@@ -8,7 +8,7 @@
 import pytest
 
 import torch
-from monarch.actor import Actor, current_rank, endpoint, proc_mesh
+from monarch.actor import Actor, current_rank, endpoint, this_host
 from monarch.tensor_engine import is_available as rdma_available, RDMABuffer
 
 
@@ -67,7 +67,7 @@ class ParameterClient(Actor):
 @needs_rdma
 @needs_cuda
 async def test_proc_mesh_rdma():
-    proc = await proc_mesh(gpus=1)
+    proc = this_host().spawn_procs(per_host={"gpus": 1})
     server = await proc.spawn("server", ParameterServer)
 
     # --- CPU TESTS ---
@@ -168,8 +168,8 @@ class GeneratorActor(Actor):
 @needs_rdma
 @needs_cuda
 async def test_gpu_trainer_generator():
-    trainer_proc = await proc_mesh(gpus=1)
-    gen_proc = await proc_mesh(gpus=1)
+    trainer_proc = this_host().spawn_procs(per_host={"gpus": 2})
+    gen_proc = this_host().spawn_procs(per_host={"gpus": 2})
     trainer = await trainer_proc.spawn("trainer", TrainerActor)
     generator = await gen_proc.spawn("gen", GeneratorActor)
 
@@ -185,8 +185,8 @@ async def test_gpu_trainer_generator():
 @needs_rdma
 @needs_cuda
 def test_gpu_trainer_generator_sync() -> None:
-    trainer_proc = proc_mesh(gpus=1)
-    gen_proc = proc_mesh(gpus=1)
+    trainer_proc = this_host().spawn_procs(per_host={"gpus": 1})
+    gen_proc = this_host().spawn_procs(per_host={"gpus": 1})
     trainer = trainer_proc.spawn("trainer", TrainerActor).get()
     generator = gen_proc.spawn("gen", GeneratorActor).get()
 
