@@ -87,7 +87,7 @@ impl ProcessAllocator {
 impl Allocator for ProcessAllocator {
     type Alloc = ProcessAlloc;
 
-    #[hyperactor::instrument(fields(name = "process_allocate"))]
+    #[hyperactor::instrument(fields(name = "process_allocate", monarch_client_trace_id = spec.constraints.match_labels.get(CLIENT_TRACE_ID_LABEL).cloned().unwrap_or_else(|| "".to_string())))]
     async fn allocate(&mut self, spec: AllocSpec) -> Result<ProcessAlloc, AllocatorError> {
         let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix))
             .await

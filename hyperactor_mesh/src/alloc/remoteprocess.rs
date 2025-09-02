@@ -40,7 +40,6 @@ use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use mockall::automock;
 use ndslice::Region;
-use ndslice::View;
 use ndslice::ViewExt;
 use ndslice::view::Extent;
 use ndslice::view::Point;
@@ -229,6 +228,8 @@ impl RemoteProcessAllocator {
                                     "allocating...",
                                 );
                             }
+
+
                             let spec = AllocSpec {
                                 extent: view.extent(),
                                 constraints,
