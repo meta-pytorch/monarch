@@ -329,10 +329,11 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             pm: "ProcMesh",
             hy_proc_mesh_task: "Shared[HyProcMesh]",
             setup_actor: Optional[SetupActor],
+            stream_log_to_client: bool,
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
 
-            await pm._logging_manager.init(hy_proc_mesh)
+            await pm._logging_manager.init(hy_proc_mesh, stream_log_to_client)
 
             if setup_actor is not None:
                 await setup_actor.setup.call()
@@ -349,7 +350,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             )
 
         pm._proc_mesh = PythonTask.from_coroutine(
-            task(pm, hy_proc_mesh, setup_actor)
+            task(pm, hy_proc_mesh, setup_actor, alloc.stream_logs)
         ).spawn()
 
         return pm
@@ -579,7 +580,11 @@ def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
         stacklevel=2,
     )
 
-    return _proc_mesh_from_allocator(allocator=LocalAllocator(), gpus=gpus, hosts=hosts)
+    return _proc_mesh_from_allocator(
+        allocator=LocalAllocator(),
+        gpus=gpus,
+        hosts=hosts,
+    )
 
 
 def sim_proc_mesh(

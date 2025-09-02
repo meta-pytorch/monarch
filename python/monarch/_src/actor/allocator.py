@@ -9,7 +9,7 @@
 import abc
 import logging
 from dataclasses import dataclass
-from typing import Dict, final, Literal, Optional, TYPE_CHECKING
+from typing import Dict, final, Literal, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
@@ -33,13 +33,16 @@ logger: logging.Logger = logging.getLogger(__name__)
 class AllocHandle(DeprecatedNotAFuture):
     _hy_alloc: "Shared[Alloc]"
     _extent: Dict[str, int]
+    _stream_logs: bool
 
     def reshape(self, extent: Dict[str, int]) -> "AllocHandle":
         async def task() -> Alloc:
             alloc = await self._hy_alloc
             return alloc.reshape(extent)
 
-        return AllocHandle(PythonTask.from_coroutine(task()).spawn(), extent)
+        return AllocHandle(
+            PythonTask.from_coroutine(task()).spawn(), extent, self._stream_logs
+        )
 
     @property
     def initialized(self) -> Future[Literal[True]]:
@@ -54,6 +57,14 @@ class AllocHandle(DeprecatedNotAFuture):
             return True
 
         return Future(coro=task())
+
+    @property
+    def stream_logs(self) -> bool:
+        """
+        Whether to stream stdout/stderr logs from the allocated processes back to the client.
+        The default behavior is determined by the underlying allocator.
+        """
+        return self._stream_logs
 
 
 class AllocateMixin(abc.ABC):
@@ -70,7 +81,25 @@ class AllocateMixin(abc.ABC):
         Returns:
         - A future that will be fulfilled when the requested allocation is fulfilled.
         """
-        return AllocHandle(self.allocate_nonblocking(spec).spawn(), spec.extent)
+        return AllocHandle(
+            self.allocate_nonblocking(spec).spawn(),
+            spec.extent,
+            self._stream_logs(),
+        )
+
+    @abc.abstractmethod
+    def _stream_logs(self) -> bool:
+        """
+        Whether to stream stdout/stderr logs from the allocated processes back to the client.
+        A common pattern is if the processes are allocated on the same host as the client,
+        then it is not necessary to stream logs back. But if the processes are remotely allocated,
+        it is recommended to stream logs back. It is up to each allocator to decide the default behavior.
+
+        Returns:
+        - A boolean indicating whether to stream logs back to the client.
+        """
+
+        ...
 
 
 @final
@@ -79,6 +108,9 @@ class ProcessAllocator(ProcessAllocatorBase, AllocateMixin):
     An allocator that allocates by spawning local processes.
     """
 
+    def _stream_logs(self) -> bool:
+        return False
+
 
 @final
 class LocalAllocator(LocalAllocatorBase, AllocateMixin):
@@ -86,12 +118,18 @@ class LocalAllocator(LocalAllocatorBase, AllocateMixin):
     An allocator that allocates by spawning actors into the current process.
     """
 
+    def _stream_logs(self) -> bool:
+        return False
+
 
 @final
 class SimAllocator(SimAllocatorBase, AllocateMixin):
     """
     An allocator that allocates by spawning actors into the current process using simulated channels for transport
     """
+
+    def _stream_logs(self) -> bool:
+        return False
 
 
 class RemoteAllocInitializer(abc.ABC):
@@ -226,3 +264,6 @@ class RemoteAllocator(RemoteAllocatorBase, AllocateMixin):
     An allocator that allocates by spawning actors on a remote host.
     The remote host must be running hyperactor's remote-process-allocator.
     """
+
+    def _stream_logs(self) -> bool:
+        return True

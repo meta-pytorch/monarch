@@ -35,14 +35,14 @@ class LoggingManager:
         self._logging_mesh_client: LoggingMeshClient | None = None
         self._ipython_flush_logs_handler: Callable[..., None] | None = None
 
-    async def init(self, proc_mesh: HyProcMesh) -> None:
+    async def init(self, proc_mesh: HyProcMesh, stream_to_client: bool) -> None:
         if self._logging_mesh_client is not None:
             return
 
         self._logging_mesh_client = await LoggingMeshClient.spawn(proc_mesh=proc_mesh)
         self._logging_mesh_client.set_mode(
-            stream_to_client=True,
-            aggregate_window_sec=3,
+            stream_to_client=stream_to_client,
+            aggregate_window_sec=3 if stream_to_client else None,
             level=logging.INFO,
         )
 
