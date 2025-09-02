@@ -35,7 +35,8 @@ use hyperactor::clock::RealClock;
 use hyperactor::config;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
-use hyperactor::observe;
+use hyperactor::observe_async;
+use hyperactor::observe_result;
 use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use mockall::automock;
@@ -181,7 +182,7 @@ impl RemoteProcessAllocator {
             handle: JoinHandle<()>,
             cancel_token: CancellationToken,
         }
-        #[observe("remote_process")]
+        #[observe_async("RemoteProcessAllocator")]
         async fn ensure_previous_alloc_stopped(active_allocation: &mut Option<ActiveAllocation>) {
             if let Some(active_allocation) = active_allocation.take() {
                 tracing::info!("previous alloc found, stopping");
@@ -293,7 +294,7 @@ impl RemoteProcessAllocator {
         Ok(())
     }
 
-    #[observe("remote_process")]
+    #[observe_async("RemoteProcessAllocator")]
     async fn handle_allocation_request(
         alloc: Box<dyn Alloc + Send + Sync>,
         view: Region,
@@ -600,7 +601,7 @@ impl RemoteProcessAlloc {
     /// to obtain a list of allocate hosts. Then Allocate message will be sent to all
     /// RemoteProcessAllocator on all hosts. Heartbeats will be used to maintain health
     /// status of remote hosts.
-    #[observe("remote_process")]
+    #[observe_result("RemoteProcessAlloc")]
     pub async fn new(
         spec: AllocSpec,
         world_id: WorldId,

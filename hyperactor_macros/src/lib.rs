@@ -37,7 +37,6 @@ use syn::ItemImpl;
 use syn::Lit;
 use syn::Meta;
 use syn::MetaNameValue;
-use syn::ReturnType;
 use syn::Token;
 use syn::Type;
 use syn::bracketed;
@@ -1881,76 +1880,91 @@ pub fn derive_actor(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// A procedural macro that automatically injects telemetry code into async functions.
+// Helper function for common parsing and validation
+fn parse_observe_function(
+    attr: TokenStream,
+    item: TokenStream,
+) -> syn::Result<(ItemFn, String, String)> {
+    let input = syn::parse::<ItemFn>(item)?;
+
+    if input.sig.asyncness.is_none() {
+        return Err(syn::Error::new(
+            input.sig.span(),
+            "observe macros can only be applied to async functions",
+        ));
+    }
+
+    let fn_name_str = input.sig.ident.to_string();
+    let module_name_str = syn::parse::<syn::LitStr>(attr)?.value();
+
+    Ok((input, fn_name_str, module_name_str))
+}
+
+// Helper function for creating telemetry identifiers and setup code
+fn create_telemetry_setup(
+    module_name_str: &str,
+    fn_name_str: &str,
+    include_error: bool,
+) -> (Ident, Ident, Option<Ident>, proc_macro2::TokenStream) {
+    let module_and_fn = format!("{}_{}", module_name_str, fn_name_str);
+    let latency_ident = Ident::new("latency", Span::from(proc_macro::Span::def_site()));
+
+    let success_ident = Ident::new("success", Span::from(proc_macro::Span::def_site()));
+
+    let error_ident = if include_error {
+        Some(Ident::new(
+            "error",
+            Span::from(proc_macro::Span::def_site()),
+        ))
+    } else {
+        None
+    };
+
+    let error_declaration = if let Some(ref error_ident) = error_ident {
+        quote! {
+            hyperactor_telemetry::declare_static_counter!(#error_ident, concat!(#module_and_fn, ".error"));
+        }
+    } else {
+        quote! {}
+    };
+
+    let setup_code = quote! {
+        use hyperactor_telemetry;
+        hyperactor_telemetry::declare_static_timer!(#latency_ident, concat!(#module_and_fn, ".latency"), hyperactor_telemetry::TimeUnit::Micros);
+        hyperactor_telemetry::declare_static_counter!(#success_ident, concat!(#module_and_fn, ".success"));
+        #error_declaration
+    };
+
+    (latency_ident, success_ident, error_ident, setup_code)
+}
+
+/// A procedural macro that automatically injects telemetry code into async functions
+/// that return a Result type.
 ///
-/// This macro wraps tokio::async functions and adds instrumentation to measure:
+/// This macro wraps async functions and adds instrumentation to measure:
 /// 1. Latency - how long the function takes to execute
-/// 2. Error throughput - whether the function returns an error or success
+/// 2. Error counter - function error count
+/// 3. Success counter - function completion count
 ///
 /// # Example
 ///
 /// ```rust
-/// use hyperactor_actor::observe;
+/// use hyperactor_actor::observe_result;
 ///
-/// #[observe("my_module")]
+/// #[observe_result("my_module")]
 /// async fn process_request(user_id: &str) -> Result<String, Error> {
 ///     // Function implementation
 ///     // Telemetry will be automatically collected
 /// }
 /// ```
-///
-/// The macro will generate code equivalent to:
-///
-/// ```rust
-/// async fn process_request(user_id: &str) -> Result<String, Error> {
-///     let _timer = hyperactor_telemetry::FUNCTION_LATENCY.start(
-///         hyperactor_telemetry::kv_pairs!("function" => "process_request")
-///     );
-///     
-///     let result = async {
-///         // Original function body
-///     }.await;
-///     
-///     match &result {
-///         Ok(_) => {
-///             hyperactor_telemetry::FUNCTION_SUCCESS.add(
-///                 1,
-///                 hyperactor_telemetry::kv_pairs!("function" => "process_request")
-///             );
-///         }
-///         Err(_) => {
-///             hyperactor_telemetry::FUNCTION_ERROR.add(
-///                 1,
-///                 hyperactor_telemetry::kv_pairs!("function" => "process_request")
-///             );
-///         }
-///     }
-///     
-///     result
-/// }
-/// ```
 #[proc_macro_attribute]
-pub fn observe(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the input function
-    let input = parse_macro_input!(item as ItemFn);
+pub fn observe_result(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let (input, fn_name_str, module_name_str) = match parse_observe_function(attr, item) {
+        Ok(parsed) => parsed,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
-    // Check if the function is async
-    if input.sig.asyncness.is_none() {
-        return syn::Error::new(
-            input.sig.span(),
-            "the #[observe] macro can only be applied to async functions",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    // Extract function name
     let fn_name = &input.sig.ident;
-    let fn_name_str = fn_name.to_string();
-    // Parse attr if present into a string variable named module_name_str
-    let module_name_str = parse_macro_input!(attr as syn::LitStr).value();
-
-    // Extract function visibility, arguments, return type, and body
     let vis = &input.vis;
     let args = &input.sig.inputs;
     let return_type = &input.sig.output;
@@ -1958,101 +1972,101 @@ pub fn observe(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attrs = &input.attrs;
     let generics = &input.sig.generics;
 
-    let module_and_fn = format!("{}_{}", module_name_str, fn_name_str);
+    let (latency_ident, success_ident, error_ident, telemetry_setup) =
+        create_telemetry_setup(&module_name_str, &fn_name_str, true);
+    let error_ident = error_ident.unwrap();
 
-    let latency_ident = Ident::new(
-        format!("{}_LATENCY", module_and_fn).as_str(),
-        Span::call_site(),
-    );
-
-    let success_ident = Ident::new(
-        format!("{}_SUCCESS", module_and_fn).as_str(),
-        Span::call_site(),
-    );
-
-    let error_ident = Ident::new(
-        format!("{}_ERROR", module_and_fn).as_str(),
-        Span::call_site(),
-    );
-
-    // Determine if the function returns a Result
-    let returns_result = match return_type {
-        ReturnType::Type(_, ty) => {
-            if let Type::Path(type_path) = ty.as_ref() {
-                if let Some(segment) = type_path.path.segments.first() {
-                    segment.ident == "Result"
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        _ => false,
-    };
+    let result_ident = Ident::new("result", Span::from(proc_macro::Span::def_site()));
 
     // Generate the instrumented function
-    let expanded = if returns_result {
-        quote! {
-            #(#attrs)*
-            #vis async fn #fn_name #generics(#args) #return_type {
-                use hyperactor_telemetry;
-                // Create the static counters and timer if they don't exist yet
-                hyperactor_telemetry::declare_static_timer!(#latency_ident, concat!(#module_name_str, "_", stringify!(#fn_name), ".latency"), hyperactor_telemetry::TimeUnit::Micros);
-                hyperactor_telemetry::declare_static_counter!(#success_ident, concat!(#module_name_str, "_", stringify!(#fn_name), ".success"));
-                hyperactor_telemetry::declare_static_counter!(#error_ident, concat!(#module_name_str, "_", stringify!(#fn_name), ".error"));
+    let expanded = quote! {
+        #(#attrs)*
+        #vis async fn #fn_name #generics(#args) #return_type {
+            #telemetry_setup
 
-                let kv_pairs = hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone());
-                // Start timing the function execution
-                let _timer = #latency_ident.start(kv_pairs);
+            let kv_pairs = hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone());
+            let _timer = #latency_ident.start(kv_pairs);
 
-                // Execute the original function body
-                let result = async #body.await;
+            let #result_ident = async #body.await;
 
-                // Record success or error based on the result
-                match &result {
-                    Ok(_) => {
-                        #success_ident.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone())
-                        );
-                    }
-                    Err(_) => {
-                        #error_ident.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone())
-                        );
-                    }
+            match &#result_ident {
+                Ok(_) => {
+                    #success_ident.add(
+                        1,
+                        hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone())
+                    );
                 }
-
-                result
+                Err(_) => {
+                    #error_ident.add(
+                        1,
+                        hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone())
+                    );
+                }
             }
-        }
-    } else {
-        // For functions that don't return Result, we still measure both latency and success
-        quote! {
-            #(#attrs)*
-            #vis async fn #fn_name #generics(#args) #return_type {
-                use hyperactor_telemetry;
 
-                hyperactor_telemetry::declare_static_timer!(#latency_ident, concat!(#module_name_str, "_", stringify!(#fn_name), ".latency"), hyperactor_telemetry::TimeUnit::Micros);
-                hyperactor_telemetry::declare_static_counter!(#success_ident, concat!(#module_name_str, "_", stringify!(#fn_name), ".success"));
-
-                let kv_pairs = hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone());
-                // Start timing the function execution
-                let _timer = #latency_ident.start(kv_pairs);
-
-                let ret = async #body.await;
-
-                #success_ident.add(
-                    1,
-                    hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone())
-                );
-                ret
-            }
+            #result_ident
         }
     };
 
-    // Return the expanded code
+    expanded.into()
+}
+
+/// A procedural macro that automatically injects telemetry code into async functions
+/// that do not return a Result type.
+///
+/// This macro wraps async functions and adds instrumentation to measure:
+/// 1. Latency - how long the function takes to execute
+/// 2. Success counter - function completion count
+///
+/// # Example
+///
+/// ```rust
+/// use hyperactor_actor::observe_async;
+///
+/// #[observe_async("my_module")]
+/// async fn process_data(data: &str) -> String {
+///     // Function implementation
+///     // Telemetry will be automatically collected
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn observe_async(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let (input, fn_name_str, module_name_str) = match parse_observe_function(attr, item) {
+        Ok(parsed) => parsed,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    let fn_name = &input.sig.ident;
+    let vis = &input.vis;
+    let args = &input.sig.inputs;
+    let return_type = &input.sig.output;
+    let body = &input.block;
+    let attrs = &input.attrs;
+    let generics = &input.sig.generics;
+
+    let (latency_ident, success_ident, _, telemetry_setup) =
+        create_telemetry_setup(&module_name_str, &fn_name_str, false);
+
+    let return_ident = Ident::new("ret", Span::from(proc_macro::Span::def_site()));
+
+    // Generate the instrumented function
+    let expanded = quote! {
+        #(#attrs)*
+        #vis async fn #fn_name #generics(#args) #return_type {
+            #telemetry_setup
+
+            let kv_pairs = hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone());
+            let _timer = #latency_ident.start(kv_pairs);
+
+            let #return_ident = async #body.await;
+
+            #success_ident.add(
+                1,
+                hyperactor_telemetry::kv_pairs!("function" => #fn_name_str.clone())
+            );
+            #return_ident
+        }
+    };
+
     expanded.into()
 }

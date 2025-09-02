@@ -24,7 +24,6 @@ use hyperactor::RefClient;
 use hyperactor::forward;
 use hyperactor::instrument;
 use hyperactor::instrument_infallible;
-use hyperactor::observe;
 use serde::Deserialize;
 use serde::Serialize;
 

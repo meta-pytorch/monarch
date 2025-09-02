@@ -243,6 +243,7 @@ impl ProcMesh {
         C.get_or_init(|| AtomicUsize::new(0))
     }
 
+    #[hyperactor::observe_result("ProcMesh")]
     async fn allocate_boxed_inner(
         mut alloc: Box<dyn Alloc + Send + Sync>,
         loc: &'static Location<'static>,
