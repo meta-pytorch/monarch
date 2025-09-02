@@ -211,12 +211,80 @@ impl<M: RemoteMessage> NetTx<M> {
             seq: u64,
             message: serde_multipart::Message,
             received_at: Instant,
+            // When this message was written to the stream. None means it is not
+            // written yet.
+            sent_at: Option<Instant>,
             return_channel: oneshot::Sender<M>,
         }
 
         impl<M: RemoteMessage> fmt::Debug for QueuedMessage<M> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.seq.fmt(f)
+                let rcv_secs = self.received_at.elapsed().as_secs();
+                match self.sent_at {
+                    Some(s) => {
+                        write!(
+                            f,
+                            "(seq={}, since_rcv={}sec, since_sent={}sec)",
+                            self.seq,
+                            rcv_secs,
+                            s.elapsed().as_secs()
+                        )
+                    }
+                    None => {
+                        write!(f, "(seq={}, since_rcv={}sec)", self.seq, rcv_secs)
+                    }
+                }
+            }
+        }
+
+        // A new type to provide custom Debug impl.
+        struct MessageDeque<M: RemoteMessage>(VecDeque<QueuedMessage<M>>);
+
+        impl<M: RemoteMessage> MessageDeque<M> {
+            fn pop_front(&mut self) -> Option<QueuedMessage<M>> {
+                self.0.pop_front()
+            }
+
+            fn push_back(&mut self, message: QueuedMessage<M>) {
+                self.0.push_back(message);
+            }
+
+            fn append(&mut self, other: &mut Self) {
+                self.0.append(&mut other.0);
+            }
+
+            fn front(&self) -> Option<&QueuedMessage<M>> {
+                self.0.front()
+            }
+
+            fn back(&self) -> Option<&QueuedMessage<M>> {
+                self.0.back()
+            }
+
+            fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+        }
+
+        impl<M: RemoteMessage> fmt::Debug for MessageDeque<M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let mut list = f.debug_list();
+                let n = self.0.len();
+                if n <= 6 {
+                    list.entries(&self.0);
+                } else {
+                    // head
+                    for x in self.0.iter().take(3) {
+                        list.entry(&x);
+                    }
+                    // middle
+                    list.entry(&format_args!("... omit {} messages ...", n - 6));
+                    // tail
+                    for x in self.0.iter().skip(n - 3) {
+                        list.entry(&x);
+                    }
+                }
+                list.finish()
             }
         }
 
@@ -227,7 +295,7 @@ impl<M: RemoteMessage> NetTx<M> {
             // unacked messages should still use their already assigned seq
             // numbers.
             next_seq: u64,
-            deque: VecDeque<QueuedMessage<M>>,
+            deque: MessageDeque<M>,
             #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
@@ -236,7 +304,7 @@ impl<M: RemoteMessage> NetTx<M> {
             fn new(log_id: &'a str) -> Self {
                 Self {
                     next_seq: 0,
-                    deque: VecDeque::new(),
+                    deque: MessageDeque(VecDeque::new()),
                     log_id,
                 }
             }
@@ -288,13 +356,14 @@ impl<M: RemoteMessage> NetTx<M> {
                     seq: self.next_seq,
                     message,
                     received_at,
+                    sent_at: None,
                     return_channel,
                 });
                 self.next_seq += 1;
                 Ok(())
             }
 
-            fn requeue_unacked(&mut self, unacked: VecDeque<QueuedMessage<M>>) {
+            fn requeue_unacked(&mut self, unacked: MessageDeque<M>) {
                 match (unacked.back(), self.deque.front()) {
                     (Some(last), Some(first)) => {
                         assert!(
@@ -327,7 +396,7 @@ impl<M: RemoteMessage> NetTx<M> {
         #[derive(Derivative)]
         #[derivative(Debug)]
         struct Unacked<'a, M: RemoteMessage> {
-            deque: VecDeque<QueuedMessage<M>>,
+            deque: MessageDeque<M>,
             largest_acked: Option<AckedSeq>,
             #[derivative(Debug = "ignore")]
             log_id: &'a str,
@@ -336,7 +405,7 @@ impl<M: RemoteMessage> NetTx<M> {
         impl<'a, M: RemoteMessage> Unacked<'a, M> {
             fn new(largest_acked: Option<AckedSeq>, log_id: &'a str) -> Self {
                 Self {
-                    deque: VecDeque::new(),
+                    deque: MessageDeque(VecDeque::new()),
                     largest_acked,
                     log_id,
                 }
@@ -641,7 +710,11 @@ impl<M: RemoteMessage> NetTx<M> {
                         send_result = write_state.send() => {
                             match send_result {
                                 Ok(()) => {
-                                    let message = outbox.pop_front().expect("outbox should not be empty");
+                                    let mut message = outbox.pop_front().expect("outbox should not be empty");
+                                    // If this message was re-put into `outbox` from `unacked` due to reconnection,
+                                    // its `sent_at` field would be set in the last attempt. In that case, we simply
+                                    // overwrite the old one here.
+                                    message.sent_at = Some(RealClock.now());
                                     unacked.push_back(message);
                                     (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                 }
@@ -811,8 +884,9 @@ impl<M: RemoteMessage> NetTx<M> {
                 // either not acknowledged or not sent.
                 unacked
                     .deque
+                    .0
                     .drain(..)
-                    .chain(outbox.deque.drain(..))
+                    .chain(outbox.deque.0.drain(..))
                     .filter_map(|queued_msg| {
                         serde_multipart::deserialize_bincode(queued_msg.message.clone())
                             .ok()
