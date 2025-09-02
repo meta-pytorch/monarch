@@ -48,21 +48,39 @@ def is_available():
 class RdmaController(Actor):
     def __init__(self) -> None:
         self._managers: Dict[ProcMesh, _RdmaManager] = {}
+        self._initializing: Dict[ProcMesh, Future[Optional[_RdmaManager]]] = {}
 
     @endpoint
     async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -> None:
         if proc_mesh not in self._managers:
+            # Check if initialization is already in progress
+            if proc_mesh in self._initializing:
+                # Wait for the existing initialization to complete
+                await self._initializing[proc_mesh]
+                return
+
             if not _RdmaBuffer.rdma_supported():
                 raise RuntimeError(
                     "Cannot spawn _RdmaManager because RDMA is not supported on this machine"
                 )
-            self._managers[proc_mesh] = none_throws(
-                await Future(
-                    coro=_RdmaManager.create_rdma_manager_nonblocking(
-                        await Future(coro=proc_mesh._proc_mesh.task())
-                    )
+
+            # Create a Future to track this initialization
+            init_future = Future(
+                coro=_RdmaManager.create_rdma_manager_nonblocking(
+                    await Future(coro=proc_mesh._proc_mesh.task())
                 )
             )
+
+            # Mark initialization as in progress
+            self._initializing[proc_mesh] = init_future
+
+            try:
+                # Perform the initialization
+                manager = none_throws(await init_future)
+                self._managers[proc_mesh] = manager
+            finally:
+                # Clean up the tracking future regardless of success/failure
+                self._initializing.pop(proc_mesh, None)
 
 
 # Cached so that we don't have to call out to the root client every time,
