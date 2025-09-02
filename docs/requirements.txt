@@ -12,3 +12,4 @@ sphinx-sitemap==2.7.1
 sphinxext-opengraph
 pillow  # Required for image processing in documentation
 matplotlib  # Required for Sphinx Gallery matplotlib scraping and reset functionality
+psutil  # Required for Option 1C resource detection in conf.py
