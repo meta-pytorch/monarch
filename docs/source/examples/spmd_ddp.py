@@ -141,6 +141,22 @@ async def cleanup_distributed(ddp_actor):
 # Main function to run the complete example
 async def main():
     """Main function to run the DDP example."""
+    # Check CUDA and GPU availability
+    if not torch.cuda.is_available():
+        print("Skipping DDP example: CUDA is not available")
+        return
+
+    available_gpus = torch.cuda.device_count()
+    if available_gpus < WORLD_SIZE:
+        print(
+            f"Skipping DDP example: requires {WORLD_SIZE} GPUs, only {available_gpus} available"
+        )
+        print("This example demonstrates distributed training and needs 4 GPUs")
+        return
+
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"Found {available_gpus} GPUs, proceeding with DDP example")
+
     # Create actors
     ddp_actor, proc_mesh = await create_ddp_actors()
 
