@@ -645,6 +645,7 @@ pub mod env {
     pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
     pub const OTEL_EXPORTER: &str = "HYPERACTOR_OTEL_EXPORTER";
     pub const MAST_ENVIRONMENT: &str = "MAST_ENVIRONMENT";
+    pub const HYPERACTOR_MESSAGE_TRACE_ENABLED: &str = "HYPERACTOR_MESSAGE_TRACE_ENABLED";
 
     /// Forward or generate a uuid for this execution. When running in production on mast, this is provided to
     /// us via the MAST_HPC_JOB_NAME env var. Subprocesses should either forward the MAST_HPC_JOB_NAME

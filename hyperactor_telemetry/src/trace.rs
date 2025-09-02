@@ -8,9 +8,32 @@
 
 use std::env;
 
+use rand::Rng;
+use rand::distributions::Alphanumeric;
+
 use crate::env::execution_id;
 
 const MONARCH_CLIENT_TRACE_ID: &str = "MONARCH_CLIENT_TRACE_ID";
+pub const HYPERACTOR_MESSAGE_TRACE_ENABLED: &str = "HYPERACTOR_MESSAGE_TRACE_ENABLED";
+
+pub fn is_message_tracing_enabled() -> bool {
+    if let Ok(val) = env::var(HYPERACTOR_MESSAGE_TRACE_ENABLED) {
+        if val == "1" || val.to_lowercase() == "true" {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn generate_new_message_trace() -> String {
+    let new_trace_id: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(24)
+        .map(char::from)
+        .collect();
+    new_trace_id
+}
 
 /// Returns the current trace ID if it exists, or None if it doesn't.
 /// This function does not create a new trace ID if one doesn't exist.

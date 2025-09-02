@@ -123,6 +123,32 @@ use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
 
+crate::attrs::declare_attrs! {
+    /// Unique identifier for message level tracing
+    attr MESSAGE_TRACE: String;
+}
+
+/// Utility function to ensure a message envelope has a trace ID and return it if message tracing is enabled via environment variable,
+/// If trace is not already set, it generates a new one using UUID pattern. Returns the trace ID as an owned String for use in metrics.
+fn ensure_message_trace(envelope: &mut MessageEnvelope) -> String {
+    if !hyperactor_telemetry::trace::is_message_tracing_enabled() {
+        return "".to_string();
+    }
+
+    if envelope.headers.get(MESSAGE_TRACE).is_none() {
+        envelope.headers.set(
+            MESSAGE_TRACE,
+            hyperactor_telemetry::trace::generate_new_message_trace(),
+        );
+    }
+
+    envelope
+        .headers
+        .get(MESSAGE_TRACE)
+        .cloned()
+        .unwrap_or_else(|| "".to_string())
+}
+
 mod undeliverable;
 /// For [`Undeliverable`], a message type for delivery failures.
 pub use undeliverable::Undeliverable;
@@ -283,16 +309,6 @@ impl MessageEnvelope {
         error: DeliveryError,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
-            1,
-            hyperactor_telemetry::kv_pairs!(
-                "actor_id" => self.sender.to_string(),
-                "dest_actor_id" => self.dest.0.to_string(),
-                "message_type" => self.data.typename().unwrap_or("unknown"),
-                "error_type" =>  error.to_string(),
-            ),
-        );
-
         self.set_error(error);
         undeliverable::return_undeliverable(return_handle, self);
     }
@@ -696,10 +712,9 @@ pub struct UndeliverableMailboxSender;
 impl MailboxSender for UndeliverableMailboxSender {
     fn post(
         &self,
-        envelope: MessageEnvelope,
+        mut envelope: MessageEnvelope,
         _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let sender_name = envelope.sender.name();
         let mut error_str = "".to_string();
         if !envelope.errors.is_empty() {
             error_str = envelope
@@ -710,13 +725,17 @@ impl MailboxSender for UndeliverableMailboxSender {
                 .join("; ");
         }
 
-        tracing::error!(
-            name = "undelivered_message",
-            actor_name = sender_name,
-            actor_id = envelope.sender.to_string(),
-            "message not delivered to {}, {}",
-            envelope.dest.actor_id().name(),
-            error_str,
+        let message_trace_id = ensure_message_trace(&mut envelope);
+
+        metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
+            1,
+            hyperactor_telemetry::kv_pairs!(
+                "actor_id" => envelope.sender.to_string(),
+                "dest_actor_id" => envelope.dest.actor_id().to_string(),
+                "message_type" => envelope.data.typename().unwrap_or("unknown"),
+                "error_type" =>  error_str,
+                "message_trace" => message_trace_id,
+            ),
         );
     }
 }
@@ -1071,26 +1090,27 @@ impl MailboxClient {
 impl MailboxSender for MailboxClient {
     fn post(
         &self,
-        envelope: MessageEnvelope,
+        mut envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        // tracing::trace!(name = "post", "posting message to {}", envelope.dest);
+        let trace_id_for_metrics = ensure_message_trace(&mut envelope);
+
+        metrics::MAILBOX_POSTS.add(
+            1,
+            hyperactor_telemetry::kv_pairs!(
+                "actor_id" => envelope.sender.to_string(),
+                "dest_actor_id" => envelope.dest.0.to_string(),
+                "message_trace" => trace_id_for_metrics,
+                "reason" => "MailboxClient",
+            ),
+        );
+
         tracing::event!(target:"messages", tracing::Level::DEBUG, "crc"=envelope.data.crc(), "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.0, "port"= envelope.dest.1, "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
 
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
             self.buffer.send((envelope, return_handle))
         {
             let err = DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string());
-            metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
-                1,
-                hyperactor_telemetry::kv_pairs!(
-                    "actor_id" => envelope.sender.to_string(),
-                    "dest_actor_id" => envelope.dest.0.to_string(),
-                    "message_type" => envelope.data.typename().unwrap_or("unknown"),
-                    "reason" => err.to_string(),
-                ),
-            );
-
             // Failed to enqueue.
             envelope.undeliverable(err, return_handle);
         }
@@ -1366,22 +1386,27 @@ impl MailboxSender for Mailbox {
     /// if the message does not deserialize into the expected type.
     fn post(
         &self,
-        envelope: MessageEnvelope,
+        mut envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        metrics::MAILBOX_POSTS.add(
-            1,
-            hyperactor_telemetry::kv_pairs!(
-                "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.0.to_string(),
-            ),
-        );
         tracing::trace!(
             name = "post",
             actor_name = envelope.sender.name(),
             actor_id = envelope.sender.to_string(),
             "posting message to {}",
             envelope.dest
+        );
+
+        let trace_id_for_metrics = ensure_message_trace(&mut envelope);
+
+        metrics::MAILBOX_POSTS.add(
+            1,
+            hyperactor_telemetry::kv_pairs!(
+                "actor_id" => envelope.sender.to_string(),
+                "dest_actor_id" => envelope.dest.0.to_string(),
+                "message_trace" => trace_id_for_metrics,
+                "reason" => "Mailbox",
+            ),
         );
 
         if envelope.dest().actor_id() != &self.inner.actor_id {
@@ -1391,16 +1416,6 @@ impl MailboxSender for Mailbox {
         match self.inner.ports.entry(envelope.dest().index()) {
             Entry::Vacant(_) => {
                 let err = DeliveryError::Unroutable("port not bound in mailbox".to_string());
-                metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
-                    1,
-                    hyperactor_telemetry::kv_pairs!(
-                        "actor_id" => envelope.sender.to_string(),
-                        "dest_actor_id" => envelope.dest.0.to_string(),
-                        "message_type" => envelope.data.typename().unwrap_or("unknown"),
-                        "reason" => err.to_string(),
-                    ),
-                );
-
                 envelope.undeliverable(err, return_handle);
             }
             Entry::Occupied(entry) => {
@@ -1430,16 +1445,6 @@ impl MailboxSender for Mailbox {
                         headers,
                     }) => {
                         let err = DeliveryError::Mailbox(format!("{}", sender_error));
-                        metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!(
-                                "actor_id" => sender.to_string(),
-                                "dest_actor_id" => dest.0.to_string(),
-                                "message_type" => data.typename().unwrap_or("unknown"),
-                                "reason" => err.to_string(),
-                            ),
-                        );
-
                         MessageEnvelope::seal(
                             MessageMetadata {
                                 headers,
@@ -2569,6 +2574,116 @@ mod tests {
     use crate::reference::ProcId;
     use crate::reference::WorldId;
     use crate::simnet;
+
+    #[test]
+    fn test_ensure_message_trace() {
+        // SAFETY: Removing the env var for testing
+        unsafe {
+            std::env::remove_var(hyperactor_telemetry::trace::HYPERACTOR_MESSAGE_TRACE_ENABLED);
+        }
+        let mut envelope = MessageEnvelope::new(
+            id!(test[0].sender),
+            PortId(id!(test[0].dest), 123),
+            Serialized::serialize(&42u64).unwrap(),
+            Attrs::new(),
+        );
+
+        let trace_id = ensure_message_trace(&mut envelope);
+        assert_eq!(trace_id, "");
+        assert!(envelope.headers.get(MESSAGE_TRACE).is_none());
+
+        // SAFETY: Setting the env var for testing
+        unsafe {
+            std::env::set_var(
+                hyperactor_telemetry::trace::HYPERACTOR_MESSAGE_TRACE_ENABLED,
+                "1",
+            );
+        }
+        let mut envelope = MessageEnvelope::new(
+            id!(test[0].sender),
+            PortId(id!(test[0].dest), 123),
+            Serialized::serialize(&42u64).unwrap(),
+            Attrs::new(),
+        );
+
+        let trace_id = ensure_message_trace(&mut envelope);
+        assert!(!trace_id.is_empty());
+        // The new implementation generates a 24-character alphanumeric string without "trace_" prefix
+        assert_eq!(trace_id.len(), 24);
+        assert!(trace_id.chars().all(|c| c.is_alphanumeric()));
+        assert_eq!(envelope.headers.get(MESSAGE_TRACE).unwrap(), &trace_id);
+
+        // Test with existing trace ID - should preserve it
+        let existing_trace = "existing_trace_12345".to_string();
+        envelope.headers.set(MESSAGE_TRACE, existing_trace.clone());
+
+        let trace_id = ensure_message_trace(&mut envelope);
+        assert_eq!(trace_id, existing_trace);
+        assert_eq!(
+            envelope.headers.get(MESSAGE_TRACE).unwrap(),
+            &existing_trace
+        );
+
+        // SAFETY: Setting the env var for testing
+        unsafe {
+            std::env::set_var(
+                hyperactor_telemetry::trace::HYPERACTOR_MESSAGE_TRACE_ENABLED,
+                "true",
+            );
+        }
+        let mut envelope = MessageEnvelope::new(
+            id!(test[0].sender),
+            PortId(id!(test[0].dest), 123),
+            Serialized::serialize(&42u64).unwrap(),
+            Attrs::new(),
+        );
+
+        let trace_id = ensure_message_trace(&mut envelope);
+        assert!(!trace_id.is_empty());
+        assert_eq!(trace_id.len(), 24);
+        assert!(trace_id.chars().all(|c| c.is_alphanumeric()));
+
+        // SAFETY: Setting the env var for testing
+        unsafe {
+            std::env::set_var(
+                hyperactor_telemetry::trace::HYPERACTOR_MESSAGE_TRACE_ENABLED,
+                "false",
+            );
+        }
+        let mut envelope = MessageEnvelope::new(
+            id!(test[0].sender),
+            PortId(id!(test[0].dest), 123),
+            Serialized::serialize(&42u64).unwrap(),
+            Attrs::new(),
+        );
+
+        let trace_id = ensure_message_trace(&mut envelope);
+        assert_eq!(trace_id, "");
+        assert!(envelope.headers.get(MESSAGE_TRACE).is_none());
+
+        // SAFETY: Setting the env var for testing
+        unsafe {
+            std::env::set_var(
+                hyperactor_telemetry::trace::HYPERACTOR_MESSAGE_TRACE_ENABLED,
+                "0",
+            );
+        }
+        let mut envelope = MessageEnvelope::new(
+            id!(test[0].sender),
+            PortId(id!(test[0].dest), 123),
+            Serialized::serialize(&42u64).unwrap(),
+            Attrs::new(),
+        );
+
+        let trace_id = ensure_message_trace(&mut envelope);
+        assert_eq!(trace_id, "");
+        assert!(envelope.headers.get(MESSAGE_TRACE).is_none());
+
+        // SAFETY: clean up.
+        unsafe {
+            std::env::remove_var(hyperactor_telemetry::trace::HYPERACTOR_MESSAGE_TRACE_ENABLED);
+        }
+    }
 
     #[test]
     fn test_error() {
