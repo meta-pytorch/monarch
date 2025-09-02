@@ -39,9 +39,6 @@ jobs:
         # Setup Tensor Engine dependencies
         setup_tensor_engine
 
-        # Build the process allocator binary
-        build_process_allocator
-
         cargo install --path monarch_hyperactor
 
         # Build wheel
