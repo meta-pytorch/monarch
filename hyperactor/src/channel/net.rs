@@ -1079,9 +1079,9 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let ack_msg_interval = config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
         let (mut final_next, final_result, reject_conn) = loop {
-            if self.write_state.is_idle()
-                && (next.ack + ack_msg_interval <= next.seq
-                    || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval))
+            assert!(self.write_state.is_idle());
+            if next.ack + ack_msg_interval <= next.seq
+                || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval)
             {
                 let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle()
                 else {
@@ -1099,116 +1099,116 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     }
                 };
                 self.write_state = WriteState::Writing(FrameWrite::new(writer, ack), next.seq);
-            }
-
-            tokio::select! {
-                bytes_result = self.reader.next() => {
-                    rcv_raw_frame_count += 1;
-                    // First handle transport-level I/O errors, and EOFs.
-                    let bytes = match bytes_result {
-                        Ok(Some(bytes)) => bytes,
-                        Ok(None) => {
-                            tracing::debug!("{log_id}: reader returns None, meaning EOF");
-                            break (next, Ok(()), false);
-                        }
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: error reading into Frame with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            false
-                        ),
-                    };
-
-                    // De-frame the multi-part message.
-                    let message = match serde_multipart::Message::from_framed(bytes) {
-                        Ok(message) => message,
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: failed to de-frame message with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            false
-                        ),
-                    };
-
-                    // Finally decode the message. This assembles the M-typed message
-                    // from its constituent parts.
-                    match serde_multipart::deserialize_bincode(message) {
-                        Ok(Frame::Init(_)) => {
-                            break (next, Err(anyhow::anyhow!("{log_id}: unexpected init frame")), true)
-                        },
-                        // Ignore retransmits.
-                        Ok(Frame::Message(seq, _)) if seq < next.seq => {
-                            tracing::debug!(
-                                "{log_id}: ignoring retransmit; retransmit seq: {}; expected next seq: {}",
-                                seq,
-                                next.seq,
-                            );
-                        },
-                        // The following segment ensures exactly-once semantics.
-                        // That means No out-of-order delivery and no duplicate delivery.
-                        Ok(Frame::Message(seq, message)) => {
-                            // received seq should be equal to next seq. Else error out!
-                            if seq > next.seq {
-                                let msg = format!("{log_id}: out-of-sequence message, expected seq {}, got {}", next.seq, seq);
-                                tracing::error!(msg);
-                                break (next, Err(anyhow::anyhow!(msg)), true)
-                            }
-                            match self.send_with_buffer_metric(&log_id, &tx, message).await {
-                                Ok(()) => {
-                                    // In channel's contract, "delivered" means the message
-                                    // is sent to the NetRx object. Therefore, we could bump
-                                    // `next_seq` as far as the message is put on the mspc
-                                    // channel.
-                                    //
-                                    // Note that when/how the messages in NetRx are processed
-                                    // is not covered by channel's contract. For example,
-                                    // the message might never be taken out of netRx, but
-                                    // channel still considers those messages delivered.
-                                    next.seq = seq+1;
-                                }
-                                Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: error relaying message to mspc channel")), false)
-                                }
-                            }
-                        },
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: failed to deserialize message with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            false
-                        ),
+                match self.write_state.send().await {
+                    Ok(acked_seq) => {
+                        last_ack_time = RealClock.now();
+                        next.ack = acked_seq;
                     }
-                },
-
-                // We have to be careful to manage the ack write state here, so that we do not
-                // write partial acks in the presence of cancellation.
-                ack_result = self.write_state.send() => {
-                    match ack_result {
-                        Ok(acked_seq) => {
-                            last_ack_time = RealClock.now();
-                            next.ack = acked_seq;
-                        }
-                        Err(err) => {
-                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("{log_id}: error acking peer message")), false)
-                        }
+                    Err(err) => {
+                        break (
+                            next,
+                            Err::<(), anyhow::Error>(err.into())
+                                .context(format!("{log_id}: error acking peer message")),
+                            false,
+                        );
                     }
-                },
-                // Have a tick to abort select! call to make sure the ack for the last message can get the chance
-                // to be sent as a result of time interval being reached.
-                _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-                _ = cancel_token.cancelled() => break (next, Ok(()), false)
+                }
+            } else {
+                tokio::select! {
+                    bytes_result = self.reader.next() => {
+                        rcv_raw_frame_count += 1;
+                        // First handle transport-level I/O errors, and EOFs.
+                        let bytes = match bytes_result {
+                            Ok(Some(bytes)) => bytes,
+                            Ok(None) => {
+                                tracing::debug!("{log_id}: reader returns None, meaning EOF");
+                                break (next, Ok(()), false);
+                            }
+                            Err(err) => break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into()).context(
+                                    format!(
+                                        "{log_id}: error reading into Frame with M = {}",
+                                        type_name::<M>(),
+                                    )
+                                ),
+                                false
+                            ),
+                        };
+
+                        // De-frame the multi-part message.
+                        let message = match serde_multipart::Message::from_framed(bytes) {
+                            Ok(message) => message,
+                            Err(err) => break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into()).context(
+                                    format!(
+                                        "{log_id}: failed to de-frame message with M = {}",
+                                        type_name::<M>(),
+                                    )
+                                ),
+                                false
+                            ),
+                        };
+
+                        // Finally decode the message. This assembles the M-typed message
+                        // from its constituent parts.
+                        match serde_multipart::deserialize_bincode(message) {
+                            Ok(Frame::Init(_)) => {
+                                break (next, Err(anyhow::anyhow!("{log_id}: unexpected init frame")), true)
+                            },
+                            // Ignore retransmits.
+                            Ok(Frame::Message(seq, _)) if seq < next.seq => {
+                                tracing::debug!(
+                                    "{log_id}: ignoring retransmit; retransmit seq: {}; expected next seq: {}",
+                                    seq,
+                                    next.seq,
+                                );
+                            },
+                            // The following segment ensures exactly-once semantics.
+                            // That means No out-of-order delivery and no duplicate delivery.
+                            Ok(Frame::Message(seq, message)) => {
+                                // received seq should be equal to next seq. Else error out!
+                                if seq > next.seq {
+                                    let msg = format!("{log_id}: out-of-sequence message, expected seq {}, got {}", next.seq, seq);
+                                    tracing::error!(msg);
+                                    break (next, Err(anyhow::anyhow!(msg)), true)
+                                }
+                                match self.send_with_buffer_metric(&log_id, &tx, message).await {
+                                    Ok(()) => {
+                                        // In channel's contract, "delivered" means the message
+                                        // is sent to the NetRx object. Therefore, we could bump
+                                        // `next_seq` as far as the message is put on the mspc
+                                        // channel.
+                                        //
+                                        // Note that when/how the messages in NetRx are processed
+                                        // is not covered by channel's contract. For example,
+                                        // the message might never be taken out of netRx, but
+                                        // channel still considers those messages delivered.
+                                        next.seq = seq+1;
+                                    }
+                                    Err(err) => {
+                                        break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: error relaying message to mspc channel")), false)
+                                    }
+                                }
+                            },
+                            Err(err) => break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into()).context(
+                                    format!(
+                                        "{log_id}: failed to deserialize message with M = {}",
+                                        type_name::<M>(),
+                                    )
+                                ),
+                                false
+                            ),
+                        }
+                    },
+                    // Have a tick to abort select! call to make sure the ack for the last message can get the chance
+                    // to be sent as a result of time interval being reached.
+                    _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
+                    _ = cancel_token.cancelled() => break (next, Ok(()), false)
+                }
             }
         };
         // Note:
