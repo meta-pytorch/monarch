@@ -283,6 +283,13 @@ impl MessageEnvelope {
         error: DeliveryError,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
+        tracing::error!(
+            name = "undelivered_message_attempt",
+            actor_id = self.sender.to_string(),
+            "message not delivered to {}, {}",
+            self.dest.actor_id().name(),
+            error.to_string(),
+        );
         metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
             1,
             hyperactor_telemetry::kv_pairs!(
@@ -709,9 +716,10 @@ impl MailboxSender for UndeliverableMailboxSender {
                 .collect::<Vec<_>>()
                 .join("; ");
         }
-
+        // The undeliverable message was unable to be delivered back to the
+        // sender for some reason
         tracing::error!(
-            name = "undelivered_message",
+            name = "undelivered_message_abandoned",
             actor_name = sender_name,
             actor_id = envelope.sender.to_string(),
             "message not delivered to {}, {}",
@@ -870,7 +878,7 @@ impl Future for MailboxServerHandle {
     }
 }
 
-// A `MailboxServer` (such as a router) can can receive a message
+// A `MailboxServer` (such as a router) can receive a message
 // that couldn't reach its destination. We can use the fact that
 // servers are `MailboxSender`s to attempt to forward them back to
 // their senders.
@@ -917,7 +925,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         self,
         mut rx: impl channel::Rx<MessageEnvelope> + Send + 'static,
     ) -> MailboxServerHandle {
-        // A `MailboxServer` can can receive a message that couldn't
+        // A `MailboxServer` can receive a message that couldn't
         // reach its destination. We can use the fact that servers are
         // `MailboxSender`s to attempt to forward them back to their
         // senders.
@@ -1081,15 +1089,6 @@ impl MailboxSender for MailboxClient {
             self.buffer.send((envelope, return_handle))
         {
             let err = DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string());
-            metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
-                1,
-                hyperactor_telemetry::kv_pairs!(
-                    "actor_id" => envelope.sender.to_string(),
-                    "dest_actor_id" => envelope.dest.0.to_string(),
-                    "message_type" => envelope.data.typename().unwrap_or("unknown"),
-                    "reason" => err.to_string(),
-                ),
-            );
 
             // Failed to enqueue.
             envelope.undeliverable(err, return_handle);
@@ -1391,15 +1390,6 @@ impl MailboxSender for Mailbox {
         match self.inner.ports.entry(envelope.dest().index()) {
             Entry::Vacant(_) => {
                 let err = DeliveryError::Unroutable("port not bound in mailbox".to_string());
-                metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
-                    1,
-                    hyperactor_telemetry::kv_pairs!(
-                        "actor_id" => envelope.sender.to_string(),
-                        "dest_actor_id" => envelope.dest.0.to_string(),
-                        "message_type" => envelope.data.typename().unwrap_or("unknown"),
-                        "reason" => err.to_string(),
-                    ),
-                );
 
                 envelope.undeliverable(err, return_handle);
             }
@@ -1430,15 +1420,6 @@ impl MailboxSender for Mailbox {
                         headers,
                     }) => {
                         let err = DeliveryError::Mailbox(format!("{}", sender_error));
-                        metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!(
-                                "actor_id" => sender.to_string(),
-                                "dest_actor_id" => dest.0.to_string(),
-                                "message_type" => data.typename().unwrap_or("unknown"),
-                                "reason" => err.to_string(),
-                            ),
-                        );
 
                         MessageEnvelope::seal(
                             MessageMetadata {
