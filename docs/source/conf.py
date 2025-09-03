@@ -12,10 +12,17 @@
 import os
 import sys
 
-import psutil
-
 import pytorch_sphinx_theme2
 import torch
+
+# Safe import of psutil - fallback if not available
+try:
+    import psutil
+
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("Warning: psutil not available, using simplified resource detection")
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -57,32 +64,24 @@ def get_sphinx_gallery_config():
     }
 
     if os.getenv("CI"):
-        # CI environment: aggressive resource management, but still run examples
+        # CI environment: check resources and skip problematic examples
         available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        available_memory_gb = psutil.virtual_memory().available / (1024**3)
+
+        # Safe memory detection with fallback
+        if PSUTIL_AVAILABLE:
+            available_memory_gb = psutil.virtual_memory().available / (1024**3)
+        else:
+            # Fallback: assume limited memory in CI without psutil
+            available_memory_gb = 4.0
+            print("Warning: Using fallback memory detection (assuming 4GB)")
 
         print(
             f"CI Resource check: {available_gpus} GPUs, {available_memory_gb:.1f}GB RAM available"
         )
 
+        # Only use valid Sphinx Gallery configuration keys
         ci_config = {
-            "subprocess_timeout": 90,  # Shorter timeout for CI
-            "run_stale_examples": True,  # Fresh process per example
-            "capture_repr": (),  # Don't capture object representations to save memory
-            "reset_modules": (),  # Don't reset modules between examples
-            "matplotlib_animations": False,  # Disable animations to save resources
-            "remove_config_comments": True,  # Reduce memory overhead
-            # Set environment variables that examples can read to adapt their behavior
-            "first_notebook_cell": """
-# CI environment configuration for examples
-import os
-os.environ['DOCS_BUILD_MODE'] = 'ci'
-os.environ['DOCS_BUILD_GPUS'] = '{}'
-os.environ['DOCS_BUILD_MEMORY_GB'] = '{:.1f}'
-""".format(
-                available_gpus, available_memory_gb
-            ),
-            # Skip only truly problematic examples that can't be adapted
+            # Skip problematic examples in resource-constrained CI
             "expected_failing_examples": (
                 [
                     "./examples/distributed_tensors.py",  # Skip if severe resource constraints
@@ -94,16 +93,9 @@ os.environ['DOCS_BUILD_MEMORY_GB'] = '{:.1f}'
         }
         base_config.update(ci_config)
     else:
-        # Local development: full features and longer timeouts
+        # Local development: full features
         print("Local development detected: Using full Sphinx Gallery configuration")
-        local_config = {
-            "subprocess_timeout": 300,  # 5-minute timeout locally
-            "capture_repr": ("_repr_html_", "__repr__"),  # Capture representations
-            "matplotlib_animations": True,  # Enable animations
-            "reset_modules": ("matplotlib", "seaborn"),  # Reset modules for clean state
-            "remove_config_comments": False,  # Keep comments for debugging
-        }
-        base_config.update(local_config)
+        # No additional config needed for local development
 
     return base_config
 
