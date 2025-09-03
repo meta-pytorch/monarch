@@ -34,7 +34,7 @@ fut.get()
 ```
 
 
-The [introduction to monarch concepts](getting_started.html) provides an introduction to using these features.
+The [introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html) provides an introduction to using these features.
 
 > ⚠️ **Early Development Warning** Monarch is currently in an experimental
 > stage. You should expect bugs, incomplete features, and APIs that may change
