@@ -1,0 +1,75 @@
+name: Build and publish versioned monarch wheels
+
+on:
+  workflow_dispatch
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: cuda12.6-py${{ matrix.python-version }}-${{ matrix.name }}
+    strategy:
+      fail-fast: false  # Changed to false to see results from all Python versions
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - name: 4xlarge
+            runs-on: linux.g5.4xlarge.nvidia.gpu
+            install-args: '--pre --extra-index-url https://download.pytorch.org/whl/cu126'
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.6"
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      submodules: recursive
+      upload-artifact: monarch-${{ matrix.python-version }}-${{ matrix.gpu-arch-type }}${{ matrix.gpu-arch-version }}
+      script: |
+        source scripts/common-setup.sh
+        setup_build_environment ${{ matrix.python-version }} "${{ matrix.install-args }}"
+
+        # Setup Tensor Engine dependencies
+        setup_tensor_engine
+
+        cargo install --path monarch_hyperactor
+
+        # Build wheel
+        export MONARCH_PACKAGE_NAME="torchmonarch"
+        export MONARCH_VERSION=$(date +'%Y.%m.%d')
+        export CUDA_LIB_DIR=/usr/lib64
+
+        python setup.py bdist_wheel
+
+        # hacky until the right distribution wheel can be made...
+        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
+        ls -la dist/
+
+        # Run tests
+        install_python_test_dependencies
+        pip install dist/*.whl
+        python -c "import monarch"
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      id-token: write  # Required for PyPI trusted publishing
+      contents: read
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Display structure of downloaded files
+        run: ls -R dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
