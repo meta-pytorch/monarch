@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
+import asyncio
 import functools
 import logging
 import warnings
@@ -48,21 +49,27 @@ def is_available():
 class RdmaController(Actor):
     def __init__(self) -> None:
         self._managers: Dict[ProcMesh, _RdmaManager] = {}
+        self._lock = asyncio.Lock()
 
     @endpoint
     async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -> None:
-        if proc_mesh not in self._managers:
-            if not _RdmaBuffer.rdma_supported():
-                raise RuntimeError(
-                    "Cannot spawn _RdmaManager because RDMA is not supported on this machine"
-                )
-            self._managers[proc_mesh] = none_throws(
-                await Future(
-                    coro=_RdmaManager.create_rdma_manager_nonblocking(
-                        await Future(coro=proc_mesh._proc_mesh.task())
+        if not _RdmaBuffer.rdma_supported():
+            raise RuntimeError(
+                "Cannot spawn _RdmaManager because RDMA is not supported on this machine"
+            )
+
+        if proc_mesh in self._managers:
+            return
+
+        async with self._lock:
+            if proc_mesh not in self._managers:
+                self._managers[proc_mesh] = none_throws(
+                    await Future(
+                        coro=_RdmaManager.create_rdma_manager_nonblocking(
+                            await Future(coro=proc_mesh._proc_mesh.task())
+                        )
                     )
                 )
-            )
 
 
 # Cached so that we don't have to call out to the root client every time,

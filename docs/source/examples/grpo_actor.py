@@ -231,7 +231,7 @@ class Scorer(Actor):
                 try:
                     slice_ = await asyncio.wait_for(
                         self.trajectory_queue.get.call_one(),
-                        timeout=1.0,
+                        timeout=10.0,
                     )
                     await self._score_slice(slice_)
                 except asyncio.TimeoutError:
@@ -501,7 +501,7 @@ async def main():
     """Run the distributed reinforcement learning training loop."""
     # Create process meshes for different components
     learner_mesh = this_host().spawn_procs(per_host={"gpus": 1})
-    gen_mesh = this_host().spawn_procs(per_host={"gpus": 1})
+    gen_mesh = this_host().spawn_procs(per_host={"gpus": 2})
 
     # Spawn actors on the learner mesh
     traj_q = await learner_mesh.spawn("traj", TrajectoryQueue)
@@ -519,10 +519,11 @@ async def main():
     )
     await learner.init_generators.call(generators)
 
+    # initial generator entry
+    await generators.generate.call(torch.randn(STATE_DIM))
     # Start the scorer event loop in the background
     scorer_run_future = scorer.run.call_one()
 
-    # Training loop
     for step in range(5):
         state = torch.randn(STATE_DIM)
         # Generate actions and update policy in parallel
