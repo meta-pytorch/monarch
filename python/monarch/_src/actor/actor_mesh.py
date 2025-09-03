@@ -529,14 +529,38 @@ def as_endpoint(
 
 
 class Accumulator(Generic[P, R, A]):
+    """
+    Accumulate the result of a broadcast invocation of an endpoint
+    across a sliced mesh.
+
+    Usage:
+            >>> counter = Accumulator(Actor.increment, 0, lambda x, y: x + y)
+    """
+
     def __init__(
         self, endpoint: Endpoint[P, R], identity: A, combine: Callable[[A, R], A]
     ) -> None:
+        """
+        Args:
+            endpoint: Endpoint to accumulate the result of.
+            identity: Initial value of the accumulated value before the first combine invocation.
+            combine: Lambda invoked for combining the result of the endpoint with the accumulated value.
+        """
         self._endpoint: Endpoint[P, R] = endpoint
         self._identity: A = identity
         self._combine: Callable[[A, R], A] = combine
 
     def accumulate(self, *args: P.args, **kwargs: P.kwargs) -> "Future[A]":
+        """
+        Accumulate the result of the endpoint invocation.
+
+        Args:
+            args: Arguments to pass to the endpoint.
+            kwargs: Keyword arguments to pass to the endpoint.
+
+        Returns:
+            Future that resolves to the accumulated value.
+        """
         gen: Generator[Future[R], None, None] = self._endpoint.stream(*args, **kwargs)
 
         async def impl() -> A:
@@ -550,7 +574,7 @@ class Accumulator(Generic[P, R, A]):
 
 class ValueMesh(MeshTrait, Generic[R]):
     """
-    Container of return values, indexed by rank.
+    A mesh that holds the result of an endpoint invocation.
     """
 
     def __init__(self, shape: Shape, values: List[R]) -> None:
@@ -561,6 +585,18 @@ class ValueMesh(MeshTrait, Generic[R]):
         return ValueMesh(shape, self._values)
 
     def item(self, **kwargs) -> R:
+        """
+        Get the value at the given coordinates.
+
+        Args:
+            kwargs: Coordinates to get the value at.
+
+        Returns:
+            Value at the given coordinate.
+
+        Raises:
+            KeyError: If invalid coordinates are provided.
+        """
         coordinates = [kwargs.pop(label) for label in self._labels]
         if kwargs:
             raise KeyError(f"item has extra dimensions: {list(kwargs.keys())}")
@@ -568,6 +604,12 @@ class ValueMesh(MeshTrait, Generic[R]):
         return self._values[self._ndslice.nditem(coordinates)]
 
     def items(self) -> Iterable[Tuple[Point, R]]:
+        """
+        Generator that returns values for the provided coordinates.
+
+        Returns:
+            Values at all coordinates.
+        """
         extent = self._shape.extent
         for i, rank in enumerate(self._shape.ranks()):
             yield Point(i, extent), self._values[rank]
@@ -596,14 +638,27 @@ def send(
     selection: Selection = "all",
 ) -> None:
     """
-    Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
+        Fire-and-forget broadcast invocation of the endpoint across a given selection of the mesh.
 
-    This sends the message to all actors but does not wait for any result.
+        This sends the message to all actors but does not wait for any result. Use the port provided to
+        send the response back to the caller.
+
+    Args:
+        endpoint: Endpoint to invoke.
+        args: Arguments to pass to the endpoint.
+        kwargs: Keyword arguments to pass to the endpoint.
+        port: Handle to send the response to.
+        selection: Selection query representing a subset of the mesh.
     """
     endpoint._send(args, kwargs, port, selection)
 
 
 class Port(Generic[R]):
+    """
+    Handle used to send reliable in-order messages through a channel to
+    a PortReceiver.
+    """
+
     def __init__(
         self,
         port_ref: PortRef | OncePortRef,
@@ -615,6 +670,13 @@ class Port(Generic[R]):
         self._rank = rank
 
     def send(self, obj: R) -> None:
+        """
+            Fire-and-forget send R-typed objects in order
+            through a channel to its corresponding PortReceiver.
+
+        Args:
+            obj: R-typed object to send.
+        """
         self._port_ref.send(
             self._mailbox,
             PythonMessage(PythonMessageKind.Result(self._rank), _pickle(obj)),
@@ -656,8 +718,17 @@ T = TypeVar("T")
 # not part of the Endpoint API because they way it accepts arguments
 # and handles concerns is different.
 class Channel(Generic[R]):
+    """
+    An advanced low level API for a communication channel used for message passing
+    between actors.
+
+    Provides static methods to create communication channels with port pairs
+    for sending and receiving messages of type R.
+    """
+
     @staticmethod
     def open(once: bool = False) -> Tuple["Port[R]", "PortReceiver[R]"]:
+        """ """
         mailbox = context().actor_instance._mailbox
         handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
         port_ref = handle.bind()
@@ -673,6 +744,14 @@ class Channel(Generic[R]):
 
 
 class PortReceiver(Generic[R]):
+    """
+    Receiver for messages sent through a communication channel.
+
+    Handles receiving R-typed objects sent from a corresponding Port.
+    Asynchronously message reception with optional supervision
+    monitoring for error handling.
+    """
+
     def __init__(
         self,
         mailbox: Mailbox,
@@ -956,6 +1035,15 @@ class Actor(MeshTrait, DeprecatedNotAFuture):
 
 
 class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
+    """
+    A group of actor instances of the same class.
+
+    Represents a collection of T-typed actor instances spawned at most once per process
+    that can be communicated with collectively or individually. Provides
+    methods for spawning actors, managing their lifecycle, and creating
+    endpoints for method invocation across the mesh.
+    """
+
     def __init__(
         self,
         Class: Type[T],
