@@ -251,6 +251,7 @@ impl ProcMesh {
         let world = alloc.world_id().name().to_string();
         let alloc_id = Self::alloc_counter().fetch_add(1, Ordering::Relaxed) + 1;
         tracing::info!(
+            name = "ProcMesh::Allocate::Attempt",
             %world,
             alloc_id,
             caller = %format!("{}:{}", loc.file(), loc.line()),
@@ -269,14 +270,22 @@ impl ProcMesh {
                 // Alloc finished before it was fully allocated.
                 return Err(AllocatorError::Incomplete(alloc.extent().clone()));
             };
-
+            let state_cloned = state.clone();
+            let state_str = format!("ProcMesh::Allocate::{}", state_cloned.as_ref());
             match state {
                 ProcState::Created { proc_id, point, .. } => {
                     let rank = point.rank();
                     if let Some(old_proc_id) = proc_ids.insert(rank, proc_id.clone()) {
                         tracing::warn!("rank {rank} reassigned from {old_proc_id} to {proc_id}");
                     }
-                    tracing::info!("proc {} rank {}: created", proc_id, rank);
+                    tracing::info!(
+                        name = state_str,
+                        rank = rank,
+                        alloc_id = alloc_id,
+                        "proc {} rank {}: created",
+                        proc_id,
+                        rank
+                    );
                 }
                 ProcState::Running {
                     proc_id,
@@ -284,7 +293,11 @@ impl ProcMesh {
                     addr,
                 } => {
                     let Some(rank) = proc_ids.rank(&proc_id) else {
-                        tracing::warn!("proc id {proc_id} running, but not created");
+                        tracing::warn!(
+                            name = state_str,
+                            alloc_id = alloc_id,
+                            "proc id {proc_id} running, but not created"
+                        );
                         continue;
                     };
 
@@ -292,10 +305,14 @@ impl ProcMesh {
                         running.insert(*rank, (addr.clone(), mesh_agent.clone()))
                     {
                         tracing::warn!(
+                            name = state_str,
+                            alloc_id = alloc_id,
                             "duplicate running notifications for {proc_id}, addr:{addr}, mesh_agent:{mesh_agent}, old addr:{old_addr}, old mesh_agent:{old_mesh_agent}"
                         )
                     }
                     tracing::info!(
+                        name = state_str,
+                        alloc_id = alloc_id,
                         "proc {} rank {}: running at addr:{addr} mesh_agent:{mesh_agent}",
                         proc_id,
                         rank
@@ -305,14 +322,26 @@ impl ProcMesh {
                 // can choose to either provide a new proc or emit a
                 // ProcState::Failed to fail the whole allocation.
                 ProcState::Stopped { proc_id, reason } => {
-                    tracing::error!("allocation failed for proc_id {}: {}", proc_id, reason);
+                    tracing::error!(
+                        name = state_str,
+                        alloc_id = alloc_id,
+                        "allocation failed for proc_id {}: {}",
+                        proc_id,
+                        reason
+                    );
                     return Err(AllocatorError::Other(anyhow::Error::msg(reason)));
                 }
                 ProcState::Failed {
                     world_id,
                     description,
                 } => {
-                    tracing::error!("allocation failed for world {}: {}", world_id, description);
+                    tracing::error!(
+                        name = state_str,
+                        alloc_id = alloc_id,
+                        "allocation failed for world {}: {}",
+                        world_id,
+                        description
+                    );
                     return Err(AllocatorError::Other(anyhow::Error::msg(description)));
                 }
             }
@@ -351,7 +380,11 @@ impl ProcMesh {
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
             .await
             .map_err(|err| AllocatorError::Other(err.into()))?;
-        tracing::info!("client proc started listening on addr: {client_proc_addr}");
+        tracing::info!(
+            name = "ProcMesh::Allocate::ChannelServe",
+            alloc_id = alloc_id,
+            "client proc started listening on addr: {client_proc_addr}"
+        );
         let client_proc = Proc::new(
             client_proc_id.clone(),
             BoxedMailboxSender::new(router.clone()),
