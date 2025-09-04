@@ -35,11 +35,23 @@ def this_proc() -> "ProcMesh":
 
 
 def create_local_host_mesh() -> "HostMesh":
+    """
+    Create a local host mesh for the current machine.
+
+    Returns:
+        HostMesh: A single-host mesh configured for local process allocation.
+    """
     cmd, args, env = _get_bootstrap_args()
     return HostMesh(Shape.unity(), ProcessAllocator(cmd, args, env))
 
 
 class HostMesh(MeshTrait):
+    """
+    HostMesh represents a collection of compute hosts that can be used to spawn
+    processes and actors. The class requires you to provide your AllocateMixin that
+    interfaces with the underlying resource allocator of your choice.
+    """
+
     def __init__(self, shape: Shape, allocator: AllocateMixin):
         self._allocator = allocator
         self._shape = shape
@@ -57,12 +69,14 @@ class HostMesh(MeshTrait):
         """
         Start new processes on this host mesh. By default this starts one proc
         on each host in the mesh. Additional procs can be started using `per_host` to
-        specify the local shape, e.g.
+        specify the local shape, e.g.`
             per_host = {'gpus': 8}
         Will create a proc mesh with an additional 'gpus' dimension.
 
         `bootstrap` is a function that will be run at startup on each proc and can be used to e.g.
         configure CUDA or NCCL. We guarantee that CUDA has not been initialized before boostrap is called.
+
+        TODO: For now, a new allocator is created for every new ProcMesh.
         """
         if per_host is None:
             per_host = {}
@@ -107,6 +121,12 @@ class HostMesh(MeshTrait):
 
 
 def fake_in_process_host() -> "HostMesh":
+    """
+    Create a host mesh for testing and development using a local allocator.
+
+    Returns:
+        HostMesh: A host mesh configured with local allocation for in-process use.
+    """
     return HostMesh(Shape.unity(), LocalAllocator())
 
 

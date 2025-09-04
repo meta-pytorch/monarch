@@ -95,14 +95,10 @@ if TYPE_CHECKING:
 
 class SetupActor(Actor):
     """
-    A helper actor to setup the proc mesh with user defined setup method.
-    Typically used to setup the environment variables.
+    A helper actor to set up the actor mesh with user defined setup method.
     """
 
     def __init__(self, env: Callable[[], None]) -> None:
-        """
-        Initialize the setup actor with the user defined setup method.
-        """
         self._setup_method = env
 
     @endpoint
@@ -133,8 +129,12 @@ def _use_standin_mesh() -> bool:
     return os.getenv("USE_STANDIN_ACTOR_MESH", default="0") != "0"
 
 
-# Ultra-hack to allow actors to identify proc meshes but with no real functionality.
 class ProcMeshRef:
+    """
+    A serializable remote reference to a ProcMesh. The reference is weak: No support
+    for refcount'ing. Spawning actors on a ProcMeshRef a stopped or a failed mesh will fail.
+    """
+
     def __init__(self, proc_mesh_id: int) -> None:
         self._proc_mesh_id = proc_mesh_id
         self._host_mesh: Optional["HostMesh"] = None
@@ -179,6 +179,17 @@ def _deref_proc_mesh(proc_mesh: ProcMeshRef) -> "ProcMesh":
 
 
 class ProcMesh(MeshTrait, DeprecatedNotAFuture):
+    """
+    A distributed mesh of processes for actor computation.
+
+    ProcMesh represents a collection of processes that can spawn and manage actors.
+    It provides the foundation for distributed actor systems by managing process
+    allocation, lifecycle, and communication across multiple hosts and devices.
+
+    The ProcMesh supports spawning actors, monitoring process health, logging
+    configuration, and code synchronization across distributed processes.
+    """
+
     def __init__(
         self,
         hy_proc_mesh: "Shared[HyProcMesh]",
@@ -249,6 +260,22 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         return pm
 
     def spawn(self, name: str, Class: Type[T], *args: Any, **kwargs: Any) -> T:
+        """
+        Spawn a T-typed actor mesh on the process mesh.
+
+        Args:
+        - `name`: The name of the actor.
+        - `Class`: The class of the actor to spawn.
+        - `args`: Positional arguments to pass to the actor's constructor.
+        - `kwargs`: Keyword arguments to pass to the actor's constructor.
+
+        Returns:
+        - The actor instance.
+
+        Usage:
+            >>> procs: ProcMesh = host_mesh.spawn_procs(per_host={"gpus": 8})
+            >>> counters: Counter = procs.spawn("counters", Counter, 0)
+        """
         if self._slice:
             raise NotImplementedError("NYI: spawn on slice of a proc mesh.")
         return self._spawn_nonblocking(name, Class, *args, **kwargs)
@@ -294,19 +321,9 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         Allocate a process mesh according to the provided alloc.
         Returns when the mesh is fully allocated.
 
-        Arguments:
-        - `alloc`: The alloc to allocate according to.
+        Args:
+        - `alloc`: A generator that yields a list of allocations.
         - `setup`: An optional lambda function to configure environment variables on the allocated mesh.
-        Use the `current_rank()` method within the lambda to obtain the rank.
-
-        Example of a setup method to initialize torch distributed environment variables:
-        ```
-        def setup():
-            rank = current_rank()
-            os.environ["RANK"] = str(rank)
-            os.environ["WORLD_SIZE"] = str(len(rank.shape))
-            os.environ["LOCAL_RANK"] = str(rank["gpus"])
-        ```
         """
 
         async def task() -> HyProcMesh:
@@ -432,6 +449,14 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         conda: bool = False,
         auto_reload: bool = False,
     ) -> None:
+        """
+        Sync local code changes to the remote processes.
+
+        Args:
+            workspace: The workspace to sync.
+            conda: If True, also sync the currently activated conda env.
+            auto_reload: If True, automatically reload the workspace on changes.
+        """
         if self._code_sync_client is None:
             self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
                 proc_mesh=await self._proc_mesh_for_asyncio_fixme,
@@ -525,6 +550,10 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         return self
 
     def stop(self) -> Future[None]:
+        """
+        This will stop all processes (and actors) in the mesh and
+        release any resources associated with the mesh.
+        """
         self._logging_manager.stop()
 
         async def _stop_nonblocking() -> None:
@@ -574,6 +603,23 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
 
 
 def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
+    """
+    Create a local process mesh for testing and development.
+
+    This function creates a process mesh using local allocation instead of
+    distributed process allocation. Primarily used for testing scenarios.
+
+    Args:
+        gpus: Number of GPUs to allocate per host. If None, uses local device count.
+        hosts: Number of hosts to allocate. Defaults to 1.
+
+    Returns:
+        ProcMesh: A locally allocated process mesh.
+
+    Warning:
+        This function is deprecated. Use `fake_in_process_host().spawn_procs()`
+        for testing or `this_proc().spawn_procs()` for current process actors.
+    """
     warnings.warn(
         "Use monarch._src.actor.host_mesh.fake_in_process_host().spawn_procs for testing. For launching an actor in the current process use this_proc().spawn_procs()",
         DeprecationWarning,
@@ -596,6 +642,22 @@ def sim_proc_mesh(
     dcs: int = 1,
     regions: int = 1,
 ) -> ProcMesh:
+    """Create a simulated process mesh for testing distributed scenarios.
+
+    This function creates a process mesh using simulation allocation to test
+    distributed behavior without requiring actual remote resources.
+
+    Args:
+        gpus: Number of GPUs per host. Defaults to 1.
+        hosts: Number of hosts. Defaults to 1.
+        racks: Number of racks. Defaults to 1.
+        zones: Number of zones. Defaults to 1.
+        dcs: Number of data centers. Defaults to 1.
+        regions: Number of regions. Defaults to 1.
+
+    Returns:
+        ProcMesh: A simulated process mesh with the specified topology.
+    """
     spec: AllocSpec = AllocSpec(
         AllocConstraints(),
         hosts=hosts,
@@ -658,6 +720,25 @@ def proc_mesh(
     env: dict[str, str] | None = None,
     setup: Callable[[], None] | None = None,
 ) -> ProcMesh:
+    """
+    Create a distributed process mesh across hosts.
+
+    This function creates a process mesh using distributed process allocation
+    across multiple hosts and GPUs. Used for production distributed computing.
+
+    Args:
+        gpus: Number of GPUs per host. If None, uses local device count.
+        hosts: Number of hosts to allocate. Defaults to 1.
+        env: Environment variables to set on remote processes.
+        setup: Optional setup function to run on each process at startup.
+
+    Returns:
+        ProcMesh: A distributed process mesh with the specified configuration.
+
+    Warning:
+        This function is deprecated. Use `this_host().spawn_procs()` with
+        appropriate per_host configuration instead.
+    """
     warnings.warn(
         "use this_host().spawn_procs(per_host = {'hosts': 2, 'gpus': 3}) instead of monarch.actor.proc_mesh(hosts=2, gpus=3)",
         DeprecationWarning,
