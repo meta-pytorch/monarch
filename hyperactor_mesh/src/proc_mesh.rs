@@ -51,6 +51,7 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Range;
 use ndslice::Shape;
 use ndslice::ShapeError;
+use strum::AsRefStr;
 use tokio::sync::mpsc;
 
 use crate::CommActor;
@@ -185,10 +186,8 @@ pub fn global_root_client() -> &'static Instance<()> {
             |env| {
                 let sink_present = crate::proc_mesh::get_global_supervision_sink().is_some();
                 tracing::info!(
-                    actor = %env.dest().actor_id(),
-                    headers = ?env.headers(),
-                    sink_present,
-                    "global root client undeliverable observed"
+                    actor_id = %env.dest().actor_id(),
+                    "global root client undeliverable observed with headers {:?} {}", env.headers(), sink_present
                 );
             },
         );
@@ -623,9 +622,9 @@ impl ProcMesh {
             // Instantiate supervision routing BEFORE spawning the actor mesh.
             self.actor_event_router.insert(actor_name.to_string(), tx);
             tracing::info!(
-                event = "router_insert",
-                mesh = %actor_name,
-                map_len = self.actor_event_router.len(),
+                name = "router_insert",
+                actor_name = %actor_name,
+                "the length of the router is {}", self.actor_event_router.len(),
             );
         }
         let root_mesh = RootActorMesh::new(
@@ -674,6 +673,7 @@ impl ProcMesh {
     }
 
     /// Send stop actors message to all mesh agents for a specific mesh name
+    #[hyperactor::observe_result("ProcMesh")]
     pub async fn stop_actor_by_name(&self, mesh_name: &str) -> Result<(), anyhow::Error> {
         let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         let results = join_all(self.agents().map(|agent| async move {
@@ -718,6 +718,14 @@ pub enum ProcEvent {
     Crashed(usize, String),
 }
 
+#[derive(Debug, Clone, AsRefStr)]
+pub enum SupervisionEventState {
+    SupervisionEventForward,
+    SupervisionEventForwardFailed,
+    SupervisionEventReceived,
+    SupervisionEventTransmitFailed,
+}
+
 impl fmt::Display for ProcEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -748,7 +756,7 @@ impl ProcEvents {
         loop {
             tokio::select! {
                 result = self.event_state.alloc.next() => {
-                    tracing::debug!("received ProcEvent alloc update: {result:?}");
+                    tracing::debug!(name = "ProcEventReceived", "received ProcEvent alloc update: {result:?}");
                     // Don't disable the outer branch on None: this is always terminal.
                     let Some(alloc_event) = result else {
                         self.actor_event_router.clear();
@@ -786,7 +794,10 @@ impl ProcEvents {
                             caused_by: None,
                         };
                         if entry.value().send(event).is_err() {
-                            tracing::warn!("unable to transmit supervision event to actor {}", entry.key());
+                            tracing::warn!(
+                                name = SupervisionEventState::SupervisionEventTransmitFailed.as_ref(),
+                                "unable to transmit supervision event to actor {}", entry.key()
+                            );
                         }
                     }
 
@@ -806,10 +817,11 @@ impl ProcEvents {
                 Ok(mut event) = self.event_state.supervision_events.recv() => {
                     let had_headers = event.message_headers.is_some();
                     tracing::info!(
-                        actor = %event.actor_id,
+                        name = SupervisionEventState::SupervisionEventReceived.as_ref(),
+                        actor_id = %event.actor_id,
+                        actor_name = %event.actor_id.name(),
                         status = %event.actor_status,
-                        had_headers,
-                        "proc supervision: event received"
+                        "proc supervision: event received with {had_headers} headers"
                     );
                     tracing::debug!(?event, "proc supervision: full event");
 
@@ -823,9 +835,8 @@ impl ProcEvents {
                                 0,
                             );
                             tracing::debug!(
-                                old_actor = %old_actor,
-                                new_actor = %event.actor_id,
-                                "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID"
+                                actor_id = %old_actor,
+                                "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", event.actor_id
                             );
                         } else {
                             tracing::debug!(
@@ -846,22 +857,25 @@ impl ProcEvents {
                     let reason = event.to_string();
                     if let Some(tx) = self.actor_event_router.get(actor_id.name()) {
                         tracing::info!(
-                            actor = %actor_id,
+                            name = SupervisionEventState::SupervisionEventForwardFailed.as_ref(),
+                            actor_id = %actor_id,
+                            actor_name = actor_id.name(),
                             status = %actor_status,
                             "proc supervision: delivering event to registered ActorMesh"
                         );
                         if tx.send(event).is_err() {
                             tracing::warn!(
-                                actor = %actor_id,
+                                name = SupervisionEventState::SupervisionEventForwardFailed.as_ref(),
+                                actor_id = %actor_id,
                                 "proc supervision: registered ActorMesh dropped receiver; unable to deliver"
                             );
                         }
                     } else {
                         let registered_meshes: Vec<_> = self.actor_event_router.iter().map(|e| e.key().clone()).collect();
                         tracing::warn!(
-                            actor = %actor_id,
-                            known_meshes = ?registered_meshes,
-                            "proc supervision: no ActorMesh registered for this actor"
+                            name = SupervisionEventState::SupervisionEventForwardFailed.as_ref(),
+                            actor_id = %actor_id,
+                            "proc supervision: no ActorMesh registered for this actor {:?}", registered_meshes,
                         );
                     }
                     // Ensure we have a known rank for the proc
@@ -869,7 +883,7 @@ impl ProcEvents {
                     // attribute the failure to a known process.
                     let Some(rank) = self.ranks.get(actor_id.proc_id()) else {
                         tracing::warn!(
-                            actor = %actor_id,
+                            actor_id = %actor_id,
                             "proc supervision: actor belongs to an unmapped proc; dropping event"
                         );
                         continue;
@@ -925,9 +939,9 @@ impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D 
             // Instantiate supervision routing BEFORE spawning the actor mesh.
             self.actor_event_router.insert(actor_name.to_string(), tx);
             tracing::info!(
-                event = "router_insert",
-                mesh = %actor_name,
-                map_len = self.actor_event_router.len(),
+                name = "router_insert",
+                actor_name = %actor_name,
+                "the length of the router is {}", self.actor_event_router.len(),
             );
         }
         let ranks =
