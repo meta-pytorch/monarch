@@ -86,6 +86,16 @@ impl TelemetryClock for DefaultTelemetryClock {
     }
 }
 
+pub fn username() -> String {
+    let env = env::Env::current();
+    match env {
+        env::Env::Mast => {
+            std::env::var("MAST_JOB_OWNER_UNIXNAME").unwrap_or_else(|_| "mast_owner".to_string())
+        }
+        _ => whoami::username(),
+    }
+}
+
 // Given an environment, determine the log file path to write to.
 pub fn log_file_path(env: env::Env) -> Result<(String, String), anyhow::Error> {
     match env {
@@ -637,12 +647,10 @@ pub fn initialize_logging_with_log_prefix(
 }
 
 pub mod env {
-    use rand::Rng;
-    use rand::distributions::Alphanumeric;
+    use rand::RngCore;
 
     /// Env var name set when monarch launches subprocesses to forward the execution context
     pub const HYPERACTOR_EXECUTION_ID_ENV: &str = "HYPERACTOR_EXECUTION_ID";
-    pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
     pub const OTEL_EXPORTER: &str = "HYPERACTOR_OTEL_EXPORTER";
     pub const MAST_ENVIRONMENT: &str = "MAST_ENVIRONMENT";
 
@@ -653,18 +661,18 @@ pub mod env {
     /// to understand their environment do not get confused and think they are running on mast when we are doing
     ///  local testing.
     pub fn execution_id() -> String {
-        let id = std::env::var(HYPERACTOR_EXECUTION_ID_ENV)
-            .or(std::env::var(MAST_HPC_JOB_NAME_ENV))
-            .ok()
-            .unwrap_or_else(|| {
-                // not able to find an existing id so generate a random one. 24 bytes should be sufficient.
-                let random_string: String = rand::thread_rng()
-                    .sample_iter(&Alphanumeric)
-                    .take(24)
-                    .map(char::from)
-                    .collect::<String>();
-                random_string
-            });
+        let id = std::env::var(HYPERACTOR_EXECUTION_ID_ENV).unwrap_or_else(|_| {
+            // not able to find an existing id so generate a unique one: username + current_time + random number.
+            let username = crate::username();
+            let now = {
+                let now = std::time::SystemTime::now();
+                let datetime: chrono::DateTime<chrono::Local> = now.into();
+                datetime.format("%b-%d_%H:%M").to_string()
+            };
+            let random_number: u16 = (rand::thread_rng().next_u32() % 1000) as u16;
+            let execution_id = format!("{}_{}_{}", username, now, random_number);
+            execution_id
+        });
         // Safety: Can be unsound if there are multiple threads
         // reading and writing the environment.
         unsafe {
