@@ -38,7 +38,6 @@ jobs:
 
         # Build wheel
         export MONARCH_PACKAGE_NAME="torchmonarch"
-        export MONARCH_VERSION=$(date +'%Y.%m.%d')
         export CUDA_LIB_DIR=/usr/lib64
 
         python setup.py bdist_wheel
