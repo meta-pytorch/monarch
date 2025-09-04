@@ -53,6 +53,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
     PythonActorMesh,
     PythonActorMeshImpl,
 )
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortReceiver as HyOncePortReceiver,  # noqa: F401
@@ -462,13 +463,13 @@ class ActorEndpoint(Endpoint[P, R]):
         This sends the message to all actors but does not wait for any result.
         """
         self._check_arguments(args, kwargs)
-        objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
+        objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
         if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
             message = PythonMessage(
                 PythonMessageKind.CallMethod(
                     self._name, None if port is None else port._port_ref
                 ),
-                bytes,
+                buffer,
             )
             self._actor_mesh.cast(message, selection, self._mailbox)
         else:
@@ -841,7 +842,7 @@ class _Actor:
         self,
         ctx: Context,
         method: MethodSpecifier,
-        message: bytes,
+        message: FrozenBuffer,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
@@ -993,9 +994,9 @@ def _is_ref_or_mailbox(x: object) -> bool:
     return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
-def _pickle(obj: object) -> bytes:
-    _, msg = flatten(obj, _is_mailbox)
-    return msg
+def _pickle(obj: object) -> bytes | FrozenBuffer:
+    _, buff = flatten(obj, _is_mailbox)
+    return buff
 
 
 class Actor(MeshTrait, DeprecatedNotAFuture):
