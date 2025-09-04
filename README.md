@@ -43,17 +43,23 @@ The [introduction to monarch concepts](https://meta-pytorch.org/monarch/generate
 > work. It's recommended that you signal your intention to contribute in the
 > issue tracker, either by filing a new issue or by claiming an existing one.
 
-Note: Monarch is currently only supported on Linux systems
-
 ## 📖 Documentation
 
 View Monarch's hosted documentation [at this link](https://meta-pytorch.org/monarch/).
 
 ## Installation
+Note for running distributed tensors, the local torch version must match the version that monarch was built with.
 
 ### On Fedora distributions
+## Stable
+`pip install torchmonarch`
 
+torchmonarch stable is built with the latest stable torch.
+
+## Nightly
 `pip install torchmonarch-nightly`
+
+torchmonarch-nightly is built with torch nightly.
 
 or manually
 
