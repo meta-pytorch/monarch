@@ -27,7 +27,8 @@ jobs:
         source scripts/common-setup.sh
 
         # Setup build environment (conda + system deps + rust + build deps)
-        setup_build_environment
+        # docs build will use 3.13
+        setup_build_environment 3.13
 
         # Setup Tensor Engine
         setup_tensor_engine
