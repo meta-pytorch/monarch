@@ -46,6 +46,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                     .allocate(AllocSpec {
                         extent: extent!(hosts = host_count, gpus = gpus),
                         constraints: Default::default(),
+                        proc_name: None,
                     })
                     .await
                     .unwrap();
@@ -142,6 +143,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                             .allocate(AllocSpec {
                                 extent: extent!(gpus = actor_count),
                                 constraints: Default::default(),
+                                proc_name: None,
                             })
                             .await
                             .unwrap();

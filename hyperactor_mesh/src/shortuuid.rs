@@ -13,6 +13,8 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use rand::RngCore;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// So-called ["Flickr base 58"](https://www.flickr.com/groups/api/discuss/72157616713786392/)
 /// as this alphabet was used in Flickr URLs. It has nice properties: 1) characters are all
@@ -42,7 +44,7 @@ static FLICKR_BASE_58_ORD: LazyLock<[Option<usize>; 256]> = LazyLock::new(|| {
 /// The characters "_" and "-" are ignored when decoding, and may be
 /// safely interspersed. By default, rendered UUIDs that begin with a
 /// numeric character is prefixed with "_".
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Serialize, Deserialize)]
 pub struct ShortUuid(u64);
 
 impl ShortUuid {
