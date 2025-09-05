@@ -93,6 +93,10 @@ impl<T: Clone + 'static> view::Ranked for ValueMesh<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use futures::executor::block_on;
+    use futures::future;
     use ndslice::extent;
     use ndslice::view::Ranked;
     use ndslice::view::ViewExt;
@@ -119,5 +123,40 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn value_mesh_transpose_ok_and_err() {
+        let region: Region = extent!(x = 2).into();
+
+        // ok case
+        let ok_mesh = ValueMesh::new(region.clone(), vec![Ok::<_, Infallible>(1), Ok(2)]).unwrap();
+        let ok = ok_mesh.transpose().unwrap();
+        assert_eq!(ok.values().collect::<Vec<_>>(), vec![1, 2]);
+
+        // err case: propagate user E
+        #[derive(Debug, PartialEq)]
+        enum E {
+            Boom,
+        }
+        let err_mesh = ValueMesh::new(region, vec![Ok(1), Err(E::Boom)]).unwrap();
+        let err = err_mesh.transpose().unwrap_err();
+        assert_eq!(err, E::Boom);
+    }
+
+    #[test]
+    fn value_mesh_join_preserves_region_and_values() {
+        let region: Region = extent!(x = 2, y = 2).into();
+        let futs = vec![
+            future::ready(10),
+            future::ready(11),
+            future::ready(12),
+            future::ready(13),
+        ];
+        let mesh = ValueMesh::new(region.clone(), futs).unwrap();
+
+        let joined = block_on(mesh.join());
+        assert_eq!(joined.region().num_ranks(), 4);
+        assert_eq!(joined.values().collect::<Vec<_>>(), vec![10, 11, 12, 13]);
     }
 }
