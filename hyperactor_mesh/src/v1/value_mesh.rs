@@ -112,6 +112,25 @@ impl<I: Iterator<Item = T>, T> CollectMesh<T> for I {
     }
 }
 
+/// Like `CollectMesh`, but for `ExactSizeIterator`. Uses `len()` to
+/// pre-check cardinality and fail fast (no allocation) if `len() !=
+/// region.num_ranks()`. On success, builds a complete mesh.
+pub trait CollectExactMesh<T>: ExactSizeIterator<Item = T> + Sized {
+    fn collect_exact_mesh(self, region: view::Region) -> crate::v1::Result<ValueMesh<T>>;
+}
+
+impl<I: ExactSizeIterator<Item = T>, T> CollectExactMesh<T> for I {
+    // Pre-check length via `len()` to fail fast before collecting.
+    fn collect_exact_mesh(self, region: view::Region) -> crate::v1::Result<ValueMesh<T>> {
+        let expected = region.num_ranks();
+        let actual = self.len();
+        if actual != expected {
+            return Err(crate::v1::Error::InvalidRankCardinality { expected, actual });
+        }
+        Ok(ValueMesh::new_unchecked(region, self.collect()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
@@ -223,6 +242,57 @@ mod tests {
     fn collect_mesh_from_map_pipeline() {
         let region: Region = extent!(x = 2, y = 2).into();
         let mesh = (0..4).map(|i| i * 10).collect_mesh(region.clone()).unwrap();
+
+        assert_eq!(mesh.region().num_ranks(), 4);
+        assert_eq!(mesh.values().collect::<Vec<_>>(), vec![0, 10, 20, 30]);
+    }
+
+    #[test]
+    fn collect_exact_mesh_ok() {
+        let region: Region = extent!(x = 2, y = 3).into();
+        let mesh = (0..6)
+            .collect_exact_mesh(region.clone())
+            .expect("collect_exact_mesh should succeed");
+
+        assert_eq!(mesh.region().num_ranks(), 6);
+        assert_eq!(mesh.values().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn collect_exact_mesh_len_too_short_is_error() {
+        let region: Region = extent!(x = 2, y = 3).into();
+        let err = (0..5).collect_exact_mesh(region).unwrap_err();
+
+        match err {
+            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+                assert_eq!(expected, 6);
+                assert_eq!(actual, 5);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_exact_mesh_len_too_long_is_error() {
+        let region: Region = extent!(x = 2, y = 3).into();
+        let err = (0..7).collect_exact_mesh(region).unwrap_err();
+
+        match err {
+            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+                assert_eq!(expected, 6);
+                assert_eq!(actual, 7);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_exact_mesh_from_map_pipeline() {
+        let region: Region = extent!(x = 2, y = 2).into();
+        let mesh = (0..4)
+            .map(|i| i * 10)
+            .collect_exact_mesh(region.clone())
+            .unwrap();
 
         assert_eq!(mesh.region().num_ranks(), 4);
         assert_eq!(mesh.values().collect::<Vec<_>>(), vec![0, 10, 20, 30]);
