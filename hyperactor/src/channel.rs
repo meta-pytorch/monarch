@@ -234,6 +234,7 @@ impl<M: RemoteMessage> Rx<M> for MpscRx<M> {
     Debug,
     PartialEq,
     Eq,
+    Hash,
     Serialize,
     Deserialize,
     strum::EnumIter,
@@ -249,7 +250,7 @@ pub enum TlsMode {
 }
 
 /// Types of channel transports.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChannelTransport {
     /// Transport over a TCP connection.
     Tcp,
