@@ -962,14 +962,14 @@ pub trait Ranked: Sized {
     /// The ranks contained in this view.
     fn region(&self) -> &Region;
 
-    /// Return the raw slice of ranks in this collection.
-    fn ranks(&self) -> &[Self::Item];
+    /// Return the item at `rank`
+    fn get(&self, rank: usize) -> Option<Self::Item>;
 
     /// Construct a new Ranked containing the ranks in this view that are
     /// part of region. The caller guarantees that
     /// `ranks.len() == region.num_ranks()` and that
     /// `region.is_subset(self.region())`.`
-    fn sliced<'a>(&self, region: Region, ranks: impl Iterator<Item = &'a Self::Item>) -> Self;
+    fn sliced(&self, region: Region, ranks: impl Iterator<Item = Self::Item>) -> Self;
 }
 
 impl<T: Ranked> View for T {
@@ -981,7 +981,7 @@ impl<T: Ranked> View for T {
     }
 
     fn get(&self, rank: usize) -> Option<Self::Item> {
-        self.ranks().get(rank).cloned()
+        self.get(rank)
     }
 
     fn subset(&self, region: Region) -> Result<Self, ViewError> {
@@ -995,7 +995,7 @@ impl<T: Ranked> View for T {
                 base: self.region().clone(),
                 selected: region.clone(),
             })?
-            .map(|index| &self.ranks()[index]);
+            .map(|index| self.get(index).unwrap());
 
         Ok(self.sliced(region, ranks))
     }
