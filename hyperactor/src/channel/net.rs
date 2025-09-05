@@ -481,6 +481,7 @@ impl<M: RemoteMessage> NetTx<M> {
                         .with_multiplier(2.0)
                         .with_randomization_factor(0.1)
                         .with_max_interval(Duration::from_millis(1000))
+                        .with_max_elapsed_time(None) // Allow infinite retries
                         .build(),
                 ))
             }
