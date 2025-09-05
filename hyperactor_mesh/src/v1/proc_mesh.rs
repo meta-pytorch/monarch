@@ -32,6 +32,7 @@ use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::v1;
 use crate::v1::Error;
 use crate::v1::Name;
+use crate::v1::ValueMesh;
 
 /// A reference to a single [`hyperactor::Proc`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -93,9 +94,32 @@ impl ProcMeshRef {
         })
     }
 
+    /// Maps over all of the ProcRefs in the mesh, returning a new ValueMesh with
+    /// the mapped values.
+    fn mapped<F, R>(&self, f: F) -> ValueMesh<R>
+    where
+        F: Fn(&ProcRef) -> R,
+    {
+        ValueMesh::new(self.region.clone(), self.ranks.iter().map(f).collect())
+    }
+
+    /// The current statuses of procs in this mesh.
+    async fn status(
+        &self,
+        caps: &(impl cap::CanSend + cap::CanOpenPort),
+    ) -> v1::Result<ValueMesh<bool>> {
+        self.mapped(|proc_ref| {
+            let proc_ref = proc_ref.clone();
+            async move { proc_ref.status(caps).await }
+        })
+        .join()
+        .await
+        .promote_result()
+    }
+
     /// Allocate a new ProcMeshRef from the provided alloc.
     /// Allocate does not require an owning actor because references are not owned.
-    async fn allocate(
+    pub async fn allocate(
         caps: &(impl cap::CanOpenPort + cap::CanSend + cap::HasProc),
         mut alloc: impl Alloc + Send + Sync + 'static,
         name: &str,
@@ -231,5 +255,14 @@ mod tests {
         for proc_ref in mesh.values() {
             assert!(proc_ref.status(&actor).await.unwrap());
         }
+
+        // Same on the proc mesh:
+        assert!(
+            mesh.status(&actor)
+                .await
+                .unwrap()
+                .values()
+                .all(|status| status)
+        );
     }
 }
