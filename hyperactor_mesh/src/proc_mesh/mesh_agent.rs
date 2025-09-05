@@ -135,7 +135,7 @@ impl MeshAgent {
 
         // Wire up this proc to the global router so that any meshes managed by
         // this process can reach actors in this proc.
-        super::global_router().bind(proc_id.into(), proc.clone());
+        super::router::global().bind(proc_id.into(), proc.clone());
 
         let agent = MeshAgent {
             proc: proc.clone(),
@@ -188,7 +188,7 @@ impl MeshAgentMessageHandler for MeshAgent {
         // set as a means of failure injection in the testing of
         // supervision codepaths.
         let router = if std::env::var("HYPERACTOR_MESH_ROUTER_NO_GLOBAL_FALLBACK").is_err() {
-            let default = super::global_router().fallback(client.into_boxed());
+            let default = super::router::global().fallback(client.into_boxed());
             DialMailboxRouter::new_with_default(default.into_boxed())
         } else {
             DialMailboxRouter::new_with_default(client.into_boxed())

@@ -40,6 +40,7 @@ use serde::Serialize;
 use strum::AsRefStr;
 
 use crate::alloc::test_utils::MockAllocWrapper;
+use crate::assign::Ranks;
 use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::shortuuid::ShortUuid;
 
@@ -253,6 +254,119 @@ pub trait Alloc {
             tracing::debug!("drained event: {:?}", event);
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct AllocatedProc {
+    pub create_key: ShortUuid,
+    pub proc_id: ProcId,
+    pub addr: ChannelAddr,
+    pub mesh_agent: ActorRef<MeshAgent>,
+}
+
+impl fmt::Display for AllocatedProc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "AllocatedProc {{ create_key: {}, proc_id: {}, addr: {}, mesh_agent: {} }}",
+            self.create_key, self.proc_id, self.addr, self.mesh_agent
+        )
+    }
+}
+
+#[async_trait]
+pub(crate) trait AllocExt {
+    /// Perform initial allocation, consuming events until the alloc is fully
+    /// running. Returns the ranked procs.
+    async fn initialize(&mut self) -> Result<Vec<AllocatedProc>, AllocatorError>;
+}
+
+#[async_trait]
+impl<A: ?Sized + Send + Alloc> AllocExt for A {
+    async fn initialize(&mut self) -> Result<Vec<AllocatedProc>, AllocatorError> {
+        // We wait for the full allocation to be running before returning the mesh.
+        let shape = self.shape().clone();
+
+        let mut created = Ranks::new(shape.slice().len());
+        let mut running = Ranks::new(shape.slice().len());
+
+        while !running.is_full() {
+            let Some(state) = self.next().await else {
+                // Alloc finished before it was fully allocated.
+                return Err(AllocatorError::Incomplete(self.extent().clone()));
+            };
+
+            match state {
+                ProcState::Created {
+                    create_key, point, ..
+                } => {
+                    let rank = point.rank();
+                    if let Some(old_create_key) = created.insert(rank, create_key.clone()) {
+                        tracing::warn!(
+                            "rank {rank} reassigned from {old_create_key} to {create_key}"
+                        );
+                    }
+                    tracing::info!("created: {} rank {}: created", create_key, rank);
+                }
+                ProcState::Running {
+                    create_key,
+                    proc_id,
+                    mesh_agent,
+                    addr,
+                } => {
+                    let Some(rank) = created.rank(&create_key) else {
+                        tracing::warn!(
+                            "proc id {proc_id} ({}) running, but not created",
+                            create_key
+                        );
+                        continue;
+                    };
+
+                    let allocated_proc = AllocatedProc {
+                        create_key,
+                        proc_id: proc_id.clone(),
+                        addr: addr.clone(),
+                        mesh_agent: mesh_agent.clone(),
+                    };
+                    if let Some(old_allocated_proc) = running.insert(*rank, allocated_proc.clone())
+                    {
+                        tracing::warn!(
+                            "duplicate running notifications for {rank}: \
+                            old:{old_allocated_proc}; \
+                            new:{allocated_proc}"
+                        )
+                    }
+                    tracing::info!(
+                        "proc {} rank {}: running at addr:{addr} mesh_agent:{mesh_agent}",
+                        proc_id,
+                        rank
+                    );
+                }
+                // TODO: We should push responsibility to the allocator, which
+                // can choose to either provide a new proc or emit a
+                // ProcState::Failed to fail the whole allocation.
+                ProcState::Stopped { create_key, reason } => {
+                    tracing::error!(
+                        "allocation failed for proc with create key {}: {}",
+                        create_key,
+                        reason
+                    );
+                    return Err(AllocatorError::Other(anyhow::Error::msg(reason)));
+                }
+                ProcState::Failed {
+                    world_id,
+                    description,
+                } => {
+                    tracing::error!("allocation failed for world {}: {}", world_id, description);
+                    return Err(AllocatorError::Other(anyhow::Error::msg(description)));
+                }
+            }
+        }
+
+        // We collect all the ranks at this point of completion, so that we can
+        // avoid holding Rcs across awaits.
+        Ok(running.into_iter().map(Option::unwrap).collect())
     }
 }
 
