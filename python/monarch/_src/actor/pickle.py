@@ -8,15 +8,18 @@
 
 import io
 import pickle
+import sys
 from contextlib import contextmanager, ExitStack
 from typing import Any, Callable, Iterable, List, Tuple
 
 import cloudpickle
 
-try:
-    import torch  # @manual
-except ImportError:
-    torch = None
+
+def maybe_torch():
+    """
+    We have to do some special pickling if torch is loaded but not if it isn't loaded?
+    """
+    return sys.modules.get("torch")
 
 
 _orig_function_getstate = cloudpickle.cloudpickle._function_getstate
@@ -76,6 +79,7 @@ def flatten(obj: Any, filter: Callable[[Any], bool]) -> Tuple[List[Any], bytes]:
 
 def unflatten(data: bytes, values: Iterable[Any]) -> Any:
     with ExitStack() as stack:
+        torch = maybe_torch()
         if torch is not None:
             stack.enter_context(load_tensors_on_cpu())
             stack.enter_context(torch.utils._python_dispatch._disable_current_modes())
@@ -87,6 +91,8 @@ def unflatten(data: bytes, values: Iterable[Any]) -> Any:
 def load_tensors_on_cpu():
     # Ensure that any tensors load from CPU via monkeypatching how Storages are
     # loaded.
+    import torch
+
     old = torch.storage._load_from_bytes
     try:
         torch.storage._load_from_bytes = lambda b: torch.load(
