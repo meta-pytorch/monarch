@@ -162,6 +162,7 @@ pub use opentelemetry;
 pub use paste::paste;
 pub use proc::Context;
 pub use proc::Instance;
+pub use proc::Proc;
 pub use reference::ActorId;
 pub use reference::ActorRef;
 pub use reference::GangId;
