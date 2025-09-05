@@ -211,12 +211,80 @@ impl<M: RemoteMessage> NetTx<M> {
             seq: u64,
             message: serde_multipart::Message,
             received_at: Instant,
+            // When this message was written to the stream. None means it is not
+            // written yet.
+            sent_at: Option<Instant>,
             return_channel: oneshot::Sender<M>,
         }
 
         impl<M: RemoteMessage> fmt::Debug for QueuedMessage<M> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.seq.fmt(f)
+                let rcv_secs = self.received_at.elapsed().as_secs();
+                match self.sent_at {
+                    Some(s) => {
+                        write!(
+                            f,
+                            "(seq={}, since_rcv={}sec, since_sent={}sec)",
+                            self.seq,
+                            rcv_secs,
+                            s.elapsed().as_secs()
+                        )
+                    }
+                    None => {
+                        write!(f, "(seq={}, since_rcv={}sec)", self.seq, rcv_secs)
+                    }
+                }
+            }
+        }
+
+        // A new type to provide custom Debug impl.
+        struct MessageDeque<M: RemoteMessage>(VecDeque<QueuedMessage<M>>);
+
+        impl<M: RemoteMessage> MessageDeque<M> {
+            fn pop_front(&mut self) -> Option<QueuedMessage<M>> {
+                self.0.pop_front()
+            }
+
+            fn push_back(&mut self, message: QueuedMessage<M>) {
+                self.0.push_back(message);
+            }
+
+            fn append(&mut self, other: &mut Self) {
+                self.0.append(&mut other.0);
+            }
+
+            fn front(&self) -> Option<&QueuedMessage<M>> {
+                self.0.front()
+            }
+
+            fn back(&self) -> Option<&QueuedMessage<M>> {
+                self.0.back()
+            }
+
+            fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+        }
+
+        impl<M: RemoteMessage> fmt::Debug for MessageDeque<M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let mut list = f.debug_list();
+                let n = self.0.len();
+                if n <= 6 {
+                    list.entries(&self.0);
+                } else {
+                    // head
+                    for x in self.0.iter().take(3) {
+                        list.entry(&x);
+                    }
+                    // middle
+                    list.entry(&format_args!("... omit {} messages ...", n - 6));
+                    // tail
+                    for x in self.0.iter().skip(n - 3) {
+                        list.entry(&x);
+                    }
+                }
+                list.finish()
             }
         }
 
@@ -227,7 +295,7 @@ impl<M: RemoteMessage> NetTx<M> {
             // unacked messages should still use their already assigned seq
             // numbers.
             next_seq: u64,
-            deque: VecDeque<QueuedMessage<M>>,
+            deque: MessageDeque<M>,
             #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
@@ -236,7 +304,7 @@ impl<M: RemoteMessage> NetTx<M> {
             fn new(log_id: &'a str) -> Self {
                 Self {
                     next_seq: 0,
-                    deque: VecDeque::new(),
+                    deque: MessageDeque(VecDeque::new()),
                     log_id,
                 }
             }
@@ -288,14 +356,15 @@ impl<M: RemoteMessage> NetTx<M> {
                     seq: self.next_seq,
                     message,
                     received_at,
+                    sent_at: None,
                     return_channel,
                 });
                 self.next_seq += 1;
                 Ok(())
             }
 
-            fn requeue_unacked(&mut self, unacked: Unacked<M>) {
-                match (unacked.deque.back(), self.deque.front()) {
+            fn requeue_unacked(&mut self, unacked: MessageDeque<M>) {
+                match (unacked.back(), self.deque.front()) {
                     (Some(last), Some(first)) => {
                         assert!(
                             last.seq < first.seq,
@@ -308,25 +377,35 @@ impl<M: RemoteMessage> NetTx<M> {
                     _ => (),
                 }
 
-                let mut outbox = unacked.deque;
+                let mut outbox = unacked;
                 outbox.append(&mut self.deque);
                 self.deque = outbox;
+            }
+        }
+
+        // A tuple of acked seq and when it was acked.
+        struct AckedSeq(u64, Instant);
+
+        impl fmt::Debug for AckedSeq {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let acked_secs = self.1.elapsed().as_secs();
+                write!(f, "(seq={}, since_acked={}sec)", self.0, acked_secs)
             }
         }
 
         #[derive(Derivative)]
         #[derivative(Debug)]
         struct Unacked<'a, M: RemoteMessage> {
-            deque: VecDeque<QueuedMessage<M>>,
-            largest_acked: Option<u64>,
+            deque: MessageDeque<M>,
+            largest_acked: Option<AckedSeq>,
             #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
 
         impl<'a, M: RemoteMessage> Unacked<'a, M> {
-            fn new(largest_acked: Option<u64>, log_id: &'a str) -> Self {
+            fn new(largest_acked: Option<AckedSeq>, log_id: &'a str) -> Self {
                 Self {
-                    deque: VecDeque::new(),
+                    deque: MessageDeque(VecDeque::new()),
                     largest_acked,
                     log_id,
                 }
@@ -341,7 +420,7 @@ impl<M: RemoteMessage> NetTx<M> {
                     message.seq
                 );
 
-                if let Some(largest) = self.largest_acked {
+                if let Some(AckedSeq(largest, _)) = self.largest_acked {
                     // Note: some scenarios of why this if branch could happen:
                     //
                     // message.0 <= largest could happen in the following scenario:
@@ -384,16 +463,16 @@ impl<M: RemoteMessage> NetTx<M> {
             }
 
             /// Remove acked messages from the deque.
-            fn prune(&mut self, acked: u64) {
+            fn prune(&mut self, acked: u64, acked_at: Instant) {
                 assert!(
-                    self.largest_acked.unwrap_or(0) <= acked,
+                    self.largest_acked.as_ref().map_or(0, |i| i.0) <= acked,
                     "{}: received out-of-order ack; received: {}; stored largest: {:?}",
                     self.log_id,
                     acked,
                     self.largest_acked,
                 );
 
-                self.largest_acked = Some(acked);
+                self.largest_acked = Some(AckedSeq(acked, acked_at));
                 let deque = &mut self.deque;
                 while let Some(msg) = deque.front() {
                     if msg.seq <= acked {
@@ -595,7 +674,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                         Ok(response) => {
                                             match response {
                                                 NetRxResponse::Ack(ack) => {
-                                                    unacked.prune(ack);
+                                                    unacked.prune(ack, RealClock.now());
                                                     (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                                 }
                                                 NetRxResponse::Reject => {
@@ -643,7 +722,11 @@ impl<M: RemoteMessage> NetTx<M> {
                         send_result = write_state.send() => {
                             match send_result {
                                 Ok(()) => {
-                                    let message = outbox.pop_front().expect("outbox should not be empty");
+                                    let mut message = outbox.pop_front().expect("outbox should not be empty");
+                                    // If this message was re-put into `outbox` from `unacked` due to reconnection,
+                                    // its `sent_at` field would be set in the last attempt. In that case, we simply
+                                    // overwrite the old one here.
+                                    message.sent_at = Some(RealClock.now());
                                     unacked.push_back(message);
                                     (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                 }
@@ -745,7 +828,7 @@ impl<M: RemoteMessage> NetTx<M> {
 
                                 // Need to resend unacked after reconnecting.
                                 let largest_acked = unacked.largest_acked;
-                                outbox.requeue_unacked(unacked);
+                                outbox.requeue_unacked(unacked.deque);
                                 (
                                     State::Running(Deliveries {
                                         outbox,
@@ -797,7 +880,7 @@ impl<M: RemoteMessage> NetTx<M> {
                 }
             }
         }; // loop
-        tracing::debug!("{log_id}: NetRx exited its loop with state: {state:?}");
+        tracing::debug!("{log_id}: NetTx exited its loop with state: {state:?}");
 
         match state {
             State::Closing {
@@ -813,8 +896,9 @@ impl<M: RemoteMessage> NetTx<M> {
                 // either not acknowledged or not sent.
                 unacked
                     .deque
+                    .0
                     .drain(..)
-                    .chain(outbox.deque.drain(..))
+                    .chain(outbox.deque.0.drain(..))
                     .filter_map(|queued_msg| {
                         serde_multipart::deserialize_bincode(queued_msg.message.clone())
                             .ok()
@@ -1025,6 +1109,15 @@ enum WriteState<W, F, T> {
     Broken,
 }
 
+impl<W, F, T> WriteState<W, F, T> {
+    fn associated_value(&self) -> Option<&T> {
+        match self {
+            Self::Writing(_, v) => Some(v),
+            Self::Idle(_) | Self::Broken => None,
+        }
+    }
+}
+
 impl<W: AsyncWrite + Unpin, F: Buf, T> WriteState<W, F, T> {
     async fn send(&mut self) -> io::Result<T> {
         match self {
@@ -1091,9 +1184,9 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let ack_msg_interval = config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
         let (mut final_next, final_result, reject_conn) = loop {
-            if self.write_state.is_idle()
-                && (next.ack + ack_msg_interval <= next.seq
-                    || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval))
+            assert!(self.write_state.is_idle());
+            if next.ack + ack_msg_interval <= next.seq
+                || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval)
             {
                 let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle()
                 else {
@@ -1111,116 +1204,117 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     }
                 };
                 self.write_state = WriteState::Writing(FrameWrite::new(writer, ack), next.seq);
-            }
-
-            tokio::select! {
-                bytes_result = self.reader.next() => {
-                    rcv_raw_frame_count += 1;
-                    // First handle transport-level I/O errors, and EOFs.
-                    let bytes = match bytes_result {
-                        Ok(Some(bytes)) => bytes,
-                        Ok(None) => {
-                            tracing::debug!("{log_id}: reader returns None, meaning EOF");
-                            break (next, Ok(()), false);
-                        }
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: error reading into Frame with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            false
-                        ),
-                    };
-
-                    // De-frame the multi-part message.
-                    let message = match serde_multipart::Message::from_framed(bytes) {
-                        Ok(message) => message,
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: failed to de-frame message with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            false
-                        ),
-                    };
-
-                    // Finally decode the message. This assembles the M-typed message
-                    // from its constituent parts.
-                    match serde_multipart::deserialize_bincode(message) {
-                        Ok(Frame::Init(_)) => {
-                            break (next, Err(anyhow::anyhow!("{log_id}: unexpected init frame")), true)
-                        },
-                        // Ignore retransmits.
-                        Ok(Frame::Message(seq, _)) if seq < next.seq => {
-                            tracing::debug!(
-                                "{log_id}: ignoring retransmit; retransmit seq: {}; expected next seq: {}",
-                                seq,
-                                next.seq,
-                            );
-                        },
-                        // The following segment ensures exactly-once semantics.
-                        // That means No out-of-order delivery and no duplicate delivery.
-                        Ok(Frame::Message(seq, message)) => {
-                            // received seq should be equal to next seq. Else error out!
-                            if seq > next.seq {
-                                let msg = format!("{log_id}: out-of-sequence message, expected seq {}, got {}", next.seq, seq);
-                                tracing::error!(msg);
-                                break (next, Err(anyhow::anyhow!(msg)), true)
-                            }
-                            match self.send_with_buffer_metric(&log_id, &tx, message).await {
-                                Ok(()) => {
-                                    // In channel's contract, "delivered" means the message
-                                    // is sent to the NetRx object. Therefore, we could bump
-                                    // `next_seq` as far as the message is put on the mspc
-                                    // channel.
-                                    //
-                                    // Note that when/how the messages in NetRx are processed
-                                    // is not covered by channel's contract. For example,
-                                    // the message might never be taken out of netRx, but
-                                    // channel still considers those messages delivered.
-                                    next.seq = seq+1;
-                                }
-                                Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: error relaying message to mspc channel")), false)
-                                }
-                            }
-                        },
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: failed to deserialize message with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            false
-                        ),
+                match self.write_state.send().await {
+                    Ok(acked_seq) => {
+                        last_ack_time = RealClock.now();
+                        next.ack = acked_seq;
                     }
-                },
-
-                // We have to be careful to manage the ack write state here, so that we do not
-                // write partial acks in the presence of cancellation.
-                ack_result = self.write_state.send() => {
-                    match ack_result {
-                        Ok(acked_seq) => {
-                            last_ack_time = RealClock.now();
-                            next.ack = acked_seq;
-                        }
-                        Err(err) => {
-                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("{log_id}: error acking peer message")), false)
-                        }
+                    Err(err) => {
+                        let v = self.write_state.associated_value();
+                        break (
+                            next,
+                            Err::<(), anyhow::Error>(err.into())
+                                .context(format!("{log_id}: error acking peer message: {v:?}")),
+                            false,
+                        );
                     }
-                },
-                // Have a tick to abort select! call to make sure the ack for the last message can get the chance
-                // to be sent as a result of time interval being reached.
-                _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-                _ = cancel_token.cancelled() => break (next, Ok(()), false)
+                }
+            } else {
+                tokio::select! {
+                    bytes_result = self.reader.next() => {
+                        rcv_raw_frame_count += 1;
+                        // First handle transport-level I/O errors, and EOFs.
+                        let bytes = match bytes_result {
+                            Ok(Some(bytes)) => bytes,
+                            Ok(None) => {
+                                tracing::debug!("{log_id}: reader returns None, meaning EOF");
+                                break (next, Ok(()), false);
+                            }
+                            Err(err) => break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into()).context(
+                                    format!(
+                                        "{log_id}: error reading into Frame with M = {}",
+                                        type_name::<M>(),
+                                    )
+                                ),
+                                false
+                            ),
+                        };
+
+                        // De-frame the multi-part message.
+                        let message = match serde_multipart::Message::from_framed(bytes) {
+                            Ok(message) => message,
+                            Err(err) => break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into()).context(
+                                    format!(
+                                        "{log_id}: failed to de-frame message with M = {}",
+                                        type_name::<M>(),
+                                    )
+                                ),
+                                false
+                            ),
+                        };
+
+                        // Finally decode the message. This assembles the M-typed message
+                        // from its constituent parts.
+                        match serde_multipart::deserialize_bincode(message) {
+                            Ok(Frame::Init(_)) => {
+                                break (next, Err(anyhow::anyhow!("{log_id}: unexpected init frame")), true)
+                            },
+                            // Ignore retransmits.
+                            Ok(Frame::Message(seq, _)) if seq < next.seq => {
+                                tracing::debug!(
+                                    "{log_id}: ignoring retransmit; retransmit seq: {}; expected next seq: {}",
+                                    seq,
+                                    next.seq,
+                                );
+                            },
+                            // The following segment ensures exactly-once semantics.
+                            // That means No out-of-order delivery and no duplicate delivery.
+                            Ok(Frame::Message(seq, message)) => {
+                                // received seq should be equal to next seq. Else error out!
+                                if seq > next.seq {
+                                    let msg = format!("{log_id}: out-of-sequence message, expected seq {}, got {}", next.seq, seq);
+                                    tracing::error!(msg);
+                                    break (next, Err(anyhow::anyhow!(msg)), true)
+                                }
+                                match self.send_with_buffer_metric(&log_id, &tx, message).await {
+                                    Ok(()) => {
+                                        // In channel's contract, "delivered" means the message
+                                        // is sent to the NetRx object. Therefore, we could bump
+                                        // `next_seq` as far as the message is put on the mspc
+                                        // channel.
+                                        //
+                                        // Note that when/how the messages in NetRx are processed
+                                        // is not covered by channel's contract. For example,
+                                        // the message might never be taken out of netRx, but
+                                        // channel still considers those messages delivered.
+                                        next.seq = seq+1;
+                                    }
+                                    Err(err) => {
+                                        break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: error relaying message to mspc channel")), false)
+                                    }
+                                }
+                            },
+                            Err(err) => break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into()).context(
+                                    format!(
+                                        "{log_id}: failed to deserialize message with M = {}",
+                                        type_name::<M>(),
+                                    )
+                                ),
+                                false
+                            ),
+                        }
+                    },
+                    // Have a tick to abort select! call to make sure the ack for the last message can get the chance
+                    // to be sent as a result of time interval being reached.
+                    _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
+                    _ = cancel_token.cancelled() => break (next, Ok(()), false)
+                }
             }
         };
         // Note:
@@ -1228,9 +1322,12 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         //   2. rcv_raw_frame_count contains the last frame which might not be
         //      desrializable, e.g. EOF, error, etc.
         tracing::debug!(
-            "{log_id}: NetRx exited its loop with states: initial Netx was \
-            {initial_next:?}; final Next is {final_next:?} ; rcv raw frame \
-            count is {rcv_raw_frame_count}.",
+            "{log_id}: NetRx::process exited its loop with states: initial Next \
+            was {initial_next:?}; final Next is {final_next:?}; since acked: \
+            {}sec; rcv raw frame count is {rcv_raw_frame_count}; final result: \
+            {:?}",
+            last_ack_time.elapsed().as_secs(),
+            final_result,
         );
 
         let mut final_ack = final_next.ack;
