@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::marker::PhantomData;
 
 use hyperactor::Actor;
@@ -66,7 +74,7 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         for actor_ref in self.values() {
             actor_ref
                 .send(caps, message.clone())
-                .map_err(|e| Error::SendingError(actor_ref.actor_id().clone(), e))?;
+                .map_err(|e| Error::SendingError(actor_ref.actor_id().clone(), Box::new(e)))?;
         }
         Ok(())
     }
