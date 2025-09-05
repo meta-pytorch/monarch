@@ -349,7 +349,7 @@ impl ProcMesh {
                     &client,
                     rank,
                     router_channel_addr.clone(),
-                    supervision_port.bind(),
+                    Some(supervision_port.bind()),
                     address_book.clone(),
                     config_handle.bind(),
                 )

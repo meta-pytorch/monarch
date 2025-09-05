@@ -15,6 +15,7 @@ pub mod proc_mesh;
 
 use std::str::FromStr;
 
+use hyperactor::ActorId;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -32,6 +33,22 @@ pub enum Error {
 
     #[error(transparent)]
     HostMeshRefParseError(#[from] HostMeshRefParseError),
+
+    #[error(transparent)]
+    AllocatorError(#[from] crate::alloc::AllocatorError),
+
+    #[error(transparent)]
+    ChannelError(#[from] hyperactor::channel::ChannelError),
+
+    #[error("error during mesh configuration: {0}")]
+    ConfigurationError(anyhow::Error),
+
+    // This is a temporary error to ensure we don't create unroutable meshes.
+    #[error("configuration error: mesh is unroutable")]
+    UnroutableMesh(),
+
+    #[error("error while calling actor {0}: {1}")]
+    CallError(ActorId, anyhow::Error),
 }
 
 /// The type of result used in `hyperactor_mesh::v1`.
