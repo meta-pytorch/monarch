@@ -100,9 +100,9 @@ impl Allocator for ProcessAllocator {
             spec: spec.clone(),
             bootstrap_addr,
             rx,
-            index: 0,
             active: HashMap::new(),
             ranks: Ranks::new(spec.extent.num_ranks()),
+            created: Vec::new(),
             cmd: Arc::clone(&self.cmd),
             children: JoinSet::new(),
             running: true,
@@ -134,10 +134,11 @@ pub struct ProcessAlloc {
     spec: AllocSpec,
     bootstrap_addr: ChannelAddr,
     rx: channel::ChannelRx<Process2Allocator>,
-    index: usize,
     active: HashMap<usize, Child>,
     // Maps process index to its rank.
     ranks: Ranks<usize>,
+    // Created processes by index.
+    created: Vec<ShortUuid>,
     cmd: Arc<Mutex<Command>>,
     children: JoinSet<(usize, ProcStopReason)>,
     running: bool,
@@ -270,6 +271,7 @@ impl Child {
             }
         }
     }
+
     #[hyperactor::instrument_infallible]
     fn stop(&self, reason: ProcStopReason) {
         let _ = self.stop_reason.set(reason); // first stop wins
@@ -403,9 +405,11 @@ impl ProcessAlloc {
             return None;
         }
         let mut cmd = self.cmd.lock().await;
-        let index = self.index;
-        self.index += 1;
         let log_channel: ChannelAddr = ChannelAddr::any(ChannelTransport::Unix);
+
+        let index = self.created.len();
+        self.created.push(ShortUuid::generate());
+        let create_key = &self.created[index];
 
         cmd.env(
             bootstrap::BOOTSTRAP_ADDR_ENV,
@@ -420,12 +424,14 @@ impl ProcessAlloc {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let proc_id = ProcId::Ranked(WorldId(self.name.to_string()), index);
         tracing::debug!("Spawning process {:?}", cmd);
         match cmd.spawn() {
             Err(err) => {
                 // Likely retry won't help here so fail permanently.
-                let message = format!("spawn index: {}, command: {:?}: {}", index, cmd, err);
+                let message = format!(
+                    "spawn {} index: {}, command: {:?}: {}",
+                    create_key, index, cmd, err
+                );
                 tracing::error!(message);
                 self.failed = true;
                 Some(ProcState::Failed {
@@ -437,7 +443,7 @@ impl ProcessAlloc {
                 let pid = process.id().unwrap_or(0);
                 match self.ranks.assign(index) {
                     Err(_index) => {
-                        tracing::info!("could not assign rank to {}", proc_id);
+                        tracing::info!("could not assign rank to {}", create_key);
                         let _ = process.kill().await;
                         None
                     }
@@ -448,7 +454,7 @@ impl ProcessAlloc {
                         // Adjust for shape slice offset for non-zero shapes (sub-shapes).
                         let point = self.spec.extent.point_of_rank(rank).unwrap();
                         Some(ProcState::Created {
-                            proc_id,
+                            create_key: create_key.clone(),
                             point,
                             pid,
                         })
@@ -500,13 +506,16 @@ impl Alloc for ProcessAlloc {
                             }
 
                             child.post(Allocator2Process::StartProc(
-                                ProcId::Ranked(WorldId(self.name.to_string()), index),
+                                self.spec.proc_name.clone().map_or(
+                                    ProcId::Ranked(WorldId(self.name.to_string()), index),
+                                    |name| ProcId::Direct(addr.clone(), name)),
                                 transport,
                             ));
                         }
 
                         Process2AllocatorMessage::StartedProc(proc_id, mesh_agent, addr) => {
                             break Some(ProcState::Running {
+                                create_key: self.created[index].clone(),
                                 proc_id,
                                 mesh_agent,
                                 addr,
@@ -538,12 +547,16 @@ impl Alloc for ProcessAlloc {
                     tracing::info!("child stopped with ProcStopReason::{:?}", reason);
 
                     break Some(ProcState::Stopped {
-                        proc_id: ProcId::Ranked(WorldId(self.name.to_string()), index),
-                        reason
+                        create_key: self.created[index].clone(),
+                        reason,
                     });
                 },
             }
         }
+    }
+
+    fn spec(&self) -> &AllocSpec {
+        &self.spec
     }
 
     fn extent(&self) -> &Extent {
@@ -601,6 +614,7 @@ mod tests {
             .allocate(AllocSpec {
                 extent: ndslice::extent!(replica = 1),
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await
             .unwrap();
