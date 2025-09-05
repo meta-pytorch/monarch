@@ -2374,6 +2374,10 @@ impl MailboxSender for WeakMailboxRouter {
 /// connections and forwards messages to the appropriate
 /// `MailboxClient`.
 ///
+/// If a message destination is not bound, but is a "direct mode" address
+/// (i.e., its proc id contains the channel address through which the proc
+/// is reachable), then DialMailboxRouter dials the proc directly.
+///
 /// Messages sent to unknown destinations are routed to the `default`
 /// sender, if present.
 #[derive(Debug, Clone)]
@@ -2447,16 +2451,22 @@ impl DialMailboxRouter {
     /// Lookup an actor's channel in the router's address bok.
     pub fn lookup_addr(&self, actor_id: &ActorId) -> Option<ChannelAddr> {
         let address_book = self.address_book.read().unwrap();
-        address_book
+        let found = address_book
             .lower_bound(Excluded(&actor_id.clone().into()))
-            .prev()
-            .and_then(|(key, addr)| {
-                if key.is_prefix_of(&actor_id.clone().into()) {
-                    Some(addr.clone())
-                } else {
-                    None
-                }
-            })
+            .prev();
+
+        // First try to look up the address in our address book; failing that,
+        // try to resolve direct procs.
+        if let Some((key, addr)) = found
+            && key.is_prefix_of(&actor_id.clone().into())
+        {
+            Some(addr.clone())
+        } else if actor_id.proc_id().is_direct() {
+            let (addr, _name) = actor_id.proc_id().clone().into_direct().unwrap();
+            Some(addr)
+        } else {
+            None
+        }
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
@@ -2529,6 +2539,7 @@ mod tests {
 
     use std::assert_matches::assert_matches;
     use std::mem::drop;
+    use std::str::FromStr;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
@@ -2831,10 +2842,29 @@ mod tests {
         router.bind(id!(world1[0]).into(), "unix!@2".parse().unwrap());
         router.bind(id!(world1[1]).into(), "unix!@3".parse().unwrap());
         router.bind(id!(world1[1].actor1).into(), "unix!@4".parse().unwrap());
+        // Bind a direct address -- we should use its bound address!
+        router.bind(
+            "unix:@4,my_proc,my_actor".parse().unwrap(),
+            "unix:@5".parse().unwrap(),
+        );
 
         // We should be able to lookup the ids
         router.lookup_addr(&id!(world0[0].actor[0])).unwrap();
         router.lookup_addr(&id!(world1[0].actor[0])).unwrap();
+
+        let actor_id = Reference::from_str("unix:@4,my_proc,my_actor")
+            .unwrap()
+            .into_actor()
+            .unwrap();
+        assert_eq!(
+            router.lookup_addr(&actor_id).unwrap(),
+            "unix!@5".parse().unwrap(),
+        );
+        router.unbind(&actor_id.clone().into());
+        assert_eq!(
+            router.lookup_addr(&actor_id).unwrap(),
+            "unix!@4".parse().unwrap(),
+        );
 
         // Unbind so we cannot find the ids anymore
         router.unbind(&id!(world1).into());
