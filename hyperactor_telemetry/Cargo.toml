@@ -27,7 +27,7 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-appender = "0.2.3"
 tracing-core = { version = "0.1.33", features = ["valuable"] }
 tracing-glog = { version = "0.4.1", features = ["ansi", "tracing-log"] }
-tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 whoami = "1.5"
 
 [dev-dependencies]
