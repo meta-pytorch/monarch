@@ -9,13 +9,6 @@
 from importlib import import_module as _import_module
 from typing import TYPE_CHECKING
 
-# Import before monarch to pre-load torch DSOs as, in exploded wheel flows,
-# our RPATHs won't correctly find them.
-try:
-    import torch  # noqa: F401
-except ImportError:
-    pass
-
 # submodules of monarch should not be imported in this
 # top-level file because it will cause them to get
 # loaded even if they are not actually being used.
