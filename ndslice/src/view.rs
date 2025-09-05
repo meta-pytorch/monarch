@@ -953,6 +953,54 @@ impl View for Extent {
     }
 }
 
+/// Ranked is a helper trait to implement `View` on a ranked collection
+/// of items.
+pub trait Ranked: Sized {
+    /// The type of item in this view.
+    type Item: Clone + 'static;
+
+    /// The ranks contained in this view.
+    fn region(&self) -> &Region;
+
+    /// Return the raw slice of ranks in this collection.
+    fn ranks(&self) -> &[Self::Item];
+
+    /// Construct a new Ranked containing the ranks in this view that are
+    /// part of region. The caller guarantees that
+    /// `ranks.len() == region.num_ranks()` and that
+    /// `region.is_subset(self.region())`.`
+    fn sliced<'a>(&self, region: Region, ranks: impl Iterator<Item = &'a Self::Item>) -> Self;
+}
+
+impl<T: Ranked> View for T {
+    type Item = T::Item;
+    type View = Self;
+
+    fn region(&self) -> Region {
+        self.region().clone()
+    }
+
+    fn get(&self, rank: usize) -> Option<Self::Item> {
+        self.ranks().get(rank).cloned()
+    }
+
+    fn subset(&self, region: Region) -> Result<Self, ViewError> {
+        // Compact the ranks, remapping them into the new region.
+        // `remap` returns None if the target region is not a subset
+        // of the source region.
+        let ranks = self
+            .region()
+            .remap(&region)
+            .ok_or_else(|| ViewError::InvalidRange {
+                base: self.region().clone(),
+                selected: region.clone(),
+            })?
+            .map(|index| &self.ranks()[index]);
+
+        Ok(self.sliced(region, ranks))
+    }
+}
+
 /// An iterator over views.
 pub struct ViewIterator {
     extent: Extent,     // Note that `extent` and...
