@@ -49,6 +49,7 @@ sphinx_gallery_conf = {
     "ignore_pattern": r"__init__\.py",  # Exclude __init__.py files
     "plot_gallery": "False",
     "only_warn_on_example_error": "True",
+    "show_time": False,  # Disable execution time display
 }
 
 
