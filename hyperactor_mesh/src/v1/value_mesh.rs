@@ -51,14 +51,14 @@ impl<T: Clone + 'static> view::Ranked for ValueMesh<T> {
         &self.region
     }
 
-    fn ranks(&self) -> &[T] {
-        &self.ranks
+    fn get(&self, rank: usize) -> Option<T> {
+        self.ranks.get(rank).cloned()
     }
 
-    fn sliced<'a>(&self, region: Region, nodes: impl Iterator<Item = &'a T>) -> Self {
+    fn sliced(&self, region: Region, nodes: impl Iterator<Item = T>) -> Self {
         Self {
             region,
-            ranks: nodes.cloned().collect(),
+            ranks: nodes.collect(),
         }
     }
 }

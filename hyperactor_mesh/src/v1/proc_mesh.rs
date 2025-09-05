@@ -6,12 +6,18 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
+use hyperactor::RemoteMessage;
+use hyperactor::actor::RemoteActor;
+use hyperactor::actor::remote::Remote;
 use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -27,9 +33,11 @@ use crate::alloc::Alloc;
 use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
 use crate::assign::Ranks;
+use crate::proc_mesh::mesh_agent::GspawnResult;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::v1;
+use crate::v1::ActorMesh;
 use crate::v1::Error;
 use crate::v1::Name;
 use crate::v1::ValueMesh;
@@ -63,6 +71,14 @@ impl ProcRef {
             }
         }
     }
+
+    pub(crate) fn actor_id(&self, name: &Name) -> ActorId {
+        self.proc_id.actor_id(name.to_string(), 0)
+    }
+
+    pub(crate) fn attest<A: RemoteActor>(&self, name: &Name) -> ActorRef<A> {
+        ActorRef::attest(self.actor_id(name))
+    }
 }
 
 /// A reference to a ProcMesh, consisting of a set of ranked [`ProcRef`]s,
@@ -92,29 +108,6 @@ impl ProcMeshRef {
             region,
             ranks: Arc::new(ranks),
         })
-    }
-
-    /// Maps over all of the ProcRefs in the mesh, returning a new ValueMesh with
-    /// the mapped values.
-    fn mapped<F, R>(&self, f: F) -> ValueMesh<R>
-    where
-        F: Fn(&ProcRef) -> R,
-    {
-        ValueMesh::new(self.region.clone(), self.ranks.iter().map(f).collect())
-    }
-
-    /// The current statuses of procs in this mesh.
-    async fn status(
-        &self,
-        caps: &(impl cap::CanSend + cap::CanOpenPort),
-    ) -> v1::Result<ValueMesh<bool>> {
-        self.mapped(|proc_ref| {
-            let proc_ref = proc_ref.clone();
-            async move { proc_ref.status(caps).await }
-        })
-        .join()
-        .await
-        .promote_result()
     }
 
     /// Allocate a new ProcMeshRef from the provided alloc.
@@ -200,6 +193,93 @@ impl ProcMeshRef {
             ranks: Arc::new(ranks),
         })
     }
+
+    /// Spawn an actor on all of the procs in this mesh, returning a new ActorMesh.
+    async fn spawn<A: Actor + RemoteActor>(
+        &self,
+        caps: &(impl cap::CanSend + cap::CanOpenPort),
+        name: &str,
+        params: &A::Params,
+    ) -> v1::Result<ActorMesh<A>>
+    where
+        A::Params: RemoteMessage,
+    {
+        let remote = Remote::collect();
+        let actor_type = remote
+            .name_of::<A>()
+            .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
+            .to_string();
+
+        let name = Name::new(name);
+        let serialized_params = bincode::serialize(params)?;
+
+        let (completed_handle, mut completed_receiver) = mailbox::open_port(caps);
+        for proc_ref in self.ranks.iter() {
+            proc_ref
+                .agent
+                .gspawn(
+                    caps,
+                    actor_type.clone(),
+                    name.clone().to_string(),
+                    serialized_params.clone(),
+                    completed_handle.bind(),
+                )
+                .await
+                .map_err(|e| Error::CallError(proc_ref.agent.actor_id().clone(), e))?;
+        }
+
+        let mut completed = Ranks::new(self.ranks.len());
+        while !completed.is_full() {
+            let result = completed_receiver.recv().await?;
+            match result {
+                GspawnResult::Success { rank, .. } if rank >= self.ranks.len() => {
+                    tracing::error!("ignoring invalid rank {}", rank);
+                }
+                GspawnResult::Success { rank, actor_id } => {
+                    if completed.insert(rank, actor_id.clone()).is_some() {
+                        tracing::error!("multiple completions received for rank {}", rank);
+                    }
+
+                    let expected_actor_id = self.ranks.get(rank).unwrap().actor_id(&name);
+                    if actor_id != expected_actor_id {
+                        return Err(Error::GspawnError(
+                            name,
+                            format!(
+                                "expected actor id {} for rank {}; got {}",
+                                expected_actor_id, rank, actor_id
+                            ),
+                        ));
+                    }
+                }
+                GspawnResult::Error(error_msg) => return Err(Error::GspawnError(name, error_msg)),
+            }
+        }
+
+        Ok(ActorMesh::new(self.clone(), name))
+    }
+
+    /// The current statuses of procs in this mesh.
+    async fn status(
+        &self,
+        caps: &(impl cap::CanSend + cap::CanOpenPort),
+    ) -> v1::Result<ValueMesh<bool>> {
+        self.mapped(|proc_ref| {
+            let proc_ref = proc_ref.clone();
+            async move { proc_ref.status(caps).await }
+        })
+        .join()
+        .await
+        .promote_result()
+    }
+
+    /// Maps over all of the ProcRefs in the mesh, returning a new ValueMesh with
+    /// the mapped values.
+    fn mapped<F, R>(&self, f: F) -> ValueMesh<R>
+    where
+        F: Fn(&ProcRef) -> R,
+    {
+        ValueMesh::new(self.region.clone(), self.ranks.iter().map(f).collect())
+    }
 }
 
 impl view::Ranked for ProcMeshRef {
@@ -209,20 +289,29 @@ impl view::Ranked for ProcMeshRef {
         &self.region
     }
 
-    fn ranks(&self) -> &[ProcRef] {
-        &self.ranks
+    fn get(&self, rank: usize) -> Option<ProcRef> {
+        self.ranks.get(rank).cloned()
     }
 
-    fn sliced<'a>(&self, region: Region, nodes: impl Iterator<Item = &'a ProcRef>) -> Self {
-        Self::new(self.name.clone(), region, nodes.cloned().collect()).unwrap()
+    fn sliced(&self, region: Region, nodes: impl Iterator<Item = ProcRef>) -> Self {
+        Self::new(self.name.clone(), region, nodes.collect()).unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use async_trait::async_trait;
+    use hyperactor::Actor;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::Instance;
+    use hyperactor::PortRef;
     use hyperactor::Proc;
     use hyperactor::id;
     use hyperactor::mailbox::BoxableMailboxSender;
+    use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
 
@@ -230,23 +319,31 @@ mod tests {
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::LocalAllocator;
+    use crate::v1::ActorMeshRef;
 
-    #[tokio::test]
-    async fn test_proc_mesh_allocate() {
+    async fn local_proc_mesh(extent: Extent) -> (ProcMeshRef, Instance<()>, DialMailboxRouter) {
         let router = DialMailboxRouter::new();
         let proc = Proc::new(id!(test[0]), router.boxed());
         let (actor, _handle) = proc.instance("controller").unwrap();
 
         let alloc = LocalAllocator
             .allocate(AllocSpec {
-                extent: extent!(replica = 4),
+                extent,
                 constraints: Default::default(),
                 proc_name: None,
             })
             .await
             .unwrap();
+        (
+            ProcMeshRef::allocate(&actor, alloc, "test").await.unwrap(),
+            actor,
+            router,
+        )
+    }
 
-        let mesh = ProcMeshRef::allocate(&actor, alloc, "test").await.unwrap();
+    #[tokio::test]
+    async fn test_proc_mesh_allocate() {
+        let (mesh, actor, router) = local_proc_mesh(extent!(replica = 4)).await;
         assert_eq!(mesh.extent(), extent!(replica = 4));
         assert_eq!(mesh.ranks.len(), 4);
         assert!(!router.prefixes().is_empty());
@@ -264,5 +361,46 @@ mod tests {
                 .values()
                 .all(|status| status)
         );
+    }
+
+    #[tokio::test]
+    async fn test_spawn_actor() {
+        #[derive(Actor, Default, Debug)]
+        #[hyperactor::export(
+            spawn = true,
+            handlers = [
+                PortRef<ActorId>,
+            ]
+        )]
+        struct EchoActor;
+
+        #[async_trait]
+        impl Handler<PortRef<ActorId>> for EchoActor {
+            async fn handle(
+                &mut self,
+                cx: &Context<Self>,
+                reply: PortRef<ActorId>,
+            ) -> Result<(), anyhow::Error> {
+                reply.send(cx, cx.self_id().clone())?;
+                Ok(())
+            }
+        }
+
+        let (proc_mesh, actor, _router) = local_proc_mesh(extent!(replica = 4)).await;
+        let actor_mesh: ActorMeshRef<EchoActor> =
+            proc_mesh.spawn(&actor, "test", &()).await.unwrap().freeze();
+
+        let (port, mut rx) = mailbox::open_port(&actor);
+        actor_mesh.cast(&actor, port.bind()).unwrap();
+
+        let mut expected_actor_ids: HashSet<_> = actor_mesh
+            .values()
+            .map(|actor_ref| actor_ref.actor_id().clone())
+            .collect();
+
+        while !expected_actor_ids.is_empty() {
+            let actor_id = rx.recv().await.unwrap();
+            assert!(expected_actor_ids.remove(&actor_id));
+        }
     }
 }
