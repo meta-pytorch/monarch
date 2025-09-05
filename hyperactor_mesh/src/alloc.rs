@@ -21,6 +21,7 @@ use std::fmt;
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::ActorRef;
+use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
@@ -100,7 +101,16 @@ pub trait Allocator {
 
 /// A proc's status. A proc can only monotonically move from
 /// `Created` to `Running` to `Stopped`.
-#[derive(Clone, Debug, PartialEq, EnumAsInner, Serialize, Deserialize, AsRefStr)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    EnumAsInner,
+    Serialize,
+    Deserialize,
+    AsRefStr,
+    Named
+)]
 pub enum ProcState {
     /// A proc was added to the alloc.
     Created {
@@ -297,6 +307,8 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                 return Err(AllocatorError::Incomplete(self.extent().clone()));
             };
 
+            let name = state.arm().unwrap_or("unknown");
+
             match state {
                 ProcState::Created {
                     create_key, point, ..
@@ -307,7 +319,14 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                             "rank {rank} reassigned from {old_create_key} to {create_key}"
                         );
                     }
-                    tracing::info!("created: {} rank {}: created", create_key, rank);
+                    tracing::info!(
+                        name = name,
+                        rank = rank,
+                        "proc with create key {}, rank {}: created",
+                        create_key,
+                        rank
+                    );
+                    // tracing::info!("created: {} rank {}: created", create_key, rank);
                 }
                 ProcState::Running {
                     create_key,
@@ -317,8 +336,9 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                 } => {
                     let Some(rank) = created.rank(&create_key) else {
                         tracing::warn!(
-                            "proc id {proc_id} ({}) running, but not created",
-                            create_key
+                            name = name,
+                            "proc id {proc_id} with create key {create_key} \
+                            is running, but was not created"
                         );
                         continue;
                     };
@@ -332,12 +352,14 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                     if let Some(old_allocated_proc) = running.insert(*rank, allocated_proc.clone())
                     {
                         tracing::warn!(
+                            name = name,
                             "duplicate running notifications for {rank}: \
                             old:{old_allocated_proc}; \
                             new:{allocated_proc}"
                         )
                     }
                     tracing::info!(
+                        name = name,
                         "proc {} rank {}: running at addr:{addr} mesh_agent:{mesh_agent}",
                         proc_id,
                         rank
@@ -348,6 +370,7 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                 // ProcState::Failed to fail the whole allocation.
                 ProcState::Stopped { create_key, reason } => {
                     tracing::error!(
+                        name = name,
                         "allocation failed for proc with create key {}: {}",
                         create_key,
                         reason
@@ -358,7 +381,12 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                     world_id,
                     description,
                 } => {
-                    tracing::error!("allocation failed for world {}: {}", world_id, description);
+                    tracing::error!(
+                        name = name,
+                        "allocation failed for world {}: {}",
+                        world_id,
+                        description
+                    );
                     return Err(AllocatorError::Other(anyhow::Error::msg(description)));
                 }
             }
