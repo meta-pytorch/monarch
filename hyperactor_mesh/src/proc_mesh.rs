@@ -7,7 +7,6 @@
  */
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt;
 use std::ops::Deref;
 use std::panic::Location;
@@ -37,7 +36,6 @@ use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
-use hyperactor::mailbox::MailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortHandle;
@@ -46,7 +44,6 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::metrics;
 use hyperactor::proc::Proc;
 use hyperactor::reference::ProcId;
-use hyperactor::reference::Reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Range;
 use ndslice::Shape;
@@ -59,6 +56,8 @@ use crate::Mesh;
 use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::actor_mesh::RootActorMesh;
 use crate::alloc::Alloc;
+use crate::alloc::AllocExt;
+use crate::alloc::AllocatedProc;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
@@ -69,25 +68,13 @@ use crate::proc_mesh::mesh_agent::MeshAgent;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::StopActorResult;
 use crate::reference::ProcMeshId;
+use crate::router;
 use crate::shortuuid::ShortUuid;
 
 pub mod mesh_agent;
 
 use std::sync::OnceLock;
 use std::sync::RwLock;
-
-/// Router: constructable anytime.
-///
-/// A global router shared by all meshes managed in this process; this
-/// allows different meshes to communicate with each other.
-///
-/// This is definitely a "good enough for now" solution; in the
-/// future, we'll likely have some form of truly global registration
-/// for meshes, also benefitting tooling, etc.
-pub(crate) fn global_router() -> &'static MailboxRouter {
-    static GLOBAL_ROUTER: OnceLock<MailboxRouter> = OnceLock::new();
-    GLOBAL_ROUTER.get_or_init(MailboxRouter::new)
-}
 
 /// Single, process-wide supervision sink storage.
 ///
@@ -153,11 +140,8 @@ pub fn global_root_client() -> &'static Instance<()> {
     let (instance, _) = GLOBAL_INSTANCE.get_or_init(|| {
         let world_id = WorldId(ShortUuid::generate().to_string());
         let client_proc_id = ProcId::Ranked(world_id.clone(), 0);
-        let client_proc = Proc::new(
-            client_proc_id.clone(),
-            BoxedMailboxSender::new(global_router().clone()),
-        );
-        global_router().bind(world_id.clone().into(), client_proc.clone());
+        let client_proc = Proc::new(client_proc_id.clone(), router::global().clone().boxed());
+        router::global().bind(world_id.clone().into(), client_proc.clone());
 
         let (client, handle) = client_proc
             .instance("client")
@@ -247,8 +231,8 @@ impl ProcMesh {
         mut alloc: Box<dyn Alloc + Send + Sync>,
         loc: &'static Location<'static>,
     ) -> Result<Self, AllocatorError> {
-        let world = alloc.world_id().name().to_string();
         let alloc_id = Self::alloc_counter().fetch_add(1, Ordering::Relaxed) + 1;
+        let world = alloc.world_id().name().to_string();
         tracing::info!(
             name = "ProcMesh::Allocate::Attempt",
             %world,
@@ -258,138 +242,21 @@ impl ProcMesh {
             "allocating proc mesh"
         );
 
-        // We wait for the full allocation to be running before returning the mesh.
-        let shape = alloc.shape().clone();
+        // 1. Initialize the alloc, producing the initial set of ranked procs:
+        let running = alloc.initialize().await?;
 
-        let mut created = Ranks::new(shape.slice().len());
-        let mut running = Ranks::new(shape.slice().len());
-
-        while !running.is_full() {
-            let Some(state) = alloc.next().await else {
-                // Alloc finished before it was fully allocated.
-                return Err(AllocatorError::Incomplete(alloc.extent().clone()));
-            };
-            let state_cloned = state.clone();
-            let state_str = format!("ProcMesh::Allocate::{}", state_cloned.as_ref());
-            match state {
-                ProcState::Created {
-                    create_key, point, ..
-                } => {
-                    let rank = point.rank();
-                    if let Some(old_create_key) = created.insert(rank, create_key.clone()) {
-                        tracing::warn!(
-                            "rank {rank} reassigned from {old_create_key} to {create_key}"
-                        );
-                    }
-                    tracing::info!(
-                        name = state_str,
-                        rank = rank,
-                        alloc_id = alloc_id,
-                        "proc with create key {} rank {}: created",
-                        create_key,
-                        rank
-                    );
-                    tracing::info!("created: {} rank {}: created", create_key, rank);
-                }
-                ProcState::Running {
-                    create_key,
-                    proc_id,
-                    mesh_agent,
-                    addr,
-                } => {
-                    let Some(rank) = created.rank(&create_key) else {
-                        tracing::warn!(
-                            name = state_str,
-                            alloc_id = alloc_id,
-                            "proc id {proc_id} running, but not created"
-                        );
-                        continue;
-                    };
-
-                    if let Some((old_create_key, old_proc_id, old_addr, old_mesh_agent)) = running
-                        .insert(
-                            *rank,
-                            (
-                                create_key.clone(),
-                                proc_id.clone(),
-                                addr.clone(),
-                                mesh_agent.clone(),
-                            ),
-                        )
-                    {
-                        tracing::warn!(
-                            name = state_str,
-                            alloc_id = alloc_id,
-                            "duplicate running notifications for {rank}: \
-                            old:{old_create_key},{old_proc_id},{old_addr},{old_mesh_agent}; \
-                            new:{create_key},{proc_id},{addr},{mesh_agent}"
-                        )
-                    }
-                    tracing::info!(
-                        name = state_str,
-                        alloc_id = alloc_id,
-                        "proc {} create key {} rank {}: running at addr:{addr} mesh_agent:{mesh_agent}",
-                        proc_id,
-                        create_key,
-                        rank
-                    );
-                }
-                // TODO: We should push responsibility to the allocator, which
-                // can choose to either provide a new proc or emit a
-                // ProcState::Failed to fail the whole allocation.
-                ProcState::Stopped { create_key, reason } => {
-                    tracing::error!(
-                        name = state_str,
-                        alloc_id = alloc_id,
-                        "allocation failed for proc with create key {}: {}",
-                        create_key,
-                        reason
-                    );
-                    return Err(AllocatorError::Other(anyhow::Error::msg(reason)));
-                }
-                ProcState::Failed {
-                    world_id,
-                    description,
-                } => {
-                    tracing::error!(
-                        name = state_str,
-                        alloc_id = alloc_id,
-                        "allocation failed for world {}: {}",
-                        world_id,
-                        description
-                    );
-                    return Err(AllocatorError::Other(anyhow::Error::msg(description)));
-                }
+        // 2. Set up routing to the initialized procs; these require dialing.
+        let router = DialMailboxRouter::new();
+        for AllocatedProc { proc_id, addr, .. } in running.iter() {
+            if proc_id.is_direct() {
+                continue;
             }
+            router.bind(proc_id.clone().into(), addr.clone());
         }
 
-        // We collect all the ranks at this point of completion, so that we can
-        // avoid holding Rcs across awaits.
-        let running: Vec<_> = running.into_iter().map(Option::unwrap).collect();
-
-        // All procs are running, so we now configure them.
-        let mut world_ids = HashSet::new();
-
-        let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
-            .await
-            .map_err(|err| AllocatorError::Other(err.into()))?;
-        tracing::info!("router channel started listening on addr: {router_channel_addr}");
-        let router = DialMailboxRouter::new_with_default(global_router().boxed());
-        for (_rank, (_create_key, proc_id, addr, _agent)) in running.iter().enumerate() {
-            router.bind(Reference::Proc(proc_id.clone()), addr.clone());
-            // Work around for Allocs that have more than one world.
-            world_ids.insert(
-                proc_id
-                    .world_id()
-                    .expect("proc in running state must be ranked")
-                    .clone(),
-            );
-        }
-        router.clone().serve(router_rx);
-
-        // Set up a client proc for the mesh itself, so that we can attach ourselves
-        // to it, and communicate with the agents. We wire it into the same router as
-        // everything else, so now the whole mesh should be able to communicate.
+        // 3. Set up a client proc for the mesh itself, so that we can attach ourselves
+        //    to it, and communicate with the agents. We wire it into the same router as
+        //    everything else, so now the whole mesh should be able to communicate.
         let client_proc_id =
             ProcId::Ranked(WorldId(format!("{}_manager", alloc.world_id().name())), 0);
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
@@ -407,18 +274,15 @@ impl ProcMesh {
         client_proc.clone().serve(client_rx);
         router.bind(client_proc_id.clone().into(), client_proc_addr.clone());
 
-        // Bind this router to the global router, to enable cross-mesh routing.
-        // TODO: unbind this when we incorporate mesh destruction too.
-        for world_id in world_ids {
-            global_router().bind(world_id.into(), router.clone());
-        }
-        global_router().bind(alloc.world_id().clone().into(), router.clone());
-        global_router().bind(client_proc_id.into(), router.clone());
+        // 4. Bind the dial router to the global router, so that everything is
+        //    connected to a single root.
+        router::global().bind_dial_router(&router);
 
         let supervisor = client_proc.attach("supervisor")?;
         let (supervision_port, supervision_events) =
             supervisor.open_port::<ActorSupervisionEvent>();
-        // Install this mesh’s supervision sink.
+
+        // 5. Install this mesh’s supervision sink.
         //
         // We intentionally use "last sink wins": if multiple
         // ProcMeshes exist in the process (e.g., a hidden
@@ -460,17 +324,28 @@ impl ProcMesh {
             },
         );
 
-        // Map of procs -> channel addresses
+        // Ensure that the global router is served so that agents may reach us.
+        let router_channel_addr = router::global()
+            .serve(&alloc.transport())
+            .await
+            .map_err(|err| AllocatorError::Other(err.into()))?;
+        tracing::info!("router channel started listening on addr: {router_channel_addr}");
+
+        // 6. Configure the mesh agents. This transmits the address book to all agents,
+        //    so that they can resolve and route traffic to all nodes in the mesh.
+
         let address_book: HashMap<_, _> = running
             .iter()
-            .map(|(_create_key, _proc_id, addr, agent)| {
-                (agent.actor_id().proc_id().clone(), addr.clone())
-            })
+            .map(
+                |AllocatedProc {
+                     addr, mesh_agent, ..
+                 }| { (mesh_agent.actor_id().proc_id().clone(), addr.clone()) },
+            )
             .collect();
 
         let (config_handle, mut config_receiver) = client.open_port();
-        for (rank, (_, _, _, agent)) in running.iter().enumerate() {
-            agent
+        for (rank, AllocatedProc { mesh_agent, .. }) in running.iter().enumerate() {
+            mesh_agent
                 .configure(
                     &client,
                     rank,
@@ -481,7 +356,7 @@ impl ProcMesh {
                 )
                 .await?;
         }
-        let mut completed = Ranks::new(shape.slice().len());
+        let mut completed = Ranks::new(running.len());
         while !completed.is_full() {
             let rank = config_receiver
                 .recv()
@@ -505,17 +380,17 @@ impl ProcMesh {
         // unification!
         //
         // Baffling and unsettling.
-        fn project_actor_ref(
-            pair: &(ShortUuid, ProcId, ChannelAddr, ActorRef<MeshAgent>),
-        ) -> ActorRef<MeshAgent> {
-            pair.3.clone()
+        fn project_mesh_agent_ref(allocated_proc: &AllocatedProc) -> ActorRef<MeshAgent> {
+            allocated_proc.mesh_agent.clone()
         }
+
+        // 7. Start comm actors and set them up to communicate via the same address book.
 
         // Spawn a comm actor on each proc, so that they can be used
         // to perform tree distribution and accumulation.
         let comm_actors = Self::spawn_on_procs::<CommActor>(
             &client,
-            running.iter().map(project_actor_ref),
+            running.iter().map(project_mesh_agent_ref),
             "comm",
             &Default::default(),
         )
@@ -540,7 +415,17 @@ impl ProcMesh {
             }),
             actor_event_router: Arc::new(DashMap::new()),
             shape,
-            ranks: running.into_iter().collect(),
+            ranks: running
+                .into_iter()
+                .map(
+                    |AllocatedProc {
+                         create_key,
+                         proc_id,
+                         addr,
+                         mesh_agent,
+                     }| (create_key, proc_id, addr, mesh_agent),
+                )
+                .collect(),
             client_proc,
             client,
             comm_actors,
