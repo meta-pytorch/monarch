@@ -12,12 +12,16 @@
 
 pub mod host_mesh;
 pub mod proc_mesh;
+pub mod value_mesh;
 
 use std::str::FromStr;
 
+pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
+pub use proc_mesh::ProcMeshRef;
 use serde::Deserialize;
 use serde::Serialize;
+pub use value_mesh::ValueMesh;
 
 use crate::shortuuid::ShortUuid;
 use crate::v1::host_mesh::HostMeshRefParseError;
