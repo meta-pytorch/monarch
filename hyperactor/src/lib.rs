@@ -65,6 +65,7 @@
 #![feature(panic_update_hook)]
 #![feature(type_alias_impl_trait)]
 #![feature(trait_alias)]
+#![feature(let_chains)]
 #![deny(missing_docs)]
 
 pub mod accum;
