@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![allow(clippy::result_large_err)] // TODO: Try reducing the size of `v1::Error`,
+
 use futures::Future;
 use ndslice::view;
 use ndslice::view::Region;
@@ -91,6 +93,25 @@ impl<T: Clone + 'static> view::Ranked for ValueMesh<T> {
     }
 }
 
+// `FromIterator` cant't work for `ValueMesh`: it has no way to carry
+// the required `Region`, and it can’t fail if the iterator length
+// mismatches. This trait provides a "mesh-aware" collect: consume an
+// iterator and a `Region`, and build a `ValueMesh<T>` with
+// cardinality validated.
+pub trait CollectMesh<T>: Iterator<Item = T> + Sized {
+    fn collect_mesh(self, region: view::Region) -> crate::v1::Result<ValueMesh<T>>;
+}
+
+impl<I: Iterator<Item = T>, T> CollectMesh<T> for I {
+    /// Collects items into a `ValueMesh` for the given `region`.
+    ///
+    /// Delegates to `ValueMesh::new`, so the result is only returned
+    /// if the iterator yields exactly `region.num_ranks()` items.
+    fn collect_mesh(self, region: view::Region) -> crate::v1::Result<ValueMesh<T>> {
+        ValueMesh::new(region, self.collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
@@ -158,5 +179,52 @@ mod tests {
         let joined = block_on(mesh.join());
         assert_eq!(joined.region().num_ranks(), 4);
         assert_eq!(joined.values().collect::<Vec<_>>(), vec![10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn collect_mesh_ok() {
+        let region: Region = extent!(x = 2, y = 3).into();
+        let mesh = (0..6)
+            .collect_mesh(region.clone())
+            .expect("collect_mesh should succeed");
+
+        assert_eq!(mesh.region().num_ranks(), 6);
+        assert_eq!(mesh.values().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn collect_mesh_len_too_short_is_error() {
+        let region: Region = extent!(x = 2, y = 3).into();
+        let err = (0..5).collect_mesh(region).unwrap_err();
+
+        match err {
+            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+                assert_eq!(expected, 6);
+                assert_eq!(actual, 5);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_mesh_len_too_long_is_error() {
+        let region: Region = extent!(x = 2, y = 3).into();
+        let err = (0..7).collect_mesh(region).unwrap_err();
+        match err {
+            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+                assert_eq!(expected, 6);
+                assert_eq!(actual, 7);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_mesh_from_map_pipeline() {
+        let region: Region = extent!(x = 2, y = 2).into();
+        let mesh = (0..4).map(|i| i * 10).collect_mesh(region.clone()).unwrap();
+
+        assert_eq!(mesh.region().num_ranks(), 4);
+        assert_eq!(mesh.values().collect::<Vec<_>>(), vec![0, 10, 20, 30]);
     }
 }
