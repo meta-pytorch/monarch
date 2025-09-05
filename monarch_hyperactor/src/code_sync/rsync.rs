@@ -501,6 +501,7 @@ mod tests {
             .allocate(AllocSpec {
                 extent: extent! { replica = 1 },
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await?;
 

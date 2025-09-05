@@ -761,6 +761,7 @@ mod tests {
             .allocate(AllocSpec {
                 extent: extent.clone(),
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await
             .unwrap();
