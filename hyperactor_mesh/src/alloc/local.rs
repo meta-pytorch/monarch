@@ -33,7 +33,7 @@ use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
-use crate::proc_mesh::mesh_agent::MeshAgent;
+use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::shortuuid::ShortUuid;
 
 enum Action {
@@ -175,7 +175,7 @@ impl Alloc for LocalAlloc {
                     };
 
                     let bspan = tracing::info_span!("mesh_agent_bootstrap");
-                    let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
+                    let (proc, mesh_agent) = match ProcMeshAgent::bootstrap(proc_id.clone()).await {
                         Ok(proc_and_agent) => proc_and_agent,
                         Err(err) => {
                             let message = format!("failed spawn mesh agent for {}: {}", rank, err);
