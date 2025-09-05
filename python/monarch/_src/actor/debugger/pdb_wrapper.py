@@ -57,7 +57,6 @@ class PdbWrapper(pdb.Pdb):
         self.controller = controller
         # pyre-ignore
         super().__init__(stdout=WriteWrapper(self), stdin=ReadWrapper.create(self))
-        self._first = True
 
     def set_trace(self, frame=None):
         with _debug_controller_request_ctx():
@@ -118,7 +117,14 @@ class PdbWrapper(pdb.Pdb):
         self.stdout = sys.stdout
 
     def post_mortem(self, exc_tb):
-        self._first = False
+        with _debug_controller_request_ctx():
+            self.controller.debugger_session_start.call_one(
+                self.rank,
+                self.coords,
+                socket.getfqdn(socket.gethostname()),
+                self.actor_id.actor_name,
+            ).get()
+
         # See builtin implementation of pdb.post_mortem() for reference.
         self.reset()
         self.interaction(None, exc_tb)

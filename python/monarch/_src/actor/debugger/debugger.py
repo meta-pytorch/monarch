@@ -32,6 +32,8 @@ _MONARCH_DEBUG_SERVER_PORT_ENV_VAR = "MONARCH_DEBUG_SERVER_PORT"
 _MONARCH_DEBUG_SERVER_PORT_DEFAULT = "27000"
 _MONARCH_DEBUG_SERVER_PROTOCOL_ENV_VAR = "MONARCH_DEBUG_SERVER_PROTOCOL"
 _MONARCH_DEBUG_SERVER_PROTOCOL_DEFAULT = "tcp"
+_MONARCH_DEBUG_POST_MORTEM_ENABLED_ENV_VAR = "MONARCH_DEBUG_POST_MORTEM_ENABLED"
+_MONARCH_DEBUG_POST_MORTEM_ENABLED_DEFAULT = "0"
 
 
 def _get_debug_server_host():
@@ -710,6 +712,16 @@ class DebugController(Actor):
         """Write to the debug session for the given rank."""
         await self.sessions.get(actor_name, rank).debugger_write(write)
 
+    @endpoint
+    def post_mortem_enabled(self) -> bool:
+        return (
+            os.environ.get(
+                _MONARCH_DEBUG_POST_MORTEM_ENABLED_ENV_VAR,
+                _MONARCH_DEBUG_POST_MORTEM_ENABLED_DEFAULT,
+            )
+            == "1"
+        )
+
 
 # Cached so that we don't have to call out to the root client every time,
 # which may be on a different host.
@@ -735,3 +747,13 @@ def remote_breakpointhook() -> None:
     )
     DebugContext.set(DebugContext(pdb_wrapper))
     pdb_wrapper.set_trace(frame)
+
+
+@functools.cache
+def _post_mortem_enabled() -> bool:
+    # If the _controller_controller isn't set, then we can't
+    # query the debug controller, so we can't do post-mortem debugging.
+    if context().actor_instance._controller_controller is None:
+        return False
+    with fake_sync_state():
+        return debug_controller().post_mortem_enabled.call_one().get()

@@ -27,6 +27,7 @@ import pytest
 import torch
 from monarch._src.actor.actor_mesh import Actor, ActorError, current_rank, IN_PAR
 from monarch._src.actor.debugger.debugger import (
+    _MONARCH_DEBUG_POST_MORTEM_ENABLED_ENV_VAR,
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
     Attach,
@@ -185,7 +186,9 @@ async def _wait_for_breakpoints(
 # We have to run this test in a separate process because there is only one
 # debug controller per process, and we don't want this to interfere with
 # the other two tests that access the debug controller.
-@isolate_in_subprocess(env=debug_env)
+@isolate_in_subprocess(
+    env={_MONARCH_DEBUG_POST_MORTEM_ENABLED_ENV_VAR: "1", **debug_env}
+)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
@@ -353,7 +356,9 @@ async def test_debug() -> None:
 
 
 # See earlier comment
-@isolate_in_subprocess(env=debug_env)
+@isolate_in_subprocess(
+    env={_MONARCH_DEBUG_POST_MORTEM_ENABLED_ENV_VAR: "1", **debug_env}
+)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
@@ -774,7 +779,13 @@ async def test_debug_command_parser_invalid_inputs(invalid_input):
 
 
 # See earlier comment
-@isolate_in_subprocess(env={"MONARCH_DEBUG_CLI_BIN": debug_cli_bin, **debug_env})
+@isolate_in_subprocess(
+    env={
+        "MONARCH_DEBUG_CLI_BIN": debug_cli_bin,
+        **debug_env,
+        _MONARCH_DEBUG_POST_MORTEM_ENABLED_ENV_VAR: "1",
+    }
+)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
@@ -1236,3 +1247,172 @@ async def test_debug_with_pickle_by_value():
 
         await fut
         await pm.stop()
+
+
+class ExceptionOnlyActor(Actor):
+    @endpoint
+    async def raise_exception(self):
+        raise ValueError("Test exception for post-mortem debugging")
+
+
+class BreakpointThenExceptionActor(Actor):
+    @endpoint
+    async def breakpoint_then_exception(self):
+        breakpoint()  # noqa
+        raise ValueError("Exception after breakpoint")
+
+
+@isolate_in_subprocess(
+    env=debug_env  # Post-mortem disabled by default
+)
+@pytest.mark.timeout(60)
+async def test_post_mortem_disabled_no_debugger_session() -> None:
+    """
+    Test that when an actor endpoint raises an exception and post-mortem
+    isn't enabled, no debugger session is ever entered.
+    """
+    proc = proc_mesh(hosts=1, gpus=1)
+    exception_actor = proc.spawn("exception_actor", ExceptionOnlyActor)
+    debug_controller = actor.get_or_spawn_controller(
+        "debug_controller", DebugControllerForTesting
+    ).get()
+
+    fut = exception_actor.raise_exception.call()
+
+    # Wait a bit to see if any breakpoints appear
+    await asyncio.sleep(2)
+
+    # Check that no debug sessions were created
+    breakpoints = await debug_controller.list.call_one(print_output=False)
+    assert (
+        len(breakpoints) == 0
+    ), "No debug sessions should be created when post-mortem is disabled"
+
+    # Exception should still be raised normally
+    with pytest.raises(
+        ActorError, match="ValueError: Test exception for post-mortem debugging"
+    ):
+        await fut
+
+
+@isolate_in_subprocess(
+    env={_MONARCH_DEBUG_POST_MORTEM_ENABLED_ENV_VAR: "1", **debug_env}
+)
+@pytest.mark.timeout(60)
+async def test_post_mortem_enabled_debugger_session_entered() -> None:
+    """
+    Test that when post-mortem is enabled, a debugger session is entered
+    even if no breakpoint was previously hit.
+    """
+    input_mock = AsyncMock()
+    input_mock.side_effect = [
+        "attach exception_actor 0",
+        "bt",  # Show backtrace to verify we're in post-mortem mode
+        "c",
+        "quit",
+    ]
+
+    outputs = []
+
+    def _patch_output(msg):
+        nonlocal outputs
+        outputs.append(msg)
+
+    output_mock = AsyncMock()
+    output_mock.side_effect = _patch_output
+
+    with patch(
+        "monarch._src.actor.debugger.debugger.DebugStdIO.input", new=input_mock
+    ), patch("monarch._src.actor.debugger.debugger.DebugStdIO.output", new=output_mock):
+        proc = proc_mesh(hosts=1, gpus=1)
+        exception_actor = proc.spawn("exception_actor", ExceptionOnlyActor)
+        debug_controller = actor.get_or_spawn_controller(
+            "debug_controller", DebugControllerForTesting
+        ).get()
+
+        fut = exception_actor.raise_exception.call()
+        await debug_controller.wait_pending_session.call_one()
+
+        # Wait for post-mortem debug session to be created
+        breakpoints = await _wait_for_breakpoints(debug_controller, 1)
+
+        # Verify we have a debug session for the exception
+        assert len(breakpoints) == 1
+        assert breakpoints[0].rank == 0
+        assert breakpoints[0].actor_name == "exception_actor"
+        assert breakpoints[0].function == "test_debugger.raise_exception"
+
+        # Enter the debugger to verify backtrace and continue execution
+        await debug_controller.blocking_enter.call_one()
+
+        expected_last_output = [
+            r'> (/.*/)+test_debugger.py\(\d+\)raise_exception\(\)\n-> raise ValueError\("Test exception for post-mortem debugging"\)',
+            r"\n",
+            r"\(Pdb\) ",
+        ]
+
+        rev_outputs = outputs[::-1]
+        output_index = len(outputs) - (
+            rev_outputs.index("(Pdb) ") + len(expected_last_output)
+        )
+
+        for output, expected_output in zip(
+            outputs[output_index : output_index + len(expected_last_output)],  # noqa
+            expected_last_output,
+        ):
+            assert re.match(expected_output, output) is not None
+
+        # Verify the exception is still raised after debugging
+        with pytest.raises(
+            ActorError, match="ValueError: Test exception for post-mortem debugging"
+        ):
+            await fut
+
+
+@isolate_in_subprocess(
+    env=debug_env  # Post-mortem disabled by default
+)
+@pytest.mark.timeout(60)
+async def test_breakpoint_then_exception_post_mortem_disabled() -> None:
+    """
+    Test that when an actor endpoint hits a breakpoint and then an exception
+    is raised during the debugging session, if post-mortem debugging is disabled,
+    then the exception isn't caught and the debugging session exits.
+    """
+    input_mock = AsyncMock()
+    input_mock.side_effect = [
+        "attach bp_exception_actor 0",
+        "n",  # Step to next line that will throw exception when executed
+        "n",  # Step again, which throws the exception and should exit the debug session
+        "quit",
+    ]
+
+    with patch("monarch._src.actor.debugger.debugger.DebugStdIO.input", new=input_mock):
+        proc = proc_mesh(hosts=1, gpus=1)
+        bp_exception_actor = proc.spawn(
+            "bp_exception_actor", BreakpointThenExceptionActor
+        )
+        debug_controller = actor.get_or_spawn_controller(
+            "debug_controller", DebugControllerForTesting
+        ).get()
+
+        fut = bp_exception_actor.breakpoint_then_exception.call()
+        await debug_controller.wait_pending_session.call_one()
+
+        # Wait for initial breakpoint
+        breakpoints = await _wait_for_breakpoints(debug_controller, 1)
+        assert len(breakpoints) == 1
+        assert breakpoints[0].rank == 0
+        assert breakpoints[0].actor_name == "bp_exception_actor"
+        assert breakpoints[0].function == "test_debugger.breakpoint_then_exception"
+
+        # Enter debugger and step (which should cause exception and exit debug session)
+        await debug_controller.blocking_enter.call_one()
+
+        # After stepping and hitting exception, debug session should exit
+        # since post-mortem is disabled
+        await _wait_for_breakpoints(debug_controller, 0)
+
+        # Exception should still be raised normally
+        with pytest.raises(ActorError, match="ValueError: Exception after breakpoint"):
+            await fut
