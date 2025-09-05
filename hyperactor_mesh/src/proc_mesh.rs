@@ -50,6 +50,9 @@ use ndslice::Shape;
 use ndslice::ShapeError;
 use strum::AsRefStr;
 use tokio::sync::mpsc;
+use tracing::Instrument;
+use tracing::Level;
+use tracing::span;
 
 use crate::CommActor;
 use crate::Mesh;
@@ -243,7 +246,14 @@ impl ProcMesh {
         );
 
         // 1. Initialize the alloc, producing the initial set of ranked procs:
-        let running = alloc.initialize().await?;
+        let running = alloc
+            .initialize()
+            .instrument(span!(
+                Level::INFO,
+                "ProcMesh::Allocate::Initialize",
+                alloc_id
+            ))
+            .await?;
 
         // 2. Set up routing to the initialized procs; these require dialing.
         let router = DialMailboxRouter::new();
