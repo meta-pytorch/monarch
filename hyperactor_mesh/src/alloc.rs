@@ -41,7 +41,7 @@ use strum::AsRefStr;
 
 use crate::alloc::test_utils::MockAllocWrapper;
 use crate::assign::Ranks;
-use crate::proc_mesh::mesh_agent::MeshAgent;
+use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::shortuuid::ShortUuid;
 
 /// Errors that occur during allocation operations.
@@ -120,7 +120,7 @@ pub enum ProcState {
         proc_id: ProcId,
         /// Reference to this proc's mesh agent. In the future, we'll reserve a
         /// 'well known' PID (0) for this purpose.
-        mesh_agent: ActorRef<MeshAgent>,
+        mesh_agent: ActorRef<ProcMeshAgent>,
         /// The address of this proc. The endpoint of this address is
         /// the proc's mailbox, which accepts [`hyperactor::mailbox::MessageEnvelope`]s.
         addr: ChannelAddr,
@@ -262,7 +262,7 @@ pub(crate) struct AllocatedProc {
     pub create_key: ShortUuid,
     pub proc_id: ProcId,
     pub addr: ChannelAddr,
-    pub mesh_agent: ActorRef<MeshAgent>,
+    pub mesh_agent: ActorRef<ProcMeshAgent>,
 }
 
 impl fmt::Display for AllocatedProc {
@@ -618,7 +618,7 @@ pub(crate) mod testing {
         client_proc: &Proc,
         client: &Mailbox,
         router_channel_addr: ChannelAddr,
-        mesh_agent: ActorRef<MeshAgent>,
+        mesh_agent: ActorRef<ProcMeshAgent>,
     ) -> ActorRef<TestActor> {
         let supervisor = client_proc.attach("supervisor").unwrap();
         let (supervison_port, _) = supervisor.open_port();

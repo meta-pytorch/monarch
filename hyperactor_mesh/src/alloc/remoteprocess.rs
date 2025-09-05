@@ -1215,7 +1215,7 @@ mod test {
     use crate::alloc::MockAllocWrapper;
     use crate::alloc::MockAllocator;
     use crate::alloc::ProcStopReason;
-    use crate::proc_mesh::mesh_agent::MeshAgent;
+    use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 
     async fn read_all_created(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
         let mut i: usize = 0;
@@ -1269,7 +1269,7 @@ mod test {
         }
         for i in 0..extent.num_ranks() {
             let proc_id = format!("test[{}]", i).parse().unwrap();
-            let mesh_agent = ActorRef::<MeshAgent>::attest(
+            let mesh_agent = ActorRef::<ProcMeshAgent>::attest(
                 format!("test[{}].mesh_agent[{}]", i, i).parse().unwrap(),
             );
             let create_key = create_keys[i].clone();
@@ -1398,7 +1398,7 @@ mod test {
                     assert_eq!(got_alloc_key, alloc_key);
                     assert_eq!(create_key, create_keys[rank]);
                     let expected_proc_id = format!("test[{}]", rank).parse().unwrap();
-                    let expected_mesh_agent = ActorRef::<MeshAgent>::attest(
+                    let expected_mesh_agent = ActorRef::<ProcMeshAgent>::attest(
                         format!("test[{}].mesh_agent[{}]", rank, rank)
                             .parse()
                             .unwrap(),
