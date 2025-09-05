@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![allow(clippy::result_large_err)] // TODO: Try reducing the size of `v1::Error`,
-
 use futures::Future;
 use ndslice::view;
 use ndslice::view::Region;
@@ -46,7 +44,7 @@ impl<T> ValueMesh<T> {
         Ok(Self { region, ranks })
     }
 
-    /// Constructs a ValueMesh without checking cardinality. Caller
+    /// Constructs a `ValueMesh` without checking cardinality. Caller
     /// must ensure `ranks.len() == region.num_ranks()`.
     #[inline]
     pub(crate) fn new_unchecked(region: Region, ranks: Vec<T>) -> Self {
@@ -86,10 +84,14 @@ impl<T: Clone + 'static> view::Ranked for ValueMesh<T> {
     }
 
     fn sliced(&self, region: Region, nodes: impl Iterator<Item = T>) -> Self {
-        Self {
-            region,
-            ranks: nodes.collect(),
-        }
+        debug_assert!(region.is_subset(self.region()), "sliced: not a subset");
+        let ranks: Vec<T> = nodes.collect();
+        debug_assert_eq!(
+            region.num_ranks(),
+            ranks.len(),
+            "sliced: cardinality mismatch"
+        );
+        Self::new_unchecked(region, ranks)
     }
 }
 
@@ -128,6 +130,58 @@ impl<I: ExactSizeIterator<Item = T>, T> CollectExactMesh<T> for I {
             return Err(crate::v1::Error::InvalidRankCardinality { expected, actual });
         }
         Ok(ValueMesh::new_unchecked(region, self.collect()))
+    }
+}
+
+pub trait TryCollectIndexedMesh<T>: Iterator<Item = (usize, T)> + Sized {
+    /// Collect `(rank, value)` pairs into a `ValueMesh<T>` for
+    /// `region`.
+    ///
+    /// Validates that:
+    /// - every rank `0..region.num_ranks()` is provided exactly once
+    ///   overall (coverage),
+    /// - no pair has an out-of-bounds rank (`rank >= num_ranks()`).
+    ///
+    /// Duplicates are allowed; the **last write wins**. Missing ranks
+    /// or out-of-bound ranks return `InvalidRankCardinality`.
+    fn try_collect_indexed(self, region: view::Region) -> crate::v1::Result<ValueMesh<T>>;
+}
+
+impl<I: Iterator<Item = (usize, T)>, T> TryCollectIndexedMesh<T> for I {
+    fn try_collect_indexed(self, region: view::Region) -> crate::v1::Result<ValueMesh<T>> {
+        let n = region.num_ranks();
+
+        // Buffer for exactly n slots; fill by rank.
+        let mut buf: Vec<Option<T>> = std::iter::repeat_with(|| None).take(n).collect();
+        let mut filled = 0usize;
+
+        for (rank, value) in self {
+            if rank >= n {
+                // Out-of-bounds: report `expected` = n, `actual` =
+                // offending index + 1; i.e. number of ranks implied
+                // so far.
+                return Err(crate::v1::Error::InvalidRankCardinality {
+                    expected: n,
+                    actual: rank + 1,
+                });
+            }
+            if buf[rank].is_none() {
+                filled += 1;
+            }
+            buf[rank] = Some(value); // Last write wins.
+        }
+
+        if filled != n {
+            // Missing ranks: actual = number of distinct ranks seen.
+            return Err(crate::v1::Error::InvalidRankCardinality {
+                expected: n,
+                actual: filled,
+            });
+        }
+
+        // All present and in-bounds: unwrap and build unchecked.
+        let ranks: Vec<T> = buf.into_iter().map(Option::unwrap).collect();
+        Ok(ValueMesh::new_unchecked(region, ranks))
     }
 }
 
@@ -296,5 +350,66 @@ mod tests {
 
         assert_eq!(mesh.region().num_ranks(), 4);
         assert_eq!(mesh.values().collect::<Vec<_>>(), vec![0, 10, 20, 30]);
+    }
+
+    #[test]
+    fn try_collect_indexed_ok_shuffled() {
+        let region: Region = extent!(x = 2, y = 3).into();
+        // (rank, value) in shuffled order; values = rank * 10
+        let pairs = vec![(3, 30), (0, 0), (5, 50), (2, 20), (1, 10), (4, 40)];
+        let mesh = pairs
+            .into_iter()
+            .try_collect_indexed(region.clone())
+            .unwrap();
+
+        assert_eq!(mesh.region().num_ranks(), 6);
+        assert_eq!(
+            mesh.values().collect::<Vec<_>>(),
+            vec![0, 10, 20, 30, 40, 50]
+        );
+    }
+
+    #[test]
+    fn try_collect_indexed_missing_rank_is_error() {
+        let region: Region = extent!(x = 2, y = 2).into(); // 4
+        // Missing rank 3
+        let pairs = vec![(0, 100), (1, 101), (2, 102)];
+        let err = pairs.into_iter().try_collect_indexed(region).unwrap_err();
+
+        match err {
+            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+                assert_eq!(expected, 4);
+                assert_eq!(actual, 3); // Distinct ranks seen.
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_collect_indexed_out_of_bounds_is_error() {
+        let region: Region = extent!(x = 2, y = 2).into(); // 4 (valid ranks 0..=3)
+        let pairs = vec![(0, 1), (4, 9)]; // 4 is out-of-bounds
+        let err = pairs.into_iter().try_collect_indexed(region).unwrap_err();
+
+        match err {
+            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+                assert_eq!(expected, 4);
+                assert_eq!(actual, 5); // offending index + 1
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_collect_indexed_duplicate_last_write_wins() {
+        let region: Region = extent!(x = 1, y = 3).into(); // 3
+        // rank 1 appears twice; last value should stick
+        let pairs = vec![(0, 7), (1, 8), (1, 88), (2, 9)];
+        let mesh = pairs
+            .into_iter()
+            .try_collect_indexed(region.clone())
+            .unwrap();
+
+        assert_eq!(mesh.values().collect::<Vec<_>>(), vec![7, 88, 9]);
     }
 }
