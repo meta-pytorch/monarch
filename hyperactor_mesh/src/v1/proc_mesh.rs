@@ -110,6 +110,30 @@ impl ProcMeshRef {
         })
     }
 
+    /// Maps over all of the ProcRefs in the mesh, returning a new
+    /// ValueMesh with the mapped values. This is infallible because
+    /// the mapping is 1:1 with the ranks.
+    fn mapped<F, R>(&self, f: F) -> ValueMesh<R>
+    where
+        F: Fn(&ProcRef) -> R,
+    {
+        ValueMesh::new_unchecked(self.region.clone(), self.ranks.iter().map(f).collect())
+    }
+
+    /// The current statuses of procs in this mesh.
+    async fn status(
+        &self,
+        caps: &(impl cap::CanSend + cap::CanOpenPort),
+    ) -> v1::Result<ValueMesh<bool>> {
+        self.mapped(|proc_ref| {
+            let proc_ref = proc_ref.clone();
+            async move { proc_ref.status(caps).await }
+        })
+        .join()
+        .await
+        .transpose()
+    }
+
     /// Allocate a new ProcMeshRef from the provided alloc.
     /// Allocate does not require an owning actor because references are not owned.
     pub async fn allocate(
@@ -256,29 +280,6 @@ impl ProcMeshRef {
         }
 
         Ok(ActorMesh::new(self.clone(), name))
-    }
-
-    /// The current statuses of procs in this mesh.
-    async fn status(
-        &self,
-        caps: &(impl cap::CanSend + cap::CanOpenPort),
-    ) -> v1::Result<ValueMesh<bool>> {
-        self.mapped(|proc_ref| {
-            let proc_ref = proc_ref.clone();
-            async move { proc_ref.status(caps).await }
-        })
-        .join()
-        .await
-        .promote_result()
-    }
-
-    /// Maps over all of the ProcRefs in the mesh, returning a new ValueMesh with
-    /// the mapped values.
-    fn mapped<F, R>(&self, f: F) -> ValueMesh<R>
-    where
-        F: Fn(&ProcRef) -> R,
-    {
-        ValueMesh::new(self.region.clone(), self.ranks.iter().map(f).collect())
     }
 }
 
