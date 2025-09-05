@@ -134,6 +134,7 @@ mod tests {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
             extent: extent! { x=1, y=4 },
             constraints: Default::default(),
+            proc_name: None,
         };
 
         let mut initializer = remoteprocess::MockRemoteProcessAllocInitializer::new();
@@ -158,37 +159,26 @@ mod tests {
 
         // make sure we accounted for `world_size` number of Created and Stopped proc states
         let world_size = spec.extent.num_ranks();
-        let mut created_ranks: HashSet<usize> = HashSet::new();
-        let mut stopped_ranks: HashSet<usize> = HashSet::new();
+        let mut created = HashSet::new();
+        let mut stopped = HashSet::new();
 
-        while created_ranks.len() < world_size || stopped_ranks.len() < world_size {
+        while stopped.len() < world_size {
             let proc_state = alloc.next().await.unwrap();
             match proc_state {
-                alloc::ProcState::Created { proc_id, .. } => {
+                alloc::ProcState::Created { create_key, .. } => {
                     // alloc.next() will keep creating procs and incrementing rank id
                     // so we mod the rank by world_size to map it to its logical rank
-                    created_ranks.insert(
-                        proc_id
-                            .rank()
-                            .expect("process allocator currently supports only ranked procs")
-                            % world_size,
-                    );
+                    eprintln!("created: {}", create_key);
+                    created.insert(create_key);
                 }
-                alloc::ProcState::Stopped { proc_id, .. } => {
-                    stopped_ranks.insert(
-                        proc_id
-                            .rank()
-                            .expect("process allocator currently supports only ranked procs")
-                            % world_size,
-                    );
+                alloc::ProcState::Stopped { create_key, .. } => {
+                    eprintln!("stopped: {}", create_key);
+                    assert!(created.remove(&create_key));
+                    stopped.insert(create_key);
                 }
                 _ => {}
             }
         }
-
-        let expected_ranks: HashSet<usize> = (0..world_size).collect();
-        assert_eq!(created_ranks, expected_ranks);
-        assert_eq!(stopped_ranks, expected_ranks);
 
         server_handle.abort();
         Ok(())
@@ -210,6 +200,7 @@ mod tests {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
             extent: extent! { x=1, y=4 },
             constraints: Default::default(),
+            proc_name: None,
         };
 
         let mut initializer = remoteprocess::MockRemoteProcessAllocInitializer::new();
@@ -268,6 +259,7 @@ mod tests {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
             extent: extent! { x=1, y=4 },
             constraints: Default::default(),
+            proc_name: None,
         };
 
         let mut initializer = remoteprocess::MockRemoteProcessAllocInitializer::new();
@@ -347,6 +339,7 @@ mod tests {
             // NOTE: x cannot be more than 1 since we created a single process-allocator server instance!
             extent: extent! { x=1, y=4 },
             constraints: Default::default(),
+            proc_name: None,
         };
 
         let mut initializer = remoteprocess::MockRemoteProcessAllocInitializer::new();
@@ -374,17 +367,13 @@ mod tests {
         // start without stopping.
         // make sure we accounted for `world_size` number of Created and Stopped proc states
         let world_size = spec.extent.num_ranks();
-        let mut created_ranks: HashSet<usize> = HashSet::new();
+        let mut created = HashSet::new();
 
-        while created_ranks.len() < world_size {
+        while created.len() < world_size {
             let proc_state = alloc.next().await.unwrap();
             match proc_state {
-                alloc::ProcState::Created { proc_id, .. } => {
-                    created_ranks.insert(
-                        proc_id
-                            .rank()
-                            .expect("process allocator currently supports only ranked procs"),
-                    );
+                alloc::ProcState::Created { create_key, .. } => {
+                    created.insert(create_key);
                 }
                 _ => {
                     panic!("Unexpected message: {:?}", proc_state)
@@ -396,26 +385,21 @@ mod tests {
         // stays alive as long as the child processes stay alive.
         RealClock.sleep(timeout * 2).await;
         // Now wait for more events and ensure they are ProcState::Stopped
-        let mut stopped_ranks: HashSet<usize> = HashSet::new();
-        while stopped_ranks.len() < world_size {
+        while !created.is_empty() {
             let proc_state = alloc.next().await.unwrap();
             match proc_state {
-                alloc::ProcState::Created { .. } => {
-                    // ignore
+                alloc::ProcState::Created { create_key, .. } => {
+                    // created.insert(create_key);
                 }
-                alloc::ProcState::Stopped { proc_id, .. } => {
-                    stopped_ranks.insert(
-                        proc_id
-                            .rank()
-                            .expect("process allocator currently supports only ranked procs")
-                            % world_size,
-                    );
+                alloc::ProcState::Stopped { create_key, .. } => {
+                    created.remove(&create_key);
                 }
                 _ => {
                     panic!("Unexpected message: {:?}", proc_state)
                 }
             }
         }
+        assert!(created.is_empty());
         server_handle.abort();
         Ok(())
     }
