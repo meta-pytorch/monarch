@@ -10,14 +10,18 @@
 //! This will be moved down to the base module when we graduate
 //! the APIs and fully deprecate the "v0" APIs.
 
+pub mod actor_mesh;
 pub mod host_mesh;
 pub mod proc_mesh;
 pub mod value_mesh;
 
 use std::str::FromStr;
 
+pub use actor_mesh::ActorMesh;
+pub use actor_mesh::ActorMeshRef;
 pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
+use hyperactor::mailbox::MailboxSenderError;
 pub use proc_mesh::ProcMeshRef;
 use serde::Deserialize;
 use serde::Serialize;
@@ -44,6 +48,12 @@ pub enum Error {
     #[error(transparent)]
     ChannelError(#[from] hyperactor::channel::ChannelError),
 
+    #[error(transparent)]
+    MailboxError(#[from] hyperactor::mailbox::MailboxError),
+
+    #[error(transparent)]
+    BincodeError(#[from] bincode::Error),
+
     #[error("error during mesh configuration: {0}")]
     ConfigurationError(anyhow::Error),
 
@@ -53,6 +63,15 @@ pub enum Error {
 
     #[error("error while calling actor {0}: {1}")]
     CallError(ActorId, anyhow::Error),
+
+    #[error("actor not registered for type {0}")]
+    ActorTypeNotRegistered(String),
+
+    #[error("error while spawning actor {0}: {1}")]
+    GspawnError(Name, String),
+
+    #[error("error while sending message to actor {0}: {1}")]
+    SendingError(ActorId, MailboxSenderError),
 }
 
 /// The type of result used in `hyperactor_mesh::v1`.
