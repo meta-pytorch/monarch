@@ -683,7 +683,10 @@ pub enum ViewError {
     ExtentError(#[from] ExtentError),
 
     #[error("invalid range: selected ranks {selected} not a subset of base {base} ")]
-    InvalidRange { base: Region, selected: Region },
+    InvalidRange {
+        base: Box<Region>,
+        selected: Box<Region>,
+    },
 }
 
 /// `Region` describes a region of a possibly-larger space of ranks, organized into
@@ -913,8 +916,8 @@ impl View for Region {
             Ok(region)
         } else {
             Err(ViewError::InvalidRange {
-                base: self.clone(),
-                selected: region,
+                base: Box::new(self.clone()),
+                selected: Box::new(region),
             })
         }
     }
@@ -992,8 +995,8 @@ impl<T: Ranked> View for T {
             .region()
             .remap(&region)
             .ok_or_else(|| ViewError::InvalidRange {
-                base: self.region().clone(),
-                selected: region.clone(),
+                base: Box::new(self.region().clone()),
+                selected: Box::new(region.clone()),
             })?
             .map(|index| self.get(index).unwrap());
 

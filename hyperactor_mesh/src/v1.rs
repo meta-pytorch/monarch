@@ -43,21 +43,22 @@ pub enum Error {
     HostMeshRefParseError(#[from] HostMeshRefParseError),
 
     #[error(transparent)]
-    AllocatorError(#[from] crate::alloc::AllocatorError),
+    AllocatorError(#[from] Box<crate::alloc::AllocatorError>),
 
     #[error(transparent)]
-    ChannelError(#[from] hyperactor::channel::ChannelError),
+    ChannelError(#[from] Box<hyperactor::channel::ChannelError>),
 
     #[error(transparent)]
-    MailboxError(#[from] hyperactor::mailbox::MailboxError),
+    MailboxError(#[from] Box<hyperactor::mailbox::MailboxError>),
 
     #[error(transparent)]
-    BincodeError(#[from] bincode::Error),
+    BincodeError(#[from] Box<bincode::Error>),
 
     #[error("error during mesh configuration: {0}")]
     ConfigurationError(anyhow::Error),
 
-    // This is a temporary error to ensure we don't create unroutable meshes.
+    // This is a temporary error to ensure we don't create unroutable
+    // meshes.
     #[error("configuration error: mesh is unroutable")]
     UnroutableMesh(),
 
@@ -71,7 +72,31 @@ pub enum Error {
     GspawnError(Name, String),
 
     #[error("error while sending message to actor {0}: {1}")]
-    SendingError(ActorId, MailboxSenderError),
+    SendingError(ActorId, Box<MailboxSenderError>),
+}
+
+impl From<crate::alloc::AllocatorError> for Error {
+    fn from(e: crate::alloc::AllocatorError) -> Self {
+        Error::AllocatorError(Box::new(e))
+    }
+}
+
+impl From<hyperactor::channel::ChannelError> for Error {
+    fn from(e: hyperactor::channel::ChannelError) -> Self {
+        Error::ChannelError(Box::new(e))
+    }
+}
+
+impl From<hyperactor::mailbox::MailboxError> for Error {
+    fn from(e: hyperactor::mailbox::MailboxError) -> Self {
+        Error::MailboxError(Box::new(e))
+    }
+}
+
+impl From<bincode::Error> for Error {
+    fn from(e: bincode::Error) -> Self {
+        Error::BincodeError(Box::new(e))
+    }
 }
 
 /// The type of result used in `hyperactor_mesh::v1`.
