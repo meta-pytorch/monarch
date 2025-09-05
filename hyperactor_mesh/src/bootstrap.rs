@@ -26,7 +26,7 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
-use crate::proc_mesh::mesh_agent::MeshAgent;
+use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 
 pub const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";
 pub const BOOTSTRAP_INDEX_ENV: &str = "HYPERACTOR_MESH_INDEX";
@@ -54,7 +54,7 @@ pub(crate) enum Process2AllocatorMessage {
     /// served at the provided channel address. Procs are started
     /// after instruction by the allocator through the corresponding
     /// [`Allocator2Process`] message.
-    StartedProc(ProcId, ActorRef<MeshAgent>, ChannelAddr),
+    StartedProc(ProcId, ActorRef<ProcMeshAgent>, ChannelAddr),
 
     Heartbeat,
 }
@@ -183,7 +183,7 @@ pub async fn bootstrap() -> anyhow::Error {
             let _ = hyperactor::tracing::info_span!("wait_for_next_message_from_mesh_agent");
             match the_msg? {
                 Allocator2Process::StartProc(proc_id, listen_transport) => {
-                    let (proc, mesh_agent) = MeshAgent::bootstrap(proc_id.clone()).await?;
+                    let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone()).await?;
                     let (proc_addr, proc_rx) =
                         channel::serve(ChannelAddr::any(listen_transport)).await?;
                     let handle = proc.clone().serve(proc_rx);
