@@ -51,4 +51,5 @@ class TestClient(TestCase):
             seq=11,
             response={"result": tensor},
         )
-        self.assertTrue(torch.equal(resp.result()["result"], tensor))
+        result = resp.result()["result"]
+        self.assertTrue(torch.equal(result, tensor))

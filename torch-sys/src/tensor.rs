@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::borrow::Cow;
 use std::fmt;
 
 use cxx::ExternType;
@@ -173,8 +174,8 @@ impl<'de> Deserialize<'de> for Tensor {
     where
         D: Deserializer<'de>,
     {
-        let buf: &[u8] = Deserialize::deserialize(deserializer)?;
-        let tensor = load_tensor(buf).map_err(serde::de::Error::custom)?;
+        let buf: Cow<'de, [u8]> = Deserialize::deserialize(deserializer)?;
+        let tensor = load_tensor(&buf).map_err(serde::de::Error::custom)?;
         Ok(tensor)
     }
 }
@@ -248,12 +249,8 @@ mod tests {
     fn multipart_serialize() -> Result<()> {
         let t1 = test_make_tensor();
         let buf = serde_multipart::serialize_bincode(&t1)?;
-        let t2_result = serde_multipart::deserialize_bincode::<Tensor>(buf);
-        assert!(t2_result.is_err());
-        assert_eq!(
-            format!("{}", t2_result.unwrap_err()),
-            "invalid type: byte array, expected a borrowed byte array",
-        );
+        let t2: Tensor = serde_multipart::deserialize_bincode(buf)?;
+        assert_eq!(t1, t2);
         Ok(())
     }
 

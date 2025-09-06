@@ -1288,6 +1288,9 @@ mod tests {
         //#[tracing_test::traced_test]
         #[async_timed_test(timeout_secs = 30)]
         async fn test_oversized_frames() {
+            use hyperactor::config;
+            use hyperactor::data::Encoding;
+
             // Reproduced from 'net.rs'.
             #[derive(Debug, Serialize, Deserialize, PartialEq)]
             enum Frame<M> {
@@ -1314,6 +1317,8 @@ mod tests {
             unsafe {
                 std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024");
             };
+            let _guard3 = config.override_key(config::DEFAULT_ENCODING, Encoding::Bincode);
+            let _guard4 = config.override_key(config::CHANNEL_MULTIPART, false);
 
             let alloc = process_allocator()
                 .allocate(AllocSpec {

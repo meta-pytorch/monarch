@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::borrow::Cow;
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::MaybeUninit;
@@ -94,8 +95,8 @@ impl<'de> Deserialize<'de> for IValue {
     where
         D: serde::Deserializer<'de>,
     {
-        let buf: &[u8] = Deserialize::deserialize(deserializer)?;
-        ffi::deserialize_ivalue(buf).map_err(serde::de::Error::custom)
+        let buf: Cow<'de, [u8]> = Deserialize::deserialize(deserializer)?;
+        ffi::deserialize_ivalue(&buf).map_err(serde::de::Error::custom)
     }
 }
 
