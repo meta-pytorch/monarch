@@ -82,12 +82,19 @@ pub(crate) enum MeshAgentMessage {
         /// The forwarder to send messages to unknown destinations.
         forwarder: ChannelAddr,
         /// The supervisor port to which the agent should report supervision events.
-        supervisor: PortRef<ActorSupervisionEvent>,
+        supervisor: Option<PortRef<ActorSupervisionEvent>>,
         /// An address book to use for direct dialing.
         address_book: HashMap<ProcId, ChannelAddr>,
         /// The agent should write its rank to this port when it successfully
         /// configured.
         configured: PortRef<usize>,
+    },
+
+    Status {
+        /// The status of the proc.
+        /// To be replaced with fine-grained lifecycle status,
+        /// and to use aggregation.
+        status: PortRef<(usize, bool)>,
     },
 
     /// Spawn an actor on the proc to the provided name.
@@ -117,7 +124,7 @@ pub(crate) enum MeshAgentMessage {
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
 #[derive(Debug)]
 #[hyperactor::export(handlers=[MeshAgentMessage])]
-pub struct MeshAgent {
+pub struct ProcMeshAgent {
     proc: Proc,
     remote: Remote,
     sender: ReconfigurableMailboxSender,
@@ -125,7 +132,7 @@ pub struct MeshAgent {
     supervisor: Option<PortRef<ActorSupervisionEvent>>,
 }
 
-impl MeshAgent {
+impl ProcMeshAgent {
     #[hyperactor::observe_result("MeshAgent")]
     pub(crate) async fn bootstrap(
         proc_id: ProcId,
@@ -135,9 +142,9 @@ impl MeshAgent {
 
         // Wire up this proc to the global router so that any meshes managed by
         // this process can reach actors in this proc.
-        super::global_router().bind(proc_id.into(), proc.clone());
+        super::router::global().bind(proc_id.into(), proc.clone());
 
-        let agent = MeshAgent {
+        let agent = ProcMeshAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
             sender,
@@ -150,7 +157,7 @@ impl MeshAgent {
 }
 
 #[async_trait]
-impl Actor for MeshAgent {
+impl Actor for ProcMeshAgent {
     type Params = Self;
 
     async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
@@ -165,20 +172,20 @@ impl Actor for MeshAgent {
 
 #[async_trait]
 #[hyperactor::forward(MeshAgentMessage)]
-impl MeshAgentMessageHandler for MeshAgent {
+impl MeshAgentMessageHandler for ProcMeshAgent {
     async fn configure(
         &mut self,
         cx: &Context<Self>,
         rank: usize,
         forwarder: ChannelAddr,
-        supervisor: PortRef<ActorSupervisionEvent>,
+        supervisor: Option<PortRef<ActorSupervisionEvent>>,
         address_book: HashMap<ProcId, ChannelAddr>,
         configured: PortRef<usize>,
     ) -> Result<(), anyhow::Error> {
         // Set the supervisor first so that we can handle supervison events that might
         // occur from configuration failures. Though we should instead report these directly
         // for better ergonomics in the allocator.
-        self.supervisor = Some(supervisor);
+        self.supervisor = supervisor;
 
         // Wire up the local proc to the global (process) router. This ensures that child
         // meshes are reachable from any actor created by this mesh.
@@ -188,7 +195,7 @@ impl MeshAgentMessageHandler for MeshAgent {
         // set as a means of failure injection in the testing of
         // supervision codepaths.
         let router = if std::env::var("HYPERACTOR_MESH_ROUTER_NO_GLOBAL_FALLBACK").is_err() {
-            let default = super::global_router().fallback(client.into_boxed());
+            let default = super::router::global().fallback(client.into_boxed());
             DialMailboxRouter::new_with_default(default.into_boxed())
         } else {
             DialMailboxRouter::new_with_default(client.into_boxed())
@@ -265,10 +272,22 @@ impl MeshAgentMessageHandler for MeshAgent {
             Ok(StopActorResult::NotFound)
         }
     }
+
+    async fn status(
+        &mut self,
+        cx: &Context<Self>,
+        status_port: PortRef<(usize, bool)>,
+    ) -> Result<(), anyhow::Error> {
+        let rank = self
+            .rank
+            .ok_or_else(|| anyhow::anyhow!("tried to get status of unconfigured proc"))?;
+        status_port.send(cx, (rank, true))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
-impl Handler<ActorSupervisionEvent> for MeshAgent {
+impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,

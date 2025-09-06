@@ -25,9 +25,11 @@ pub mod mesh_selection;
 mod metrics;
 pub mod proc_mesh;
 pub mod reference;
+mod router;
 pub mod shared_cell;
 pub mod shortuuid;
 pub mod test_utils;
+pub mod v1;
 
 pub use actor_mesh::RootActorMesh;
 pub use actor_mesh::SlicedActorMesh;
