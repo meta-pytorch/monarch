@@ -245,6 +245,19 @@ mod tests {
     }
 
     #[test]
+    fn multipart_serialize() -> Result<()> {
+        let t1 = test_make_tensor();
+        let buf = serde_multipart::serialize_bincode(&t1)?;
+        let t2_result = serde_multipart::deserialize_bincode::<Tensor>(buf);
+        assert!(t2_result.is_err());
+        assert_eq!(
+            format!("{}", t2_result.unwrap_err()),
+            "invalid type: byte array, expected a borrowed byte array",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn convert_to_py_and_back() {
         pyo3::prepare_freethreaded_python();
         let tensor = test_make_tensor();
