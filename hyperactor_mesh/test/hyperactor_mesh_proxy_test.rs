@@ -118,6 +118,7 @@ impl Actor for ProxyActor {
             .allocate(AllocSpec {
                 extent: extent! { replica = 1 },
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await
             .unwrap();
@@ -154,6 +155,7 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
         .allocate(AllocSpec {
             extent: extent! { replica = 1 },
             constraints: Default::default(),
+            proc_name: None,
         })
         .await
         .unwrap();

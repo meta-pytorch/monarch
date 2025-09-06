@@ -334,6 +334,7 @@ pub mod test_utils {
                 .allocate(AllocSpec {
                     extent: extent! { proc = 1 },
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();
@@ -346,6 +347,7 @@ pub mod test_utils {
                 .allocate(AllocSpec {
                     extent: extent! { proc = 1 },
                     constraints: Default::default(),
+                    proc_name: None,
                 })
                 .await
                 .unwrap();

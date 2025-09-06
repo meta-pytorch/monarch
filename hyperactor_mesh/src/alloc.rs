@@ -40,7 +40,9 @@ use serde::Serialize;
 use strum::AsRefStr;
 
 use crate::alloc::test_utils::MockAllocWrapper;
-use crate::proc_mesh::mesh_agent::MeshAgent;
+use crate::assign::Ranks;
+use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::shortuuid::ShortUuid;
 
 /// Errors that occur during allocation operations.
 #[derive(Debug, thiserror::Error)]
@@ -73,8 +75,13 @@ pub struct AllocSpec {
     // This should be validated, or even enforced by
     // way of types.
     pub extent: Extent,
+
     /// Constraints on the allocation.
     pub constraints: AllocConstraints,
+
+    /// If specified, return procs using direct addressing with
+    /// the provided proc name.
+    pub proc_name: Option<String>,
 }
 
 /// The core allocator trait, implemented by all allocators.
@@ -97,8 +104,9 @@ pub trait Allocator {
 pub enum ProcState {
     /// A proc was added to the alloc.
     Created {
-        /// The proc's id.
-        proc_id: ProcId,
+        /// A key to uniquely identify a created proc. The key is used again
+        /// to identify the created proc as Running.
+        create_key: ShortUuid,
         /// Its assigned point (in the alloc's extent).
         point: Point,
         /// The system process ID of the created child process.
@@ -106,17 +114,20 @@ pub enum ProcState {
     },
     /// A proc was started.
     Running {
+        /// The key used to identify the created proc.
+        create_key: ShortUuid,
+        /// The proc's assigned ID.
         proc_id: ProcId,
         /// Reference to this proc's mesh agent. In the future, we'll reserve a
         /// 'well known' PID (0) for this purpose.
-        mesh_agent: ActorRef<MeshAgent>,
+        mesh_agent: ActorRef<ProcMeshAgent>,
         /// The address of this proc. The endpoint of this address is
         /// the proc's mailbox, which accepts [`hyperactor::mailbox::MessageEnvelope`]s.
         addr: ChannelAddr,
     },
     /// A proc was stopped.
     Stopped {
-        proc_id: ProcId,
+        create_key: ShortUuid,
         reason: ProcStopReason,
     },
     /// Allocation process encountered an irrecoverable error. Depending on the
@@ -128,6 +139,8 @@ pub enum ProcState {
     /// drain the iterator for clean shutdown.
     Failed {
         /// The world ID of the failed alloc.
+        ///
+        /// TODO: this is not meaningful with direct addressing.
         world_id: WorldId,
         /// A description of the failure.
         description: String,
@@ -138,17 +151,17 @@ impl fmt::Display for ProcState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ProcState::Created {
-                proc_id,
+                create_key,
                 point,
                 pid,
             } => {
-                write!(f, "{}: created at ({}) with PID {}", proc_id, point, pid)
+                write!(f, "{}: created at ({}) with PID {}", create_key, point, pid)
             }
             ProcState::Running { proc_id, addr, .. } => {
                 write!(f, "{}: running at {}", proc_id, addr)
             }
-            ProcState::Stopped { proc_id, reason } => {
-                write!(f, "{}: stopped: {}", proc_id, reason)
+            ProcState::Stopped { create_key, reason } => {
+                write!(f, "{}: stopped: {}", create_key, reason)
             }
             ProcState::Failed {
                 description,
@@ -208,6 +221,9 @@ pub trait Alloc {
     /// no more events, and that the alloc is stopped.
     async fn next(&mut self) -> Option<ProcState>;
 
+    /// The spec against which this alloc is executing.
+    fn spec(&self) -> &AllocSpec;
+
     /// The shape of the alloc.
     fn extent(&self) -> &Extent;
 
@@ -238,6 +254,119 @@ pub trait Alloc {
             tracing::debug!("drained event: {:?}", event);
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct AllocatedProc {
+    pub create_key: ShortUuid,
+    pub proc_id: ProcId,
+    pub addr: ChannelAddr,
+    pub mesh_agent: ActorRef<ProcMeshAgent>,
+}
+
+impl fmt::Display for AllocatedProc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "AllocatedProc {{ create_key: {}, proc_id: {}, addr: {}, mesh_agent: {} }}",
+            self.create_key, self.proc_id, self.addr, self.mesh_agent
+        )
+    }
+}
+
+#[async_trait]
+pub(crate) trait AllocExt {
+    /// Perform initial allocation, consuming events until the alloc is fully
+    /// running. Returns the ranked procs.
+    async fn initialize(&mut self) -> Result<Vec<AllocatedProc>, AllocatorError>;
+}
+
+#[async_trait]
+impl<A: ?Sized + Send + Alloc> AllocExt for A {
+    async fn initialize(&mut self) -> Result<Vec<AllocatedProc>, AllocatorError> {
+        // We wait for the full allocation to be running before returning the mesh.
+        let shape = self.shape().clone();
+
+        let mut created = Ranks::new(shape.slice().len());
+        let mut running = Ranks::new(shape.slice().len());
+
+        while !running.is_full() {
+            let Some(state) = self.next().await else {
+                // Alloc finished before it was fully allocated.
+                return Err(AllocatorError::Incomplete(self.extent().clone()));
+            };
+
+            match state {
+                ProcState::Created {
+                    create_key, point, ..
+                } => {
+                    let rank = point.rank();
+                    if let Some(old_create_key) = created.insert(rank, create_key.clone()) {
+                        tracing::warn!(
+                            "rank {rank} reassigned from {old_create_key} to {create_key}"
+                        );
+                    }
+                    tracing::info!("created: {} rank {}: created", create_key, rank);
+                }
+                ProcState::Running {
+                    create_key,
+                    proc_id,
+                    mesh_agent,
+                    addr,
+                } => {
+                    let Some(rank) = created.rank(&create_key) else {
+                        tracing::warn!(
+                            "proc id {proc_id} ({}) running, but not created",
+                            create_key
+                        );
+                        continue;
+                    };
+
+                    let allocated_proc = AllocatedProc {
+                        create_key,
+                        proc_id: proc_id.clone(),
+                        addr: addr.clone(),
+                        mesh_agent: mesh_agent.clone(),
+                    };
+                    if let Some(old_allocated_proc) = running.insert(*rank, allocated_proc.clone())
+                    {
+                        tracing::warn!(
+                            "duplicate running notifications for {rank}: \
+                            old:{old_allocated_proc}; \
+                            new:{allocated_proc}"
+                        )
+                    }
+                    tracing::info!(
+                        "proc {} rank {}: running at addr:{addr} mesh_agent:{mesh_agent}",
+                        proc_id,
+                        rank
+                    );
+                }
+                // TODO: We should push responsibility to the allocator, which
+                // can choose to either provide a new proc or emit a
+                // ProcState::Failed to fail the whole allocation.
+                ProcState::Stopped { create_key, reason } => {
+                    tracing::error!(
+                        "allocation failed for proc with create key {}: {}",
+                        create_key,
+                        reason
+                    );
+                    return Err(AllocatorError::Other(anyhow::Error::msg(reason)));
+                }
+                ProcState::Failed {
+                    world_id,
+                    description,
+                } => {
+                    tracing::error!("allocation failed for world {}: {}", world_id, description);
+                    return Err(AllocatorError::Other(anyhow::Error::msg(description)));
+                }
+            }
+        }
+
+        // We collect all the ranks at this point of completion, so that we can
+        // avoid holding Rcs across awaits.
+        Ok(running.into_iter().map(Option::unwrap).collect())
     }
 }
 
@@ -338,6 +467,10 @@ pub mod test_utils {
             self.alloc.next().await
         }
 
+        fn spec(&self) -> &AllocSpec {
+            self.alloc.spec()
+        }
+
         fn extent(&self) -> &Extent {
             self.alloc.extent()
         }
@@ -399,6 +532,7 @@ pub(crate) mod testing {
             .allocate(AllocSpec {
                 extent: extent.clone(),
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await
             .unwrap();
@@ -406,16 +540,22 @@ pub(crate) mod testing {
         // Get everything up into running state. We require that we get
         // procs 0..4.
         let mut procs = HashMap::new();
+        let mut created = HashMap::new();
         let mut running = HashSet::new();
         while running.len() != 4 {
             match alloc.next().await.unwrap() {
-                ProcState::Created { proc_id, point, .. } => {
-                    procs.insert(proc_id, point);
+                ProcState::Created {
+                    create_key, point, ..
+                } => {
+                    created.insert(create_key, point);
                 }
-                ProcState::Running { proc_id, .. } => {
-                    assert!(procs.contains_key(&proc_id));
-                    assert!(!running.contains(&proc_id));
-                    running.insert(proc_id);
+                ProcState::Running {
+                    create_key,
+                    proc_id,
+                    ..
+                } => {
+                    assert!(running.insert(create_key.clone()));
+                    procs.insert(proc_id, created.remove(&create_key).unwrap());
                 }
                 event => panic!("unexpected event: {:?}", event),
             }
@@ -435,9 +575,12 @@ pub(crate) mod testing {
 
         alloc.stop().await.unwrap();
         let mut stopped = HashSet::new();
-        while let Some(ProcState::Stopped { proc_id, reason }) = alloc.next().await {
+        while let Some(ProcState::Stopped {
+            create_key, reason, ..
+        }) = alloc.next().await
+        {
             assert_eq!(reason, ProcStopReason::Stopped);
-            stopped.insert(proc_id);
+            stopped.insert(create_key);
         }
         assert!(alloc.next().await.is_none());
         assert_eq!(stopped, running);
@@ -475,7 +618,7 @@ pub(crate) mod testing {
         client_proc: &Proc,
         client: &Mailbox,
         router_channel_addr: ChannelAddr,
-        mesh_agent: ActorRef<MeshAgent>,
+        mesh_agent: ActorRef<ProcMeshAgent>,
     ) -> ActorRef<TestActor> {
         let supervisor = client_proc.attach("supervisor").unwrap();
         let (supervison_port, _) = supervisor.open_port();
@@ -485,7 +628,7 @@ pub(crate) mod testing {
                 client,
                 rank,
                 router_channel_addr,
-                supervison_port.bind(),
+                Some(supervison_port.bind()),
                 HashMap::new(),
                 config_handle.bind(),
             )
@@ -540,6 +683,7 @@ pub(crate) mod testing {
             .allocate(AllocSpec {
                 extent: extent! { replica = 1 },
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await
             .unwrap();
@@ -551,23 +695,26 @@ pub(crate) mod testing {
         let (router, client, client_proc, router_addr) = spawn_proc(alloc.transport()).await;
         while running.is_empty() {
             match alloc.next().await.unwrap() {
-                ProcState::Created { proc_id, point, .. } => {
-                    procs.insert(proc_id, point);
+                ProcState::Created {
+                    create_key, point, ..
+                } => {
+                    procs.insert(create_key, point);
                 }
                 ProcState::Running {
+                    create_key,
                     proc_id,
                     mesh_agent,
                     addr,
                 } => {
                     router.bind(Reference::Proc(proc_id.clone()), addr.clone());
 
-                    assert!(procs.contains_key(&proc_id));
-                    assert!(!running.contains(&proc_id));
+                    assert!(procs.contains_key(&create_key));
+                    assert!(!running.contains(&create_key));
 
                     actor_ref = Some(
                         spawn_test_actor(0, &client_proc, &client, router_addr, mesh_agent).await,
                     );
-                    running.insert(proc_id);
+                    running.insert(create_key.clone());
                     break;
                 }
                 event => panic!("unexpected event: {:?}", event),
@@ -578,9 +725,12 @@ pub(crate) mod testing {
         // There is a stuck actor! We should get a watchdog failure.
         alloc.stop().await.unwrap();
         let mut stopped = HashSet::new();
-        while let Some(ProcState::Stopped { proc_id, reason }) = alloc.next().await {
+        while let Some(ProcState::Stopped {
+            create_key, reason, ..
+        }) = alloc.next().await
+        {
             assert_eq!(reason, ProcStopReason::Watchdog);
-            stopped.insert(proc_id);
+            stopped.insert(create_key);
         }
         assert!(alloc.next().await.is_none());
         assert_eq!(stopped, running);

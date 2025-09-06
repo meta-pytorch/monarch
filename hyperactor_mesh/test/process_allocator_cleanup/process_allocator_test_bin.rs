@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allocate(AllocSpec {
             extent: extent! { replica = 4 },
             constraints: AllocConstraints::default(),
+            proc_name: None,
         })
         .await?;
 

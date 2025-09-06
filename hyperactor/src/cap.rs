@@ -34,6 +34,14 @@ impl<T: sealed::CanSpawn> CanSpawn for T {}
 pub trait CanResolveActorRef: sealed::CanResolveActorRef {}
 impl<T: sealed::CanResolveActorRef> CanResolveActorRef for T {}
 
+/// HasProc is a capability that returns the Proc associated with the caller.
+/// Full access to the proc is quite powerful: we should consider some kind of
+/// "read only" proc trait.
+pub trait HasProc {
+    /// The proc associated with the caller.
+    fn proc(&self) -> &crate::Proc;
+}
+
 pub(crate) mod sealed {
     use async_trait::async_trait;
 

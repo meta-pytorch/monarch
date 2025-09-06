@@ -91,6 +91,7 @@ async fn main() {
             AllocSpec {
                 extent: extent!(host = hosts_per_proc_mesh, gpu = 1),
                 constraints: Default::default(),
+                proc_name: None,
             },
             WorldId("test_world_id".to_string()),
             ChannelTransport::Unix,
