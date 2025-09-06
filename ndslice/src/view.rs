@@ -752,6 +752,49 @@ impl Region {
             }
         }
     }
+
+    /// Remap the target to ranks in this region. The returned iterator iterates
+    /// over each rank in `target`, providing the corresponding rank in `self`.
+    /// This is useful when mapping between different subspaces.
+    ///
+    /// ```
+    /// # use ndslice::Region;
+    /// # use ndslice::ViewExt;
+    /// # use ndslice::extent;
+    /// let ext = extent!(replica = 8, gpu = 4);
+    /// let replica1 = ext.range("replica", 1).unwrap();
+    /// assert_eq!(replica1.extent(), extent!(replica = 1, gpu = 4));
+    /// let replica1_gpu12 = replica1.range("gpu", 1..3).unwrap();
+    /// assert_eq!(replica1_gpu12.extent(), extent!(replica = 1, gpu = 2));
+    /// // The first rank in `replica1_gpu12` is the second rank in `replica1`.
+    /// assert_eq!(
+    ///     replica1.remap(&replica1_gpu12).unwrap().collect::<Vec<_>>(),
+    ///     vec![1, 2],
+    /// );
+    /// ```
+    pub fn remap(&self, target: &Region) -> Option<impl Iterator<Item = usize> + '_> {
+        if !target.is_subset(self) {
+            return None;
+        }
+
+        let mut ours = self.slice.iter().enumerate();
+        let mut theirs = target.slice.iter();
+
+        Some(std::iter::from_fn(move || {
+            let needle = theirs.next()?;
+            loop {
+                let (index, value) = ours.next().unwrap();
+                if value == needle {
+                    break Some(index);
+                }
+            }
+        }))
+    }
+
+    /// Returns the total number of ranks in the region.
+    pub fn num_ranks(&self) -> usize {
+        self.slice.len()
+    }
 }
 
 // We would make this impl<T: Viewable> From<T> for View,
@@ -907,6 +950,54 @@ impl View for Extent {
         } else {
             None
         }
+    }
+}
+
+/// Ranked is a helper trait to implement `View` on a ranked collection
+/// of items.
+pub trait Ranked: Sized {
+    /// The type of item in this view.
+    type Item: Clone + 'static;
+
+    /// The ranks contained in this view.
+    fn region(&self) -> &Region;
+
+    /// Return the item at `rank`
+    fn get(&self, rank: usize) -> Option<Self::Item>;
+
+    /// Construct a new Ranked containing the ranks in this view that are
+    /// part of region. The caller guarantees that
+    /// `ranks.len() == region.num_ranks()` and that
+    /// `region.is_subset(self.region())`.`
+    fn sliced(&self, region: Region, ranks: impl Iterator<Item = Self::Item>) -> Self;
+}
+
+impl<T: Ranked> View for T {
+    type Item = T::Item;
+    type View = Self;
+
+    fn region(&self) -> Region {
+        self.region().clone()
+    }
+
+    fn get(&self, rank: usize) -> Option<Self::Item> {
+        self.get(rank)
+    }
+
+    fn subset(&self, region: Region) -> Result<Self, ViewError> {
+        // Compact the ranks, remapping them into the new region.
+        // `remap` returns None if the target region is not a subset
+        // of the source region.
+        let ranks = self
+            .region()
+            .remap(&region)
+            .ok_or_else(|| ViewError::InvalidRange {
+                base: self.region().clone(),
+                selected: region.clone(),
+            })?
+            .map(|index| self.get(index).unwrap());
+
+        Ok(self.sliced(region, ranks))
     }
 }
 
@@ -1456,6 +1547,43 @@ mod test {
 
         assert!(!c.region().is_subset(&a.region()));
         assert!(c.region().is_subset(&e.region()));
+    }
+
+    #[test]
+    fn test_remap() {
+        let region: Region = extent!(x = 4, y = 4).into();
+        // Self-remap
+        assert_eq!(
+            region.remap(&region).unwrap().collect::<Vec<_>>(),
+            (0..16).collect::<Vec<_>>()
+        );
+
+        let subset = region.range("x", 2..).unwrap();
+        assert_eq!(subset.num_ranks(), 8);
+        assert_eq!(
+            region.remap(&subset).unwrap().collect::<Vec<_>>(),
+            vec![8, 9, 10, 11, 12, 13, 14, 15],
+        );
+
+        let subset = subset.range("y", 1).unwrap();
+        assert_eq!(subset.num_ranks(), 2);
+        assert_eq!(
+            region.remap(&subset).unwrap().collect::<Vec<_>>(),
+            vec![9, 13],
+        );
+
+        // Test double subsetting:
+
+        let ext = extent!(replica = 8, gpu = 4);
+        let replica1 = ext.range("replica", 1).unwrap();
+        assert_eq!(replica1.extent(), extent!(replica = 1, gpu = 4));
+        let replica1_gpu12 = replica1.range("gpu", 1..3).unwrap();
+        assert_eq!(replica1_gpu12.extent(), extent!(replica = 1, gpu = 2));
+        // The first rank in `replica1_gpu12` is the second rank in `replica1`.
+        assert_eq!(
+            replica1.remap(&replica1_gpu12).unwrap().collect::<Vec<_>>(),
+            vec![1, 2],
+        );
     }
 
     use proptest::prelude::*;

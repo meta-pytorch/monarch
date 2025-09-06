@@ -636,6 +636,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
             .allocate(AllocSpec {
                 extent: extent! {replica=1, host=1, gpu=1},
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await?,
     )
@@ -647,6 +648,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
             .allocate(AllocSpec {
                 extent: extent! {replica=1, host=1, gpu=1},
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await?,
     )
