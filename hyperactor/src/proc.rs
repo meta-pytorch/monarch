@@ -1335,6 +1335,12 @@ impl<A: Actor> cap::sealed::CanResolveActorRef for Instance<A> {
     }
 }
 
+impl<A: Actor> cap::HasProc for Instance<A> {
+    fn proc(&self) -> &Proc {
+        &self.proc
+    }
+}
+
 impl<A: Actor> cap::sealed::CanSend for Context<'_, A> {
     fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
         <Instance<A> as cap::sealed::CanSend>::post(self, dest, headers, data)
@@ -1384,6 +1390,12 @@ impl<A: Actor> cap::sealed::CanResolveActorRef for Context<'_, A> {
         actor_ref: &ActorRef<R>,
     ) -> Option<ActorHandle<R>> {
         <Instance<A> as cap::sealed::CanResolveActorRef>::resolve_actor_ref(self, actor_ref)
+    }
+}
+
+impl<A: Actor> cap::HasProc for Context<'_, A> {
+    fn proc(&self) -> &Proc {
+        <Instance<A> as cap::HasProc>::proc(self)
     }
 }
 

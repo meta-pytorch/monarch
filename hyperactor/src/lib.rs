@@ -65,6 +65,7 @@
 #![feature(panic_update_hook)]
 #![feature(type_alias_impl_trait)]
 #![feature(trait_alias)]
+#![feature(let_chains)]
 #![deny(missing_docs)]
 
 pub mod accum;
@@ -161,6 +162,7 @@ pub use opentelemetry;
 pub use paste::paste;
 pub use proc::Context;
 pub use proc::Instance;
+pub use proc::Proc;
 pub use reference::ActorId;
 pub use reference::ActorRef;
 pub use reference::GangId;

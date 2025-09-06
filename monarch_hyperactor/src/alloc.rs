@@ -62,7 +62,16 @@ pub struct PyAlloc {
 
 struct ReshapedAlloc {
     extent: Extent,
+    spec: AllocSpec,
     base: Box<dyn Alloc + Sync + Send>,
+}
+
+impl ReshapedAlloc {
+    fn new(extent: Extent, base: Box<dyn Alloc + Sync + Send>) -> Self {
+        let mut spec = base.spec().clone();
+        spec.extent = extent.clone();
+        Self { extent, spec, base }
+    }
 }
 
 #[async_trait]
@@ -73,6 +82,10 @@ impl Alloc for ReshapedAlloc {
 
     fn extent(&self) -> &Extent {
         &self.extent
+    }
+
+    fn spec(&self) -> &AllocSpec {
+        &self.spec
     }
 
     fn world_id(&self) -> &WorldId {
@@ -125,10 +138,9 @@ impl PyAlloc {
                         old_num_elements, new_elements
                     )));
                 }
-                Ok(PyAlloc::new(Box::new(ReshapedAlloc {
-                    extent: new_extent,
-                    base: alloc,
-                })))
+                Ok(PyAlloc::new(Box::new(ReshapedAlloc::new(
+                    new_extent, alloc,
+                ))))
             })
             .transpose()
     }
@@ -194,6 +206,7 @@ impl PyAllocSpec {
             inner: AllocSpec {
                 extent,
                 constraints: constraints.inner.clone(),
+                proc_name: None,
             },
         })
     }

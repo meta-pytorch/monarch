@@ -67,6 +67,7 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Debug;
 use std::future::Future;
@@ -2374,6 +2375,10 @@ impl MailboxSender for WeakMailboxRouter {
 /// connections and forwards messages to the appropriate
 /// `MailboxClient`.
 ///
+/// If a message destination is not bound, but is a "direct mode" address
+/// (i.e., its proc id contains the channel address through which the proc
+/// is reachable), then DialMailboxRouter dials the proc directly.
+///
 /// Messages sent to unknown destinations are routed to the `default`
 /// sender, if present.
 #[derive(Debug, Clone)]
@@ -2447,16 +2452,39 @@ impl DialMailboxRouter {
     /// Lookup an actor's channel in the router's address bok.
     pub fn lookup_addr(&self, actor_id: &ActorId) -> Option<ChannelAddr> {
         let address_book = self.address_book.read().unwrap();
-        address_book
+        let found = address_book
             .lower_bound(Excluded(&actor_id.clone().into()))
-            .prev()
-            .and_then(|(key, addr)| {
-                if key.is_prefix_of(&actor_id.clone().into()) {
-                    Some(addr.clone())
-                } else {
-                    None
+            .prev();
+
+        // First try to look up the address in our address book; failing that,
+        // try to resolve direct procs.
+        if let Some((key, addr)) = found
+            && key.is_prefix_of(&actor_id.clone().into())
+        {
+            Some(addr.clone())
+        } else if actor_id.proc_id().is_direct() {
+            let (addr, _name) = actor_id.proc_id().clone().into_direct().unwrap();
+            Some(addr)
+        } else {
+            None
+        }
+    }
+
+    /// Return all covering prefixes of this router. That is, all references that are not
+    /// prefixed by another reference in the routing table
+    pub fn prefixes(&self) -> BTreeSet<Reference> {
+        let addrs = self.address_book.read().unwrap();
+        let mut prefixes: BTreeSet<Reference> = BTreeSet::new();
+        for (reference, _) in addrs.iter() {
+            match prefixes.lower_bound(Excluded(reference)).peek_prev() {
+                Some(candidate) if candidate.is_prefix_of(reference) => (),
+                _ => {
+                    prefixes.insert(reference.clone());
                 }
-            })
+            }
+        }
+
+        prefixes
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
@@ -2529,6 +2557,7 @@ mod tests {
 
     use std::assert_matches::assert_matches;
     use std::mem::drop;
+    use std::str::FromStr;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
@@ -2831,10 +2860,29 @@ mod tests {
         router.bind(id!(world1[0]).into(), "unix!@2".parse().unwrap());
         router.bind(id!(world1[1]).into(), "unix!@3".parse().unwrap());
         router.bind(id!(world1[1].actor1).into(), "unix!@4".parse().unwrap());
+        // Bind a direct address -- we should use its bound address!
+        router.bind(
+            "unix:@4,my_proc,my_actor".parse().unwrap(),
+            "unix:@5".parse().unwrap(),
+        );
 
         // We should be able to lookup the ids
         router.lookup_addr(&id!(world0[0].actor[0])).unwrap();
         router.lookup_addr(&id!(world1[0].actor[0])).unwrap();
+
+        let actor_id = Reference::from_str("unix:@4,my_proc,my_actor")
+            .unwrap()
+            .into_actor()
+            .unwrap();
+        assert_eq!(
+            router.lookup_addr(&actor_id).unwrap(),
+            "unix!@5".parse().unwrap(),
+        );
+        router.unbind(&actor_id.clone().into());
+        assert_eq!(
+            router.lookup_addr(&actor_id).unwrap(),
+            "unix!@4".parse().unwrap(),
+        );
 
         // Unbind so we cannot find the ids anymore
         router.unbind(&id!(world1).into());
@@ -3347,5 +3395,104 @@ mod tests {
         RealClock.sleep(Duration::from_secs(2)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
+    }
+
+    #[test]
+    fn test_dial_mailbox_router_prefixes_empty() {
+        assert_eq!(DialMailboxRouter::new().prefixes().len(), 0);
+    }
+
+    #[test]
+    fn test_dial_mailbox_router_prefixes_single_entry() {
+        let router = DialMailboxRouter::new();
+        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
+
+        let prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], id!(world0).into());
+    }
+
+    #[test]
+    fn test_dial_mailbox_router_prefixes_no_overlap() {
+        let router = DialMailboxRouter::new();
+        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
+        router.bind(id!(world1).into(), "unix!@2".parse().unwrap());
+        router.bind(id!(world2).into(), "unix!@3".parse().unwrap());
+
+        let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
+        prefixes.sort();
+
+        let mut expected = vec![id!(world0).into(), id!(world1).into(), id!(world2).into()];
+        expected.sort();
+
+        assert_eq!(prefixes, expected);
+    }
+
+    #[test]
+    fn test_dial_mailbox_router_prefixes_with_overlaps() {
+        let router = DialMailboxRouter::new();
+        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
+        router.bind(id!(world0[0]).into(), "unix!@2".parse().unwrap());
+        router.bind(id!(world0[1]).into(), "unix!@3".parse().unwrap());
+        router.bind(id!(world1).into(), "unix!@4".parse().unwrap());
+        router.bind(id!(world1[0]).into(), "unix!@5".parse().unwrap());
+
+        let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
+        prefixes.sort();
+
+        // Only world0 and world1 should be covering prefixes since they cover their children
+        let mut expected = vec![id!(world0).into(), id!(world1).into()];
+        expected.sort();
+
+        assert_eq!(prefixes, expected);
+    }
+
+    #[test]
+    fn test_dial_mailbox_router_prefixes_complex_hierarchy() {
+        let router = DialMailboxRouter::new();
+        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
+        router.bind(id!(world0[0]).into(), "unix!@2".parse().unwrap());
+        router.bind(id!(world0[0].actor1).into(), "unix!@3".parse().unwrap());
+        router.bind(id!(world1[0]).into(), "unix!@4".parse().unwrap());
+        router.bind(id!(world1[1]).into(), "unix!@5".parse().unwrap());
+        router.bind(id!(world2[0].actor0).into(), "unix!@6".parse().unwrap());
+
+        let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
+        prefixes.sort();
+
+        // Covering prefixes should be:
+        // - world0 (covers world0[0] and world0[0].actor1)
+        // - world1[0] (not covered by anything else)
+        // - world1[1] (not covered by anything else)
+        // - world2[0].actor0 (not covered by anything else)
+        let expected = vec![
+            id!(world0).into(),
+            id!(world1[0]).into(),
+            id!(world1[1]).into(),
+            id!(world2[0].actor0).into(),
+        ];
+
+        assert_eq!(prefixes, expected);
+    }
+
+    #[test]
+    fn test_dial_mailbox_router_prefixes_same_level() {
+        let router = DialMailboxRouter::new();
+        router.bind(id!(world0[0]).into(), "unix!@1".parse().unwrap());
+        router.bind(id!(world0[1]).into(), "unix!@2".parse().unwrap());
+        router.bind(id!(world0[2]).into(), "unix!@3".parse().unwrap());
+
+        let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
+        prefixes.sort();
+
+        // All should be covering prefixes since none is a prefix of another
+        let mut expected = vec![
+            id!(world0[0]).into(),
+            id!(world0[1]).into(),
+            id!(world0[2]).into(),
+        ];
+        expected.sort();
+
+        assert_eq!(prefixes, expected);
     }
 }

@@ -77,7 +77,17 @@ use crate::parse::parse;
 /// ordered lexicographically with the hierarchy implied by world, proc,
 /// actor. This allows reference ordering to be used to implement prefix
 /// based routing.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Named)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Named,
+    EnumAsInner
+)]
 pub enum Reference {
     /// A reference to a world.
     World(WorldId),
