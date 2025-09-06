@@ -34,6 +34,7 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::registry::Scope;
 
+use crate::SPAN_FIELD_RECORDING;
 use crate::pool::Pool;
 use crate::spool::Spool;
 
@@ -364,7 +365,7 @@ impl Recording {
     pub fn span(&self) -> Span {
         span!(
             Level::INFO,
-            "recording",
+            SPAN_FIELD_RECORDING,
             recording = self.recording_key(),
             recorder = self.recorder_key(),
         )

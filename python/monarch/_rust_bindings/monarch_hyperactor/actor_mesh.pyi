@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import AsyncIterator, final, NoReturn, Optional, Protocol
+from typing import Any, AsyncIterator, final, NoReturn, Optional, Protocol, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
@@ -38,16 +38,55 @@ class ActorMeshProtocol(Protocol):
 
 @final
 class PythonActorMesh(ActorMeshProtocol):
-    pass
+    """
+    A Python actor mesh that forwards to the rust trait implementation.
+    """
+
+    def get(self, rank: int) -> "ActorId | None":
+        """
+        Get the actor id for the actor at the given rank.
+        """
+        ...
+
+    @property
+    def client(self) -> Mailbox:
+        """
+        The mailbox client for this actor mesh.
+        """
+        ...
+
+    @property
+    def stopped(self) -> bool:
+        """
+        If the mesh has been stopped.
+        """
+        ...
+
+    def __reduce__(self) -> Tuple[Any, Any]:
+        """
+        Support for pickle serialization.
+        """
+        ...
+
+    @staticmethod
+    def from_bytes(bytes: bytes) -> "PythonActorMesh":
+        """
+        Deserialize a PythonActorMesh from bytes.
+        """
+        ...
 
 class PythonActorMeshImpl:
-    def get_supervision_event(self) -> ActorSupervisionEvent | None:
+    """
+    Implementation of a Python actor mesh with supervision monitoring.
+    """
+
+    def get_supervision_event(self) -> "ActorSupervisionEvent | None":
         """
         Returns supervision event if there is any.
         """
         ...
 
-    def get(self, rank: int) -> ActorId | None:
+    def get(self, rank: int) -> "ActorId | None":
         """
         Get the actor id for the actor at the given rank.
         """
@@ -60,7 +99,12 @@ class PythonActorMeshImpl:
         """
         ...
 
-    def supervision_event(self) -> "Optional[Shared[Exception]]": ...
+    def supervision_event(self) -> "Optional[Shared[Exception]]":
+        """
+        Get supervision events for this actor mesh.
+        """
+        ...
+
     @property
     def stopped(self) -> bool:
         """
@@ -70,6 +114,10 @@ class PythonActorMeshImpl:
 
 @final
 class ActorSupervisionEvent:
+    """
+    Event representing an actor supervision failure.
+    """
+
     @property
     def actor_id(self) -> ActorId:
         """
@@ -81,5 +129,11 @@ class ActorSupervisionEvent:
     def actor_status(self) -> str:
         """
         Detailed actor status.
+        """
+        ...
+
+    def __repr__(self) -> str:
+        """
+        String representation of the supervision event.
         """
         ...

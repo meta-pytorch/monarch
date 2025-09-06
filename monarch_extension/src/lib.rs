@@ -74,6 +74,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         runtime.handle().clone(),
         Some(::hyperactor_mesh::bootstrap::BOOTSTRAP_INDEX_ENV.to_string()),
     );
+    monarch_hyperactor::buffers::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.buffers",
+    )?)?;
 
     monarch_hyperactor::shape::register_python_bindings(&get_or_add_new_module(
         module,
@@ -161,6 +165,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.mailbox",
+    )?)?;
+    monarch_hyperactor::config::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.config",
     )?)?;
 
     monarch_hyperactor::alloc::register_python_bindings(&get_or_add_new_module(
