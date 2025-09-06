@@ -10,6 +10,8 @@
 
 #![allow(dead_code)] // until it is used outside of testing
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use hyperactor::ProcId;
 use hyperactor::WorldId;
@@ -17,6 +19,7 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
+use ndslice::Point;
 use ndslice::view::Extent;
 
 use super::ProcStopReason;
@@ -58,6 +61,7 @@ struct SimProc {
 /// A simulated allocation. It is a collection of procs that are running in the local process.
 pub struct SimAlloc {
     inner: LocalAlloc,
+    created: HashMap<ShortUuid, Point>,
 }
 
 impl SimAlloc {
@@ -78,7 +82,10 @@ impl SimAlloc {
                     .expect("should be valid point"),
             );
 
-        Self { inner }
+        Self {
+            inner,
+            created: HashMap::new(),
+        }
     }
     /// A chaos monkey that can be used to stop procs at random.
     pub(crate) fn chaos_monkey(&self) -> impl Fn(usize, ProcStopReason) + 'static {
@@ -102,13 +109,34 @@ impl SimAlloc {
 #[async_trait]
 impl Alloc for SimAlloc {
     async fn next(&mut self) -> Option<ProcState> {
-        let proc_state = self.inner.next().await;
-        if let Some(ProcState::Created { proc_id, point, .. }) = &proc_state {
-            hyperactor::simnet::simnet_handle()
-                .expect("simnet event loop not running")
-                .register_proc(proc_id.clone(), point.clone());
+        let proc_state = self.inner.next().await?;
+        match &proc_state {
+            ProcState::Created {
+                create_key, point, ..
+            } => {
+                self.created.insert(create_key.clone(), point.clone());
+            }
+            ProcState::Running {
+                create_key,
+                proc_id,
+                ..
+            } => {
+                hyperactor::simnet::simnet_handle()
+                    .expect("simnet event loop not running")
+                    .register_proc(
+                        proc_id.clone(),
+                        self.created
+                            .remove(create_key)
+                            .expect("have point for create key"),
+                    );
+            }
+            _ => (),
         }
-        proc_state
+        Some(proc_state)
+    }
+
+    fn spec(&self) -> &AllocSpec {
+        &self.inner.spec()
     }
 
     fn extent(&self) -> &Extent {
@@ -171,6 +199,7 @@ mod tests {
                 constraints: AllocConstraints {
                     match_labels: HashMap::new(),
                 },
+                proc_name: None,
             })
             .await
             .unwrap();

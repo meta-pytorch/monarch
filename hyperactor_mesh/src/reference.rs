@@ -278,6 +278,7 @@ mod tests {
             .allocate(AllocSpec {
                 extent: extent(),
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await
             .unwrap();
@@ -285,6 +286,7 @@ mod tests {
             .allocate(AllocSpec {
                 extent: extent(),
                 constraints: Default::default(),
+                proc_name: None,
             })
             .await
             .unwrap();

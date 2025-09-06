@@ -13,6 +13,8 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use rand::RngCore;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// So-called ["Flickr base 58"](https://www.flickr.com/groups/api/discuss/72157616713786392/)
 /// as this alphabet was used in Flickr URLs. It has nice properties: 1) characters are all
@@ -42,7 +44,7 @@ static FLICKR_BASE_58_ORD: LazyLock<[Option<usize>; 256]> = LazyLock::new(|| {
 /// The characters "_" and "-" are ignored when decoding, and may be
 /// safely interspersed. By default, rendered UUIDs that begin with a
 /// numeric character is prefixed with "_".
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Serialize, Deserialize)]
 pub struct ShortUuid(u64);
 
 impl ShortUuid {
@@ -50,9 +52,8 @@ impl ShortUuid {
     pub fn generate() -> ShortUuid {
         ShortUuid(rand::thread_rng().next_u64())
     }
-}
-impl std::fmt::Display for ShortUuid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+    pub(crate) fn format(&self, f: &mut std::fmt::Formatter<'_>, raw: bool) -> std::fmt::Result {
         let mut num = self.0;
         let base = FLICKR_BASE_58.len() as u64;
         let mut result = String::with_capacity(12);
@@ -63,7 +64,7 @@ impl std::fmt::Display for ShortUuid {
             let c = FLICKR_BASE_58.chars().nth(remainder).unwrap();
             result.push(c);
             // Make sure the first position is never a digit.
-            if pos == 11 && c >= '0' && c <= '9' {
+            if !raw && pos == 11 && c >= '0' && c <= '9' {
                 result.push('_');
             }
         }
@@ -71,6 +72,11 @@ impl std::fmt::Display for ShortUuid {
 
         let result = result.chars().rev().collect::<String>();
         write!(f, "{}", result)
+    }
+}
+impl std::fmt::Display for ShortUuid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.format(f, false /*raw*/)
     }
 }
 

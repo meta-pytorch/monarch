@@ -33,7 +33,7 @@ use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
-use crate::proc_mesh::mesh_agent::MeshAgent;
+use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::shortuuid::ShortUuid;
 
 enum Action {
@@ -60,6 +60,7 @@ impl Allocator for LocalAllocator {
 
 struct LocalProc {
     proc: Proc,
+    create_key: ShortUuid,
     addr: ChannelAddr,
     handle: MailboxServerHandle,
 }
@@ -152,24 +153,6 @@ impl Alloc for LocalAlloc {
 
             match self.todo_rx.recv().await? {
                 Action::Start(rank) => {
-                    let proc_id = ProcId::Ranked(self.world_id.clone(), rank);
-                    let bspan = tracing::info_span!("mesh_agent_bootstrap");
-                    let (proc, mesh_agent) = match MeshAgent::bootstrap(proc_id.clone()).await {
-                        Ok(proc_and_agent) => proc_and_agent,
-                        Err(err) => {
-                            let message = format!("failed spawn mesh agent for {}: {}", rank, err);
-                            tracing::error!(message);
-                            // It's unclear if this is actually recoverable in a practical sense,
-                            // so we give up.
-                            self.failed = true;
-                            break Some(ProcState::Failed {
-                                world_id: self.world_id.clone(),
-                                description: message,
-                            });
-                        }
-                    };
-                    drop(bspan);
-
                     let (addr, proc_rx) = loop {
                         match channel::serve(ChannelAddr::any(self.transport())).await {
                             Ok(addr_and_proc_rx) => break addr_and_proc_rx,
@@ -186,13 +169,38 @@ impl Alloc for LocalAlloc {
                         }
                     };
 
+                    let proc_id = match &self.spec.proc_name {
+                        Some(name) => ProcId::Direct(addr.clone(), name.clone()),
+                        None => ProcId::Ranked(self.world_id.clone(), rank),
+                    };
+
+                    let bspan = tracing::info_span!("mesh_agent_bootstrap");
+                    let (proc, mesh_agent) = match ProcMeshAgent::bootstrap(proc_id.clone()).await {
+                        Ok(proc_and_agent) => proc_and_agent,
+                        Err(err) => {
+                            let message = format!("failed spawn mesh agent for {}: {}", rank, err);
+                            tracing::error!(message);
+                            // It's unclear if this is actually recoverable in a practical sense,
+                            // so we give up.
+                            self.failed = true;
+                            break Some(ProcState::Failed {
+                                world_id: self.world_id.clone(),
+                                description: message,
+                            });
+                        }
+                    };
+                    drop(bspan);
+
                     // Undeliverable messages get forwarded to the mesh agent.
                     let handle = proc.clone().serve(proc_rx);
+
+                    let create_key = ShortUuid::generate();
 
                     self.procs.insert(
                         rank,
                         LocalProc {
                             proc,
+                            create_key: create_key.clone(),
                             addr: addr.clone(),
                             handle,
                         },
@@ -206,11 +214,12 @@ impl Alloc for LocalAlloc {
                         }
                     };
                     let created = ProcState::Created {
-                        proc_id: proc_id.clone(),
+                        create_key: create_key.clone(),
                         point,
                         pid: std::process::id(),
                     };
                     self.queue.push_back(ProcState::Running {
+                        create_key,
                         proc_id,
                         mesh_agent: mesh_agent.bind(),
                         addr,
@@ -234,7 +243,7 @@ impl Alloc for LocalAlloc {
                     }
                     break Some(ProcState::Stopped {
                         reason,
-                        proc_id: proc_to_stop.proc.proc_id().clone(),
+                        create_key: proc_to_stop.create_key.clone(),
                     });
                 }
                 Action::Stopped => break None,
@@ -242,6 +251,10 @@ impl Alloc for LocalAlloc {
         };
         self.stopped = event.is_none();
         event
+    }
+
+    fn spec(&self) -> &AllocSpec {
+        &self.spec
     }
 
     fn extent(&self) -> &Extent {

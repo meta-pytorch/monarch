@@ -231,6 +231,7 @@ async fn main() -> Result<ExitCode> {
         .allocate(AllocSpec {
             extent: extent! {replica = group_size},
             constraints: Default::default(),
+            proc_name: None,
         })
         .await?;
 
