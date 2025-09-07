@@ -4,8 +4,8 @@
 actor messaging. It provides:
 
 1. Remote actors with scalable messaging: Actors are grouped into collections called meshes and messages can be broadcast to all members.
-2. Fault tolerance through supervision trees: Actors and processes for a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery.
-3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided tranfers based on libibverbs
+2. Fault tolerance through supervision trees: Actors and processes form a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery.
+3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided transfers based on libibverbs
 4. Distributed tensors: actors can work with tensor objects sharded across processes
 
 Monarch code imperatively describes how to create processes and actors using a simple python API:
@@ -26,7 +26,7 @@ class Trainer(Actor):
 # create the trainers
 trainers = training_procs.spawn("trainers", Trainer)
 
-# tell all the trainers to to take a step
+# tell all the trainers to take a step
 fut = trainers.train.call(step=0)
 
 # wait for all trainers to complete
@@ -82,7 +82,7 @@ sudo dnf install cuda-toolkit-12-0 cuda-12-0
 
 # Install clang-dev and nccl-dev
 sudo dnf install clang-devel libnccl-devel
-# Or, in some envrionments, the following may be necessary instead
+# Or, in some environments, the following may be necessary instead
 conda install -c conda-forge clangdev nccl
 conda update -n monarchenv --all -c conda-forge -y
 

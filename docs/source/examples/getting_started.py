@@ -288,7 +288,7 @@ class SupervisorActor(Actor):
 #
 # RDMA transfers use libibverbs to transfer data over infiniband or RoCE.
 # Unlike traditional NCCL collectives where a send must be matched to a receive,
-# once an actor has a handle to a buffer, it read or write to the buffer without the owner of the buffer.
+# once an actor has a handle to a buffer, it can read or write to the buffer without the owner of the buffer.
 
 import torch
 from monarch.tensor_engine import RDMABuffer
@@ -499,7 +499,7 @@ print(recv.recv().get())
 
 
 # %%
-# Ports can be passed as arguments to actors and send a response
+# Ports can be passed as arguments to actors and sent a response
 # remotely. We can also directly ask an endpoint to send its response to a port using
 # the  ``send`` messaging primitive.
 
@@ -528,7 +528,7 @@ for _ in range(4):
 # In particular, if actor A sends a message M0 to actor B, and then
 # later A sends another message M1 to B, then actor B will receive M0 before M1.
 # Messages in monarch are sent to a mesh of multiple actor instances at once. For
-# the purpose of message ordering, this bulk send behaves as if it send each message
+# the purpose of message ordering, this bulk send behaves as if it sent each message
 # individually to each destination.
 #
 # Each actor handles its messages sequentially. It must finish the handling of a message
@@ -540,10 +540,10 @@ for _ in range(4):
 # Responding Out of Order
 # =============================
 # Messages to actors are delivered in order, but sometimes an actor might want to
-# repond to later messages first. The normal way of defining an endpoint does not
+# respond to later messages first. The normal way of defining an endpoint does not
 # allow for this since it must return the response before future messages are delivered.
 #
-# Instead, an endpoint can request an explicit port object on which to deliver a reponse.
+# Instead, an endpoint can request an explicit port object on which to deliver a response.
 #
 # Here is an example of an inference engine
 # where we use an explicit reponse port for the `infer` endpoint

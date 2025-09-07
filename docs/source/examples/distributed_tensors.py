@@ -151,7 +151,7 @@ print(mesh_3d_parallel.to_table())
 # Pipelining
 # ----------
 #
-# Pipelining is accomplish by slicing the mesh, and copying tensors from
+# Pipelining is accomplished by slicing the mesh, and copying tensors from
 # one mesh to another.
 
 pipeline_mesh = mast_mesh.rename(host="pp")
@@ -160,7 +160,7 @@ meshes = [pipeline_mesh.slice(pp=i) for i in range(pipeline_mesh.size("pp"))]
 print(meshes[0].to_table())
 
 # %%
-# Intitialize a model across multiple meshes
+# Initialize a model across multiple meshes
 
 layers_per_stage = 2
 stages = []
