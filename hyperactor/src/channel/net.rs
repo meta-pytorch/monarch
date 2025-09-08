@@ -1163,6 +1163,27 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
             }
 
             tokio::select! {
+                // Prioritize ack, and then shutdown. Leave read last because
+                // there could be a large volume of messages to read, which
+                // subsequently starves the other select! branches.
+                biased;
+                // We have to be careful to manage the ack write state here, so that we do not
+                // write partial acks in the presence of cancellation.
+                ack_result = self.write_state.send() => {
+                    match ack_result {
+                        Ok(acked_seq) => {
+                            last_ack_time = RealClock.now();
+                            next.ack = acked_seq;
+                        }
+                        Err(err) => {
+                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("{log_id}: error acking peer message")), false)
+                        }
+                    }
+                },
+                // Have a tick to abort select! call to make sure the ack for the last message can get the chance
+                // to be sent as a result of time interval being reached.
+                _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
+                _ = cancel_token.cancelled() => break (next, Ok(()), false),
                 bytes_result = self.reader.next() => {
                     rcv_raw_frame_count += 1;
                     // First handle transport-level I/O errors, and EOFs.
@@ -1252,26 +1273,9 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                         ),
                     }
                 },
-
-                // We have to be careful to manage the ack write state here, so that we do not
-                // write partial acks in the presence of cancellation.
-                ack_result = self.write_state.send() => {
-                    match ack_result {
-                        Ok(acked_seq) => {
-                            last_ack_time = RealClock.now();
-                            next.ack = acked_seq;
-                        }
-                        Err(err) => {
-                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("{log_id}: error acking peer message")), false)
-                        }
-                    }
-                },
-                // Have a tick to abort select! call to make sure the ack for the last message can get the chance
-                // to be sent as a result of time interval being reached.
-                _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-                _ = cancel_token.cancelled() => break (next, Ok(()), false)
             }
         };
+
         // Note:
         //   1. processed seq/ack is Next-1;
         //   2. rcv_raw_frame_count contains the last frame which might not be
