@@ -68,6 +68,7 @@ pub fn from_env() -> Attrs {
     // Load codec max frame length
     if let Ok(val) = env::var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH") {
         if let Ok(parsed) = val.parse::<usize>() {
+            tracing::info!("overriding CODEC_MAX_FRAME_LENGTH to {}", parsed);
             config[CODEC_MAX_FRAME_LENGTH] = parsed;
         }
     }
@@ -75,6 +76,7 @@ pub fn from_env() -> Attrs {
     // Load message delivery timeout
     if let Ok(val) = env::var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS") {
         if let Ok(parsed) = val.parse::<u64>() {
+            tracing::info!("overriding MESSAGE_DELIVERY_TIMEOUT to {}", parsed);
             config[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_secs(parsed);
         }
     }
@@ -82,6 +84,7 @@ pub fn from_env() -> Attrs {
     // Load message ack time interval
     if let Ok(val) = env::var("HYPERACTOR_MESSAGE_ACK_TIME_INTERVAL_MS") {
         if let Ok(parsed) = val.parse::<u64>() {
+            tracing::info!("overriding MESSAGE_ACK_TIME_INTERVAL to {}", parsed);
             config[MESSAGE_ACK_TIME_INTERVAL] = Duration::from_millis(parsed);
         }
     }
@@ -89,6 +92,7 @@ pub fn from_env() -> Attrs {
     // Load message ack every n messages
     if let Ok(val) = env::var("HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES") {
         if let Ok(parsed) = val.parse::<u64>() {
+            tracing::info!("overriding MESSAGE_ACK_EVERY_N_MESSAGES to {}", parsed);
             config[MESSAGE_ACK_EVERY_N_MESSAGES] = parsed;
         }
     }
@@ -96,6 +100,7 @@ pub fn from_env() -> Attrs {
     // Load split max buffer size
     if let Ok(val) = env::var("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE") {
         if let Ok(parsed) = val.parse::<usize>() {
+            tracing::info!("overriding SPLIT_MAX_BUFFER_SIZE to {}", parsed);
             config[SPLIT_MAX_BUFFER_SIZE] = parsed;
         }
     }
@@ -103,6 +108,10 @@ pub fn from_env() -> Attrs {
     // Load remote allocator heartbeat interval
     if let Ok(val) = env::var("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL_SECS") {
         if let Ok(parsed) = val.parse::<u64>() {
+            tracing::info!(
+                "overriding REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL to {}",
+                parsed
+            );
             config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL] = Duration::from_secs(parsed);
         }
     }
@@ -110,6 +119,7 @@ pub fn from_env() -> Attrs {
     // Load default encoding
     if let Ok(val) = env::var("HYPERACTOR_DEFAULT_ENCODING") {
         if let Ok(parsed) = val.parse::<Encoding>() {
+            tracing::info!("overriding DEFAULT_ENCODING to {}", parsed);
             config[DEFAULT_ENCODING] = parsed;
         }
     }
@@ -117,6 +127,7 @@ pub fn from_env() -> Attrs {
     // Load channel multipart.
     if let Ok(val) = env::var("HYPERACTOR_CHANNEL_MULTIPART") {
         if let Ok(parsed) = val.parse::<bool>() {
+            tracing::info!("overriding CHANNEL_MULTIPART to {}", parsed);
             config[CHANNEL_MULTIPART] = parsed;
         }
     }
