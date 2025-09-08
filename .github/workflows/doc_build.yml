@@ -67,8 +67,10 @@ jobs:
 
         make clean
         make html SPHINXOPTS="-v --keep-going" || {
-            echo "WARNING: Sphinx build had issues. Running diagnostics..."
+            echo "ERROR: Sphinx build failed. Running diagnostics..."
             ../scripts/handle_sphinx_errors.sh
+            echo "Documentation build failed - exiting with error"
+            exit 1
         }
 
         cd ..
