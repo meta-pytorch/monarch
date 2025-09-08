@@ -457,6 +457,28 @@ mod tests {
     }
 
     #[test]
+    fn bincode_serialize() {
+        let tensor = test_make_tensor();
+        let i1 = IValue::from(tensor);
+        let buf = bincode::serialize(&i1).unwrap();
+        let i2: IValue = bincode::deserialize(&buf).unwrap();
+        assert!(ivalues_equal_with_tensor_equal(i1, i2));
+    }
+
+    #[test]
+    fn multipart_serialize() {
+        let tensor = test_make_tensor();
+        let i1 = IValue::from(tensor);
+        let buf = serde_multipart::serialize_bincode(&i1).unwrap();
+        let i2_result = serde_multipart::deserialize_bincode::<IValue>(buf);
+        assert!(i2_result.is_err());
+        assert_eq!(
+            format!("{}", i2_result.unwrap_err()),
+            "invalid type: byte array, expected a borrowed byte array",
+        );
+    }
+
+    #[test]
     fn test_ivalue_from_py_object_with_type() {
         pyo3::prepare_freethreaded_python();
 

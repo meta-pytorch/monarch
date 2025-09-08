@@ -220,7 +220,6 @@ impl TensorCell {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use pyo3::prelude::*;
 
     use crate::Tensor;
@@ -228,20 +227,30 @@ mod tests {
     use crate::bridge::ffi::test_make_tensor;
 
     #[test]
-    fn partial_eq() -> Result<()> {
+    fn partial_eq() {
         let t1 = test_make_tensor();
         let t2 = deep_clone(&t1);
         assert_eq!(t1, t2);
-        Ok(())
     }
 
     #[test]
-    fn serialize() -> Result<()> {
+    fn bincode_serialize() {
         let t1 = test_make_tensor();
-        let buf = bincode::serialize(&t1)?;
-        let t2: Tensor = bincode::deserialize(&buf)?;
+        let buf = bincode::serialize(&t1).unwrap();
+        let t2: Tensor = bincode::deserialize(&buf).unwrap();
         assert_eq!(t1, t2);
-        Ok(())
+    }
+
+    #[test]
+    fn multipart_serialize() {
+        let t1 = test_make_tensor();
+        let buf = serde_multipart::serialize_bincode(&t1).unwrap();
+        let t2_result = serde_multipart::deserialize_bincode::<Tensor>(buf);
+        assert!(t2_result.is_err());
+        assert_eq!(
+            format!("{}", t2_result.unwrap_err()),
+            "invalid type: byte array, expected a borrowed byte array",
+        );
     }
 
     #[test]
