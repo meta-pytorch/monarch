@@ -26,6 +26,10 @@ pub const DISABLE_OTEL_METRICS: &str = "DISABLE_OTEL_METRICS";
 /// Set to "1" to disable the recorder output.
 pub const DISABLE_RECORDER_TRACING: &str = "DISABLE_RECORDER_TRACING";
 
+/// Environment variable to disable the sqlite logging layer.
+/// Set to "1" to disable the sqlite tracing.
+pub const DISABLE_SQLITE_TRACING: &str = "DISABLE_SQLITE_TRACING";
+
 pub mod in_memory_reader;
 #[cfg(fbcode_build)]
 mod meta;
@@ -577,8 +581,6 @@ pub fn initialize_logging_with_log_prefix(
                 .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
         );
 
-    let sqlite_layer = get_reloadable_sqlite_layer().unwrap();
-
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -590,7 +592,11 @@ pub fn initialize_logging_with_log_prefix(
             std::env::var(env_var).unwrap_or_default() != "1"
         }
         if let Err(err) = Registry::default()
-            .with(sqlite_layer)
+            .with(if is_layer_enabled(DISABLE_SQLITE_TRACING) {
+                Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
+            } else {
+                None
+            })
             .with(if is_layer_enabled(DISABLE_OTEL_TRACING) {
                 Some(otel::tracing_layer())
             } else {
