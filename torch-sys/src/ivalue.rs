@@ -18,6 +18,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::Visitor;
 
 use crate::CloneUnsafe;
 use crate::Device;
@@ -94,8 +95,24 @@ impl<'de> Deserialize<'de> for IValue {
     where
         D: serde::Deserializer<'de>,
     {
-        let buf: &[u8] = Deserialize::deserialize(deserializer)?;
-        ffi::deserialize_ivalue(buf).map_err(serde::de::Error::custom)
+        struct IValueVisitor;
+
+        impl<'de> Visitor<'de> for IValueVisitor {
+            type Value = IValue;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("raw ivalue bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                ffi::deserialize_ivalue(v).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_bytes(IValueVisitor)
     }
 }
 
@@ -470,12 +487,8 @@ mod tests {
         let tensor = test_make_tensor();
         let i1 = IValue::from(tensor);
         let buf = serde_multipart::serialize_bincode(&i1).unwrap();
-        let i2_result = serde_multipart::deserialize_bincode::<IValue>(buf);
-        assert!(i2_result.is_err());
-        assert_eq!(
-            format!("{}", i2_result.unwrap_err()),
-            "invalid type: byte array, expected a borrowed byte array",
-        );
+        let i2: IValue = serde_multipart::deserialize_bincode(buf).unwrap();
+        assert!(ivalues_equal_with_tensor_equal(i1, i2));
     }
 
     #[test]

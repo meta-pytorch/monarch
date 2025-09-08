@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use serde::de::Visitor;
 
 use crate::DeviceType;
 use crate::bridge::const_data_ptr;
@@ -173,9 +174,24 @@ impl<'de> Deserialize<'de> for Tensor {
     where
         D: Deserializer<'de>,
     {
-        let buf: &[u8] = Deserialize::deserialize(deserializer)?;
-        let tensor = load_tensor(buf).map_err(serde::de::Error::custom)?;
-        Ok(tensor)
+        struct TensorVisitor;
+
+        impl<'de> Visitor<'de> for TensorVisitor {
+            type Value = Tensor;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("raw tensor bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                load_tensor(v).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_bytes(TensorVisitor)
     }
 }
 
@@ -245,12 +261,8 @@ mod tests {
     fn multipart_serialize() {
         let t1 = test_make_tensor();
         let buf = serde_multipart::serialize_bincode(&t1).unwrap();
-        let t2_result = serde_multipart::deserialize_bincode::<Tensor>(buf);
-        assert!(t2_result.is_err());
-        assert_eq!(
-            format!("{}", t2_result.unwrap_err()),
-            "invalid type: byte array, expected a borrowed byte array",
-        );
+        let t2: Tensor = serde_multipart::deserialize_bincode(buf).unwrap();
+        assert_eq!(t1, t2);
     }
 
     #[test]
