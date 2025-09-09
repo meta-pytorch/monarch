@@ -40,6 +40,7 @@ class MeshSpec:
     port: int = DEFAULT_REMOTE_ALLOCATOR_PORT
     hostnames: list[str] = field(default_factory=list)
     state: specs.AppState = specs.AppState.UNSUBMITTED
+    image: str = _UNSET_STR
 
     def server_addrs(
         self, transport: Optional[str] = None, port: Optional[int] = None
@@ -81,6 +82,7 @@ def mesh_spec_from_metadata(appdef: specs.AppDef, mesh_name: str) -> Optional[Me
         if role.name == mesh_name:
             return MeshSpec(
                 name=mesh_name,
+                image=role.image,
                 num_hosts=role.num_replicas,
                 host_type=appdef.metadata.get(
                     _tag(mesh_name, _TAG_HOST_TYPE), _UNSET_STR

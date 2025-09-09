@@ -172,6 +172,7 @@ class TestCommands(unittest.TestCase):
                         host_type="gpu.medium",
                         gpus=2,
                         port=26501,
+                        image="__unused__",
                     )
                 ],
             ),

@@ -91,6 +91,7 @@ class TestMeshSpec(unittest.TestCase):
             host_type="gpu.medium",
             gpus=2,
             hostnames=["n0", "n1", "n2", "n3"],
+            image="test_pkg:123",
         )
         expected = """
 {
@@ -106,7 +107,8 @@ class TestMeshSpec(unittest.TestCase):
     "n2",
     "n3"
   ],
-  "state": 0
+  "state": 0,
+  "image": "test_pkg:123"
 }
 """
         self.assertEqual(expected.strip("\n"), json.dumps(asdict(mesh_spec), indent=2))
