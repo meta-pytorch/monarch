@@ -127,6 +127,8 @@ class RDMABuffer:
             storage = data.untyped_storage()
             addr: int = storage.data_ptr()
             size = storage.element_size() * data.numel()
+            if size == 0:
+                raise ValueError("Cannot create RDMABuffer with size 0.")
             ctx = context()
             self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking(
                 addr=addr,
