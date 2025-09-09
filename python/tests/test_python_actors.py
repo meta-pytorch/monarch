@@ -1136,7 +1136,7 @@ async def test_multiple_ongoing_flushes_no_deadlock() -> None:
     for _ in range(10):
         await am.print.call("aggregated log line")
 
-    log_mesh = pm._logging_manager._logging_mesh_client
+    log_mesh = pm._logging_mesh_client
     assert log_mesh is not None
     futures = []
     for _ in range(5):
