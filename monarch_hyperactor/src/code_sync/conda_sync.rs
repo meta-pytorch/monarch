@@ -88,7 +88,7 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
             let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
             connect.send(cx, connect_msg)?;
             let (mut read, mut write) = completer.complete().await?.into_split();
-            let changes_result = receiver(&workspace, &mut read, &mut write).await;
+            let changes_result = receiver(&workspace, &mut read, &mut write, HashMap::new()).await;
 
             // Shutdown our end, then read from the other end till exhaustion to avoid undeliverable
             // message spam.
