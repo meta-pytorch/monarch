@@ -8,6 +8,7 @@
 
 #![feature(exit_status_error)]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -35,7 +36,7 @@ async fn main() -> Result<()> {
     let (from_receiver, to_receiver) = tokio::io::split(recv);
     let (from_sender, to_sender) = tokio::io::split(send);
     try_join!(
-        receiver(&args.dst, from_sender, to_sender),
+        receiver(&args.dst, from_sender, to_sender, HashMap::new()),
         sender(&args.src, from_receiver, to_receiver),
     )?;
 

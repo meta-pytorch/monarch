@@ -11,4 +11,5 @@
 pub mod diff;
 pub mod hash_utils;
 pub mod pack_meta_history;
+pub mod replace;
 pub mod sync;

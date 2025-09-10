@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -40,7 +39,6 @@ use ignore::DirEntry;
 use ignore::WalkBuilder;
 use ignore::WalkState;
 use itertools::Itertools;
-use memchr::memmem::Finder;
 use memmap2::MmapMut;
 use serde::Deserialize;
 use serde::Serialize;
@@ -54,6 +52,7 @@ use tokio_util::codec::FramedWrite;
 use tokio_util::codec::LengthDelimitedCodec;
 
 use crate::diff::CondaFingerprint;
+use crate::replace::ReplacerBuilder;
 
 #[derive(Eq, PartialEq)]
 enum Origin {
@@ -422,28 +421,6 @@ async fn make_executable(path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn null_pad(input: &[u8], len: usize) -> Result<Vec<u8>> {
-    ensure!(input.len() <= len, "Input is longer than target length");
-    let mut padded = Vec::with_capacity(len);
-    padded.extend_from_slice(input);
-    padded.resize(len, 0);
-    Ok(padded)
-}
-
-fn replace_bytestring(vec: &mut Vec<u8>, from: &[u8], to: &[u8]) {
-    if vec.len() >= from.len() {
-        let mut i = 0;
-        while i <= vec.len() - from.len() {
-            if &vec[i..i + from.len()] == from {
-                vec.splice(i..i + from.len(), to.iter().cloned());
-                i += to.len(); // Skip past the inserted section
-            } else {
-                i += 1;
-            }
-        }
-    }
-}
-
 fn is_binary(buf: &[u8]) -> bool {
     // If any null byte is seen, treat as binary
     if buf.iter().contains(&0) {
@@ -464,6 +441,7 @@ pub async fn receiver(
     dst: &Path,
     from_sender: impl AsyncRead + Unpin,
     to_sender: impl AsyncWrite + Unpin,
+    replacement_paths: HashMap<PathBuf, PathBuf>,
 ) -> Result<HashMap<PathBuf, Action>> {
     let mut to_sender = FramedWrite::new(to_sender, LengthDelimitedCodec::new());
     let mut from_sender = FramedRead::new(from_sender, LengthDelimitedCodec::new());
@@ -558,12 +536,26 @@ pub async fn receiver(
                     .with_context(|| format!("creating dir {}", fpath.display()))?;
             }
 
-            let src_prefix = src_env.pack_meta.history.last_prefix()?;
-            let dst_prefix = dst_env.pack_meta.history.last_prefix()?;
-            let src_prefix_bytes = src_prefix.as_os_str().as_encoded_bytes();
-            let dst_prefix_bytes = dst_prefix.as_os_str().as_encoded_bytes();
-            let replacement_prefix = OnceCell::new();
-            let finder = Finder::new(src_prefix_bytes);
+            // Build a prefix path replacer.
+            let replacer = {
+                let mut builder = ReplacerBuilder::new();
+
+                // Add the conda src/dst prefixes.
+                let src_prefix = src_env.pack_meta.history.last_prefix()?;
+                let dst_prefix = dst_env.pack_meta.history.last_prefix()?;
+                if src_prefix != dst_prefix {
+                    builder.add(src_prefix, dst_prefix)?;
+                }
+
+                // Add custom replacements passed in.
+                for (src, dst) in replacement_paths.iter() {
+                    if src != dst {
+                        builder.add(src, dst)?;
+                    }
+                }
+
+                builder.build_if_non_empty()?
+            };
 
             // Then pull file data and create files.
             let mut from_sender = from_sender.into_inner();
@@ -583,9 +575,7 @@ pub async fn receiver(
                         let mut reader = (&mut from_sender).take(len);
 
                         // Copy the file contents.
-                        if src_prefix == dst_prefix {
-                            tokio::io::copy(&mut reader, &mut dst_tmp).await?;
-                        } else {
+                        if let Some(ref replacer) = replacer {
                             // We do different copies dependending on whether the file is binary or not.
                             let mut buf = vec![0; 4096];
                             let len = reader.read(&mut buf[..]).await?;
@@ -594,28 +584,17 @@ pub async fn receiver(
                                 dst_tmp.write_all(&buf).await?;
                                 tokio::io::copy(&mut reader, &mut dst_tmp).await?;
 
-                                // For binary files Replace prefixes.
+                                // For binary files, replace prefixes.
                                 // SAFETY: use mmap for fast in-place prefix replacement
                                 let mut mmap = unsafe { MmapMut::map_mut(&*dst_tmp)? };
-                                let mut offset = 0;
-                                while let Some(pos) = finder.find(&mmap[offset..]) {
-                                    let trailing_byte =
-                                        &mmap[offset + pos + src_prefix_bytes.len()..][..1];
-                                    if matches!(trailing_byte, b"" | b"/" | b"\0") {
-                                        let repl = replacement_prefix.get_or_try_init(|| {
-                                            null_pad(dst_prefix_bytes, src_prefix_bytes.len())
-                                        })?;
-                                        mmap[offset + pos..offset + pos + src_prefix_bytes.len()]
-                                            .copy_from_slice(repl);
-                                    }
-                                    offset = pos + src_prefix_bytes.len();
-                                }
+                                replacer.replace_inplace_padded(&mut mmap)?;
                             } else {
                                 reader.read_to_end(&mut buf).await?;
-                                // Replace prefixes.
-                                replace_bytestring(&mut buf, src_prefix_bytes, dst_prefix_bytes);
+                                replacer.replace_inplace(&mut buf);
                                 dst_tmp.write_all(&buf).await?;
                             }
+                        } else {
+                            tokio::io::copy(&mut reader, &mut dst_tmp).await?;
                         }
 
                         if *executable {
@@ -625,8 +604,8 @@ pub async fn receiver(
                         set_mtime(&fpath, *mtime).await?;
                     }
                     (FileContents::Symlink(mut target), (mtime, Receive::Symlink)) => {
-                        if let Ok(suffix) = target.strip_prefix(src_prefix) {
-                            target = dst_prefix.join(suffix);
+                        if let Some(ref replacer) = replacer {
+                            target = replacer.replace_path(target);
                         }
                         fs::symlink(target, &fpath).await?;
                         set_mtime(&fpath, *mtime).await?;
@@ -667,7 +646,7 @@ pub async fn sync(src: &Path, dst: &Path) -> Result<HashMap<PathBuf, Action>> {
     let (from_receiver, to_receiver) = tokio::io::split(recv);
     let (from_sender, to_sender) = tokio::io::split(send);
     let (actions, ()) = try_join!(
-        receiver(dst, from_sender, to_sender),
+        receiver(dst, from_sender, to_sender, HashMap::new()),
         sender(src, from_receiver, to_receiver),
     )?;
     Ok(actions)
