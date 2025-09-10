@@ -34,11 +34,12 @@ use serde::Deserialize;
 use serde::Serialize;
 
 #[pyclass(
-    frozen,
     name = "WorkspaceLocation",
-    module = "monarch._rust_bindings.monarch_extension.code_sync"
+    module = "monarch._rust_bindings.monarch_extension.code_sync",
+    eq,
+    frozen
 )]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum PyWorkspaceLocation {
     Constant(PathBuf),
     FromEnvVar { env: String, relpath: PathBuf },
@@ -84,11 +85,13 @@ impl PyWorkspaceLocation {
 }
 
 #[pyclass(
-    frozen,
     name = "WorkspaceShape",
-    module = "monarch._rust_bindings.monarch_extension.code_sync"
+    module = "monarch._rust_bindings.monarch_extension.code_sync",
+    eq,
+    frozen,
+    get_all
 )]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PyWorkspaceShape {
     dimension: Option<String>,
 }
@@ -112,8 +115,13 @@ impl PyWorkspaceShape {
     }
 }
 
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.code_sync")]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[pyclass(
+    module = "monarch._rust_bindings.monarch_extension.code_sync",
+    eq,
+    frozen,
+    get_all
+)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct RemoteWorkspace {
     location: PyWorkspaceLocation,
     shape: PyWorkspaceShape,
@@ -133,11 +141,12 @@ impl RemoteWorkspace {
 }
 
 #[pyclass(
-    frozen,
     name = "CodeSyncMethod",
-    module = "monarch._rust_bindings.monarch_extension.code_sync"
+    module = "monarch._rust_bindings.monarch_extension.code_sync",
+    eq,
+    frozen
 )]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum PyCodeSyncMethod {
     Rsync,
     CondaSync,
@@ -175,11 +184,13 @@ impl PyCodeSyncMethod {
 }
 
 #[pyclass(
-    frozen,
     name = "WorkspaceConfig",
-    module = "monarch._rust_bindings.monarch_extension.code_sync"
+    module = "monarch._rust_bindings.monarch_extension.code_sync",
+    eq,
+    frozen,
+    get_all
 )]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PyWorkspaceConfig {
     local: PathBuf,
     remote: RemoteWorkspace,
