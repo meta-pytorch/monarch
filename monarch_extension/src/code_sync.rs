@@ -77,6 +77,10 @@ impl PyWorkspaceLocation {
         loc.resolve()
             .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
     }
+
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
+    }
 }
 
 #[pyclass(
@@ -102,6 +106,10 @@ impl PyWorkspaceShape {
     fn exclusive() -> Self {
         Self { dimension: None }
     }
+
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
+    }
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.code_sync")]
@@ -117,6 +125,10 @@ impl RemoteWorkspace {
     #[pyo3(signature = (*, location, shape = PyWorkspaceShape::exclusive()))]
     fn new(location: PyWorkspaceLocation, shape: PyWorkspaceShape) -> Self {
         Self { location, shape }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
     }
 }
 
@@ -156,6 +168,10 @@ impl PyCodeSyncMethod {
         let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.as_any().getattr("from_bytes")?, (py_bytes,)))
     }
+
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
+    }
 }
 
 #[pyclass(
@@ -180,6 +196,10 @@ impl PyWorkspaceConfig {
             remote,
             method,
         }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
     }
 }
 
