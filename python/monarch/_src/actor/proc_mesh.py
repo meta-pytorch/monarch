@@ -480,7 +480,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
                         ),
                         shape=WorkspaceShape.shared("gpus"),
                     ),
-                    method=CodeSyncMethod.Rsync,
+                    method=CodeSyncMethod.Rsync(),
                 ),
             )
 
@@ -506,7 +506,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
                         ),
                         shape=WorkspaceShape.shared("gpus"),
                     ),
-                    method=CodeSyncMethod.CondaSync,
+                    method=CodeSyncMethod.CondaSync({}),
                 ),
             )
 

@@ -8,6 +8,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -148,15 +149,24 @@ impl RemoteWorkspace {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum PyCodeSyncMethod {
-    Rsync,
-    CondaSync,
+    Rsync {},
+    CondaSync {
+        path_prefix_replacements: HashMap<PathBuf, PyWorkspaceLocation>,
+    },
 }
 
 impl From<PyCodeSyncMethod> for CodeSyncMethod {
     fn from(method: PyCodeSyncMethod) -> CodeSyncMethod {
         match method {
-            PyCodeSyncMethod::Rsync => CodeSyncMethod::Rsync,
-            PyCodeSyncMethod::CondaSync => CodeSyncMethod::CondaSync,
+            PyCodeSyncMethod::Rsync {} => CodeSyncMethod::Rsync,
+            PyCodeSyncMethod::CondaSync {
+                path_prefix_replacements,
+            } => CodeSyncMethod::CondaSync {
+                path_prefix_replacements: path_prefix_replacements
+                    .into_iter()
+                    .map(|(l, r)| (l, r.into()))
+                    .collect(),
+            },
         }
     }
 }
@@ -200,7 +210,7 @@ struct PyWorkspaceConfig {
 #[pymethods]
 impl PyWorkspaceConfig {
     #[new]
-    #[pyo3(signature = (*, local, remote, method = PyCodeSyncMethod::Rsync))]
+    #[pyo3(signature = (*, local, remote, method = PyCodeSyncMethod::Rsync {}))]
     fn new(local: PathBuf, remote: RemoteWorkspace, method: PyCodeSyncMethod) -> Self {
         Self {
             local,
@@ -262,7 +272,7 @@ impl CodeSyncMeshClient {
         })?
     }
 
-    #[pyo3(signature = (*, local, remote, method = PyCodeSyncMethod::Rsync, auto_reload = false))]
+    #[pyo3(signature = (*, local, remote, method = PyCodeSyncMethod::Rsync {}, auto_reload = false))]
     fn sync_workspace<'py>(
         &self,
         py: Python<'py>,
