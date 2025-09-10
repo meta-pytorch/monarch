@@ -48,28 +48,45 @@ namespace {
 // This function extracts the address of the table entry for a function (e.g.
 // 0x7ffff7d0f150 above)
 std::optional<void*> extractJumpTarget(const uint8_t* functionBytes) {
+  // If the library was compiled without -fomit-frame-pointer, the first
+  // instructions will be:
+  // push %rbp       # 0x55
+  // mov %rsp, %rbp  # 0x48 0x89 0xe5
+  // push %rsp       # 0x65 0x54
+  // sub $0x8, %rsp  # 0x48 0x83 0xec 0x8
+  const uint8_t framePointerPrelude[] = {
+      0x55, 0x48, 0x89, 0xe5, 0x65, 0x54, 0x48, 0x83, 0xec, 0x8};
+  uint8_t* functionBytesStart = (uint8_t*)functionBytes;
+  if (std::memcmp(
+          functionBytes, framePointerPrelude, sizeof(framePointerPrelude)) ==
+      0) {
+    functionBytesStart = (uint8_t*)functionBytes + sizeof(framePointerPrelude);
+  }
+
   const uint8_t expectedOpcode[] = {0x81, 0x3D};
   const uint8_t expectedImmediateValue[] = {0x00, 0xBA, 0x1C, 0x32};
   const uint8_t jmpq[] = {0xFF, 0x25};
   const uint8_t movzbl_sil_esi[] = {0x40, 0x0f, 0xb6, 0xf6};
-  if (std::memcmp(functionBytes, expectedOpcode, sizeof(expectedOpcode)) != 0) {
+  if (std::memcmp(functionBytesStart, expectedOpcode, sizeof(expectedOpcode)) !=
+      0) {
     return std::nullopt;
   }
   if (std::memcmp(
-          functionBytes + 6,
+          functionBytesStart + 6,
           expectedImmediateValue,
           sizeof(expectedImmediateValue)) != 0) {
     return std::nullopt;
   }
 
   size_t jmpqOffset = 12;
-  if (std::memcmp(functionBytes + 12, jmpq, sizeof(jmpq)) != 0) {
+  if (std::memcmp(functionBytesStart + 12, jmpq, sizeof(jmpq)) != 0) {
     // The only exception to the pattern is cuMemsetD8Async which does a
     // ubyte -> uint promotion of its second argument. We just
     // skip that here. Our own function will redo the promotion,
     // but the operation is idempotent.
     if (std::memcmp(
-            functionBytes + 12, movzbl_sil_esi, sizeof(movzbl_sil_esi)) != 0) {
+            functionBytesStart + 12, movzbl_sil_esi, sizeof(movzbl_sil_esi)) !=
+        0) {
       return std::nullopt;
     }
     jmpqOffset += sizeof(movzbl_sil_esi);
@@ -78,10 +95,10 @@ std::optional<void*> extractJumpTarget(const uint8_t* functionBytes) {
   int32_t ripRelativeOffset;
   std::memcpy(
       &ripRelativeOffset,
-      functionBytes + jmpqOffset + 2,
+      functionBytesStart + jmpqOffset + 2,
       sizeof(ripRelativeOffset));
   uintptr_t jmpqInstructionAddress =
-      reinterpret_cast<uintptr_t>(functionBytes) + jmpqOffset;
+      reinterpret_cast<uintptr_t>(functionBytesStart) + jmpqOffset;
   uintptr_t targetAddress = jmpqInstructionAddress + 6 + ripRelativeOffset;
   return reinterpret_cast<void*>(targetAddress);
 }

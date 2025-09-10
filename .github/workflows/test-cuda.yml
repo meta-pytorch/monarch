@@ -58,6 +58,4 @@ jobs:
 
         # Run CUDA tests
         LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip"
-        # TODO(meriksen): temporarily disabled to unblock lands while debugging
-        # mock CUDA issues on the OSS setup
-        # python python/tests/test_mock_cuda.py
+        python python/tests/test_mock_cuda.py
