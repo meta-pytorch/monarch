@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -69,8 +70,13 @@ use crate::code_sync::rsync::RsyncResult;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Method {
-    Rsync { connect: PortRef<Connect> },
-    CondaSync { connect: PortRef<Connect> },
+    Rsync {
+        connect: PortRef<Connect>,
+    },
+    CondaSync {
+        connect: PortRef<Connect>,
+        path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
+    },
 }
 
 /// Describe the shape of the workspace.
@@ -248,7 +254,10 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                     // Observe any errors.
                     let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
                 }
-                Method::CondaSync { connect } => {
+                Method::CondaSync {
+                    connect,
+                    path_prefix_replacements,
+                } => {
                     // Forward rsync connection port to the RsyncActor, which will do the actual
                     // connection and run the client.
                     let (tx, mut rx) = cx.open_port::<Result<CondaSyncResult, String>>();
@@ -258,6 +267,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                             connect,
                             result: tx.bind(),
                             workspace,
+                            path_prefix_replacements,
                         })?;
                     // Observe any errors.
                     let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
@@ -332,10 +342,12 @@ impl CodeSyncMessageHandler for CodeSyncManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CodeSyncMethod {
     Rsync,
-    CondaSync,
+    CondaSync {
+        path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
+    },
 }
 
 pub async fn code_sync_mesh(
@@ -390,11 +402,14 @@ pub async fn code_sync_mesh(
                 .boxed(),
             )
         }
-        CodeSyncMethod::CondaSync => {
+        CodeSyncMethod::CondaSync {
+            path_prefix_replacements,
+        } => {
             let (conns_tx, conns_rx) = mailbox.open_port::<Connect>();
             (
                 Method::CondaSync {
                     connect: conns_tx.bind(),
+                    path_prefix_replacements,
                 },
                 async move {
                     conns_rx

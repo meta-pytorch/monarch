@@ -54,6 +54,8 @@ pub struct CondaSyncMessage {
     pub result: PortRef<Result<CondaSyncResult, String>>,
     /// The location of the workspace to sync.
     pub workspace: WorkspaceLocation,
+    /// Path prefixes to fixup/replace when copying.
+    pub path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
 }
 
 #[derive(Debug, Named, Serialize, Deserialize)]
@@ -79,6 +81,7 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
         cx: &hyperactor::Context<Self>,
         CondaSyncMessage {
             workspace,
+            path_prefix_replacements,
             connect,
             result,
         }: CondaSyncMessage,
@@ -88,7 +91,14 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
             let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
             connect.send(cx, connect_msg)?;
             let (mut read, mut write) = completer.complete().await?.into_split();
-            let changes_result = receiver(&workspace, &mut read, &mut write, HashMap::new()).await;
+            let path_prefix_replacements = path_prefix_replacements
+                .into_iter()
+                .map(|(l, r)| Ok((l, r.resolve()?)))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .collect::<HashMap<_, _>>();
+            let changes_result =
+                receiver(&workspace, &mut read, &mut write, path_prefix_replacements).await;
 
             // Shutdown our end, then read from the other end till exhaustion to avoid undeliverable
             // message spam.
@@ -110,6 +120,7 @@ pub async fn conda_sync_mesh<M>(
     actor_mesh: &M,
     local_workspace: PathBuf,
     remote_workspace: WorkspaceLocation,
+    path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
 ) -> Result<Vec<CondaSyncResult>>
 where
     M: ActorMesh<Actor = CondaSyncActor>,
@@ -145,6 +156,7 @@ where
                     connect: conns_tx.bind(),
                     result: result_tx.bind(),
                     workspace: remote_workspace,
+                    path_prefix_replacements,
                 },
             )?;
 

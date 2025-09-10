@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from pathlib import Path
-from typing import final
+from typing import Dict, final
 
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 
@@ -44,8 +44,15 @@ class CodeSyncMethod:
     Python binding for the Rust CodeSyncMethod enum.
     """
 
-    Rsync: CodeSyncMethod
-    CondaSync: CodeSyncMethod
+    @final
+    class Rsync(CodeSyncMethod):
+        def __init__(self) -> None: ...
+
+    @final
+    class CondaSync(CodeSyncMethod):
+        def __init__(
+            self, prefix_path_replacements: Dict[str | Path, WorkspaceLocation]
+        ) -> None: ...
 
 @final
 class RemoteWorkspace:
