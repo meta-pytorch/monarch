@@ -487,7 +487,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         # If `conda` is set, also sync the currently activated conda env.
         conda_prefix = conda_utils.active_env_dir()
         if isinstance(workspace.env, CondaEnvironment):
-            conda_prefix = workspace.env._conda_prefix
+            conda_prefix = workspace.env.conda_prefix
 
         if conda and conda_prefix is not None:
             conda_prefix = Path(conda_prefix)
