@@ -7,6 +7,8 @@
 # pyre-strict
 
 import asyncio
+import importlib.metadata
+import json
 import logging
 import os
 import sys
@@ -31,6 +33,7 @@ from typing import (
     TYPE_CHECKING,
     TypeVar,
 )
+from urllib.parse import urlparse
 from weakref import WeakValueDictionary
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
@@ -468,20 +471,19 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         # The workspace shape (i.e. only perform one rsync per host).
         assert set(self._shape.labels).issubset({"gpus", "hosts"})
 
-        workspaces = []
+        workspaces = {}
         for src_dir, dst_dir in workspace.dirs.items():
-            workspaces.append(
-                WorkspaceConfig(
-                    local=Path(src_dir),
-                    remote=RemoteWorkspace(
-                        location=WorkspaceLocation.FromEnvVar(
-                            env="WORKSPACE_DIR",
-                            relpath=dst_dir,
-                        ),
-                        shape=WorkspaceShape.shared("gpus"),
+            local = Path(src_dir)
+            workspaces[local] = WorkspaceConfig(
+                local=local,
+                remote=RemoteWorkspace(
+                    location=WorkspaceLocation.FromEnvVar(
+                        env="WORKSPACE_DIR",
+                        relpath=dst_dir,
                     ),
-                    method=CodeSyncMethod.Rsync(),
+                    shape=WorkspaceShape.shared("gpus"),
                 ),
+                method=CodeSyncMethod.Rsync(),
             )
 
         # If `conda` is set, also sync the currently activated conda env.
@@ -496,23 +498,82 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
             while conda_prefix.is_symlink():
                 conda_prefix = conda_prefix.parent / conda_prefix.readlink()
 
-            workspaces.append(
-                WorkspaceConfig(
-                    local=conda_prefix,
-                    remote=RemoteWorkspace(
+            # Build a list of additional paths prefixes to fixup when syncing
+            # the conda env.
+            conda_prefix_replacements = {}
+
+            # Auto-detect editable installs and implicitly add workspaces for
+            # them.
+            # NOTE(agallagher): There's sometimes a `python3.1` symlink to
+            # `python3.10`, so avoid it.
+            (lib_python,) = [
+                dirpath
+                for dirpath in conda_prefix.glob("lib/python*")
+                if not os.path.islink(dirpath)
+            ]
+            for direct_url in lib_python.glob(
+                "site-packages/*.dist-info/direct_url.json"
+            ):
+                # Parse the direct_url.json to see if it's an editable install
+                # (https://packaging.python.org/en/latest/specifications/direct-url/#example-pip-commands-and-their-effect-on-direct-url-json).
+                with open(direct_url) as f:
+                    info = json.load(f)
+                if not info.get("dir_info", {}).get("editable", False):
+                    continue
+
+                # Extract the workspace path from the URL (e.g. `file///my/workspace/`).
+                url = urlparse(info["url"])
+                assert url.scheme == "file", f"expected file:// URL, got {url.scheme}"
+
+                # Get the project name, so we can use it below to create a unique-ish
+                # remote directory.
+                dist = importlib.metadata.PathDistribution(direct_url.parent)
+                name = dist.metadata["Name"]
+
+                local = Path(url.path)
+
+                # Check if we've already defined a workspace for this local path.
+                existing = workspaces.get(local)
+                if existing is not None:
+                    assert existing.method == CodeSyncMethod.Rsync()
+                    remote = existing.remote
+                else:
+                    # Otherwise, add the workspace to the list.
+                    remote = RemoteWorkspace(
                         location=WorkspaceLocation.FromEnvVar(
-                            env="CONDA_PREFIX",
-                            relpath="",
+                            env="WORKSPACE_DIR",
+                            relpath=f"__editable__.{name}",
                         ),
                         shape=WorkspaceShape.shared("gpus"),
+                    )
+                    workspaces[local] = WorkspaceConfig(
+                        local=local,
+                        remote=remote,
+                        method=CodeSyncMethod.Rsync(),
+                    )
+
+                logging.info(
+                    f"Syncing editable install of {name} from {local} (to {remote.location})"
+                )
+
+                # Make sure we fixup path prefixes to the editable install.
+                conda_prefix_replacements[local] = remote.location
+
+            workspaces[conda_prefix] = WorkspaceConfig(
+                local=conda_prefix,
+                remote=RemoteWorkspace(
+                    location=WorkspaceLocation.FromEnvVar(
+                        env="CONDA_PREFIX",
+                        relpath="",
                     ),
-                    method=CodeSyncMethod.CondaSync({}),
+                    shape=WorkspaceShape.shared("gpus"),
                 ),
+                method=CodeSyncMethod.CondaSync(conda_prefix_replacements),
             )
 
         assert self._code_sync_client is not None
         await self._code_sync_client.sync_workspaces(
-            workspaces=workspaces,
+            workspaces=list(workspaces.values()),
             auto_reload=auto_reload,
         )
 
