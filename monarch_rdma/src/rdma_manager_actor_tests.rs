@@ -405,7 +405,7 @@ mod tests {
             println!("Skipping test: GPU P2P not supported");
             return Ok(());
         }
-        const BSIZE: usize = 1024 * 1024;
+        const BSIZE: usize = 2 * 1024 * 1024;
         let devices = get_all_devices();
         if devices.len() < 5 {
             println!(
@@ -711,7 +711,7 @@ mod tests {
             println!("Skipping test: GPU P2P not supported");
             return Ok(());
         }
-        const BSIZE: usize = 32;
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
         let devices = get_all_devices();
         if devices.len() < 5 {
             println!(

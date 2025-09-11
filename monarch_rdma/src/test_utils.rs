@@ -266,8 +266,8 @@ pub mod test_utils {
         pub actor_2: ActorRef<RdmaManagerActor>,
         pub rdma_handle_1: RdmaBuffer,
         pub rdma_handle_2: RdmaBuffer,
-        handle_1_cuda: bool,
-        handle_2_cuda: bool,
+        cuda_context_1: Option<cuda_sys::CUcontext>,
+        cuda_context_2: Option<cuda_sys::CUcontext>,
     }
 
     #[derive(Debug, Clone)]
@@ -287,47 +287,51 @@ pub mod test_utils {
         /// # Arguments
         ///
         /// * `buffer_size` - The size of the buffers to be used in the test.
-        /// * `devices` - Optional tuple specifying the indices of RDMA devices to use. If not provided, then
+        /// * `nics` - Tuple specifying the indices of RDMA devices to use
+        /// * `accels` - Tuple specifying the indices of accelerators to use (or cpu)
         ///   both RDMAManagerActors will default to the first indexed RDMA device.
         pub async fn setup(
             buffer_size: usize,
             nics: (&str, &str),
-            devices: (&str, &str),
+            accels: (&str, &str),
         ) -> Result<Self, anyhow::Error> {
-            let all_devices = get_all_devices();
+            let all_nic_devices = get_all_devices();
             let mut config1 = IbverbsConfig::default();
             let mut config2 = IbverbsConfig::default();
 
-            for device in all_devices.iter() {
-                if device.name == nics.0 {
-                    config1.device = device.clone();
+            for nic_device in all_nic_devices.iter() {
+                if nic_device.name == nics.0 {
+                    config1.device = nic_device.clone();
                 }
-                if device.name == nics.1 {
-                    config2.device = device.clone();
+                if nic_device.name == nics.1 {
+                    config2.device = nic_device.clone();
                 }
             }
+            let accel1;
+            let accel2;
 
-            let device_str1 = (String::new(), 0);
-            let device_str2 = (String::new(), 0);
-
-            if let Some((backend, idx)) = devices.0.split_once(':') {
+            if let Some((backend, idx)) = accels.0.split_once(':') {
                 assert!(backend == "cuda");
-                let _parsed_idx = idx
+                let parsed_idx = idx
                     .parse::<usize>()
                     .expect("Device index is not a valid integer");
+                accel1 = (backend.to_string(), parsed_idx);
             } else {
-                assert!(devices.0 == "cpu");
+                assert!(accels.0 == "cpu");
                 config1.use_gpu_direct = false;
+                accel1 = ("cpu".to_string(), 0);
             }
 
-            if let Some((backend, idx)) = devices.1.split_once(':') {
+            if let Some((backend, idx)) = accels.1.split_once(':') {
                 assert!(backend == "cuda");
-                let _parsed_idx = idx
+                let parsed_idx = idx
                     .parse::<usize>()
                     .expect("Device index is not a valid integer");
+                accel2 = (backend.to_string(), parsed_idx);
             } else {
-                assert!(devices.1 == "cpu");
+                assert!(accels.1 == "cpu");
                 config2.use_gpu_direct = false;
+                accel2 = ("cpu".to_string(), 0);
             }
 
             let alloc_1 = LocalAllocator
@@ -357,15 +361,17 @@ pub mod test_utils {
                 proc_mesh_2.spawn("rdma_manager", &(config2)).await.unwrap();
 
             let mut buf_vec = Vec::new();
+            let mut cuda_contexts = Vec::new();
 
-            for device_str in [device_str1.clone(), device_str2.clone()] {
-                if device_str.0 != "cpu" {
+            for accel in [accel1.clone(), accel2.clone()] {
+                if accel.0 == "cpu" {
                     let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
                     buf_vec.push(Buffer {
                         ptr: buffer.as_mut_ptr() as u64,
                         len: buffer.len(),
                         cpu_ref: Some(buffer),
                     });
+                    cuda_contexts.push(None);
                     continue;
                 }
                 // CUDA case
@@ -376,10 +382,10 @@ pub mod test_utils {
                     let mut handle: cuda_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
 
                     let mut device: cuda_sys::CUdevice = std::mem::zeroed();
-                    cu_check!(cuda_sys::cuDeviceGet(&mut device, device_str.1));
+                    cu_check!(cuda_sys::cuDeviceGet(&mut device, accel.1 as i32));
 
                     let mut context: cuda_sys::CUcontext = std::mem::zeroed();
-                    cu_check!(cuda_sys::cuCtxCreate_v2(&mut context, 0, device_str.1));
+                    cu_check!(cuda_sys::cuCtxCreate_v2(&mut context, 0, accel.1 as i32));
                     cu_check!(cuda_sys::cuCtxSetCurrent(context));
 
                     let mut granularity: usize = 0;
@@ -443,16 +449,22 @@ pub mod test_utils {
                         len: padded_size,
                         cpu_ref: None,
                     });
+                    cuda_contexts.push(Some(context));
                 }
             }
 
             // Fill buffer1 with test data
-            if device_str1.0 == "cuda" {
+            if accel1.0 == "cuda" {
                 let mut temp_buffer = vec![0u8; buffer_size].into_boxed_slice();
                 for (i, val) in temp_buffer.iter_mut().enumerate() {
                     *val = (i % 256) as u8;
                 }
                 unsafe {
+                    // Use the CUDA context that was created for the first buffer
+                    cu_check!(cuda_sys::cuCtxSetCurrent(
+                        cuda_contexts[0].expect("No CUDA context found")
+                    ));
+
                     cu_check!(cuda_sys::cuMemcpyHtoD_v2(
                         buf_vec[0].ptr,
                         temp_buffer.as_ptr() as *const std::ffi::c_void,
@@ -489,8 +501,8 @@ pub mod test_utils {
                 actor_2,
                 rdma_handle_1,
                 rdma_handle_2,
-                handle_1_cuda: device_str1.0 == "cuda",
-                handle_2_cuda: device_str2.0 == "cuda",
+                cuda_context_1: cuda_contexts.get(0).cloned().flatten(),
+                cuda_context_2: cuda_contexts.get(1).cloned().flatten(),
             })
         }
 
@@ -501,8 +513,11 @@ pub mod test_utils {
             self.actor_2
                 .release_buffer(self.client_2, self.rdma_handle_2.clone())
                 .await?;
-            if self.handle_1_cuda {
+            if self.cuda_context_1.is_some() {
                 unsafe {
+                    cu_check!(cuda_sys::cuCtxSetCurrent(
+                        self.cuda_context_1.expect("No CUDA context found")
+                    ));
                     cu_check!(cuda_sys::cuMemUnmap(
                         self.buffer_1.ptr as cuda_sys::CUdeviceptr,
                         self.buffer_1.len
@@ -513,8 +528,11 @@ pub mod test_utils {
                     ));
                 }
             }
-            if self.handle_2_cuda {
+            if self.cuda_context_2.is_some() {
                 unsafe {
+                    cu_check!(cuda_sys::cuCtxSetCurrent(
+                        self.cuda_context_2.expect("No CUDA context found")
+                    ));
                     cu_check!(cuda_sys::cuMemUnmap(
                         self.buffer_2.ptr as cuda_sys::CUdeviceptr,
                         self.buffer_2.len
@@ -530,17 +548,20 @@ pub mod test_utils {
 
         pub async fn verify_buffers(&self, size: usize) -> Result<(), anyhow::Error> {
             let mut buf_vec = Vec::new();
-            for (handle, is_cuda) in [
-                (self.rdma_handle_1.clone(), self.handle_1_cuda),
-                (self.rdma_handle_2.clone(), self.handle_2_cuda),
+            for (virtual_addr, cuda_context) in [
+                (self.buffer_1.ptr, self.cuda_context_1),
+                (self.buffer_2.ptr, self.cuda_context_2),
             ] {
-                if is_cuda {
+                if cuda_context.is_some() {
                     let mut temp_buffer = vec![0u8; size].into_boxed_slice();
                     // SAFETY: The buffer is allocated with the correct size and the pointer is valid.
                     unsafe {
+                        cu_check!(cuda_sys::cuCtxSetCurrent(
+                            cuda_context.expect("No CUDA context found")
+                        ));
                         cu_check!(cuda_sys::cuMemcpyDtoH_v2(
                             temp_buffer.as_mut_ptr() as *mut std::ffi::c_void,
-                            handle.addr as cuda_sys::CUdeviceptr,
+                            virtual_addr as cuda_sys::CUdeviceptr,
                             size
                         ));
                     }
@@ -551,7 +572,7 @@ pub mod test_utils {
                     });
                 } else {
                     buf_vec.push(Buffer {
-                        ptr: handle.addr as u64,
+                        ptr: virtual_addr,
                         len: size,
                         cpu_ref: None,
                     });
