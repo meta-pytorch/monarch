@@ -57,7 +57,36 @@ impl PyValueMesh {
         Ok(PyList::new(py, vec)?.into())
     }
 
-    // TODO(SF, 2025-09-10): Implement more bindings.
+    /// Get value by linear rank (0..num_ranks-1).
+    fn get(&self, _py: Python<'_>, rank: usize) -> PyResult<PyObject> {
+        let n = self.inner.region().num_ranks();
+        if rank >= n {
+            return Err(PyValueError::new_err(format!(
+                "index {} out of range (len={})",
+                rank, n
+            )));
+        }
+        // ValueMesh<T: Clone>: get() returns owned T; we clone the
+        // Py<PyAny>. `unwrap` is safe because the bounds have been
+        // checked.
+        let v: Py<PyAny> = self.inner.get(rank).unwrap();
+        Ok(v.into())
+    }
+
+    /// Build from (rank, value) pairs with last-write-wins semantics.
+    #[staticmethod]
+    fn from_indexed(
+        _py: Python<'_>,
+        shape: &PyShape,
+        pairs: Vec<(usize, Py<PyAny>)>,
+    ) -> PyResult<Self> {
+        let extent: Extent = shape.get_inner().clone().into();
+        let region: Region = extent.into();
+        let inner = <ValueMesh<Py<PyAny>> as ndslice::view::BuildFromRegionIndexed<Py<PyAny>>>
+            ::build_indexed(region, pairs)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
