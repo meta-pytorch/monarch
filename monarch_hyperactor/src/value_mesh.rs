@@ -7,7 +7,6 @@
  */
 
 use hyperactor_mesh::v1::ValueMesh;
-use ndslice::Extent;
 use ndslice::Region;
 use ndslice::view::BuildFromRegion;
 use ndslice::view::Ranked;
@@ -32,9 +31,11 @@ impl PyValueMesh {
     /// __init__(self, shape: Shape, values: list)
     #[new]
     fn new(_py: Python<'_>, shape: &PyShape, values: Bound<'_, PyList>) -> PyResult<Self> {
-        // Convert shape to region.
-        let extent: Extent = shape.get_inner().clone().into();
-        let region: Region = extent.into();
+        // Convert shape to region, preserving the original Slice
+        // (offset/strides) so linear rank order matches the Python
+        // Shape.
+        let s = shape.get_inner();
+        let region = Region::new(s.labels().to_vec(), s.slice().clone());
         let vals: Vec<Py<PyAny>> = values.extract()?;
 
         // Build & validate cardinality against region.
@@ -80,8 +81,9 @@ impl PyValueMesh {
         shape: &PyShape,
         pairs: Vec<(usize, Py<PyAny>)>,
     ) -> PyResult<Self> {
-        let extent: Extent = shape.get_inner().clone().into();
-        let region: Region = extent.into();
+        // Preserve the shape's original Slice (offset/strides).
+        let s = shape.get_inner();
+        let region = Region::new(s.labels().to_vec(), s.slice().clone());
         let inner = <ValueMesh<Py<PyAny>> as ndslice::view::BuildFromRegionIndexed<Py<PyAny>>>
             ::build_indexed(region, pairs)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
