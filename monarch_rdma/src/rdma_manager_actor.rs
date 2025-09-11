@@ -127,10 +127,12 @@ pub struct RdmaManagerActor {
 
 #[async_trait]
 impl Actor for RdmaManagerActor {
-    type Params = IbverbsConfig;
+    type Params = Option<IbverbsConfig>;
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
-        let mut config = _params;
+    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+        // Use provided config or default if none provided
+        let mut config = params.unwrap_or_default();
+        tracing::debug!("rdma is enabled, using device {}", config.device);
 
         // check config and hardware support align
         if config.use_gpu_direct {
