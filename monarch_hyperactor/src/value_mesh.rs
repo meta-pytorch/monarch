@@ -7,7 +7,6 @@
  */
 
 use hyperactor_mesh::v1::ValueMesh;
-use ndslice::Extent;
 use ndslice::Region;
 use ndslice::view::BuildFromRegion;
 use ndslice::view::Ranked;
@@ -32,9 +31,11 @@ impl PyValueMesh {
     /// __init__(self, shape: Shape, values: list)
     #[new]
     fn new(_py: Python<'_>, shape: &PyShape, values: Bound<'_, PyList>) -> PyResult<Self> {
-        // Convert shape to region.
-        let extent: Extent = shape.get_inner().clone().into();
-        let region: Region = extent.into();
+        // Convert shape to region, preserving the original Slice
+        // (offset/strides) so linear rank order matches the Python
+        // Shape.
+        let s = shape.get_inner();
+        let region = Region::new(s.labels().to_vec(), s.slice().clone());
         let vals: Vec<Py<PyAny>> = values.extract()?;
 
         // Build & validate cardinality against region.
@@ -57,7 +58,37 @@ impl PyValueMesh {
         Ok(PyList::new(py, vec)?.into())
     }
 
-    // TODO(SF, 2025-09-10): Implement more bindings.
+    /// Get value by linear rank (0..num_ranks-1).
+    fn get(&self, _py: Python<'_>, rank: usize) -> PyResult<PyObject> {
+        let n = self.inner.region().num_ranks();
+        if rank >= n {
+            return Err(PyValueError::new_err(format!(
+                "index {} out of range (len={})",
+                rank, n
+            )));
+        }
+        // ValueMesh<T: Clone>: get() returns owned T; we clone the
+        // Py<PyAny>. `unwrap` is safe because the bounds have been
+        // checked.
+        let v: Py<PyAny> = self.inner.get(rank).unwrap();
+        Ok(v.into())
+    }
+
+    /// Build from (rank, value) pairs with last-write-wins semantics.
+    #[staticmethod]
+    fn from_indexed(
+        _py: Python<'_>,
+        shape: &PyShape,
+        pairs: Vec<(usize, Py<PyAny>)>,
+    ) -> PyResult<Self> {
+        // Preserve the shape's original Slice (offset/strides).
+        let s = shape.get_inner();
+        let region = Region::new(s.labels().to_vec(), s.slice().clone());
+        let inner = <ValueMesh<Py<PyAny>> as ndslice::view::BuildFromRegionIndexed<Py<PyAny>>>
+            ::build_indexed(region, pairs)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {

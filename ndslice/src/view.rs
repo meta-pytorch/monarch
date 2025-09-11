@@ -834,11 +834,10 @@ impl Region {
         }
     }
 
-    /// Crate-local constructor to build arbitrary regions (incl.
-    /// non-contiguous / offset). Keeps the public API constrained
-    /// while letting tests/strategies explore more cases.
+    /// Constructor to build arbitrary regions (incl. non-contiguous /
+    /// offset).
     #[allow(dead_code)]
-    pub(crate) fn new(labels: Vec<String>, slice: Slice) -> Self {
+    pub fn new(labels: Vec<String>, slice: Slice) -> Self {
         Self { labels, slice }
     }
 

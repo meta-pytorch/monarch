@@ -66,6 +66,10 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection as HySelection
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+
+from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
+    ValueMesh as HyValueMesh,
+)
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
@@ -579,10 +583,16 @@ class ValueMesh(MeshTrait, Generic[R]):
 
     def __init__(self, shape: Shape, values: List[R]) -> None:
         self._shape = shape
-        self._values = values
+        self._hy: HyValueMesh = HyValueMesh(shape, values)
 
     def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
-        return ValueMesh(shape, self._values)
+        # Build a map from current global ranks -> local indices.
+        cur_ranks = list(self._shape.ranks())
+        pos = {g: i for i, g in enumerate(cur_ranks)}
+        # For each global rank of the target shape, pull from our
+        # current local index.
+        remapped = [self._hy.get(pos[g]) for g in shape.ranks()]
+        return ValueMesh(shape, remapped)
 
     def item(self, **kwargs) -> R:
         """
@@ -601,7 +611,16 @@ class ValueMesh(MeshTrait, Generic[R]):
         if kwargs:
             raise KeyError(f"item has extra dimensions: {list(kwargs.keys())}")
 
-        return self._values[self._ndslice.nditem(coordinates)]
+        global_rank = self._ndslice.nditem(coordinates)  # May include offset.
+        # Map global -> local (position in this shape's rank order).
+        ranks = list(self._shape.ranks())
+        try:
+            local_idx = ranks.index(global_rank)
+        except ValueError:
+            # Shouldn't happen if Shape is consistent, but keep a clear
+            # error.
+            raise IndexError(f"rank {global_rank} not in current shape")
+        return self._hy.get(local_idx)
 
     def items(self) -> Iterable[Tuple[Point, R]]:
         """
@@ -611,8 +630,8 @@ class ValueMesh(MeshTrait, Generic[R]):
             Values at all coordinates.
         """
         extent = self._shape.extent
-        for i, rank in enumerate(self._shape.ranks()):
-            yield Point(i, extent), self._values[rank]
+        for i, _global_rank in enumerate(self._shape.ranks()):
+            yield Point(i, extent), self._hy.get(i)
 
     def __iter__(self) -> Iterator[Tuple[Point, R]]:
         return iter(self.items())
@@ -628,6 +647,14 @@ class ValueMesh(MeshTrait, Generic[R]):
     @property
     def _labels(self) -> Iterable[str]:
         return self._shape.labels
+
+    def __getstate__(self):
+        return {"shape": self._shape, "values": self._hy.values()}
+
+    def __setstate__(self, state):
+        self._shape = state["shape"]
+        vals = state["values"]
+        self._hy = HyValueMesh(self._shape, vals)
 
 
 def send(
