@@ -375,14 +375,20 @@ impl RdmaDomain {
                 ptr,
             );
             let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
-
             let access = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
                 | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
                 | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
                 | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-
-            let mr;
-            if is_cuda {
+            tracing::debug!(
+                "[register_mr] regimemtype={}, is_cuda={}, self.pd={:?}, access.0={}, addr={}, size={}",
+                mem_type,
+                is_cuda,
+                self.pd,
+                access.0,
+                addr,
+                size
+            );
+            let mr = if is_cuda {
                 let mut fd: i32 = -1;
                 cuda_sys::cuMemGetHandleForAddressRange(
                     &mut fd as *mut i32 as *mut std::ffi::c_void,
@@ -391,15 +397,15 @@ impl RdmaDomain {
                     cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                     0,
                 );
-                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(self.pd, 0, size, 0, fd, access.0 as i32);
+                rdmaxcel_sys::ibv_reg_dmabuf_mr(self.pd, 0, size, 0, fd, access.0 as i32)
             } else {
-                mr = rdmaxcel_sys::ibv_reg_mr(
+                rdmaxcel_sys::ibv_reg_mr(
                     self.pd,
                     addr as *mut std::ffi::c_void,
                     size,
                     access.0 as i32,
-                );
-            }
+                )
+            };
 
             if mr.is_null() {
                 return Err(anyhow::anyhow!("failed to register memory region (MR)"));
