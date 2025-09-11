@@ -173,6 +173,11 @@ _proc_mesh_registry: WeakValueDictionary[ProcMeshRef, "ProcMesh"] = (
 )
 
 
+def get_active_proc_meshes() -> List["ProcMesh"]:
+    """Get a list of all active ProcMesh instances."""
+    return list(_proc_mesh_registry.values())
+
+
 def _deref_proc_mesh(proc_mesh: ProcMeshRef) -> "ProcMesh":
     if proc_mesh not in _proc_mesh_registry:
         raise ValueError(
@@ -615,7 +620,6 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         This will stop all processes (and actors) in the mesh and
         release any resources associated with the mesh.
         """
-        self._logging_manager.stop()
 
         async def _stop_nonblocking() -> None:
             await (await self._proc_mesh).stop_nonblocking()
@@ -634,8 +638,6 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
     # Finalizer to check if the proc mesh was closed properly.
     def __del__(self) -> None:
         if not self._stopped:
-            self._logging_manager.stop()
-
             warnings.warn(
                 f"unstopped ProcMesh {self!r}",
                 ResourceWarning,

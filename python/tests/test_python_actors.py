@@ -855,6 +855,55 @@ async def test_logging_option_defaults() -> None:
             pass
 
 
+class MockEvents:
+    def __init__(self):
+        self.callbacks = {}
+        self.registers = 0
+
+    def register(self, event_name, callback):
+        if event_name not in self.callbacks:
+            self.callbacks[event_name] = []
+        self.callbacks[event_name].append(callback)
+        self.registers += 1
+
+    def trigger(self, event_name, *args, **kwargs):
+        if event_name in self.callbacks:
+            for callback in self.callbacks[event_name]:
+                callback(*args, **kwargs)
+
+
+class MockIPython:
+    def __init__(self):
+        self.events = MockEvents()
+
+
+# oss_skip: pytest keeps complaining about mocking get_ipython module
+@pytest.mark.oss_skip
+async def test_flush_called_only_once() -> None:
+    """Test that flush is called only once when ending an ipython cell"""
+    mock_ipython = MockIPython()
+    with unittest.mock.patch(
+        "monarch._src.actor.logging.get_ipython",
+        lambda: mock_ipython,
+    ), unittest.mock.patch(
+        "monarch._src.actor.logging.IN_IPYTHON", True
+    ), unittest.mock.patch(
+        "monarch._src.actor.logging.flush_all_proc_mesh_logs"
+    ) as mock_flush:
+        # Create 2 proc meshes with a large aggregation window
+        pm1 = await this_host().spawn_procs(per_host={"gpus": 2})
+        _ = await this_host().spawn_procs(per_host={"gpus": 2})
+        # flush not yet called unless post_run_cell
+        assert mock_flush.call_count == 0
+        assert mock_ipython.events.registers == 0
+        await pm1.logging_option(stream_to_client=True, aggregate_window_sec=600)
+        assert mock_ipython.events.registers == 1
+
+        # now, flush should be called only once
+        mock_ipython.events.trigger("post_run_cell", unittest.mock.MagicMock())
+        assert mock_flush.call_count == 1
+
+
 # oss_skip: pytest keeps complaining about mocking get_ipython module
 @pytest.mark.oss_skip
 @pytest.mark.timeout(180)
@@ -876,38 +925,6 @@ async def test_flush_logs_ipython() -> None:
             sys.stdout = stdout_file
 
             try:
-                # Mock IPython environment
-                class MockExecutionResult:
-                    pass
-
-                class MockEvents:
-                    def __init__(self):
-                        self.callbacks = {}
-                        self.registers = 0
-                        self.unregisters = 0
-
-                    def register(self, event_name, callback):
-                        if event_name not in self.callbacks:
-                            self.callbacks[event_name] = []
-                        self.callbacks[event_name].append(callback)
-                        self.registers += 1
-
-                    def unregister(self, event_name, callback):
-                        if event_name not in self.callbacks:
-                            raise ValueError(f"Event {event_name} not registered")
-                        assert callback in self.callbacks[event_name]
-                        self.callbacks[event_name].remove(callback)
-                        self.unregisters += 1
-
-                    def trigger(self, event_name, *args, **kwargs):
-                        if event_name in self.callbacks:
-                            for callback in self.callbacks[event_name]:
-                                callback(*args, **kwargs)
-
-                class MockIPython:
-                    def __init__(self):
-                        self.events = MockEvents()
-
                 mock_ipython = MockIPython()
 
                 with unittest.mock.patch(
@@ -928,13 +945,6 @@ async def test_flush_logs_ipython() -> None:
                         await pm2.logging_option(
                             stream_to_client=True, aggregate_window_sec=600
                         )
-                        # TODO: fix the following assertion
-                        # assert mock_ipython.events.unregisters == 2 * i
-
-                        # _get_controller_controller() spawns an extra local mesh
-                        # but log streaming is disabled so it doesn't hurt
-                        assert mock_ipython.events.registers == 1 + 2 * (i + 1)
-                        await asyncio.sleep(1)
 
                         # Generate some logs that will be aggregated
                         for _ in range(5):
@@ -943,21 +953,16 @@ async def test_flush_logs_ipython() -> None:
 
                         # Trigger the post_run_cell event which should flush logs
                         mock_ipython.events.trigger(
-                            "post_run_cell", MockExecutionResult()
+                            "post_run_cell", unittest.mock.MagicMock()
                         )
 
                     # Flush all outputs
                     stdout_file.flush()
                     os.fsync(stdout_file.fileno())
 
-                gc.collect()
-
-                # Same as above, _get_controller_controller() spawns an extra local mesh
-                assert mock_ipython.events.registers == 7
-                # There are many objects still taking refs
-                # TODO: fix the following assertion
-                assert mock_ipython.events.unregisters == 0
-                assert len(mock_ipython.events.callbacks["post_run_cell"]) == 7
+                # We expect to register post_run_cell hook only once per notebook/ipython session
+                assert mock_ipython.events.registers == 1
+                assert len(mock_ipython.events.callbacks["post_run_cell"]) == 1
             finally:
                 # Restore Python's sys.stdout
                 sys.stdout = original_sys_stdout

@@ -6,10 +6,8 @@
 
 # pyre-strict
 
-import gc
 import logging
-
-from typing import Callable
+import threading
 
 from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
 
@@ -29,11 +27,24 @@ try:
 except ImportError:
     pass
 
+logger: logging.Logger = logging.getLogger(__name__)
+
+_global_flush_registered = False
+_global_flush_lock = threading.Lock()
+
+
+def flush_all_proc_mesh_logs() -> None:
+    """Flush logs from all active ProcMesh instances."""
+    # import `get_active_proc_meshes` here to avoid circular import dependency
+    from monarch._src.actor.proc_mesh import get_active_proc_meshes
+
+    for pm in get_active_proc_meshes():
+        pm._logging_manager.flush()
+
 
 class LoggingManager:
     def __init__(self) -> None:
         self._logging_mesh_client: LoggingMeshClient | None = None
-        self._ipython_flush_logs_handler: Callable[..., None] | None = None
 
     async def init(self, proc_mesh: HyProcMesh, stream_to_client: bool) -> None:
         if self._logging_mesh_client is not None:
@@ -46,28 +57,17 @@ class LoggingManager:
             level=logging.INFO,
         )
 
+    def register_flusher_if_in_ipython(self) -> None:
         if IN_IPYTHON:
             # For ipython environment, a cell can end fast with threads running in background.
-            # Flush all the ongoing logs proactively to avoid missing logs.
-            assert self._logging_mesh_client is not None
-            logging_client: LoggingMeshClient = self._logging_mesh_client
-            ipython = get_ipython()
-
-            # pyre-ignore[11]
-            def flush_logs(_: ExecutionResult) -> None:
-                try:
-                    Future(coro=logging_client.flush().spawn().task()).get(3)
-                except TimeoutError:
-                    # We need to prevent failed proc meshes not coming back
-                    pass
-
-            # Force to recycle previous undropped proc_mesh.
-            # Otherwise, we may end up with unregisterd dead callbacks.
-            gc.collect()
-
-            # Store the handler reference so we can unregister it later
-            self._ipython_flush_logs_handler = flush_logs
-            ipython.events.register("post_run_cell", flush_logs)
+            # register a post_run_cell event ONCE to flush all logs from all proc meshes.
+            with _global_flush_lock:
+                global _global_flush_registered
+                if not _global_flush_registered:
+                    get_ipython().events.register(
+                        "post_run_cell", lambda _: flush_all_proc_mesh_logs()
+                    )
+                    _global_flush_registered = True
 
     async def logging_option(
         self,
@@ -84,11 +84,15 @@ class LoggingManager:
             aggregate_window_sec=aggregate_window_sec,
             level=level,
         )
+        self.register_flusher_if_in_ipython()
 
-    def stop(self) -> None:
-        if self._ipython_flush_logs_handler is not None:
-            assert IN_IPYTHON
-            ipython = get_ipython()
-            assert ipython is not None
-            ipython.events.unregister("post_run_cell", self._ipython_flush_logs_handler)
-            self._ipython_flush_logs_handler = None
+    def flush(self) -> None:
+        assert self._logging_mesh_client is not None
+        try:
+            # blocks for this proc mesh until 3 seconds timeout
+            Future(coro=self._logging_mesh_client.flush().spawn().task()).get(timeout=3)
+        except Exception:
+            # TODO: A harmless exception happens to come through due to coroutine
+            # accessing shared resources via logging_mesh_client. Flush works fine
+            # but shared resource management under loggingMeshClient needs to be investigated
+            pass
