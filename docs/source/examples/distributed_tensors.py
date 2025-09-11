@@ -120,17 +120,17 @@ monarch.show(r, gpu=0)  # try
 monarch.show(r, gpu=1)  # try
 
 # %%
-# MAST GPUs
+# Remote GPUs
 # ---------
 #
 # We can also connect to remote GPUs reserved from some scheduler
 
 # NYI: schedule public API based on config, just fake it locally
 
-mast_mesh = this_host().spawn_procs({"host": 4, "gpu": 4})
+remote_mesh = this_host().spawn_procs({"host": 4, "gpu": 4})
 
-print(mast_mesh.to_table())
-with mast_mesh.activate():
+print(remote_mesh.to_table())
+with remote_mesh.activate():
     eg = torch.rand(3, 4, device="cuda")
     rgpu = eg.reduce("gpu", "sum")
     rhost = eg.reduce("host", "sum")
@@ -141,10 +141,10 @@ with mast_mesh.activate():
 #
 # Meshes can be renamed and reshaped to fit the parallelism desired.
 
-mesh_2d_parallel = mast_mesh.rename(host="dp", gpu="tp")
+mesh_2d_parallel = remote_mesh.rename(host="dp", gpu="tp")
 print(mesh_2d_parallel.to_table())
 
-mesh_3d_parallel = mast_mesh.split(host=("dp", "pp"), gpu=("tp",), pp=2)
+mesh_3d_parallel = remote_mesh.split(host=("dp", "pp"), gpu=("tp",), pp=2)
 print(mesh_3d_parallel.to_table())
 
 # %%
@@ -154,7 +154,7 @@ print(mesh_3d_parallel.to_table())
 # Pipelining is accomplished by slicing the mesh, and copying tensors from
 # one mesh to another.
 
-pipeline_mesh = mast_mesh.rename(host="pp")
+pipeline_mesh = remote_mesh.rename(host="pp")
 meshes = [pipeline_mesh.slice(pp=i) for i in range(pipeline_mesh.size("pp"))]
 
 print(meshes[0].to_table())
