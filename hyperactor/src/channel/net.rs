@@ -67,7 +67,6 @@ use bytes::Buf;
 use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
 use serde::de::Error;
 use tokio::io::AsyncRead;
@@ -242,15 +241,12 @@ impl<M: RemoteMessage> NetTx<M> {
             }
         }
 
-        #[derive(Derivative)]
-        #[derivative(Debug)]
         struct Outbox<'a, M: RemoteMessage> {
             // The seq number of the next new message put into outbox. Requeued
             // unacked messages should still use their already assigned seq
             // numbers.
             next_seq: u64,
             deque: VecDeque<QueuedMessage<M>>,
-            #[derivative(Debug = "ignore")]
             log_id: &'a str,
         }
 
@@ -316,8 +312,8 @@ impl<M: RemoteMessage> NetTx<M> {
                 Ok(())
             }
 
-            fn requeue_unacked(&mut self, unacked: Unacked<M>) {
-                match (unacked.deque.back(), self.deque.front()) {
+            fn requeue_unacked(&mut self, unacked: VecDeque<QueuedMessage<M>>) {
+                match (unacked.back(), self.deque.front()) {
                     (Some(last), Some(first)) => {
                         assert!(
                             last.seq < first.seq,
@@ -330,23 +326,36 @@ impl<M: RemoteMessage> NetTx<M> {
                     _ => (),
                 }
 
-                let mut outbox = unacked.deque;
+                let mut outbox = unacked;
                 outbox.append(&mut self.deque);
                 self.deque = outbox;
             }
         }
 
-        #[derive(Derivative)]
-        #[derivative(Debug)]
+        impl<'a, M: RemoteMessage> fmt::Display for Outbox<'a, M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "(next_seq: {}, deque: {:?})", self.next_seq, self.deque)
+            }
+        }
+
+        // A tuple of acked seq and when it was acked.
+        struct AckedSeq(u64, Instant);
+
+        impl fmt::Display for AckedSeq {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let acked_secs = self.1.elapsed().as_secs();
+                write!(f, "(seq={}, since_acked={}sec)", self.0, acked_secs)
+            }
+        }
+
         struct Unacked<'a, M: RemoteMessage> {
             deque: VecDeque<QueuedMessage<M>>,
-            largest_acked: Option<u64>,
-            #[derivative(Debug = "ignore")]
+            largest_acked: Option<AckedSeq>,
             log_id: &'a str,
         }
 
         impl<'a, M: RemoteMessage> Unacked<'a, M> {
-            fn new(largest_acked: Option<u64>, log_id: &'a str) -> Self {
+            fn new(largest_acked: Option<AckedSeq>, log_id: &'a str) -> Self {
                 Self {
                     deque: VecDeque::new(),
                     largest_acked,
@@ -363,7 +372,7 @@ impl<M: RemoteMessage> NetTx<M> {
                     message.seq
                 );
 
-                if let Some(largest) = self.largest_acked {
+                if let Some(AckedSeq(largest, _)) = self.largest_acked {
                     // Note: some scenarios of why this if branch could happen:
                     //
                     // message.0 <= largest could happen in the following scenario:
@@ -406,16 +415,18 @@ impl<M: RemoteMessage> NetTx<M> {
             }
 
             /// Remove acked messages from the deque.
-            fn prune(&mut self, acked: u64) {
+            fn prune(&mut self, acked: u64, acked_at: Instant) {
                 assert!(
-                    self.largest_acked.unwrap_or(0) <= acked,
-                    "{}: received out-of-order ack; received: {}; stored largest: {:?}",
+                    self.largest_acked.as_ref().map_or(0, |i| i.0) <= acked,
+                    "{}: received out-of-order ack; received: {}; stored largest: {}",
                     self.log_id,
                     acked,
-                    self.largest_acked,
+                    self.largest_acked
+                        .as_ref()
+                        .map_or("None".to_string(), |l| l.to_string()),
                 );
 
-                self.largest_acked = Some(acked);
+                self.largest_acked = Some(AckedSeq(acked, acked_at));
                 let deque = &mut self.deque;
                 while let Some(msg) = deque.front() {
                     if msg.seq <= acked {
@@ -458,13 +469,30 @@ impl<M: RemoteMessage> NetTx<M> {
             }
         }
 
-        #[derive(Debug)]
+        impl<'a, M: RemoteMessage> fmt::Display for Unacked<'a, M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(
+                    f,
+                    "(deque: {:?}, largest_acked: {})",
+                    self.deque,
+                    self.largest_acked
+                        .as_ref()
+                        .map_or("None".to_string(), |l| l.to_string())
+                )
+            }
+        }
+
         struct Deliveries<'a, M: RemoteMessage> {
             outbox: Outbox<'a, M>,
             unacked: Unacked<'a, M>,
         }
 
-        #[derive(Debug)]
+        impl<'a, M: RemoteMessage> fmt::Display for Deliveries<'a, M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "(outbox: {}, unacked: {})", self.outbox, self.unacked)
+            }
+        }
+
         enum State<'a, M: RemoteMessage> {
             /// Channel is running.
             Running(Deliveries<'a, M>),
@@ -482,6 +510,19 @@ impl<M: RemoteMessage> NetTx<M> {
                     outbox: Outbox::new(log_id),
                     unacked: Unacked::new(None, log_id),
                 })
+            }
+        }
+
+        impl<'a, M: RemoteMessage> fmt::Display for State<'a, M> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    State::Running(deliveries) => {
+                        write!(f, "Running(deliveries: {})", deliveries)
+                    }
+                    State::Closing { deliveries, reason } => {
+                        write!(f, "Running(deliveries: {}, reason: {})", deliveries, reason)
+                    }
+                }
             }
         }
 
@@ -636,7 +677,7 @@ impl<M: RemoteMessage> NetTx<M> {
                                         Ok(response) => {
                                             match response {
                                                 NetRxResponse::Ack(ack) => {
-                                                    unacked.prune(ack);
+                                                    unacked.prune(ack, RealClock.now());
                                                     (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                                 }
                                                 NetRxResponse::Reject => {
@@ -791,7 +832,7 @@ impl<M: RemoteMessage> NetTx<M> {
 
                                 // Need to resend unacked after reconnecting.
                                 let largest_acked = unacked.largest_acked;
-                                outbox.requeue_unacked(unacked);
+                                outbox.requeue_unacked(unacked.deque);
                                 (
                                     State::Running(Deliveries {
                                         outbox,
@@ -843,7 +884,7 @@ impl<M: RemoteMessage> NetTx<M> {
                 }
             }
         }; // loop
-        tracing::debug!("{log_id}: NetRx exited its loop with state: {state:?}");
+        tracing::debug!("{log_id}: NetTx exited its loop with state: {state}");
 
         match state {
             State::Closing {
@@ -1061,6 +1102,15 @@ enum WriteState<W, F, T> {
     Broken,
 }
 
+impl<W, F, T> WriteState<W, F, T> {
+    fn value(&self) -> Option<&T> {
+        match self {
+            Self::Writing(_, v) => Some(v),
+            Self::Idle(_) | Self::Broken => None,
+        }
+    }
+}
+
 impl<W: AsyncWrite + Unpin, F: Buf, T> WriteState<W, F, T> {
     async fn send(&mut self) -> io::Result<T> {
         match self {
@@ -1176,7 +1226,13 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next.ack = acked_seq;
                         }
                         Err(err) => {
-                            break (next, Err::<(), anyhow::Error>(err.into()).context(format!("{log_id}: error acking peer message")), false)
+                            let v = self.write_state.value();
+                            break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into())
+                                    .context(format!("{log_id}: error acking peer message: {v:?}")),
+                                false
+                            );
                         }
                     }
                 },
@@ -1281,9 +1337,12 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         //   2. rcv_raw_frame_count contains the last frame which might not be
         //      desrializable, e.g. EOF, error, etc.
         tracing::debug!(
-            "{log_id}: NetRx exited its loop with states: initial Netx was \
-            {initial_next:?}; final Next is {final_next:?} ; rcv raw frame \
-            count is {rcv_raw_frame_count}.",
+            "{log_id}: NetRx::process exited its loop with states: initial Next \
+            was {initial_next:?}; final Next is {final_next:?}; since acked: \
+            {}sec; rcv raw frame count is {rcv_raw_frame_count}; final result: \
+            {:?}",
+            last_ack_time.elapsed().as_secs(),
+            final_result,
         );
 
         let mut final_ack = final_next.ack;
