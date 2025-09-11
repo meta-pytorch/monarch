@@ -36,6 +36,7 @@ from typing import (
 from urllib.parse import urlparse
 from weakref import WeakValueDictionary
 
+from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
@@ -68,7 +69,7 @@ from monarch._src.actor.device_utils import _local_device_count
 
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import DeprecatedNotAFuture, Future
-from monarch._src.actor.logging import LoggingManager
+
 from monarch._src.actor.shape import MeshTrait
 from monarch.tools.config.environment import CondaEnvironment
 from monarch.tools.config.workspace import Workspace
@@ -168,6 +169,8 @@ class ProcMeshRef:
 
 _proc_mesh_lock: threading.Lock = threading.Lock()
 _proc_mesh_key: int = 0
+# RFC: Checking understanding - is it safe to use this registry as a way to track the lifetime of proc_meshes?
+# I see that references are added only when piclked in __reduce_ex__, meaning we only track pickled proc meshes.
 _proc_mesh_registry: WeakValueDictionary[ProcMeshRef, "ProcMesh"] = (
     WeakValueDictionary()
 )
@@ -179,6 +182,44 @@ def _deref_proc_mesh(proc_mesh: ProcMeshRef) -> "ProcMesh":
             f"ProcMesh with id {proc_mesh._proc_mesh_id} does not exist on host."
         )
     return _proc_mesh_registry[proc_mesh]
+
+
+def in_ipython() -> bool:
+    try:
+        from IPython import get_ipython
+
+        return get_ipython() is not None
+    except ImportError:
+        return False
+
+
+# TODO: add lock to ensure atomic update of the global flush registered flag
+_global_flush_registered = False
+_global_flush_lock = threading.Lock()
+
+
+def register_log_flush_if_in_ipython() -> None:
+    global _global_flush_registered
+    with _global_flush_lock:
+        if not _global_flush_registered and in_ipython():
+            from IPython import get_ipython
+
+            get_ipython().events.register(
+                "post_run_cell", lambda _: flush_all_proc_mesh_logs()
+            )
+            _global_flush_registered = True
+
+
+def flush_all_proc_mesh_logs() -> None:
+    """Flush logs from all active ProcMesh instances."""
+    for proc_mesh in _proc_mesh_registry.values():
+        if proc_mesh._logging_mesh_client is not None:
+            try:
+                client = proc_mesh._logging_mesh_client
+                Future(coro=client.flush().spawn().task()).get(timeout=3)
+            except Exception:
+                # TODO: log the exception
+                pass  # Handle individual client failures gracefully
 
 
 class ProcMesh(MeshTrait, DeprecatedNotAFuture):
@@ -209,12 +250,14 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         # of whether this is a slice of a real proc_meshg
         self._slice = False
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
-        self._logging_manager: LoggingManager = LoggingManager()
+        self._logging_mesh_client: Optional[LoggingMeshClient] = None
         self._maybe_device_mesh: Optional["DeviceMesh"] = _device_mesh
         self._stopped = False
         self._controller_controller: Optional["_ControllerController"] = None
         # current set only for context()'s proc_mesh to be a local host mesh.
         self._host_mesh: Optional["HostMesh"] = None
+        # idempotent call to register log flush if in ipython
+        register_log_flush_if_in_ipython()
 
     @property
     def initialized(self) -> Future[Literal[True]]:
@@ -353,7 +396,14 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
 
-            await pm._logging_manager.init(hy_proc_mesh, stream_log_to_client)
+            pm._logging_mesh_client = await LoggingMeshClient.spawn(
+                proc_mesh=hy_proc_mesh
+            )
+            pm._logging_mesh_client.set_mode(
+                stream_to_client=stream_log_to_client,
+                aggregate_window_sec=3 if stream_log_to_client else None,
+                level=logging.INFO,
+            )
 
             if setup_actor is not None:
                 await setup_actor.setup.call()
@@ -597,9 +647,11 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         Returns:
             None
         """
+        if level < 0 or level > 255:
+            raise ValueError("Invalid logging level: {}".format(level))
         await self.initialized
-
-        await self._logging_manager.logging_option(
+        assert self._logging_mesh_client is not None
+        self._logging_mesh_client.set_mode(
             stream_to_client=stream_to_client,
             aggregate_window_sec=aggregate_window_sec,
             level=level,
@@ -615,7 +667,6 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
         This will stop all processes (and actors) in the mesh and
         release any resources associated with the mesh.
         """
-        self._logging_manager.stop()
 
         async def _stop_nonblocking() -> None:
             await (await self._proc_mesh).stop_nonblocking()
@@ -634,8 +685,6 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
     # Finalizer to check if the proc mesh was closed properly.
     def __del__(self) -> None:
         if not self._stopped:
-            self._logging_manager.stop()
-
             warnings.warn(
                 f"unstopped ProcMesh {self!r}",
                 ResourceWarning,
