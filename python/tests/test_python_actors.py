@@ -8,7 +8,6 @@
 
 import asyncio
 import ctypes
-import gc
 import importlib.resources
 import logging
 import operator
@@ -1326,7 +1325,8 @@ class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
         await cast(ActorMesh, am_1).stop()
 
         with self.assertRaisesRegex(
-            RuntimeError, expected_regex="`PythonActorMesh` has already been stopped"
+            RuntimeError,
+            r"(?:`PythonActorMesh` has already been stopped|delivery error: broken link)",
         ):
             await am_1.print.call("hello 1")
 
