@@ -20,7 +20,7 @@ use dashmap::DashSet;
 use crate::ActorHandle;
 use crate::ActorId;
 use crate::ActorRef;
-use crate::Instance;
+use crate::InstanceCell;
 use crate::PortId;
 use crate::Proc;
 use crate::accum::ReducerSpec;
@@ -38,7 +38,7 @@ pub trait Mailbox: crate::private::Sealed {
     fn mailbox(&self) -> &crate::Mailbox;
 }
 
-/// A typed actor context, providing both a [`Mailbox`] and an [`Instance`].
+/// A typed actor context, providing both a [`Mailbox`] and an [`InstanceCell<A>`].
 ///
 /// Note: Send and Sync markers are here only temporarily in order to bridge
 /// the transition to the context types, away from the [`crate::cap`] module.
@@ -48,7 +48,7 @@ pub trait Actor: Mailbox + Send + Sync {
     type A: crate::Actor;
 
     /// The instance associated with this context.
-    fn instance(&self) -> &Instance<Self::A>;
+    fn instance(&self) -> &InstanceCell<Self::A>;
 }
 
 // The following are forwarding traits, used to ease transition to the new

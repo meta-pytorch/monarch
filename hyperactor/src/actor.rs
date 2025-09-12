@@ -16,7 +16,6 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::future::IntoFuture;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -549,19 +548,18 @@ impl fmt::Display for ActorStatus {
 /// Correspondingly, [`crate::ActorRef`]s refer to (possibly) remote
 /// actors.
 pub struct ActorHandle<A: Actor> {
-    cell: InstanceCell,
-    ports: Arc<Ports<A>>,
+    cell: InstanceCell<A>,
 }
 
 /// A handle to a running (local) actor.
 impl<A: Actor> ActorHandle<A> {
-    pub(crate) fn new(cell: InstanceCell, ports: Arc<Ports<A>>) -> Self {
-        Self { cell, ports }
+    pub(crate) fn new(cell: InstanceCell<A>) -> Self {
+        Self { cell }
     }
 
     /// The actor's cell. Used primarily for testing.
     /// TODO: this should not be a public API.
-    pub(crate) fn cell(&self) -> &InstanceCell {
+    pub(crate) fn cell(&self) -> &InstanceCell<A> {
         &self.cell
     }
 
@@ -589,7 +587,7 @@ impl<A: Actor> ActorHandle<A> {
     where
         A: Handler<M>,
     {
-        self.ports.get().send(message)
+        self.cell.port().send(message)
     }
 
     /// Return a port for the provided message type handled by the actor.
@@ -597,13 +595,13 @@ impl<A: Actor> ActorHandle<A> {
     where
         A: Handler<M>,
     {
-        self.ports.get()
+        self.cell.port()
     }
 
     /// TEMPORARY: bind...
     /// TODO: we shoudl also have a default binding(?)
     pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
-        self.cell.bind(self.ports.as_ref())
+        self.cell.bind()
     }
 }
 
@@ -638,7 +636,6 @@ impl<A: Actor> Clone for ActorHandle<A> {
     fn clone(&self) -> Self {
         Self {
             cell: self.cell.clone(),
-            ports: self.ports.clone(),
         }
     }
 }
@@ -662,6 +659,7 @@ pub trait RemoteHandles<M: RemoteMessage>: RemoteActor {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
 

@@ -163,6 +163,7 @@ pub use opentelemetry;
 pub use paste::paste;
 pub use proc::Context;
 pub use proc::Instance;
+pub use proc::InstanceCell;
 pub use proc::Proc;
 pub use reference::ActorId;
 pub use reference::ActorRef;
@@ -202,6 +203,8 @@ mod private {
     // These two implement context capabilities:
     impl<A: crate::Actor> Sealed for crate::proc::Instance<A> {}
     impl<A: crate::Actor> Sealed for &crate::proc::Instance<A> {}
+    impl<A: crate::Actor> Sealed for crate::proc::InstanceCell<A> {}
+    impl<A: crate::Actor> Sealed for &crate::proc::InstanceCell<A> {}
     impl<A: crate::Actor> Sealed for crate::proc::Context<'_, A> {}
     impl<A: crate::Actor> Sealed for &crate::proc::Context<'_, A> {}
 }

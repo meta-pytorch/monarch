@@ -126,7 +126,7 @@ struct ProcState {
     /// Keep track of all of the active actors in the proc.
     ledger: ActorLedger,
 
-    instances: DashMap<ActorId, WeakInstanceCell>,
+    instances: DashMap<ActorId, WeakErasedInstanceCell>,
 
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
@@ -217,8 +217,8 @@ impl fmt::Display for ActorStats {
 
 #[derive(Debug)]
 struct ActorLedger {
-    // Root actors. Map's value is its key's InstanceCell.
-    roots: DashMap<ActorId, WeakInstanceCell>,
+    // Root actors. Map's value is its key's ErasedInstanceCell.
+    roots: DashMap<ActorId, WeakErasedInstanceCell>,
 }
 
 impl ActorLedger {
@@ -231,7 +231,7 @@ impl ActorLedger {
     fn insert(
         &self,
         root_actor_id: ActorId,
-        root_actor_cell: WeakInstanceCell,
+        root_actor_cell: WeakErasedInstanceCell,
     ) -> Result<(), anyhow::Error> {
         match self.roots.insert(root_actor_id.clone(), root_actor_cell) {
             None => Ok(()),
@@ -269,7 +269,7 @@ impl ActorLedger {
         ActorLedgerSnapshot { roots }
     }
 
-    fn get_actor_tree_snapshot(cell: &InstanceCell) -> ActorTreeSnapshot {
+    fn get_actor_tree_snapshot(cell: &ErasedInstanceCell) -> ActorTreeSnapshot {
         // Get the edges between this actor and its children.
         let children = cell
             .child_iter()
@@ -487,7 +487,7 @@ impl Proc {
         );
 
         let instance = Instance::new(self.clone(), actor_id.clone(), true, None);
-        let handle = ActorHandle::new(instance.cell.clone(), instance.ports.clone());
+        let handle = ActorHandle::new(instance.cell.clone());
 
         instance.change_status(ActorStatus::Client);
 
@@ -497,7 +497,7 @@ impl Proc {
     /// Create a child instance. Called from `Instance`.
     fn child_instance(
         &self,
-        parent: InstanceCell,
+        parent: ErasedInstanceCell,
     ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
         let actor_id = self.allocate_child_id(parent.actor_id())?;
         let _ = tracing::debug_span!(
@@ -508,7 +508,7 @@ impl Proc {
         );
 
         let instance = Instance::new(self.clone(), actor_id, false, Some(parent));
-        let handle = ActorHandle::new(instance.cell.clone(), instance.ports.clone());
+        let handle = ActorHandle::new(instance.cell.clone());
         instance.change_status(ActorStatus::Client);
         Ok((instance, handle))
     }
@@ -520,7 +520,7 @@ impl Proc {
     /// with its parent.
     async fn spawn_child<A: Actor>(
         &self,
-        parent: InstanceCell,
+        parent: ErasedInstanceCell,
         params: A::Params,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_child_id(parent.actor_id())?;
@@ -819,19 +819,11 @@ impl<A: Actor> Deref for Context<'_, A> {
 /// its full lifecycle, supervision, signal management, etc. Instances can represent
 /// a managed actor or a "client" actor that has joined the proc.
 pub struct Instance<A: Actor> {
-    /// The proc that owns this instance.
-    proc: Proc,
-
     /// The instance cell that manages instance hierarchy.
-    cell: InstanceCell,
-
-    /// The mailbox associated with the actor.
-    mailbox: Mailbox,
+    cell: InstanceCell<A>,
 
     /// Receivers for the actor loop, if available.
     actor_loop_receivers: Option<(PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>)>,
-
-    ports: Arc<Ports<A>>,
 
     /// Handler work queue.
     work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -851,7 +843,7 @@ impl<A: Actor> Instance<A> {
         proc: Proc,
         actor_id: ActorId,
         detached: bool,
-        parent: Option<InstanceCell>,
+        parent: Option<ErasedInstanceCell>,
     ) -> Self {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
@@ -880,7 +872,7 @@ impl<A: Actor> Instance<A> {
 
         let (actor_loop, actor_loop_receivers) = actor_loop_ports.unzip();
 
-        let cell = InstanceCell::new(
+        let cell = ErasedInstanceCell::new(
             actor_id,
             actor_type,
             proc.clone(),
@@ -888,15 +880,13 @@ impl<A: Actor> Instance<A> {
             status_rx,
             parent,
             ports.clone(),
+            mailbox.clone(),
         );
         let start = proc.clock().now();
 
         Self {
-            proc,
-            cell,
-            mailbox,
+            cell: InstanceCell::new(cell, ports.clone()),
             actor_loop_receivers,
-            ports,
             work_rx,
             status_tx,
             status_span: Mutex::new(tracing::debug_span!(
@@ -915,66 +905,13 @@ impl<A: Actor> Instance<A> {
         self.status_tx.send_replace(new.clone());
     }
 
-    /// This instance's actor ID.
-    pub fn self_id(&self) -> &ActorId {
-        self.mailbox.actor_id()
-    }
-
-    /// Signal the actor to stop.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
-    pub fn stop(&self) -> Result<(), ActorError> {
-        tracing::info!("Instance::stop called, {}", self.cell.actor_id());
-        self.cell.signal(Signal::DrainAndStop)
-    }
-
-    /// Open a new port that accepts M-typed messages. The returned
-    /// port may be freely cloned, serialized, and passed around. The
-    /// returned receiver should only be retained by the actor responsible
-    /// for processing the delivered messages.
-    pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
-        self.mailbox.open_port()
-    }
-
-    /// Open a new one-shot port that accepts M-typed messages. The
-    /// returned port may be used to send a single message; ditto the
-    /// receiver may receive a single message.
-    pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
-        self.mailbox.open_once_port()
-    }
-
-    /// Send a message to the actor running on the proc.
-    pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
-        <Self as cap::sealed::CanSend>::post(self, port_id, headers, message)
-    }
-
-    /// Send a message to the actor itself with a delay usually to trigger some event.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
-    pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
-    where
-        M: Message,
-        A: Handler<M>,
-    {
-        let port = self.port();
-        let self_id = self.self_id().clone();
-        let clock = self.proc.state().clock.clone();
-        tokio::spawn(async move {
-            clock.non_advancing_sleep(delay).await;
-            if let Err(e) = port.send(message) {
-                // TODO: this is a fire-n-forget thread. We need to
-                // handle errors in a better way.
-                tracing::info!("{}: error sending delayed message: {}", self_id, e);
-            }
-        });
-        Ok(())
-    }
-
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
     #[hyperactor::instrument(fields(actor_id=self.cell.actor_id().clone().to_string(), actor_name=self.cell.actor_id().name()))]
     async fn start(self, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
         let instance_cell = self.cell.clone();
         let actor_id = self.cell.actor_id().clone();
-        let actor_handle = ActorHandle::new(self.cell.clone(), self.ports.clone());
+        let actor_handle = ActorHandle::new(self.cell.clone());
         let actor_task_handle =
             A::spawn_server_task(panic_handler::with_backtrace_tracking(self.serve(actor)));
         tracing::debug!("{}: spawned with {:?}", actor_id, actor_task_handle);
@@ -1031,7 +968,7 @@ impl<A: Actor> Instance<A> {
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
             if let Some(event) = event {
-                self.proc.handle_supervision_event(event);
+                self.proc().handle_supervision_event(event);
             }
         }
         self.change_status(actor_status);
@@ -1258,53 +1195,13 @@ impl<A: Actor> Instance<A> {
         // &Instance<A>.
         actor.handle(&context, message).instrument(span).await
     }
+}
 
-    // Spawn on child on this instance. Currently used only by cap::CanSpawn.
-    pub(crate) async fn spawn<C: Actor>(
-        &self,
-        params: C::Params,
-    ) -> anyhow::Result<ActorHandle<C>> {
-        self.proc.spawn_child(self.cell.clone(), params).await
-    }
+impl<A: Actor> Deref for Instance<A> {
+    type Target = InstanceCell<A>;
 
-    /// Create a new direct child instance.
-    pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
-        self.proc.child_instance(self.cell.clone())
-    }
-
-    /// Return a handle port handle representing the actor's message
-    /// handler for M-typed messages.
-    pub fn port<M: Message>(&self) -> PortHandle<M>
-    where
-        A: Handler<M>,
-    {
-        self.ports.get()
-    }
-
-    /// The [`ActorHandle`] corresponding to this instance.
-    pub fn handle(&self) -> ActorHandle<A> {
-        ActorHandle::new(self.cell.clone(), Arc::clone(&self.ports))
-    }
-
-    /// The owning actor ref.
-    pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
-        self.cell.bind(self.ports.as_ref())
-    }
-
-    // Temporary in order to support python bindings.
-    #[doc(hidden)]
-    pub fn mailbox_for_py(&self) -> &Mailbox {
-        &self.mailbox
-    }
-
-    /// A reference to the proc's clock
-    pub fn clock(&self) -> &(impl Clock + use<A>) {
-        &self.proc.state().clock
-    }
-
-    /// The owning proc.
-    pub fn proc(&self) -> &Proc {
-        &self.proc
+    fn deref(&self) -> &Self::Target {
+        &self.cell
     }
 }
 
@@ -1323,53 +1220,79 @@ impl<A: Actor> Drop for Instance<A> {
 
 impl<A: Actor> context::Mailbox for Instance<A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        self.cell.mailbox()
+    }
+}
+
+impl<A: Actor> context::Mailbox for InstanceCell<A> {
+    fn mailbox(&self) -> &Mailbox {
+        InstanceCell::mailbox(self)
     }
 }
 
 impl<A: Actor> context::Mailbox for Context<'_, A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        self.cell.mailbox()
     }
 }
 
 impl<A: Actor> context::Mailbox for &Instance<A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        self.cell.mailbox()
+    }
+}
+
+impl<A: Actor> context::Mailbox for &InstanceCell<A> {
+    fn mailbox(&self) -> &Mailbox {
+        InstanceCell::mailbox(self)
     }
 }
 
 impl<A: Actor> context::Mailbox for &Context<'_, A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        self.cell.mailbox()
     }
 }
 
 impl<A: Actor> context::Actor for Instance<A> {
     type A = A;
-    fn instance(&self) -> &Instance<A> {
+    fn instance(&self) -> &InstanceCell<A> {
+        &self.cell
+    }
+}
+
+impl<A: Actor> context::Actor for InstanceCell<A> {
+    type A = A;
+    fn instance(&self) -> &InstanceCell<A> {
         self
     }
 }
 
 impl<A: Actor> context::Actor for Context<'_, A> {
     type A = A;
-    fn instance(&self) -> &Instance<A> {
-        self
+    fn instance(&self) -> &InstanceCell<A> {
+        &self.cell
     }
 }
 
 impl<A: Actor> context::Actor for &Instance<A> {
     type A = A;
-    fn instance(&self) -> &Instance<A> {
+    fn instance(&self) -> &InstanceCell<A> {
+        &self.cell
+    }
+}
+
+impl<A: Actor> context::Actor for &InstanceCell<A> {
+    type A = A;
+    fn instance(&self) -> &InstanceCell<A> {
         self
     }
 }
 
 impl<A: Actor> context::Actor for &Context<'_, A> {
     type A = A;
-    fn instance(&self) -> &Instance<A> {
-        self
+    fn instance(&self) -> &InstanceCell<A> {
+        &self.cell
     }
 }
 
@@ -1389,13 +1312,13 @@ impl ActorType {
     }
 }
 
-/// InstanceCell contains all of the type-erased, shareable state of an instance.
-/// Specifically, InstanceCells form a supervision tree, and is used by ActorHandle
+/// ErasedInstanceCell contains all of the type-erased, shareable state of an instance.
+/// Specifically, ErasedInstanceCells form a supervision tree, and is used by ActorHandle
 /// to access the underlying instance.
 ///
-/// InstanceCell is reference counted and cloneable.
+/// ErasedInstanceCell is reference counted and cloneable.
 #[derive(Clone, Debug)]
-pub struct InstanceCell {
+pub struct ErasedInstanceCell {
     inner: Arc<InstanceState>,
 }
 
@@ -1417,10 +1340,10 @@ struct InstanceState {
     status: watch::Receiver<ActorStatus>,
 
     /// A weak reference to this instance's parent.
-    parent: WeakInstanceCell,
+    parent: WeakErasedInstanceCell,
 
     /// This instance's children by their PIDs.
-    children: DashMap<Index, InstanceCell>,
+    children: DashMap<Index, ErasedInstanceCell>,
 
     /// Access to the spawned actor's join handle.
     actor_task_handle: OnceLock<JoinHandle<()>>,
@@ -1438,12 +1361,15 @@ struct InstanceState {
     /// A type-erased reference to Ports<A>, which allows us to recover
     /// an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
+
+    /// The mailbox associated with this instance.
+    mailbox: Mailbox,
 }
 
 impl InstanceState {
     /// Unlink this instance from its parent, if it has one. If it was unlinked,
     /// the parent is returned.
-    fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
+    fn maybe_unlink_parent(&self) -> Option<ErasedInstanceCell> {
         self.parent
             .upgrade()
             .filter(|parent| parent.inner.unlink(self))
@@ -1456,7 +1382,7 @@ impl InstanceState {
     }
 }
 
-impl InstanceCell {
+impl ErasedInstanceCell {
     /// Creates a new instance cell with the provided internal state. If a parent
     /// is provided, it is linked to this cell.
     fn new(
@@ -1465,8 +1391,9 @@ impl InstanceCell {
         proc: Proc,
         actor_loop: Option<(PortHandle<Signal>, PortHandle<ActorSupervisionEvent>)>,
         status: watch::Receiver<ActorStatus>,
-        parent: Option<InstanceCell>,
+        parent: Option<ErasedInstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
+        mailbox: Mailbox,
     ) -> Self {
         let _ais = actor_id.to_string();
         let cell = Self {
@@ -1476,13 +1403,14 @@ impl InstanceCell {
                 proc: proc.clone(),
                 actor_loop,
                 status,
-                parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
+                parent: parent.map_or_else(WeakErasedInstanceCell::new, |cell| cell.downgrade()),
                 children: DashMap::new(),
                 actor_task_handle: OnceLock::new(),
                 exported_named_ports: DashMap::new(),
                 num_processed_messages: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
                 ports,
+                mailbox,
             }),
         };
         cell.maybe_link_parent();
@@ -1562,21 +1490,21 @@ impl InstanceCell {
         }
     }
 
-    /// Downgrade this InstanceCell to a weak reference.
-    pub fn downgrade(&self) -> WeakInstanceCell {
-        WeakInstanceCell {
+    /// Downgrade this ErasedInstanceCell to a weak reference.
+    pub fn downgrade(&self) -> WeakErasedInstanceCell {
+        WeakErasedInstanceCell {
             inner: Arc::downgrade(&self.inner),
         }
     }
 
     /// Link this instance to a new child.
-    fn link(&self, child: InstanceCell) {
+    fn link(&self, child: ErasedInstanceCell) {
         assert_eq!(self.actor_id().proc_id(), child.actor_id().proc_id());
         self.inner.children.insert(child.pid(), child);
     }
 
     /// Unlink this instance from a child.
-    fn unlink(&self, child: &InstanceCell) {
+    fn unlink(&self, child: &ErasedInstanceCell) {
         assert_eq!(self.actor_id().proc_id(), child.actor_id().proc_id());
         self.inner.children.remove(&child.pid());
     }
@@ -1590,19 +1518,19 @@ impl InstanceCell {
 
     /// Unlink this instance from its parent, if it has one. If it was unlinked,
     /// the parent is returned.
-    fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
+    fn maybe_unlink_parent(&self) -> Option<ErasedInstanceCell> {
         self.inner.maybe_unlink_parent()
     }
 
     /// Get parent instance cell, if it exists.
     #[allow(dead_code)]
-    fn get_parent_cell(&self) -> Option<InstanceCell> {
+    fn get_parent_cell(&self) -> Option<ErasedInstanceCell> {
         self.inner.parent.upgrade()
     }
 
     /// Return an iterator over this instance's children. This may deadlock if the
     /// caller already holds a reference to any item in map.
-    fn child_iter(&self) -> impl Iterator<Item = RefMulti<'_, Index, InstanceCell>> {
+    fn child_iter(&self) -> impl Iterator<Item = RefMulti<'_, Index, ErasedInstanceCell>> {
         self.inner.children.iter()
     }
 
@@ -1612,7 +1540,7 @@ impl InstanceCell {
     }
 
     /// Get a child by its PID.
-    fn get_child(&self, pid: Index) -> Option<InstanceCell> {
+    fn get_child(&self, pid: Index) -> Option<ErasedInstanceCell> {
         self.inner.children.get(&pid).map(|child| child.clone())
     }
 
@@ -1635,7 +1563,145 @@ impl InstanceCell {
     /// Attempt to downcast this cell to a concrete actor handle.
     pub(crate) fn downcast_handle<A: Actor>(&self) -> Option<ActorHandle<A>> {
         let ports = Arc::clone(&self.inner.ports).downcast::<Ports<A>>().ok()?;
-        Some(ActorHandle::new(self.clone(), ports))
+        Some(ActorHandle::new(InstanceCell {
+            erased: self.clone(),
+            ports,
+        }))
+    }
+}
+
+/// Wraps an ErasedInstanceCell with concrete type information about
+/// the associated Actor.
+pub struct InstanceCell<A: Actor> {
+    erased: ErasedInstanceCell,
+    ports: Arc<Ports<A>>,
+}
+
+impl<A: Actor> Deref for InstanceCell<A> {
+    type Target = ErasedInstanceCell;
+
+    fn deref(&self) -> &Self::Target {
+        &self.erased
+    }
+}
+
+impl<A: Actor> InstanceCell<A> {
+    fn new(erased: ErasedInstanceCell, ports: Arc<Ports<A>>) -> Self {
+        InstanceCell { erased, ports }
+    }
+
+    fn mailbox(&self) -> &Mailbox {
+        &self.erased.inner.mailbox
+    }
+
+    /// This instance cell's actor ID.
+    pub fn self_id(&self) -> &ActorId {
+        self.actor_id()
+    }
+
+    /// Signal the actor to stop.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
+    pub fn stop(&self) -> Result<(), ActorError> {
+        tracing::info!("InstanceCell::stop called, {}", self.actor_id());
+        self.signal(Signal::DrainAndStop)
+    }
+
+    /// Open a new port that accepts M-typed messages. The returned
+    /// port may be freely cloned, serialized, and passed around. The
+    /// returned receiver should only be retained by the actor responsible
+    /// for processing the delivered messages.
+    pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
+        self.mailbox().open_port()
+    }
+
+    /// Open a new one-shot port that accepts M-typed messages. The
+    /// returned port may be used to send a single message; ditto the
+    /// receiver may receive a single message.
+    pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
+        self.mailbox().open_once_port()
+    }
+
+    /// Send a message to the actor running on the proc.
+    pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
+        <Self as cap::sealed::CanSend>::post(self, port_id, headers, message)
+    }
+
+    /// Send a message to the actor itself with a delay usually to trigger some event.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
+    pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
+    where
+        M: Message,
+        A: Handler<M>,
+    {
+        let port = self.port();
+        let self_id = self.self_id().clone();
+        let clock = self.proc().state().clock.clone();
+        tokio::spawn(async move {
+            clock.non_advancing_sleep(delay).await;
+            if let Err(e) = port.send(message) {
+                // TODO: this is a fire-n-forget thread. We need to
+                // handle errors in a better way.
+                tracing::info!("{}: error sending delayed message: {}", self_id, e);
+            }
+        });
+        Ok(())
+    }
+
+    // Spawn a child actor for the actor associated with this InstanceCell.
+    pub(crate) async fn spawn<C: Actor>(
+        &self,
+        params: C::Params,
+    ) -> anyhow::Result<ActorHandle<C>> {
+        self.inner
+            .proc
+            .spawn_child(self.erased.clone(), params)
+            .await
+    }
+
+    /// Create a new direct child instance.
+    pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
+        self.proc().child_instance(self.erased.clone())
+    }
+
+    /// Return a handle port handle representing the actor's message
+    /// handler for M-typed messages.
+    pub fn port<M: Message>(&self) -> PortHandle<M>
+    where
+        A: Handler<M>,
+    {
+        self.ports.get()
+    }
+
+    /// The [`ActorHandle`] corresponding to this instance.
+    pub fn handle(&self) -> ActorHandle<A> {
+        ActorHandle::new(self.clone())
+    }
+
+    /// The owning actor ref.
+    pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
+        self.erased.bind(self.ports.as_ref())
+    }
+
+    // Temporary in order to support python bindings.
+    #[doc(hidden)]
+    pub fn mailbox_for_py(&self) -> &Mailbox {
+        &self.inner.mailbox
+    }
+
+    /// A reference to the proc's clock
+    pub fn clock(&self) -> &(impl Clock + use<A>) {
+        &self.inner.proc.state().clock
+    }
+
+    /// The owning proc.
+    pub fn proc(&self) -> &Proc {
+        &self.inner.proc
+    }
+}
+
+impl<A: Actor> Clone for InstanceCell<A> {
+    fn clone(&self) -> Self {
+        Self::new(self.erased.clone(), Arc::clone(&self.ports))
     }
 }
 
@@ -1654,22 +1720,22 @@ impl Drop for InstanceState {
     }
 }
 
-/// A weak version of the InstanceCell. This is used to provide cyclical
+/// A weak version of the ErasedInstanceCell. This is used to provide cyclical
 /// linkage between actors without creating a strong reference cycle.
 #[derive(Debug, Clone)]
-pub struct WeakInstanceCell {
+pub struct WeakErasedInstanceCell {
     inner: Weak<InstanceState>,
 }
 
-impl WeakInstanceCell {
+impl WeakErasedInstanceCell {
     /// Create a new weak instance cell that is never upgradeable.
     pub fn new() -> Self {
         Self { inner: Weak::new() }
     }
 
     /// Upgrade this weak instance cell to a strong reference, if possible.
-    pub fn upgrade(&self) -> Option<InstanceCell> {
-        self.inner.upgrade().map(InstanceCell::wrap)
+    pub fn upgrade(&self) -> Option<ErasedInstanceCell> {
+        self.inner.upgrade().map(ErasedInstanceCell::wrap)
     }
 }
 
@@ -2059,7 +2125,7 @@ mod tests {
         lookup_actor.await;
     }
 
-    fn validate_link(child: &InstanceCell, parent: &InstanceCell) {
+    fn validate_link(child: &ErasedInstanceCell, parent: &ErasedInstanceCell) {
         assert_eq!(child.actor_id().proc_id(), parent.actor_id().proc_id());
         assert_eq!(
             child.inner.parent.upgrade().unwrap().actor_id(),
@@ -2554,7 +2620,7 @@ mod tests {
             .unwrap();
         let root_1 = proc
             .spawn_child::<TestActor>(
-                root.cell().clone(),
+                root.cell().erased.clone(),
                 (
                     root_1_state.clone(),
                     true, /* set true so children's event stops here */
@@ -2563,19 +2629,28 @@ mod tests {
             .await
             .unwrap();
         let root_1_1 = proc
-            .spawn_child::<TestActor>(root_1.cell().clone(), (root_1_1_state.clone(), false))
+            .spawn_child::<TestActor>(
+                root_1.cell().erased.clone(),
+                (root_1_1_state.clone(), false),
+            )
             .await
             .unwrap();
         let root_1_1_1 = proc
-            .spawn_child::<TestActor>(root_1_1.cell().clone(), (root_1_1_1_state.clone(), false))
+            .spawn_child::<TestActor>(
+                root_1_1.cell().erased.clone(),
+                (root_1_1_1_state.clone(), false),
+            )
             .await
             .unwrap();
         let root_2 = proc
-            .spawn_child::<TestActor>(root.cell().clone(), (root_2_state.clone(), false))
+            .spawn_child::<TestActor>(root.cell().erased.clone(), (root_2_state.clone(), false))
             .await
             .unwrap();
         let root_2_1 = proc
-            .spawn_child::<TestActor>(root_2.cell().clone(), (root_2_1_state.clone(), false))
+            .spawn_child::<TestActor>(
+                root_2.cell().erased.clone(),
+                (root_2_1_state.clone(), false),
+            )
             .await
             .unwrap();
 
@@ -2667,11 +2742,11 @@ mod tests {
 
         let parent = proc.spawn::<ParentActor>("parent", event_tx).await.unwrap();
         let child = proc
-            .spawn_child::<FailingSupervisionActor>(parent.cell().clone(), ())
+            .spawn_child::<FailingSupervisionActor>(parent.cell().erased.clone(), ())
             .await
             .unwrap();
         let grandchild = proc
-            .spawn_child::<FailingSupervisionActor>(child.cell().clone(), ())
+            .spawn_child::<FailingSupervisionActor>(child.cell().erased.clone(), ())
             .await
             .unwrap();
 

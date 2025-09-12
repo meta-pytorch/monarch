@@ -8,13 +8,10 @@ Unlike remote references (e.g. `ActorRef<A>`), which may refer to actors on othe
 
 ```rust
 pub struct ActorHandle<A: Actor> {
-    cell: InstanceCell,
-    ports: Arc<Ports<A>>,
+    cell: InstanceCell<A>,
 }
 ```
-An `ActorHandle` contains:
-- `cell` is the actor’s internal runtime state, including identity and lifecycle metadata.
-- `ports` is a shared dictionary of all typed message ports available to the actor.
+An `ActorHandle` is a wrapper around an `InstanceCell<A>`, which contains the actor's internal runtime state as well as a shared dictionary of all typed message ports available to the actor.
 
 This handle is cloneable, sendable across tasks, and allows interaction with the actor via messaging, status observation, and controlled shutdown.
 
@@ -22,18 +19,18 @@ This handle is cloneable, sendable across tasks, and allows interaction with the
 
 ### `new` (internal)
 
-Constructs a new `ActorHandle` from its backing `InstanceCell` and `Ports`. This is called by the runtime when spawning a new actor.
+Constructs a new `ActorHandle` from its backing `InstanceCell<A>`. This is called by the runtime when spawning a new actor.
 ```rust
-pub(crate) fn new(cell: InstanceCell, ports: Arc<Ports<A>>) -> Self {
-    Self { cell, ports }
+pub(crate) fn new(cell: InstanceCell<A>) -> Self {
+    Self { cell }
 }
 ```
 
 ### `cell` (internal)
 
-Returns the underlying `InstanceCell` backing the actor.
+Returns the underlying `InstanceCell<A>` backing the actor.
 ```rust
-pub(crate) fn cell(&self) -> &InstanceCell {
+pub(crate) fn cell(&self) -> &InstanceCell<A> {
     &self.cell
 }
 ```
@@ -75,7 +72,7 @@ pub fn send<M: Message>(&self, message: M) -> Result<(), MailboxSenderError>
 where
     A: Handler<M>,
 {
-    self.ports.get().send(message)
+    self.cell.port().send(message)
 }
 ```
 
@@ -87,7 +84,7 @@ pub fn port<M: Message>(&self) -> PortHandle<M>
 where
     A: Handler<M>,
 {
-    self.ports.get()
+    self.cell.port()
 }
 ```
 
@@ -96,7 +93,7 @@ where
 Creates a remote reference (`ActorRef<R>`) by applying a `Binds<A>` implementation.
 ```rust
 pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
-    self.cell.bind(self.ports.as_ref())
+    self.cell.bind()
 }
 ```
 
@@ -117,7 +114,7 @@ In practice, `A` and `R` are usually the same type; this is the pattern produced
 ### Binding internals
 
 Calling `bind()` on the `ActorHandle`:
-1. Invokes the `Binds<A>::bind()` implementation for `R`, registering the actor's message handlers into the `Ports<A>` dictionary.
+1. Invokes the `Binds<A>::bind()` implementation for `R`, registering the actor's message handlers in `InstanceCell<A>`.
 2. Always binds the `Signal` type (used for draining, stopping, and supervision).
 3. Records the bound message types into `InstanceState::exported_named_ports`, enabling routing and diagnostics.
 4. Constructs the final `ActorRef<R>` using `ActorRef::attest(...)`, which assumes the type-level correspondence between `R` and the bound ports.
