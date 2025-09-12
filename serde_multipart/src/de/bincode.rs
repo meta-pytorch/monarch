@@ -85,9 +85,8 @@ where
     type Error = Error;
 
     fn is_human_readable(&self) -> bool {
-        // Same as Deserializer's default implementation. Duplicate here to
-        // be explicit.
-        true
+        // Same as bincode
+        false
     }
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
