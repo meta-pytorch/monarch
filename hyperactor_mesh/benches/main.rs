@@ -35,8 +35,6 @@ fn bench_actor_scaling(c: &mut Criterion) {
     let host_counts = vec![1, 10, 100];
     let gpus = 1;
     let message_size = 1024; // Fixed message size (1KB)
-    group.sample_size(10);
-    group.sampling_mode(criterion::SamplingMode::Flat);
 
     for host_count in host_counts {
         group.bench_function(BenchmarkId::from_parameter(host_count), |b| {

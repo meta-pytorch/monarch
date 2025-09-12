@@ -511,6 +511,11 @@ pub fn initialize_logging(clock: impl TelemetryClock + Send + 'static) {
     initialize_logging_with_log_prefix(clock, None);
 }
 
+/// testing
+pub fn initialize_logging_for_test() {
+    initialize_logging(DefaultTelemetryClock {});
+}
+
 /// Set up logging based on the given execution environment. We specialize logging based on how the
 /// logs are consumed. The destination scuba table is specialized based on the execution environment.
 /// mast -> monarch_tracing/prod
