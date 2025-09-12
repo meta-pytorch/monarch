@@ -231,11 +231,43 @@ class ActorLatencyMultipart(ActorLatency):
         os.environ["HYPERACTOR_CHANNEL_MULTIPART"] = "1"
 
 
-message_sizes: list[int] = [10**n for n in range(7, 9)]
-# message_sizes: list[int] = [10**8]
-host_counts = [1]
-gpu_counts = [1]
-runners = [ActorLatency, ActorLatency]
+@dataclass
+class ActorThroughput(ActorLatency):
+    request_batch_size: int = 10
+    min_iterations: int = 10
+
+    def meta(self) -> dict[str, int | float | str]:
+        return super().meta() | {
+            "request_batch_size": self.request_batch_size,
+        }
+
+    async def run_once(self) -> None:
+        pong = self.pong_actors
+        assert pong is not None
+        res = await asyncio.gather(
+            *[pong.pong.call(self.message) for _ in range(self.request_batch_size)]
+        )
+        assert len(res) == self.request_batch_size, "did not receive all responses"
+        self.bump_counter("bytes", self.message_size * self.request_batch_size)
+        self.bump_counter("casts", self.request_batch_size)
+        self.bump_counter("messages", pong.size() * self.request_batch_size)
+
+
+class ActorThroughputMultipart(ActorThroughput):
+    def setup_env(self) -> None:
+        os.environ["HYPERACTOR_DEFAULT_ENCODING"] = "serde_multipart"
+        os.environ["HYPERACTOR_CHANNEL_MULTIPART"] = "1"
+
+
+message_sizes: list[int] = [10**n for n in range(1, 9)]
+host_counts = [1, 8, 16]
+gpu_counts = [1, 8]
+runners = [
+    ActorLatency,
+    ActorLatencyMultipart,
+    ActorThroughput,
+    ActorThroughputMultipart,
+]
 
 for hosts, gpus, message_size, Runner in itertools.product(
     host_counts, gpu_counts, message_sizes, runners
@@ -254,7 +286,6 @@ for hosts, gpus, message_size, Runner in itertools.product(
         bench=bench,
     )
     async def bench_actor_scaling(counters: UserCounters, bench: Benchmark) -> None:
-        # host_counts = [1, 10, 100]
         filename = Path(f"/tmp/actor_mesh_benchmark/{get_rev()}.csv")
         filename.parent.mkdir(parents=True, exist_ok=True)
         w = None
