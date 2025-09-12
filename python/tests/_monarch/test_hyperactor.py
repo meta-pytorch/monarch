@@ -6,11 +6,13 @@
 
 # pyre-strict
 
+import datetime
 import multiprocessing
 import os
+import pickle
 import signal
 import time
-from typing import Any, Callable, Coroutine, Iterable
+from typing import Any, Callable, Coroutine
 
 import monarch
 
@@ -20,11 +22,13 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocConstraints,
     AllocSpec,
 )
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._src.actor.pickle import flatten, unflatten
 
 
 class MyActor:
@@ -98,3 +102,19 @@ async def test_actor_mesh() -> None:
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
 
     await actor_mesh.initialized()
+
+    # assert isinstance(actor_mesh.client, Mailbox)
+
+
+def test_buffer_read_write() -> None:
+    b = Buffer()
+    b.write(b"yellow")
+    assert b.freeze().read() == b"yellow"
+
+
+def test_pickle_to_buffer() -> None:
+    x = [bytes(100000)]
+    b = Buffer()
+    args, b = flatten(x, lambda x: False)
+    y = unflatten(b, args)
+    assert x == y

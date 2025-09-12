@@ -262,6 +262,8 @@ class ActorThroughputMultipart(ActorThroughput):
 message_sizes: list[int] = [10**n for n in range(1, 9)]
 host_counts = [1, 8, 16]
 gpu_counts = [1, 8]
+host_counts = [1]
+gpu_counts = [1]
 runners = [
     ActorLatency,
     ActorLatencyMultipart,
