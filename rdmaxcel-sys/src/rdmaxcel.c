@@ -43,8 +43,8 @@ struct ibv_qp* create_qp(
     return NULL;
   }
 
-  // Initialize queue pair attributes
-  struct ibv_qp_init_attr qp_init_attr = {
+  // Initialize extended queue pair attributes
+  struct ibv_qp_init_attr_ex qp_init_attr_ex = {
       .qp_context = NULL,
       .send_cq = send_cq,
       .recv_cq = recv_cq,
@@ -59,12 +59,22 @@ struct ibv_qp* create_qp(
           },
       .qp_type = IBV_QPT_RC,
       .sq_sig_all = 0,
+      .pd = pd,
+      .comp_mask = IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_SEND_OPS_FLAGS,
+      .send_ops_flags = IBV_QP_EX_WITH_RDMA_WRITE | IBV_QP_EX_WITH_RDMA_READ |
+          IBV_QP_EX_WITH_SEND,
+      .create_flags = 0,
   };
 
-  // Create queue pair
-  struct ibv_qp* qp = ibv_create_qp(pd, &qp_init_attr);
+  struct mlx5dv_qp_init_attr mlx5dv_attr = {};
+  mlx5dv_attr.comp_mask |= MLX5DV_QP_INIT_ATTR_MASK_SEND_OPS_FLAGS;
+  mlx5dv_attr.send_ops_flags =
+      MLX5DV_QP_EX_WITH_MKEY_CONFIGURE | MLX5DV_QP_EX_WITH_MR_LIST;
+
+  // Create extended queue pair
+  struct ibv_qp* qp = mlx5dv_create_qp(context, &qp_init_attr_ex, &mlx5dv_attr);
   if (!qp) {
-    perror("failed to create queue pair (QP)");
+    perror("failed to create extended queue pair (QP)");
     ibv_destroy_cq(send_cq);
     ibv_destroy_cq(recv_cq);
     return NULL;

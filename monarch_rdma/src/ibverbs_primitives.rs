@@ -615,10 +615,19 @@ pub fn ibverbs_supported() -> bool {
 /// The memory pointed to by `ptr` must remain valid for the lifetime of the `RdmaMemoryRegionView`.
 /// The caller is responsible for ensuring that the memory is not freed, moved or overwritten while
 /// RDMA operations are in progress.
-#[derive(Debug, PartialEq, Eq, std::hash::Hash, Serialize, Deserialize, Clone)]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    std::hash::Hash,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy
+)]
 pub struct RdmaMemoryRegionView {
-    pub id: u32,
-    pub addr: usize,
+    pub virtual_addr: usize,
+    pub rdma_addr: usize,
     pub size: usize,
     pub lkey: u32,
     pub rkey: u32,
@@ -643,10 +652,10 @@ unsafe impl Sync for RdmaMemoryRegionView {}
 
 impl RdmaMemoryRegionView {
     /// Creates a new `RdmaMemoryRegionView` with the given address and size.
-    pub fn new(id: u32, addr: usize, size: usize, lkey: u32, rkey: u32) -> Self {
+    pub fn new(virtual_addr: usize, rdma_addr: usize, size: usize, lkey: u32, rkey: u32) -> Self {
         Self {
-            id,
-            addr,
+            virtual_addr,
+            rdma_addr,
             size,
             lkey,
             rkey,

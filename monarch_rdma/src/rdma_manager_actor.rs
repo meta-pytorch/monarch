@@ -45,10 +45,12 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::ibverbs_primitives::IbverbsConfig;
+use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaQpInfo;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
+use crate::rdma_components::get_registered_cuda_segments;
 use crate::validate_execution_context;
 
 /// Represents a reference to a remote RDMA buffer that can be accessed via RDMA operations.
@@ -95,7 +97,7 @@ pub enum RdmaManagerMessage {
         /// `other` - The ActorId to get connection info for
         other: ActorRef<RdmaManagerActor>,
         #[reply]
-        /// `reply` - Reply channel to return connection information needed for the RDMA connection
+        /// `reply` - Reply channel to return the connection info
         reply: OncePortRef<RdmaQpInfo>,
     },
 }
@@ -123,6 +125,147 @@ pub struct RdmaManagerActor {
     // and operations.
     domain: RdmaDomain,
     config: IbverbsConfig,
+
+    // Flag indicating PyTorch CUDA allocator compatibility
+    // True if both C10 CUDA allocator is enabled AND expandable segments are enabled
+    pt_cuda_alloc: bool,
+
+    // Map of memory region IDs to (RdmaMemoryRegionView, ibv_mr* as usize (optional)), representing registered memory regions
+    mr_map: HashMap<usize, (RdmaMemoryRegionView, usize)>,
+}
+
+impl RdmaManagerActor {
+    fn find_cuda_segment_for_address(
+        &self,
+        addr: usize,
+        size: usize,
+    ) -> Option<RdmaMemoryRegionView> {
+        let registered_segments = get_registered_cuda_segments();
+        for segment in registered_segments {
+            let start_addr = segment.phys_address;
+            let end_addr = start_addr + segment.phys_size;
+
+            if start_addr <= addr && addr + size <= end_addr {
+                let offset = addr - start_addr;
+                return Some(RdmaMemoryRegionView {
+                    virtual_addr: addr,
+                    rdma_addr: segment.mr_addr + offset,
+                    size,
+                    lkey: segment.lkey,
+                    rkey: segment.rkey,
+                });
+            }
+        }
+        None
+    }
+
+    fn register_mr(
+        &mut self,
+        actor_id: ActorId,
+        addr: usize,
+        size: usize,
+    ) -> Result<RdmaMemoryRegionView, anyhow::Error> {
+        unsafe {
+            let mut mem_type: i32 = 0;
+            let ptr = addr as cuda_sys::CUdeviceptr;
+            let err = cuda_sys::cuPointerGetAttribute(
+                &mut mem_type as *mut _ as *mut std::ffi::c_void,
+                cuda_sys::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                ptr,
+            );
+            let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
+
+            let access = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+
+            let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
+            let mut mrv: Option<RdmaMemoryRegionView> = None;
+
+            if is_cuda && self.pt_cuda_alloc {
+                // Get registered segments and check if our memory range is covered
+                mrv = self.find_cuda_segment_for_address(addr, size);
+                // not found, lets re-sync with caching allocator  and retry
+                if mrv.is_none() {
+                    let qp = self.qp_map.get(&actor_id).unwrap();
+                    rdmaxcel_sys::register_segments(
+                        self.domain.pd,
+                        qp.qp as *mut rdmaxcel_sys::ibv_qp,
+                    );
+                    mrv = self.find_cuda_segment_for_address(addr, size);
+                }
+                // if still not found, throw exception
+                if mrv.is_none() {
+                    return Err(anyhow::anyhow!(
+                        "MR registration failed for cuda (addr: 0x{:x}, size: {}), unable to find segment in CudaCachingAllocator",
+                        addr,
+                        size
+                    ));
+                }
+            } else if is_cuda {
+                let mut fd: i32 = -1;
+                cuda_sys::cuMemGetHandleForAddressRange(
+                    &mut fd as *mut i32 as *mut std::ffi::c_void,
+                    addr as cuda_sys::CUdeviceptr,
+                    size,
+                    cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+                    0,
+                );
+                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(
+                    self.domain.pd,
+                    0,
+                    size,
+                    0,
+                    fd,
+                    access.0 as i32,
+                );
+                mrv = Some(RdmaMemoryRegionView {
+                    virtual_addr: addr,
+                    rdma_addr: (*mr).addr as usize,
+                    size,
+                    lkey: (*mr).lkey,
+                    rkey: (*mr).rkey,
+                });
+            } else {
+                // CPU memory path
+                mr = rdmaxcel_sys::ibv_reg_mr(
+                    self.domain.pd,
+                    addr as *mut std::ffi::c_void,
+                    size,
+                    access.0 as i32,
+                );
+
+                if mr.is_null() {
+                    return Err(anyhow::anyhow!("failed to register memory region (MR)"));
+                }
+
+                mrv = Some(RdmaMemoryRegionView {
+                    virtual_addr: addr,
+                    rdma_addr: (*mr).addr as usize,
+                    size,
+                    lkey: (*mr).lkey,
+                    rkey: (*mr).rkey,
+                });
+            }
+
+            let result_mrv = mrv.unwrap();
+            self.mr_map.insert(addr, (result_mrv.clone(), mr as usize));
+            Ok(result_mrv)
+        }
+    }
+
+    fn deregister_mr(&mut self, id: usize) -> Result<(), anyhow::Error> {
+        let mr_tuple = self.mr_map.remove(&id);
+        if let Some((_, mr_ptr)) = mr_tuple {
+            if mr_ptr != 0 {
+                unsafe {
+                    rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -131,6 +274,8 @@ impl Actor for RdmaManagerActor {
 
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
         let mut config = _params;
+
+        let pt_cuda_alloc = unsafe { rdmaxcel_sys::pt_cuda_allocator_compatibility() };
 
         // check config and hardware support align
         if config.use_gpu_direct {
@@ -150,11 +295,41 @@ impl Actor for RdmaManagerActor {
 
         let domain = RdmaDomain::new(config.device.clone())
             .map_err(|e| anyhow::anyhow!("rdmaManagerActor could not create domain: {}", e))?;
+
         Ok(Self {
             qp_map: HashMap::new(),
             domain,
             config,
+            pt_cuda_alloc,
+            mr_map: HashMap::new(),
         })
+    }
+
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Create a loopback queue pair for self-communication
+        let self_ref: ActorRef<RdmaManagerActor> = this.bind().clone();
+        let self_id = self_ref.actor_id().clone();
+
+        // Initialize the queue pair directly (without going through message handler)
+        if !self.qp_map.contains_key(&self_id) {
+            let mut qp =
+                RdmaQueuePair::new(self.domain.context, self.domain.pd, self.config.clone())
+                    .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
+
+            // Get connection info for loopback
+            let endpoint = qp
+                .get_qp_info()
+                .map_err(|e| anyhow::anyhow!("could not get QP info: {}", e))?;
+
+            // Connect to itself
+            qp.connect(&endpoint)
+                .map_err(|e| anyhow::anyhow!("could not connect to RDMA endpoint: {}", e))?;
+
+            self.qp_map.insert(self_id, qp);
+            tracing::debug!("successfully created loopback connection");
+        }
+
+        Ok(())
     }
 
     async fn handle_supervision_event(
@@ -192,14 +367,20 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         addr: usize,
         size: usize,
     ) -> Result<RdmaBuffer, anyhow::Error> {
-        let mr = self.domain.register_buffer(addr, size)?;
+        let mrv = if let Some((mrv_, _)) = self.mr_map.get(&addr) {
+            mrv_
+        } else {
+            let actor_id = cx.bind::<RdmaManagerActor>().actor_id().clone();
+            &self.register_mr(actor_id, addr, size)?
+        };
+
         Ok(RdmaBuffer {
             owner: cx.bind().clone(),
-            mr_id: mr.id,
-            addr: mr.addr,
-            size: mr.size,
-            rkey: mr.rkey,
-            lkey: mr.lkey,
+            mr_id: mrv.virtual_addr,
+            addr: mrv.rdma_addr,
+            size: mrv.size,
+            rkey: mrv.rkey,
+            lkey: mrv.lkey,
         })
     }
 
@@ -221,8 +402,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         _cx: &Context<Self>,
         buffer: RdmaBuffer,
     ) -> Result<(), anyhow::Error> {
-        self.domain
-            .deregister_buffer(buffer)
+        self.deregister_mr(buffer.mr_id)
             .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
         Ok(())
     }
