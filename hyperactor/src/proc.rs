@@ -83,6 +83,7 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::metrics::MESSAGE_LATENCY_MICROS;
 use crate::panic_handler;
 use crate::reference::ActorId;
 use crate::reference::Index;
@@ -1221,11 +1222,31 @@ impl<A: Actor> Instance<A> {
         ));
         let span = self.status_span.lock().unwrap().clone();
 
+        let send_timestamp = headers
+            .get(crate::mailbox::headers::SEND_TIMESTAMP)
+            .and_then(|micros| {
+                std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_micros(*micros))
+            });
+
         let context = Context::new(self, headers);
+
         // Pass a reference to the context to the handler, so that deref
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
-        actor.handle(&context, message).instrument(span).await
+        let result = actor.handle(&context, message).instrument(span).await;
+
+        // Track message latency after the actor has finished processing
+        if let Some(send_timestamp) = send_timestamp {
+            let receive_time = self.clock().system_time_now();
+            if let Ok(latency) = receive_time.duration_since(send_timestamp) {
+                let metric_pairs = hyperactor_telemetry::kv_pairs!(
+                    "actor_id" => self.self_id().to_string()
+                );
+                MESSAGE_LATENCY_MICROS.record(latency.as_micros() as f64, metric_pairs);
+            }
+        }
+
+        result
     }
 
     /// Return a handle port handle representing the actor's message
