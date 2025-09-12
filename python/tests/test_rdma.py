@@ -5,8 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
-import pytest
 
+import pytest
 import torch
 from monarch.actor import Actor, current_rank, endpoint, this_host
 from monarch.tensor_engine import is_available as rdma_available, RDMABuffer

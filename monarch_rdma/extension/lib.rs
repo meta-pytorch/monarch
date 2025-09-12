@@ -187,6 +187,10 @@ impl PyRdmaBuffer {
         })
     }
 
+    fn size(&self) -> usize {
+        self.buffer.size
+    }
+
     fn __reduce__(&self) -> PyResult<(PyObject, PyObject)> {
         Python::with_gil(|py| {
             let ctor = py.get_type::<PyRdmaBuffer>().into_py_any(py)?;

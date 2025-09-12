@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 import asyncio
+import ctypes
 import functools
 import logging
 import warnings
@@ -46,6 +47,71 @@ def is_available():
     return _RdmaBuffer.rdma_supported()
 
 
+# Cached so that we don't have to call out to the root client every time,
+# which may be on a different host.
+@functools.cache
+def _ensure_init_rdma_manager() -> Shared[None]:
+    async def task() -> None:
+        await (
+            await get_or_spawn_controller("rdma_controller", RdmaController)
+        ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh))
+
+    return PythonTask.from_coroutine(task()).spawn()
+
+
+def _get_error(buf) -> ValueError:
+    return ValueError(
+        "RDMABuffer only supports 1d contiguous torch.Tensor or 1d c-contiguous memoryview. Got: {}".format(
+            buf
+        )
+    )
+
+
+def _assert_1d_contiguous(buf: torch.Tensor | memoryview) -> None:
+    if isinstance(buf, torch.Tensor):
+        if buf.dim() != 1 or not buf.is_contiguous():
+            raise _get_error(buf)
+    elif isinstance(buf, memoryview):
+        if buf.ndim != 1 or not buf.c_contiguous:
+            raise _get_error(buf)
+    else:
+        raise _get_error(buf)
+
+
+def _get_memoryview_addr_and_size(buf: memoryview) -> tuple[int, int]:
+    addr = ctypes.addressof(ctypes.c_char.from_buffer(buf))
+    size = buf.nbytes
+    return addr, size
+
+
+def _get_tensor_addr_and_size(tensor: torch.Tensor) -> tuple[int, int]:
+    data_ptr: int = tensor.untyped_storage().data_ptr()
+    # Calculate the actual starting address of the tensor data
+    # storage_offset() can return either int or torch.SymInt in newer PyTorch versions
+    try:
+        storage_offset = int(tensor.storage_offset())
+    except Exception as e:
+        raise RuntimeError("Failed to convert tensor.storage_offset() to int.") from e
+    offset: int = storage_offset * tensor.element_size()
+    addr: int = data_ptr + offset
+    size: int = tensor.element_size() * tensor.numel()
+    return addr, size
+
+
+def _get_addr_and_size(buf: torch.Tensor | memoryview) -> tuple[int, int]:
+    _assert_1d_contiguous(buf)
+    if isinstance(buf, memoryview):
+        return _get_memoryview_addr_and_size(buf)
+    elif isinstance(buf, torch.Tensor):
+        return _get_tensor_addr_and_size(buf)
+    # This shouldn't happen unless there is a bug, handle the type in caller.
+    raise RuntimeError(
+        "Trying to get address and size of unsupported type. Expected memoryview or torch.Tensor. Got: {}".format(
+            type(buf)
+        )
+    )
+
+
 class RdmaController(Actor):
     def __init__(self) -> None:
         self._managers: Dict[ProcMesh, _RdmaManager] = {}
@@ -72,45 +138,28 @@ class RdmaController(Actor):
                 )
 
 
-# Cached so that we don't have to call out to the root client every time,
-# which may be on a different host.
-@functools.cache
-def _ensure_init_rdma_manager() -> Shared[None]:
-    async def task() -> None:
-        await (
-            await get_or_spawn_controller("rdma_controller", RdmaController)
-        ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh))
-
-    return PythonTask.from_coroutine(task()).spawn()
-
-
-def _assert_tensor_is_1d_contiguous_uint8(t: torch.Tensor) -> None:
-    if t.ndim != 1:
-        raise ValueError(f"Tensor must be 1D, got {t.ndim}D")
-    if t.dtype != torch.uint8:
-        raise ValueError(f"Tensor must be uint8, got {t.dtype}")
-    if not t.is_contiguous():
-        raise ValueError("Tensor must be contiguous")
-
-
 class RDMABuffer:
-    def __init__(self, data: torch.Tensor) -> None:
+    def __init__(
+        self,
+        data: torch.Tensor | memoryview,
+    ) -> None:
         """
-        RDMABuffer only supports 1D contiguous tensors that are 1 byte per item.
+        RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.
 
-        To create a 1 byte, 1D view, use t.view(torch.uint8).flatten()
+        Args:
+            data: torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
+                  If provided, addr and size must not be specified.
 
-        TODO: Create TensorBuffer, which will be main user API supporting non-contiguous , multi-byte-per-elment tensors
+        Raises:
+            ValueError: If data is not 1d contiguous, if size is 0, or if data is a GPU tensor.
+            RuntimeError: If RDMA is not available on this platform.
+
+        Note:
+            Currently only CPU tensors are supported. GPU tensor support will be added in the future.
+
+        TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors
         """
-        assert (
-            is_available()
-        ), "Tried to create an RDMABuffer, but RDMA is not available on this platform."
-
-        # We need to ensure that _RdmaManager is initialized at this point, because under the hood
-        # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case.
-        _ensure_init_rdma_manager().block_on()
-
-        if data.device.type != "cpu":
+        if isinstance(data, torch.Tensor) and data.device.type != "cpu":
             # TODO - CUDA support for RDMABuffer exists at the Rust layer, but
             # runs into issues with MR creation. For now, only support CPU tensors.
             # Remove this once GPU support is added.
@@ -120,13 +169,17 @@ class RDMABuffer:
                 )
             )
 
-        _assert_tensor_is_1d_contiguous_uint8(data)
-        assert data.storage_offset() == 0
+        assert (
+            is_available()
+        ), "Tried to create an RDMABuffer, but RDMA is not available on this platform."
+
+        # We need to ensure that _RdmaManager is initialized at this point, because under the hood
+        # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case.
+        _ensure_init_rdma_manager().block_on()
+
+        addr, size = _get_addr_and_size(data)
 
         try:
-            storage = data.untyped_storage()
-            addr: int = storage.data_ptr()
-            size = storage.element_size() * data.numel()
             if size == 0:
                 raise ValueError("Cannot create RDMABuffer with size 0.")
             ctx = context()
@@ -141,23 +194,35 @@ class RDMABuffer:
             logging.error("Failed to create buffer %s", e)
             raise e
 
+    def size(self) -> int:
+        return self._buffer.size()
+
     def read_into(
         self,
-        dst: torch.Tensor,
-        offset: int = 0,
+        dst: torch.Tensor | memoryview,
+        *,
         timeout: int = 3,
     ) -> Future[Optional[int]]:
         """
         Read data from the RDMABuffer into a destination tensor.
 
-        The destination tensor must be contiguous and 1 byte per item.
+        The destination tensor must be contiguous (including tensor views/slices).
+        Args:
+            dst: Destination tensor or memoryview to read into.
+        Keyword Args:
+            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.
+        Returns:
+            Future[Optional[int]]: A Monarch Future that can be awaited or called with .get() for blocking operation.
 
-        Returns an ActorFuture that can be awaited or called with .get() for blocking operation.
+        Raises:
+            ValueError: If the destination tensor size is smaller than the RDMA buffer size.
+
+        Note:
+            Currently only CPU tensors are fully supported. GPU tensors will be temporarily
+            copied to CPU, which may impact performance.
         """
-        _assert_tensor_is_1d_contiguous_uint8(dst)
         dst_gpu = None
-        if dst.device.type != "cpu":
-            # TODO - remove this once GPU support is added.
+        if isinstance(dst, torch.Tensor) and dst.device.type != "cpu":
             warnings.warn(
                 "note: read_into only supports CPU tensors, so `dst` is being copied to CPU.",
                 RDMAReadTransferWarning,
@@ -165,12 +230,12 @@ class RDMABuffer:
             )
             dst_gpu = dst
             dst = dst.cpu()
-        storage = dst.untyped_storage()
-        addr: int = storage.data_ptr() + offset
-        size = storage.element_size() * dst.numel()
-        if offset + size > dst.numel():
+
+        dst_addr, dst_size = _get_addr_and_size(dst)
+
+        if self.size() > dst_size:
             raise ValueError(
-                f"offset + size ({offset + size}) must be <= dst.numel() ({dst.numel()})"
+                f"Destination tensor size ({dst_size}) must be >= RDMA buffer size ({self.size()})"
             )
 
         local_proc_id = context().actor_instance.proc_id
@@ -180,8 +245,8 @@ class RDMABuffer:
             await _ensure_init_rdma_manager()
 
             res = await self._buffer.read_into(
-                addr=addr,
-                size=size,
+                addr=dst_addr,
+                size=dst_size,
                 local_proc_id=local_proc_id,
                 client=client,
                 timeout=timeout,
@@ -194,18 +259,34 @@ class RDMABuffer:
         return Future(coro=read_into_nonblocking())
 
     def write_from(
-        self, src: torch.Tensor, offset: int = 0, timeout: int = 3
+        self,
+        src: torch.Tensor | memoryview,
+        *,
+        timeout: int = 3,
     ) -> Future[None]:
         """
         Write data from a source tensor into the RDMABuffer.
 
-        The source tensor must be contiguous and 1 byte per item.
+        Args:
+            src: Source tensor containing data to be written to the RDMA buffer.
+                                Must be a contiguous tensor (including tensor views/slices).
+                                Either src or addr/size must be provided.
+        Keyword Args:
+            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.
 
-        Returns an ActorFuture that can be awaited or called with .get() for blocking operation.
+        Returns:
+            Future[None]: A Monarch Future object that can be awaited or called with .get()
+                         for blocking operation. Returns None when completed successfully.
+
+        Raises:
+            ValueError: If the source tensor size exceeds the RDMA buffer size.
+
+        Note:
+            Currently only CPU tensors are fully supported. GPU tensors will be temporarily
+            copied to CPU, which may impact performance.
         """
-        _assert_tensor_is_1d_contiguous_uint8(src)
         src_gpu = None
-        if src.device.type != "cpu":
+        if isinstance(src, torch.Tensor) and src.device.type != "cpu":
             # TODO - remove this once GPU support is added.
             warnings.warn(
                 "note: write_from only supports CPU tensors, so we will write to CPU first, then transfer to `src` in place.",
@@ -214,14 +295,13 @@ class RDMABuffer:
             )
             src_gpu = src  # Save the original GPU tensor reference
             src = src.cpu()  # Convert to CPU for RDMA operation
-        storage = src.untyped_storage()
-        addr: int = storage.data_ptr()
-        size = storage.element_size() * src.numel()
-        if size + offset > src.numel():
-            raise ValueError(
-                f"size + offset ({size + offset}) must be <= src.numel() ({src.numel()})"
-            )
 
+        src_addr, src_size = _get_addr_and_size(src)
+
+        if src_size > self.size():
+            raise ValueError(
+                f"Source tensor size ({src_size}) must be <= RDMA buffer size ({self.size()})"
+            )
         local_proc_id = context().actor_instance.proc_id
         client = context().actor_instance._mailbox
 
@@ -229,8 +309,8 @@ class RDMABuffer:
             await _ensure_init_rdma_manager()
 
             res = await self._buffer.write_from(
-                addr=addr,
-                size=size,
+                addr=src_addr,
+                size=src_size,
                 local_proc_id=local_proc_id,
                 client=client,
                 timeout=timeout,
