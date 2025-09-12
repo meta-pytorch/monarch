@@ -74,6 +74,9 @@ pub enum Error {
 
     #[error("error while sending message to actor {0}: {1}")]
     SendingError(ActorId, Box<MailboxSenderError>),
+
+    #[error("error while casting message: {0}")]
+    CastingError(anyhow::Error),
 }
 
 impl From<crate::alloc::AllocatorError> for Error {
