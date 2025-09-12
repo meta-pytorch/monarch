@@ -8,6 +8,7 @@
 
 // RDMA requires frequent unsafe code blocks
 #![allow(clippy::undocumented_unsafe_blocks)]
+pub mod bench_utils;
 
 mod ibverbs_primitives;
 mod rdma_components;
