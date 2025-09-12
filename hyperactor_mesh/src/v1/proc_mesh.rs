@@ -308,11 +308,14 @@ mod tests {
     use hyperactor::Instance;
     use hyperactor::PortRef;
     use hyperactor::Proc;
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
     use hyperactor::id;
     use hyperactor::mailbox::BoxableMailboxSender;
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::async_timed_test;
 
     use super::*;
     use crate::alloc::AllocSpec;
@@ -362,7 +365,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
         #[derive(Actor, Default, Debug)]
         #[hyperactor::export(
@@ -385,21 +388,53 @@ mod tests {
             }
         }
 
-        let (proc_mesh, actor, _router) = local_proc_mesh(extent!(replica = 4)).await;
+        let (proc_mesh, actor, _router) = local_proc_mesh(extent!(replica = 4, hosts = 2)).await;
+        // Verify casting to the root actor mesh
         let actor_mesh: ActorMeshRef<EchoActor> =
             proc_mesh.spawn(&actor, "test", &()).await.unwrap().freeze();
+        {
+            let (port, mut rx) = mailbox::open_port(&actor);
+            actor_mesh.cast(&actor, port.bind()).unwrap();
 
-        let (port, mut rx) = mailbox::open_port(&actor);
-        actor_mesh.cast(&actor, port.bind()).unwrap();
+            let mut expected_actor_ids: HashSet<_> = actor_mesh
+                .values()
+                .map(|actor_ref| actor_ref.actor_id().clone())
+                .collect();
+            while !expected_actor_ids.is_empty() {
+                let actor_id = rx.recv().await.unwrap();
+                assert!(
+                    expected_actor_ids.remove(&actor_id),
+                    "got {actor_id}, expect {expected_actor_ids:?}"
+                );
+            }
+            // No more messages
+            RealClock.sleep(Duration::from_secs(1)).await;
+            let result = rx.try_recv();
+            assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
+        }
 
-        let mut expected_actor_ids: HashSet<_> = actor_mesh
-            .values()
-            .map(|actor_ref| actor_ref.actor_id().clone())
-            .collect();
+        // Verify casting to the sliced actor mesh
+        let sliced_actor_mesh = actor_mesh.range("replica", 1..3).unwrap();
+        {
+            let (port, mut rx) = mailbox::open_port(&actor);
+            sliced_actor_mesh.cast(&actor, port.bind()).unwrap();
 
-        while !expected_actor_ids.is_empty() {
-            let actor_id = rx.recv().await.unwrap();
-            assert!(expected_actor_ids.remove(&actor_id));
+            let mut expected_actor_ids: HashSet<_> = sliced_actor_mesh
+                .values()
+                .map(|actor_ref| actor_ref.actor_id().clone())
+                .collect();
+
+            while !expected_actor_ids.is_empty() {
+                let actor_id = rx.recv().await.unwrap();
+                assert!(
+                    expected_actor_ids.remove(&actor_id),
+                    "got {actor_id}, expect {expected_actor_ids:?}"
+                );
+            }
+            // No more messages
+            RealClock.sleep(Duration::from_secs(1)).await;
+            let result = rx.try_recv();
+            assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
         }
     }
 }
