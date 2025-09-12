@@ -154,7 +154,7 @@ impl Default for IbverbsConfig {
             max_rd_atomic: 1,
             pkey_index: 0,
             psn: rand::random::<u32>() & 0xffffff,
-            use_gpu_direct: true,
+            use_gpu_direct: false, // nv_peermem enabled for cuda
         }
     }
 }

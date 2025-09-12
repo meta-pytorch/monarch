@@ -16,14 +16,15 @@
 #[cfg(test)]
 mod tests {
 
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
+
     use crate::PollTarget;
     use crate::ibverbs_primitives::get_all_devices;
     use crate::rdma_components::validate_execution_context;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
     use crate::test_utils::test_utils::RdmaManagerTestEnv;
     use crate::test_utils::test_utils::*;
-
-    // CPU-only tests
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
@@ -581,10 +582,6 @@ mod tests {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
-        if !does_gpu_support_p2p().await {
-            println!("Skipping test: GPU P2P not supported");
-            return Ok(());
-        }
         const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -594,10 +591,12 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
+        // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
+        RealClock.sleep(std::time::Duration::from_millis(50)).await;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
@@ -614,10 +613,6 @@ mod tests {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
-        if !does_gpu_support_p2p().await {
-            println!("Skipping test: GPU P2P not supported");
-            return Ok(());
-        }
         const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -628,10 +623,12 @@ mod tests {
         }
         let env =
             RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
             .await?;
+        RealClock.sleep(std::time::Duration::from_millis(50)).await;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
@@ -647,10 +644,6 @@ mod tests {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
-        if !does_gpu_support_p2p().await {
-            println!("Skipping test: GPU P2P not supported");
-            return Ok(());
-        }
         const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -661,6 +654,14 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
+
+        // Pre-initialize comms, and wait for hardware to transition to send state
+        let mut _qp_1 = env
+            .actor_1
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .await?;
+        RealClock.sleep(std::time::Duration::from_millis(50)).await;
+
         rdma_handle_1
             .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
             .await?;
@@ -676,8 +677,37 @@ mod tests {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
-        if !does_gpu_support_p2p().await {
-            println!("Skipping test: GPU P2P not supported");
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env =
+            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        // Pre-initialize comms, and wait for hardware to transition to send state
+        let mut _qp_1 = env
+            .actor_1
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .await?;
+        RealClock.sleep(std::time::Duration::from_millis(50)).await;
+
+        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
         const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
@@ -690,42 +720,19 @@ mod tests {
         }
         let env =
             RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        // Pre-initialize comms, and wait for hardware to transition to send state
+        let mut _qp_1 = env
+            .actor_1
+            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .await?;
+        RealClock.sleep(std::time::Duration::from_millis(50)).await;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .write_from(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
         env.cleanup().await?;
-        Ok(())
-    }
-
-    // Tests RdmaBufer's `read_into` API
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_read_into_cuda() -> Result<(), anyhow::Error> {
-        if is_cpu_only_mode() {
-            println!("Skipping CUDA test in CPU-only mode");
-            return Ok(());
-        }
-        if !does_gpu_support_p2p().await {
-            println!("Skipping test: GPU P2P not supported");
-            return Ok(());
-        }
-        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
-        let devices = get_all_devices();
-        if devices.len() < 5 {
-            println!(
-                "skipping this test as it is only configured on H100 nodes with backend network"
-            );
-            return Ok(());
-        }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
-        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
-            .await?;
-
-        env.verify_buffers(BSIZE).await?;
         Ok(())
     }
 }

@@ -97,6 +97,7 @@ pub mod test_utils {
     use crate::rdma_components::RdmaQueuePair;
     use crate::rdma_manager_actor::RdmaManagerActor;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
+    use crate::validate_execution_context;
     // Waits for the completion of an RDMA operation.
 
     // This function polls for the completion of an RDMA operation by repeatedly
@@ -316,9 +317,9 @@ pub mod test_utils {
                     .parse::<usize>()
                     .expect("Device index is not a valid integer");
                 accel1 = (backend.to_string(), parsed_idx);
+                config1.use_gpu_direct = validate_execution_context().await.is_ok();
             } else {
                 assert!(accels.0 == "cpu");
-                config1.use_gpu_direct = false;
                 accel1 = ("cpu".to_string(), 0);
             }
 
@@ -328,9 +329,9 @@ pub mod test_utils {
                     .parse::<usize>()
                     .expect("Device index is not a valid integer");
                 accel2 = (backend.to_string(), parsed_idx);
+                config2.use_gpu_direct = validate_execution_context().await.is_ok();
             } else {
                 assert!(accels.1 == "cpu");
-                config2.use_gpu_direct = false;
                 accel2 = ("cpu".to_string(), 0);
             }
 
