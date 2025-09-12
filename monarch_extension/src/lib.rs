@@ -167,6 +167,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module,
         "monarch_hyperactor.mailbox",
     )?)?;
+    monarch_hyperactor::config::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.config",
+    )?)?;
 
     monarch_hyperactor::alloc::register_python_bindings(&get_or_add_new_module(
         module,

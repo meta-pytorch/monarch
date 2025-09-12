@@ -12,12 +12,27 @@ Benchmark for measuring message throughput in Monarch actor mesh.
 """
 
 import asyncio
+import csv
+import itertools
+import os
 import time
-from typing import Any, Dict
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from subprocess import check_output
 
 import humanfriendly
 
-from monarch.actor import Actor, endpoint, proc_mesh
+from monarch._rust_bindings.monarch_hyperactor.config import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
+    reload_config_from_env,
+)
+
+from monarch.actor import (  # @manual=//monarch/python/monarch/actor:actor_no_torch
+    Actor,
+    endpoint,
+    proc_mesh,
+    ProcMesh,
+)
 
 from windtunnel.benchmarks.python_benchmark_runner.benchmark import (
     main,
@@ -29,158 +44,236 @@ from windtunnel.benchmarks.python_benchmark_runner.benchmark import (
 FILE_PATH: str = "monarch/python/benches/actor_mesh_benchmark.py"
 
 
-class SleepActor(Actor):
-    @endpoint
-    async def sleep(self, sleep_secs: float, _: bytes) -> int:
-        await asyncio.sleep(sleep_secs)
-
-        return 1
-
-
-async def run_actor_scaling_benchmark(
-    actor_mesh: Any,
-    actor_count: int,
-    message_size: int,
-    duration_seconds: int,
-    sleep_secs: float,
-) -> Dict[str, float]:
-    """
-    Run a benchmark with a specific number of actors and message size.
-    Returns statistics about the benchmark run including:
-    - avg_time_ms: average time per iteration in milliseconds
-    - median_time_ms: median time per iteration in milliseconds
-    - min_time_ms: minimum time per iteration in milliseconds
-    - max_time_ms: maximum time per iteration in milliseconds
-    - throughput_mbps: throughput in megabits per second
-    - iterations: number of iterations completed
-    """
-    payload = bytes(message_size)
-    times = []
-
-    start_benchmark = time.time()
-    iteration_count = 0
-
-    while time.time() - start_benchmark < duration_seconds:
-        start_time = time.time()
-        val_mesh = await actor_mesh.sleep.call(sleep_secs, payload)
-        elapsed_time = time.time() - start_time
-        times.append(elapsed_time)
-
-        val = sum([val[1] for val in val_mesh.items()])
-        assert val == actor_count, f"Expected {actor_count} responses, got {val}"
-        iteration_count += 1
-
-    if iteration_count == 0:
-        raise ValueError("No iterations completed")
-
-    times_ms = [t * 1000 for t in times]
-    avg_time_ms = sum(times_ms) / (iteration_count * 1.0)
-    sorted_times = sorted(times_ms)
-    median_time_ms = (
-        sorted_times[iteration_count // 2]
-        if iteration_count % 2 == 1
-        else (
-            sorted_times[iteration_count // 2 - 1] + sorted_times[iteration_count // 2]
+def get_rev() -> str:
+    try:
+        return (
+            check_output(
+                "hg id",
+                shell=True,
+            )
+            .decode()
+            .strip()
         )
-        / 2
+    except Exception:
+        return "unknown_rev"
+
+
+def get_rev_name() -> str:
+    try:
+        name = (
+            check_output(
+                "hg log -r . --template '{desc|firstline}'",
+                shell=True,
+            )
+            .decode()
+            .strip()
+        )
+
+        if len(name) > 20:
+            name = name[:20]
+        return name
+    except Exception:
+        return "unknown_rev_name"
+
+
+class Pong(Actor):
+    @endpoint
+    async def pong(self, data: bytes) -> int:
+        return len(data)
+
+
+class Ping(Actor):
+    def __init__(self, other: Pong) -> None:
+        self.pong = other
+
+    @endpoint
+    async def ping(self, data: bytes) -> int:
+        await self.pong.pong.call(data)
+        return len(data)
+
+
+MILLION = 1_000_000
+
+
+@dataclass
+class Benchmark:
+    counters: defaultdict[str, float] = field(
+        default_factory=lambda: defaultdict(lambda: 0.0)
     )
+    test_duration: float = 3.0
+    min_iterations: int = 100
+    _clock: float = 0.0
+    _duration: float = 0.0
+    _iterations: int = 0
 
-    return {
-        "avg_time_ms": avg_time_ms,
-        "median_time_ms": median_time_ms,
-        "min_time_ms": min(times_ms),
-        "max_time_ms": max(times_ms),
-        "throughput_mBps": (message_size * actor_count * (1000.0 / avg_time_ms))
-        / 1_000_000,
-        "iterations": iteration_count,
-    }
+    def _start(self) -> None:
+        self._clock = time.monotonic()
+
+    def _stop(self) -> float:
+        assert self._clock != 0.0
+        delta = time.monotonic() - self._clock
+        self._duration += delta
+        return delta
+
+    def meta(self) -> dict[str, float | str | int]:
+        return {
+            "test_name": self.name(),
+            "rev": get_rev(),
+            "rev_name": get_rev_name(),
+        }
+
+    def name(self) -> str:
+        return self.__class__.__name__
+
+    def bump_counter(self, name: str, delta: float) -> None:
+        name = name.replace(" ", "_")
+        old = self.counters[name]
+        self.counters[name] = old + delta
+
+    def report(self) -> dict[str, float | str | int]:
+        return self.meta() | self.counters
+
+    def reached_min_iterations(self) -> bool:
+        return self._iterations >= self.min_iterations
+
+    def reached_min_duration(self) -> bool:
+        return self._duration >= self.test_duration
+
+    async def run(self) -> dict[str, float | str | int]:
+        self.counters = defaultdict(lambda: 0.0)
+        batch_size = 10
+        batch_durations = []
+        await self.setup()
+        await self.run_once()
+        while not (self.reached_min_iterations() and self.reached_min_duration()):
+            remaining = self.test_duration - self._duration
+            print(f"{self.name()}::{batch_size=}::time_{remaining=}")
+            for _ in range(batch_size):
+                self._start()
+                await self.run_once()
+                batch_durations.append(self._stop())
+                self._iterations += 1
+
+            remaining = self.test_duration - self._duration
+            batch_size = max(int(remaining / min(batch_durations)), 10)
+
+        await self.teardown()
+
+        self.counters["total_test_duration_us"] = self._duration * MILLION
+        self.counters["total_test_iterations"] = self._iterations
+        avg = sum(batch_durations) / len(batch_durations)
+        self.counters["avg_duration_us"] = avg * MILLION
+        self.counters["min_duration_us"] = min(batch_durations) * MILLION
+        self.counters["max_duration_us"] = max(batch_durations) * MILLION
+        self.counters["stddev_duration_us"] = (
+            sum([abs(x - avg) for x in batch_durations]) / len(batch_durations)
+        ) * MILLION
+
+        return self.report()
+
+    async def setup(self) -> None:
+        pass
+
+    async def teardown(self) -> None:
+        pass
+
+    async def run_once(self) -> None:
+        raise NotImplementedError()
 
 
-@register_benchmark(FILE_PATH, use_counters=True)
-async def bench_actor_scaling(counters: UserCounters) -> None:
-    """
-    Benchmark how long it takes to process 1KB message on different numbers of actors.
-    Reports average, median, min, and max times.
-    """
-    host_counts = [1, 10, 100]
-    message_sizes = [1024]
-    duration_seconds = 10
-    gpus = 1
+@dataclass
+class ActorLatency(Benchmark):
+    host_count: int = 1
+    gpu_count: int = 1
+    message_size: int = 1024
+    message: bytes = b""
+    pong_mesh: ProcMesh | None = None
+    pong_actors: Pong | None = None
 
-    for host_count in host_counts:
-        for message_size in message_sizes:
-            mesh = proc_mesh(hosts=host_count, gpus=gpus)
-            await mesh.initialized
-            await mesh.logging_option(stream_to_client=False, aggregate_window_sec=None)
-            actor_mesh = await mesh.spawn("actor", SleepActor)
-            # Allow Actor init to finish
+    def meta(self) -> dict[str, float | str | int]:
+        return super().meta() | {
+            "hosts": self.host_count,
+            "gpus": self.gpu_count,
+            "message_size": self.message_size,
+        }
+
+    async def run_once(self) -> None:
+        pong = self.pong_actors
+        assert pong is not None
+        await pong.pong.call(self.message)
+        self.bump_counter("bytes", self.message_size)
+        self.bump_counter("casts", 1)
+        self.bump_counter("messages", pong.size())
+
+    async def teardown(self) -> None:
+        assert self.pong_mesh is not None
+        await self.pong_mesh.stop()
+
+    def setup_env(self) -> None:
+        # ensure any changes are reflected
+        os.environ["HYPERACTOR_DEFAULT_ENCODING"] = "serde_bincode"
+        os.environ["HYPERACTOR_CHANNEL_MULTIPART"] = "0"
+
+    async def setup(self) -> None:
+        self.setup_env()
+        reload_config_from_env()
+        pong_mesh = await proc_mesh(hosts=self.host_count, gpus=self.gpu_count)
+        await pong_mesh.logging_option(stream_to_client=True, aggregate_window_sec=None)
+
+        self.pong_actors = await pong_mesh.spawn("pong", Pong)
+        self.pong_mesh = pong_mesh
+        self.message = bytes(self.message_size)
+
+
+class ActorLatencyMultipart(ActorLatency):
+    def setup_env(self) -> None:
+        os.environ["HYPERACTOR_DEFAULT_ENCODING"] = "serde_multipart"
+        os.environ["HYPERACTOR_CHANNEL_MULTIPART"] = "1"
+
+
+message_sizes: list[int] = [10**n for n in range(7, 9)]
+# message_sizes: list[int] = [10**8]
+host_counts = [1]
+gpu_counts = [1]
+runners = [ActorLatency, ActorLatency]
+
+for hosts, gpus, message_size, Runner in itertools.product(
+    host_counts, gpu_counts, message_sizes, runners
+):
+    bench = Runner(
+        host_count=hosts,
+        gpu_count=gpus,
+        message_size=message_size,
+    )
+    size_name = humanfriendly.format_size(message_size).replace(" ", "_")
+
+    @register_benchmark(
+        FILE_PATH,
+        use_counters=True,
+        name=f"{bench.__class__.__name__}_{hosts=}_{gpus=}_{size_name}",
+        bench=bench,
+    )
+    async def bench_actor_scaling(counters: UserCounters, bench: Benchmark) -> None:
+        # host_counts = [1, 10, 100]
+        filename = Path(f"/tmp/actor_mesh_benchmark/{get_rev()}.csv")
+        filename.parent.mkdir(parents=True, exist_ok=True)
+        w = None
+        row = await bench.run()
+        for k, v in row.items():
+            if isinstance(v, (int, float)):
+                counters[k] = UserMetric(value=int(v))
+
+        with open(filename, "a") as f:
+            w = csv.DictWriter(
+                f,
+                fieldnames=row.keys(),
+            )
+            if os.stat(filename).st_size == 0:
+                w.writeheader()
+                f.flush()
+            w.writerow(row)
+            f.flush()
             await asyncio.sleep(1)
-
-            stats = await run_actor_scaling_benchmark(
-                actor_mesh,
-                host_count * gpus,
-                message_size,
-                duration_seconds,
-                sleep_secs=0.1,
-            )
-            await mesh.stop()
-
-            counters[f"actor_count_{host_count}_median_ms"] = UserMetric(
-                value=int(stats["median_time_ms"])
-            )
-            counters[f"actor_count_{host_count}_min_ms"] = UserMetric(
-                value=int(stats["min_time_ms"])
-            )
-            counters[f"actor_count_{host_count}_max_ms"] = UserMetric(
-                value=int(stats["max_time_ms"])
-            )
-
-
-@register_benchmark(FILE_PATH, use_counters=True)
-async def bench_message_scaling(counters: UserCounters) -> None:
-    """
-    Benchmark how long it takes to process messages of different sizes on different numbers of actors.
-    Reports average, median, min, max times, throughput in Mbps, and number of iterations completed.
-    """
-    gpu_counts = [1, 10]
-    KB = 1000
-    MB = 1000 * KB
-    message_sizes = [10 * KB, 100 * KB, 1 * MB, 10 * MB, 100 * MB]
-    duration_seconds = 5
-
-    for gpus in gpu_counts:
-        for message_size in message_sizes:
-            if gpus >= 20 and message_size >= 100 * MB:
-                continue
-            print(f"Testing host_count: {gpus}, message_size: {message_size}")
-            mesh = await proc_mesh(gpus=gpus)
-            await mesh.logging_option(stream_to_client=True, aggregate_window_sec=None)
-            actor_mesh = await mesh.spawn("actor", SleepActor)
-            # Allow Actor init to finish
-            await asyncio.sleep(1)
-
-            stats = await run_actor_scaling_benchmark(
-                actor_mesh,
-                gpus,
-                message_size,
-                duration_seconds,
-                sleep_secs=0.0,
-            )
-            await mesh.stop()
-
-            size = humanfriendly.format_size(message_size)
-            counters[f"hosts_{gpus}_size_{size}_median_ms"] = UserMetric(
-                value=int(stats["median_time_ms"])
-            )
-            counters[f"hosts_{gpus}_size_{size}_min_ms"] = UserMetric(
-                value=int(stats["min_time_ms"])
-            )
-            counters[f"hosts_{gpus}_size_{size}_max_ms"] = UserMetric(
-                value=int(stats["max_time_ms"])
-            )
-            counters[f"hosts_{gpus}_size_{size}_throughput_mBps"] = UserMetric(
-                value=int(stats["throughput_mBps"])
-            )
 
 
 if __name__ == "__main__":
