@@ -72,9 +72,15 @@ impl DurableMailboxSender {
 impl MailboxSender for DurableMailboxSender {
     fn post(
         &self,
-        envelope: MessageEnvelope,
+        mut envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
+        // One TTL decrement for this hop
+        if let Err(err) = envelope.dec_ttl_or_err() {
+            envelope.undeliverable(err, return_handle);
+            return;
+        }
+
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
             self.0.send((envelope, return_handle))
         {

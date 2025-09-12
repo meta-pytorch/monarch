@@ -42,6 +42,9 @@ declare_attrs! {
     /// Number of messages after which to send an acknowledgment
     pub attr MESSAGE_ACK_EVERY_N_MESSAGES: u64 = 1000;
 
+    /// Default hop Time-To-Live for message envelopes.
+    pub attr MESSAGE_TTL_DEFAULT : u8 = 64;
+
     /// Maximum buffer size for split port messages
     pub attr SPLIT_MAX_BUFFER_SIZE: usize = 5;
 
@@ -86,6 +89,14 @@ pub fn from_env() -> Attrs {
         if let Ok(parsed) = val.parse::<u64>() {
             tracing::info!("overriding MESSAGE_ACK_TIME_INTERVAL to {}", parsed);
             config[MESSAGE_ACK_TIME_INTERVAL] = Duration::from_millis(parsed);
+        }
+    }
+
+    // Load message ttl default
+    if let Ok(val) = env::var("HYPERACTOR_MESSAGE_TTL_DEFAULT") {
+        if let Ok(parsed) = val.parse::<u8>() {
+            tracing::info!("overriding MESSAGE_TTL_DEFAULT to {}", parsed);
+            config[MESSAGE_TTL_DEFAULT] = parsed;
         }
     }
 
@@ -163,6 +174,9 @@ pub fn merge(config: &mut Attrs, other: &Attrs) {
     }
     if other.contains_key(MESSAGE_ACK_EVERY_N_MESSAGES) {
         config[MESSAGE_ACK_EVERY_N_MESSAGES] = other[MESSAGE_ACK_EVERY_N_MESSAGES];
+    }
+    if other.contains_key(MESSAGE_TTL_DEFAULT) {
+        config[MESSAGE_TTL_DEFAULT] = other[MESSAGE_TTL_DEFAULT];
     }
     if other.contains_key(SPLIT_MAX_BUFFER_SIZE) {
         config[SPLIT_MAX_BUFFER_SIZE] = other[SPLIT_MAX_BUFFER_SIZE];

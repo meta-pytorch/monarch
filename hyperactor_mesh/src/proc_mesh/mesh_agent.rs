@@ -371,6 +371,9 @@ impl MailboxSender for ReconfigurableMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
+        // NOTE: This sender is a transparent shim (not a hop). It
+        // MUST NOT decrement TTL here, otherwise messages will be
+        // double-decremented when the underlying hop also decrements.
         match *self.state.read().unwrap() {
             ReconfigurableMailboxSenderState::Queueing(ref queue) => {
                 queue.lock().unwrap().push((envelope, return_handle));

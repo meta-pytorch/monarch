@@ -183,6 +183,10 @@ pub enum DeliveryError {
     /// A multicast related delivery error.
     #[error("multicast error: {0}")]
     Multicast(String),
+
+    /// The message went through too many hops and has expired.
+    #[error("ttl expired")]
+    TtlExpired,
 }
 
 /// An envelope that carries a message destined to a remote actor.
@@ -204,7 +208,10 @@ pub struct MessageEnvelope {
 
     /// Additional context for this message.
     headers: Attrs,
-    // TODO: add typename, source, seq, TTL, etc.
+
+    /// Decremented at every `MailboxSender` hop.
+    ttl: u8,
+    // TODO: add typename, source, seq, etc.
 }
 
 impl MessageEnvelope {
@@ -216,6 +223,7 @@ impl MessageEnvelope {
             data,
             errors: Vec::new(),
             headers,
+            ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
         }
     }
 
@@ -237,7 +245,47 @@ impl MessageEnvelope {
             sender: source,
             dest,
             errors: Vec::new(),
+            ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
         })
+    }
+
+    /// Returns the remaining time-to-live (TTL) for this message.
+    ///
+    /// The TTL is decremented at each `MailboxSender` hop. When it
+    /// reaches 0, the message is considered expired and is returned
+    /// to the sender as undeliverable.
+    pub fn ttl(&self) -> u8 {
+        self.ttl
+    }
+
+    /// Overrides the message’s time-to-live (TTL).
+    ///
+    /// This replaces the current TTL value (normally initialized from
+    /// `config::MESSAGE_TTL_DEFAULT`) with the provided `ttl`. The
+    /// updated envelope is returned for chaining.
+    ///
+    /// # Note
+    /// The TTL is decremented at each `MailboxSender` hop, and when
+    /// it reaches 0 the message will be treated as undeliverable.
+    pub fn set_ttl(mut self, ttl: u8) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Decrements the message's TTL by one hop.
+    ///
+    /// Returns `Ok(())` if the TTL was greater than zero and
+    /// successfully decremented. If the TTL was already zero, no
+    /// decrement occurs and `Err(DeliveryError::TtlExpired)` is
+    /// returned, indicating that the message has expired and should
+    /// be treated as undeliverable.
+    fn dec_ttl_or_err(&mut self) -> Result<(), DeliveryError> {
+        if self.ttl == 0 {
+            Err(DeliveryError::TtlExpired)
+        } else {
+            self.ttl -= 1;
+            Ok(())
+        }
     }
 
     /// Deserialize the message in the envelope to the provided type T.
@@ -334,6 +382,7 @@ impl MessageEnvelope {
             data,
             errors,
             headers,
+            ttl,
         } = self;
 
         (
@@ -342,6 +391,7 @@ impl MessageEnvelope {
                 dest,
                 errors,
                 headers,
+                ttl,
             },
             data,
         )
@@ -353,6 +403,7 @@ impl MessageEnvelope {
             dest,
             errors,
             headers,
+            ttl,
         } = metadata;
 
         Self {
@@ -361,6 +412,7 @@ impl MessageEnvelope {
             data,
             errors,
             headers,
+            ttl,
         }
     }
 }
@@ -378,6 +430,36 @@ impl fmt::Display for MessageEnvelope {
     }
 }
 
+/// Perform one hop of message forwarding, or return the message as
+/// undeliverable if its TTL has expired.
+///
+/// This helper ensures that the message's TTL is decremented exactly
+/// once per hop. If the TTL is still positive, the message is passed
+/// to the provided `forward` continuation for continued delivery. If
+/// the TTL has reached zero, the message is marked with a
+/// [`DeliveryError::TtlExpired`] and returned to the sender via the
+/// supplied `return_handle`.
+///
+/// # Parameters
+/// - `envelope`: The message being forwarded.
+/// - `return_handle`: A port handle for delivering undeliverable
+///   messages back to the sender.
+/// - `forward`: The continuation to invoke if the message can still
+///   be forwarded.
+///
+/// This function centralizes TTL handling so all `MailboxSender`
+/// implementations apply the same semantics.
+pub fn hop_or_undeliverable(
+    mut envelope: MessageEnvelope,
+    return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    forward: impl FnOnce(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>),
+) {
+    match envelope.dec_ttl_or_err() {
+        Ok(()) => forward(envelope, return_handle),
+        Err(e) => envelope.undeliverable(e, return_handle),
+    }
+}
+
 /// Metadata about a message sent via a MessageEnvelope.
 #[derive(Clone)]
 pub struct MessageMetadata {
@@ -385,6 +467,7 @@ pub struct MessageMetadata {
     dest: PortId,
     errors: Vec<DeliveryError>,
     headers: Attrs,
+    ttl: u8,
 }
 
 /// Errors that occur during mailbox operations. Each error is associated
@@ -1084,15 +1167,17 @@ impl MailboxSender for MailboxClient {
     ) {
         // tracing::trace!(name = "post", "posting message to {}", envelope.dest);
         tracing::event!(target:"messages", tracing::Level::DEBUG, "crc"=envelope.data.crc(), "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.0, "port"= envelope.dest.1, "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
+        hop_or_undeliverable(envelope, return_handle, |envelope, return_handle| {
+            if let Err(mpsc::error::SendError((envelope, return_handle))) =
+                self.buffer.send((envelope, return_handle))
+            {
+                let err =
+                    DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string());
 
-        if let Err(mpsc::error::SendError((envelope, return_handle))) =
-            self.buffer.send((envelope, return_handle))
-        {
-            let err = DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string());
-
-            // Failed to enqueue.
-            envelope.undeliverable(err, return_handle);
-        }
+                // Failed to enqueue.
+                envelope.undeliverable(err, return_handle);
+            }
+        })
     }
 }
 
@@ -1368,73 +1453,82 @@ impl MailboxSender for Mailbox {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        metrics::MAILBOX_POSTS.add(
-            1,
-            hyperactor_telemetry::kv_pairs!(
-                "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.0.to_string(),
-            ),
-        );
-        tracing::trace!(
-            name = "post",
-            actor_name = envelope.sender.name(),
-            actor_id = envelope.sender.to_string(),
-            "posting message to {}",
-            envelope.dest
-        );
+        hop_or_undeliverable(
+            envelope,
+            return_handle.clone(),
+            |envelope, return_handle| {
+                metrics::MAILBOX_POSTS.add(
+                    1,
+                    hyperactor_telemetry::kv_pairs!(
+                        "actor_id" => envelope.sender.to_string(),
+                        "dest_actor_id" => envelope.dest.0.to_string(),
+                    ),
+                );
+                tracing::trace!(
+                    name = "post",
+                    actor_name = envelope.sender.name(),
+                    actor_id = envelope.sender.to_string(),
+                    "posting message to {}",
+                    envelope.dest
+                );
 
-        if envelope.dest().actor_id() != &self.inner.actor_id {
-            return self.inner.forwarder.post(envelope, return_handle);
-        }
+                if envelope.dest().actor_id() != &self.inner.actor_id {
+                    return self.inner.forwarder.post(envelope, return_handle);
+                }
 
-        match self.inner.ports.entry(envelope.dest().index()) {
-            Entry::Vacant(_) => {
-                let err = DeliveryError::Unroutable("port not bound in mailbox".to_string());
+                match self.inner.ports.entry(envelope.dest().index()) {
+                    Entry::Vacant(_) => {
+                        let err =
+                            DeliveryError::Unroutable("port not bound in mailbox".to_string());
 
-                envelope.undeliverable(err, return_handle);
-            }
-            Entry::Occupied(entry) => {
-                let (metadata, data) = envelope.open();
-                let MessageMetadata {
-                    headers,
-                    sender,
-                    dest,
-                    errors: metadata_errors,
-                } = metadata;
-
-                // We use the entry API here so that we can remove the
-                // entry while holding an (entry) reference. The DashMap
-                // documentation suggests that deadlocks are possible
-                // "when holding any sort of reference into the map",
-                // but surely this applies only to the same thread? This
-                // would also imply we have to be careful holding any
-                // sort of reference across .await points.
-                match entry.get().send_serialized(headers, data) {
-                    Ok(false) => {
-                        entry.remove();
+                        envelope.undeliverable(err, return_handle);
                     }
-                    Ok(true) => (),
-                    Err(SerializedSenderError {
-                        data,
-                        error: sender_error,
-                        headers,
-                    }) => {
-                        let err = DeliveryError::Mailbox(format!("{}", sender_error));
+                    Entry::Occupied(entry) => {
+                        let (metadata, data) = envelope.open();
+                        let MessageMetadata {
+                            headers,
+                            sender,
+                            dest,
+                            errors: metadata_errors,
+                            ttl,
+                        } = metadata;
 
-                        MessageEnvelope::seal(
-                            MessageMetadata {
+                        // We use the entry API here so that we can remove the
+                        // entry while holding an (entry) reference. The DashMap
+                        // documentation suggests that deadlocks are possible
+                        // "when holding any sort of reference into the map",
+                        // but surely this applies only to the same thread? This
+                        // would also imply we have to be careful holding any
+                        // sort of reference across .await points.
+                        match entry.get().send_serialized(headers, data) {
+                            Ok(false) => {
+                                entry.remove();
+                            }
+                            Ok(true) => (),
+                            Err(SerializedSenderError {
+                                data,
+                                error: sender_error,
                                 headers,
-                                sender,
-                                dest,
-                                errors: metadata_errors,
-                            },
-                            data,
-                        )
-                        .undeliverable(err, return_handle)
+                            }) => {
+                                let err = DeliveryError::Mailbox(format!("{}", sender_error));
+
+                                MessageEnvelope::seal(
+                                    MessageMetadata {
+                                        headers,
+                                        sender,
+                                        dest,
+                                        errors: metadata_errors,
+                                        ttl,
+                                    },
+                                    data,
+                                )
+                                .undeliverable(err, return_handle)
+                            }
+                        }
                     }
                 }
-            }
-        }
+            },
+        );
     }
 }
 
@@ -2228,14 +2322,16 @@ impl MailboxSender for MailboxMuxer {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let dest_actor_id = envelope.dest().actor_id();
-        match self.mailboxes.get(envelope.dest().actor_id()) {
-            None => {
-                let err = format!("no mailbox for actor {} registered in muxer", dest_actor_id);
-                envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
+        hop_or_undeliverable(envelope, return_handle, |envelope, return_handle| {
+            let dest_actor_id = envelope.dest().actor_id();
+            match self.mailboxes.get(envelope.dest().actor_id()) {
+                None => {
+                    let err = format!("no mailbox for actor {} registered in muxer", dest_actor_id);
+                    envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
+                }
+                Some(sender) => sender.post(envelope, return_handle),
             }
-            Some(sender) => sender.post(envelope, return_handle),
-        }
+        });
     }
 }
 
@@ -2300,15 +2396,19 @@ impl MailboxSender for MailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match self.sender(envelope.dest().actor_id()) {
-            None => envelope.undeliverable(
-                DeliveryError::Unroutable(
-                    "no destination found for actor in routing table".to_string(),
+        hop_or_undeliverable(
+            envelope,
+            return_handle.clone(),
+            |envelope, return_handle| match self.sender(envelope.dest().actor_id()) {
+                None => envelope.undeliverable(
+                    DeliveryError::Unroutable(
+                        "no destination found for actor in routing table".to_string(),
+                    ),
+                    return_handle,
                 ),
-                return_handle,
-            ),
-            Some(sender) => sender.post(envelope, return_handle),
-        }
+                Some(sender) => sender.post(envelope, return_handle),
+            },
+        );
     }
 }
 
@@ -2324,10 +2424,14 @@ impl MailboxSender for FallbackMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match self.router.sender(envelope.dest().actor_id()) {
-            Some(sender) => sender.post(envelope, return_handle),
-            None => self.default.post(envelope, return_handle),
-        }
+        hop_or_undeliverable(
+            envelope,
+            return_handle,
+            |envelope, return_handle| match self.router.sender(envelope.dest().actor_id()) {
+                Some(sender) => sender.post(envelope, return_handle),
+                None => self.default.post(envelope, return_handle),
+            },
+        );
     }
 }
 
@@ -2357,13 +2461,17 @@ impl MailboxSender for WeakMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match self.upgrade() {
-            Some(router) => router.post(envelope, return_handle),
-            None => envelope.undeliverable(
-                DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
-                return_handle,
-            ),
-        }
+        hop_or_undeliverable(
+            envelope,
+            return_handle,
+            |envelope, return_handle| match self.upgrade() {
+                Some(router) => router.post(envelope, return_handle),
+                None => envelope.undeliverable(
+                    DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
+                    return_handle,
+                ),
+            },
+        );
     }
 }
 
@@ -2518,18 +2626,20 @@ impl MailboxSender for DialMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let Some(addr) = self.lookup_addr(envelope.dest().actor_id()) else {
-            self.default.post(envelope, return_handle);
-            return;
-        };
+        hop_or_undeliverable(envelope, return_handle, |envelope, return_handle| {
+            let Some(addr) = self.lookup_addr(envelope.dest().actor_id()) else {
+                self.default.post(envelope, return_handle);
+                return;
+            };
 
-        match self.dial(&addr, envelope.dest().actor_id()) {
-            Err(err) => envelope.undeliverable(
-                DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
-                return_handle,
-            ),
-            Ok(sender) => sender.post(envelope, return_handle),
-        }
+            match self.dial(&addr, envelope.dest().actor_id()) {
+                Err(err) => envelope.undeliverable(
+                    DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
+                    return_handle,
+                ),
+                Ok(sender) => sender.post(envelope, return_handle),
+            }
+        });
     }
 }
 
@@ -3493,5 +3603,125 @@ mod tests {
         expected.sort();
 
         assert_eq!(prefixes, expected);
+    }
+
+    /// A forwarder that bounces messages back to the **same**
+    /// mailbox, but does so on a task to avoid recursive stack
+    /// growth.
+    #[derive(Clone, Debug)]
+    struct AsyncLoopForwarder;
+
+    impl MailboxSender for AsyncLoopForwarder {
+        fn post(
+            &self,
+            envelope: MessageEnvelope,
+            return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            let me = self.clone();
+            tokio::spawn(async move {
+                hop_or_undeliverable(envelope, return_handle, |env, reth| me.post(env, reth));
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn message_ttl_expires_in_routing_loop_returns_to_sender() {
+        let actor_id = ActorId(
+            ProcId::Ranked(id!(test_world), 0),
+            "ttl_actor".to_string(),
+            0,
+        );
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(AsyncLoopForwarder),
+        );
+        let (ret_port, mut ret_rx) = mailbox.open_port::<Undeliverable<MessageEnvelope>>();
+        ret_port.bind_to(Undeliverable::<MessageEnvelope>::port());
+
+        // Create a destination not owned by this mailbox to force
+        // forwarding.
+        let remote_actor = ActorId(
+            ProcId::Ranked(id!(remote_world), 1),
+            "remote".to_string(),
+            0,
+        );
+        let dest = PortId(remote_actor.clone(), /*port index*/ 4242);
+
+        // Build an envelope (TTL is seeded in `MessageEnvelope::new` /
+        // `::serialize`).
+        let payload = 1234_u64;
+        let envelope =
+            MessageEnvelope::serialize(actor_id.clone(), dest.clone(), &payload, Attrs::new())
+                .expect("serialize");
+
+        // Post it. This will start bouncing between forwarder and
+        // mailbox until TTL hits 0.
+        let return_handle = ret_port.clone();
+        mailbox.post(envelope, return_handle);
+
+        // We expect the undeliverable to come back once TTL expires.
+        #[allow(clippy::disallowed_methods)]
+        let Undeliverable(undelivered) =
+            tokio::time::timeout(Duration::from_secs(5), ret_rx.recv())
+                .await
+                .expect("timed out waiting for undeliverable")
+                .expect("channel closed");
+
+        // Sanity: round-trip payload still deserializes.
+        let got: u64 = undelivered.deserialized().expect("deserialize");
+        assert_eq!(got, payload, "payload preserved");
+    }
+
+    #[tokio::test]
+    async fn message_ttl_success_local_delivery() {
+        let actor_id = ActorId(
+            ProcId::Ranked(id!(test_world), 0),
+            "ttl_actor".to_string(),
+            0,
+        );
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+        let (undeliverable_tx, mut undeliverable_rx) =
+            mailbox.open_port::<Undeliverable<MessageEnvelope>>();
+        undeliverable_tx.bind_to(Undeliverable::<MessageEnvelope>::port());
+
+        // Open a local user u64 port.
+        let (user_port, mut user_rx) = mailbox.open_port::<u64>();
+
+        // Build an envelope destined for this mailbox's own port.
+        let payload = 0xC0FFEE_u64;
+        let envelope = MessageEnvelope::serialize(
+            actor_id.clone(),
+            user_port.bind().port_id().clone(),
+            &payload,
+            Attrs::new(),
+        )
+        .expect("serialize");
+
+        // Post the message using the mailbox (local path). TTL will
+        // not expire.
+        let return_handle = mailbox
+            .bound_return_handle()
+            .unwrap_or(monitored_return_handle());
+        mailbox.post(envelope, return_handle);
+
+        // We should receive the payload locally.
+        #[allow(clippy::disallowed_methods)]
+        let got = tokio::time::timeout(Duration::from_secs(1), user_rx.recv())
+            .await
+            .expect("timed out waiting for local delivery")
+            .expect("user port closed");
+        assert_eq!(got, payload);
+
+        // There should be no undeliverables arriving.
+        #[allow(clippy::disallowed_methods)]
+        let no_undeliverable =
+            tokio::time::timeout(Duration::from_millis(100), undeliverable_rx.recv()).await;
+        assert!(
+            no_undeliverable.is_err(),
+            "unexpected undeliverable returned on successful local delivery"
+        );
     }
 }

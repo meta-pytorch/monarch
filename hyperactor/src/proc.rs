@@ -80,6 +80,7 @@ use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
 use crate::mailbox::Undeliverable;
+use crate::mailbox::hop_or_undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
@@ -680,11 +681,13 @@ impl MailboxSender for Proc {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if envelope.dest().actor_id().proc_id() == &self.state().proc_id {
-            self.state().proc_muxer.post(envelope, return_handle)
-        } else {
-            self.state().forwarder.post(envelope, return_handle)
-        }
+        hop_or_undeliverable(envelope, return_handle, |envelope, return_handle| {
+            if envelope.dest().actor_id().proc_id() == &self.state().proc_id {
+                self.state().proc_muxer.post(envelope, return_handle)
+            } else {
+                self.state().forwarder.post(envelope, return_handle)
+            }
+        });
     }
 }
 
@@ -708,13 +711,17 @@ impl MailboxSender for WeakProc {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match self.upgrade() {
-            Some(proc) => proc.post(envelope, return_handle),
-            None => envelope.undeliverable(
-                DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
-                return_handle,
-            ),
-        }
+        hop_or_undeliverable(
+            envelope,
+            return_handle,
+            |envelope, return_handle| match self.upgrade() {
+                Some(proc) => proc.post(envelope, return_handle),
+                None => envelope.undeliverable(
+                    DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
+                    return_handle,
+                ),
+            },
+        );
     }
 }
 
