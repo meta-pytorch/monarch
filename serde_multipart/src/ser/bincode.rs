@@ -57,9 +57,8 @@ impl<'a, W: Write, O: Options> ser::Serializer for &'a mut Serializer<W, O> {
     type SerializeStructVariant = Compound<'a, W, O>;
 
     fn is_human_readable(&self) -> bool {
-        // Same as Serializer's default implementation. Duplicate here to
-        // be explicit.
-        true
+        // Same as bincode
+        false
     }
 
     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {

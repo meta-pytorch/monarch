@@ -593,9 +593,8 @@ mod tests {
         address_book.insert(1, socket_addr);
         {
             let message = serialize_bincode(&address_book).unwrap();
-            let result = deserialize_bincode::<HashMap<usize, SocketAddr>>(message);
-            // TODO: this is a bug which should be fixed
-            assert_matches!(result, Err(e) if e.to_string().contains("invalid value: integer `40`, expected `V4` or `V6`"));
+            let deserialized: HashMap<usize, SocketAddr> = deserialize_bincode(message).unwrap();
+            assert_eq!(address_book, deserialized);
         }
     }
 
