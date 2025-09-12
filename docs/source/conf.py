@@ -72,7 +72,9 @@ ogp_image = "https://pytorch.org/assets/images/social-share.jpg"
 
 html_theme_options = {
     "navigation_with_keys": False,
-    "analytics_id": "GTM-T8XT4PS",
+    "show_lf_header": False,
+    "show_lf_footer": False,
+    "analytics_id": "G-FLDB7SHJV2",
     "logo": {
         "text": "",
     },
