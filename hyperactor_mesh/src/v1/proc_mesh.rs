@@ -99,11 +99,24 @@ pub struct ProcMeshRef {
     name: Name,
     region: Region,
     ranks: Arc<Vec<ProcRef>>,
+    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
+    // should be removed after we remove the v0 code.
+    // The root region of this mesh. None means this mesh itself is the root.
+    pub(crate) root_region: Option<Region>,
+    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
+    // should be removed after we remove the v0 code.
+    pub(crate) comm_actor: ActorRef<CommActor>,
 }
 
 impl ProcMeshRef {
-    /// Create a new ProcMeshRef from the given name, region, and ranks.
-    fn new(name: Name, region: Region, ranks: Vec<ProcRef>) -> v1::Result<Self> {
+    /// Create a new ProcMeshRef from the given name, region, ranks, and root_region.
+    fn new(
+        name: Name,
+        region: Region,
+        ranks: Vec<ProcRef>,
+        root_region: Option<Region>,
+        comm_actor: ActorRef<CommActor>,
+    ) -> v1::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(v1::Error::InvalidRankCardinality {
                 expected: region.num_ranks(),
@@ -114,6 +127,8 @@ impl ProcMeshRef {
             name,
             region,
             ranks: Arc::new(ranks),
+            root_region,
+            comm_actor,
         })
     }
 
@@ -137,6 +152,7 @@ impl ProcMeshRef {
         mut alloc: impl Alloc + Send + Sync + 'static,
         name: &str,
     ) -> v1::Result<Self> {
+        let name = Name::new(name);
         let running = alloc.initialize().await?;
 
         // Wire the newly created mesh into the proc, so that it is routable.
@@ -209,11 +225,21 @@ impl ProcMeshRef {
 
         // Spawn a comm actor on each proc, so that they can be used to perform
         // tree distribution and accumulation.
-        Self::spawn_on_procs::<CommActor>(caps, &ranks, "comm", &Default::default()).await?;
+        let comm_actor =
+            Self::spawn_on_procs::<CommActor>(caps, &ranks, "comm", &Default::default())
+                .await?
+                .into_iter()
+                .map(Option::unwrap)
+                .map(ActorRef::attest)
+                .next()
+                .expect("comm actors cannot be empty");
         Ok(Self {
-            name: Name::new(name),
+            name,
             region: alloc.extent().clone().into(),
             ranks: Arc::new(ranks),
+            // Allocated mesh is always the root mesh.
+            root_region: None,
+            comm_actor,
         })
     }
 
@@ -278,7 +304,7 @@ impl ProcMeshRef {
                         tracing::error!("multiple completions received for rank {}", rank);
                     }
 
-                    let expected_actor_id = ranks.get(rank).unwrap().actor_id_from_str(&name);
+                    let expected_actor_id = ranks.get(rank).unwrap().actor_id_from_str(name);
                     if actor_id != expected_actor_id {
                         return Err(Error::GspawnError(
                             name.to_string(),
@@ -310,7 +336,14 @@ impl view::Ranked for ProcMeshRef {
     }
 
     fn sliced(&self, region: Region, nodes: impl Iterator<Item = ProcRef>) -> Self {
-        Self::new(self.name.clone(), region, nodes.collect()).unwrap()
+        Self::new(
+            self.name.clone(),
+            region,
+            nodes.collect(),
+            Some(self.root_region.as_ref().unwrap_or(&self.region).clone()),
+            self.comm_actor.clone(),
+        )
+        .unwrap()
     }
 }
 
@@ -327,11 +360,13 @@ mod tests {
 
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::PortRef;
     use hyperactor::Proc;
+    use hyperactor::Unbind;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::id;
@@ -391,23 +426,26 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
+        #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+        struct ReplyPort(#[binding(include)] PortRef<ActorId>);
+
         #[derive(Actor, Default, Debug)]
         #[hyperactor::export(
             spawn = true,
             handlers = [
-                PortRef<ActorId>,
+                ReplyPort { cast = true },
             ]
         )]
         struct EchoActor;
 
         #[async_trait]
-        impl Handler<PortRef<ActorId>> for EchoActor {
+        impl Handler<ReplyPort> for EchoActor {
             async fn handle(
                 &mut self,
                 cx: &Context<Self>,
-                reply: PortRef<ActorId>,
+                reply: ReplyPort,
             ) -> Result<(), anyhow::Error> {
-                reply.send(cx, cx.self_id().clone())?;
+                reply.0.send(cx, cx.self_id().clone())?;
                 Ok(())
             }
         }
@@ -418,7 +456,7 @@ mod tests {
             proc_mesh.spawn(&actor, "test", &()).await.unwrap().freeze();
         {
             let (port, mut rx) = mailbox::open_port(&actor);
-            actor_mesh.cast(&actor, port.bind()).unwrap();
+            actor_mesh.cast(&actor, ReplyPort(port.bind())).unwrap();
 
             let mut expected_actor_ids: HashSet<_> = actor_mesh
                 .values()
@@ -449,7 +487,11 @@ mod tests {
             view::Ranked::sliced(&actor_mesh, sliced_region, sliced_ranks.into_iter());
         {
             let (port, mut rx) = mailbox::open_port(&actor);
-            sliced_actor_mesh.cast(&actor, port.bind()).unwrap();
+            sliced_actor_mesh
+                .cast(&actor, ReplyPort(port.bind()))
+                .unwrap();
+
+            tracing::info!("sliced_actor_mesh: {sliced_actor_mesh:?}");
 
             let mut expected_actor_ids: HashSet<_> = sliced_actor_mesh
                 .values()
