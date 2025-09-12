@@ -31,7 +31,11 @@ from typing import (
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 
 from monarch._src.actor.future import Future
-from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
+from monarch._src.actor.tensor_engine_shim import (
+    _cached_propagation,
+    _mocked_propagation,
+    fake_call,
+)
 
 if TYPE_CHECKING:
     from monarch._src.actor.actor_mesh import (
@@ -193,7 +197,12 @@ class Endpoint(ABC, Generic[P, R]):
         elif self._propagator_arg == "inspect":
             return None
         elif self._propagator_arg == "mocked":
-            raise NotImplementedError("mocked propagation")
+            resolvable = getattr(self, "_resolvable", None)
+            if resolvable is None:
+                raise NotImplementedError(
+                    "Mocked propagation is not implemented for actor endpoints."
+                )
+            return _mocked_propagation(self._resolvable, args, kwargs)
         else:
             return fake_call(self._propagator_arg, *fake_args, **fake_kwargs)
 

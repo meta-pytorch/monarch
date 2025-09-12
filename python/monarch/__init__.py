@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from monarch.common.future import Future
 
     from monarch.common.invocation import RemoteException
+    from monarch.common.mock_cuda import mock_cuda, mock_cuda_guard, unmock_cuda
     from monarch.common.opaque_ref import OpaqueRef
     from monarch.common.pipe import create_pipe, Pipe, remote_generator
     from monarch.common.remote import remote
@@ -84,6 +85,9 @@ _public_api = {
     "Shape": ("monarch._src.actor.shape", "Shape"),
     "NDSlice": ("monarch._src.actor.shape", "NDSlice"),
     "Selection": ("monarch.common.selection", "Selection"),
+    "mock_cuda": ("monarch.common.mock_cuda", "mock_cuda"),
+    "mock_cuda_guard": ("monarch.common.mock_cuda", "mock_cuda_guard"),
+    "unmock_cuda": ("monarch.common.mock_cuda", "unmock_cuda"),
     "OpaqueRef": ("monarch.common.opaque_ref", "OpaqueRef"),
     "create_pipe": ("monarch.common.pipe", "create_pipe"),
     "Pipe": ("monarch.common.pipe", "Pipe"),
@@ -153,6 +157,9 @@ __all__ = [
     "RemoteException",
     "Shape",
     "Selection",
+    "mock_cuda",
+    "mock_cuda_guard",
+    "unmock_cuda",
     "NDSlice",
     "OpaqueRef",
     "create_pipe",
