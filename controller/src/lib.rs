@@ -438,7 +438,7 @@ impl ControllerMessageHandler for ControllerActor {
             .shape;
 
         let message = CastMessageEnvelope::from_serialized(
-            ActorMeshId(
+            ActorMeshId::V0(
                 ProcMeshId(self.worker_gang_ref.gang_id().world_id().to_string()),
                 self.worker_gang_ref.gang_id().name().to_string(),
             ),
