@@ -30,6 +30,7 @@ use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::CommActor;
 use crate::alloc::Alloc;
 use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
@@ -94,11 +95,28 @@ pub struct ProcMeshRef {
     name: Name,
     region: Region,
     ranks: Arc<Vec<ProcRef>>,
+    comm_actor_name: Name,
+    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
+    // should be removed after we remove the v0 code.
+    // The root region of this mesh. None means this mesh itself is the root.
+    pub(crate) root_region: Option<Region>,
+    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
+    // should be removed after we remove the v0 code.
+    // v0 casting requires root mesh rank 0 as the 1st hop, so we need to provide
+    // it here. For v1, this can be removed since v1 can use any rank.
+    pub(crate) root_mesh_rank_0: ProcRef,
 }
 
 impl ProcMeshRef {
-    /// Create a new ProcMeshRef from the given name, region, and ranks.
-    fn new(name: Name, region: Region, ranks: Vec<ProcRef>) -> v1::Result<Self> {
+    /// Create a new ProcMeshRef from the given name, region, ranks, and root_region.
+    fn new(
+        name: Name,
+        region: Region,
+        ranks: Vec<ProcRef>,
+        comm_actor_name: Name,
+        root_region: Option<Region>,
+        root_mesh_rank_0: ProcRef,
+    ) -> v1::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(v1::Error::InvalidRankCardinality {
                 expected: region.num_ranks(),
@@ -109,7 +127,14 @@ impl ProcMeshRef {
             name,
             region,
             ranks: Arc::new(ranks),
+            comm_actor_name,
+            root_region,
+            root_mesh_rank_0,
         })
+    }
+
+    pub(crate) fn comm_actor_name(&self) -> &Name {
+        &self.comm_actor_name
     }
 
     /// The current statuses of procs in this mesh.
@@ -192,7 +217,7 @@ impl ProcMeshRef {
             }
         }
 
-        let ranks = running
+        let ranks: Vec<_> = running
             .into_iter()
             .enumerate()
             .map(|(create_rank, allocated)| ProcRef {
@@ -202,11 +227,25 @@ impl ProcMeshRef {
             })
             .collect();
 
-        Ok(Self {
+        let root_mesh_rank_0 = ranks.first().expect("root mesh cannot be empty").clone();
+        let proc_mesh = Self {
             name: Name::new(name),
             region: alloc.extent().clone().into(),
+            comm_actor_name: Name::new("comm"),
             ranks: Arc::new(ranks),
-        })
+            // Allocated mesh is always the root mesh.
+            root_region: None,
+            root_mesh_rank_0,
+        };
+
+        // Spawn a comm actor on each proc, so that they can be used to perform
+        // tree distribution and accumulation.
+        let comm_actor_name = proc_mesh.comm_actor_name.clone();
+        proc_mesh
+            .spawn_with_name::<CommActor>(caps, comm_actor_name, &Default::default())
+            .await?;
+
+        Ok(proc_mesh)
     }
 
     /// Spawn an actor on all of the procs in this mesh, returning a new ActorMesh.
@@ -220,13 +259,25 @@ impl ProcMeshRef {
     where
         A::Params: RemoteMessage,
     {
+        self.spawn_with_name(caps, Name::new(name), params).await
+    }
+
+    #[allow(dead_code)]
+    async fn spawn_with_name<A: Actor + RemoteActor>(
+        &self,
+        caps: &(impl cap::CanSend + cap::CanOpenPort),
+        name: Name,
+        params: &A::Params,
+    ) -> v1::Result<ActorMesh<A>>
+    where
+        A::Params: RemoteMessage,
+    {
         let remote = Remote::collect();
         let actor_type = remote
             .name_of::<A>()
             .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
             .to_string();
 
-        let name = Name::new(name);
         let serialized_params = bincode::serialize(params)?;
 
         let (completed_handle, mut completed_receiver) = mailbox::open_port(caps);
@@ -236,7 +287,7 @@ impl ProcMeshRef {
                 .gspawn(
                     caps,
                     actor_type.clone(),
-                    name.clone().to_string(),
+                    name.to_string(),
                     serialized_params.clone(),
                     completed_handle.bind(),
                 )
@@ -287,7 +338,15 @@ impl view::Ranked for ProcMeshRef {
     }
 
     fn sliced(&self, region: Region, nodes: impl Iterator<Item = ProcRef>) -> Self {
-        Self::new(self.name.clone(), region, nodes.collect()).unwrap()
+        Self::new(
+            self.name.clone(),
+            region,
+            nodes.collect(),
+            self.comm_actor_name.clone(),
+            Some(self.root_region.as_ref().unwrap_or(&self.region).clone()),
+            self.root_mesh_rank_0.clone(),
+        )
+        .unwrap()
     }
 }
 
@@ -303,16 +362,21 @@ mod tests {
 
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::PortRef;
     use hyperactor::Proc;
+    use hyperactor::Unbind;
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
     use hyperactor::id;
     use hyperactor::mailbox::BoxableMailboxSender;
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::async_timed_test;
 
     use super::*;
     use crate::alloc::AllocSpec;
@@ -362,44 +426,81 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
+        #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+        struct ReplyPort(#[binding(include)] PortRef<ActorId>);
+
         #[derive(Actor, Default, Debug)]
         #[hyperactor::export(
             spawn = true,
             handlers = [
-                PortRef<ActorId>,
+                ReplyPort { cast = true },
             ]
         )]
         struct EchoActor;
 
         #[async_trait]
-        impl Handler<PortRef<ActorId>> for EchoActor {
+        impl Handler<ReplyPort> for EchoActor {
             async fn handle(
                 &mut self,
                 cx: &Context<Self>,
-                reply: PortRef<ActorId>,
+                reply: ReplyPort,
             ) -> Result<(), anyhow::Error> {
-                reply.send(cx, cx.self_id().clone())?;
+                reply.0.send(cx, cx.self_id().clone())?;
                 Ok(())
             }
         }
 
-        let (proc_mesh, actor, _router) = local_proc_mesh(extent!(replica = 4)).await;
+        let (proc_mesh, actor, _router) = local_proc_mesh(extent!(replica = 4, hosts = 2)).await;
+        // Verify casting to the root actor mesh
         let actor_mesh: ActorMeshRef<EchoActor> =
             proc_mesh.spawn(&actor, "test", &()).await.unwrap().freeze();
+        {
+            let (port, mut rx) = mailbox::open_port(&actor);
+            actor_mesh.cast(&actor, ReplyPort(port.bind())).unwrap();
 
-        let (port, mut rx) = mailbox::open_port(&actor);
-        actor_mesh.cast(&actor, port.bind()).unwrap();
+            let mut expected_actor_ids: HashSet<_> = actor_mesh
+                .values()
+                .map(|actor_ref| actor_ref.actor_id().clone())
+                .collect();
+            while !expected_actor_ids.is_empty() {
+                let actor_id = rx.recv().await.unwrap();
+                assert!(
+                    expected_actor_ids.remove(&actor_id),
+                    "got {actor_id}, expect {expected_actor_ids:?}"
+                );
+            }
+            // No more messages
+            RealClock.sleep(Duration::from_secs(1)).await;
+            let result = rx.try_recv();
+            assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
+        }
 
-        let mut expected_actor_ids: HashSet<_> = actor_mesh
-            .values()
-            .map(|actor_ref| actor_ref.actor_id().clone())
-            .collect();
+        // Verify casting to the sliced actor mesh
+        let sliced_actor_mesh = actor_mesh.range("replica", 1..3).unwrap();
+        {
+            let (port, mut rx) = mailbox::open_port(&actor);
+            sliced_actor_mesh
+                .cast(&actor, ReplyPort(port.bind()))
+                .unwrap();
 
-        while !expected_actor_ids.is_empty() {
-            let actor_id = rx.recv().await.unwrap();
-            assert!(expected_actor_ids.remove(&actor_id));
+            let mut expected_actor_ids: HashSet<_> = sliced_actor_mesh
+                .values()
+                .map(|actor_ref| actor_ref.actor_id().clone())
+                .collect();
+
+            while !expected_actor_ids.is_empty() {
+                let actor_id = rx.recv().await.unwrap();
+                assert!(
+                    expected_actor_ids.remove(&actor_id),
+                    "got {actor_id}, expect {expected_actor_ids:?}"
+                );
+            }
+            // No more messages
+            RealClock.sleep(Duration::from_secs(1)).await;
+            let result = rx.try_recv();
+            assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
         }
     }
 }

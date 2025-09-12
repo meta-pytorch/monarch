@@ -73,7 +73,10 @@ impl CastMessageEnvelope {
         M: Castable + RemoteMessage,
     {
         let data = ErasedUnbound::try_from_message(message)?;
-        let actor_name = actor_mesh_id.1.to_string();
+        let actor_name = match &actor_mesh_id {
+            ActorMeshId::V0(_, actor_name) => actor_name.clone(),
+            ActorMeshId::V1(name) => name.to_string(),
+        };
         Ok(Self {
             actor_mesh_id,
             sender,
