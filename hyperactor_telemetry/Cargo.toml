@@ -22,6 +22,7 @@ scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_rusqlite = "0.39.3"
+smol_str = "0.1.22"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-appender = "0.2.3"
@@ -32,6 +33,8 @@ whoami = "1.5"
 
 [dev-dependencies]
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+quickcheck = "1.0"
+quickcheck_macros = "1.0"
 scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 
