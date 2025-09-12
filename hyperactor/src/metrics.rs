@@ -61,3 +61,7 @@ declare_static_counter!(PROC_MESH_ALLOCATION, "proc_mesh.active_procs");
 declare_static_counter!(PROC_MESH_PROC_STOPPED, "proc_mesh.proc_failures");
 // Tracks the number of actor failures within the process mesh
 declare_static_counter!(PROC_MESH_ACTOR_FAILURES, "proc_mesh.actor_failures");
+
+// MESSAGE LATENCY
+// Tracks end-to-end message latency in microseconds (sampled at 1% by default)
+declare_static_histogram!(MESSAGE_LATENCY_MICROS, "message.e2e_latency.us");

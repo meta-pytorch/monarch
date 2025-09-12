@@ -494,6 +494,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             receiver_actor_id = tracing::field::display(&actor_id.inner),
             ?message,
         );
+
         actor_id
             .inner
             .port_id(message.port())

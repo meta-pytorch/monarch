@@ -59,6 +59,10 @@ declare_attrs! {
 
     /// How often to check for full MSPC channel on NetRx.
     pub attr CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+    /// Sampling rate for latency tracking (percentage of messages to sample)
+    /// Set to 1 for 1% sampling, 10 for 10% sampling, 90 for 90% sampling, etc.
+    pub attr LATENCY_SAMPLING_RATE: u32 = 1;
 }
 
 /// Load configuration from environment variables
