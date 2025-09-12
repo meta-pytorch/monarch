@@ -30,6 +30,7 @@ use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::CommActor;
 use crate::alloc::Alloc;
 use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
@@ -75,6 +76,10 @@ impl ProcRef {
     }
 
     pub(crate) fn actor_id(&self, name: &Name) -> ActorId {
+        self.actor_id_from_str(&name.to_string())
+    }
+
+    fn actor_id_from_str(&self, name: &str) -> ActorId {
         self.proc_id.actor_id(name.to_string(), 0)
     }
 
@@ -192,7 +197,7 @@ impl ProcMeshRef {
             }
         }
 
-        let ranks = running
+        let ranks: Vec<_> = running
             .into_iter()
             .enumerate()
             .map(|(create_rank, allocated)| ProcRef {
@@ -202,6 +207,9 @@ impl ProcMeshRef {
             })
             .collect();
 
+        // Spawn a comm actor on each proc, so that they can be used to perform
+        // tree distribution and accumulation.
+        Self::spawn_on_procs::<CommActor>(caps, &ranks, "comm", &Default::default()).await?;
         Ok(Self {
             name: Name::new(name),
             region: alloc.extent().clone().into(),
@@ -220,23 +228,37 @@ impl ProcMeshRef {
     where
         A::Params: RemoteMessage,
     {
+        let name = Name::new(name);
+        Self::spawn_on_procs::<A>(caps, &self.ranks, &name.to_string(), params).await?;
+        Ok(ActorMesh::new(self.clone(), name))
+    }
+
+    /// Spawn an actor on all of the procs in this mesh, returning a new ActorMesh.
+    async fn spawn_on_procs<A: Actor + RemoteActor>(
+        caps: &(impl cap::CanSend + cap::CanOpenPort),
+        ranks: &[ProcRef],
+        name: &str,
+        params: &A::Params,
+    ) -> v1::Result<Ranks<ActorId>>
+    where
+        A::Params: RemoteMessage,
+    {
         let remote = Remote::collect();
         let actor_type = remote
             .name_of::<A>()
             .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
             .to_string();
 
-        let name = Name::new(name);
         let serialized_params = bincode::serialize(params)?;
 
         let (completed_handle, mut completed_receiver) = mailbox::open_port(caps);
-        for proc_ref in self.ranks.iter() {
+        for proc_ref in ranks {
             proc_ref
                 .agent
                 .gspawn(
                     caps,
                     actor_type.clone(),
-                    name.clone().to_string(),
+                    name.to_string(),
                     serialized_params.clone(),
                     completed_handle.bind(),
                 )
@@ -244,11 +266,11 @@ impl ProcMeshRef {
                 .map_err(|e| Error::CallError(proc_ref.agent.actor_id().clone(), e))?;
         }
 
-        let mut completed = Ranks::new(self.ranks.len());
+        let mut completed = Ranks::new(ranks.len());
         while !completed.is_full() {
             let result = completed_receiver.recv().await?;
             match result {
-                GspawnResult::Success { rank, .. } if rank >= self.ranks.len() => {
+                GspawnResult::Success { rank, .. } if rank >= ranks.len() => {
                     tracing::error!("ignoring invalid rank {}", rank);
                 }
                 GspawnResult::Success { rank, actor_id } => {
@@ -256,10 +278,10 @@ impl ProcMeshRef {
                         tracing::error!("multiple completions received for rank {}", rank);
                     }
 
-                    let expected_actor_id = self.ranks.get(rank).unwrap().actor_id(&name);
+                    let expected_actor_id = ranks.get(rank).unwrap().actor_id_from_str(&name);
                     if actor_id != expected_actor_id {
                         return Err(Error::GspawnError(
-                            name,
+                            name.to_string(),
                             format!(
                                 "expected actor id {} for rank {}; got {}",
                                 expected_actor_id, rank, actor_id
@@ -267,11 +289,12 @@ impl ProcMeshRef {
                         ));
                     }
                 }
-                GspawnResult::Error(error_msg) => return Err(Error::GspawnError(name, error_msg)),
+                GspawnResult::Error(error_msg) => {
+                    return Err(Error::GspawnError(name.to_string(), error_msg));
+                }
             }
         }
-
-        Ok(ActorMesh::new(self.clone(), name))
+        Ok(completed)
     }
 }
 

@@ -70,7 +70,7 @@ pub enum Error {
     ActorTypeNotRegistered(String),
 
     #[error("error while spawning actor {0}: {1}")]
-    GspawnError(Name, String),
+    GspawnError(String, String),
 
     #[error("error while sending message to actor {0}: {1}")]
     SendingError(ActorId, Box<MailboxSenderError>),
