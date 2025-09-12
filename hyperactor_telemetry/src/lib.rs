@@ -29,6 +29,26 @@ pub const DISABLE_RECORDER_TRACING: &str = "DISABLE_RECORDER_TRACING";
 /// Environment variable to disable the sqlite logging layer.
 /// Set to "1" to disable the sqlite tracing.
 pub const DISABLE_SQLITE_TRACING: &str = "DISABLE_SQLITE_TRACING";
+// Environment variable constants
+const MONARCH_FILE_LOG_ENV: &str = "MONARCH_FILE_LOG";
+const MONARCH_STDERR_LOG_ENV: &str = "MONARCH_STDERR_LOG";
+pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
+
+// Log level constants
+const LOG_LEVEL_INFO: &str = "info";
+const LOG_LEVEL_DEBUG: &str = "debug";
+const LOG_LEVEL_ERROR: &str = "error";
+
+// Span field constants
+const SPAN_FIELD_RECORDING: &str = "recording";
+const SPAN_FIELD_RECORDER: &str = "recorder";
+
+// Environment value constants
+const ENV_VALUE_LOCAL: &str = "local";
+const ENV_VALUE_MAST_EMULATOR: &str = "mast_emulator";
+const ENV_VALUE_MAST: &str = "mast";
+const ENV_VALUE_TEST: &str = "test";
+const ENV_VALUE_LOCAL_MAST_SIMULATOR: &str = "local_mast_simulator";
 
 pub mod in_memory_reader;
 #[cfg(fbcode_build)]
@@ -536,10 +556,10 @@ pub fn initialize_logging_with_log_prefix(
 ) {
     swap_telemetry_clock(clock);
     let file_log_level = match env::Env::current() {
-        env::Env::Local => "info",
-        env::Env::MastEmulator => "info",
-        env::Env::Mast => "info",
-        env::Env::Test => "debug",
+        env::Env::Local => LOG_LEVEL_INFO,
+        env::Env::MastEmulator => LOG_LEVEL_INFO,
+        env::Env::Mast => LOG_LEVEL_INFO,
+        env::Env::Test => LOG_LEVEL_DEBUG,
     };
     let (non_blocking, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
         .lossy(false)
@@ -556,7 +576,7 @@ pub fn initialize_logging_with_log_prefix(
             Targets::new()
                 .with_default(LevelFilter::from_level(
                     tracing::Level::from_str(
-                        &std::env::var("MONARCH_FILE_LOG").unwrap_or(file_log_level.to_string()),
+                        &std::env::var(MONARCH_FILE_LOG_ENV).unwrap_or(file_log_level.to_string()),
                     )
                     .expect("Invalid log level"),
                 ))
@@ -564,10 +584,10 @@ pub fn initialize_logging_with_log_prefix(
         );
 
     let stderr_log_level = match env::Env::current() {
-        env::Env::Local => "error",
-        env::Env::MastEmulator => "info",
-        env::Env::Mast => "error",
-        env::Env::Test => "debug",
+        env::Env::Local => LOG_LEVEL_ERROR,
+        env::Env::MastEmulator => LOG_LEVEL_INFO,
+        env::Env::Mast => LOG_LEVEL_ERROR,
+        env::Env::Test => LOG_LEVEL_DEBUG,
     };
     let stderr_layer = fmt::Layer::default()
         .with_writer(std::io::stderr)
@@ -578,7 +598,7 @@ pub fn initialize_logging_with_log_prefix(
             Targets::new()
                 .with_default(LevelFilter::from_level(
                     tracing::Level::from_str(
-                        &std::env::var("MONARCH_STDERR_LOG")
+                        &std::env::var(MONARCH_STDERR_LOG_ENV)
                             .unwrap_or(stderr_log_level.to_string()),
                     )
                     .expect("Invalid log level"),
@@ -706,10 +726,10 @@ pub mod env {
                 f,
                 "{}",
                 match self {
-                    Self::Local => "local",
-                    Self::MastEmulator => "mast_emulator",
-                    Self::Mast => "mast",
-                    Self::Test => "test",
+                    Self::Local => crate::ENV_VALUE_LOCAL,
+                    Self::MastEmulator => crate::ENV_VALUE_MAST_EMULATOR,
+                    Self::Mast => crate::ENV_VALUE_MAST,
+                    Self::Test => crate::ENV_VALUE_TEST,
                 }
             )
         }
@@ -725,8 +745,8 @@ pub mod env {
         pub fn current() -> Self {
             match std::env::var(MAST_ENVIRONMENT).unwrap_or_default().as_str() {
                 // Constant from https://fburl.com/fhysd3fd
-                "local_mast_simulator" => Self::MastEmulator,
-                _ => match std::env::var("MAST_HPC_JOB_NAME").is_ok() {
+                crate::ENV_VALUE_LOCAL_MAST_SIMULATOR => Self::MastEmulator,
+                _ => match std::env::var(crate::MAST_HPC_JOB_NAME_ENV).is_ok() {
                     true => Self::Mast,
                     false => Self::Local,
                 },
