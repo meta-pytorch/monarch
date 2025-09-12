@@ -208,7 +208,7 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
     /// Get a serializeable reference to this mesh similar to ActorHandle::bind
     fn bind(&self) -> ActorMeshRef<Self::Actor> {
         ActorMeshRef::attest(
-            ActorMeshId(
+            ActorMeshId::V0(
                 ProcMeshId(self.world_id().to_string()),
                 self.name().to_string(),
             ),
@@ -344,7 +344,7 @@ impl<'a, A: RemoteActor> Mesh for RootActorMesh<'a, A> {
     }
 
     fn id(&self) -> Self::Id {
-        ActorMeshId(self.proc_mesh.id(), self.name.clone())
+        ActorMeshId::V0(self.proc_mesh.id(), self.name.clone())
     }
 }
 

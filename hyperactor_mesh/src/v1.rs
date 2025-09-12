@@ -70,10 +70,13 @@ pub enum Error {
     ActorTypeNotRegistered(String),
 
     #[error("error while spawning actor {0}: {1}")]
-    GspawnError(Name, String),
+    GspawnError(String, String),
 
     #[error("error while sending message to actor {0}: {1}")]
     SendingError(ActorId, Box<MailboxSenderError>),
+
+    #[error("error while casting message: {0}")]
+    CastingError(anyhow::Error),
 }
 
 impl From<crate::alloc::AllocatorError> for Error {
@@ -116,7 +119,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// and a unique UUID.
 ///
 /// Names have a concrete syntax--`{name}-{uuid}`--printed by `Display` and parsed by `FromStr`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
 pub struct Name(pub String, pub ShortUuid);
 
 impl Name {
