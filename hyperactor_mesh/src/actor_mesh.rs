@@ -683,6 +683,7 @@ mod tests {
     use hyperactor::ProcId;
     use hyperactor::WorldId;
     use hyperactor::attrs::Attrs;
+    use hyperactor::data::Encoding;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -1328,6 +1329,9 @@ mod tests {
             unsafe {
                 std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024");
             };
+            let _guard3 =
+                config.override_key(hyperactor::config::DEFAULT_ENCODING, Encoding::Bincode);
+            let _guard4 = config.override_key(hyperactor::config::CHANNEL_MULTIPART, false);
 
             let alloc = process_allocator()
                 .allocate(AllocSpec {

@@ -777,7 +777,7 @@ mod tests {
         let serialized = Serialized::serialize(&data).unwrap();
         let serialized_json = serialized.clone().transcode_to_json().unwrap();
 
-        assert!(serialized.encoded.is_bincode());
+        assert!(serialized.encoded.is_multipart());
         assert!(serialized_json.encoded.is_json());
 
         let json_string =
@@ -816,6 +816,8 @@ mod tests {
 
     #[test]
     fn test_emplace_prefix() {
+        let config = config::global::lock();
+        let _guard = config.override_key(config::DEFAULT_ENCODING, Encoding::Bincode);
         let data = TestDumpStruct {
             a: "hello".to_string(),
             b: 1234,

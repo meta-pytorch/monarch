@@ -52,10 +52,10 @@ declare_attrs! {
     pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
     /// The default encoding to be used.
-    pub attr DEFAULT_ENCODING: Encoding = Encoding::Bincode;
+    pub attr DEFAULT_ENCODING: Encoding = Encoding::Multipart;
 
     /// Whether to use multipart encoding for network channel communications.
-    pub attr CHANNEL_MULTIPART: bool = false;
+    pub attr CHANNEL_MULTIPART: bool = true;
 
     /// How often to check for full MSPC channel on NetRx.
     pub attr CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
