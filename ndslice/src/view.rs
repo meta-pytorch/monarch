@@ -42,7 +42,6 @@ use crate::SliceError;
 use crate::SliceIterator;
 use crate::parse::Parser;
 use crate::parse::ParserError;
-use crate::slice::CartesianIterator;
 
 /// Errors that can occur when constructing or validating an `Extent`.
 #[derive(Debug, thiserror::Error)]
@@ -305,10 +304,7 @@ impl Extent {
 
     /// Iterate points in this extent.
     pub fn points(&self) -> ExtentPointsIterator<'_> {
-        ExtentPointsIterator {
-            extent: self,
-            pos: CartesianIterator::new(self.sizes().to_vec()),
-        }
+        ExtentPointsIterator::new(self)
     }
 }
 
@@ -400,7 +396,16 @@ impl std::fmt::Display for Extent {
 /// An iterator for points in an extent.
 pub struct ExtentPointsIterator<'a> {
     extent: &'a Extent,
-    pos: CartesianIterator,
+    next_rank: usize,
+}
+
+impl<'a> ExtentPointsIterator<'a> {
+    pub fn new(extent: &'a Extent) -> Self {
+        Self {
+            extent,
+            next_rank: 0,
+        }
+    }
 }
 
 impl<'a> Iterator for ExtentPointsIterator<'a> {
@@ -408,21 +413,17 @@ impl<'a> Iterator for ExtentPointsIterator<'a> {
 
     /// Advances the iterator and returns the next [`Point`] in
     /// row-major order.
-    ///
-    /// Internally, this takes the next coordinate tuple from the
-    /// underlying [`CartesianIterator`], converts it into a
-    /// linearized rank using [`Extent::rank_of_coords`], and packages
-    /// both into a `Point`.
-    ///
-    /// If the extent has been fully traversed, or if the coordinates
-    /// are invalid for the extent, `None` is returned.
     fn next(&mut self) -> Option<Self::Item> {
-        let coords = self.pos.next()?;
-        let rank = self.extent.rank_of_coords(&coords).ok()?;
-        Some(Point {
-            rank,
+        if self.next_rank == self.extent.num_ranks() {
+            return None;
+        }
+
+        let p = Point {
+            rank: self.next_rank,
             extent: self.extent.clone(),
-        })
+        };
+        self.next_rank += 1;
+        Some(p)
     }
 }
 
@@ -1615,7 +1616,9 @@ impl<T: View> ViewExt for T {
 macro_rules! extent {
     ( $( $label:ident = $size:expr ),* $(,)? ) => {
         {
+            #[allow(unused_mut)]
             let mut labels = Vec::new();
+            #[allow(unused_mut)]
             let mut sizes = Vec::new();
 
             $(
@@ -1634,6 +1637,7 @@ mod test {
     use super::*;
     use crate::Shape;
     use crate::shape;
+    use crate::slice::CartesianIterator;
 
     #[test]
     fn test_is_safe_ident() {
@@ -1683,6 +1687,42 @@ mod test {
             assert_eq!(z + y * 6 + x * 6 * 5, rank);
             assert_eq!(point.rank(), rank);
         }
+    }
+
+    #[test]
+    fn points_iterates_ranks_in_row_major_order() {
+        let ext = extent!(x = 2, y = 3, z = 4); // 24 ranks
+        let mut it = ext.points();
+
+        for expected_rank in 0..ext.num_ranks() {
+            let p = it.next().expect("expected another Point");
+            assert_eq!(
+                p.rank, expected_rank,
+                "ranks must be consecutive in row-major order"
+            );
+        }
+        assert!(
+            it.next().is_none(),
+            "iterator must be exhausted after num_ranks items"
+        );
+    }
+
+    #[test]
+    fn points_iterates_single_point_for_0d_extent() {
+        // 0-D extent has exactly one rank (the single point).
+        let ext = extent!();
+        let mut it = ext.points();
+
+        let p = it
+            .next()
+            .expect("0-D extent should yield exactly one point");
+        assert_eq!(p.rank, 0);
+        assert_eq!(p.extent, ext);
+
+        assert!(
+            it.next().is_none(),
+            "no more points after the single 0-D point"
+        );
     }
 
     macro_rules! assert_view {
@@ -2282,6 +2322,28 @@ mod test {
                     prop_assert_eq!(r, total, "reported rank mismatch");
                 }
                 other => prop_assert!(false, "expected OutOfRangeRank, got {:?}", other),
+            }
+        }
+    }
+
+    proptest! {
+        /// New rank-walk iterator must match legacy CartesianIterator
+        /// + rank_of_coords.
+        #[test]
+        fn points_iterator_equivalent_to_legacy_cartesian(extent in gen_extent(0..=4, 8)) {
+            let sizes = extent.sizes().to_vec();
+
+            // Compare lengths without cloning the iterator.
+            let legacy_len = CartesianIterator::new(sizes.clone()).count();
+            prop_assert_eq!(legacy_len, extent.num_ranks());
+
+            // Compare element-by-element: (Point from new iter) vs
+            // (coords from legacy)
+            let legacy_coords = CartesianIterator::new(sizes);
+            for (step, (p, coords)) in extent.points().zip(legacy_coords).enumerate() {
+                let old_rank = extent.rank_of_coords(&coords).expect("valid legacy coords");
+                prop_assert_eq!(p.rank(), old_rank, "rank mismatch at step {} for coords {:?}", step, coords);
+                prop_assert_eq!(p.coords(), coords, "coords mismatch at step {}", step);
             }
         }
     }
