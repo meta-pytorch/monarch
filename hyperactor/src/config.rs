@@ -59,6 +59,9 @@ declare_attrs! {
 
     /// How often to check for full MSPC channel on NetRx.
     pub attr CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+    /// The reshaping limit used by casting. Zero means no reshaping.
+    pub attr CASTING_FANOUT_SIZE: usize = 0;
 }
 
 /// Load configuration from environment variables
@@ -129,6 +132,14 @@ pub fn from_env() -> Attrs {
         if let Ok(parsed) = val.parse::<bool>() {
             tracing::info!("overriding CHANNEL_MULTIPART to {}", parsed);
             config[CHANNEL_MULTIPART] = parsed;
+        }
+    }
+
+    // Load channel cast fanout size
+    if let Ok(val) = env::var("HYPERACTOR_CASTING_FANOUT_SIZE") {
+        if let Ok(parsed) = val.parse::<usize>() {
+            tracing::info!("overriding CASTING_FANOUT_SIZE to {}", parsed);
+            config[CASTING_FANOUT_SIZE] = parsed;
         }
     }
 
