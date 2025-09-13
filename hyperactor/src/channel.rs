@@ -86,6 +86,12 @@ pub enum ChannelError {
 #[error("{0}")]
 pub struct SendError<M: RemoteMessage>(#[source] pub ChannelError, pub M);
 
+impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
+    fn from(error: SendError<M>) -> Self {
+        error.0
+    }
+}
+
 /// The possible states of a `Tx`.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TxStatus {

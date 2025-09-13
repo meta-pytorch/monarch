@@ -287,7 +287,7 @@ impl MessageEnvelope {
         tracing::error!(
             name = "undelivered_message_attempt",
             sender = self.sender.to_string(),
-            dest = self.dest.actor_id().to_string(),
+            dest = self.dest.to_string(),
             error = error.to_string(),
             return_handle = %return_handle,
         );
@@ -627,11 +627,8 @@ pub trait MailboxSender: Send + Sync + Debug + Any {
     );
 }
 
-// PortSender is an extension trait so that we can include generics,
-// making the API end-to-end typesafe.
-
 /// PortSender extends [`MailboxSender`] by providing typed endpoints
-/// for sending messages over ports.
+/// for sending messages over ports
 pub trait PortSender: MailboxSender {
     /// Deliver a message to the provided port.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
