@@ -62,6 +62,9 @@ use crate::actor::RemoteHandles;
 use crate::actor::Signal;
 use crate::attrs::Attrs;
 use crate::cap;
+use crate::channel;
+use crate::channel::ChannelAddr;
+use crate::channel::ChannelError;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
 use crate::clock::RealClock;
@@ -70,9 +73,12 @@ use crate::data::Serialized;
 use crate::data::TypeInfo;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
+use crate::mailbox::DialMailboxRouter;
+use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
+use crate::mailbox::MailboxServer as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
@@ -317,6 +323,15 @@ impl Proc {
     /// Create a new proc with the given proc id and forwarder.
     pub fn new(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self {
         Self::new_with_clock(proc_id, forwarder, ClockKind::default())
+    }
+
+    /// Create a new direct-addressed proc.
+    pub async fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
+        let (addr, rx) = channel::serve(addr).await?;
+        let proc_id = ProcId::Direct(addr, name);
+        let proc = Self::new(proc_id, DialMailboxRouter::new().into_boxed());
+        proc.clone().serve(rx);
+        Ok(proc)
     }
 
     /// Create a new proc with the given proc id, forwarder and clock kind.
