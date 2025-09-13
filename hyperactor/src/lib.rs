@@ -78,6 +78,7 @@ pub mod clock;
 pub mod config;
 pub mod context;
 pub mod data;
+pub mod host;
 mod init;
 pub mod mailbox;
 pub mod message;

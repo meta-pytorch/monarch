@@ -194,8 +194,10 @@ impl PartialOrd for Reference {
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
         (
+            // Ranked procs precede direct procs:
             self.world_id(),
             self.rank(),
+            self.proc_id().and_then(ProcId::as_direct),
             self.actor_name(),
             self.pid(),
             self.port(),
@@ -203,6 +205,7 @@ impl Ord for Reference {
             .cmp(&(
                 other.world_id(),
                 other.rank(),
+                other.proc_id().and_then(ProcId::as_direct),
                 other.actor_name(),
                 other.pid(),
                 other.port(),
