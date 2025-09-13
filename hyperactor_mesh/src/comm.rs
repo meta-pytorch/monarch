@@ -543,6 +543,7 @@ mod tests {
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::config;
+    use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
@@ -781,7 +782,7 @@ mod tests {
         let (reply_port_handle0, _) = open_port::<String>(proc_mesh.client());
         let reply_port_ref0 = reply_port_handle0.bind();
         let (reply_port_handle1, reply1_rx) = match accum {
-            Some(a) => proc_mesh.client().open_accum_port(a),
+            Some(a) => proc_mesh.client().mailbox().open_accum_port(a),
             None => open_port(proc_mesh.client()),
         };
         let reply_port_ref1 = reply_port_handle1.bind();

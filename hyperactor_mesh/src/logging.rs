@@ -1038,7 +1038,7 @@ mod tests {
         let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
         proc.clone().serve(client_rx);
         router.bind(id!(client[0]).into(), proc_addr.clone());
-        let client = proc.attach("client").unwrap();
+        let (client, _handle) = proc.instance("client").unwrap();
 
         // Spin up both the forwarder and the client
         let log_channel = ChannelAddr::any(ChannelTransport::Unix);

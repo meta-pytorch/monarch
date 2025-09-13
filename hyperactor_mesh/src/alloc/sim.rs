@@ -225,7 +225,7 @@ mod tests {
         );
         assert_eq!(
             handle.sample_latency(
-                proc_mesh.client().actor_id().proc_id(),
+                proc_mesh.client().self_id().proc_id(),
                 actors[1].actor_id().proc_id()
             ),
             tokio::time::Duration::from_millis(999)

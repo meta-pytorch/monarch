@@ -524,9 +524,10 @@ pub(crate) mod testing {
     use std::collections::HashSet;
     use std::time::Duration;
 
-    use hyperactor::Mailbox;
+    use hyperactor::Instance;
     use hyperactor::actor::remote::Remote;
     use hyperactor::channel;
+    use hyperactor::context;
     use hyperactor::mailbox;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::DialMailboxRouter;
@@ -616,7 +617,7 @@ pub(crate) mod testing {
 
     async fn spawn_proc(
         transport: ChannelTransport,
-    ) -> (DialMailboxRouter, Mailbox, Proc, ChannelAddr) {
+    ) -> (DialMailboxRouter, Instance<()>, Proc, ChannelAddr) {
         let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(transport.clone()))
             .await
             .unwrap();
@@ -635,7 +636,7 @@ pub(crate) mod testing {
         router.bind(client_proc_id.clone().into(), client_proc_addr);
         (
             router,
-            client_proc.attach("test_proc").unwrap(),
+            client_proc.instance("test_proc").unwrap().0,
             client_proc,
             router_channel_addr,
         )
@@ -644,16 +645,16 @@ pub(crate) mod testing {
     async fn spawn_test_actor(
         rank: usize,
         client_proc: &Proc,
-        client: &Mailbox,
+        cx: &impl context::Actor,
         router_channel_addr: ChannelAddr,
         mesh_agent: ActorRef<ProcMeshAgent>,
     ) -> ActorRef<TestActor> {
         let supervisor = client_proc.attach("supervisor").unwrap();
         let (supervison_port, _) = supervisor.open_port();
-        let (config_handle, _) = client.open_port();
+        let (config_handle, _) = cx.mailbox().open_port();
         mesh_agent
             .configure(
-                client,
+                cx,
                 rank,
                 router_channel_addr,
                 Some(supervison_port.bind()),
@@ -669,11 +670,11 @@ pub(crate) mod testing {
             .unwrap()
             .to_string();
         let params = &();
-        let (completed_handle, mut completed_receiver) = mailbox::open_port(client);
+        let (completed_handle, mut completed_receiver) = mailbox::open_port(cx);
         // gspawn actor
         mesh_agent
             .gspawn(
-                client,
+                cx,
                 actor_type,
                 "Stuck".to_string(),
                 bincode::serialize(params).unwrap(),

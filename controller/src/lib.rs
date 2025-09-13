@@ -29,9 +29,9 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::actor::ActorHandle;
 use hyperactor::actor::ActorStatus;
-use hyperactor::cap;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
+use hyperactor::context;
 use hyperactor::data::Serialized;
 use hyperactor_mesh::comm::CommActor;
 use hyperactor_mesh::comm::CommActorMode;
@@ -478,7 +478,7 @@ impl ControllerMessageHandler for ControllerActor {
         let rank = error.worker_actor_id.rank();
         self.history
             .propagate_exception(seq, Exception::Error(seq, seq, error.clone()));
-        mark_worker_complete_and_propagate_exceptions(self, cx, rank, &seq).await?;
+        mark_worker_complete_and_propagate_exceptions(cx, self, rank, &seq).await?;
         Ok(())
     }
 
@@ -494,7 +494,7 @@ impl ControllerMessageHandler for ControllerActor {
         if controller {
             self.history.update_deadline_tracking(rank, seq);
         } else {
-            mark_worker_complete_and_propagate_exceptions(self, cx, rank, &seq).await?;
+            mark_worker_complete_and_propagate_exceptions(cx, self, rank, &seq).await?;
         }
         Ok(())
     }
@@ -604,8 +604,8 @@ impl ControllerMessageHandler for ControllerActor {
 }
 
 async fn mark_worker_complete_and_propagate_exceptions(
+    cx: &impl context::Actor,
     actor: &mut ControllerActor,
-    instance: &(impl cap::CanSend + cap::CanOpenPort),
     rank: usize,
     seq: &Seq,
 ) -> Result<(), anyhow::Error> {
@@ -613,7 +613,7 @@ async fn mark_worker_complete_and_propagate_exceptions(
     let client = actor.client()?;
     // Propagate the failures to the clients.
     for (seq, result) in results.iter() {
-        let _ = client.result(instance, seq.clone(), result.clone()).await;
+        let _ = client.result(cx, seq.clone(), result.clone()).await;
     }
     Ok(())
 }
@@ -633,6 +633,7 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor::context::Mailbox as _;
     use hyperactor::data::Named;
     use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
@@ -674,8 +675,12 @@ mod tests {
         let (worker, worker_ref, mut worker_rx) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
             .unwrap();
-        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker_ref.clone(), &worker)
-            .unwrap();
+
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(
+            worker_ref.clone(),
+            worker.mailbox(),
+        )
+        .unwrap();
 
         let comm_handle = proc
             .spawn::<CommActor>("comm", CommActorParams {})
@@ -863,8 +868,11 @@ mod tests {
         let (worker, worker_ref, mut worker_rx) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
             .unwrap();
-        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker_ref.clone(), &worker)
-            .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(
+            worker_ref.clone(),
+            worker.mailbox(),
+        )
+        .unwrap();
 
         let comm_handle = proc
             .spawn::<CommActor>("comm", CommActorParams {})
@@ -981,8 +989,11 @@ mod tests {
         let (worker, worker_ref, mut worker_rx) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
             .unwrap();
-        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker_ref.clone(), &worker)
-            .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(
+            worker_ref.clone(),
+            worker.mailbox(),
+        )
+        .unwrap();
 
         let comm_handle = proc
             .spawn::<CommActor>("comm", CommActorParams {})
@@ -1117,7 +1128,7 @@ mod tests {
         let sup_mail = system.attach().await.unwrap();
         let (sup_tx, _sup_rx) = sup_mail.open_port::<ProcSupervisionMessage>();
         sup_tx.bind_to(ProcSupervisionMessage::port());
-        let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.actor_id().clone());
+        let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.self_id().clone());
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
@@ -1167,13 +1178,19 @@ mod tests {
         let (worker1, worker1_ref, _) = proc
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
             .unwrap();
-        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker1_ref.clone(), &worker1)
-            .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(
+            worker1_ref.clone(),
+            worker1.mailbox(),
+        )
+        .unwrap();
         let (worker2, worker2_ref, _) = proc2
             .attach_actor::<WorkerActor, WorkerMessage>("worker")
             .unwrap();
-        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(worker2_ref.clone(), &worker2)
-            .unwrap();
+        IndexedErasedUnbound::<WorkerMessage>::bind_for_test_only(
+            worker2_ref.clone(),
+            worker2.mailbox(),
+        )
+        .unwrap();
 
         let controller_handle = proc
             .spawn::<ControllerActor>(
@@ -1340,7 +1357,7 @@ mod tests {
         let sup_mail = system.attach().await.unwrap();
         let (sup_tx, _sup_rx) = sup_mail.open_port::<ProcSupervisionMessage>();
         sup_tx.bind_to(ProcSupervisionMessage::port());
-        let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.actor_id().clone());
+        let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.self_id().clone());
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
@@ -1640,7 +1657,7 @@ mod tests {
         actor_ref
             .attach(
                 &client_mailbox,
-                ActorRef::attest(client_mailbox.actor_id().clone()),
+                ActorRef::attest(client_mailbox.self_id().clone()),
             )
             .await
             .unwrap();
@@ -1746,7 +1763,7 @@ mod tests {
         actor_ref
             .attach(
                 &client_mailbox,
-                ActorRef::attest(client_mailbox.actor_id().clone()),
+                ActorRef::attest(client_mailbox.self_id().clone()),
             )
             .await
             .unwrap();
@@ -1885,7 +1902,7 @@ mod tests {
         actor_ref
             .attach(
                 &client_mailbox,
-                ActorRef::attest(client_mailbox.actor_id().clone()),
+                ActorRef::attest(client_mailbox.self_id().clone()),
             )
             .await
             .unwrap();

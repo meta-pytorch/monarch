@@ -409,8 +409,8 @@ where
     let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &local_workspace).await?;
     let daemon_addr = daemon.addr();
 
-    let mailbox = actor_mesh.proc_mesh().client();
-    let (rsync_conns_tx, rsync_conns_rx) = mailbox.open_port::<Connect>();
+    let instance = actor_mesh.proc_mesh().client();
+    let (rsync_conns_tx, rsync_conns_rx) = instance.open_port::<Connect>();
 
     let ((), results) = try_join!(
         rsync_conns_rx
@@ -419,16 +419,16 @@ where
             .try_for_each_concurrent(None, |connect| async move {
                 let (mut local, mut stream) = try_join!(
                     TcpStream::connect(daemon_addr.clone()).err_into(),
-                    accept(mailbox, mailbox.actor_id().clone(), connect),
+                    accept(instance, instance.self_id().clone(), connect),
                 )?;
                 tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                 anyhow::Ok(())
             })
             .boxed(),
         async move {
-            let (result_tx, result_rx) = mailbox.open_port::<Result<RsyncResult, String>>();
+            let (result_tx, result_rx) = instance.open_port::<Result<RsyncResult, String>>();
             actor_mesh.cast(
-                mailbox,
+                instance,
                 sel!(*),
                 RsyncMessage {
                     connect: rsync_conns_tx.bind(),

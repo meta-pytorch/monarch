@@ -2101,7 +2101,7 @@ impl StreamMessageHandler for StreamActor {
 #[cfg(test)]
 mod tests {
     use hyperactor::actor::ActorStatus;
-    use hyperactor::cap;
+    use hyperactor::context;
     use hyperactor::supervision::ActorSupervisionEvent;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::StreamCreationMode;
@@ -2126,7 +2126,7 @@ mod tests {
     struct TestSetup {
         proc: Proc,
         stream_actor: ActorHandle<StreamActor>,
-        client: Mailbox,
+        client: Instance<()>,
         // Unused, but necessary, because proc needs a supervision
         // port -- otherwise an actor failure will cause a crash.
         #[allow(dead_code)]
@@ -2147,7 +2147,7 @@ mod tests {
             let proc = Proc::local();
             let (_, controller_actor, controller_rx) =
                 proc.attach_actor::<ControllerActor, ControllerMessage>("controller")?;
-            let client = proc.attach("client")?;
+            let (client, _handle) = proc.instance("client")?;
             let (supervision_tx, supervision_rx) = client.open_port();
             proc.set_supervision_coordinator(supervision_tx)?;
             let stream_actor = proc
@@ -2252,7 +2252,7 @@ mod tests {
     }
 
     async fn fetch_result(
-        caps: &impl cap::CanSend,
+        cx: &impl context::Actor,
         stream_actor: ActorHandle<StreamActor>,
         seq: Seq,
         reference: Ref,
@@ -2263,7 +2263,7 @@ mod tests {
 
         stream_actor
             .send_value(
-                caps,
+                cx,
                 seq,
                 stream_actor.actor_id().clone(),
                 Vec::new(),
@@ -2278,14 +2278,14 @@ mod tests {
     }
 
     async fn check_fetch_result_error(
-        caps: &impl cap::CanSend,
+        cx: &impl context::Actor,
         stream_actor: ActorHandle<StreamActor>,
         seq: Seq,
         reference: Ref,
         controller_rx: &mut PortReceiver<ControllerMessage>,
         expected_backtrace: &str,
     ) {
-        fetch_result(caps, stream_actor, seq, reference).await;
+        fetch_result(cx, stream_actor, seq, reference).await;
 
         let controller_msg = controller_rx.recv().await.unwrap();
         match controller_msg {
@@ -2306,13 +2306,13 @@ mod tests {
     }
 
     async fn check_fetch_result_value(
-        caps: &impl cap::CanSend,
+        cx: &impl context::Actor,
         stream_actor: ActorHandle<StreamActor>,
         seq: Seq,
         reference: Ref,
         controller_rx: &mut PortReceiver<ControllerMessage>,
     ) {
-        fetch_result(caps, stream_actor, seq, reference).await;
+        fetch_result(cx, stream_actor, seq, reference).await;
 
         let controller_msg = controller_rx.recv().await.unwrap();
         match controller_msg {

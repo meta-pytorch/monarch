@@ -12,9 +12,10 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::ActorRef;
-    use hyperactor::Mailbox;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::sim::SimAddr;
+    use hyperactor::context;
+    use hyperactor::context::Mailbox as _;
     use hyperactor::id;
     use hyperactor::reference::Index;
     use hyperactor::reference::WorldId;
@@ -48,30 +49,23 @@ mod tests {
         let mut system = System::new(server_local_addr.clone());
 
         // Create a client on its individual proc that can talk to the system.
-        let sys_mailbox = system.attach().await.unwrap();
+        let instance = system.attach().await.unwrap();
 
         let world_id = id!(world);
 
-        let ping_actor_ref = spawn_proc_actor(
-            2,
-            system_sim_addr.clone(),
-            sys_mailbox.clone(),
-            world_id.clone(),
-        )
-        .await;
+        let ping_actor_ref =
+            spawn_proc_actor(&instance, 2, system_sim_addr.clone(), world_id.clone()).await;
 
         let pong_actor_ref =
-            spawn_proc_actor(3, system_sim_addr, sys_mailbox.clone(), world_id.clone()).await;
+            spawn_proc_actor(&instance, 3, system_sim_addr, world_id.clone()).await;
 
         // Kick start the ping pong game by sending a message to the ping actor. The message will ask the
         // ping actor to deliver a message to the pong actor with TTL - 1. The pong actor will then
         // deliver a message to the ping actor with TTL - 2. This will continue until the TTL reaches 0.
         // The ping actor will then send a message to the done channel to indicate that the game is over.
-        let (done_tx, done_rx) = sys_mailbox.open_once_port();
+        let (done_tx, done_rx) = instance.mailbox().open_once_port();
         let ping_pong_message = PingPongMessage(4, pong_actor_ref.clone(), done_tx.bind());
-        ping_actor_ref
-            .send(&sys_mailbox, ping_pong_message)
-            .unwrap();
+        ping_actor_ref.send(&instance, ping_pong_message).unwrap();
 
         assert!(done_rx.recv().await.unwrap());
 
@@ -83,9 +77,9 @@ mod tests {
     }
 
     async fn spawn_proc_actor(
+        cx: &impl context::Actor,
         actor_index: Index,
         system_addr: SimAddr,
-        sys_mailbox: Mailbox,
         world_id: WorldId,
     ) -> ActorRef<PingPongActor> {
         let proc_addr = format!("local!{}", actor_index)
@@ -112,7 +106,7 @@ mod tests {
 
         let params = PingPongActorParams::new(None, None);
         spawn::<PingPongActor>(
-            &sys_mailbox,
+            cx,
             &bootstrap.proc_actor.bind(),
             actor_index.to_string().as_str(),
             &params,

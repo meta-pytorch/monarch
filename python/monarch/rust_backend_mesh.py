@@ -135,9 +135,7 @@ class PoolDeviceMeshProvider:
                 # Create a new device mesh
                 backend_ctrl = RustController(
                     proc=self._proc,
-                    client_actor=ClientActor.new_with_parent(
-                        self._proc, self._root_client.actor_id
-                    ),
+                    client_actor=ClientActor(self._proc, "backend_controller"),
                     controller_id=controller_id,
                     worker_world_name=worker_world,
                 )

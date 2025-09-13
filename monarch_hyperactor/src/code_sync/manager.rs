@@ -357,7 +357,7 @@ pub async fn code_sync_mesh(
     method: CodeSyncMethod,
     auto_reload: bool,
 ) -> Result<()> {
-    let mailbox = actor_mesh.proc_mesh().client();
+    let instance = actor_mesh.proc_mesh().client();
 
     // Create a slice of the actor mesh that only includes workspace "owners" (e.g. on multi-GPU hosts,
     // only one of the ranks on that host will participate in the code sync).
@@ -375,7 +375,7 @@ pub async fn code_sync_mesh(
                 RsyncDaemon::spawn(TcpListener::bind(&addrs[..]).await?, &local_workspace).await?;
 
             let daemon_addr = daemon.addr().clone();
-            let (rsync_conns_tx, rsync_conns_rx) = mailbox.open_port::<Connect>();
+            let (rsync_conns_tx, rsync_conns_rx) = instance.open_port::<Connect>();
             (
                 Method::Rsync {
                     connect: rsync_conns_tx.bind(),
@@ -389,7 +389,7 @@ pub async fn code_sync_mesh(
                         .try_for_each_concurrent(None, |connect| async move {
                             let (mut local, mut stream) = try_join!(
                                 TcpStream::connect(daemon_addr.clone()).err_into(),
-                                accept(mailbox, mailbox.actor_id().clone(), connect),
+                                accept(instance, instance.self_id().clone(), connect),
                             )?;
                             tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                             Ok(())
@@ -405,7 +405,7 @@ pub async fn code_sync_mesh(
         CodeSyncMethod::CondaSync {
             path_prefix_replacements,
         } => {
-            let (conns_tx, conns_rx) = mailbox.open_port::<Connect>();
+            let (conns_tx, conns_rx) = instance.open_port::<Connect>();
             (
                 Method::CondaSync {
                     connect: conns_tx.bind(),
@@ -417,7 +417,7 @@ pub async fn code_sync_mesh(
                         .err_into::<anyhow::Error>()
                         .try_for_each_concurrent(None, |connect| async {
                             let (mut read, mut write) =
-                                accept(mailbox, mailbox.actor_id().clone(), connect)
+                                accept(instance, instance.self_id().clone(), connect)
                                     .await?
                                     .into_split();
                             let res = sender(&local_workspace, &mut read, &mut write).await;
@@ -441,9 +441,9 @@ pub async fn code_sync_mesh(
         method_fut,
         // This async task will cast the code sync message to workspace owners, and process any errors.
         async move {
-            let (result_tx, result_rx) = mailbox.open_port::<Result<(), String>>();
+            let (result_tx, result_rx) = instance.open_port::<Result<(), String>>();
             actor_mesh.cast(
-                mailbox,
+                instance,
                 sel!(*),
                 CodeSyncMessage::Sync {
                     method,

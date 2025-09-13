@@ -18,6 +18,7 @@ mod tests {
 
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor::context::Mailbox as _;
 
     use crate::PollTarget;
     use crate::ibverbs_primitives::get_all_devices;
@@ -38,7 +39,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_0"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
@@ -61,7 +62,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_0"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
@@ -86,7 +87,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         qp_1.get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
@@ -111,11 +112,11 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         let _qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
@@ -140,11 +141,11 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         let mut qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
         qp_2.put_with_recv(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
         qp_1.recv(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -167,7 +168,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
         qp_1.ring_doorbell()?;
@@ -191,7 +192,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
         qp_2.enqueue_get(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
         qp_2.ring_doorbell()?;
@@ -216,7 +217,7 @@ mod tests {
             RdmaManagerTestEnv::setup(BSIZE * 2, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
 
         let mut rdma_handle_2_first_half = env.rdma_handle_2.clone();
@@ -251,7 +252,7 @@ mod tests {
             RdmaManagerTestEnv::setup(BSIZE * 2, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let mut qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
 
         let mut rdma_handle_2_first_half = env.rdma_handle_2.clone();
@@ -283,7 +284,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .read_into(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -305,7 +306,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .write_from(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .write_from(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -347,11 +348,11 @@ mod tests {
             RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         let _qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
         qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
         ring_db_gpu(&mut qp_1).await?;
@@ -385,7 +386,7 @@ mod tests {
             RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         qp_1.enqueue_get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
         ring_db_gpu(&mut qp_1).await?;
@@ -418,11 +419,11 @@ mod tests {
             RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         let mut qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
         send_wqe_gpu(
             &mut qp_2,
@@ -468,11 +469,11 @@ mod tests {
             .await?;
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         let mut qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
 
         let rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
@@ -538,11 +539,11 @@ mod tests {
             .await?;
         let _qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         let mut qp_2 = env
             .actor_2
-            .request_queue_pair(&env.client_2.clone(), env.actor_1.clone())
+            .request_queue_pair(&env.client_2, env.actor_1.clone())
             .await?;
 
         let rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
@@ -594,7 +595,7 @@ mod tests {
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         RealClock.sleep(std::time::Duration::from_millis(50)).await;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -626,7 +627,7 @@ mod tests {
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .actor_1
-            .request_queue_pair(&env.client_1.clone(), env.actor_2.clone())
+            .request_queue_pair(&env.client_1, env.actor_2.clone())
             .await?;
         RealClock.sleep(std::time::Duration::from_millis(50)).await;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -663,7 +664,7 @@ mod tests {
         RealClock.sleep(std::time::Duration::from_millis(50)).await;
 
         rdma_handle_1
-            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .read_into(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -696,7 +697,7 @@ mod tests {
 
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .read_into(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .read_into(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -728,7 +729,7 @@ mod tests {
         RealClock.sleep(std::time::Duration::from_millis(50)).await;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .write_from(&env.client_1.clone(), env.rdma_handle_2.clone(), 2)
+            .write_from(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;

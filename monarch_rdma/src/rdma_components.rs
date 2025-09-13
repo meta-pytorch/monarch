@@ -128,7 +128,7 @@ impl RdmaBuffer {
         );
         let mut qp = self
             .owner
-            .request_queue_pair(client, remote.owner.clone())
+            .request_queue_pair_deprecated(client, remote.owner.clone())
             .await?;
 
         qp.put(self.clone(), remote)?;
@@ -163,7 +163,7 @@ impl RdmaBuffer {
         );
         let mut qp = self
             .owner
-            .request_queue_pair(client, remote.owner.clone())
+            .request_queue_pair_deprecated(client, remote.owner.clone())
             .await?;
         qp.get(self.clone(), remote)?;
         self.wait_for_completion(&mut qp, PollTarget::Send, timeout)
@@ -1042,7 +1042,7 @@ impl RdmaQueuePair {
                     lkey,
                 };
                 let mut wr = rdmaxcel_sys::ibv_recv_wr {
-                    wr_id: wr_id.try_into().unwrap(),
+                    wr_id: wr_id.into(),
                     sg_list: &mut sge as *mut _,
                     num_sge: 1,
                     ..Default::default()
@@ -1064,7 +1064,7 @@ impl RdmaQueuePair {
                     lkey,
                 };
                 let mut wr = rdmaxcel_sys::ibv_send_wr {
-                    wr_id: wr_id.try_into().unwrap(),
+                    wr_id: wr_id.into(),
                     next: std::ptr::null_mut(),
                     sg_list: &mut sge as *mut _,
                     num_sge: 1,
@@ -1143,7 +1143,7 @@ impl RdmaQueuePair {
                 laddr,
                 lkey,
                 length,
-                wr_id: wr_id.try_into().unwrap(),
+                wr_id: wr_id.into(),
                 signaled,
                 op_type: op_type_val,
                 raddr,

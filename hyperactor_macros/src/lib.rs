@@ -524,7 +524,7 @@ fn parse_message_enum(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///     // todo: consider making this a macro to remove the magic names
 ///
 ///     // Derive(Handler) generates client methods, which call the
-///     // remote handler provided an instance (send + open capability),
+///     // remote handler provided an actor instance,
 ///     // the destination actor, and the method arguments.
 ///
 ///     shopping_list_actor.add(&client, "milk".into()).await?;
@@ -588,6 +588,8 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
             } => {
                 let (arg_names, arg_types): (Vec<_>, Vec<_>) = message.args().into_iter().unzip();
                 let variant_name_snake = variant.snake_name();
+                let variant_name_snake_deprecated =
+                    format_ident!("{}_deprecated", variant_name_snake);
                 let enum_name = variant.enum_name();
                 let _variant_qualified_name = variant.qualified_name();
                 let log_level = match (&global_log_level, log_level) {
@@ -626,7 +628,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated client method for this enum variant."]
                     async fn #variant_name_snake(
                         &self,
-                        caps: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                        cx: &impl hyperactor::context::Actor,
+                        #(#arg_names: #arg_types),*)
+                        -> Result<#return_type, hyperactor::anyhow::Error>;
+
+                    #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
+                    async fn #variant_name_snake_deprecated(
+                        &self,
+                        cx: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
                         #(#arg_names: #arg_types),*)
                         -> Result<#return_type, hyperactor::anyhow::Error>;
                 });
@@ -663,6 +672,8 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
             } => {
                 let (arg_names, arg_types): (Vec<_>, Vec<_>) = message.args().into_iter().unzip();
                 let variant_name_snake = variant.snake_name();
+                let variant_name_snake_deprecated =
+                    format_ident!("{}_deprecated", variant_name_snake);
                 let enum_name = variant.enum_name();
                 let log_level = match (&global_log_level, log_level) {
                     (_, Some(local)) => local.clone(),
@@ -694,7 +705,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated client method for this enum variant."]
                     async fn #variant_name_snake(
                         &self,
-                        caps: &impl hyperactor::cap::CanSend,
+                        cx: &impl hyperactor::context::Actor,
+                        #(#arg_names: #arg_types),*)
+                        -> Result<(), hyperactor::anyhow::Error>;
+
+                    #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
+                    async fn #variant_name_snake_deprecated(
+                        &self,
+                        cx: &impl hyperactor::cap::CanSend,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error>;
                 });
@@ -772,7 +790,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     let send_message = if is_handle {
         quote! { self.send(message)? }
     } else {
-        quote! { self.send(caps, message)? }
+        quote! { self.send(cx, message)? }
     };
     let global_log_level = parse_log_level(&input.attrs).ok().unwrap_or(None);
 
@@ -786,6 +804,8 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
             } => {
                 let (arg_names, arg_types): (Vec<_>, Vec<_>) = message.args().into_iter().unzip();
                 let variant_name_snake = variant.snake_name();
+                let variant_name_snake_deprecated =
+                    format_ident!("{}_deprecated", variant_name_snake);
                 let enum_name = variant.enum_name();
 
                 let (reply_port_arg, _) = message.reply_port_arg().unwrap();
@@ -818,11 +838,25 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
                         async fn #variant_name_snake(
                             &self,
-                            caps: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                            cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, reply_receiver) =
-                                hyperactor::mailbox::open_once_port::<#return_type>(caps);
+                                hyperactor::mailbox::open_once_port::<#return_type>(cx);
+                            let message = #constructor;
+                            #log_message;
+                            #send_message;
+                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                        }
+
+                        #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
+                        async fn #variant_name_snake_deprecated(
+                            &self,
+                            cx: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                            #(#arg_names: #arg_types),*)
+                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            let (#reply_port_arg, reply_receiver) =
+                                hyperactor::mailbox::open_once_port::<#return_type>(cx);
                             let message = #constructor;
                             #log_message;
                             #send_message;
@@ -834,11 +868,26 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
                         async fn #variant_name_snake(
                             &self,
-                            caps: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                            cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, reply_receiver) =
-                                hyperactor::mailbox::open_once_port::<#return_type>(caps);
+                                hyperactor::mailbox::open_once_port::<#return_type>(cx);
+                            let #reply_port_arg = #reply_port_arg.bind();
+                            let message = #constructor;
+                            #log_message;
+                            #send_message;
+                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                        }
+
+                        #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
+                        async fn #variant_name_snake_deprecated(
+                            &self,
+                            cx: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                            #(#arg_names: #arg_types),*)
+                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            let (#reply_port_arg, reply_receiver) =
+                                hyperactor::mailbox::open_once_port::<#return_type>(cx);
                             let #reply_port_arg = #reply_port_arg.bind();
                             let message = #constructor;
                             #log_message;
@@ -854,6 +903,8 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
             } => {
                 let (arg_names, arg_types): (Vec<_>, Vec<_>) = message.args().into_iter().unzip();
                 let variant_name_snake = variant.snake_name();
+                let variant_name_snake_deprecated =
+                    format_ident!("{}_deprecated", variant_name_snake);
                 let enum_name = variant.enum_name();
                 let constructor = variant.constructor();
                 let log_level = match (&global_log_level, log_level) {
@@ -881,7 +932,18 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 impl_methods.push(quote! {
                     async fn #variant_name_snake(
                         &self,
-                        caps: &impl hyperactor::cap::CanSend,
+                        cx: &impl hyperactor::context::Actor,
+                        #(#arg_names: #arg_types),*)
+                        -> Result<(), hyperactor::anyhow::Error> {
+                        let message = #constructor;
+                        #log_message;
+                        #send_message;
+                        Ok(())
+                    }
+
+                    async fn #variant_name_snake_deprecated(
+                        &self,
+                        cx: &impl hyperactor::cap::CanSend,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error> {
                         let message = #constructor;

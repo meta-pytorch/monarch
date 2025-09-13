@@ -78,6 +78,7 @@ pub mod test_utils {
     use std::time::Instant;
 
     use hyperactor::ActorRef;
+    use hyperactor::Instance;
     use hyperactor::Mailbox;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
@@ -261,8 +262,8 @@ pub mod test_utils {
     pub struct RdmaManagerTestEnv<'a> {
         buffer_1: Buffer,
         buffer_2: Buffer,
-        pub client_1: &'a Mailbox,
-        pub client_2: &'a Mailbox,
+        pub client_1: &'a Instance<()>,
+        pub client_2: &'a Instance<()>,
         pub actor_1: ActorRef<RdmaManagerActor>,
         pub actor_2: ActorRef<RdmaManagerActor>,
         pub rdma_handle_1: RdmaBuffer,

@@ -433,16 +433,16 @@ impl Proc {
     pub fn attach_actor<R, M>(
         &self,
         name: &str,
-    ) -> Result<(Mailbox, ActorRef<R>, PortReceiver<M>), anyhow::Error>
+    ) -> Result<(Instance<()>, ActorRef<R>, PortReceiver<M>), anyhow::Error>
     where
         M: RemoteMessage,
         R: RemoteActor + RemoteHandles<M>,
     {
-        let mbox = self.attach(name)?;
-        let (handle, rx) = mbox.open_port::<M>();
+        let (instance, _handle) = self.instance(name)?;
+        let (handle, rx) = instance.open_port::<M>();
         handle.bind_to(M::port());
-        let actor_ref = ActorRef::attest(mbox.actor_id().clone());
-        Ok((mbox, actor_ref, rx))
+        let actor_ref = ActorRef::attest(instance.self_id().clone());
+        Ok((instance, actor_ref, rx))
     }
 
     /// Spawn a named (root) actor on this proc. The name of the actor must be
@@ -491,6 +491,25 @@ impl Proc {
 
         instance.change_status(ActorStatus::Client);
 
+        Ok((instance, handle))
+    }
+
+    /// Create a child instance. Called from `Instance`.
+    fn child_instance(
+        &self,
+        parent: InstanceCell,
+    ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
+        let actor_id = self.allocate_child_id(parent.actor_id())?;
+        let _ = tracing::debug_span!(
+            "child_actor_instance",
+            parent_actor_id = %parent.actor_id(),
+            actor_type = std::any::type_name::<()>(),
+            actor_id = %actor_id,
+        );
+
+        let instance = Instance::new(self.clone(), actor_id, false, Some(parent));
+        let handle = ActorHandle::new(instance.cell.clone(), instance.ports.clone());
+        instance.change_status(ActorStatus::Client);
         Ok((instance, handle))
     }
 
@@ -1090,13 +1109,12 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Initialize and run the actor until it fails or is stopped.
+    #[tracing::instrument(level = "info", skip_all, fields(actor_id = %self.self_id()))]
     async fn run(
         &mut self,
         actor: &mut A,
         actor_loop_receivers: &mut (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
     ) -> Result<(), ActorError> {
-        tracing::debug!("entering actor loop: {}", self.self_id());
-
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
         self.change_status(ActorStatus::Initializing);
@@ -1247,6 +1265,11 @@ impl<A: Actor> Instance<A> {
         params: C::Params,
     ) -> anyhow::Result<ActorHandle<C>> {
         self.proc.spawn_child(self.cell.clone(), params).await
+    }
+
+    /// Create a new direct child instance.
+    pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
+        self.proc.child_instance(self.cell.clone())
     }
 
     /// Return a handle port handle representing the actor's message

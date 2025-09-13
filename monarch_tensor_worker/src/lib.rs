@@ -61,7 +61,7 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
-use hyperactor::cap;
+use hyperactor::context;
 use hyperactor::reference::ActorId;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
@@ -196,7 +196,7 @@ impl WorkerActor {
 
     async fn maybe_add_stream_to_recording(
         &mut self,
-        caps: &impl cap::CanSend,
+        cx: &impl context::Actor,
         stream: StreamRef,
     ) -> Result<()> {
         // If we're defining a recording, add the stream to the list of streams that
@@ -209,7 +209,7 @@ impl WorkerActor {
                     streams.insert(stream).then(|| -> Result<_, anyhow::Error> {
                         Ok(self
                             .try_get_stream(stream)?
-                            .define_recording(caps, defining_recording))
+                            .define_recording(cx, defining_recording))
                     })
                 }
             }
@@ -1176,6 +1176,7 @@ mod tests {
     use std::process::Stdio;
 
     use anyhow::Result;
+    use hyperactor::Instance;
     use hyperactor::Mailbox;
     use hyperactor::Named;
     use hyperactor::WorldId;
@@ -2322,7 +2323,7 @@ mod tests {
         format!("unix!@{random_string}").parse().unwrap()
     }
 
-    async fn ensure_world_ready(client: Mailbox, world: WorldId) -> Result<()> {
+    async fn ensure_world_ready(client: &Instance<()>, world: WorldId) -> Result<()> {
         tracing::info!("checking whether world {world} is ready");
         let retry_strategy = FixedInterval::from_millis(1000).take(100);
         Retry::spawn(retry_strategy, async || {
@@ -2353,7 +2354,7 @@ mod tests {
         let client = System::new(system_addr.clone()).attach().await?;
         let (handle, mut controller_rx) = client.open_port::<ControllerMessage>();
         handle.bind_to(ControllerMessage::port());
-        let controller_ref: ActorRef<ControllerActor> = ActorRef::attest(client.actor_id().clone());
+        let controller_ref: ActorRef<ControllerActor> = ActorRef::attest(client.self_id().clone());
 
         // Create the worker world
         let world_size = 2;
@@ -2400,7 +2401,8 @@ mod tests {
         }
 
         // Wait for procs to initialize
-        ensure_world_ready(client.clone(), id!(world)).await?;
+
+        ensure_world_ready(&client, id!(world)).await?;
 
         // Spawn workers on each proc
         let (spawned_port, mut spawned_receiver) = open_port(&client);

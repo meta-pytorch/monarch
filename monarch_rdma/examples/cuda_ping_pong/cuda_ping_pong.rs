@@ -418,7 +418,7 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         }
         let qp = self
             .rdma_manager
-            .request_queue_pair(cx.mailbox_for_py(), remote_buffer.owner.clone())
+            .request_queue_pair(cx, remote_buffer.owner.clone())
             .await?;
 
         unsafe {
