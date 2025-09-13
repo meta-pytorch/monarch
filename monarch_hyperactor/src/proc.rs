@@ -20,6 +20,8 @@ use std::collections::HashMap;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -32,6 +34,7 @@ use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
+use hyperactor::context;
 use hyperactor::data::Serialized;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
@@ -39,6 +42,7 @@ use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::PortHandle;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
 use hyperactor::reference::ActorId;
 use hyperactor::reference::Index;
@@ -47,9 +51,11 @@ use hyperactor::reference::WorldId;
 use hyperactor_multiprocess::proc_actor::ProcActor;
 use hyperactor_multiprocess::supervision::ProcStatus;
 use hyperactor_multiprocess::supervision::ProcSupervisor;
+use hyperactor_multiprocess::supervision::WorldSupervisionMessage;
 use hyperactor_multiprocess::supervision::WorldSupervisionMessageClient;
 use hyperactor_multiprocess::system_actor::ProcLifecycleMode;
 use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
+use hyperactor_multiprocess::system_actor::SystemMessage;
 use hyperactor_multiprocess::system_actor::SystemMessageClient;
 use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
 use hyperactor_multiprocess::system_actor::WorldStatus;
@@ -421,7 +427,7 @@ impl PySerialized {
 /// message type they want to handle. [`PickledMessageClientActor``] is a specialization of this
 /// for handling messages that are serialized to bytes using pickle.
 pub struct InstanceWrapper<M: RemoteMessage> {
-    mailbox: Mailbox,
+    instance: Instance<()>,
     message_receiver: PortReceiver<M>,
     signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
@@ -433,6 +439,7 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     controller_error_sender: watch::Sender<String>,
     controller_error_receiver: watch::Receiver<String>,
     clock: ClockKind,
+    actor_id: ActorId,
 }
 
 /// Error that can occur when there is controller supervision error.
@@ -444,31 +451,25 @@ pub enum ControllerError {
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
-        InstanceWrapper::new_with_mailbox_and_clock(
-            proc.inner.attach(actor_name)?,
+        InstanceWrapper::new_with_instance_and_clock(
+            proc.inner.instance(actor_name)?.0,
             proc.inner.clock().clone(),
         )
     }
 
-    pub fn new_with_parent(proc: &PyProc, parent_id: &ActorId) -> Result<Self> {
-        InstanceWrapper::new_with_mailbox_and_clock(
-            proc.inner.attach_child(parent_id)?,
-            proc.inner.clock().clone(),
-        )
-    }
-
-    fn new_with_mailbox_and_clock(mailbox: Mailbox, clock: ClockKind) -> Result<Self> {
+    fn new_with_instance_and_clock(instance: Instance<()>, clock: ClockKind) -> Result<Self> {
         // TEMPORARY: remove after using fixed message ports.
-        let (message_port, message_receiver) = mailbox.open_port::<M>();
+        let (message_port, message_receiver) = instance.open_port::<M>();
         message_port.bind_to(M::port());
 
-        let (signal_port, signal_receiver) = mailbox.open_port::<Signal>();
+        let (signal_port, signal_receiver) = instance.open_port::<Signal>();
         signal_port.bind_to(<Signal as Named>::port());
 
         let (controller_error_sender, controller_error_receiver) = watch::channel("".to_string());
+        let actor_id = instance.self_id().clone();
 
         Ok(Self {
-            mailbox,
+            instance,
             message_receiver,
             signal_receiver,
             status: InstanceStatus::Running,
@@ -478,6 +479,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             controller_error_sender,
             controller_error_receiver,
             clock,
+            actor_id,
         })
     }
 
@@ -497,7 +499,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         actor_id
             .inner
             .port_id(message.port())
-            .send(&self.mailbox, &message.inner);
+            .send(&self.instance, &message.inner);
         Ok(())
     }
 
@@ -541,22 +543,24 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
                 .elapsed()
                 .unwrap_or_default();
 
-            let mailbox = self.mailbox.clone();
             let signal_port = self.signal_port.clone();
             let controller_id = controller_id.clone();
             let controller_error_sender = self.controller_error_sender.clone();
             let clock = self.clock.clone();
+            // Create a new child instance just to check hte
+            let (checker_instance, checker_instance_handle) = self.instance().child()?;
 
             if check_staleness > Duration::from_secs(5) {
                 get_tokio_runtime().spawn(async move {
                     let _ = check_actor_supervision_state(
+                        checker_instance,
                         clock,
-                        mailbox,
                         signal_port,
                         controller_id.clone(),
                         controller_error_sender,
                     )
                     .await;
+                    let _ = checker_instance_handle.drain_and_stop();
                 });
                 self.last_controller_status_check = self.clock.system_time_now();
             }
@@ -627,7 +631,8 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         &self,
         filter: SystemSnapshotFilter,
     ) -> Result<HashMap<WorldId, WorldStatus>> {
-        let snapshot = SYSTEM_ACTOR_REF.snapshot(&self.mailbox, filter).await?;
+        let snapshot = SYSTEM_ACTOR_REF.snapshot(&self.instance, filter).await?;
+
         // TODO: pulling snapshot is expensive as it contains all proc details
         // We do not need those extra information.
         Ok(snapshot
@@ -637,20 +642,20 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             .collect())
     }
 
-    pub fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+    pub fn instance(&self) -> &Instance<()> {
+        &self.instance
     }
 
     pub fn actor_id(&self) -> &ActorId {
-        self.mailbox.actor_id()
+        &self.actor_id
     }
 }
 
 /// Check the supervision state of given actor from system actor. This will schedule itself to allow
 /// for periodic checks.
 async fn check_actor_supervision_state(
+    instance: Instance<()>,
     clock: ClockKind,
-    mailbox: Mailbox,
     signal_port: PortHandle<Signal>,
     actor_id: ActorId,
     controller_error_sender: watch::Sender<String>,
@@ -659,7 +664,7 @@ async fn check_actor_supervision_state(
         .timeout(
             // TODO: make the timeout configurable
             tokio::time::Duration::from_secs(10),
-            SYSTEM_ACTOR_REF.state(&mailbox, WorldId(actor_id.world_name().into())),
+            SYSTEM_ACTOR_REF.state(&instance, WorldId(actor_id.world_name().into())),
         )
         .await
     {

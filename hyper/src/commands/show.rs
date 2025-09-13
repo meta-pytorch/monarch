@@ -8,6 +8,7 @@
 
 use std::io;
 use std::io::Write;
+use std::sync::Arc;
 
 use anyhow::Context;
 use chrono::DateTime;
@@ -27,6 +28,7 @@ use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
 use hyperactor_multiprocess::system_actor::SystemMessageClient;
 use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
 use tabwriter::TabWriter;
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 #[cfg(fbcode_build)]
 use utils::system_address::SystemAddr;
@@ -193,29 +195,22 @@ impl ShowCommand {
                     .cloned()
                     .context("world not found")?;
 
-                let tasks: JoinSet<_> = world
-                    .procs
-                    .keys()
-                    .map(|proc_id| {
-                        let client = client.clone();
-                        let proc_id = proc_id.clone();
-                        async move {
-                            let proc_ref: ActorRef<ProcActor> =
-                                ActorRef::attest(proc_id.actor_id("proc", 0));
-                            (
-                                proc_id,
-                                RealClock
-                                    .timeout(
-                                        std::time::Duration::from_secs(5),
-                                        proc_ref.snapshot(&client.clone()),
-                                    )
-                                    .await,
+                // Do in serial to avoid sharing client instance.
+                let mut procs = Vec::new();
+                for proc_id in world.procs.keys() {
+                    let proc_ref: ActorRef<ProcActor> =
+                        ActorRef::attest(proc_id.actor_id("proc", 0));
+                    procs.push((
+                        proc_id,
+                        RealClock
+                            .timeout(
+                                std::time::Duration::from_secs(5),
+                                proc_ref.snapshot(&client),
                             )
-                        }
-                    })
-                    .collect();
+                            .await,
+                    ));
+                }
 
-                let procs = tasks.join_all().await;
                 let mut procs: Vec<_> = procs
                     .into_iter()
                     .filter_map(|(proc_id, result)| match result {

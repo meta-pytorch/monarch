@@ -125,15 +125,15 @@ pub async fn conda_sync_mesh<M>(
 where
     M: ActorMesh<Actor = CondaSyncActor>,
 {
-    let mailbox = actor_mesh.proc_mesh().client();
-    let (conns_tx, conns_rx) = mailbox.open_port::<Connect>();
+    let instance = actor_mesh.proc_mesh().client();
+    let (conns_tx, conns_rx) = instance.open_port();
 
     let (res1, res2) = futures::future::join(
         conns_rx
             .take(actor_mesh.shape().slice().len())
             .err_into::<anyhow::Error>()
             .try_for_each_concurrent(None, |connect| async {
-                let (mut read, mut write) = accept(mailbox, mailbox.actor_id().clone(), connect)
+                let (mut read, mut write) = accept(instance, instance.self_id().clone(), connect)
                     .await?
                     .into_split();
                 let res = sender(&local_workspace, &mut read, &mut write).await;
@@ -148,9 +148,9 @@ where
             })
             .boxed(),
         async move {
-            let (result_tx, result_rx) = mailbox.open_port::<Result<CondaSyncResult, String>>();
+            let (result_tx, result_rx) = instance.open_port::<Result<CondaSyncResult, String>>();
             actor_mesh.cast(
-                mailbox,
+                instance,
                 sel!(*),
                 CondaSyncMessage {
                     connect: conns_tx.bind(),

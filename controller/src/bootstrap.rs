@@ -15,11 +15,11 @@ use anyhow::anyhow;
 use clap::Args;
 use clap::Subcommand;
 use const_format::concatcp;
-use hyperactor::Mailbox;
 use hyperactor::actor::ActorHandle;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::context;
 use hyperactor::mailbox::open_port;
 use hyperactor::reference::ActorId;
 use hyperactor::reference::ActorRef;
@@ -412,10 +412,10 @@ async fn spawn_controller(
     tracing::info!("spawning controller");
 
     let mut system = hyperactor_multiprocess::System::new(system_addr.clone());
-    let client = system.attach().await.unwrap();
+    let instance = system.attach().await.unwrap();
 
     self::create_world(
-        client.clone(),
+        &instance,
         controller_actor_id.clone(),
         num_procs,
         num_procs_per_host,
@@ -441,7 +441,7 @@ async fn spawn_controller(
     .await?;
 
     self::spawn_worker_actors(
-        client.clone(),
+        &instance,
         controller_actor_id.clone(),
         num_procs,
         worker_world_id,
@@ -454,7 +454,7 @@ async fn spawn_controller(
     // This will announce itself as live so the client can observe it.
     system_actor::SYSTEM_ACTOR_REF
         .upsert_world(
-            &client,
+            &instance,
             WorldId(controller_actor_id.world_name().to_string()),
             Shape::Definite(vec![1]),
             1,
@@ -534,7 +534,7 @@ pub async fn bootstrap_controller(
 }
 
 async fn create_world(
-    client: Mailbox,
+    cx: &impl context::Actor,
     controller_actor_id: ActorId,
     num_procs: usize,
     num_procs_per_host: usize,
@@ -543,7 +543,7 @@ async fn create_world(
 ) -> anyhow::Result<()> {
     system_actor::SYSTEM_ACTOR_REF
         .upsert_world(
-            &client,
+            cx,
             worker_world_id.clone(),
             Shape::Definite(vec![num_procs]),
             num_procs_per_host,
@@ -570,7 +570,7 @@ async fn create_world(
             .timeout(timeout, async {
                 system_actor::SYSTEM_ACTOR_REF
                     .snapshot(
-                        &client,
+                        cx,
                         system_actor::SystemSnapshotFilter {
                             worlds: vec![worker_world_id.clone()],
                             world_labels: HashMap::new(),
@@ -597,7 +597,7 @@ async fn create_world(
 }
 
 async fn spawn_worker_actors(
-    client: Mailbox,
+    cx: &impl context::Actor,
     controller_actor_id: ActorId,
     num_procs: usize,
     worker_world_id: WorldId,
@@ -605,7 +605,7 @@ async fn spawn_worker_actors(
     is_cpu_worker: bool,
 ) -> anyhow::Result<()> {
     // Bootstrap worker actors and wait for them to be ready.
-    let (spawned_port, mut spawned_receiver) = open_port(&client);
+    let (spawned_port, mut spawned_receiver) = open_port(cx);
     for rank in 0..num_procs {
         let param = WorkerParams {
             world_size: num_procs,
@@ -621,7 +621,7 @@ async fn spawn_worker_actors(
 
         worker_proc
             .spawn(
-                &client,
+                cx,
                 // Use explicit actor type to avoid the WorkActor dependency.
                 "monarch_tensor_worker::WorkerActor".to_owned(),
                 worker_name.clone(),

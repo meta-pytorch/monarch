@@ -13,7 +13,7 @@ use anyhow::Result;
 use hyperactor::Mailbox;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
-use hyperactor::cap;
+use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use tokio::sync::Mutex;
 use torch_sys_cuda::cuda::Event;
@@ -66,7 +66,7 @@ enum BorrowState {
 
 impl Borrow {
     pub async fn create(
-        caps: &(impl cap::CanSend + cap::CanOpenPort),
+        cx: &impl context::Actor,
         borrow_id: u64,
         tensor_ref: Ref,
         result: Ref,
@@ -79,7 +79,7 @@ impl Borrow {
             Mailbox::new_detached(from_stream.actor_id().clone()).open_port();
 
         from_stream
-            .borrow_create(caps, borrow_id, tensor_ref, first_use_sender)
+            .borrow_create(cx, borrow_id, tensor_ref, first_use_sender)
             .await?;
 
         let state = BorrowState::Created {
@@ -98,7 +98,7 @@ impl Borrow {
         })
     }
 
-    pub async fn first_use(&mut self, caps: &(impl cap::CanSend + cap::CanOpenPort)) -> Result<()> {
+    pub async fn first_use(&mut self, cx: &impl context::Actor) -> Result<()> {
         let state = replace(&mut self.state, BorrowState::Intermediate);
         let (last_use_sender, last_use_receiver) = match state {
             BorrowState::Created {
@@ -108,7 +108,7 @@ impl Borrow {
             } => {
                 self.to_stream
                     .borrow_first_use(
-                        caps,
+                        cx,
                         self.id,
                         self.result,
                         Arc::new(Mutex::new(first_use_receiver)),
@@ -130,7 +130,7 @@ impl Borrow {
         Ok(())
     }
 
-    pub async fn last_use(&mut self, caps: &(impl cap::CanSend + cap::CanOpenPort)) -> Result<()> {
+    pub async fn last_use(&mut self, cx: &impl context::Actor) -> Result<()> {
         let state = replace(&mut self.state, BorrowState::Intermediate);
         let last_use_receiver = match state {
             BorrowState::FirstUsed {
@@ -138,7 +138,7 @@ impl Borrow {
                 last_use_receiver,
             } => {
                 self.to_stream
-                    .borrow_last_use(caps, self.id, self.result, last_use_sender)
+                    .borrow_last_use(cx, self.id, self.result, last_use_sender)
                     .await?;
                 last_use_receiver
             }
@@ -152,12 +152,12 @@ impl Borrow {
         Ok(())
     }
 
-    pub async fn drop(&mut self, caps: &(impl cap::CanSend + cap::CanOpenPort)) -> Result<()> {
+    pub async fn drop(&mut self, cx: &impl context::Actor) -> Result<()> {
         let state = replace(&mut self.state, BorrowState::Intermediate);
         match state {
             BorrowState::LastUsed { last_use_receiver } => {
                 self.from_stream
-                    .borrow_drop(caps, self.id, Arc::new(Mutex::new(last_use_receiver)))
+                    .borrow_drop(cx, self.id, Arc::new(Mutex::new(last_use_receiver)))
                     .await?;
             }
             _ => panic!("Called `drop` on borrow in unexpected state: {:?}", state),

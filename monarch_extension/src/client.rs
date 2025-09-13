@@ -13,8 +13,10 @@ use hyperactor::ActorRef;
 use hyperactor::WorldId;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::context::Mailbox as _;
 use hyperactor::data::Serialized;
 use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
+use hyperactor_multiprocess::system_actor::SystemMessage;
 use hyperactor_multiprocess::system_actor::SystemMessageClient;
 use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
 use hyperactor_multiprocess::system_actor::WorldSnapshot;
@@ -539,13 +541,18 @@ impl ClientActor {
     // Send a message to stop the controller and workers in a mesh.
     fn stop_worlds_impl(&mut self, py: Python, world_names: Option<Vec<String>>) -> PyResult<()> {
         let system_actor_ref = &*SYSTEM_ACTOR_REF;
-        let mailbox = self.instance.blocking_lock().mailbox().clone();
-        let (tx, rx) = mailbox.open_once_port::<()>();
+        let (instance, _instance_handle) = self
+            .instance
+            .blocking_lock()
+            .instance()
+            .child()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let (tx, rx) = instance.mailbox().open_once_port();
         let timeout = tokio::time::Duration::from_secs(4);
         let worlds_ids = world_names.map(|w| w.into_iter().map(WorldId).collect());
         signal_safe_block_on(py, async move {
             system_actor_ref
-                .stop(&mailbox, worlds_ids, timeout, tx.bind())
+                .stop(&instance, worlds_ids, timeout, tx.bind())
                 .await?;
             let timeout = tokio::time::Duration::from_secs(10);
             match RealClock.timeout(timeout, rx.recv()).await {
@@ -573,12 +580,14 @@ impl ClientActor {
 
     #[staticmethod]
     fn new_with_parent(proc: &PyProc, parent: &PyActorId) -> PyResult<Self> {
-        Ok(Self {
-            instance: Arc::new(Mutex::new(InstanceWrapper::new_with_parent(
-                proc,
-                &parent.into(),
-            )?)),
-        })
+        // XXX:
+        unimplemented!("this is not a valid thing to do!");
+        // Ok(Self {
+        //     instance: Arc::new(Mutex::new(InstanceWrapper::new_with_parent(
+        //         proc,
+        //         &parent.into(),
+        //     )?)),
+        // })
     }
 
     /// Send a message to any actor that can receive the corresponding serialized
@@ -616,25 +625,32 @@ impl ClientActor {
 
     /// Attach the client to a controller actor. This will block until the controller responds.
     fn attach(&mut self, py: Python, controller_id: PyActorId) -> PyResult<()> {
-        let mut instance = self.instance.blocking_lock();
-        instance.set_controller((&controller_id).into());
-        let mailbox = instance.mailbox().clone();
-        let actor_id = instance.actor_id().clone();
+        let mut instance_wrapper = self.instance.blocking_lock();
+        instance_wrapper.set_controller((&controller_id).into());
+        let actor_id = instance_wrapper.actor_id().clone();
+        let (instance, _handler) = instance_wrapper
+            .instance()
+            .child()
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
 
         signal_safe_block_on(py, async move {
             ActorRef::<ControllerActor>::attest((&controller_id).into())
-                .attach(&mailbox, ActorRef::attest(actor_id))
+                .attach(&instance, ActorRef::attest(actor_id))
                 .await
                 .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
     }
 
     fn drop_refs(&self, py: Python, controller_id: PyActorId, refs: Vec<Ref>) -> PyResult<()> {
-        let instance = self.instance.blocking_lock();
-        let mailbox = instance.mailbox().clone();
+        let instance_wrapper = self.instance.blocking_lock();
+        let (instance, _handler) = instance_wrapper
+            .instance()
+            .child()
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+
         signal_safe_block_on(py, async move {
             ActorRef::<ControllerActor>::attest((&controller_id).into())
-                .drop_refs(&mailbox, refs)
+                .drop_refs(&instance, refs)
                 .await
                 .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
@@ -771,19 +787,25 @@ impl ClientActor {
         py: Python<'py>,
         filter: Option<&PySystemSnapshotFilter>,
     ) -> PyResult<PyObject> {
-        let instance = self.instance.blocking_lock();
-        let mailbox = instance.mailbox().clone();
+        let (instance, instance_handler) = self
+            .instance
+            .blocking_lock()
+            .instance()
+            .child()
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
         // TODO: we are cloning this so that we can pass it into the async
         // world. Figure out a better way without incurring a copy.
         let filter = filter.cloned();
 
         let snapshot = signal_safe_block_on(py, async move {
-            SYSTEM_ACTOR_REF
+            let result = SYSTEM_ACTOR_REF
                 .snapshot(
-                    &mailbox,
+                    &instance,
                     filter.map_or(SystemSnapshotFilter::all(), SystemSnapshotFilter::from),
                 )
-                .await
+                .await;
+            let _ = instance_handler.drain_and_stop();
+            result
         })??;
 
         // Convert the snapshot to a Python dictionary

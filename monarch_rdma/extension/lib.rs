@@ -61,7 +61,9 @@ async fn create_rdma_buffer(
 
     let caps = client.get_inner();
     // Create the RdmaBuffer
-    let buffer = owner_ref.request_buffer(caps, addr, size).await?;
+    let buffer = owner_ref
+        .request_buffer_deprecated(caps, addr, size)
+        .await?;
     Ok(PyRdmaBuffer { buffer, owner_ref })
 }
 
@@ -144,7 +146,9 @@ impl PyRdmaBuffer {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
         PyPythonTask::new(async move {
             let caps = client.get_inner();
-            let local_buffer = local_owner_ref.request_buffer(caps, addr, size).await?;
+            let local_buffer = local_owner_ref
+                .request_buffer_deprecated(caps, addr, size)
+                .await?;
             let _result_ = local_buffer
                 .write_from(caps, buffer, timeout)
                 .await
@@ -178,7 +182,9 @@ impl PyRdmaBuffer {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
         PyPythonTask::new(async move {
             let caps = client.get_inner();
-            let local_buffer = local_owner_ref.request_buffer(caps, addr, size).await?;
+            let local_buffer = local_owner_ref
+                .request_buffer_deprecated(caps, addr, size)
+                .await?;
             let _result_ = local_buffer
                 .read_into(caps, buffer, timeout)
                 .await

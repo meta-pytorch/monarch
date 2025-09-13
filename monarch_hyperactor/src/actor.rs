@@ -158,7 +158,7 @@ impl PickledMessageClientActor {
     }
 
     fn world_status<'py>(&mut self, py: Python<'py>) -> PyResult<PyObject> {
-        let instance = self.instance.clone();
+        let instance = Arc::clone(&self.instance);
 
         let worlds = signal_safe_block_on(py, async move {
             instance.lock().await.world_status(Default::default()).await

@@ -81,12 +81,12 @@ impl PdbActor {
     #[new]
     fn new() -> PyResult<Self> {
         let proc = PyProc::new_from_proc(PROC.with(|cell| cell.get().unwrap().clone()));
-        let root_actor_id = ROOT_ACTOR_ID.with(|cell| cell.get().unwrap().clone());
+        let name = format!(
+            "debugger-{}",
+            hyperactor_mesh::shortuuid::ShortUuid::generate()
+        );
         Ok(Self {
-            instance: Arc::new(Mutex::new(InstanceWrapper::new_with_parent(
-                &proc,
-                &root_actor_id,
-            )?)),
+            instance: Arc::new(Mutex::new(InstanceWrapper::new(&proc, &name)?)),
             controller_actor_ref: CONTROLLER_ACTOR_REF.with(|cell| cell.get().unwrap().clone()),
         })
     }
@@ -94,14 +94,20 @@ impl PdbActor {
     fn send<'py>(&self, py: Python<'py>, action: DebuggerAction) -> PyResult<()> {
         let controller_actor_ref = self.controller_actor_ref.clone();
         let instance = self.instance.clone();
+        let actor_id = instance.blocking_lock().actor_id().clone();
         signal_safe_block_on(py, async move {
-            let instance = instance.lock().await;
-            let mailbox = instance.mailbox().clone();
-            let actor_id = instance.actor_id().clone();
-            controller_actor_ref
-                .debugger_message(&mailbox, actor_id, action)
+            let (instance, handle) = instance
+                .lock()
                 .await
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+                .instance()
+                .child()
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+            let result = controller_actor_ref
+                .debugger_message(&instance, actor_id, action)
+                .await
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()));
+            let _ = handle.drain_and_stop();
+            result
         })?
     }
 

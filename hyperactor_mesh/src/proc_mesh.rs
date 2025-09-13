@@ -22,16 +22,15 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Instance;
-use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::RemoteActor;
 use hyperactor::actor::remote::Remote;
-use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::context;
 use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -196,7 +195,7 @@ pub struct ProcMesh {
     ranks: Vec<(ShortUuid, ProcId, ChannelAddr, ActorRef<ProcMeshAgent>)>,
     #[allow(dead_code)] // will be used in subsequent diff
     client_proc: Proc,
-    client: Mailbox,
+    client: Instance<()>,
     comm_actors: Vec<ActorRef<CommActor>>,
     world_id: WorldId,
 }
@@ -322,7 +321,7 @@ impl ProcMesh {
         // Scope: covers undeliverables observed on this mesh's client
         // mailbox only. It does not affect other meshes or the
         // `global_root_client()`.
-        let client = client_proc.attach("client")?;
+        let (client, _handle) = client_proc.instance("client")?;
         // Bind an undeliverable message port in the client.
         let (undeliverable_messages, client_undeliverable_receiver) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
@@ -444,7 +443,7 @@ impl ProcMesh {
     }
 
     async fn spawn_on_procs<A: Actor + RemoteActor>(
-        cx: &(impl cap::CanSend + cap::CanOpenPort),
+        cx: &impl context::Actor,
         agents: impl IntoIterator<Item = ActorRef<ProcMeshAgent>> + '_,
         actor_name: &str,
         params: &A::Params,
@@ -547,8 +546,8 @@ impl ProcMesh {
         Ok(root_mesh)
     }
 
-    /// A client used to communicate with any member of this mesh.
-    pub fn client(&self) -> &Mailbox {
+    /// A client actor used to communicate with any member of this mesh.
+    pub fn client(&self) -> &Instance<()> {
         &self.client
     }
 
@@ -682,7 +681,7 @@ impl ProcEvents {
                         continue;
                     };
 
-                    let Some((proc_id, (rank, _create_key))) = self.ranks.iter().find(|(_proc_id, (_, key))| key == &create_key) else {
+                    let Some((proc_id, (rank, _create_key))) = self.ranks.iter().find(|(_proc_id, (_rank, key))| key == &create_key) else {
                         tracing::warn!("received stop event for unmapped proc {}", create_key);
                         continue;
                     };
@@ -707,13 +706,17 @@ impl ProcEvents {
                             message_headers: None,
                             caused_by: None,
                         };
-                        if entry.value().send(event).is_err() {
+                        tracing::debug!(name = "ActorSupervisionEventDelivery", event = ?event);
+                        if entry.value().send(event.clone()).is_err() {
                             tracing::warn!(
                                 name = SupervisionEventState::SupervisionEventTransmitFailed.as_ref(),
                                 "unable to transmit supervision event to actor {}", entry.key()
                             );
                         }
                     }
+
+                    let event = ProcEvent::Stopped(*rank, reason.clone());
+                    tracing::debug!(name = "delivering proc event", event = %event);
 
                     break Some(ProcEvent::Stopped(*rank, reason));
                 }
@@ -908,7 +911,7 @@ impl fmt::Debug for ProcMesh {
             .field("shape", &self.shape())
             .field("ranks", &self.ranks)
             .field("client_proc", &self.client_proc)
-            .field("client", &self.client)
+            .field("client", &"<Instance>")
             // Skip the alloc field since it doesn't implement Debug
             .finish()
     }

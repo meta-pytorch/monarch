@@ -289,6 +289,7 @@ impl MessageEnvelope {
             sender = self.sender.to_string(),
             dest = self.dest.actor_id().to_string(),
             error = error.to_string(),
+            return_handle = %return_handle,
         );
         metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
             1,
@@ -1442,7 +1443,7 @@ impl MailboxSender for Mailbox {
 // missing an `Undeliverable<MessageEnvelope>` binding. In this
 // context, mailboxes are few and long-lived; unbounded growth is not
 // a realistic concern.
-static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
+pub(crate) static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
 
 impl cap::sealed::CanSend for Mailbox {
     fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {

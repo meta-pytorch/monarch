@@ -89,7 +89,7 @@ async fn main() -> Result<(), anyhow::Error> {
         proc.spawn("shopping", ()).await?;
 
     // We join the system, so that we can send messages to actors.
-    let client = proc.attach("client").unwrap();
+    let (client, _) = proc.instance("client").unwrap();
 
     // todo: consider making this a macro to remove the magic names
 

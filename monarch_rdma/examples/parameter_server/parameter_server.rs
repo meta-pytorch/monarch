@@ -66,6 +66,7 @@ use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
+use hyperactor::context::Mailbox as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -308,9 +309,8 @@ impl Handler<WorkerInit> for WorkerActor {
 
         tracing::info!("[worker_actor_{}] initializing", rank);
 
-        let client = cx.mailbox_for_py();
-        let (handle, receiver) = client.open_once_port::<(RdmaBuffer, RdmaBuffer)>();
-        ps_ref.send(client, PsGetBuffers(rank, handle.bind()))?;
+        let (handle, receiver) = cx.mailbox().open_once_port();
+        ps_ref.send(cx, PsGetBuffers(rank, handle.bind()))?;
         let (ps_weights_handle, ps_grad_handle) = receiver.recv().await?;
         self.ps_weights_handle = Some(ps_weights_handle);
         self.ps_grad_handle = Some(ps_grad_handle);
@@ -360,7 +360,7 @@ impl Handler<WorkerStep> for WorkerActor {
             .ps_grad_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let /*mut*/ lbuffer = owner_ref
+        let /*mut*/ buffer = owner_ref
             .request_buffer(
                 cx,
                 self.local_gradients.as_ptr() as usize,
@@ -368,8 +368,8 @@ impl Handler<WorkerStep> for WorkerActor {
             )
             .await?;
 
-        lbuffer
-            .read_into(cx.mailbox_for_py(), ps_grad_handle.clone(), 5)
+        buffer
+            .read_into(cx.mailbox(), ps_grad_handle.clone(), 5)
             .await?;
 
         self.local_gradients.fill(0);
@@ -394,7 +394,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
             rank,
             self.weights_data,
         );
-        let /*mut*/ lbuffer = self
+        let /*mut*/ buffer = self
             .rdma_manager
             .as_ref()
             .expect("Rmda Manager should have been initialized")
@@ -409,8 +409,8 @@ impl Handler<WorkerUpdate> for WorkerActor {
             .ps_weights_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        lbuffer
-            .write_from(cx.mailbox_for_py(), ps_weights_handle.clone(), 5)
+        buffer
+            .write_from(cx.mailbox(), ps_weights_handle.clone(), 5)
             .await?;
         reply.send(cx, true)?;
         Ok(())

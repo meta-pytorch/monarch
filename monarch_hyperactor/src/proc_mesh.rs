@@ -16,6 +16,8 @@ use hyperactor::Mailbox;
 use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
+use hyperactor::context::Mailbox as _;
+use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::ProcStopReason;
@@ -98,7 +100,7 @@ impl TrackedProcMesh {
         Ok(self.children.insert(actor))
     }
 
-    pub fn client(&self) -> &Mailbox {
+    pub fn client(&self) -> &Instance<()> {
         self.inner.client()
     }
 
@@ -316,12 +318,14 @@ impl PyProcMesh {
         let keepalive = self.keepalive.clone();
         let meshimpl = async move {
             ensure_mesh_healthy(&unhealthy_event).await?;
-            let mailbox = proc_mesh.client().clone();
+            let instance = proc_mesh.client();
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let actor_events = actor_mesh.with_mut(|a| a.events()).await.unwrap().unwrap();
             let im = PythonActorMeshImpl::new(
                 actor_mesh,
-                PyMailbox { inner: mailbox },
+                PyMailbox {
+                    inner: instance.mailbox().clone(),
+                },
                 keepalive,
                 actor_events,
             );
@@ -351,12 +355,14 @@ impl PyProcMesh {
                     Ok((proc_mesh, pickled_type, unhealthy_event, keepalive))
                 })?;
             ensure_mesh_healthy(&unhealthy_event).await?;
-            let mailbox = proc_mesh.client().clone();
+            let instance = proc_mesh.client();
             let actor_mesh = proc_mesh.spawn(&name, &pickled_type).await?;
             let actor_events = actor_mesh.with_mut(|a| a.events()).await.unwrap().unwrap();
             Ok(PythonActorMeshImpl::new(
                 actor_mesh,
-                PyMailbox { inner: mailbox },
+                PyMailbox {
+                    inner: instance.mailbox().clone(),
+                },
                 keepalive,
                 actor_events,
             ))
@@ -395,7 +401,7 @@ impl PyProcMesh {
     #[getter]
     fn client(&self) -> PyResult<PyMailbox> {
         Ok(PyMailbox {
-            inner: self.try_inner()?.client().clone(),
+            inner: self.try_inner()?.client().mailbox().clone(),
         })
     }
 

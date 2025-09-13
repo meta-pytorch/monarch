@@ -32,11 +32,11 @@ use hyperactor::WorldId;
 use hyperactor::actor::ActorHandle;
 use hyperactor::actor::RemoteActor;
 use hyperactor::actor::remote::Remote;
-use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
+use hyperactor::context;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxAdminMessage;
@@ -830,7 +830,7 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
 /// Convenience utility to spawn an actor on a proc. Spawn returns
 /// with the new ActorRef on success.
 pub async fn spawn<A: Actor + RemoteActor>(
-    caps: &(impl cap::CanSend + cap::CanOpenPort),
+    cx: &impl context::Actor,
     proc_actor: &ActorRef<ProcActor>,
     actor_name: &str,
     params: &A::Params,
@@ -839,12 +839,12 @@ where
     A::Params: RemoteMessage,
 {
     let remote = Remote::collect();
-    let (spawned_port, mut spawned_receiver) = open_port(caps);
+    let (spawned_port, mut spawned_receiver) = open_port(cx);
     let ActorId(proc_id, _, _) = (*proc_actor).clone().into();
 
     proc_actor
         .spawn(
-            caps,
+            cx,
             remote
                 .name_of::<A>()
                 .ok_or(anyhow::anyhow!("actor not registered"))?
@@ -881,7 +881,6 @@ mod tests {
     use hyperactor::data::Named;
     use hyperactor::forward;
     use hyperactor::id;
-    use hyperactor::mailbox::Mailbox;
     use hyperactor::reference::ActorRef;
     use hyperactor::test_utils::pingpong::PingPongActor;
     use hyperactor::test_utils::pingpong::PingPongActorParams;
@@ -902,7 +901,7 @@ mod tests {
         server_handle: ServerHandle,
         proc_actor_ref: ActorRef<ProcActor>,
         comm_actor_ref: ActorRef<CommActor>,
-        client: Mailbox,
+        client: Instance<()>,
     }
 
     async fn bootstrap() -> Bootstrapped {
@@ -1202,12 +1201,12 @@ mod tests {
 
         // A test supervisor.
         let mut system = System::new(server_handle.local_addr().clone());
-        let supervisor_mailbox = system.attach().await.unwrap();
+        let supervisor = system.attach().await.unwrap();
         let (supervisor_supervision_tx, mut supervisor_supervision_receiver) =
-            supervisor_mailbox.open_port::<ProcSupervisionMessage>();
+            supervisor.open_port::<ProcSupervisionMessage>();
         supervisor_supervision_tx.bind_to(ProcSupervisionMessage::port());
         let supervisor_actor_ref: ActorRef<ProcSupervisor> =
-            ActorRef::attest(supervisor_mailbox.actor_id().clone());
+            ActorRef::attest(supervisor.self_id().clone());
 
         // Start the proc actor
         let local_world_id = hyperactor::id!(test_proc);
@@ -1240,21 +1239,18 @@ mod tests {
                         failed_actors: Vec::new(),
                     }
                 );
-                let _ = port.send(&supervisor_mailbox, ());
+                let _ = port.send(&supervisor, ());
             }
         }
 
         // Spawn a root actor on the proc.
         let proc_actor_ref = bootstrap.proc_actor.bind();
-        let test_actor_ref = spawn::<TestActor>(&supervisor_mailbox, &proc_actor_ref, "test", &())
+        let test_actor_ref = spawn::<TestActor>(&supervisor, &proc_actor_ref, "test", &())
             .await
             .unwrap();
 
         test_actor_ref
-            .fail(
-                &supervisor_mailbox,
-                "test actor is erroring out".to_string(),
-            )
+            .fail(&supervisor, "test actor is erroring out".to_string())
             .await
             .unwrap();
         // Since we could get messages from both the periodic task and the
@@ -1388,10 +1384,10 @@ mod tests {
         let mut system = System::new(server_handle.local_addr().clone());
 
         // Build a supervisor.
-        let sup_mail = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = sup_mail.open_port::<ProcSupervisionMessage>();
+        let supervisor = system.attach().await.unwrap();
+        let (sup_tx, _sup_rx) = supervisor.open_port::<ProcSupervisionMessage>();
         sup_tx.bind_to(ProcSupervisionMessage::port());
-        let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.actor_id().clone());
+        let sup_ref = ActorRef::<ProcSupervisor>::attest(supervisor.self_id().clone());
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
@@ -1512,10 +1508,10 @@ mod tests {
         let system_client = system.attach().await.unwrap(); // world id: user
 
         // Build a supervisor.
-        let sup_mail = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = sup_mail.open_port::<ProcSupervisionMessage>();
+        let supervisor = system.attach().await.unwrap();
+        let (sup_tx, _sup_rx) = supervisor.open_port::<ProcSupervisionMessage>();
         sup_tx.bind_to(ProcSupervisionMessage::port());
-        let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.actor_id().clone());
+        let sup_ref = ActorRef::<ProcSupervisor>::attest(supervisor.self_id().clone());
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
@@ -1670,11 +1666,11 @@ mod tests {
         // Spawn ping and pong actors to play a ping pong game.
         let ping_actor_id = id!(world[0].ping[0]);
         let (ping_actor_ref, _ping_proc_ref) =
-            spawn_actor(&ping_actor_id, &system_addr, system_client.clone()).await;
+            spawn_actor(&system_client, &ping_actor_id, &system_addr).await;
 
         let pong_actor_id = id!(world[1].pong[0]);
         let (pong_actor_ref, pong_proc_ref) =
-            spawn_actor(&pong_actor_id, &system_addr, system_client.clone()).await;
+            spawn_actor(&system_client, &pong_actor_id, &system_addr).await;
 
         // After playing the first round game, ping and pong actors has each other's
         // ChannelAddr cached in their procs' mailboxes, respectively.
@@ -1692,7 +1688,7 @@ mod tests {
             .unwrap();
         assert_eq!(1, actors_aborted);
         let (pong_actor_ref, _pong_proc_ref) =
-            spawn_actor(&pong_actor_id, &system_addr, system_client.clone()).await;
+            spawn_actor(&system_client, &pong_actor_id, &system_addr).await;
 
         // Now we expect to play the game between ping and new pong. The new pong has the same
         // proc ID as the old pong but different ChannelAddr. The game should still be playable
@@ -1706,9 +1702,9 @@ mod tests {
     }
 
     async fn spawn_actor(
+        cx: &impl context::Actor,
         actor_id: &ActorId,
         system_addr: &ChannelAddr,
-        system_client: Mailbox,
     ) -> (ActorRef<PingPongActor>, ActorRef<ProcActor>) {
         let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
         let bootstrap = ProcActor::bootstrap(
@@ -1726,10 +1722,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let (undeliverable_msg_tx, _) = system_client.open_port();
+        let (undeliverable_msg_tx, _) = cx.mailbox().open_port();
         let params = PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), None);
         let actor_ref = spawn::<PingPongActor>(
-            &system_client,
+            cx,
             &bootstrap.proc_actor.bind(),
             &actor_id.to_string(),
             &params,

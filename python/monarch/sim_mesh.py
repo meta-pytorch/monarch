@@ -96,9 +96,7 @@ def sim_mesh(n_meshes: int, hosts: int, gpus_per_host: int) -> List[DeviceMesh]:
         # Create a new device mesh
         backend_ctrl = RustController(
             proc=client_proc,
-            client_actor=ClientActor.new_with_parent(
-                client_proc, root_client_actor.actor_id
-            ),
+            client_actor=ClientActor(client_proc, "backend_controller"),
             controller_id=controller_id,
             worker_world_name=f"mesh_{i}_worker",
         )
@@ -298,9 +296,7 @@ class PoolDeviceMeshProvider:
         # Create a new device mesh
         backend_ctrl = RustController(
             proc=self._client_proc,
-            client_actor=ClientActor.new_with_parent(
-                self._client_proc, self._root_client_actor.actor_id
-            ),
+            client_actor=ClientActor(self._client_proc, "backend_controller"),
             controller_id=controller_id,
             worker_world_name=worker_world,
         )

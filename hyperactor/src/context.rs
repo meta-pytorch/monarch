@@ -15,6 +15,7 @@
 //! core hyperactor crate.
 
 use async_trait::async_trait;
+use dashmap::DashSet;
 
 use crate::ActorHandle;
 use crate::ActorId;
@@ -27,6 +28,7 @@ use crate::actor::RemoteActor;
 use crate::attrs::Attrs;
 use crate::cap;
 use crate::data::Serialized;
+use crate::mailbox;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 
@@ -67,8 +69,24 @@ impl<T: Mailbox + Send + Sync> cap::sealed::CanSplitPort for T {
 /// Only actors CanSend because they need a return port.
 impl<T: Actor + Send + Sync> cap::sealed::CanSend for T {
     fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
+        let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
+            let actor_id = self.actor_id();
+            if mailbox::CAN_SEND_WARNED_MAILBOXES
+                .get_or_init(DashSet::new)
+                .insert(actor_id.clone())
+            {
+                let bt = std::backtrace::Backtrace::force_capture();
+                tracing::warn!(
+                    actor_id = ?actor_id,
+                    backtrace = ?bt,
+                    "mailbox attempted to post a message without binding Undeliverable<MessageEnvelope>"
+                );
+            }
+            mailbox::monitored_return_handle()
+        });
+
         let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data, headers);
-        MailboxSender::post(self.mailbox(), envelope, self.instance().port());
+        MailboxSender::post(self.mailbox(), envelope, return_handle);
     }
     fn actor_id(&self) -> &ActorId {
         self.mailbox().actor_id()

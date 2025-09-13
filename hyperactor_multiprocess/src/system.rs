@@ -11,15 +11,16 @@ use std::future::IntoFuture;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use hyperactor::Instance;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorHandle;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
+use hyperactor::context::Mailbox as _;
 use hyperactor::id;
 use hyperactor::mailbox::BoxedMailboxSender;
-use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MailboxServer;
@@ -80,7 +81,7 @@ impl System {
     ///
     /// TODO: figure out lifecycle management: e.g., should this be
     /// alive until all ports are deallocated and the receiver is dropped?
-    pub async fn attach(&mut self) -> Result<Mailbox, anyhow::Error> {
+    pub async fn attach(&mut self) -> Result<Instance<()>, anyhow::Error> {
         // TODO: just launch a proc actor here to handle the local
         // proc management.
         let world_id = id!(user);
@@ -96,12 +97,12 @@ impl System {
         let _proc_serve_handle: MailboxServerHandle = proc.clone().serve(proc_rx);
 
         // Now, pretend we are the proc actor, and use this to join the system.
-        let proc_inst = proc.attach("proc")?;
-        let (proc_tx, mut proc_rx) = proc_inst.open_port();
+        let (instance, _handle) = proc.instance("proc")?;
+        let (proc_tx, mut proc_rx) = instance.mailbox().open_port();
 
         system_actor::SYSTEM_ACTOR_REF
             .join(
-                &proc_inst,
+                &instance,
                 world_id,
                 /*proc_id=*/ proc.proc_id().clone(),
                 /*proc_message_port=*/ proc_tx.bind(),
@@ -120,7 +121,7 @@ impl System {
             }
         }
 
-        proc.attach("user")
+        proc.instance("user").map(|(instance, _)| instance)
     }
 }
 
