@@ -34,4 +34,4 @@ tokio-util = { version = "0.7.15", features = ["full"] }
 walkdir = "2.3"
 
 [dev-dependencies]
-tempfile = "3.15"
+tempfile = "3.22"
