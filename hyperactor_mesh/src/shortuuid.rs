@@ -44,7 +44,17 @@ static FLICKR_BASE_58_ORD: LazyLock<[Option<usize>; 256]> = LazyLock::new(|| {
 /// The characters "_" and "-" are ignored when decoding, and may be
 /// safely interspersed. By default, rendered UUIDs that begin with a
 /// numeric character is prefixed with "_".
-#[derive(PartialEq, Eq, Hash, Debug, Clone, Serialize, Deserialize)]
+#[derive(
+    PartialEq,
+    Eq,
+    Hash,
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialOrd,
+    Ord
+)]
 pub struct ShortUuid(u64);
 
 impl ShortUuid {

@@ -141,7 +141,7 @@ impl WorkspaceShape {
     fn downstream_mesh(&self, actor_id: &ActorId) -> Result<ActorMeshRef<CodeSyncManager>> {
         let shape = self.downstream(actor_id.rank())?;
         Ok(ActorMeshRef::attest(
-            ActorMeshId(
+            ActorMeshId::V0(
                 ProcMeshId(actor_id.world_name().to_owned()),
                 actor_id.name().to_string(),
             ),

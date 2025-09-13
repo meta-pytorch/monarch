@@ -31,6 +31,7 @@ use crate::CommActor;
 use crate::actor_mesh::CastError;
 use crate::actor_mesh::actor_mesh_cast;
 use crate::actor_mesh::cast_to_sliced_mesh;
+use crate::v1::Name;
 
 #[macro_export]
 macro_rules! mesh_id {
@@ -38,7 +39,7 @@ macro_rules! mesh_id {
         $crate::reference::ProcMeshId(stringify!($proc_mesh).to_string(), "0".into())
     };
     ($proc_mesh:ident . $actor_mesh:ident) => {
-        $crate::reference::ActorMeshId(
+        $crate::reference::ActorMeshId::V0(
             $crate::reference::ProcMeshId(stringify!($proc_mesh).to_string()),
             stringify!($proc_mesh).to_string(),
         )
@@ -59,7 +60,7 @@ macro_rules! mesh_id {
 )]
 pub struct ProcMeshId(pub String);
 
-/// Actor Mesh ID.  Tuple of the ProcMesh ID and actor name.
+/// Actor Mesh ID.  Enum with different versions.
 #[derive(
     Debug,
     Serialize,
@@ -72,7 +73,12 @@ pub struct ProcMeshId(pub String);
     Ord,
     Named
 )]
-pub struct ActorMeshId(pub ProcMeshId, pub String);
+pub enum ActorMeshId {
+    /// V0: Tuple of the ProcMesh ID and actor name.
+    V0(ProcMeshId, String),
+    /// V1: Name-based actor mesh ID.
+    V1(Name),
+}
 
 /// Types references to Actor Meshes.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -295,7 +301,7 @@ mod tests {
             .spawn(
                 "ping",
                 &MeshPingPongActorParams {
-                    mesh_id: ActorMeshId(
+                    mesh_id: ActorMeshId::V0(
                         ProcMeshId(ping_proc_mesh.world_id().to_string()),
                         "ping".to_string(),
                     ),
@@ -312,7 +318,7 @@ mod tests {
             .spawn(
                 "pong",
                 &MeshPingPongActorParams {
-                    mesh_id: ActorMeshId(
+                    mesh_id: ActorMeshId::V0(
                         ProcMeshId(pong_proc_mesh.world_id().to_string()),
                         "pong".to_string(),
                     ),
