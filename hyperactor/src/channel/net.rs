@@ -1332,7 +1332,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     let bytes = match bytes_result {
                         Ok(Some(bytes)) => bytes,
                         Ok(None) => {
-                            tracing::debug!("{log_id}: reader returns None, meaning EOF");
+                            tracing::debug!("{log_id}: EOF");
                             break (next, Ok(()), false);
                         }
                         Err(err) => break (
@@ -1712,9 +1712,10 @@ where
         let _ = tracing::info_span!("channel_listen_accept_loop");
         tokio::select! {
             result = listener.accept() => {
-                tracing::debug!("listener accepted a new connection to {}", listener_channel_addr);
                 match result {
                     Ok((stream, addr)) => {
+                        let source : ChannelAddr = addr.into();
+                        tracing::debug!("listen {}: new connection from {}", listener_channel_addr, source);
                         metrics::CHANNEL_CONNECTIONS.add(
                             1,
                             hyperactor_telemetry::kv_pairs!(
@@ -1725,7 +1726,6 @@ where
 
                         let tx = tx.clone();
                         let child_cancel_token = child_cancel_token.child_token();
-                        let source : ChannelAddr = addr.into();
                         let dest  = listener_channel_addr.clone();
                         let manager = manager.clone();
                         connections.spawn(async move {
