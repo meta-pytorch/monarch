@@ -424,7 +424,7 @@ impl ProcessAlloc {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        tracing::debug!("Spawning process {:?}", cmd);
+        tracing::debug!("spawning process {:?}", cmd);
         match cmd.spawn() {
             Err(err) => {
                 // Likely retry won't help here so fail permanently.

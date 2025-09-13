@@ -13,6 +13,8 @@
 pub mod actor_mesh;
 pub mod host_mesh;
 pub mod proc_mesh;
+mod testactor;
+mod testing;
 pub mod value_mesh;
 
 use std::str::FromStr;
@@ -23,6 +25,7 @@ pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
 use hyperactor::mailbox::MailboxSenderError;
 use ndslice::view;
+pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
 use serde::Deserialize;
 use serde::Serialize;
