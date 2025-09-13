@@ -19,9 +19,9 @@ use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
 use hyperactor::actor::remote::Remote;
-use hyperactor::cap;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::context;
 use hyperactor::mailbox;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
@@ -59,10 +59,10 @@ impl ProcRef {
     /// Pings the proc, returning whether it is alive. This will be replaced by a
     /// finer-grained lifecycle status in the near future.
     #[allow(dead_code)]
-    async fn status(&self, caps: &(impl cap::CanSend + cap::CanOpenPort)) -> v1::Result<bool> {
-        let (port, mut rx) = mailbox::open_port(caps);
+    async fn status(&self, cx: &impl context::Actor) -> v1::Result<bool> {
+        let (port, mut rx) = cx.mailbox().open_port();
         self.agent
-            .status(caps, port.bind())
+            .status(cx, port.bind())
             .await
             .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e))?;
         loop {
@@ -108,7 +108,7 @@ impl ProcMesh {
     /// Allocate does not require an owning actor because references are not owned.
     /// Allocate a new ProcMesh from the provided alloc.
     pub async fn allocate(
-        caps: &(impl cap::CanOpenPort + cap::CanSend + cap::HasProc),
+        cx: &impl context::Actor,
         mut alloc: impl Alloc + Send + Sync + 'static,
         name: &str,
     ) -> v1::Result<Self> {
@@ -119,7 +119,7 @@ impl ProcMesh {
         // and serve it on the alloc's transport.
         //
         // This will be removed with direct addressing.
-        let proc = caps.proc();
+        let proc = cx.instance().proc();
 
         // First make sure we can serve the proc:
         let (proc_channel_addr, rx) = channel::serve(ChannelAddr::any(alloc.transport())).await?;
@@ -148,11 +148,11 @@ impl ProcMesh {
             )
             .collect();
 
-        let (config_handle, mut config_receiver) = mailbox::open_port(caps);
+        let (config_handle, mut config_receiver) = cx.mailbox().open_port();
         for (rank, AllocatedProc { mesh_agent, .. }) in running.iter().enumerate() {
             mesh_agent
                 .configure(
-                    caps,
+                    cx,
                     rank,
                     proc_channel_addr.clone(),
                     None, // no supervisor; we just crash
@@ -267,13 +267,10 @@ impl ProcMeshRef {
 
     /// The current statuses of procs in this mesh.
     #[allow(dead_code)]
-    async fn status(
-        &self,
-        caps: &(impl cap::CanSend + cap::CanOpenPort),
-    ) -> v1::Result<ValueMesh<bool>> {
+    async fn status(&self, cx: &impl context::Actor) -> v1::Result<ValueMesh<bool>> {
         let vm: ValueMesh<_> = self.map_into_ref(|proc_ref| {
             let proc_ref = proc_ref.clone();
-            async move { proc_ref.status(caps).await }
+            async move { proc_ref.status(cx).await }
         });
         vm.join().await.transpose()
     }
@@ -282,7 +279,7 @@ impl ProcMeshRef {
     #[allow(dead_code)]
     async fn spawn<A: Actor + RemoteActor>(
         &self,
-        caps: &(impl cap::CanSend + cap::CanOpenPort),
+        cx: &impl context::Actor,
         name: &str,
         params: &A::Params,
     ) -> v1::Result<ActorMesh<A>>
@@ -298,12 +295,12 @@ impl ProcMeshRef {
         let name = Name::new(name);
         let serialized_params = bincode::serialize(params)?;
 
-        let (completed_handle, mut completed_receiver) = mailbox::open_port(caps);
+        let (completed_handle, mut completed_receiver) = cx.mailbox().open_port();
         for proc_ref in self.ranks.iter() {
             proc_ref
                 .agent
                 .gspawn(
-                    caps,
+                    cx,
                     actor_type.clone(),
                     name.clone().to_string(),
                     serialized_params.clone(),

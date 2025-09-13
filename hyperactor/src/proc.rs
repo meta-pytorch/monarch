@@ -52,7 +52,6 @@ use crate::ActorRef;
 use crate::Handler;
 use crate::Message;
 use crate::RemoteMessage;
-use crate::accum::ReducerSpec;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorHandle;
@@ -66,6 +65,7 @@ use crate::cap;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
 use crate::clock::RealClock;
+use crate::context;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
 use crate::mailbox::BoxedMailboxSender;
@@ -636,6 +636,19 @@ impl Proc {
             aborted_actors.len()
         );
         Ok((stopped_actors, aborted_actors))
+    }
+
+    /// Resolve an actor reference to an actor residing on this proc.
+    /// Returns None if the actor is not found on this proc.
+    pub fn resolve_actor_ref<R: RemoteActor + Actor>(
+        &self,
+        actor_ref: &ActorRef<R>,
+    ) -> Option<ActorHandle<R>> {
+        self.inner
+            .instances
+            .get(actor_ref.actor_id())?
+            .upgrade()?
+            .downcast_handle()
     }
 
     /// Create a root allocation in the proc.
@@ -1228,6 +1241,14 @@ impl<A: Actor> Instance<A> {
         actor.handle(&context, message).instrument(span).await
     }
 
+    // Spawn on child on this instance. Currently used only by cap::CanSpawn.
+    pub(crate) async fn spawn<C: Actor>(
+        &self,
+        params: C::Params,
+    ) -> anyhow::Result<ActorHandle<C>> {
+        self.proc.spawn_child(self.cell.clone(), params).await
+    }
+
     /// Return a handle port handle representing the actor's message
     /// handler for M-typed messages.
     pub fn port<M: Message>(&self) -> PortHandle<M>
@@ -1277,125 +1298,55 @@ impl<A: Actor> Drop for Instance<A> {
     }
 }
 
-impl<A: Actor> cap::sealed::CanSend for Instance<A> {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
-        let envelope = MessageEnvelope::new(self.self_id().clone(), dest, data, headers);
-        self.proc.post(envelope, self.ports.get());
-    }
-    fn actor_id(&self) -> &ActorId {
-        self.self_id()
-    }
-}
-
-impl<A: Actor> cap::sealed::CanSend for &Instance<A> {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
-        (*self).post(dest, headers, data)
-    }
-    fn actor_id(&self) -> &ActorId {
-        self.self_id()
-    }
-}
-
-impl<A: Actor> cap::sealed::CanOpenPort for Instance<A> {
+impl<A: Actor> context::Mailbox for Instance<A> {
     fn mailbox(&self) -> &Mailbox {
         &self.mailbox
     }
 }
 
-impl<A: Actor> cap::sealed::CanOpenPort for &Instance<A> {
+impl<A: Actor> context::Mailbox for Context<'_, A> {
     fn mailbox(&self) -> &Mailbox {
         &self.mailbox
     }
 }
 
-impl<A: Actor> cap::sealed::CanSplitPort for Instance<A> {
-    fn split(&self, port_id: PortId, reducer_spec: Option<ReducerSpec>) -> anyhow::Result<PortId> {
-        self.mailbox.split(port_id, reducer_spec)
-    }
-}
-
-#[async_trait]
-impl<A: Actor> cap::sealed::CanSpawn for Instance<A> {
-    async fn spawn<C: Actor>(&self, params: C::Params) -> anyhow::Result<ActorHandle<C>> {
-        self.proc.spawn_child(self.cell.clone(), params).await
-    }
-}
-
-impl<A: Actor> cap::sealed::CanResolveActorRef for Instance<A> {
-    fn resolve_actor_ref<R: RemoteActor + Actor>(
-        &self,
-        actor_ref: &ActorRef<R>,
-    ) -> Option<ActorHandle<R>> {
-        self.proc
-            .inner
-            .instances
-            .get(actor_ref.actor_id())?
-            .upgrade()?
-            .downcast_handle()
-    }
-}
-
-impl<A: Actor> cap::HasProc for Instance<A> {
-    fn proc(&self) -> &Proc {
-        &self.proc
-    }
-}
-
-impl<A: Actor> cap::sealed::CanSend for Context<'_, A> {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
-        <Instance<A> as cap::sealed::CanSend>::post(self, dest, headers, data)
-    }
-    fn actor_id(&self) -> &ActorId {
-        self.self_id()
-    }
-}
-
-impl<A: Actor> cap::sealed::CanSend for &Context<'_, A> {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
-        <Instance<A> as cap::sealed::CanSend>::post(self, dest, headers, data)
-    }
-    fn actor_id(&self) -> &ActorId {
-        self.self_id()
-    }
-}
-
-impl<A: Actor> cap::sealed::CanOpenPort for Context<'_, A> {
+impl<A: Actor> context::Mailbox for &Instance<A> {
     fn mailbox(&self) -> &Mailbox {
-        <Instance<A> as cap::sealed::CanOpenPort>::mailbox(self)
+        &self.mailbox
     }
 }
 
-impl<A: Actor> cap::sealed::CanOpenPort for &Context<'_, A> {
+impl<A: Actor> context::Mailbox for &Context<'_, A> {
     fn mailbox(&self) -> &Mailbox {
-        <Instance<A> as cap::sealed::CanOpenPort>::mailbox(self)
+        &self.mailbox
     }
 }
 
-impl<A: Actor> cap::sealed::CanSplitPort for Context<'_, A> {
-    fn split(&self, port_id: PortId, reducer_spec: Option<ReducerSpec>) -> anyhow::Result<PortId> {
-        <Instance<A> as cap::sealed::CanSplitPort>::split(self, port_id, reducer_spec)
+impl<A: Actor> context::Actor for Instance<A> {
+    type A = A;
+    fn instance(&self) -> &Instance<A> {
+        self
     }
 }
 
-#[async_trait]
-impl<A: Actor> cap::sealed::CanSpawn for Context<'_, A> {
-    async fn spawn<C: Actor>(&self, params: C::Params) -> anyhow::Result<ActorHandle<C>> {
-        <Instance<A> as cap::sealed::CanSpawn>::spawn(self, params).await
+impl<A: Actor> context::Actor for Context<'_, A> {
+    type A = A;
+    fn instance(&self) -> &Instance<A> {
+        self
     }
 }
 
-impl<A: Actor> cap::sealed::CanResolveActorRef for Context<'_, A> {
-    fn resolve_actor_ref<R: RemoteActor + Actor>(
-        &self,
-        actor_ref: &ActorRef<R>,
-    ) -> Option<ActorHandle<R>> {
-        <Instance<A> as cap::sealed::CanResolveActorRef>::resolve_actor_ref(self, actor_ref)
+impl<A: Actor> context::Actor for &Instance<A> {
+    type A = A;
+    fn instance(&self) -> &Instance<A> {
+        self
     }
 }
 
-impl<A: Actor> cap::HasProc for Context<'_, A> {
-    fn proc(&self) -> &Proc {
-        <Instance<A> as cap::HasProc>::proc(self)
+impl<A: Actor> context::Actor for &Context<'_, A> {
+    type A = A;
+    fn instance(&self) -> &Instance<A> {
+        self
     }
 }
 
@@ -2040,7 +1991,7 @@ mod tests {
     #[tokio::test]
     async fn test_actor_lookup() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let (client, _handle) = proc.instance("client").unwrap();
 
         let target_actor = proc.spawn::<TestActor>("target", ()).await.unwrap();
         let target_actor_ref = target_actor.bind();
@@ -2497,7 +2448,7 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let client = proc.attach("client").unwrap();
+        let (client, _handle) = proc.instance("client").unwrap();
         let actor_handle = proc.spawn::<TestActor>("test", ()).await.unwrap();
         actor_handle
             .panic(&client, "some random failure".to_string())
@@ -2787,7 +2738,7 @@ mod tests {
             // should cause the process to terminate.
             // ProcSupervisionCoordinator::set(&proc).await.unwrap();
             let root = proc.spawn::<TestActor>("root", ()).await.unwrap();
-            let client = proc.attach("client").unwrap();
+            let (client, _handle) = proc.instance("client").unwrap();
             root.fail(&client, anyhow::anyhow!("some random failure"))
                 .await
                 .unwrap();

@@ -13,7 +13,7 @@ use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
-use hyperactor::cap;
+use hyperactor::context;
 use hyperactor::message::Castable;
 use ndslice::view;
 use ndslice::view::Region;
@@ -65,7 +65,7 @@ pub struct ActorMeshRef<A> {
 
 impl<A: Actor + RemoteActor> ActorMeshRef<A> {
     /// Cast a message to all actors in this mesh.
-    pub fn cast<M>(&self, caps: &impl cap::CanSend, message: M) -> v1::Result<()>
+    pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> v1::Result<()>
     where
         M: Castable + RemoteMessage + Clone,
         A: RemoteHandles<M>,
@@ -73,7 +73,7 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         // todo: headers, binding/unbinding/accumulation
         for actor_ref in self.values() {
             actor_ref
-                .send(caps, message.clone())
+                .send(cx, message.clone())
                 .map_err(|e| Error::SendingError(actor_ref.actor_id().clone(), Box::new(e)))?;
         }
         Ok(())

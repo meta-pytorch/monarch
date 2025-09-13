@@ -12,7 +12,7 @@
 
 use hyperactor::Instance;
 use hyperactor::Proc;
-use hyperactor::cap;
+use hyperactor::context;
 use hyperactor::id;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
@@ -31,10 +31,7 @@ pub fn instance() -> Instance<()> {
     actor
 }
 
-pub async fn proc_meshes(
-    caps: &(impl cap::CanOpenPort + cap::CanSend + cap::HasProc),
-    extent: Extent,
-) -> Vec<ProcMesh> {
+pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMesh> {
     let mut meshes = Vec::new();
 
     meshes.push({
@@ -47,7 +44,7 @@ pub async fn proc_meshes(
             .await
             .unwrap();
 
-        ProcMesh::allocate(caps, alloc, "test.local").await.unwrap()
+        ProcMesh::allocate(cx, alloc, "test.local").await.unwrap()
     });
 
     meshes.push({
@@ -63,9 +60,7 @@ pub async fn proc_meshes(
             .await
             .unwrap();
 
-        ProcMesh::allocate(caps, alloc, "test.process")
-            .await
-            .unwrap()
+        ProcMesh::allocate(cx, alloc, "test.process").await.unwrap()
     });
 
     meshes
