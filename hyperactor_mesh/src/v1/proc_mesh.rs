@@ -22,7 +22,6 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
-use hyperactor::mailbox;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use ndslice::Extent;
@@ -367,10 +366,13 @@ impl view::RankedRef for ProcMeshRef {
 mod tests {
     use std::collections::HashSet;
 
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
+    use hyperactor::mailbox;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::async_timed_test;
 
-    use super::*;
     use crate::v1::ActorMeshRef;
     use crate::v1::testactor;
     use crate::v1::testing;
@@ -399,13 +401,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
         let instance = testing::instance();
 
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4)).await {
+        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             let actor_mesh: ActorMeshRef<testactor::TestActor> = proc_mesh
                 .freeze()
                 .spawn(&instance, "test", &())
@@ -413,19 +415,57 @@ mod tests {
                 .unwrap()
                 .freeze();
 
-            let (port, mut rx) = mailbox::open_port(&instance);
-            actor_mesh
-                .cast(&instance, testactor::GetActorId(port.bind()))
-                .unwrap();
+            // Verify casting to the root actor mesh
+            {
+                let (port, mut rx) = mailbox::open_port(&instance);
+                actor_mesh
+                    .cast(&instance, testactor::GetActorId(port.bind()))
+                    .unwrap();
 
-            let mut expected_actor_ids: HashSet<_> = actor_mesh
-                .values()
-                .map(|actor_ref| actor_ref.actor_id().clone())
-                .collect();
+                let mut expected_actor_ids: HashSet<_> = actor_mesh
+                    .values()
+                    .map(|actor_ref| actor_ref.actor_id().clone())
+                    .collect();
 
-            while !expected_actor_ids.is_empty() {
-                let actor_id = rx.recv().await.unwrap();
-                assert!(expected_actor_ids.remove(&actor_id));
+                while !expected_actor_ids.is_empty() {
+                    let actor_id = rx.recv().await.unwrap();
+                    assert!(
+                        expected_actor_ids.remove(&actor_id),
+                        "got {actor_id}, expect {expected_actor_ids:?}"
+                    );
+                }
+
+                // No more messages
+                RealClock.sleep(Duration::from_secs(1)).await;
+                let result = rx.try_recv();
+                assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
+            }
+
+            // Verify casting to the sliced actor mesh
+            let sliced_actor_mesh = actor_mesh.range("replicas", 1..3).unwrap();
+            {
+                let (port, mut rx) = mailbox::open_port(&instance);
+                sliced_actor_mesh
+                    .cast(&instance, testactor::GetActorId(port.bind()))
+                    .unwrap();
+
+                let mut expected_actor_ids: HashSet<_> = sliced_actor_mesh
+                    .values()
+                    .map(|actor_ref| actor_ref.actor_id().clone())
+                    .collect();
+
+                while !expected_actor_ids.is_empty() {
+                    let actor_id = rx.recv().await.unwrap();
+                    assert!(
+                        expected_actor_ids.remove(&actor_id),
+                        "got {actor_id}, expect {expected_actor_ids:?}"
+                    );
+                }
+
+                // No more messages
+                RealClock.sleep(Duration::from_secs(1)).await;
+                let result = rx.try_recv();
+                assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
             }
         }
     }
