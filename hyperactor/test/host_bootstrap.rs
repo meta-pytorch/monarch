@@ -14,9 +14,9 @@ use std::future;
 async fn main() {
     hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
-    let proc = hyperactor::host::ProcessProcManager::boot_proc::<
-        hyperactor::host::testing::EchoActor,
-    >("echo", ())
+    let proc = hyperactor::host::boot_proc::<hyperactor::host::testing::EchoActor, _, _>(
+        |proc| async move { proc.spawn("echo", ()).await },
+    )
     .await
     .unwrap();
 

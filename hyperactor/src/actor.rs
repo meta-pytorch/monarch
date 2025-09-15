@@ -156,6 +156,14 @@ impl Actor for () {
     }
 }
 
+impl RemoteActor for () {}
+
+impl Binds<()> for () {
+    fn bind(_ports: &Ports<Self>) {
+        // Binds no ports.
+    }
+}
+
 /// A Handler allows an actor to handle a specific message type.
 #[async_trait]
 pub trait Handler<M>: Actor {
