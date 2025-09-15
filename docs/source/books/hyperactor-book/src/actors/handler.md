@@ -40,7 +40,7 @@ impl<A: Actor> Handler<Signal> for A {
 }
 ```
 
-### `Handler<Undeliverable<MessageEnvelope>>`
+### `Handler<IndexedErasedUnbound<M>>`
 
 ```rust
 #[async_trait]
