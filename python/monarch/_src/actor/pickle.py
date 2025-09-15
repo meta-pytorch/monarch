@@ -98,7 +98,7 @@ def load_tensors_on_cpu():
     old = torch.storage._load_from_bytes
     try:
         torch.storage._load_from_bytes = lambda b: torch.load(
-            io.BytesIO(b) if isinstance(bytes) else b,
+            io.BytesIO(b) if isinstance(b, bytes) else b,
             map_location="cpu",
             weights_only=False,
         )
