@@ -1245,6 +1245,21 @@ pub fn get_registered_cuda_segments() -> Vec<rdmaxcel_sys::rdma_segment_info_t> 
     }
 }
 
+/// Check if PyTorch CUDA caching allocator has expandable segments enabled.
+///
+/// This function calls the C++ implementation that directly accesses the
+/// PyTorch C10 CUDA allocator configuration to check if expandable segments
+/// are enabled, which is required for RDMA operations with CUDA tensors.
+///
+/// # Returns
+///
+/// `true` if both CUDA caching allocator is enabled AND expandable segments are enabled,
+/// `false` otherwise.
+pub fn pt_cuda_allocator_compatibility() -> bool {
+    // SAFETY: We are calling a C++ function from rdmaxcel that accesses PyTorch C10 APIs.
+    unsafe { rdmaxcel_sys::pt_cuda_allocator_compatibility() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

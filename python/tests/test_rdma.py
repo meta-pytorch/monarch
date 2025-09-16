@@ -5,6 +5,10 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
+import os
+
+# required to enable RDMA support
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import pytest
 import torch
@@ -105,8 +109,6 @@ async def test_proc_mesh_rdma():
     x = await client_gpu.get_buffer.call_one()
     buffer_gpu = x.view(torch.float32).view(10, 10)
     assert torch.sum(buffer_gpu) == 0
-    # copying a tensor across hosts moves it to CPU
-    assert buffer_gpu.device.type == "cpu"
 
     # Modify server state again
     await server.update.call_one()
@@ -114,14 +116,13 @@ async def test_proc_mesh_rdma():
     x = await client_gpu.get_buffer.call_one()
     buffer_gpu = x.view(torch.float32).view(10, 10)
     remote_grad = await server.get_grad_buffer.call_one()
-    assert torch.allclose(buffer_gpu.cpu(), remote_grad)
+    assert torch.allclose(buffer_gpu.cpu(), remote_grad.cpu())
 
 
 class TrainerActor(Actor):
     def __init__(self):
         super().__init__()
-        # TODO - switch to CUDA once GPU support is added
-        self.trainer = torch.nn.Linear(10, 10).to("cpu")
+        self.trainer = torch.nn.Linear(10, 10).to("cuda")
         self.trainer.weight.data.zero_()
 
     @endpoint

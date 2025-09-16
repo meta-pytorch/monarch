@@ -275,7 +275,7 @@ impl Actor for RdmaManagerActor {
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
         let mut config = _params;
 
-        let pt_cuda_alloc = unsafe { rdmaxcel_sys::pt_cuda_allocator_compatibility() };
+        let pt_cuda_alloc = crate::rdma_components::pt_cuda_allocator_compatibility();
 
         // check config and hardware support align
         if config.use_gpu_direct {

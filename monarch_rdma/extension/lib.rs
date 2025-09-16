@@ -116,6 +116,11 @@ impl PyRdmaBuffer {
         ibverbs_supported()
     }
 
+    #[classmethod]
+    fn pt_cuda_allocator_compatibility<'py>(_cls: &Bound<'_, PyType>, _py: Python<'py>) -> bool {
+        monarch_rdma::pt_cuda_allocator_compatibility()
+    }
+
     #[pyo3(name = "__repr__")]
     fn repr(&self) -> String {
         format!("<RdmaBuffer'{:?}'>", self.buffer)
