@@ -20,10 +20,7 @@ from typing import (
     Tuple,
     Type,
     TypeVar,
-    Union,
 )
-
-from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -204,10 +201,10 @@ class PythonMessage:
     def __init__(
         self,
         kind: PythonMessageKind,
-        message: Union[FrozenBuffer, bytes],
+        message: bytes,
     ) -> None: ...
     @property
-    def message(self) -> FrozenBuffer:
+    def message(self) -> bytes:
         """The pickled arguments."""
         ...
     @property

@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
@@ -33,7 +32,6 @@ use monarch_types::SerializablePyErr;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -43,15 +41,12 @@ use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
-use serde_multipart::Part;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
-use crate::buffers::Buffer;
-use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
@@ -241,12 +236,13 @@ fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, Py
 #[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
 pub struct PythonMessage {
     pub kind: PythonMessageKind,
-    pub message: Part,
+    #[serde(with = "serde_bytes")]
+    pub message: Vec<u8>,
 }
 
 struct ResolvedCallMethod {
     method: MethodSpecifier,
-    bytes: FrozenBuffer,
+    bytes: Vec<u8>,
     local_state: PyObject,
     /// Implements PortProtocol
     /// Concretely either a Port, DroppingPort, or LocalPort
@@ -254,11 +250,8 @@ struct ResolvedCallMethod {
 }
 
 impl PythonMessage {
-    pub fn new_from_buf(kind: PythonMessageKind, message: impl Into<Part>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
+    pub fn new_from_buf(kind: PythonMessageKind, message: Vec<u8>) -> Self {
+        Self { kind, message }
     }
 
     pub fn into_rank(self, rank: usize) -> Self {
@@ -312,9 +305,7 @@ impl PythonMessage {
                     .unwrap();
                     Ok(ResolvedCallMethod {
                         method: name,
-                        bytes: FrozenBuffer {
-                            inner: self.message.into_inner(),
-                        },
+                        bytes: self.message,
                         local_state,
                         response_port,
                     })
@@ -350,9 +341,7 @@ impl PythonMessage {
                     .unbind();
                 Ok(ResolvedCallMethod {
                     method: name,
-                    bytes: FrozenBuffer {
-                        inner: self.message.into_inner(),
-                    },
+                    bytes: self.message,
                     local_state,
                     response_port,
                 })
@@ -370,7 +359,7 @@ impl std::fmt::Debug for PythonMessage {
             .field("kind", &self.kind)
             .field(
                 "message",
-                &hyperactor::data::HexFmt(&(*self.message)[..]).to_string(),
+                &hyperactor::data::HexFmt(self.message.as_slice()).to_string(),
             )
             .finish()
     }
@@ -398,20 +387,8 @@ impl Bind for PythonMessage {
 impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
-    pub fn new<'py>(kind: PythonMessageKind, message: Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(buff) = message.extract::<Bound<'py, FrozenBuffer>>() {
-            let frozen = buff.borrow_mut();
-            return Ok(PythonMessage::new_from_buf(kind, frozen.inner.clone()));
-        } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
-            return Ok(PythonMessage::new_from_buf(
-                kind,
-                Vec::from(buff.as_bytes()),
-            ));
-        }
-
-        Err(PyTypeError::new_err(
-            "PythonMessage(buff) takes Buffer or bytes objects only",
-        ))
+    pub fn new(kind: PythonMessageKind, message: &[u8]) -> Self {
+        PythonMessage::new_from_buf(kind, message.to_vec())
     }
 
     #[getter]
@@ -420,10 +397,8 @@ impl PythonMessage {
     }
 
     #[getter]
-    fn message(&self) -> FrozenBuffer {
-        FrozenBuffer {
-            inner: self.message.clone().into_inner(),
-        }
+    fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
+        PyBytes::new(py, self.message.as_ref())
     }
 }
 
@@ -844,7 +819,7 @@ mod tests {
                 },
                 response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
             },
-            message: Part::from(vec![1, 2, 3]),
+            message: vec![1, 2, 3],
         };
         {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();

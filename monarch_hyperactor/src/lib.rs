@@ -15,7 +15,6 @@ pub mod actor;
 pub mod actor_mesh;
 pub mod alloc;
 pub mod bootstrap;
-pub mod buffers;
 pub mod channel;
 pub mod code_sync;
 pub mod config;
