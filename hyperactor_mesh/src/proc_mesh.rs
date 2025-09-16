@@ -415,7 +415,10 @@ impl ProcMesh {
 
         let shape = alloc.shape().clone();
         let world_id = alloc.world_id().clone();
-        metrics::PROC_MESH_ALLOCATION.add(1, hyperactor_telemetry::kv_pairs!());
+        metrics::PROC_MESH_ALLOCATION.add(
+            running.len() as u64,
+            hyperactor_telemetry::kv_pairs!("alloc_id" => alloc_id.to_string()),
+        );
 
         Ok(Self {
             event_state: Some(EventState {
