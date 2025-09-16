@@ -1,6 +1,9 @@
 # `#[derive(Handler)]`
 
-The `#[derive(Handler)]` macro generates the infrastructure for sending and receiving typed messages in hyperactor. When applied to an enum like this:
+The `#[derive(Handler)]` macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct.
+
+### For an Enum:
+When applied to an enum like this
 ```rust
 #[derive(Handler)]
 enum ShoppingList {
@@ -15,7 +18,7 @@ enum ShoppingList {
 ```
 ... it generates **two key things**:
 
-### 1. `ShoppingListHandler` trait
+#### 1. `ShoppingListHandler` trait
 This trait defines a method for each variant, and a `handle` method to route incoming messages:
 ```rust
 use async_trait::async_trait;
@@ -54,7 +57,7 @@ Note:
   - `Add` and `Remove` are **oneway**: no reply port
   - `Exists` and `List` are **call-style**: they take a `#[reply] OncePortRef<T>` and expect a response to be sent back.
 
-### 2. `ShoppingListClient` trait
+#### 2. `ShoppingListClient` trait
 
 Alongside the handler, the `#[derive(Handler)]` macro also generates a client-side trait named `ShoppingListClient`. This trait provides a convenient and type-safe interface for sending messages to an actor.
 
@@ -72,6 +75,61 @@ pub trait ShoppingListClient: Send + Sync {
     async fn list(&self, caps: &impl CanSend + CanOpenPort) -> Result<Vec<String>, Error>;
 }
 ```
+
+### For a struct
+When applied to a struct like this
+```rust
+#[derive(Handler)]
+struct GetItemCount {
+    category_filter: String,
+    #[reply]
+    reply: OncePortRef<usize>,
+}
+```
+
+... it generates:
+
+#### 1. `GetItemCountHandler` trait
+```rust
+use async_trait::async_trait;
+use hyperactor::anyhow::Error;
+
+#[async_trait]
+pub trait GetItemCountHandler: hyperactor::Actor + Send + Sync  {
+    async fn get_item_count(
+        &mut self,
+        _cx: &Context<Self>,
+        category_filter: String,
+    ) -> Result<(), anyhow::Error>;
+
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        msg: GetItemCount,
+    ) -> Result<(), anyhow::Error> {
+        match msg {
+            GetItemCount { category_filter, reply_to } => {
+                let result = self.get_item_count(_cx, category_filter).await?;
+                reply_to.send(_cx, result)?;
+                Ok(())
+            }
+        }
+    }
+}
+```
+
+#### 2. `GetItemCountClient` trait
+```rust
+#[async_trait]
+pub trait GetItemCountClient: Send + Sync {
+    async fn get_item_count(
+        &mut self,
+        _cx: &Context<Self>,
+        category_filter: String,
+    ) -> Result<(), anyhow::Error>;
+}
+```
+
 
 #### Capability Parameter
 Each method takes a caps argument that provides the runtime capabilities required to send the message:
