@@ -660,6 +660,7 @@ pub(crate) mod testing {
                 Some(supervison_port.bind()),
                 HashMap::new(),
                 config_handle.bind(),
+                false,
             )
             .await
             .unwrap();

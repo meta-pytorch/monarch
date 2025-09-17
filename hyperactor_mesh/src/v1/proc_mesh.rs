@@ -24,8 +24,11 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
+use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Extent;
+use ndslice::ViewExt;
 use ndslice::view;
+use ndslice::view::CollectMeshExt;
 use ndslice::view::MapIntoExt;
 use ndslice::view::Ranked;
 use ndslice::view::Region;
@@ -37,15 +40,14 @@ use crate::alloc::Alloc;
 use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
 use crate::assign::Ranks;
-use crate::proc_mesh;
 use crate::proc_mesh::mesh_agent;
-use crate::proc_mesh::mesh_agent::GspawnResult;
+use crate::proc_mesh::mesh_agent::ActorState;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
-use crate::resource::CreateOrUpdateClient;
 use crate::v1;
 use crate::v1::ActorMesh;
+use crate::v1::ActorMeshRef;
 use crate::v1::Error;
 use crate::v1::Name;
 use crate::v1::ValueMesh;
@@ -78,6 +80,50 @@ impl ProcRef {
             if rank == self.create_rank {
                 break Ok(status);
             }
+        }
+    }
+
+    /// Get the supervision events for one actor with the given name.
+    async fn supervision_events(
+        &self,
+        cx: &impl context::Actor,
+        name: Name,
+    ) -> v1::Result<Vec<ActorSupervisionEvent>> {
+        let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
+        self.agent
+            .send(
+                cx,
+                resource::GetState::<ActorState> {
+                    name: name.clone(),
+                    reply: port.bind(),
+                },
+            )
+            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
+        let state = rx
+            .recv()
+            .await
+            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
+        if let Some(state) = state.state {
+            let rank = state.create_rank;
+            let events = state.supervision_events;
+            if rank == self.create_rank {
+                Ok(events)
+            } else {
+                Err(Error::CallError(
+                    self.agent.actor_id().clone(),
+                    anyhow::anyhow!(
+                        "Rank on mesh agent not matching for Actor {}: returned {}, expected {}",
+                        name,
+                        rank,
+                        self.create_rank
+                    ),
+                ))
+            }
+        } else {
+            Err(Error::CallError(
+                self.agent.actor_id().clone(),
+                anyhow::anyhow!("Actor {} does not exist", name),
+            ))
         }
     }
 
@@ -173,6 +219,7 @@ impl ProcMesh {
                     None, // no supervisor; we just crash
                     address_book.clone(),
                     config_handle.bind(),
+                    true,
                 )
                 .await
                 .map_err(Error::ConfigurationError)?;
@@ -305,8 +352,7 @@ impl ProcMeshRef {
     }
 
     /// The current statuses of procs in this mesh.
-    #[allow(dead_code)]
-    async fn status(&self, cx: &impl context::Actor) -> v1::Result<ValueMesh<bool>> {
+    pub async fn status(&self, cx: &impl context::Actor) -> v1::Result<ValueMesh<bool>> {
         let vm: ValueMesh<_> = self.map_into(|proc_ref| {
             let proc_ref = proc_ref.clone();
             async move { proc_ref.status(cx).await }
@@ -314,9 +360,22 @@ impl ProcMeshRef {
         vm.join().await.transpose()
     }
 
+    /// The supervision events of procs in this mesh.
+    pub async fn supervision_events(
+        &self,
+        cx: &impl context::Actor,
+        name: Name,
+    ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
+        let vm: ValueMesh<_> = self.map_into(|proc_ref| {
+            let proc_ref = proc_ref.clone();
+            let name = name.clone();
+            async move { proc_ref.supervision_events(cx, name).await }
+        });
+        vm.join().await.transpose()
+    }
+
     /// Spawn an actor on all of the procs in this mesh, returning a new ActorMesh.
-    #[allow(dead_code)]
-    async fn spawn<A: Actor + RemoteActor>(
+    pub async fn spawn<A: Actor + RemoteActor>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -328,8 +387,7 @@ impl ProcMeshRef {
         self.spawn_with_name(cx, Name::new(name), params).await
     }
 
-    #[allow(dead_code)]
-    async fn spawn_with_name<A: Actor + RemoteActor>(
+    pub async fn spawn_with_name<A: Actor + RemoteActor>(
         &self,
         cx: &impl context::Actor,
         name: Name,
@@ -450,6 +508,7 @@ mod tests {
     use timed_test::async_timed_test;
 
     use crate::v1::ActorMeshRef;
+    use crate::v1::Name;
     use crate::v1::testactor;
     use crate::v1::testing;
 

@@ -91,6 +91,8 @@ pub(crate) enum MeshAgentMessage {
         /// The agent should write its rank to this port when it successfully
         /// configured.
         configured: PortRef<usize>,
+        /// If true, and supervisor is None, record supervision events to be reported
+        record_supervision_events: bool,
     },
 
     Status {
@@ -174,6 +176,12 @@ pub struct ProcMeshAgent {
     state: State,
     /// Actors created and tracked through the resource behavior.
     created: HashMap<Name, Result<ActorId, anyhow::Error>>,
+    /// If true, and supervisor is None, record supervision events to be reported
+    /// to owning actors later.
+    record_supervision_events: bool,
+    /// If record_supervision_events is true, then this will contain the list
+    /// of all events that were received.
+    supervision_events: Vec<ActorSupervisionEvent>,
 }
 
 impl ProcMeshAgent {
@@ -193,6 +201,8 @@ impl ProcMeshAgent {
             remote: Remote::collect(),
             state: State::UnconfiguredV0 { sender },
             created: HashMap::new(),
+            record_supervision_events: false,
+            supervision_events: Vec::new(),
         };
         let handle = proc.spawn::<Self>("mesh", agent).await?;
         Ok((proc, handle))
@@ -204,6 +214,8 @@ impl ProcMeshAgent {
             remote: Remote::collect(),
             state: State::V1,
             created: HashMap::new(),
+            record_supervision_events: true,
+            supervision_events: Vec::new(),
         };
         proc.spawn::<Self>("agent", agent).await
     }
@@ -234,11 +246,13 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         supervisor: Option<PortRef<ActorSupervisionEvent>>,
         address_book: HashMap<ProcId, ChannelAddr>,
         configured: PortRef<usize>,
+        record_supervision_events: bool,
     ) -> Result<(), anyhow::Error> {
         anyhow::ensure!(
             self.state.is_unconfigured_v0(),
             "mesh agent cannot be (re-)configured"
         );
+        self.record_supervision_events = record_supervision_events;
 
         // Wire up the local proc to the global (process) router. This ensures that child
         // meshes are reachable from any actor created by this mesh.
@@ -356,9 +370,15 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
         cx: &Context<Self>,
         event: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
+        if self.record_supervision_events {
+            tracing::info!("Received supervision event: {:?}, recording", event);
+            self.supervision_events.push(event.clone());
+        }
         if let Some(supervisor) = self.state.supervisor() {
             supervisor.send(cx, event)?;
-        } else {
+        } else if !self.record_supervision_events {
+            // If there is no supervisor, and nothing is recording these, crash
+            // the whole process.
             tracing::error!(
                 name = SupervisionEventState::SupervisionEventTransmitFailed.as_ref(),
                 "proc {}: could not propagate supervision event {:?}: crashing",
@@ -390,7 +410,10 @@ pub struct ActorSpec {
 pub struct ActorState {
     /// The actor's ID.
     pub actor_id: ActorId,
+    /// The rank of the proc that created the actor. This is before any slicing.
+    pub create_rank: usize,
     // TODO status: ActorStatus,
+    pub supervision_events: Vec<ActorSupervisionEvent>,
 }
 
 #[async_trait]
@@ -433,12 +456,18 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
         cx: &Context<Self>,
         get_state: resource::GetState<ActorState>,
     ) -> anyhow::Result<()> {
+        let rank = self
+            .state
+            .rank()
+            .ok_or_else(|| anyhow::anyhow!("tried to get status of unconfigured proc"))?;
         let state = match self.created.get(&get_state.name) {
             Some(Ok(actor_id)) => resource::State {
                 name: get_state.name.clone(),
                 status: resource::Status::Running,
                 state: Some(ActorState {
                     actor_id: actor_id.clone(),
+                    create_rank: rank,
+                    supervision_events: self.supervision_events.clone(),
                 }),
             },
             Some(Err(e)) => resource::State {

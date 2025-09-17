@@ -363,6 +363,7 @@ impl ProcMesh {
                     Some(supervision_port.bind()),
                     address_book.clone(),
                     config_handle.bind(),
+                    false,
                 )
                 .await?;
         }

@@ -16,6 +16,7 @@ use hyperactor::actor::RemoteActor;
 use hyperactor::context;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -33,6 +34,7 @@ use crate::v1;
 use crate::v1::Error;
 use crate::v1::Name;
 use crate::v1::ProcMeshRef;
+use crate::v1::ValueMesh;
 
 /// An ActorMesh is a collection of ranked A-typed actors.
 #[derive(Debug)]
@@ -124,6 +126,14 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
             .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
         }
     }
+
+    pub async fn supervision_events(
+        &self,
+        cx: &impl context::Actor,
+        name: Name,
+    ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
+        self.proc_mesh.supervision_events(cx, name).await
+    }
 }
 
 impl<A: RemoteActor> view::Ranked for ActorMeshRef<A> {
@@ -155,4 +165,94 @@ impl<A: RemoteActor> view::RankedSliceable for ActorMeshRef<A> {
 fn to_shape(region: &Region) -> Shape {
     Shape::new(region.labels().to_vec(), region.slice().clone())
         .expect("Shape::new should not fail because a Region by definition is a valid Shape")
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::assert_matches::assert_matches;
+
+    use hyperactor::actor::ActorStatus;
+    use hyperactor::supervision::ActorSupervisionEvent;
+    use ndslice::ViewExt;
+    use ndslice::extent;
+    use timed_test::async_timed_test;
+
+    use crate::v1::Name;
+    use crate::v1::testactor;
+    use crate::v1::testing;
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let instance = testing::instance();
+        // Listen for supervision events sent to the parent instance.
+        let (supervision_port, mut supervision_receiver) =
+            instance.open_port::<ActorSupervisionEvent>();
+        let supervisor = supervision_port.bind();
+        let num_replicas = 4;
+        let meshes = testing::proc_meshes(&instance, extent!(replicas = num_replicas)).await;
+        let proc_mesh = &meshes[1];
+        let child_name = Name::new("child");
+
+        let actor_mesh = proc_mesh
+            .freeze()
+            .spawn_with_name::<testactor::TestActor>(&instance, child_name.clone(), &())
+            .await
+            .unwrap();
+
+        actor_mesh
+            .freeze()
+            .cast(
+                &instance,
+                testactor::CauseSupervisionEvent(testactor::SupervisionEventType::Panic),
+            )
+            .unwrap();
+
+        // Wait for the casted message to cause a panic on all actors.
+        // We can't use a reply port because the handler for the message will
+        // by definition not complete and send a reply.
+        #[allow(clippy::disallowed_methods)]
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        // Now that all ranks have completed, set up a continuous poll of the
+        // status such that when a process switches to unhealthy it sets a
+        // supervision event.
+        let actor_mesh_ref = actor_mesh.freeze();
+        let child_name_clone = child_name.clone();
+        let supervision_task = tokio::spawn(async move {
+            match actor_mesh_ref
+                .supervision_events(&instance, child_name_clone)
+                .await
+            {
+                Ok(events) => {
+                    for event_list in events.values() {
+                        assert!(!event_list.is_empty());
+                        for event in event_list {
+                            supervisor.send(&instance, event).unwrap();
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("error: {:?}", e);
+                }
+            };
+        });
+        // Make sure the task completes first without a panic.
+        supervision_task.await.unwrap();
+
+        for _ in 0..num_replicas {
+            match supervision_receiver.recv().await {
+                Ok(event) => {
+                    println!("receiving event: {:?}", event);
+                    assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
+                    assert_matches!(event.actor_status, ActorStatus::Failed(_));
+                }
+                Err(e) => {
+                    panic!("error: {:?}", e);
+                }
+            }
+        }
+    }
 }

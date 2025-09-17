@@ -184,6 +184,12 @@ impl<T: Named + 'static> Named for Vec<T> {
     }
 }
 
+impl<K: Named + 'static, V: Named + 'static> Named for HashMap<K, V> {
+    fn typename() -> &'static str {
+        intern_typename!(Self, "HashMap<{}, {}>", K, V)
+    }
+}
+
 impl<T: Named + 'static, E: Named + 'static> Named for Result<T, E> {
     fn typename() -> &'static str {
         intern_typename!(Self, "Result<{}, {}>", T, E)
