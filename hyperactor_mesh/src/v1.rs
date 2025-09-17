@@ -119,7 +119,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// and a unique UUID.
 ///
 /// Names have a concrete syntax--`{name}-{uuid}`--printed by `Display` and parsed by `FromStr`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
 pub struct Name(pub String, pub ShortUuid);
 
 impl Name {
