@@ -69,6 +69,7 @@ use crate::proc_mesh::mesh_agent::GspawnResult;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::proc_mesh::mesh_agent::StopActorResult;
+use crate::reference::ActorMeshId;
 use crate::reference::ProcMeshId;
 use crate::router;
 use crate::shortuuid::ShortUuid;
@@ -748,16 +749,23 @@ impl ProcEvents {
                     // Normalize events that came via the comm tree.
                     if let Some(headers) = &event.message_headers {
                         if let Some(actor_mesh_id) = headers.get(CAST_ACTOR_MESH_ID) {
-                            let old_actor = event.actor_id.clone();
-                            event.actor_id = ActorId(
-                                ProcId::Ranked(WorldId(actor_mesh_id.0.0.clone()), 0),
-                                actor_mesh_id.1.clone(),
-                                0,
-                            );
-                            tracing::debug!(
-                                actor_id = %old_actor,
-                                "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", event.actor_id
-                            );
+                            match actor_mesh_id {
+                                ActorMeshId::V0(proc_mesh_id, actor_name) => {
+                                    let old_actor = event.actor_id.clone();
+                                    event.actor_id = ActorId(
+                                        ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
+                                        actor_name.clone(),
+                                        0,
+                                    );
+                                    tracing::debug!(
+                                        actor_id = %old_actor,
+                                        "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", event.actor_id
+                                    );
+                                }
+                                ActorMeshId::V1(_) => {
+                                    tracing::debug!("proc supervision: headers present but V1 ActorMeshId; leaving actor_id unchanged");
+                                }
+                            }
                         } else {
                             tracing::debug!(
                                 "proc supervision: headers present but no CAST_ACTOR_MESH_ID; leaving actor_id unchanged"
