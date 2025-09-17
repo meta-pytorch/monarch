@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 //! This module defines a test actor. It is defined in a separate module
 //! (outside of [`crate::v1::testing`]) to ensure that it is compiled into
 //! the bootstrap binary, which is not built in test mode (and anyway, test mode
@@ -20,14 +28,14 @@ use serde::Serialize;
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        GetActorId,
+        GetActorId { cast = true },
     ]
 )]
 pub struct TestActor;
 
 /// A message that returns the recipient actor's id.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
-pub struct GetActorId(pub PortRef<ActorId>);
+pub struct GetActorId(#[binding(include)] pub PortRef<ActorId>);
 
 #[async_trait]
 impl Handler<GetActorId> for TestActor {
