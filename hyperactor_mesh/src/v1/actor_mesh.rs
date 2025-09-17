@@ -15,13 +15,20 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
 use hyperactor::context;
 use hyperactor::message::Castable;
+use hyperactor::message::IndexedErasedUnbound;
+use hyperactor_mesh_macros::sel;
+use ndslice::Selection;
+use ndslice::Shape;
+use ndslice::ViewExt;
 use ndslice::view;
 use ndslice::view::Region;
 use ndslice::view::View;
-use ndslice::view::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::CommActor;
+use crate::actor_mesh as v0_actor_mesh;
+use crate::reference::ActorMeshId;
 use crate::v1;
 use crate::v1::Error;
 use crate::v1::Name;
@@ -82,16 +89,40 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
     /// Cast a message to all actors in this mesh.
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> v1::Result<()>
     where
-        M: Castable + RemoteMessage + Clone,
-        A: RemoteHandles<M>,
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
     {
-        // todo: headers, binding/unbinding/accumulation
-        for actor_ref in self.values() {
-            actor_ref
-                .send(cx, message.clone())
-                .map_err(|e| Error::SendingError(actor_ref.actor_id().clone(), Box::new(e)))?;
+        let cast_mesh_shape = to_shape(view::Ranked::region(self));
+        let comm_actor_ref = self
+            .proc_mesh
+            .root_mesh_rank_0
+            .attest::<CommActor>(self.proc_mesh.comm_actor_name());
+        let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+        match &self.proc_mesh.root_region {
+            Some(root_region) => {
+                let root_mesh_shape = to_shape(root_region);
+                v0_actor_mesh::cast_to_sliced_mesh::<A, M>(
+                    cx,
+                    actor_mesh_id,
+                    &comm_actor_ref,
+                    &sel!(*),
+                    message,
+                    &cast_mesh_shape,
+                    &root_mesh_shape,
+                )
+                .map_err(|e| Error::CastingError(self.name.clone(), e.into()))
+            }
+            None => v0_actor_mesh::actor_mesh_cast::<A, M>(
+                cx,
+                actor_mesh_id,
+                &comm_actor_ref,
+                sel!(*),
+                &cast_mesh_shape,
+                &cast_mesh_shape,
+                message,
+            )
+            .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
         }
-        Ok(())
     }
 }
 
@@ -119,4 +150,9 @@ impl<A: RemoteActor> view::RankedSliceable for ActorMeshRef<A> {
             .collect();
         ActorMeshRef::new(self.name.clone(), proc_mesh, actor_refs)
     }
+}
+
+fn to_shape(region: &Region) -> Shape {
+    Shape::new(region.labels().to_vec(), region.slice().clone())
+        .expect("Shape::new should not fail because a Region by definition is a valid Shape")
 }
