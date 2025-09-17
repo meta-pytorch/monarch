@@ -785,8 +785,8 @@ impl MailboxSender for UndeliverableMailboxSender {
             name = "undelivered_message_abandoned",
             actor_name = sender_name,
             actor_id = envelope.sender.to_string(),
-            "message not delivered to {}, {}",
-            envelope.dest.actor_id().name(),
+            dest = envelope.dest.to_string(),
+            "message not delivered, {}",
             error_str,
         );
     }
