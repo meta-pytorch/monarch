@@ -23,6 +23,19 @@ typedef enum {
   CQE_POLL_TRUE = 1
 } cqe_poll_result_t;
 
+// C-compatible structure for CUDA segment information
+typedef struct {
+  size_t phys_address; // Physical memory address of the segment
+  size_t phys_size; // Physical size of the segment in bytes
+  int32_t device; // CUDA device ID
+  int is_expandable; // Boolean: 1 if expandable, 0 if not (using int for C
+                     // compatibility)
+  uint32_t lkey; // Local key for registered MR (0 if not registered)
+  uint32_t rkey; // Remote key for registered MR (0 if not registered)
+  size_t mr_size; // Size of the registered MR (0 if not registered)
+  uintptr_t mr_addr; // Registered MR address (0 if not registered)
+} rdma_segment_info_t;
+
 // Structure for WQE parameters
 typedef struct {
   uintptr_t laddr;
@@ -95,6 +108,12 @@ __global__ void cu_recv_wqe(wqe_params_t params);
 // Host function to launch the cu_send_wqe kernel
 void launch_send_wqe(wqe_params_t params);
 void launch_recv_wqe(wqe_params_t params);
+
+// Active segment tracking functions (implemented in C++)
+int rdma_get_active_segment_count();
+int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count);
+bool pt_cuda_allocator_compatibility();
+int register_segments(struct ibv_pd* pd, struct ibv_qp* qp);
 
 #ifdef __cplusplus
 }

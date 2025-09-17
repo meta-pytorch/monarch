@@ -606,19 +606,36 @@ pub fn ibverbs_supported() -> bool {
 
 /// Represents a view of a memory region that can be registered with an RDMA device.
 ///
-/// An `RdmaMemoryRegionView` encapsulates a pointer to a memory buffer and its size.
-/// This memory region can be registered with an RDMA device to allow direct memory
-/// access operations (such as RDMA reads and writes) to be performed on it.
+/// This is a 'view' of a registered Memory Region, allowing multiple views into a single
+/// large MR registration. This is commonly used with PyTorch's caching allocator, which
+/// reserves large memory blocks and provides different data pointers into that space.
+///
+/// # Example
+/// PyTorch Caching Allocator creates a 16GB segment at virtual address `0x01000000`.
+/// The underlying Memory Region registers 16GB but at RDMA address `0x0`.
+/// To access virtual address `0x01100000`, we return a view at RDMA address `0x100000`.
 ///
 /// # Safety
-///
-/// The memory pointed to by `ptr` must remain valid for the lifetime of the `RdmaMemoryRegionView`.
-/// The caller is responsible for ensuring that the memory is not freed, moved or overwritten while
-/// RDMA operations are in progress.
-#[derive(Debug, PartialEq, Eq, std::hash::Hash, Serialize, Deserialize, Clone)]
+/// The caller must ensure the memory remains valid and is not freed, moved, or
+/// overwritten while RDMA operations are in progress.
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    std::hash::Hash,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy
+)]
 pub struct RdmaMemoryRegionView {
-    pub id: u32,
-    pub addr: usize,
+    /// Virtual address in the process address space.
+    /// This is the pointer/address as seen by the local process.
+    pub virtual_addr: usize,
+    /// Memory address assigned after Memory Region (MR) registration.
+    /// This is the address may be offset a base MR addr.
+    pub rdma_addr: usize,
     pub size: usize,
     pub lkey: u32,
     pub rkey: u32,
@@ -643,10 +660,10 @@ unsafe impl Sync for RdmaMemoryRegionView {}
 
 impl RdmaMemoryRegionView {
     /// Creates a new `RdmaMemoryRegionView` with the given address and size.
-    pub fn new(id: u32, addr: usize, size: usize, lkey: u32, rkey: u32) -> Self {
+    pub fn new(virtual_addr: usize, rdma_addr: usize, size: usize, lkey: u32, rkey: u32) -> Self {
         Self {
-            id,
-            addr,
+            virtual_addr,
+            rdma_addr,
             size,
             lkey,
             rkey,

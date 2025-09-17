@@ -40,7 +40,6 @@
 //! 6. Poll for completions
 //! 7. Resources are cleaned up when dropped
 
-use std::collections::HashMap;
 use std::ffi::CStr;
 use std::fs;
 use std::io::Error;
@@ -61,7 +60,6 @@ use crate::RdmaManagerMessageClient;
 use crate::ibverbs_primitives::Gid;
 use crate::ibverbs_primitives::IbvWc;
 use crate::ibverbs_primitives::IbverbsConfig;
-use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaOperation;
 use crate::ibverbs_primitives::RdmaQpInfo;
 
@@ -94,7 +92,7 @@ impl DoorBell {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct RdmaBuffer {
     pub owner: ActorRef<RdmaManagerActor>,
-    pub mr_id: u32,
+    pub mr_id: usize,
     pub lkey: u32,
     pub rkey: u32,
     pub addr: usize,
@@ -224,13 +222,9 @@ impl RdmaBuffer {
 ///
 /// * `context`: A pointer to the RDMA device context, representing the connection to the RDMA device.
 /// * `pd`: A pointer to the protection domain, which provides isolation between different connections.
-/// * `mr_map`: A map of memory region IDs to pointers, representing registered memory regions.
-/// * `counter`: A counter for generating unique memory region IDs.
 pub struct RdmaDomain {
     pub context: *mut rdmaxcel_sys::ibv_context,
     pub pd: *mut rdmaxcel_sys::ibv_pd,
-    mr_map: HashMap<u32, *mut rdmaxcel_sys::ibv_mr>,
-    counter: u32,
 }
 
 impl std::fmt::Debug for RdmaDomain {
@@ -238,8 +232,6 @@ impl std::fmt::Debug for RdmaDomain {
         f.debug_struct("RdmaDomain")
             .field("context", &format!("{:p}", self.context))
             .field("pd", &format!("{:p}", self.pd))
-            .field("mr", &format!("{:?}", self.mr_map))
-            .field("counter", &self.counter)
             .finish()
     }
 }
@@ -352,96 +344,10 @@ impl RdmaDomain {
             // Avoids memory leaks
             rdmaxcel_sys::ibv_free_device_list(devices);
 
-            Ok(RdmaDomain {
-                context,
-                pd,
-                mr_map: HashMap::new(),
-                counter: 0,
-            })
+            let domain = RdmaDomain { context, pd };
+
+            Ok(domain)
         }
-    }
-
-    fn register_mr(
-        &mut self,
-        addr: usize,
-        size: usize,
-    ) -> Result<RdmaMemoryRegionView, anyhow::Error> {
-        unsafe {
-            let mut mem_type: i32 = 0;
-            let ptr = addr as cuda_sys::CUdeviceptr;
-            let err = cuda_sys::cuPointerGetAttribute(
-                &mut mem_type as *mut _ as *mut std::ffi::c_void,
-                cuda_sys::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-                ptr,
-            );
-            let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
-
-            let access = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-
-            let mr;
-            if is_cuda {
-                let mut fd: i32 = -1;
-                cuda_sys::cuMemGetHandleForAddressRange(
-                    &mut fd as *mut i32 as *mut std::ffi::c_void,
-                    addr as cuda_sys::CUdeviceptr,
-                    size,
-                    cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-                    0,
-                );
-                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(self.pd, 0, size, 0, fd, access.0 as i32);
-            } else {
-                mr = rdmaxcel_sys::ibv_reg_mr(
-                    self.pd,
-                    addr as *mut std::ffi::c_void,
-                    size,
-                    access.0 as i32,
-                );
-            }
-
-            if mr.is_null() {
-                return Err(anyhow::anyhow!("failed to register memory region (MR)"));
-            }
-            let id = self.counter;
-            self.mr_map.insert(id, mr);
-            self.counter += 1;
-
-            Ok(RdmaMemoryRegionView {
-                id,
-                addr: (*mr).addr as usize,
-                size: (*mr).length,
-                lkey: (*mr).lkey,
-                rkey: (*mr).rkey,
-            })
-        }
-    }
-
-    fn deregister_mr(&mut self, id: u32) -> Result<(), anyhow::Error> {
-        let mr = self.mr_map.remove(&id);
-        if mr.is_some() {
-            unsafe {
-                rdmaxcel_sys::ibv_dereg_mr(mr.expect("mr is required"));
-            }
-        }
-        Ok(())
-    }
-
-    pub fn register_buffer(
-        &mut self,
-        addr: usize,
-        size: usize,
-    ) -> Result<RdmaMemoryRegionView, anyhow::Error> {
-        let region_view = self.register_mr(addr, size)?;
-        Ok(region_view)
-    }
-
-    // Removes a specific address from memory region.   Currently we only support single address,
-    // but in future we can expand/contract effective memory region.
-    pub fn deregister_buffer(&mut self, buffer: RdmaBuffer) -> Result<(), anyhow::Error> {
-        self.deregister_mr(buffer.mr_id)?;
-        Ok(())
     }
 }
 /// Enum to specify which completion queue to poll
@@ -1309,6 +1215,34 @@ pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
         }
     }
     Ok(())
+}
+
+/// Get all segments that have been registered with MRs
+///
+/// # Returns
+/// * `Vec<SegmentInfo>` - Vector containing all registered segment information
+pub fn get_registered_cuda_segments() -> Vec<rdmaxcel_sys::rdma_segment_info_t> {
+    unsafe {
+        let segment_count = rdmaxcel_sys::rdma_get_active_segment_count();
+        if segment_count <= 0 {
+            return Vec::new();
+        }
+
+        let mut segments = vec![
+            std::mem::MaybeUninit::<rdmaxcel_sys::rdma_segment_info_t>::zeroed()
+                .assume_init();
+            segment_count as usize
+        ];
+        let actual_count =
+            rdmaxcel_sys::rdma_get_all_segment_info(segments.as_mut_ptr(), segment_count);
+
+        if actual_count > 0 {
+            segments.truncate(actual_count as usize);
+            segments
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]

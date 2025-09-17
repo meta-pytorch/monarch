@@ -13,11 +13,26 @@ use std::path::PathBuf;
 use glob::glob;
 use which::which;
 
+const PYTHON_PRINT_PYTORCH_DETAILS: &str = r"
+import torch
+from torch.utils import cpp_extension
+print('LIBTORCH_CXX11:', torch._C._GLIBCXX_USE_CXX11_ABI)
+for include_path in cpp_extension.include_paths():
+    print('LIBTORCH_INCLUDE:', include_path)
+for library_path in cpp_extension.library_paths():
+    print('LIBTORCH_LIB:', library_path)
+";
+
 const PYTHON_PRINT_DIRS: &str = r"
 import sysconfig
 print('PYTHON_INCLUDE_DIR:', sysconfig.get_config_var('INCLUDEDIR'))
 print('PYTHON_LIB_DIR:', sysconfig.get_config_var('LIBDIR'))
 ";
+
+fn get_env_var_with_rerun(name: &str) -> Result<String, std::env::VarError> {
+    println!("cargo::rerun-if-env-changed={}", name);
+    env::var(name)
+}
 
 // Translated from torch/utils/cpp_extension.py
 fn find_cuda_home() -> Option<String> {
@@ -150,6 +165,7 @@ fn main() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
     println!("cargo:rerun-if-changed=src/rdmaxcel.c");
+    println!("cargo:rerun-if-changed=src/rdmaxcel.cpp");
 
     // Validate CUDA installation and get CUDA home path
     let cuda_home = validate_cuda_installation();
@@ -202,12 +218,17 @@ fn main() {
         .allowlist_function("launch_cqe_poll")
         .allowlist_function("launch_send_wqe")
         .allowlist_function("launch_recv_wqe")
+        .allowlist_function("rdma_get_active_segment_count")
+        .allowlist_function("rdma_get_all_segment_info")
+        .allowlist_function("register_segments")
+        .allowlist_function("pt_cuda_allocator_compatibility")
         .allowlist_type("ibv_.*")
         .allowlist_type("mlx5dv_.*")
         .allowlist_type("mlx5_wqe_.*")
         .allowlist_type("cqe_poll_result_t")
         .allowlist_type("wqe_params_t")
         .allowlist_type("cqe_poll_params_t")
+        .allowlist_type("rdma_segment_info_t")
         .allowlist_var("MLX5_.*")
         .allowlist_var("IBV_.*")
         // Block specific types that are manually defined in lib.rs
@@ -235,7 +256,7 @@ fn main() {
 
     // Include headers and libs from the active environment.
     let (include_dir, lib_dir) = python_env_dirs();
-    if let Some(include_dir) = include_dir {
+    if let Some(ref include_dir) = include_dir {
         builder = builder.clang_arg(format!("-I{}", include_dir));
     }
     if let Some(lib_dir) = lib_dir {
@@ -280,6 +301,66 @@ fn main() {
                 build.compile("rdmaxcel");
             } else {
                 panic!("C source file not found at {}", c_source_path);
+            }
+
+            // Compile the C++ source file for CUDA allocator compatibility
+            let cpp_source_path = format!("{}/src/rdmaxcel.cpp", manifest_dir);
+            if Path::new(&cpp_source_path).exists() {
+                let mut libtorch_include_dirs: Vec<PathBuf> = vec![];
+
+                // Use the same approach as torch-sys: Python discovery first, env vars as fallback
+                let use_pytorch_apis = get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS")
+                    .unwrap_or_else(|_| "1".to_owned());
+
+                if use_pytorch_apis == "1" {
+                    // Use Python to get PyTorch include paths (same as torch-sys)
+                    let python_interpreter = PathBuf::from("python");
+                    let output = std::process::Command::new(&python_interpreter)
+                        .arg("-c")
+                        .arg(PYTHON_PRINT_PYTORCH_DETAILS)
+                        .output()
+                        .unwrap_or_else(|_| panic!("error running {python_interpreter:?}"));
+
+                    for line in String::from_utf8_lossy(&output.stdout).lines() {
+                        if let Some(path) = line.strip_prefix("LIBTORCH_INCLUDE: ") {
+                            libtorch_include_dirs.push(PathBuf::from(path));
+                        }
+                    }
+                } else {
+                    // Use environment variables (fallback approach)
+                    libtorch_include_dirs.extend(
+                        get_env_var_with_rerun("LIBTORCH_INCLUDE")
+                            .unwrap_or_default()
+                            .split(':')
+                            .filter(|s| !s.is_empty())
+                            .map(PathBuf::from),
+                    );
+                }
+
+                let mut cpp_build = cc::Build::new();
+                cpp_build
+                    .file(&cpp_source_path)
+                    .include(format!("{}/src", manifest_dir))
+                    .flag("-fPIC")
+                    .cpp(true)
+                    .flag("-std=gnu++20");
+
+                // Add CUDA include paths
+                cpp_build.include(&cuda_include_path);
+
+                // Add PyTorch/C10 include paths
+                for include_dir in &libtorch_include_dirs {
+                    cpp_build.include(include_dir);
+                }
+
+                // Add Python include path if available
+                if let Some(include_dir) = &include_dir {
+                    cpp_build.include(include_dir);
+                }
+
+                cpp_build.compile("rdmaxcel_cpp");
+            } else {
+                panic!("C++ source file not found at {}", cpp_source_path);
             }
         }
         Err(_) => {
