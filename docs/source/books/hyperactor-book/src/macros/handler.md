@@ -152,3 +152,12 @@ let found = actor.exists(&client, "milk".into()).await?;
 println!("got milk? {found}");
 ```
 Here, actor is an `ActorHandle<ShoppingListActor>` that implements `ShoppingListClient`, and `client` is a `Mailbox` that provides the necessary capabilities.
+
+#### `#[reply]`
+`#[reply]` can take any of the four types:
+- `OncePortRef<T>`
+- `OncePortHandle<T>`
+- `PortRef<T>`
+- `PortHandle<T>`
+
+Note that `OncePortRef<T>` and `OncePortHandle<T>` support one-shot communication, compared to `PortRef<T>` and `PortHandle<T>` which can be used for multiple requests and responses.
