@@ -13,5 +13,4 @@ serde = { version = "1.0.185", features = ["derive", "rc"] }
 
 [build-dependencies]
 bindgen = "0.70.1"
-which = "6.0.3"
-glob = "0.3.1"
+build_utils = { path = "../build_utils" }

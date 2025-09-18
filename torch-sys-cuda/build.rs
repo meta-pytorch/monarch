@@ -15,32 +15,9 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use build_utils::*;
 use cxx_build::CFG;
 use pyo3_build_config::InterpreterConfig;
-
-// Python script to get CUDA information from PyTorch
-const PYTHON_PRINT_CUDA_DETAILS: &str = r"
-import torch
-from torch.utils import cpp_extension
-print('CUDA_HOME:', cpp_extension.CUDA_HOME)
-for include_path in cpp_extension.include_paths():
-    print('LIBTORCH_INCLUDE:', include_path)
-for library_path in cpp_extension.library_paths():
-    print('LIBTORCH_LIB:', library_path)
-print('LIBTORCH_CXX11:', torch._C._GLIBCXX_USE_CXX11_ABI)
-";
-
-const PYTHON_PRINT_INCLUDE_PATH: &str = r"
-import sysconfig
-print('PYTHON_INCLUDE:', sysconfig.get_path('include'))
-print('PYTHON_INCLUDE_DIR:', sysconfig.get_config_var('INCLUDEDIR'))
-print('PYTHON_LIB_DIR:', sysconfig.get_config_var('LIBDIR'))
-";
-
-fn get_env_var_with_rerun(name: &str) -> Result<String, std::env::VarError> {
-    println!("cargo::rerun-if-env-changed={}", name);
-    std::env::var(name)
-}
 
 #[cfg(target_os = "macos")]
 fn main() {}
@@ -53,15 +30,15 @@ fn main() {
     let mut cuda_home: Option<PathBuf> = None;
     let python_interpreter = PathBuf::from("python");
 
-    let use_pytorch_apis =
-        get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS").unwrap_or_else(|_| "1".to_owned());
+    let use_pytorch_apis = build_utils::get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS")
+        .unwrap_or_else(|_| "1".to_owned());
 
     if use_pytorch_apis == "1" {
         // We use the user's python installation of PyTorch to get the proper
         // headers/libraries for libtorch
         let output = std::process::Command::new(&python_interpreter)
             .arg("-c")
-            .arg(PYTHON_PRINT_CUDA_DETAILS)
+            .arg(build_utils::PYTHON_PRINT_CUDA_DETAILS)
             .stdout(Stdio::piped())
             .spawn()
             .unwrap_or_else(|_| panic!("error spawning {python_interpreter:?}"))
@@ -89,15 +66,23 @@ fn main() {
             }
         }
     } else {
-        cxx11_abi = Some(get_env_var_with_rerun("_GLIBCXX_USE_CXX11_ABI").unwrap());
+        cxx11_abi = Some(build_utils::get_env_var_with_rerun("_GLIBCXX_USE_CXX11_ABI").unwrap());
         libtorch_include_dirs.extend(
-            get_env_var_with_rerun("LIBTORCH_INCLUDE")
+            build_utils::get_env_var_with_rerun("LIBTORCH_INCLUDE")
                 .unwrap()
                 .split(':')
                 .map(|s| s.into()),
         );
-        libtorch_lib_dir = Some(get_env_var_with_rerun("LIBTORCH_LIB").unwrap().into());
-        cuda_home = Some(get_env_var_with_rerun("CUDA_HOME").unwrap().into());
+        libtorch_lib_dir = Some(
+            build_utils::get_env_var_with_rerun("LIBTORCH_LIB")
+                .unwrap()
+                .into(),
+        );
+        cuda_home = Some(
+            build_utils::get_env_var_with_rerun("CUDA_HOME")
+                .unwrap()
+                .into(),
+        );
     }
     let cuda_home = cuda_home.expect("could not find CUDA_HOME");
 
@@ -106,7 +91,7 @@ fn main() {
     // Include Python headers for compatibility with torch-sys
     let output = std::process::Command::new(&python_interpreter)
         .arg("-c")
-        .arg(PYTHON_PRINT_INCLUDE_PATH)
+        .arg(build_utils::PYTHON_PRINT_INCLUDE_PATH)
         .output()
         .unwrap_or_else(|_| panic!("error running {python_interpreter:?}"));
     for line in String::from_utf8_lossy(&output.stdout).lines() {
