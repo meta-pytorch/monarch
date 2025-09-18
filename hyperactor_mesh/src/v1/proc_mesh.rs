@@ -357,18 +357,46 @@ impl ProcMeshRef {
         vm.join().await.transpose()
     }
 
+    fn agent_mesh(&self) -> ActorMeshRef<ProcMeshAgent> {
+        let actor_refs = self.values().map(|p| p.agent).collect::<Vec<_>>();
+        let agent_name = actor_refs.first().unwrap().actor_id().name();
+        // This name must match the ProcMeshAgent name, which can change depending on the allocator.
+        ActorMeshRef::new(Name::new_reserved(agent_name), self.clone(), actor_refs)
+    }
+
     /// The supervision events of procs in this mesh.
     pub async fn supervision_events(
         &self,
         cx: &impl context::Actor,
         name: Name,
     ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
-        let vm: ValueMesh<_> = self.map_into(|proc_ref| {
-            let proc_ref = proc_ref.clone();
-            let name = name.clone();
-            async move { proc_ref.supervision_events(cx, name).await }
-        });
-        vm.join().await.transpose()
+        let agent_mesh = self.agent_mesh();
+        let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
+        agent_mesh.cast(
+            cx,
+            resource::GetState::<ActorState> {
+                name: name.clone(),
+                reply: port.bind(),
+            },
+        )?;
+        let expected = self.ranks.len();
+        let mut states = Vec::with_capacity(expected);
+        for _ in 0..expected {
+            let state = rx.recv().await?;
+            states.push(state);
+        }
+        let vm = states
+            .into_iter()
+            .map(|state| {
+                if let Some(state) = state.state {
+                    state.supervision_events
+                } else {
+                    // Empty vec for ranks with no supervision events.
+                    Vec::new()
+                }
+            })
+            .collect_mesh::<ValueMesh<Vec<_>>>(self.region.clone())?;
+        Ok(vm)
     }
 
     /// Spawn an actor on all of the procs in this mesh, returning a new ActorMesh.

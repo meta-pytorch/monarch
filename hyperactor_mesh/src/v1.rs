@@ -164,27 +164,51 @@ pub type Result<T> = std::result::Result<T, Error>;
     Serialize,
     Deserialize
 )]
-pub struct Name(pub String, pub ShortUuid);
+pub enum Name {
+    /// Normal names for most actors.
+    Suffixed(String, ShortUuid),
+    /// Reserved names for system actors without UUIDs.
+    Reserved(String),
+}
 
 impl Name {
     /// Create a new `Name` from a user-provided base name.
     pub fn new(name: impl Into<String>) -> Self {
+        Self::new_with_uuid(name, Some(ShortUuid::generate()))
+    }
+
+    /// Create a Reserved `Name` with no uuid. Only for use by system actors.
+    pub(crate) fn new_reserved(name: impl Into<String>) -> Self {
+        Self::new_with_uuid(name, None)
+    }
+
+    fn new_with_uuid(name: impl Into<String>, uuid: Option<ShortUuid>) -> Self {
         let mut name = name.into();
         if name.is_empty() {
             name = "unnamed".to_string();
         }
-        let uuid = ShortUuid::generate();
-        Self(name, uuid)
+        if let Some(uuid) = uuid {
+            Self::Suffixed(name, uuid)
+        } else {
+            Self::Reserved(name)
+        }
     }
 
     /// The name portion of this `Name`.
     pub fn name(&self) -> &str {
-        &self.0
+        match self {
+            Self::Suffixed(n, _) => n,
+            Self::Reserved(n) => n,
+        }
     }
 
     /// The UUID portion of this `Name`.
+    /// Only valid for Name::Suffixed, if called on Name::Reserved it'll panic.
     pub fn uuid(&self) -> &ShortUuid {
-        &self.1
+        match self {
+            Self::Suffixed(_, uuid) => uuid,
+            Self::Reserved(_) => panic!("Reserved name has no UUID"),
+        }
     }
 }
 
@@ -208,24 +232,33 @@ impl FromStr for Name {
     type Err = NameParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let (name, uuid) = s.split_once('-').ok_or(NameParseError::MissingSeparator)?;
-        if name.is_empty() {
-            return Err(NameParseError::MissingName);
-        }
-        if uuid.is_empty() {
-            return Err(NameParseError::MissingName);
-        }
+        if let Some((name, uuid)) = s.split_once('-') {
+            if name.is_empty() {
+                return Err(NameParseError::MissingName);
+            }
+            if uuid.is_empty() {
+                return Err(NameParseError::MissingName);
+            }
 
-        let name = name.to_string();
-        let uuid = uuid.parse()?;
-        Ok(Name(name, uuid))
+            Ok(Name::new_with_uuid(name.to_string(), Some(uuid.parse()?)))
+        } else {
+            if s.is_empty() {
+                return Err(NameParseError::MissingName);
+            }
+            Ok(Name::new_reserved(s))
+        }
     }
 }
 
 impl std::fmt::Display for Name {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}-", self.name())?;
-        self.uuid().format(f, true /*raw*/)
+        match self {
+            Self::Suffixed(n, uuid) => {
+                write!(f, "{}-", n)?;
+                uuid.format(f, true /*raw*/)
+            }
+            Self::Reserved(n) => write!(f, "{}", n),
+        }
     }
 }
 
