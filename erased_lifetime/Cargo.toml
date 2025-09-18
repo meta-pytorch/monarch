@@ -8,3 +8,6 @@ edition = "2021"
 description = "dynamic, lifetime-erased refcell"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
+
+[lib]
+edition = "2024"

@@ -13,6 +13,7 @@ license = "BSD-3-Clause"
 test = false
 doctest = false
 proc-macro = true
+edition = "2024"
 
 [[test]]
 name = "hyperactor_macros_test"

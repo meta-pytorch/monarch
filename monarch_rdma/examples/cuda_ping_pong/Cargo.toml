@@ -11,16 +11,19 @@ license = "BSD-3-Clause"
 path = "cuda_ping_pong.rs"
 test = false
 doctest = false
+edition = "2024"
 
 [[bin]]
 name = "cuda_ping_pong_bootstrap"
 path = "bootstrap.rs"
 test = false
+edition = "2024"
 
 [[bin]]
 name = "cuda_ping_pong_example"
 path = "main.rs"
 test = false
+edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"

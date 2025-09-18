@@ -9,16 +9,19 @@ license = "BSD-3-Clause"
 
 [lib]
 path = "parameter_server.rs"
+edition = "2024"
 
 [[bin]]
 name = "parameter_server_bootstrap"
 path = "bootstrap.rs"
 test = false
+edition = "2024"
 
 [[bin]]
 name = "parameter_server_example"
 path = "main.rs"
 test = false
+edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"

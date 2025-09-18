@@ -7,6 +7,9 @@ authors = ["Meta"]
 edition = "2021"
 license = "BSD-3-Clause"
 
+[lib]
+edition = "2024"
+
 [dependencies]
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 

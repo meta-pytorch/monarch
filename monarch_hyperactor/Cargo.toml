@@ -7,6 +7,10 @@ authors = ["Meta"]
 edition = "2021"
 license = "BSD-3-Clause"
 
+[[bin]]
+name = "process_allocator"
+edition = "2024"
+
 [[test]]
 name = "test_monarch_hyperactor"
 path = "tests/lib.rs"

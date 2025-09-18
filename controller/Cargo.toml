@@ -7,9 +7,13 @@ authors = ["Meta"]
 edition = "2021"
 license = "BSD-3-Clause"
 
+[lib]
+edition = "2024"
+
 [[bin]]
 name = "controller_bin"
 path = "src/main.rs"
+edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"

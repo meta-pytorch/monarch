@@ -9,6 +9,9 @@ description = "a high-performance, scalable actor framework for cluster computin
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
+[lib]
+edition = "2024"
+
 [[bin]]
 name = "channel_benchmarks"
 path = "benches/main.rs"
@@ -16,18 +19,22 @@ path = "benches/main.rs"
 [[bin]]
 name = "hyperactor_example_channel"
 path = "example/channel.rs"
+edition = "2024"
 
 [[bin]]
 name = "hyperactor_example_derive"
 path = "example/derive.rs"
+edition = "2024"
 
 [[bin]]
 name = "hyperactor_example_stream"
 path = "example/stream.rs"
+edition = "2024"
 
 [[bin]]
 name = "hyperactor_host_test_bootstrap"
 path = "test/host_bootstrap.rs"
+edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"

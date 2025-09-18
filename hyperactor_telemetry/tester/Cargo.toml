@@ -10,6 +10,7 @@ license = "BSD-3-Clause"
 [[bin]]
 name = "tester"
 path = "main.rs"
+edition = "2024"
 
 [dependencies]
 hyperactor_telemetry = { version = "0.0.0", path = ".." }

@@ -9,6 +9,9 @@ description = "data structures to support n-d arrays of ranks"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
+[lib]
+edition = "2024"
+
 [dependencies]
 anyhow = "1.0.98"
 enum-as-inner = "0.6.0"

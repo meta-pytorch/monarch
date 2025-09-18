@@ -11,6 +11,7 @@ license = "BSD-3-Clause"
 path = "lib.rs"
 test = false
 doctest = false
+edition = "2024"
 
 [dependencies]
 hyperactor = { version = "0.0.0", path = "../../hyperactor" }
