@@ -28,6 +28,19 @@ from opentelemetry.util.types import Attributes
 
 class TracingForwarder(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
+        # Try to add actor_id from the current context to the logging record
+        try:
+            from monarch._src.actor.actor_mesh import context
+
+            ctx = context()
+            if ctx and ctx.actor_instance and ctx.actor_instance.actor_id:
+                # Add actor_id as an attribute to the logging record
+                setattr(record, "actor_id", str(ctx.actor_instance.actor_id))
+        except Exception:
+            # If we can't get the context or actor_id for any reason, just continue
+            # without adding the actor_id field
+            pass
+
         forward_to_tracing(record)
 
 
