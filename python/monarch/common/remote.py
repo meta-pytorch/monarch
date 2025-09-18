@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 from monarch._src.actor.endpoint import Endpoint
 from monarch.common.device_mesh import RemoteProcessGroup
-from monarch.common.fake import fake_call
+from monarch.common.fake import _fake_mode, fake_call
 
 from monarch.common.function import (
     Propagator,
@@ -57,9 +57,12 @@ from monarch.common.function_caching import (
 )
 from monarch.common.messages import Dims
 
+from monarch.common.mock_cuda import mock_cuda_guard
 from monarch.common.tensor import dtensor_check, dtensor_dispatch, InputChecker
 from monarch.common.tree import flatten, tree_map
 from torch import autograd, distributed as dist
+from torch.utils._python_dispatch import _disable_current_modes
+
 from typing_extensions import ParamSpec
 
 logger: Logger = logging.getLogger(__name__)
@@ -366,4 +369,76 @@ def _cached_propagation(_cache, rfunction: ResolvableFunction, args, kwargs):
     unflatten_result, output_pattern = _cache[key]
 
     output_tensors = fake_call(output_pattern.empty, [inputs_group.tensors])
+    return unflatten_result(output_tensors)
+
+
+def _mocked_propagation(rfunction: ResolvableFunction, args, kwargs):
+    # need to break out of device_mesh dispatch mode to run local mocked execution
+    with _disable_current_modes():
+        # need to manually enable autograd version tracking as we may be
+        # being called inside torch_dispatch
+        with torch._C._SetExcludeDispatchKeyGuard(
+            torch._C.DispatchKey.ADInplaceOrView, False
+        ):
+            fn = rfunction.resolve()
+
+            input_monarch_tensors, unflatten_monarch_input = flatten(
+                (args, kwargs), lambda x: isinstance(x, torch.Tensor)
+            )
+            if len(input_monarch_tensors) > 0:
+                assert all(
+                    [[t._fake.is_cuda for t in input_monarch_tensors]]
+                ), "all input tensors to mocked should be CUDA"
+            input_fake_tensors = [t._fake for t in input_monarch_tensors]
+            input_fake_group = TensorGroup(input_fake_tensors)
+
+            with mock_cuda_guard():
+                # create mocked real tensor versions of input tensors
+                mocked_real_input_tensors = input_fake_group.pattern.empty([[]])
+                # increment version of mocked tensors to match input tensors.
+                # looping over (fake_version - mocked_version) to account for
+                # potential tensor aliasing.
+                for fake_input_tensor, mocked_input_tensor in zip(
+                    input_fake_tensors, mocked_real_input_tensors
+                ):
+                    fake_input_version = fake_input_tensor._version
+                    mocked_input_version = mocked_input_tensor._version
+                    assert (
+                        mocked_input_version <= fake_input_version
+                    ), "mocked version should be <= than fake version"
+                    for _ in range(fake_input_version - mocked_input_version):
+                        torch.autograd.graph.increment_version(mocked_input_tensor)
+
+                for i in range(len(input_monarch_tensors)):
+                    mocked_real_input_tensors[i].requires_grad = input_monarch_tensors[
+                        i
+                    ].requires_grad
+
+                mocked_input_group = TensorGroup(mocked_real_input_tensors)
+                mocked_args, mocked_kwargs = unflatten_monarch_input(
+                    mocked_real_input_tensors
+                )
+
+                mocked_result = fn(*mocked_args, **mocked_kwargs)
+
+                mocked_result_tensors, unflatten_result = flatten(
+                    mocked_result, lambda x: isinstance(x, torch.Tensor)
+                )
+                mocked_output_group = TensorGroup(
+                    mocked_result_tensors, parent=mocked_input_group
+                )
+
+            output_tensors = fake_call(
+                mocked_output_group.pattern.empty, [input_fake_group.tensors]
+            )
+
+            for mocked_result_tensor, fake_output_tensor in zip(
+                mocked_result_tensors, output_tensors
+            ):
+                mocked_result_version = mocked_result_tensor._version
+                fake_output_version = fake_output_tensor._version
+                for _ in range(mocked_result_version - fake_output_version):
+                    torch.autograd.graph.increment_version(fake_output_tensor)
+                assert mocked_result_tensor._version == fake_output_tensor._version
+
     return unflatten_result(output_tensors)

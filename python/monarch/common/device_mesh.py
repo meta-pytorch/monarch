@@ -29,6 +29,7 @@ from typing import (
 import monarch.common.messages as messages
 import torch
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
+from monarch.common.tree import flatten
 
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
@@ -335,6 +336,7 @@ class DeviceMesh(Referenceable, MeshTrait):
 
 _active: Optional[DeviceMesh] = None
 _dispatch_enabled = False
+_mock_dispatch = False
 
 
 def get_active_mesh():
@@ -355,6 +357,14 @@ class _ActiveMesh(TorchDispatchMode):
             return func(*args, **kwargs)
         if fnstr in self.allowed_local_accessors and not isinstance(args[0], Tensor):
             return func(*args, **kwargs)
+        global _mock_dispatch
+        input_tensors, _ = flatten(
+            (args, kwargs), lambda x: isinstance(x, torch.Tensor)
+        )
+        if _mock_dispatch and (
+            len(input_tensors) == 0 or all([[t.is_cuda for t in input_tensors]])
+        ):
+            return _remote(func, propagate="mocked")(*args, **kwargs)
         return _remote(func, propagate=func)(*args, **kwargs)
 
 
@@ -374,6 +384,16 @@ def _dispatch():
                 yield
         finally:
             _dispatch_enabled = False
+
+
+def enable_mocked_dispatch() -> None:
+    global _mock_dispatch
+    _mock_dispatch = True
+
+
+def disable_mocked_dispatch() -> None:
+    global _mock_dispatch
+    _mock_dispatch = False
 
 
 _on_change: List[Callable] = []
