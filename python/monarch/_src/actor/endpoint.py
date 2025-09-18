@@ -8,7 +8,7 @@
 
 import functools
 from abc import ABC, abstractmethod
-from operator import mul
+from datetime import datetime
 from typing import (
     Any,
     Awaitable,
@@ -31,7 +31,14 @@ from typing import (
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 
 from monarch._src.actor.future import Future
+from monarch._src.actor.telemetry import METER
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
+
+# Histogram for measuring endpoint call latency
+endpoint_call_latency_histogram = METER.create_histogram(
+    name="endpoint_call_latency.us",
+    description="Latency of endpoint call operations in microseconds",
+)
 
 if TYPE_CHECKING:
     from monarch._src.actor.actor_mesh import (
@@ -121,24 +128,41 @@ class Endpoint(ABC, Generic[P, R]):
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
         from monarch._src.actor.actor_mesh import ValueMesh
 
+        start_time = datetime.now()
         p, unranked = self._port()
         r = unranked.ranked()
         # pyre-ignore
         extent = self._send(args, kwargs, port=p)
 
+        method_specifier = self._call_name()
+        if hasattr(method_specifier, "name"):
+            method_name = method_specifier.name
+        else:
+            method_name = "unknown"
+
         async def process() -> "ValueMesh[R]":
             from monarch._rust_bindings.monarch_hyperactor.shape import Shape
             from monarch._src.actor.shape import NDSlice
 
-            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
-            for _ in range(extent.nelements):
-                rank, value = await r._recv()
-                results[rank] = value
-            call_shape = Shape(
-                extent.labels,
-                NDSlice.new_row_major(extent.sizes),
-            )
-            return ValueMesh(call_shape, results)
+            try:
+                results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
+                for _ in range(extent.nelements):
+                    rank, value = await r._recv()
+                    results[rank] = value
+                call_shape = Shape(
+                    extent.labels,
+                    NDSlice.new_row_major(extent.sizes),
+                )
+                return ValueMesh(call_shape, results)
+            finally:
+                duration = datetime.now() - start_time
+                endpoint_call_latency_histogram.record(
+                    duration.microseconds,
+                    attributes={
+                        "method": str(method_name),
+                        "actor_count": extent.nelements,
+                    },
+                )
 
         return Future(coro=process())
 

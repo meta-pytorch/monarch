@@ -76,7 +76,10 @@ class Histogram(metrics.Histogram):
         attributes: Optional[Attributes] = None,
         context: Optional[Context] = None,
     ) -> None:
-        self.inner.record(amount)
+        rust_attributes = None
+        if attributes:
+            rust_attributes = {str(k): str(v) for k, v in attributes.items()}
+        self.inner.record(amount, attributes=rust_attributes)
 
 
 class Meter(metrics.Meter):

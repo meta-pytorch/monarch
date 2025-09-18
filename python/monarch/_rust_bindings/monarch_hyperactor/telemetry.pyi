@@ -119,12 +119,13 @@ class PyHistogram:
         """
         ...
 
-    def record(self, value: float) -> None:
+    def record(self, value: float, *, attributes: dict[str, str] | None = None) -> None:
         """
         Record a value in the histogram.
 
         Args:
         - value (float): The value to record in the histogram.
+        - attributes (dict[str, str] | None): Optional attributes to associate with the measurement.
         """
         ...
 

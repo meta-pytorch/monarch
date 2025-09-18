@@ -136,8 +136,19 @@ impl PyHistogram {
         }
     }
 
-    fn record(&mut self, value: f64) {
-        self.inner.record(value, &[]);
+    fn record(
+        &mut self,
+        value: f64,
+        attributes: Option<std::collections::HashMap<String, String>>,
+    ) {
+        let kv_attributes: Vec<opentelemetry::KeyValue> = match attributes {
+            Some(attrs) => attrs
+                .into_iter()
+                .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+                .collect(),
+            None => vec![],
+        };
+        self.inner.record(value, &kv_attributes);
     }
 }
 
