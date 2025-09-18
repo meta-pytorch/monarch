@@ -821,7 +821,9 @@ impl PortId {
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
     pub fn send(&self, caps: &impl cap::CanSend, serialized: &Serialized) {
-        caps.post(self.clone(), Attrs::new(), serialized.clone());
+        let mut headers = Attrs::new();
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+        caps.post(self.clone(), headers, serialized.clone());
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -831,8 +833,9 @@ impl PortId {
         &self,
         caps: &impl cap::CanSend,
         serialized: &Serialized,
-        headers: Attrs,
+        mut headers: Attrs,
     ) {
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
         caps.post(self.clone(), headers, serialized.clone());
     }
 
@@ -944,9 +947,10 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn send_with_headers(
         &self,
         caps: &impl cap::CanSend,
-        headers: Attrs,
+        mut headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
         let serialized = Serialized::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),
@@ -1057,9 +1061,10 @@ impl<M: RemoteMessage> OncePortRef<M> {
     pub fn send_with_headers(
         self,
         caps: &impl cap::CanSend,
-        headers: Attrs,
+        mut headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
         let serialized = Serialized::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),

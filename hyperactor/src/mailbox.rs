@@ -140,6 +140,8 @@ pub use mailbox_admin_message::MailboxAdminMessageHandler;
 pub mod durable_mailbox_sender;
 pub use durable_mailbox_sender::log;
 use durable_mailbox_sender::log::*;
+/// For message headers and latency tracking.
+pub mod headers;
 
 /// Message collects the necessary requirements for messages that are deposited
 /// into mailboxes.
@@ -1687,7 +1689,11 @@ impl<M: Message> PortHandle<M> {
     /// Send a message to this port.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
-        self.sender.send(Attrs::new(), message).map_err(|err| {
+        let mut headers = Attrs::new();
+
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+
+        self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
                 MailboxSenderErrorKind::Other(err),

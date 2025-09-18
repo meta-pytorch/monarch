@@ -44,6 +44,7 @@ derivative = "2.2"
 dns-lookup = "1.0"
 enum-as-inner = "0.6.0"
 erased-serde = "0.3.27"
+fastrand = "2.1.1"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"
 hyperactor_macros = { version = "0.0.0", path = "../hyperactor_macros" }

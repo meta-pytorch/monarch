@@ -120,6 +120,12 @@ impl Named for std::time::Duration {
     }
 }
 
+impl Named for std::time::SystemTime {
+    fn typename() -> &'static str {
+        "std::time::SystemTime"
+    }
+}
+
 impl Named for bytes::Bytes {
     fn typename() -> &'static str {
         "bytes::Bytes"
