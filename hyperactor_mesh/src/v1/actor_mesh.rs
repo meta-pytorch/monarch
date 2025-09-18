@@ -159,9 +159,10 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
     pub async fn supervision_events(
         &self,
         cx: &impl context::Actor,
-        name: Name,
     ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
-        self.proc_mesh.supervision_events(cx, name).await
+        self.proc_mesh
+            .supervision_events(cx, self.name.clone())
+            .await
     }
 }
 
@@ -452,12 +453,8 @@ mod tests {
         // status such that when a process switches to unhealthy it sets a
         // supervision event.
         let actor_mesh_ref = actor_mesh.freeze();
-        let child_name_clone = child_name.clone();
         let supervision_task = tokio::spawn(async move {
-            match actor_mesh_ref
-                .supervision_events(&instance, child_name_clone)
-                .await
-            {
+            match actor_mesh_ref.supervision_events(&instance).await {
                 Ok(events) => {
                     for event_list in events.values() {
                         assert!(!event_list.is_empty());

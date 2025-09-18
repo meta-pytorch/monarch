@@ -16,6 +16,10 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
+use hyperactor::RemoteMessage;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
+use hyperactor::message::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -69,4 +73,25 @@ pub struct GetState<S> {
     /// A reply containing the state.
     #[reply]
     pub reply: PortRef<State<S>>,
+}
+
+// Cannot derive Bind and Unbind for this generic, implement manually.
+impl<T> Unbind for GetState<T>
+where
+    T: RemoteMessage,
+    T: Unbind,
+{
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.reply.unbind(bindings)
+    }
+}
+
+impl<T> Bind for GetState<T>
+where
+    T: RemoteMessage,
+    T: Bind,
+{
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.reply.bind(bindings)
+    }
 }
