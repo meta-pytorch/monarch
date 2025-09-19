@@ -80,7 +80,7 @@ from monarch._src.actor.endpoint import (
     Propagator,
     Selection,
 )
-from monarch._src.actor.future import DeprecatedNotAFuture, Future
+from monarch._src.actor.future import Future
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
@@ -1025,7 +1025,7 @@ def _pickle(obj: object) -> bytes:
     return msg
 
 
-class Actor(MeshTrait, DeprecatedNotAFuture):
+class Actor(MeshTrait):
     @functools.cached_property
     def logger(cls) -> logging.Logger:
         lgr = logging.getLogger(cls.__class__.__name__)
@@ -1062,7 +1062,7 @@ class Actor(MeshTrait, DeprecatedNotAFuture):
         return False
 
 
-class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
+class ActorMesh(MeshTrait, Generic[T]):
     """
     A group of actor instances of the same class.
 

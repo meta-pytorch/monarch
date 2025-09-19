@@ -21,7 +21,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
 )
 
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._src.actor.future import DeprecatedNotAFuture, Future
+from monarch._src.actor.future import Future
 
 
 ALLOC_LABEL_PROC_MESH_NAME = "procmesh.monarch.meta.com/name"
@@ -30,7 +30,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 
 @dataclass
-class AllocHandle(DeprecatedNotAFuture):
+class AllocHandle:
     _hy_alloc: "Shared[Alloc]"
     _extent: Dict[str, int]
     _stream_logs: bool
