@@ -25,7 +25,6 @@ use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
-use ndslice::Shape;
 use ndslice::ViewExt as _;
 use ndslice::view;
 use ndslice::view::Region;
@@ -125,11 +124,11 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            let cast_mesh_shape = to_shape(view::Ranked::region(self));
+            let cast_mesh_shape = view::Ranked::region(self).into();
             let actor_mesh_id = ActorMeshId::V1(self.name.clone());
             match &self.proc_mesh.root_region {
                 Some(root_region) => {
-                    let root_mesh_shape = to_shape(root_region);
+                    let root_mesh_shape = root_region.into();
                     v0_actor_mesh::cast_to_sliced_mesh::<A, M>(
                         cx,
                         actor_mesh_id,
@@ -297,11 +296,6 @@ impl<A: RemoteActor> view::RankedSliceable for ActorMeshRef<A> {
         let proc_mesh = self.proc_mesh.subset(region).unwrap();
         Self::with_page_size(self.name.clone(), proc_mesh, self.page_size)
     }
-}
-
-fn to_shape(region: &Region) -> Shape {
-    Shape::new(region.labels().to_vec(), region.slice().clone())
-        .expect("Shape::new should not fail because a Region by definition is a valid Shape")
 }
 
 #[cfg(test)]
