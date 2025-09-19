@@ -1013,10 +1013,7 @@ impl WorkerMessageHandler for WorkerActor {
         stream: StreamRef,
     ) -> Result<Option<Result<WireValue, String>>> {
         let stream = self.try_get_stream(stream)?;
-        Ok(stream
-            .get_ref_unit_tests_only(cx, ref_id.clone())
-            .await?
-            .map(|o| Ok(o?)))
+        Ok(stream.get_ref_unit_tests_only(cx, ref_id.clone()).await?)
     }
 
     async fn define_recording(
@@ -1177,7 +1174,6 @@ mod tests {
 
     use anyhow::Result;
     use hyperactor::Instance;
-    use hyperactor::Mailbox;
     use hyperactor::Named;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;

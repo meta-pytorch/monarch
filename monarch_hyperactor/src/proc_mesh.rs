@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use hyperactor::Actor;
-use hyperactor::Mailbox;
 use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;

@@ -593,7 +593,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
         Ok(Box::new(AsyncActorMesh::new(
             self.queue.clone(),
             self.supervised,
-            async { Ok(mesh.await?.new_with_shape(shape)?) },
+            async { mesh.await?.new_with_shape(shape) },
         )))
     }
 

@@ -16,7 +16,6 @@ use hyperactor::clock::RealClock;
 use hyperactor::context::Mailbox as _;
 use hyperactor::data::Serialized;
 use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
-use hyperactor_multiprocess::system_actor::SystemMessage;
 use hyperactor_multiprocess::system_actor::SystemMessageClient;
 use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
 use hyperactor_multiprocess::system_actor::WorldSnapshot;

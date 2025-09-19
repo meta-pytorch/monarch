@@ -79,7 +79,6 @@ pub mod test_utils {
 
     use hyperactor::ActorRef;
     use hyperactor::Instance;
-    use hyperactor::Mailbox;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor_mesh::Mesh;
@@ -503,7 +502,7 @@ pub mod test_utils {
                 actor_2,
                 rdma_handle_1,
                 rdma_handle_2,
-                cuda_context_1: cuda_contexts.get(0).cloned().flatten(),
+                cuda_context_1: cuda_contexts.first().cloned().flatten(),
                 cuda_context_2: cuda_contexts.get(1).cloned().flatten(),
             })
         }

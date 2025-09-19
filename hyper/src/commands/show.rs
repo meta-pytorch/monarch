@@ -8,7 +8,6 @@
 
 use std::io;
 use std::io::Write;
-use std::sync::Arc;
 
 use anyhow::Context;
 use chrono::DateTime;
@@ -28,8 +27,6 @@ use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
 use hyperactor_multiprocess::system_actor::SystemMessageClient;
 use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
 use tabwriter::TabWriter;
-use tokio::sync::Mutex;
-use tokio::task::JoinSet;
 #[cfg(fbcode_build)]
 use utils::system_address::SystemAddr;
 

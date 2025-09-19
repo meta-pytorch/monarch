@@ -1856,18 +1856,15 @@ mod tests {
     use hyperactor::clock::RealClock;
     use hyperactor::data::Serialized;
     use hyperactor::mailbox::Mailbox;
-    use hyperactor::mailbox::MailboxSender;
     use hyperactor::mailbox::MailboxServer;
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
-    use hyperactor::mailbox::monitored_return_handle;
     use hyperactor::simnet;
     use hyperactor::test_utils::pingpong::PingPongActorParams;
 
     use super::*;
     use crate::System;
-    use crate::supervision::WorldSupervisionMessageClient;
 
     struct MockHostActor {
         local_proc_id: ProcId,

@@ -64,9 +64,9 @@ pub fn get_tokio_runtime<'l>() -> std::sync::MappedRwLockReadGuard<'l, tokio::ru
 }
 
 pub fn shutdown_tokio_runtime() {
-    INSTANCE.write().unwrap().take().map(|x| {
+    if let Some(x) = INSTANCE.write().unwrap().take() {
         x.shutdown_timeout(Duration::from_secs(1));
-    });
+    }
 }
 
 thread_local! {

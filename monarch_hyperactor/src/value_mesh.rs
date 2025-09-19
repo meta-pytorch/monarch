@@ -71,7 +71,7 @@ impl PyValueMesh {
         // Py<PyAny>. `unwrap` is safe because the bounds have been
         // checked.
         let v: Py<PyAny> = self.inner.get(rank).unwrap().clone();
-        Ok(v.into())
+        Ok(v)
     }
 
     /// Build from (rank, value) pairs with last-write-wins semantics.

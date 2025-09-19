@@ -19,7 +19,6 @@ use monarch_messages::debugger::DebuggerAction;
 use monarch_messages::debugger::DebuggerMessage;
 use monarch_tensor_worker::stream::CONTROLLER_ACTOR_REF;
 use monarch_tensor_worker::stream::PROC;
-use monarch_tensor_worker::stream::ROOT_ACTOR_ID;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
