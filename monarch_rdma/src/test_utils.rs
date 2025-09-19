@@ -345,8 +345,10 @@ pub mod test_utils {
                 .unwrap();
 
             let proc_mesh_1 = Box::leak(Box::new(ProcMesh::allocate(alloc_1).await.unwrap()));
-            let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> =
-                proc_mesh_1.spawn("rdma_manager", &(config1)).await.unwrap();
+            let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> = proc_mesh_1
+                .spawn("rdma_manager", &Some(config1))
+                .await
+                .unwrap();
 
             let alloc_2 = LocalAllocator
                 .allocate(AllocSpec {
@@ -358,8 +360,10 @@ pub mod test_utils {
                 .unwrap();
 
             let proc_mesh_2 = Box::leak(Box::new(ProcMesh::allocate(alloc_2).await.unwrap()));
-            let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> =
-                proc_mesh_2.spawn("rdma_manager", &(config2)).await.unwrap();
+            let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> = proc_mesh_2
+                .spawn("rdma_manager", &Some(config2))
+                .await
+                .unwrap();
 
             let mut buf_vec = Vec::new();
             let mut cuda_contexts = Vec::new();
