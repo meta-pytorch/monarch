@@ -20,6 +20,10 @@ The example shows how to:
 - Create an asynchronous training loop with multiple components
 """
 
+import os
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 # %%
 import asyncio
 import copy

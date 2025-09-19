@@ -232,7 +232,8 @@ fn main() {
                     .include(format!("{}/src", manifest_dir))
                     .flag("-fPIC")
                     .cpp(true)
-                    .flag("-std=gnu++20");
+                    .flag("-std=gnu++20")
+                    .define("PYTORCH_C10_DRIVER_API_SUPPORTED", "1");
 
                 // Add CUDA include paths
                 cpp_build.include(&cuda_include_path);
