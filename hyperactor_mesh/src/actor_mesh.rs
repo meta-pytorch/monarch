@@ -41,7 +41,9 @@ use ndslice::Shape;
 use ndslice::ShapeError;
 use ndslice::SliceError;
 use ndslice::reshape::Limit;
+use ndslice::reshape::ReshapeError;
 use ndslice::reshape::ReshapeSliceExt;
+use ndslice::reshape::reshape_selection;
 use ndslice::selection;
 use ndslice::selection::EvalOpts;
 use ndslice::selection::ReifySlice;
@@ -121,12 +123,7 @@ where
 
             (
                 if reshaped_slice != *slice_of_root {
-                    Selection::of_ranks(
-                        &reshaped_slice,
-                        &selection_of_root
-                            .eval(&selection::EvalOpts::strict(), slice_of_root)?
-                            .collect::<BTreeSet<_>>(),
-                    )?
+                    reshape_selection(selection_of_root, root_mesh_shape.slice(), &reshaped_slice)?
                 } else {
                     selection_of_root
                 },
@@ -494,6 +491,9 @@ pub enum CastError {
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+
+    #[error(transparent)]
+    ReshapeError(#[from] ReshapeError),
 }
 
 // This has to be compiled outside of test mode because the bootstrap binary
