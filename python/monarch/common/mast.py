@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 # TODO: This can all be replaced using cleanrer MAST python library.
 #       See https://www.internalfb.com/wiki/Components_in_AI/MAST/References/MAST_API_Reference/Read_APIs
 

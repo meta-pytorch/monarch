@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 from typing import final, Optional, Union
 
 from monarch._rust_bindings.monarch_hyperactor.proc import Serialized

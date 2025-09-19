@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 """
 Module for managing the event loop used by Monarch Python actors.
 This provides a way to create a Python-aware thread from Rust that runs the worker event loop.
