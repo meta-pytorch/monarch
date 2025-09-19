@@ -40,6 +40,15 @@ pub fn log_message_latency_if_sampling(headers: &Attrs, actor_id: String) {
     if fastrand::f32() > global::get(crate::config::MESSAGE_LATENCY_SAMPLING_RATE) {
         return;
     }
+
+    if !headers.contains_key(SEND_TIMESTAMP) {
+        tracing::warn!(
+            actor_id = actor_id,
+            "SEND_TIMESTAMP missing from message headers, cannot measure latency"
+        );
+        return;
+    }
+
     let metric_pairs = hyperactor_telemetry::kv_pairs!(
         "actor_id" => actor_id
     );
