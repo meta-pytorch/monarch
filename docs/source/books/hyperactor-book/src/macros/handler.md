@@ -1,6 +1,6 @@
 # `#[derive(Handler)]`
 
-The `#[derive(Handler)]` macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct.
+The `#[derive(Handler)]` macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic.
 
 ### For an Enum:
 When applied to an enum like this
@@ -77,13 +77,14 @@ pub trait ShoppingListClient: Send + Sync {
 ```
 
 ### For a struct
+Supports both generic and non-generic structs. Generic structs must implement the trait bounds `Serialize`, `Deserialize`, `Send`, `Sync`, `Debug`, and `Named`. This is automatically enforced by the macro.
 When applied to a struct like this
 ```rust
 #[derive(Handler)]
-struct GetItemCount {
+struct GetItemCount<C> {
     category_filter: String,
     #[reply]
-    reply: OncePortRef<usize>,
+    reply: OncePortRef<C>,
 }
 ```
 
@@ -95,7 +96,14 @@ use async_trait::async_trait;
 use hyperactor::anyhow::Error;
 
 #[async_trait]
-pub trait GetItemCountHandler: hyperactor::Actor + Send + Sync  {
+pub trait GetItemCountHandler<
+    C: serde::Serialize
+        + for<'de> serde::Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + hyperactor::Named,
+>: hyperactor::Actor + Send + Sync  {
     async fn get_item_count(
         &mut self,
         _cx: &Context<Self>,
