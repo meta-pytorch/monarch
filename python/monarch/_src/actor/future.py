@@ -208,4 +208,4 @@ class DeprecatedNotAFuture:
 
     def __await__(self) -> "Generator[Any, Any, Self]":
         yield from ()
-        return self
+        return DeprecatedNotAFuture.get(self)

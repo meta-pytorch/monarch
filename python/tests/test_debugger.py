@@ -242,10 +242,10 @@ async def test_debug() -> None:
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock
     ), patch("monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock):
         proc = proc_mesh(hosts=2, gpus=2)
-        debugee = await proc.spawn("debugee", DebugeeActor)
-        debug_controller = actor.get_or_spawn_controller(
+        debugee = proc.spawn("debugee", DebugeeActor)
+        debug_controller = await actor.get_or_spawn_controller(
             "debug_controller", DebugControllerForTesting
-        ).get()
+        )
 
         fut = debugee.to_debug.call()
         await debug_controller.wait_pending_session.call_one()
@@ -386,12 +386,12 @@ async def test_debug_multi_actor() -> None:
     with patch(
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", side_effect=input_mock
     ):
-        proc = await proc_mesh(hosts=2, gpus=2)
-        debugee_1 = await proc.spawn("debugee_1", DebugeeActor)
-        debugee_2 = await proc.spawn("debugee_2", DebugeeActor)
-        debug_controller = actor.get_or_spawn_controller(
+        proc = proc_mesh(hosts=2, gpus=2)
+        debugee_1 = proc.spawn("debugee_1", DebugeeActor)
+        debugee_2 = proc.spawn("debugee_2", DebugeeActor)
+        debug_controller = await actor.get_or_spawn_controller(
             "debug_controller", DebugControllerForTesting
-        ).get()
+        )
 
         fut_1 = debugee_1.to_debug.call()
         fut_2 = debugee_2.to_debug.call()
@@ -787,7 +787,7 @@ async def test_debug_command_parser_invalid_inputs(invalid_input):
 @pytest.mark.timeout(60)
 async def test_debug_cli():
     proc = proc_mesh(hosts=2, gpus=2)
-    debugee = await proc.spawn("debugee", DebugeeActor)
+    debugee = proc.spawn("debugee", DebugeeActor)
     debug_controller = actor.get_or_spawn_controller(
         "debug_controller", DebugControllerForTesting
     ).get()
@@ -1039,7 +1039,7 @@ class_closure_source = """class ClassClosure:
         class Internal:
             def __init__(self):
                 self.arg = arg
-# noqa           
+# noqa
             def get_arg(self):
                 breakpoint()
                 return self.arg

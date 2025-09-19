@@ -30,11 +30,11 @@ class Printer(Actor):
 
 async def _flush_logs() -> None:
     # Create a lot of processes to stress test the logging
-    pm = await proc_mesh(gpus=32)
+    pm = proc_mesh(gpus=32)
 
     # never flush
     await pm.logging_option(aggregate_window_sec=1000)
-    am = await pm.spawn("printer", Printer)
+    am = pm.spawn("printer", Printer)
 
     # These should be streamed to client
     for _ in range(5):

@@ -77,7 +77,7 @@ class AddWithState(Actor):
 def test_actor_with_tensors() -> None:
     pm = proc_mesh(gpus=1)
     with pm.activate():
-        x = pm.spawn("adder", AddWithState, torch.ones(())).get()
+        x = pm.spawn("adder", AddWithState, torch.ones(()))
         y = torch.ones(())
         assert x.forward.call(y).get(timeout=5).item(hosts=0, gpus=0).item() == 2
 
@@ -97,7 +97,7 @@ class Counter(Actor):
 def test_actor_tensor_ordering() -> None:
     pm = proc_mesh(gpus=1)
     with pm.activate():
-        counter = pm.spawn("a", Counter).get()
+        counter = pm.spawn("a", Counter)
         results = []
         for _ in range(0, 10, 2):
             # tensor engine call
@@ -124,7 +124,7 @@ class Linear(Actor):
 def test_rref_actor() -> None:
     pm = proc_mesh(gpus=1)
     with pm.activate():
-        x = pm.spawn("linear", Linear, 3, 4).get()
+        x = pm.spawn("linear", Linear, 3, 4)
 
         y = torch.ones((4, 3))
         t = as_endpoint(x.forward, propagate=lambda x: torch.rand(3, 4)).rref(y)

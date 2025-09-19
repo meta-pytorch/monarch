@@ -404,7 +404,7 @@ async def _spawn_controller_and_receiver(
     # Assign a unique ID to the actors to avoid collisions when tests are run in parallel.
     world_id = uuid.uuid4().hex
     receiver_actor = (
-        await this_host()
+        this_host()
         .spawn_procs(per_host={"gpus": 1})
         .spawn(
             f"rdma_receiver_{world_id}",
@@ -414,7 +414,7 @@ async def _spawn_controller_and_receiver(
         )
     )
     controller_actor = (
-        await this_host()
+        this_host()
         .spawn_procs(per_host={"gpus": 1})
         .spawn(
             f"rdma_test_controller_{world_id}",
