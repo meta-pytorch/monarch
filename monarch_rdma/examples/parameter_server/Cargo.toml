@@ -8,7 +8,7 @@ edition = "2021"
 license = "BSD-3-Clause"
 
 [lib]
-path = "parameter_server.rs"
+path = "src/parameter_server.rs"
 edition = "2024"
 
 [[bin]]
@@ -19,7 +19,7 @@ edition = "2024"
 
 [[bin]]
 name = "parameter_server_example"
-path = "main.rs"
+path = "src/lib.rs"
 test = false
 edition = "2024"
 

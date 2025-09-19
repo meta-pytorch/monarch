@@ -8,7 +8,7 @@ edition = "2021"
 license = "BSD-3-Clause"
 
 [lib]
-path = "cuda_ping_pong.rs"
+path = "src/cuda_ping_pong.rs"
 test = false
 doctest = false
 edition = "2024"
@@ -21,7 +21,7 @@ edition = "2024"
 
 [[bin]]
 name = "cuda_ping_pong_example"
-path = "main.rs"
+path = "src/lib.rs"
 test = false
 edition = "2024"
 
