@@ -1,0 +1,118 @@
+name: Test GPU Rust
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: 'Wheel artifact name from build workflow'
+        required: true
+        type: string
+
+concurrency:
+  group: test-gpu-rust-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-gpu-rust:
+    name: Test GPU Rust (cuda12.6)
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: 4xlargegpu
+            runs-on: linux.g5.4xlarge.nvidia.gpu
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126'
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.6"
+    with:
+      timeout: 120
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      submodules: recursive
+      download-artifact: ${{ inputs.artifact-name }}
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
+
+        # Setup test environment
+        setup_test_environment
+
+        # Install Rust
+        setup_rust_toolchain
+
+        # Install System dependencies
+        install_system_dependencies
+
+        # Setup Tensor Engine dependencies
+        setup_tensor_engine
+
+        # Debug: Check CUDA installation locations
+        echo "=== CUDA Detection Debug Info ==="
+        echo "Environment variables:"
+        echo "  CUDA_HOME: ${CUDA_HOME:-not set}"
+        echo "  CUDA_PATH: ${CUDA_PATH:-not set}"
+        echo "  PATH: $PATH"
+
+        echo "Checking for nvcc in PATH:"
+        which nvcc || echo "  nvcc not found in PATH"
+        nvcc --version 2>/dev/null || echo "  nvcc not executable"
+
+        echo "Checking common CUDA directories:"
+        for dir in /usr/local/cuda* /usr/local/cuda /opt/cuda* /usr/lib64 /usr/lib/x86_64-linux-gnu; do
+          if [ -d "$dir" ]; then
+            echo "  Found directory: $dir"
+            ls -la "$dir" 2>/dev/null | head -5 || echo "    (cannot list contents)"
+            if [ -d "$dir/lib64" ]; then
+              echo "    lib64 contents:"
+              ls -la "$dir/lib64" | grep -E "(cuda|cudart)" | head -3 || echo "      (no cuda/cudart libs found)"
+            fi
+            if [ -d "$dir/lib" ]; then
+              echo "    lib contents:"
+              ls -la "$dir/lib" | grep -E "(cuda|cudart)" | head -3 || echo "      (no cuda/cudart libs found)"
+            fi
+          fi
+        done
+
+        echo "Checking system library paths:"
+        ldconfig -p | grep -E "(cuda|cudart)" || echo "  No CUDA libraries found in ldconfig"
+
+        # Try to find CUDA automatically first
+        DETECTED_CUDA_HOME=""
+        if command -v nvcc >/dev/null 2>&1; then
+          DETECTED_CUDA_HOME=$(dirname $(dirname $(which nvcc)))
+          echo "Detected CUDA_HOME from nvcc: $DETECTED_CUDA_HOME"
+        elif [ -d "/usr/local/cuda" ]; then
+          DETECTED_CUDA_HOME="/usr/local/cuda"
+          echo "Found default CUDA installation: $DETECTED_CUDA_HOME"
+        fi
+
+        # Set CUDA_LIB_DIR based on detection (resolve symlinks)
+        if [ -n "$DETECTED_CUDA_HOME" ] && [ -d "$DETECTED_CUDA_HOME/lib64" ]; then
+          # Resolve symlink if it exists
+          CUDA_LIB_DIR_RESOLVED=$(readlink -f "$DETECTED_CUDA_HOME/lib64")
+          export CUDA_LIB_DIR="$CUDA_LIB_DIR_RESOLVED"
+        elif [ -n "$DETECTED_CUDA_HOME" ] && [ -d "$DETECTED_CUDA_HOME/lib" ]; then
+          CUDA_LIB_DIR_RESOLVED=$(readlink -f "$DETECTED_CUDA_HOME/lib")
+          export CUDA_LIB_DIR="$CUDA_LIB_DIR_RESOLVED"
+        else
+          # Fallback to hardcoded path
+          export CUDA_LIB_DIR=/usr/local/cuda/lib64
+        fi
+
+        echo "Using CUDA_LIB_DIR: $CUDA_LIB_DIR"
+        if [ -d "$CUDA_LIB_DIR" ]; then
+          echo "Contents of $CUDA_LIB_DIR:"
+          ls -la "$CUDA_LIB_DIR" | grep -E "(cuda|cudart)" || echo "  No CUDA libraries found"
+        else
+          echo "WARNING: CUDA_LIB_DIR does not exist!"
+        fi
+        echo "=========================="
+
+        # Setup PyTorch with C++ headers using common-setup utility
+        setup_pytorch_with_headers "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-spec }}"
+
+        # Run GPU Rust tests
+        echo "Running OSS Rust tests..."
+        cargo test -p monarch_rdma
