@@ -331,7 +331,7 @@ impl PythonMessage {
                                 .unwrap()
                         },
                         |x| {
-                            let point = cx.cast_info();
+                            let point = cx.cast_point();
                             py.import("monarch._src.actor.actor_mesh")
                                 .unwrap()
                                 .call_method1("Port", (x, mailbox, point.rank()))
