@@ -19,10 +19,12 @@ use std::future::Future;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
@@ -41,6 +43,7 @@ use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
@@ -67,9 +70,11 @@ use crate::channel::ChannelError;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
 use crate::clock::RealClock;
+use crate::config;
 use crate::context;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
+use crate::declare_attrs;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -909,7 +914,10 @@ impl<A: Actor> Instance<A> {
     ) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
-        let (work_tx, work_rx) = mpsc::unbounded_channel();
+        let (work_tx, work_rx) = ordered_channel(
+            actor_id.to_string(),
+            config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
+        );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
@@ -1773,11 +1781,17 @@ pub struct Ports<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
-    workq: mpsc::UnboundedSender<WorkCell<A>>,
+    workq: OrderedSender<WorkCell<A>>,
+}
+
+declare_attrs! {
+    /// The name of the client who sent this message, and the message's sequence
+    /// number assigned by that client.
+    attr CLIENT_SEQ: (String, usize);
 }
 
 impl<A: Actor> Ports<A> {
-    fn new(mailbox: Mailbox, workq: mpsc::UnboundedSender<WorkCell<A>>) -> Self {
+    fn new(mailbox: Mailbox, workq: OrderedSender<WorkCell<A>>) -> Self {
         Self {
             ports: DashMap::new(),
             bound: DashMap::new(),
@@ -1805,6 +1819,8 @@ impl<A: Actor> Ports<A> {
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
+                    let client_seq = headers.get(CLIENT_SEQ).cloned();
+
                     let work = WorkCell::new(move |actor: &mut A, instance: &mut Instance<A>| {
                         Box::pin(async move {
                             // SAFETY: we guarantee that the passed type_info is for type M.
@@ -1819,7 +1835,17 @@ impl<A: Actor> Ports<A> {
                         1,
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
-                    workq.send(work).map_err(anyhow::Error::from)
+                    if workq.enable_buffering {
+                        let (client, seq) =
+                            client_seq.expect("CLIENT_SEQ must be set when buffering is enabled");
+
+                        workq.send(client, seq, work).map_err(|e| match e {
+                            OrderedSenderError::SendError(e) => anyhow::Error::from(e),
+                            OrderedSenderError::FlushError(e) => e,
+                        })
+                    } else {
+                        workq.direct_send(work).map_err(anyhow::Error::from)
+                    }
                 });
                 entry.insert(Box::new(port.clone()));
                 port
@@ -1875,6 +1901,152 @@ impl<A: Actor> Ports<A> {
                 );
             }
         }
+    }
+}
+
+/// A client's re-ordering buffer state.
+struct State<T> {
+    /// the last sequence number sent to receiver for this client. seq starts
+    /// with 1 and 0 mean no message has been sent.
+    last_seq: usize,
+    /// Buffer out-of-order messages in order to ensures messages are delivered
+    /// strictly in per-client sequence order.
+    ///
+    /// Map's key is seq_no, value is msg.
+    buffer: HashMap<usize, T>,
+}
+
+impl<T> Default for State<T> {
+    fn default() -> Self {
+        Self {
+            last_seq: 0,
+            buffer: HashMap::new(),
+        }
+    }
+}
+
+/// A sender that ensures messages are delivered in per-client sequence order.
+struct OrderedSender<T> {
+    tx: mpsc::UnboundedSender<T>,
+    states: Arc<DashMap<String, Arc<Mutex<State<T>>>>>,
+    enable_buffering: bool,
+    /// The identify of this object, which is used to distiguish it in debugging.
+    log_id: String,
+}
+
+/// A receiver that receives messages in per-client sequence order.
+fn ordered_channel<T>(
+    log_id: String,
+    enable_buffering: bool,
+) -> (OrderedSender<T>, mpsc::UnboundedReceiver<T>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (
+        OrderedSender {
+            tx,
+            states: Arc::new(DashMap::new()),
+            enable_buffering,
+            log_id,
+        },
+        rx,
+    )
+}
+
+#[derive(Debug)]
+enum OrderedSenderError<T> {
+    SendError(SendError<T>),
+    FlushError(anyhow::Error),
+}
+
+impl<T> Clone for OrderedSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            states: self.states.clone(),
+            enable_buffering: self.enable_buffering,
+            log_id: self.log_id.clone(),
+        }
+    }
+}
+
+impl<T> OrderedSender<T> {
+    /// Buffer msgs if necessary, and deliver them to receiver based on their
+    /// seqs in monotonically increasing order. Note seq is scoped by `sender`
+    /// so the ordering is also scoped by it.
+    ///
+    /// Concurrency:
+    ///
+    /// For the same channel,
+    /// * Calls from the same client will be serialized.
+    /// * calls from different clients will be executed concurrently.
+    fn send(&self, client: String, seq_no: usize, msg: T) -> Result<(), OrderedSenderError<T>> {
+        use std::cmp::Ordering;
+
+        assert!(self.enable_buffering);
+        assert!(seq_no > 0, "seq starts with 1");
+
+        // Make sure only this client's state is locked, not all states.
+        let state = match self.states.get(&client) {
+            Some(state) => state.value().clone(),
+            None => self
+                .states
+                .entry(client.clone())
+                .or_default()
+                .value()
+                .clone(),
+        };
+        let mut state_guard = state.lock().unwrap();
+        let State { last_seq, buffer } = state_guard.deref_mut();
+
+        match seq_no.cmp(&(*last_seq + 1)) {
+            Ordering::Less => {
+                tracing::warn!(
+                    "{} duplicate message from {} with seq no: {}",
+                    self.log_id,
+                    client,
+                    seq_no,
+                );
+            }
+            Ordering::Greater => {
+                // Future message: buffer until the gap is filled.
+                let old = buffer.insert(seq_no, msg);
+                assert!(
+                    old.is_none(),
+                    "{}: same seq is insert to buffer twice: {}",
+                    self.log_id,
+                    seq_no
+                );
+            }
+            Ordering::Equal => {
+                // In-order: deliver, then flush consecutives from buffer until
+                // it reaches a gap.
+                self.tx.send(msg).map_err(OrderedSenderError::SendError)?;
+                *last_seq += 1;
+
+                while let Some(m) = buffer.remove(&(*last_seq + 1)) {
+                    match self.tx.send(m) {
+                        Ok(()) => *last_seq += 1,
+                        Err(err) => {
+                            let flush_err = OrderedSenderError::FlushError(anyhow::anyhow!(
+                                "failed to flush buffered message: {}",
+                                err
+                            ));
+                            buffer.insert(*last_seq + 1, err.0);
+                            return Err(flush_err);
+                        }
+                    }
+                }
+                // We do not remove a client's state even if its buffer becomes
+                // empty, because in practice, normally that client will send
+                // message again.
+            }
+        }
+
+        Ok(())
+    }
+
+    fn direct_send(&self, msg: T) -> Result<(), SendError<T>> {
+        assert!(!self.enable_buffering);
+        self.tx.send(msg)
     }
 }
 
@@ -2973,5 +3145,151 @@ mod tests {
             assert_eq!(stacks[0].len(), 1);
             assert_eq!(stacks[0][0].name(), "child_span");
         })
+    }
+
+    fn drain_try_recv<T: std::fmt::Debug + Clone>(rx: &mut mpsc::UnboundedReceiver<T>) -> Vec<T> {
+        let mut out = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            out.push(m);
+        }
+        out
+    }
+
+    #[test]
+    fn test_ordered_channel_single_client_send_in_order() {
+        let (tx, mut rx) = ordered_channel::<usize>("test".to_string(), true);
+        for s in 1..=10 {
+            tx.send("A".into(), s, s).unwrap();
+            let got = drain_try_recv(&mut rx);
+            assert_eq!(got, vec![s]);
+        }
+    }
+
+    #[test]
+    fn test_ordered_channel_single_client_send_out_of_order() {
+        let (tx, mut rx) = ordered_channel::<usize>("test".to_string(), true);
+
+        // Send 2 to 4 in descending order: all should buffer until 1 arrives.
+        for s in (2..=4).rev() {
+            tx.send("A".into(), s, s).unwrap();
+        }
+
+        // Send 7 to 9 in descending order: all should buffer until 1 - 6 arrives.
+        for s in (7..=9).rev() {
+            tx.send("A".into(), s, s).unwrap();
+        }
+
+        assert!(
+            drain_try_recv(&mut rx).is_empty(),
+            "nothing should be delivered yet"
+        );
+
+        // Now send 1: should deliver 1 then flush 2 - 4.
+        tx.send("A".into(), 1, 1).unwrap();
+        assert_eq!(drain_try_recv(&mut rx), vec![1, 2, 3, 4]);
+
+        // Now send 5: should deliver immediately but not flush 7 - 9.
+        tx.send("A".into(), 5, 5).unwrap();
+        assert_eq!(drain_try_recv(&mut rx), vec![5]);
+
+        // Now send 6: should deliver 6 then flush 7 - 9.
+        tx.send("A".into(), 6, 6).unwrap();
+        assert_eq!(drain_try_recv(&mut rx), vec![6, 7, 8, 9]);
+
+        // Send 10: should deliver immediately.
+        tx.send("A".into(), 10, 10).unwrap();
+        let got = drain_try_recv(&mut rx);
+        assert_eq!(got, vec![10]);
+    }
+
+    #[test]
+    fn test_ordered_channel_multi_clients() {
+        let (tx, mut rx) = ordered_channel::<(String, usize)>("test".to_string(), true);
+
+        // A1 -> deliver
+        tx.send("A".into(), 1, ("A".into(), 1)).unwrap();
+        assert_eq!(drain_try_recv(&mut rx), vec![("A".into(), 1)]);
+        // B1 -> deliver
+        tx.send("B".into(), 1, ("B".into(), 1)).unwrap();
+        assert_eq!(drain_try_recv(&mut rx), vec![("B".into(), 1)]);
+        for s in (3..=5).rev() {
+            // A3-5 -> buffer (waiting for A2)
+            tx.send("A".into(), s, ("A".into(), s)).unwrap();
+            // B3-5 -> buffer (waiting for B2)
+            tx.send("B".into(), s, ("B".into(), s)).unwrap();
+        }
+        for s in (7..=9).rev() {
+            // A7-9 -> buffer (waiting for A1-6)
+            tx.send("A".into(), s, ("A".into(), s)).unwrap();
+            // B7-9 -> buffer (waiting for B1-6)
+            tx.send("B".into(), s, ("B".into(), s)).unwrap();
+        }
+        assert!(
+            drain_try_recv(&mut rx).is_empty(),
+            "nothing should be delivered yet"
+        );
+
+        // A2 -> deliver A2 then flush A3
+        tx.send("A".into(), 2, ("A".into(), 2)).unwrap();
+        assert_eq!(
+            drain_try_recv(&mut rx),
+            vec![
+                ("A".into(), 2),
+                ("A".into(), 3),
+                ("A".into(), 4),
+                ("A".into(), 5),
+            ]
+        );
+        // B2 -> deliver B2 then flush B3
+        tx.send("B".into(), 2, ("B".into(), 2)).unwrap();
+        assert_eq!(
+            drain_try_recv(&mut rx),
+            vec![
+                ("B".into(), 2),
+                ("B".into(), 3),
+                ("B".into(), 4),
+                ("B".into(), 5),
+            ]
+        );
+
+        // A6 -> should deliver immediately and flush A7-9
+        tx.send("A".into(), 6, ("A".into(), 6)).unwrap();
+        assert_eq!(
+            drain_try_recv(&mut rx),
+            vec![
+                ("A".into(), 6),
+                ("A".into(), 7),
+                ("A".into(), 8),
+                ("A".into(), 9)
+            ]
+        );
+        // B6 -> should deliver immediately and flush B7-9
+        tx.send("B".into(), 6, ("B".into(), 6)).unwrap();
+        assert_eq!(
+            drain_try_recv(&mut rx),
+            vec![
+                ("B".into(), 6),
+                ("B".into(), 7),
+                ("B".into(), 8),
+                ("B".into(), 9)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ordered_channel_duplicates() {
+        let (tx, mut rx) = ordered_channel::<(String, usize)>("test".to_string(), true);
+
+        // A1 -> deliver
+        tx.send("A".into(), 1, ("A".into(), 1)).unwrap();
+        // duplicate A1 -> drop even if the message is different.
+        tx.send("A".into(), 1, ("A".into(), 1_000)).unwrap();
+        // A2 -> deliver
+        tx.send("A".into(), 2, ("A".into(), 2)).unwrap();
+        // late A1 duplicate -> drop
+        tx.send("A".into(), 1, ("A".into(), 1_001)).unwrap();
+
+        let got = drain_try_recv(&mut rx);
+        assert_eq!(got, vec![("A".into(), 1), ("A".into(), 2),]);
     }
 }
