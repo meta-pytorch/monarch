@@ -41,14 +41,11 @@ endpoint_call_latency_histogram = METER.create_histogram(
 )
 
 if TYPE_CHECKING:
-    from monarch._src.actor.actor_mesh import (
-        ActorMesh,
-        HyOncePortReceiver,
-        HyPortReceiver,
-        Port,
-        PortReceiver,
-        ValueMesh,
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+        OncePortReceiver as HyOncePortReceiver,
+        PortReceiver as HyPortReceiver,
     )
+    from monarch._src.actor.actor_mesh import ActorMesh, Port, PortReceiver, ValueMesh
 
 P = ParamSpec("P")
 R = TypeVar("R")

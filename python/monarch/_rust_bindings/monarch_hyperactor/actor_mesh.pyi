@@ -17,7 +17,7 @@ from typing_extensions import Self
 
 class ActorMeshProtocol(Protocol):
     """
-    Protocol defining the common interface for actor mesh, mesh ref and _ActorMeshRefImpl.
+    Protocol defining the common interface for actor mesh and mesh ref.
     """
 
     def cast(
@@ -34,34 +34,6 @@ class ActorMeshProtocol(Protocol):
 @final
 class PythonActorMesh(ActorMeshProtocol):
     pass
-
-class PythonActorMeshImpl:
-    def get_supervision_event(self) -> ActorSupervisionEvent | None:
-        """
-        Returns supervision event if there is any.
-        """
-        ...
-
-    def get(self, rank: int) -> ActorId | None:
-        """
-        Get the actor id for the actor at the given rank.
-        """
-        ...
-
-    def stop(self) -> PythonTask[None]:
-        """
-        Stop all actors that are part of this mesh.
-        Using this mesh after stop() is called will raise an Exception.
-        """
-        ...
-
-    def supervision_event(self) -> "Optional[Shared[Exception]]": ...
-    @property
-    def stopped(self) -> bool:
-        """
-        If the mesh has been stopped.
-        """
-        ...
 
 @final
 class ActorSupervisionEvent:

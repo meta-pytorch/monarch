@@ -13,7 +13,6 @@ import functools
 import inspect
 import itertools
 import logging
-import random
 from abc import abstractproperty
 
 from dataclasses import dataclass
@@ -48,16 +47,11 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
-    PythonActorMesh,
-    PythonActorMeshImpl,
-)
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
-    OncePortReceiver as HyOncePortReceiver,  # noqa: F401
     OncePortRef,
-    PortReceiver as HyPortReceiver,  # noqa: F401
     PortRef,
     UndeliverableMessageEnvelope,
 )
@@ -71,8 +65,6 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
     Region,
     Shape,
 )
-from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
 )
@@ -251,10 +243,6 @@ P = ParamSpec("P")
 R = TypeVar("R")
 A = TypeVar("A")
 
-# keep this load balancing deterministic, but
-# equally distributed.
-_load_balancing_seed = random.Random(4)
-
 
 class _SingletonActorAdapator:
     def __init__(self, inner: ActorId, region: Optional[Region] = None) -> None:
@@ -285,159 +273,6 @@ class _SingletonActorAdapator:
             pass
 
         return PythonTask.from_coroutine(empty())
-
-
-# standin class for whatever is the serializable python object we use
-# to name an actor mesh. Hacked up today because ActorMesh
-# isn't plumbed to non-clients
-class _ActorMeshRefImpl:
-    def __init__(
-        self,
-        mailbox: Mailbox,
-        hy_actor_mesh: Optional[PythonActorMeshImpl],
-        proc_mesh: "Optional[ProcMesh]",
-        shape: Shape,
-        actor_ids: List[ActorId],
-    ) -> None:
-        self._mailbox = mailbox
-        self._actor_mesh = hy_actor_mesh
-        # actor meshes do not have a way to look this up at the moment,
-        # so we fake it here
-        self._proc_mesh = proc_mesh
-        self._shape = shape
-        self._please_replace_me_actor_ids = actor_ids
-
-    @staticmethod
-    def from_hyperactor_mesh(
-        mailbox: Mailbox,
-        shape: Shape,
-        hy_actor_mesh: PythonActorMeshImpl,
-        proc_mesh: "ProcMesh",
-    ) -> "_ActorMeshRefImpl":
-        return _ActorMeshRefImpl(
-            mailbox,
-            hy_actor_mesh,
-            proc_mesh,
-            shape,
-            [cast(ActorId, hy_actor_mesh.get(i)) for i in range(len(shape))],
-        )
-
-    def __getstate__(
-        self,
-    ) -> Tuple[Shape, List[ActorId], Mailbox]:
-        return self._shape, self._please_replace_me_actor_ids, self._mailbox
-
-    def __setstate__(
-        self,
-        state: Tuple[Shape, List[ActorId], Mailbox],
-    ) -> None:
-        self._actor_mesh = None
-        self._shape, self._please_replace_me_actor_ids, self._mailbox = state
-
-    def _check_state(self) -> None:
-        # This is temporary until we have real cast integration here. We need to actively check
-        # supervision error here is because all communication is done through direct mailbox sending
-        # and not through comm actor casting.
-        # TODO: remove this when casting integration is done.
-        if self._actor_mesh is not None:
-            if self._actor_mesh.stopped:
-                raise SupervisionError(
-                    "actor mesh is unhealthy with reason: actor mesh is stopped due to proc mesh shutdown. "
-                    "`PythonActorMesh` has already been stopped."
-                )
-
-            event = self._actor_mesh.get_supervision_event()
-            if event is not None:
-                raise SupervisionError(f"actor mesh is unhealthy with reason: {event}")
-
-    def cast(
-        self,
-        message: PythonMessage,
-        selection: str,
-        instance: HyInstance,
-    ) -> None:
-        self._check_state()
-
-        # TODO: use the actual actor mesh when available. We cannot currently use it
-        # directly because we risk bifurcating the message delivery paths from the same
-        # client, since slicing the mesh will produce a reference, which calls actors
-        # directly. The reason these paths are bifurcated is that actor meshes will
-        # use multicasting, while direct actor comms do not. Separately we need to decide
-        # whether actor meshes are ordered with actor references.
-        #
-        # The fix is to provide a first-class reference into Python, and always call "cast"
-        # on it, including for load balanced requests.
-        if selection == "choose":
-            idx = _load_balancing_seed.randrange(len(self._shape))
-            actor_rank = self._shape.ndslice[idx]
-            self._mailbox.post(self._please_replace_me_actor_ids[actor_rank], message)
-        elif selection == "all":
-            # replace me with actual remote actor mesh
-            call_shape = Shape(
-                self._shape.labels, NDSlice.new_row_major(self._shape.ndslice.sizes)
-            )
-            for i, rank in enumerate(self._shape.ranks()):
-                self._mailbox.post_cast(
-                    self._please_replace_me_actor_ids[rank],
-                    i,
-                    call_shape,
-                    message,
-                )
-        elif isinstance(selection, int):
-            try:
-                self._mailbox.post(
-                    self._please_replace_me_actor_ids[selection], message
-                )
-            except IndexError:
-                raise IndexError(
-                    f"Tried to send to an out-of-range rank {selection}: "
-                    f"mesh has {len(self._please_replace_me_actor_ids)} elements."
-                )
-        else:
-            raise ValueError(f"invalid selection: {selection}")
-
-    def __len__(self) -> int:
-        return len(self._shape)
-
-    @property
-    def _name_pid(self):
-        actor_id0 = self._please_replace_me_actor_ids[0]
-        return actor_id0.actor_name, actor_id0.pid
-
-    @property
-    def shape(self) -> Shape:
-        return self._shape
-
-    @property
-    def proc_mesh(self) -> Optional["ProcMesh"]:
-        return self._proc_mesh
-
-    def new_with_region(self, region: Region) -> "_ActorMeshRefImpl":
-        return _ActorMeshRefImpl(
-            self._mailbox,
-            None,
-            None,
-            region.as_shape(),
-            self._please_replace_me_actor_ids,
-        )
-
-    def supervision_event(self) -> "Optional[Shared[Exception]]":
-        if self._actor_mesh is None:
-            return None
-        return self._actor_mesh.supervision_event()
-
-    def stop(self) -> PythonTask[None]:
-        async def task():
-            if self._actor_mesh is not None:
-                self._actor_mesh.stop()
-
-        return PythonTask.from_coroutine(task())
-
-    def initialized(self) -> PythonTask[None]:
-        async def task():
-            pass
-
-        return PythonTask.from_coroutine(task())
 
 
 class ActorEndpoint(Endpoint[P, R]):
@@ -1148,7 +983,7 @@ class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
     def _create(
         cls,
         Class: Type[T],
-        actor_mesh: "PythonActorMesh | PythonActorMeshImpl",
+        actor_mesh: "PythonActorMesh",
         mailbox: Mailbox,
         shape: Shape,
         proc_mesh: "ProcMesh",
@@ -1158,11 +993,6 @@ class ActorMesh(MeshTrait, Generic[T], DeprecatedNotAFuture):
         *args: Any,
         **kwargs: Any,
     ) -> "ActorMesh[T]":
-        if isinstance(actor_mesh, PythonActorMeshImpl):
-            actor_mesh = _ActorMeshRefImpl.from_hyperactor_mesh(
-                mailbox, shape, actor_mesh, proc_mesh
-            )
-
         mesh = cls(Class, actor_mesh, shape, proc_mesh)
 
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:

@@ -10,10 +10,7 @@ from typing import Any, AsyncIterator, final, Literal, overload, Type, TYPE_CHEC
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import Actor
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import (
-    PythonActorMesh,
-    PythonActorMeshImpl,
-)
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
@@ -50,7 +47,7 @@ class ProcMesh:
 
     @staticmethod
     def spawn_async(
-        proc_mesh: Shared["ProcMesh"], name: str, actor: Type["Actor"], emulated: bool
+        proc_mesh: Shared["ProcMesh"], name: str, actor: Type["Actor"]
     ) -> PythonActorMesh: ...
     async def monitor(self) -> ProcMeshMonitor:
         """
