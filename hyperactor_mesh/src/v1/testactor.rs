@@ -190,7 +190,7 @@ impl Handler<GetCastInfo> for TestActor {
         cx: &Context<Self>,
         GetCastInfo { cast_info }: GetCastInfo,
     ) -> Result<(), anyhow::Error> {
-        cast_info.send(cx, (cx.cast_info(), cx.bind(), cx.sender().clone()))?;
+        cast_info.send(cx, (cx.cast_point(), cx.bind(), cx.sender().clone()))?;
         Ok(())
     }
 }

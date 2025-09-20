@@ -171,7 +171,7 @@ impl PyContext {
     ) -> PyContext {
         PyContext {
             instance,
-            rank: cx.cast_info(),
+            rank: cx.cast_point(),
         }
     }
 }
