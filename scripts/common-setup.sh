@@ -59,6 +59,48 @@ setup_tensor_engine() {
     dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
 }
 
+# Install PyTorch with C++ development headers (libtorch) for Rust compilation
+setup_pytorch_with_headers() {
+    local gpu_arch_version=${1:-"12.6"}
+    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126"}
+
+    echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
+
+    # Extract CUDA version for libtorch URL (remove dots: "12.6" -> "126")
+    local cuda_version_short=$(echo "${gpu_arch_version}" | tr -d '.')
+    local libtorch_url="https://download.pytorch.org/libtorch/nightly/cu${cuda_version_short}/libtorch-cxx11-abi-shared-with-deps-latest.zip"
+
+    echo "Downloading libtorch from: ${libtorch_url}"
+    wget -q "${libtorch_url}"
+    unzip -q "libtorch-cxx11-abi-shared-with-deps-latest.zip"
+
+    # Set environment variables for libtorch
+    export LIBTORCH_ROOT="$PWD/libtorch"
+    export LD_LIBRARY_PATH="$LIBTORCH_ROOT/lib:${LD_LIBRARY_PATH:-}"
+    export CMAKE_PREFIX_PATH="$LIBTORCH_ROOT:${CMAKE_PREFIX_PATH:-}"
+
+    # Install PyTorch Python package using provided torch-spec
+    echo "Installing PyTorch Python package with: ${torch_spec}"
+    pip install ${torch_spec}
+
+    # Verify installation
+    echo "LibTorch C++ headers available at: $LIBTORCH_ROOT/include"
+    if [[ -d "$LIBTORCH_ROOT/include/torch/csrc/api/include/torch" ]]; then
+        echo "✓ PyTorch C++ API headers found"
+    else
+        echo "⚠ PyTorch C++ API headers not found at expected location"
+    fi
+
+    if [[ -d "$LIBTORCH_ROOT/include/c10/cuda" ]]; then
+        echo "✓ C10 CUDA headers found"
+    else
+        echo "⚠ C10 CUDA headers not found"
+    fi
+
+    echo "LibTorch libraries available at: $LIBTORCH_ROOT/lib"
+    ls -la "$LIBTORCH_ROOT/lib/lib"*.so | head -5 || echo "No .so files found"
+}
+
 # Common setup for build workflows (environment + system deps + rust)
 setup_build_environment() {
     local python_version=${1:-3.10}

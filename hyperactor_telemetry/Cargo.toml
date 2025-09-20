@@ -14,14 +14,14 @@ edition = "2024"
 anyhow = "1.0.98"
 chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
-fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", optional = true }
+fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 hdrhistogram = "7.5"
 lazy_static = "1.5"
 opentelemetry = "0.29"
 opentelemetry_sdk = { version = "0.29.0", features = ["rt-tokio"] }
 rand = { version = "0.8", features = ["small_rng"] }
 rusqlite = { version = "0.36.0", features = ["backup", "blob", "bundled", "column_decltype", "functions", "limits", "modern_sqlite", "serde_json"] }
-scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", optional = true }
+scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_rusqlite = "0.39.3"
@@ -35,15 +35,9 @@ tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "
 whoami = "1.5"
 
 [dev-dependencies]
-fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 quickcheck = "1.0"
 quickcheck_macros = "1.0"
-scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
-
-[features]
-default = []
-fbcode_build = ["fbinit", "scuba"]
 
 [lints]
 rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
