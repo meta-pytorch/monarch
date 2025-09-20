@@ -162,15 +162,6 @@ class Mailbox:
         """
         ...
 
-    def post_cast(
-        self, dest: ActorId, rank: int, shape: Shape, message: PythonMessage
-    ) -> None:
-        """
-        Post a message to the provided actor. It will be handled using the handle_cast
-        endpoint as if the destination was `rank` of `shape`.
-        """
-        ...
-
     def undeliverable_receiver(self) -> UndeliverablePortReceiver:
         """
         Open a port to receive undeliverable messages.
