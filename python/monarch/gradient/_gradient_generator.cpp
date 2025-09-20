@@ -524,12 +524,12 @@ struct GradientGenerator {
         if (scan_state->users_remaining == 0) {
           all_ready.push_back(scan_state);
         }
-        for (InputBufferReference& ib : scan_state->input_buffers) {
-          if (ib.needed != NOT_NEEDED) {
+        for (InputBufferReference& currentIb : scan_state->input_buffers) {
+          if (currentIb.needed != NOT_NEEDED) {
             continue;
           }
-          ib.needed = i;
-          use = ib.first_user;
+          currentIb.needed = i;
+          use = currentIb.first_user;
           while (use) {
             scan.push_back(use->user);
             use = use->next;
