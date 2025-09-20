@@ -40,6 +40,7 @@ use crate::alloc::Alloc;
 use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
 use crate::assign::Ranks;
+use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
@@ -193,9 +194,20 @@ impl ProcMesh {
         };
 
         if let Some(comm_actor_name) = comm_actor_name {
-            proc_mesh
+            let comm_actor_mesh = proc_mesh
                 .spawn_with_name::<CommActor>(cx, comm_actor_name, &Default::default())
                 .await?;
+            let address_book: HashMap<_, _> = comm_actor_mesh
+                .iter()
+                .map(|(point, actor_ref)| (point.rank(), actor_ref))
+                .collect();
+            // Now that we have all of the spawned comm actors, kick them all into
+            // mesh mode.
+            for (rank, comm_actor) in &address_book {
+                comm_actor
+                    .send(cx, CommActorMode::Mesh(*rank, address_book.clone()))
+                    .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
+            }
         }
         Ok(proc_mesh)
     }
@@ -215,7 +227,7 @@ impl ProcMesh {
                 extent,
                 ranks: Arc::new(ranks),
             },
-            false, // comm actors not yet supported for owned meshes
+            true,
         )
         .await
     }
