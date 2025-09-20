@@ -11,6 +11,9 @@ These macros support a complete message-passing workflow: from defining message 
 - [`#[export]`](export.md) — make an actor remotely spawnable and routable by registering its type, handlers, and and optionally spawnable from outside the current runtime
 - [`#[forward]`](forward.md) — route messages to a user-defined handler trait implementation
 
+
+<a id="link-hyperactor_macros" href="https://meta-pytorch.org/monarch/rust-api/hyperactor_macros/index.html">**hyperactor_macros**</a><span id="desc-hyperactor_macros"> - See rust API link for all the macros including the ones above. </span>
+
 ## Macro Summary
 
 - **`#[derive(Handler)]`**
