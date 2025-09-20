@@ -106,10 +106,16 @@ class Workspace:
             pass
         elif isinstance(dirs, list):
             for d in dirs:
+                assert (
+                    d
+                ), f"{d} must note be empty as this may have unintended consequences"
                 d = Path(d)
                 self.dirs[d] = d.name
         else:  # dict
             for src, dst in dirs.items():
+                assert (
+                    src
+                ), f"{src} must note be empty as this may have unintended consequences"
                 self.dirs[Path(src)] = dst
 
     def __eq__(self, other: object) -> bool:

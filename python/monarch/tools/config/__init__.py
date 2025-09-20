@@ -40,7 +40,7 @@ class Config:
     def __post_init__(self) -> None:
         # workspace used to be Optional[str]
         # while we type it as class Workspace now, handle workspace=None and str for BC
-        if self.workspace is None:
+        if self.workspace is None or self.workspace == "":
             deprecation_msg = (
                 "Setting `workspace=None` is deprecated."
                 " Use `workspace=monarch.tools.config.workspace.Workspace(env=None)` instead."
