@@ -67,9 +67,11 @@ use crate::channel::ChannelError;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
 use crate::clock::RealClock;
+use crate::config;
 use crate::context;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
+use crate::declare_attrs;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -88,6 +90,9 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::ordering::OrderedSender;
+use crate::ordering::OrderedSenderError;
+use crate::ordering::ordered_channel;
 use crate::panic_handler;
 use crate::reference::ActorId;
 use crate::reference::Index;
@@ -925,7 +930,10 @@ impl<A: Actor> Instance<A> {
     ) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
-        let (work_tx, work_rx) = mpsc::unbounded_channel();
+        let (work_tx, work_rx) = ordered_channel(
+            actor_id.to_string(),
+            config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
+        );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
@@ -1789,11 +1797,17 @@ pub struct Ports<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
-    workq: mpsc::UnboundedSender<WorkCell<A>>,
+    workq: OrderedSender<WorkCell<A>>,
+}
+
+declare_attrs! {
+    /// The name of the client who sent this message, and the message's sequence
+    /// number assigned by that client.
+    attr CLIENT_SEQ: (String, usize);
 }
 
 impl<A: Actor> Ports<A> {
-    fn new(mailbox: Mailbox, workq: mpsc::UnboundedSender<WorkCell<A>>) -> Self {
+    fn new(mailbox: Mailbox, workq: OrderedSender<WorkCell<A>>) -> Self {
         Self {
             ports: DashMap::new(),
             bound: DashMap::new(),
@@ -1821,6 +1835,8 @@ impl<A: Actor> Ports<A> {
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
+                    let client_seq = headers.get(CLIENT_SEQ).cloned();
+
                     let work = WorkCell::new(move |actor: &mut A, instance: &mut Instance<A>| {
                         Box::pin(async move {
                             // SAFETY: we guarantee that the passed type_info is for type M.
@@ -1835,7 +1851,22 @@ impl<A: Actor> Ports<A> {
                         1,
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
-                    workq.send(work).map_err(anyhow::Error::from)
+                    if workq.enable_buffering {
+                        let (client, seq) =
+                            client_seq.expect("CLIENT_SEQ must be set when buffering is enabled");
+
+                        // TODO: return the message contained in the error instead of dropping them when converting
+                        // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
+                        workq.send(client, seq, work).map_err(|e| match e {
+                            OrderedSenderError::InvalidZeroSeq(_) => {
+                                anyhow::anyhow!("seq must be greater than 0")
+                            }
+                            OrderedSenderError::SendError(e) => anyhow::Error::from(e),
+                            OrderedSenderError::FlushError(e) => e,
+                        })
+                    } else {
+                        workq.direct_send(work).map_err(anyhow::Error::from)
+                    }
                 });
                 entry.insert(Box::new(port.clone()));
                 port

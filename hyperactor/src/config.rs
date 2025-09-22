@@ -66,6 +66,9 @@ declare_attrs! {
     /// Sampling rate for logging message latency
     /// Set to 0.01 for 1% sampling, 0.1 for 10% sampling, 0.90 for 90% sampling, etc.
     pub attr MESSAGE_LATENCY_SAMPLING_RATE: f32 = 0.01;
+
+    /// Whether to enable client sequence assignment.
+    pub attr ENABLE_CLIENT_SEQ_ASSIGNMENT: bool = false;
 }
 
 /// Load configuration from environment variables
