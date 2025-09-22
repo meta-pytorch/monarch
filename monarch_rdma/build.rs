@@ -51,10 +51,6 @@ fn main() {
     println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
 
-    // Tell cargo to look for shared libraries in standard RDMA directories
-    println!("cargo:rustc-link-search=/usr/lib");
-    println!("cargo:rustc-link-search=/usr/lib64");
-
     // Link against the ibverbs and mlx5 libraries (used by rdmaxcel-sys)
     println!("cargo:rustc-link-lib=ibverbs");
     println!("cargo:rustc-link-lib=mlx5");

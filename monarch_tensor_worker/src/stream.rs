@@ -2200,11 +2200,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            allclose(
+            let result = allclose(
                 &factory_float_tensor(data, "cpu".try_into().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap()
+            .unwrap();
+            // rustfmt-ignore
+            result
         }
 
         async fn validate_dependent_error(&mut self, reference: Ref, error: Arc<SeqError>) {

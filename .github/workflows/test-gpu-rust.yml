@@ -1,0 +1,60 @@
+name: Test GPU Rust
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: 'Wheel artifact name from build workflow'
+        required: true
+        type: string
+
+concurrency:
+  group: test-gpu-rust-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-gpu-rust:
+    name: Test GPU Rust (cuda12.6)
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: 4xlargegpu
+            runs-on: linux.g5.4xlarge.nvidia.gpu
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126'
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.6"
+    with:
+      timeout: 120
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      submodules: recursive
+      download-artifact: ${{ inputs.artifact-name }}
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
+
+        # Setup test environment
+        setup_test_environment
+
+        # Install Rust
+        setup_rust_toolchain
+
+        # Install System dependencies
+        install_system_dependencies
+
+        # Setup Tensor Engine dependencies
+        setup_tensor_engine
+
+        # Setup CUDA environment and library paths
+        setup_cuda_environment
+
+        # Setup PyTorch with C++ headers using common-setup utility
+        setup_pytorch_with_headers "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-spec }}"
+
+        # Run GPU Rust tests
+        echo "Running OSS Rust tests..."
+        # TODO: fix broken tests, then update to `cargo test --no-fail-fast`
+        cargo test -p monarch_rdma

@@ -10,17 +10,11 @@ use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 
-use build_utils::*;
-
 #[cfg(target_os = "macos")]
 fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Tell cargo to look for shared libraries in the specified directory
-    println!("cargo:rustc-link-search=/usr/lib");
-    println!("cargo:rustc-link-search=/usr/lib64");
-
     // Link against the ibverbs library
     println!("cargo:rustc-link-lib=ibverbs");
 
@@ -141,8 +135,6 @@ fn main() {
     }
     if let Some(lib_dir) = &python_config.lib_dir {
         println!("cargo:rustc-link-search=native={}", lib_dir);
-        // Set cargo metadata to inform dependent binaries about how to set their
-        // RPATH (see controller/build.rs for an example).
         println!("cargo:metadata=LIB_PATH={}", lib_dir);
     }
 

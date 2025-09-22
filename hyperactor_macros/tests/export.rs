@@ -15,8 +15,7 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use serde::Deserialize;
-
-use crate::Serialize;
+use serde::Serialize;
 
 #[derive(Debug)]
 #[hyperactor::export(
