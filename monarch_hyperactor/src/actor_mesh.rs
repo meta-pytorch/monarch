@@ -286,7 +286,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
         instance_dispatch!(instance, |cx_instance| {
             self.try_inner()?
-                .cast(cx_instance, selection, message.clone())
+                .cast(cx_instance, selection, message)
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         });
         Ok(())
@@ -453,7 +453,7 @@ impl ActorMeshProtocol for PythonActorMeshRef {
 
         instance_dispatch!(instance, |cx_instance| {
             self.inner
-                .cast(cx_instance, selection, message.clone())
+                .cast(cx_instance, selection, message)
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         });
         Ok(())
