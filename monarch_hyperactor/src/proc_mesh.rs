@@ -49,7 +49,6 @@ use crate::mailbox::PyMailbox;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::pytokio::PythonTask;
-use crate::runtime::get_tokio_runtime;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
@@ -340,7 +339,6 @@ impl PyProcMesh {
         proc_mesh: &mut PyShared,
         name: String,
         actor: Py<PyType>,
-        emulated: bool,
     ) -> PyResult<PyObject> {
         let task = proc_mesh.task()?.take_task()?;
         let meshimpl = async move {
@@ -368,18 +366,11 @@ impl PyProcMesh {
                 actor_events,
             )))
         };
-        if emulated {
-            // we give up on doing mesh spawn async for the emulated old version
-            // it is too complicated to make both work.
-            let r = get_tokio_runtime().block_on(meshimpl)?;
-            Python::with_gil(|py| r.into_py_any(py))
-        } else {
-            let r = PythonActorMesh::new(async move {
-                let meshimpl: Box<dyn ActorMeshProtocol> = meshimpl.await?;
-                Ok(meshimpl)
-            });
-            Python::with_gil(|py| r.into_py_any(py))
-        }
+        let r = PythonActorMesh::new(async move {
+            let meshimpl: Box<dyn ActorMeshProtocol> = meshimpl.await?;
+            Ok(meshimpl)
+        });
+        Python::with_gil(|py| r.into_py_any(py))
     }
 
     // User can call this to monitor the proc mesh events. This will override

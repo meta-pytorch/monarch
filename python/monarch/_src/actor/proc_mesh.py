@@ -121,17 +121,6 @@ except ImportError:
     IN_PAR = False
 
 
-# A temporary gate used by the PythonActorMesh/PythonActorMeshRef migration.
-# We can use this gate to quickly roll back to using _ActorMeshRefImpl, if we
-# encounter any issues with the migration.
-#
-# This should be removed once we confirm PythonActorMesh/PythonActorMeshRef is
-# working correctly in production.
-@cache
-def _use_standin_mesh() -> bool:
-    return os.getenv("USE_STANDIN_ACTOR_MESH", default="0") != "0"
-
-
 class ProcMeshRef:
     """
     A serializable remote reference to a ProcMesh. The reference is weak: No support
@@ -407,7 +396,7 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
 
-        actor_mesh = HyProcMesh.spawn_async(pm, name, _Actor, _use_standin_mesh())
+        actor_mesh = HyProcMesh.spawn_async(pm, name, _Actor)
         instance = context().actor_instance
         service = ActorMesh._create(
             Class,
