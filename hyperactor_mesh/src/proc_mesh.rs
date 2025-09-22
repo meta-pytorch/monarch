@@ -30,6 +30,8 @@ use hyperactor::actor::RemoteActor;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
@@ -712,12 +714,12 @@ impl ProcEvents {
                     for entry in self.actor_event_router.iter() {
                         // Make a dummy actor supervision event, all actors on the proc are affected if a proc stops.
                         // TODO(T231868026): find a better way to represent all actors in a proc for supervision event
-                        let event = ActorSupervisionEvent {
-                            actor_id: proc_id.actor_id("any", 0),
-                            actor_status: ActorStatus::Failed(format!("proc {} is stopped", proc_id)),
-                            message_headers: None,
-                            caused_by: None,
-                        };
+                        let event = ActorSupervisionEvent::new(
+                            proc_id.actor_id("any", 0),
+                            ActorStatus::Failed(format!("proc {} is stopped", proc_id)),
+                            None,
+                            None,
+                        );
                         tracing::debug!(name = "ActorSupervisionEventDelivery", event = ?event);
                         if entry.value().send(event.clone()).is_err() {
                             tracing::warn!(

@@ -1077,12 +1077,12 @@ impl<A: Actor> Instance<A> {
             }) => (event.actor_status.clone(), Some(event)),
             Err(err) => (
                 ActorStatus::Failed(err.to_string()),
-                Some(ActorSupervisionEvent {
-                    actor_id: self.cell.actor_id().clone(),
-                    actor_status: ActorStatus::Failed(err.to_string()),
-                    message_headers: None,
-                    caused_by: None,
-                }),
+                Some(ActorSupervisionEvent::new(
+                    self.cell.actor_id().clone(),
+                    ActorStatus::Failed(err.to_string()),
+                    None,
+                    None,
+                )),
             ),
         };
 
@@ -1277,28 +1277,23 @@ impl<A: Actor> Instance<A> {
             }
             Ok(false) => {
                 // The supervision event wasn't handled by this actor, chain it and bubble it up.
-                let supervision_event = ActorSupervisionEvent {
-                    actor_id: self.self_id().clone(),
-                    actor_status: ActorStatus::Failed(
-                        "did not handle supervision event".to_string(),
-                    ),
-                    message_headers: None,
-                    caused_by: Some(Box::new(supervision_event)),
-                };
+                let supervision_event = ActorSupervisionEvent::new(
+                    self.self_id().clone(),
+                    ActorStatus::Failed("did not handle supervision event".to_string()),
+                    None,
+                    Some(Box::new(supervision_event)),
+                );
                 Err(supervision_event.into())
             }
             Err(err) => {
                 // The actor failed to handle the supervision event, it should die.
                 // Create a new supervision event for this failure and propagate it.
-                let supervision_event = ActorSupervisionEvent {
-                    actor_id: self.self_id().clone(),
-                    actor_status: ActorStatus::Failed(format!(
-                        "failed to handle supervision event: {}",
-                        err
-                    )),
-                    message_headers: None,
-                    caused_by: Some(Box::new(supervision_event)),
-                };
+                let supervision_event = ActorSupervisionEvent::new(
+                    self.self_id().clone(),
+                    ActorStatus::Failed(format!("failed to handle supervision event: {}", err)),
+                    None,
+                    Some(Box::new(supervision_event)),
+                );
                 Err(supervision_event.into())
             }
         }
@@ -2795,22 +2790,23 @@ mod tests {
 
         assert_eq!(
             event_rx.recv().await.unwrap(),
-            ActorSupervisionEvent {
-                actor_id: child_actor_id,
-                actor_status: ActorStatus::Failed(
+            // The time field is ignored for Eq and PartialEq.
+            ActorSupervisionEvent::new(
+                child_actor_id,
+                ActorStatus::Failed(
                     "failed to handle supervision event: failed to handle supervision event!"
-                        .to_string()
+                        .to_string(),
                 ),
-                message_headers: None,
-                caused_by: Some(Box::new(ActorSupervisionEvent {
-                    actor_id: grandchild_actor_id,
-                    actor_status: ActorStatus::Failed(
+                None,
+                Some(Box::new(ActorSupervisionEvent::new(
+                    grandchild_actor_id,
+                    ActorStatus::Failed(
                         "serving local[0].parent[2]: processing error: trigger failure".to_string()
                     ),
-                    message_headers: None,
-                    caused_by: None,
-                })),
-            }
+                    None,
+                    None,
+                ))),
+            )
         );
 
         assert!(event_rx.try_recv().is_err());

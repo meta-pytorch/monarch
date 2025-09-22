@@ -298,16 +298,14 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             let event = receiver.recv().await;
             let event = match event {
                 Ok(Some(event)) => PyActorSupervisionEvent::from(event.clone()),
-                Ok(None) | Err(_) => PyActorSupervisionEvent::from(ActorSupervisionEvent {
+                Ok(None) | Err(_) => PyActorSupervisionEvent::from(ActorSupervisionEvent::new(
                     // Dummy actor as placeholder to indicate the whole mesh is stopped
                     // TODO(albertli): remove this when pushing all supervision logic to rust.
-                    actor_id: id!(default[0].actor[0]),
-                    actor_status: ActorStatus::Failed(
-                        "actor mesh is stopped due to proc mesh shutdown".into(),
-                    ),
-                    message_headers: None,
-                    caused_by: None,
-                }),
+                    id!(default[0].actor[0]),
+                    ActorStatus::Failed("actor mesh is stopped due to proc mesh shutdown".into()),
+                    None,
+                    None,
+                )),
             };
             Ok(PyErr::new::<SupervisionError, _>(format!(
                 "Actor {:?} exited because of the following reason: {}",
@@ -352,16 +350,18 @@ impl PythonActorMeshImpl {
         match &*unhealthy_event {
             Unhealthy::SoFarSoGood => Ok(None),
             Unhealthy::StreamClosed => {
-                Ok(Some(PyActorSupervisionEvent::from(ActorSupervisionEvent {
-                    // Dummy actor as placeholder to indicate the whole mesh is stopped
-                    // TODO(albertli): remove this when pushing all supervision logic to rust.
-                    actor_id: id!(default[0].actor[0]),
-                    actor_status: ActorStatus::Failed(
-                        "actor mesh is stopped due to proc mesh shutdown".into(),
+                Ok(Some(PyActorSupervisionEvent::from(
+                    ActorSupervisionEvent::new(
+                        // Dummy actor as placeholder to indicate the whole mesh is stopped
+                        // TODO(albertli): remove this when pushing all supervision logic to rust.
+                        id!(default[0].actor[0]),
+                        ActorStatus::Failed(
+                            "actor mesh is stopped due to proc mesh shutdown".into(),
+                        ),
+                        None,
+                        None,
                     ),
-                    message_headers: None,
-                    caused_by: None,
-                })))
+                )))
             }
             Unhealthy::Crashed(event) => Ok(Some(PyActorSupervisionEvent::from(event.clone()))),
         }

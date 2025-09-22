@@ -173,15 +173,12 @@ pub fn supervise_undeliverable_messages_with<R, F>(
                     let actor_id = env.dest().actor_id().clone();
                     let headers = env.headers().clone();
 
-                    if let Err(e) = sink.send(ActorSupervisionEvent {
+                    if let Err(e) = sink.send(ActorSupervisionEvent::new(
                         actor_id,
-                        actor_status: ActorStatus::Failed(format!(
-                            "message not delivered: {}",
-                            env
-                        )),
-                        message_headers: Some(headers),
-                        caused_by: None,
-                    }) {
+                        ActorStatus::Failed(format!("message not delivered: {}", env)),
+                        Some(headers),
+                        None,
+                    )) {
                         tracing::warn!(
                             %e,
                             actor=%env.dest().actor_id(),
