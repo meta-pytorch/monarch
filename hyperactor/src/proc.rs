@@ -36,6 +36,8 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
+use hyperactor_macros::AttrValue;
+use hyperactor_macros::Named;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -1795,10 +1797,39 @@ pub struct Ports<A: Actor> {
     workq: OrderedSender<WorkCell<A>>,
 }
 
+/// A message's sequencer number infomation.
+#[derive(Serialize, Deserialize, Clone, Named, AttrValue)]
+pub struct SeqInfo {
+    /// Message's sender
+    pub sender: String,
+    /// Message's sequence number in the given session.
+    pub seq: usize,
+}
+
+impl fmt::Display for SeqInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{};{}", self.sender, self.seq)
+    }
+}
+
+impl std::str::FromStr for SeqInfo {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<_> = s.split(';').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("invalid SeqInfo: {}", s));
+        }
+        let sender: String = parts[0].parse()?;
+        let seq: usize = parts[2].parse()?;
+        Ok(SeqInfo { sender, seq })
+    }
+}
+
 declare_attrs! {
     /// The name of the client who sent this message, and the message's sequence
     /// number assigned by that client.
-    attr CLIENT_SEQ: (String, usize);
+    pub attr SEQ_INFO: SeqInfo;
 }
 
 impl<A: Actor> Ports<A> {
@@ -1830,7 +1861,7 @@ impl<A: Actor> Ports<A> {
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
-                    let client_seq = headers.get(CLIENT_SEQ).cloned();
+                    let client_seq = headers.get(SEQ_INFO).cloned();
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &mut Instance<A>| {
                         Box::pin(async move {
@@ -1847,12 +1878,12 @@ impl<A: Actor> Ports<A> {
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
                     if workq.enable_buffering {
-                        let (client, seq) =
-                            client_seq.expect("CLIENT_SEQ must be set when buffering is enabled");
+                        let SeqInfo { sender, seq } =
+                            client_seq.expect("SEQ_INFO must be set when buffering is enabled");
 
                         // TODO: return the message contained in the error instead of dropping them when converting
                         // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                        workq.send(client, seq, work).map_err(|e| match e {
+                        workq.send(sender, seq, work).map_err(|e| match e {
                             OrderedSenderError::InvalidZeroSeq(_) => {
                                 anyhow::anyhow!("seq must be greater than 0")
                             }
