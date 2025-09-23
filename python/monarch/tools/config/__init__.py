@@ -7,9 +7,9 @@
 # pyre-strict
 import warnings
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from monarch.tools.config.workspace import Workspace
-from torchx.specs import CfgVal
 
 # Gracefully handle cases where torchx might not be installed
 # NOTE: this can be removed once torchx.specs moves to monarch.session
@@ -18,10 +18,15 @@ try:
 except ImportError:
     pass
 
+if TYPE_CHECKING:
+    from torchx.specs import CfgVal
+
 NOT_SET: str = "__NOT_SET__"
 
 
 def _empty_appdef() -> "specs.AppDef":
+    from torchx import specs
+
     return specs.AppDef(name=NOT_SET)
 
 
@@ -45,7 +50,7 @@ class Config:
     """
 
     scheduler: str = NOT_SET
-    scheduler_args: dict[str, CfgVal] = field(default_factory=dict)
+    scheduler_args: dict[str, "CfgVal"] = field(default_factory=dict)
     workspace: Workspace = field(default_factory=Workspace.null)
     dryrun: bool = False
     appdef: "specs.AppDef" = field(default_factory=_empty_appdef)
