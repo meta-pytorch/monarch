@@ -41,7 +41,9 @@ use ndslice::Shape;
 use ndslice::ShapeError;
 use ndslice::SliceError;
 use ndslice::reshape::Limit;
+use ndslice::reshape::ReshapeError;
 use ndslice::reshape::ReshapeSliceExt;
+use ndslice::reshape::reshape_selection;
 use ndslice::selection;
 use ndslice::selection::EvalOpts;
 use ndslice::selection::ReifySlice;
@@ -120,16 +122,9 @@ where
     let max_cast_dimension_size = config::global::get(MAX_CAST_DIMENSION_SIZE);
 
     let slice_of_cast = slice_of_root.reshape_with_limit(Limit::from(max_cast_dimension_size));
-    let selection_of_cast = if slice_of_cast != *slice_of_root {
-        Selection::of_ranks(
-            &slice_of_cast,
-            &selection_of_root
-                .eval(&selection::EvalOpts::strict(), slice_of_root)?
-                .collect::<BTreeSet<_>>(),
-        )?
-    } else {
-        selection_of_root
-    };
+
+    let selection_of_cast =
+        reshape_selection(selection_of_root, root_mesh_shape.slice(), &slice_of_cast)?;
 
     let cast_message = CastMessage {
         dest: Uslice {
@@ -489,6 +484,9 @@ pub enum CastError {
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+
+    #[error(transparent)]
+    ReshapeError(#[from] ReshapeError),
 }
 
 // This has to be compiled outside of test mode because the bootstrap binary
