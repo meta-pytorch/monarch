@@ -231,28 +231,15 @@ pub(crate) struct ForwardMessage {
 }
 
 declare_attrs! {
-    /// Used inside headers for cast messages to store
-    /// the rank of the receiver.
-    attr CAST_RANK: usize;
-    /// Used inside headers to store the shape of the
-    /// actor mesh that a message was cast to.
-    attr CAST_SHAPE: Shape;
     /// Used inside headers to store the originating sender of a cast.
     pub attr CAST_ORIGINATING_SENDER: ActorId;
 
     /// The point in the casted region that this message was sent to.
-    /// Used for "v1" casting.
     pub attr CAST_POINT: Point;
 }
 
-pub fn set_cast_info_on_headers(
-    headers: &mut Attrs,
-    cast_rank: usize,
-    cast_shape: Shape,
-    sender: ActorId,
-) {
-    headers.set(CAST_RANK, cast_rank);
-    headers.set(CAST_SHAPE, cast_shape);
+pub fn set_cast_info_on_headers(headers: &mut Attrs, cast_point: Point, sender: ActorId) {
+    headers.set(CAST_POINT, cast_point);
     headers.set(CAST_ORIGINATING_SENDER, sender);
 }
 
@@ -261,22 +248,18 @@ pub trait CastInfo {
     /// If something wasn't explicitly sent via a cast, then
     /// we represent it as the only member of a 0-dimensonal cast shape,
     /// which is the same as a singleton.
-    fn cast_info(&self) -> Point;
+    fn cast_point(&self) -> Point;
     fn sender(&self) -> &ActorId;
 }
 
 impl<A: Actor> CastInfo for Context<'_, A> {
-    fn cast_info(&self) -> Point {
-        let headers = self.headers();
-        if let Some(point) = headers.get(CAST_POINT) {
-            return point.clone();
-        }
-        match (headers.get(CAST_RANK), headers.get(CAST_SHAPE)) {
-            (Some(rank), Some(shape)) => shape.extent().point_of_rank(*rank).unwrap(),
-            (None, None) => Extent::unity().point_of_rank(0).unwrap(),
-            _ => panic!("Expected either both rank and shape or neither"),
+    fn cast_point(&self) -> Point {
+        match self.headers().get(CAST_POINT) {
+            Some(point) => point.clone(),
+            None => Extent::unity().point_of_rank(0).unwrap(),
         }
     }
+
     fn sender(&self) -> &ActorId {
         self.headers()
             .get(CAST_ORIGINATING_SENDER)

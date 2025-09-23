@@ -264,7 +264,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
         cx: &hyperactor::Context<Self>,
         _: AssignRankMessage,
     ) -> anyhow::Result<()> {
-        let point = cx.cast_info();
+        let point = cx.cast_point();
         self.rank = point.rank();
         self.respond_with_python_message = true;
         Python::with_gil(|py| {

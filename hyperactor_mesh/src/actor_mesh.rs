@@ -510,7 +510,7 @@ pub(crate) mod test_util {
             cx: &Context<Self>,
             GetRank(ok, reply): GetRank,
         ) -> Result<(), anyhow::Error> {
-            let point = cx.cast_info();
+            let point = cx.cast_point();
             reply.send(cx, point.rank())?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
@@ -1035,10 +1035,6 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                // TODO: Replace `Shape` with `Extent` in
-                // `set_cast_info_on_headers` (and wherever else - it
-                // is to be retired).
-                let shape = Shape::new(extent.labels().to_vec(), extent.to_slice()).unwrap();
 
                 let mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (reply_port_handle, mut reply_port_receiver) = mesh.client().open_port::<usize>();
@@ -1047,17 +1043,17 @@ mod tests {
                 let actor_mesh: RootActorMesh<TestActor> = mesh.spawn("test", &()).await.unwrap();
                 let actor_ref = actor_mesh.get(0).unwrap();
                 let mut headers = Attrs::new();
-                set_cast_info_on_headers(&mut headers, 0, shape.clone(), mesh.client().self_id().clone());
+                set_cast_info_on_headers(&mut headers, extent.point_of_rank(0).unwrap(), mesh.client().self_id().clone());
                 actor_ref.send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone())).unwrap();
                 assert_eq!(0, reply_port_receiver.recv().await.unwrap());
 
-                set_cast_info_on_headers(&mut headers, 1, shape.clone(), mesh.client().self_id().clone());
+                set_cast_info_on_headers(&mut headers, extent.point_of_rank(1).unwrap(), mesh.client().self_id().clone());
                 actor_ref.port()
                     .send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone()))
                     .unwrap();
                 assert_eq!(1, reply_port_receiver.recv().await.unwrap());
 
-                set_cast_info_on_headers(&mut headers, 2, shape.clone(), mesh.client().self_id().clone());
+                set_cast_info_on_headers(&mut headers, extent.point_of_rank(2).unwrap(), mesh.client().self_id().clone());
                 actor_ref.actor_id()
                     .port_id(GetRank::port())
                     .send_with_headers(

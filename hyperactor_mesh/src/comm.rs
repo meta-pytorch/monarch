@@ -280,13 +280,12 @@ impl CommActor {
             let rank_on_root_mesh = mode.self_rank(cx.self_id())?;
             let cast_rank = message.relative_rank(rank_on_root_mesh)?;
             let cast_shape = message.shape();
+            let point = cast_shape
+                .extent()
+                .point_of_rank(cast_rank)
+                .expect("rank out of bounds");
             let mut headers = cx.headers().clone();
-            set_cast_info_on_headers(
-                &mut headers,
-                cast_rank,
-                cast_shape.clone(),
-                message.sender().clone(),
-            );
+            set_cast_info_on_headers(&mut headers, point, message.sender().clone());
             cx.post(
                 cx.self_id()
                     .proc_id()
