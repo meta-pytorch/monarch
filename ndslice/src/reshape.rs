@@ -23,6 +23,9 @@
 //! See [`reshape_with_limit`] and [`reshape_shape`] for entry points.
 use std::fmt;
 
+use crate::Range;
+use crate::Selection;
+use crate::dsl::union;
 use crate::shape::Shape;
 use crate::slice::Slice;
 
@@ -372,6 +375,446 @@ pub fn expand_labels(factors: &[(String, Vec<usize>)]) -> Vec<String> {
         }
     }
     labels
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReshapeError {
+    #[error("unsupported selection kind {selection}")]
+    UnsupportedSelection { selection: Selection },
+}
+/// Maps a `Selection` on a `Slice` to a new `Selection` that selects all
+/// ranks in the reshaped `Slice` that the original `Selection` selected in the
+/// original `Slice`
+pub fn reshape_selection(
+    selection: Selection,
+    original_slice: &Slice,
+    reshaped_slice: &Slice,
+) -> Result<Selection, ReshapeError> {
+    fn recursive_fold(
+        selection: Selection,
+        original_slice: &Slice,
+        original_size_index: usize,
+        reshaped_slice: &Slice,
+        reshaped_size_index: usize,
+    ) -> Result<Selection, ReshapeError> {
+        if matches!(selection, Selection::True | Selection::False) {
+            return Ok(selection);
+        }
+
+        let Some(&original_dim_size) = original_slice.sizes().get(original_size_index) else {
+            return Ok(selection);
+        };
+
+        let mut accum = *reshaped_slice.sizes().get(reshaped_size_index).unwrap();
+        let mut next_reshaped_dimension_start = reshaped_size_index + 1;
+
+        while accum < original_dim_size {
+            accum *= *reshaped_slice
+                .sizes()
+                .get(next_reshaped_dimension_start)
+                .unwrap();
+            next_reshaped_dimension_start += 1;
+        }
+
+        match selection {
+            // base case
+            Selection::True | Selection::False => Ok(selection),
+            // For these cases we are not drilling down any dimensions when we recurse
+            Selection::Union(left, right) => {
+                let left = recursive_fold(
+                    *left,
+                    original_slice,
+                    original_size_index,
+                    reshaped_slice,
+                    reshaped_size_index,
+                )?;
+
+                match left {
+                    Selection::True => return Ok(Selection::True),
+                    Selection::False => {
+                        return recursive_fold(
+                            *right,
+                            original_slice,
+                            original_size_index,
+                            reshaped_slice,
+                            reshaped_size_index,
+                        );
+                    }
+                    _ => {}
+                }
+
+                let right = recursive_fold(
+                    *right,
+                    original_slice,
+                    original_size_index,
+                    reshaped_slice,
+                    reshaped_size_index,
+                )?;
+
+                Ok(match right {
+                    Selection::True => Selection::True,
+                    Selection::False => left,
+                    _ => Selection::Union(Box::new(left), Box::new(right)),
+                })
+            }
+            Selection::Intersection(left, right) => {
+                let left = recursive_fold(
+                    *left,
+                    original_slice,
+                    original_size_index,
+                    reshaped_slice,
+                    reshaped_size_index,
+                )?;
+                match left {
+                    Selection::False => return Ok(Selection::False),
+                    Selection::True => {
+                        return recursive_fold(
+                            *right,
+                            original_slice,
+                            original_size_index,
+                            reshaped_slice,
+                            reshaped_size_index,
+                        );
+                    }
+                    _ => {}
+                }
+
+                let right = recursive_fold(
+                    *right,
+                    original_slice,
+                    original_size_index,
+                    reshaped_slice,
+                    reshaped_size_index,
+                )?;
+                Ok(match right {
+                    Selection::False => Selection::False,
+                    Selection::True => left,
+                    _ => Selection::Intersection(Box::new(left), Box::new(right)),
+                })
+            }
+            Selection::All(inner) => {
+                let inner = recursive_fold(
+                    *inner,
+                    original_slice,
+                    original_size_index + 1,
+                    reshaped_slice,
+                    next_reshaped_dimension_start,
+                )?;
+
+                if matches!(inner, Selection::True | Selection::False) {
+                    return Ok(inner);
+                }
+
+                Ok((reshaped_size_index..next_reshaped_dimension_start - 1)
+                    .fold(Selection::All(Box::new(inner)), |result, _| {
+                        Selection::All(Box::new(result))
+                    }))
+            }
+            Selection::Any(inner) => {
+                let inner = recursive_fold(
+                    *inner,
+                    original_slice,
+                    original_size_index + 1,
+                    reshaped_slice,
+                    next_reshaped_dimension_start,
+                )?;
+
+                if matches!(inner, Selection::False) {
+                    return Ok(inner);
+                }
+
+                Ok((reshaped_size_index..next_reshaped_dimension_start - 1)
+                    .fold(Selection::Any(Box::new(inner)), |result, _| {
+                        Selection::Any(Box::new(result))
+                    }))
+            }
+            Selection::First(inner) => {
+                let inner = recursive_fold(
+                    *inner,
+                    original_slice,
+                    original_size_index + 1,
+                    reshaped_slice,
+                    next_reshaped_dimension_start,
+                )?;
+
+                if matches!(inner, Selection::False) {
+                    return Ok(inner);
+                }
+
+                Ok((reshaped_size_index..next_reshaped_dimension_start - 1)
+                    .fold(Selection::First(Box::new(inner)), |result, _| {
+                        Selection::First(Box::new(result))
+                    }))
+            }
+            Selection::Range(range, inner) => {
+                // We can fold a rectangle along a dimension by factoring it into up to 3 pieces:
+                // A starting piece if there is a region that begins after the start of a fold but spans to the end of that fold
+                // A middle piece that spans the entire fold for n folds
+                // An ending piece if there is a region that begins at the start of the fold but ends before the end of that fold
+                //
+                // To visualize: range(2:8, true)
+                // 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+                // o | o | x | x | x | x | x | x | o
+                //
+                // => fold into 3 pieces:
+                //
+                // start: range(0:1, range(2:3, true))
+                // 0 | 1 | 2 |
+                // o | o | x |
+                //
+                // middle: range(1:2, all(true))
+                // 3 | 4 | 5 |
+                // x | x | x |
+                //
+                // end: range(2:3, range(0:2, true))
+                // 6 | 7 | 8
+                // x | x | o
+                //
+                // When step size is larger than 1 this does get a bit more hairy where the middle piece must be
+                // split into several pieces and the end must be aligned
+                fn fold_once(
+                    Range(start, end, step): Range,
+                    inner: Selection,
+                    original_dimension_n_size: usize,
+                    new_dimension_n_size: usize,
+                ) -> Vec<Selection> {
+                    let dimension_n_plus_one_start = start / new_dimension_n_size;
+                    let dimension_n_plus_one_end = end.map(|end| {
+                        if end % new_dimension_n_size == 0 {
+                            end / new_dimension_n_size
+                        } else {
+                            end / new_dimension_n_size + 1
+                        }
+                    });
+                    let dimension_n_plus_one_size =
+                        original_dimension_n_size / new_dimension_n_size;
+
+                    let new_dimension_n_start = start % new_dimension_n_size;
+                    let new_dimension_n_end = end.map(|end| {
+                        if end % new_dimension_n_size == 0 && end > new_dimension_n_size - 1 {
+                            // If the original end was 3 and the new dimension size is 3
+                            // Then the new end should be 3 as opposed to 0 as end represents an upper bound
+                            new_dimension_n_size
+                        } else {
+                            end % new_dimension_n_size
+                        }
+                    });
+
+                    let mut result = vec![];
+
+                    // Simplest case where the entire rectangle is contains on a single fold of dim n+1
+                    if dimension_n_plus_one_end
+                        .is_some_and(|end| dimension_n_plus_one_start + 1 == end)
+                        || (end.is_none()
+                            && dimension_n_plus_one_start == dimension_n_plus_one_size)
+                    {
+                        return vec![Selection::Range(
+                            Range(dimension_n_plus_one_start, dimension_n_plus_one_end, 1),
+                            Box::new(Selection::Range(
+                                Range(new_dimension_n_start, new_dimension_n_end, step),
+                                Box::new(inner.clone()),
+                            )),
+                        )];
+                    }
+
+                    // Simpler case first where the middle piece can be represented with a single range
+                    if step == 1 {
+                        // Starting piece
+                        // ex: range(0:1, range(2:3, true))
+                        // 0 | 1 | 2 |
+                        // o | o | x |
+                        let middle_start = match start % new_dimension_n_size {
+                            0 => dimension_n_plus_one_start,
+                            _ => {
+                                result.push(Selection::Range(
+                                    Range(
+                                        dimension_n_plus_one_start,
+                                        Some(dimension_n_plus_one_start + 1),
+                                        1,
+                                    ),
+                                    Box::new(Selection::Range(
+                                        Range(
+                                            new_dimension_n_start,
+                                            Some(new_dimension_n_size),
+                                            step,
+                                        ),
+                                        Box::new(inner.clone()),
+                                    )),
+                                ));
+                                dimension_n_plus_one_start + 1
+                            }
+                        };
+
+                        // Ending piece
+                        // ex: range(2:3, range(0:2, true))
+                        // 6 | 7 | 8
+                        // x | x | o
+                        let middle_end = match (end, dimension_n_plus_one_end) {
+                            (Some(end), Some(dimension_n_plus_one_end))
+                                if end % new_dimension_n_size != 0 =>
+                            {
+                                result.push(Selection::Range(
+                                    Range(
+                                        dimension_n_plus_one_end - 1,
+                                        Some(dimension_n_plus_one_end),
+                                        1,
+                                    ),
+                                    Box::new(Selection::Range(
+                                        Range(0, new_dimension_n_end, step),
+                                        Box::new(inner.clone()),
+                                    )),
+                                ));
+                                Some(dimension_n_plus_one_end - 1)
+                            }
+                            _ => dimension_n_plus_one_end,
+                        };
+
+                        // Middle pieces
+                        // ex: range(1:2, all(true))
+                        // 3 | 4 | 5 |
+                        // x | x | x |
+                        if middle_end.is_some_and(|end| end > middle_start)
+                            || (middle_end.is_none() && middle_start < dimension_n_plus_one_size)
+                        {
+                            result.push(Selection::Range(
+                                Range(middle_start, middle_end, 1),
+                                Box::new(Selection::All(Box::new(inner.clone()))),
+                            ));
+                        }
+                    // Complicated case where step size is larger than 1 that involves splitting up
+                    // the middle piece
+                    } else {
+                        // Greatest common divisor
+                        fn gcd(a: usize, b: usize) -> usize {
+                            if b == 0 { a } else { gcd(b, a % b) }
+                        }
+
+                        let row_pattern_period = step / gcd(step, new_dimension_n_size);
+
+                        // get the coordinates of the first item on the next row
+                        let mut row_col_iter = std::iter::successors(
+                            Some((dimension_n_plus_one_start, start % new_dimension_n_size)),
+                            |&(row, col)| {
+                                let cols_before_end = new_dimension_n_size - 1 - col;
+                                let steps_before_end = cols_before_end / step;
+                                let last_col_before_end = col + step * steps_before_end;
+
+                                let next_row =
+                                    ((row * new_dimension_n_size) + last_col_before_end + step)
+                                        / new_dimension_n_size;
+                                let next_col = (last_col_before_end + step) % new_dimension_n_size;
+
+                                Some((next_row, next_col))
+                            },
+                        )
+                        .peekable();
+
+                        // Needs start piece
+                        if start % new_dimension_n_size != 0 {
+                            let (row, col) = row_col_iter.next().unwrap();
+
+                            result.push(Selection::Range(
+                                Range(row, Some(row + 1), 1),
+                                Box::new(Selection::Range(
+                                    Range(col, None, step),
+                                    Box::new(inner.clone()),
+                                )),
+                            ));
+                        };
+
+                        // Middle pieces
+                        for _ in 0..row_pattern_period {
+                            let end_row = end.map(|end| end / new_dimension_n_size);
+
+                            if match end_row {
+                                Some(end_row) => row_col_iter.peek().unwrap().0 >= end_row,
+                                None => row_col_iter.peek().unwrap().0 >= dimension_n_plus_one_size,
+                            } {
+                                break;
+                            }
+                            let (row_index, col) = row_col_iter.next().unwrap();
+
+                            result.push(Selection::Range(
+                                Range(row_index, end_row, row_pattern_period),
+                                Box::new(Selection::Range(
+                                    Range(col, None, step),
+                                    Box::new(inner.clone()),
+                                )),
+                            ));
+                        }
+
+                        // Needs end piece
+                        if let Some(end) = end {
+                            let end_row = end / new_dimension_n_size;
+
+                            for (row, col) in row_col_iter {
+                                if row > end_row {
+                                    break;
+                                }
+
+                                if row % row_pattern_period == end_row % row_pattern_period {
+                                    if col < end % new_dimension_n_size {
+                                        result.push(Selection::Range(
+                                            Range(end_row, Some(end_row + 1), 1),
+                                            Box::new(Selection::Range(
+                                                Range(col, Some(end % new_dimension_n_size), step),
+                                                Box::new(inner.clone()),
+                                            )),
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    result
+                }
+
+                let inner = recursive_fold(
+                    *inner,
+                    original_slice,
+                    original_size_index + 1,
+                    reshaped_slice,
+                    next_reshaped_dimension_start,
+                )?;
+                if matches!(inner, Selection::False) {
+                    return Ok(inner);
+                }
+                let mut pieces = vec![Selection::Range(range, Box::new(inner))];
+
+                // If [24] is being reshaped to [4, 3, 2] this will yield [2, 3] (dropping the first dimension and reversed)
+                // This is because we need to first fold by 2 to get [12, 3], then fold by 3 to get [4, 3, 2]
+                let reversed_dimensions = reshaped_slice.sizes()
+                    [reshaped_size_index + 1..next_reshaped_dimension_start]
+                    .iter()
+                    .copied()
+                    .rev();
+
+                let mut original_dimension_size = original_dim_size;
+                for dimension in reversed_dimensions {
+                    pieces = pieces
+                        .into_iter()
+                        .flat_map(|piece| {
+                            if let Selection::Range(range, inner) = piece {
+                                fold_once(range, *inner, original_dimension_size, dimension)
+                            } else {
+                                vec![]
+                            }
+                        })
+                        .collect();
+                    original_dimension_size /= dimension;
+                }
+
+                Ok(pieces.into_iter().fold(Selection::False, |x, y| match x {
+                    Selection::False => y,
+                    _ => union(x, y),
+                }))
+            }
+            _ => Err(ReshapeError::UnsupportedSelection { selection }),
+        }
+    }
+
+    recursive_fold(selection, original_slice, 0, reshaped_slice, 0)
 }
 
 #[cfg(test)]
@@ -808,5 +1251,44 @@ mod tests {
         // Check against low-level equivalent reshaped slice
         let expected = selected_host.slice().reshape_with_limit(Limit::from(2));
         assert_eq!(reshaped.shape.slice(), &expected);
+    }
+
+    use std::collections::BTreeSet;
+
+    use proptest::prelude::*;
+    use proptest::test_runner::TestRunner;
+
+    use crate::selection::EvalOpts;
+    use crate::strategy::gen_selection;
+    use crate::strategy::gen_slice;
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 20, ..ProptestConfig::default()
+        })]
+        #[test]
+        fn test_reshape_selection((slice, fanout_limit) in gen_slice(4, 64).prop_flat_map(|slice| {
+            let max_dimension_size = slice.sizes().iter().max().unwrap();
+            (1..=*max_dimension_size).prop_map(move |fanout_limit| (slice.clone(), fanout_limit))
+        })) {
+            let shape = slice.sizes().to_vec();
+
+            let mut runner = TestRunner::default();
+            let selection = gen_selection(4, shape.clone(), 0).new_tree(&mut runner).unwrap().current();
+
+            let original_selected_ranks = selection
+                .eval(&EvalOpts::strict(), &slice)
+                .unwrap()
+                .collect::<BTreeSet<_>>();
+
+            let reshaped_slice = reshape_with_limit(&slice, Limit::from(fanout_limit));
+            let reshaped_selection = reshape_selection(selection, &slice, &reshaped_slice).ok().unwrap();
+
+            let folded_selected_ranks = reshaped_selection
+            .eval(&EvalOpts::strict(), &reshaped_slice)?
+            .collect::<BTreeSet<_>>();
+
+            prop_assert_eq!(original_selected_ranks, folded_selected_ranks);
+        }
     }
 }
