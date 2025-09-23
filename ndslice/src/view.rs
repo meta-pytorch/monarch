@@ -993,6 +993,16 @@ pub enum ViewError {
     },
 }
 
+/// Errors that occur while operating on Region.
+#[derive(Debug, Error)]
+pub enum RegionError {
+    #[error("invalid point: this point does not belong to this region: {0}")]
+    InvalidPoint(String),
+
+    #[error("out of range base rank: this base rank {0} does not belong to this region: {0}")]
+    OutOfRangeBaseRank(usize, String),
+}
+
 /// `Region` describes a region of a possibly-larger space of ranks, organized into
 /// a hyperrect.
 ///
@@ -1108,6 +1118,34 @@ impl Region {
     /// Returns the total number of ranks in the region.
     pub fn num_ranks(&self) -> usize {
         self.slice.len()
+    }
+
+    /// Convert a rank in this region's extent into its corresponding rank in
+    /// the base space defined by the region's `Slice`.
+    pub fn base_rank_of_point(&self, p: Point) -> Result<usize, RegionError> {
+        if p.extent() != &self.extent() {
+            return Err(RegionError::InvalidPoint(
+                "mismatched extent: p must be a point in this region’s extent".to_string(),
+            ));
+        }
+
+        Ok(self
+            .slice()
+            .location(&p.coords())
+            .expect("should have valid location since extent is checked"))
+    }
+
+    /// Convert a rank in the base space into the corresponding `Point` in this
+    /// region's extent (if the base rank lies within the region's `Slice`).
+    pub fn point_of_base_rank(&self, rank: usize) -> Result<Point, RegionError> {
+        let coords = self
+            .slice()
+            .coordinates(rank)
+            .map_err(|e| RegionError::OutOfRangeBaseRank(rank, e.to_string()))?;
+        Ok(self
+            .extent()
+            .point(coords)
+            .expect("should have valid point since coords is from this region"))
     }
 }
 
@@ -2249,6 +2287,59 @@ mod test {
             replica1.remap(&replica1_gpu12).unwrap().collect::<Vec<_>>(),
             vec![1, 2],
         );
+    }
+
+    #[test]
+    fn test_base_local_rank_conversion() {
+        fn point(rank: usize, region: &Region) -> Point {
+            region.extent().point_of_rank(rank).unwrap()
+        }
+
+        let extent = extent!(replicas = 4, gpus = 2);
+        let region = extent.range("replicas", 1..3).unwrap();
+        // region is a 2x2 region of extent, with the ranks in the region and
+        // and ranks in the extent are mapped as follows:
+        //  0,        1
+        // [2] -> 0, [3] -> 1
+        // [4] -> 2, [5] -> 3
+        //  6,        7
+        // Use a point from an extent different from this region should fail:
+        assert!(
+            region
+                .base_rank_of_point(extent.point_of_rank(0).unwrap())
+                .is_err()
+        );
+        // Convert ranks in the extent to ranks in the region:
+        assert_eq!(region.base_rank_of_point(point(0, &region)).unwrap(), 2);
+        assert_eq!(region.base_rank_of_point(point(1, &region)).unwrap(), 3);
+        assert_eq!(region.base_rank_of_point(point(2, &region)).unwrap(), 4);
+        assert_eq!(region.base_rank_of_point(point(3, &region)).unwrap(), 5);
+        // Convert ranks in the region to ranks in the extent:
+        assert_eq!(region.point_of_base_rank(2).unwrap(), point(0, &region));
+        assert_eq!(region.point_of_base_rank(3).unwrap(), point(1, &region));
+        assert_eq!(region.point_of_base_rank(4).unwrap(), point(2, &region));
+        assert_eq!(region.point_of_base_rank(5).unwrap(), point(3, &region));
+        // Coverting ranks outside the region should fail:
+        assert!(region.point_of_base_rank(1).is_err());
+        assert!(region.point_of_base_rank(6).is_err());
+
+        // Slice region to give a subregion:
+        let subset = region
+            .range("replicas", 1..2)
+            .unwrap()
+            .range("gpus", 1..2)
+            .unwrap();
+        // subset is a 1x1 region of extent, with ranksmapped as follows:
+        // 0,  1
+        // 2,  3
+        // 4, [5] -> 0
+        // 6,  7
+        // Convert ranks in the extent to ranks in the subset:
+        assert_eq!(subset.base_rank_of_point(point(0, &subset)).unwrap(), 5);
+        assert_eq!(subset.point_of_base_rank(5).unwrap(), point(0, &subset));
+        // or fail if the rank is not in the subset:
+        assert!(subset.point_of_base_rank(4).is_err());
+        assert!(subset.point_of_base_rank(6).is_err());
     }
 
     use proptest::prelude::*;
