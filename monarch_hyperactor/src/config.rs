@@ -27,6 +27,7 @@ declare_attrs! {
 pub fn reload_config_from_env() -> PyResult<()> {
     // Reload the hyperactor global configuration from environment variables
     hyperactor::config::global::init_from_env();
+    hyperactor_mesh::config::init_from_env();
     Ok(())
 }
 
