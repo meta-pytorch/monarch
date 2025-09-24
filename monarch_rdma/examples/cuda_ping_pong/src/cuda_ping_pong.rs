@@ -705,12 +705,12 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // Create RDMA manager for the first device
     let device_1_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = device_1_proc_mesh
-        .spawn("device_1_rdma_manager", &device_1_ibv_config)
+        .spawn("device_1_rdma_manager", &Some(device_1_ibv_config))
         .await?;
 
     // Create RDMA manager for the second device
     let device_2_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = device_2_proc_mesh
-        .spawn("device_2_rdma_manager", &device_2_ibv_config)
+        .spawn("device_2_rdma_manager", &Some(device_2_ibv_config))
         .await?;
 
     // Get the RDMA manager actor references

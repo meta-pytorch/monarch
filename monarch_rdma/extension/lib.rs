@@ -17,7 +17,6 @@ use monarch_hyperactor::mailbox::PyMailbox;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
@@ -253,27 +252,24 @@ impl PyRdmaManager {
         _cls: &Bound<'_, PyType>,
         proc_mesh: &PyProcMesh,
     ) -> PyResult<PyPythonTask> {
-        // TODO - make this configurable
-        let config = IbverbsConfig::default();
-        tracing::debug!("rdma is enabled, using device {}", config.device);
+        tracing::debug!("spawning RDMA manager on target proc_mesh nodes");
 
         let tracked_proc_mesh = proc_mesh.try_inner()?;
-        let device = config.device.to_string();
 
         PyPythonTask::new(async move {
-            if !ibverbs_supported() {
-                tracing::info!("rdma is not enabled on this hardware");
-                return Ok(None);
-            }
-
+            // Spawns the `RdmaManagerActor` on the target proc_mesh.
+            // This allows the `RdmaController` to run on any node while real RDMA operations occur on appropriate hardware.
             let actor_mesh = tracked_proc_mesh
-                .spawn::<RdmaManagerActor>("rdma_manager", &config)
+                // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
+                // TODO - make IbverbsConfig configurable
+                .spawn::<RdmaManagerActor>("rdma_manager", &None)
                 .await
                 .map_err(|err| PyException::new_err(err.to_string()))?;
 
+            // Use placeholder device name since actual device is determined on remote node
             Ok(Some(PyRdmaManager {
                 inner: actor_mesh,
-                device,
+                device: "remote_rdma_device".to_string(),
             }))
         })
     }

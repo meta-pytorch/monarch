@@ -47,6 +47,7 @@ use serde::Serialize;
 use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaQpInfo;
+use crate::ibverbs_primitives::ibverbs_supported;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
@@ -270,10 +271,18 @@ impl RdmaManagerActor {
 
 #[async_trait]
 impl Actor for RdmaManagerActor {
-    type Params = IbverbsConfig;
+    type Params = Option<IbverbsConfig>;
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
-        let mut config = _params;
+    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+        if !ibverbs_supported() {
+            return Err(anyhow::anyhow!(
+                "Cannot create RdmaManagerActor because RDMA is not supported on this machine"
+            ));
+        }
+
+        // Use provided config or default if none provided
+        let mut config = params.unwrap_or_default();
+        tracing::debug!("rdma is enabled, using device {}", config.device);
 
         let pt_cuda_alloc = crate::rdma_components::pt_cuda_allocator_compatibility();
 
