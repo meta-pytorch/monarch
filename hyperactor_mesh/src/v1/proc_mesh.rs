@@ -29,6 +29,7 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::CollectMeshExt;
 use ndslice::view::MapIntoExt;
 use ndslice::view::Ranked;
 use ndslice::view::Region;
@@ -48,6 +49,7 @@ use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::v1;
 use crate::v1::ActorMesh;
+use crate::v1::ActorMeshRef;
 use crate::v1::Error;
 use crate::v1::HostMeshRef;
 use crate::v1::Name;
@@ -93,6 +95,7 @@ impl ProcRef {
     }
 
     /// Get the supervision events for one actor with the given name.
+    #[allow(dead_code)]
     async fn supervision_events(
         &self,
         cx: &impl context::Actor,
@@ -453,18 +456,56 @@ impl ProcMeshRef {
         vm.join().await.transpose()
     }
 
+    fn agent_mesh(&self) -> ActorMeshRef<ProcMeshAgent> {
+        let agent_name = self.ranks.first().unwrap().agent.actor_id().name();
+        // This name must match the ProcMeshAgent name, which can change depending on the allocator.
+        ActorMeshRef::new(Name::new_reserved(agent_name), self.clone())
+    }
+
     /// The supervision events of procs in this mesh.
     pub async fn supervision_events(
         &self,
         cx: &impl context::Actor,
         name: Name,
     ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
-        let vm: ValueMesh<_> = self.map_into(|proc_ref| {
-            let proc_ref = proc_ref.clone();
-            let name = name.clone();
-            async move { proc_ref.supervision_events(cx, name).await }
-        });
-        vm.join().await.transpose()
+        let agent_mesh = self.agent_mesh();
+        let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
+        // TODO: Use accumulation to get back a single value (representing whether
+        // *any* of the actors failed) instead of a mesh.
+        agent_mesh.cast(
+            cx,
+            resource::GetState::<ActorState> {
+                name: name.clone(),
+                reply: port.bind(),
+            },
+        )?;
+        let expected = self.ranks.len();
+        let mut states = Vec::with_capacity(expected);
+        for _ in 0..expected {
+            let state = rx.recv().await?;
+            match state.state {
+                Some(ref inner) => {
+                    states.push((inner.create_rank, state));
+                }
+                None => {
+                    return Err(Error::NotExist(state.name));
+                }
+            }
+        }
+        // Sort by rank, so that the resulting mesh is ordered.
+        states.sort_by_key(|(rank, _)| *rank);
+        let vm = states
+            .into_iter()
+            .map(|(_, state)| {
+                if let Some(state) = state.state {
+                    state.supervision_events
+                } else {
+                    // Empty vec for ranks with no supervision events.
+                    Vec::new()
+                }
+            })
+            .collect_mesh::<ValueMesh<Vec<_>>>(self.region.clone())?;
+        Ok(vm)
     }
 
     /// Spawn an actor on all of the procs in this mesh, returning a new ActorMesh.
@@ -600,7 +641,6 @@ mod tests {
     use timed_test::async_timed_test;
 
     use crate::v1::ActorMesh;
-    use crate::v1::ActorMeshRef;
     use crate::v1::testactor;
     use crate::v1::testing;
 

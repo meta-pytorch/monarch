@@ -182,9 +182,10 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
     pub async fn supervision_events(
         &self,
         cx: &impl context::Actor,
-        name: Name,
     ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
-        self.proc_mesh.supervision_events(cx, name).await
+        self.proc_mesh
+            .supervision_events(cx, self.name.clone())
+            .await
     }
 }
 
@@ -455,7 +456,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_status() {
+    async fn test_supervision_events() {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance().await;
@@ -489,12 +490,8 @@ mod tests {
         // Now that all ranks have completed, set up a continuous poll of the
         // status such that when a process switches to unhealthy it sets a
         // supervision event.
-        let child_name_clone = child_name.clone();
         let supervision_task = tokio::spawn(async move {
-            match actor_mesh
-                .supervision_events(instance, child_name_clone)
-                .await
-            {
+            match actor_mesh.supervision_events(&instance).await {
                 Ok(events) => {
                     for event_list in events.values() {
                         assert!(!event_list.is_empty());
