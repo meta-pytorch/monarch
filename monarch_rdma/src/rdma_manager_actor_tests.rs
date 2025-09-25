@@ -16,9 +16,13 @@
 #[cfg(test)]
 mod tests {
 
+    use std::sync::OnceLock;
+
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt;
 
     use crate::PollTarget;
     use crate::ibverbs_primitives::get_all_devices;
@@ -27,8 +31,22 @@ mod tests {
     use crate::test_utils::test_utils::RdmaManagerTestEnv;
     use crate::test_utils::test_utils::*;
 
+    static TRACING: OnceLock<()> = OnceLock::new();
+    fn init_tracing() {
+        TRACING.get_or_init(|| {
+            let subscriber = fmt()
+                .with_env_filter(EnvFilter::from_default_env())
+                .with_test_writer()
+                .pretty()
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("setting default subscriber failed");
+        });
+    }
+
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 32;
         // Skip test if RDMA devices are not available
         let devices = get_all_devices();
@@ -52,6 +70,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_loopback() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 32;
         // Skip test if RDMA devices are not available
         let devices = get_all_devices();
@@ -76,6 +95,7 @@ mod tests {
     // Test that RDMA read can be performed between two actors on separate devices.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_separate_devices() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 32;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -101,6 +121,7 @@ mod tests {
     // Test that RDMA write can be performed between two actors on separate devices.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_separate_devices() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 32;
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -130,6 +151,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_recv_separate_devices() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 1024 * 1024;
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -157,6 +179,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_separate_devices_db() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -181,6 +204,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_separate_devices_db() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -205,6 +229,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_cpu_db_trigger_buffer_wraparound() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 1024 * 1024;
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -240,6 +265,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_cpu_buffer_wraparound() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 1024 * 1024;
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -273,6 +299,7 @@ mod tests {
     // Tests RdmaBufer's `read_into` API
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_into() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 32;
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -295,6 +322,7 @@ mod tests {
     // Tests RdmaBufer's `write_from` API
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_from() -> Result<(), anyhow::Error> {
+        init_tracing();
         const BSIZE: usize = 32;
         let devices = get_all_devices();
         if devices.len() < 5 {
@@ -328,6 +356,7 @@ mod tests {
     // Test that RDMA write can be performed between two actors on separate devices with CUDA.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -366,6 +395,7 @@ mod tests {
     // Test that RDMA read can be performed between two actors on separate devices with CUDA.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -399,6 +429,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_recv_separate_devices_db_trigger() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -449,6 +480,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_recv_separate_devices_db_trigger_2x() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -519,6 +551,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_separate_devices_db_trigger_buffer_wraparound()
     -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -579,6 +612,7 @@ mod tests {
     // Test that RDMA write can be performed between two actors on separate devices.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_rdma_write_separate_devices_cuda_vs_cpu() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -610,6 +644,7 @@ mod tests {
     // Test that RDMA write can be performed between two actors on separate devices.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_rdma_write_separate_devices_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -641,6 +676,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_into_cuda_vs_cpu() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -674,6 +710,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_into_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -707,6 +744,7 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_from_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        init_tracing();
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
