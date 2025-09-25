@@ -26,7 +26,17 @@ use serde::Serialize;
 use crate::v1::Name;
 
 /// The current lifecycle status of a resource.
-#[derive(Debug, Serialize, Deserialize, Named, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq
+)]
 pub enum Status {
     /// The resource does not exist.
     NotExist,
@@ -43,7 +53,7 @@ pub enum Status {
 }
 
 /// The state of a resource.
-#[derive(Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct State<S> {
     /// The name of the resource.
     pub name: Name,

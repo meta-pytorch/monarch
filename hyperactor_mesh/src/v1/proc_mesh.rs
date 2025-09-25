@@ -25,7 +25,6 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
-use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -96,11 +95,11 @@ impl ProcRef {
 
     /// Get the supervision events for one actor with the given name.
     #[allow(dead_code)]
-    async fn supervision_events(
+    async fn actor_state(
         &self,
         cx: &impl context::Actor,
         name: Name,
-    ) -> v1::Result<Vec<ActorSupervisionEvent>> {
+    ) -> v1::Result<resource::State<ActorState>> {
         let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
         self.agent
             .send(
@@ -115,11 +114,10 @@ impl ProcRef {
             .recv()
             .await
             .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
-        if let Some(state) = state.state {
-            let rank = state.create_rank;
-            let events = state.supervision_events;
+        if let Some(ref inner) = state.state {
+            let rank = inner.create_rank;
             if rank == self.create_rank {
-                Ok(events)
+                Ok(state)
             } else {
                 Err(Error::CallError(
                     self.agent.actor_id().clone(),
@@ -463,11 +461,11 @@ impl ProcMeshRef {
     }
 
     /// The supervision events of procs in this mesh.
-    pub async fn supervision_events(
+    pub async fn actor_states(
         &self,
         cx: &impl context::Actor,
         name: Name,
-    ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
+    ) -> v1::Result<ValueMesh<resource::State<ActorState>>> {
         let agent_mesh = self.agent_mesh();
         let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
         // TODO: Use accumulation to get back a single value (representing whether
@@ -496,15 +494,8 @@ impl ProcMeshRef {
         states.sort_by_key(|(rank, _)| *rank);
         let vm = states
             .into_iter()
-            .map(|(_, state)| {
-                if let Some(state) = state.state {
-                    state.supervision_events
-                } else {
-                    // Empty vec for ranks with no supervision events.
-                    Vec::new()
-                }
-            })
-            .collect_mesh::<ValueMesh<Vec<_>>>(self.region.clone())?;
+            .map(|(_, state)| state)
+            .collect_mesh::<ValueMesh<_>>(self.region.clone())?;
         Ok(vm)
     }
 

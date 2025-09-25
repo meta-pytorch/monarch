@@ -22,7 +22,6 @@ use hyperactor::attrs::Attrs;
 use hyperactor::context;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
@@ -36,7 +35,9 @@ use serde::Serializer;
 
 use crate::actor_mesh as v0_actor_mesh;
 use crate::comm::multicast;
+use crate::proc_mesh::mesh_agent::ActorState;
 use crate::reference::ActorMeshId;
+use crate::resource;
 use crate::v1;
 use crate::v1::Error;
 use crate::v1::Name;
@@ -179,13 +180,11 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         }
     }
 
-    pub async fn supervision_events(
+    pub async fn actor_states(
         &self,
         cx: &impl context::Actor,
-    ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
-        self.proc_mesh
-            .supervision_events(cx, self.name.clone())
-            .await
+    ) -> v1::Result<ValueMesh<resource::State<ActorState>>> {
+        self.proc_mesh.actor_states(cx, self.name.clone()).await
     }
 }
 
@@ -350,6 +349,8 @@ mod tests {
     use tokio::time::Duration;
 
     use super::ActorMesh;
+    use crate::proc_mesh::mesh_agent::ActorState;
+    use crate::resource;
     use crate::v1::ActorMeshRef;
     use crate::v1::Name;
     use crate::v1::ProcMesh;
@@ -456,13 +457,13 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_supervision_events() {
+    async fn test_actor_states() {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance().await;
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<ActorSupervisionEvent>();
+            instance.open_port::<resource::State<ActorState>>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
@@ -491,13 +492,10 @@ mod tests {
         // status such that when a process switches to unhealthy it sets a
         // supervision event.
         let supervision_task = tokio::spawn(async move {
-            match actor_mesh.supervision_events(&instance).await {
+            match actor_mesh.actor_states(&instance).await {
                 Ok(events) => {
-                    for event_list in events.values() {
-                        assert!(!event_list.is_empty());
-                        for event in event_list {
-                            supervisor.send(instance, event).unwrap();
-                        }
+                    for state in events.values() {
+                        supervisor.send(instance, state.clone()).unwrap();
                     }
                 }
                 Err(e) => {
@@ -509,14 +507,18 @@ mod tests {
         supervision_task.await.unwrap();
 
         for _ in 0..num_replicas {
-            match supervision_receiver.recv().await {
-                Ok(event) => {
+            let state = supervision_receiver.recv().await.unwrap();
+            if let resource::Status::Failed(s) = state.status {
+                assert!(s.contains("supervision events"));
+            } else {
+                panic!("Not failed: {:?}", state.status);
+            }
+            if let Some(ref inner) = state.state {
+                assert!(!inner.supervision_events.is_empty());
+                for event in &inner.supervision_events {
                     println!("receiving event: {:?}", event);
                     assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
                     assert_matches!(event.actor_status, ActorStatus::Failed(_));
-                }
-                Err(e) => {
-                    panic!("error: {:?}", e);
                 }
             }
         }

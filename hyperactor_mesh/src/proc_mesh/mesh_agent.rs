@@ -183,7 +183,7 @@ pub struct ProcMeshAgent {
     record_supervision_events: bool,
     /// If record_supervision_events is true, then this will contain the list
     /// of all events that were received.
-    supervision_events: Vec<ActorSupervisionEvent>,
+    supervision_events: HashMap<ActorId, Vec<ActorSupervisionEvent>>,
 }
 
 impl ProcMeshAgent {
@@ -204,7 +204,7 @@ impl ProcMeshAgent {
             state: State::UnconfiguredV0 { sender },
             created: HashMap::new(),
             record_supervision_events: false,
-            supervision_events: Vec::new(),
+            supervision_events: HashMap::new(),
         };
         let handle = proc.spawn::<Self>("mesh", agent).await?;
         Ok((proc, handle))
@@ -236,7 +236,7 @@ impl ProcMeshAgent {
             state: State::V1,
             created: HashMap::new(),
             record_supervision_events: true,
-            supervision_events: Vec::new(),
+            supervision_events: HashMap::new(),
         };
         proc.spawn::<Self>("agent", agent).await
     }
@@ -393,7 +393,10 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
     ) -> anyhow::Result<()> {
         if self.record_supervision_events {
             tracing::info!("Received supervision event: {:?}, recording", event);
-            self.supervision_events.push(event.clone());
+            self.supervision_events
+                .entry(event.actor_id.clone())
+                .or_insert_with(Vec::new)
+                .push(event.clone());
         }
         if let Some(supervisor) = self.state.supervisor() {
             supervisor.send(cx, event)?;
@@ -482,15 +485,29 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
             .rank()
             .ok_or_else(|| anyhow::anyhow!("tried to get status of unconfigured proc"))?;
         let state = match self.created.get(&get_state.name) {
-            Some(Ok(actor_id)) => resource::State {
-                name: get_state.name.clone(),
-                status: resource::Status::Running,
-                state: Some(ActorState {
-                    actor_id: actor_id.clone(),
-                    create_rank: rank,
-                    supervision_events: self.supervision_events.clone(),
-                }),
-            },
+            Some(Ok(actor_id)) => {
+                let supervision_events = self
+                    .supervision_events
+                    .get(actor_id)
+                    .map_or_else(Vec::new, |a| a.clone());
+                let status = if supervision_events.is_empty() {
+                    resource::Status::Running
+                } else {
+                    resource::Status::Failed(format!(
+                        "because of supervision events: {:?}",
+                        supervision_events
+                    ))
+                };
+                resource::State {
+                    name: get_state.name.clone(),
+                    status,
+                    state: Some(ActorState {
+                        actor_id: actor_id.clone(),
+                        create_rank: rank,
+                        supervision_events,
+                    }),
+                }
+            }
             Some(Err(e)) => resource::State {
                 name: get_state.name.clone(),
                 status: resource::Status::Failed(e.to_string()),
