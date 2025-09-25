@@ -56,6 +56,8 @@ install_wheel_from_artifact() {
 # Setup and install dependencies for Tensor Engine
 setup_tensor_engine() {
     echo "Installing Tensor Engine dependencies..."
+    # Install the fmt library for C++ headers in pytorch.
+    conda install -y -c conda-forge fmt
     dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
 }
 
