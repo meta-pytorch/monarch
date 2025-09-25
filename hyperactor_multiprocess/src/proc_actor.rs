@@ -829,7 +829,7 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
 
 /// Convenience utility to spawn an actor on a proc. Spawn returns
 /// with the new ActorRef on success.
-pub async fn spawn<A: Actor + RemoteActor>(
+pub async fn spawn<A: RemoteActor>(
     cx: &impl context::Actor,
     proc_actor: &ActorRef<ProcActor>,
     actor_name: &str,
