@@ -53,6 +53,7 @@ use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use serde::Deserialize;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::RdmaDevice;
 use crate::RdmaManagerActor;
@@ -92,6 +93,9 @@ impl DoorBell {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct RdmaBuffer {
     pub owner: ActorRef<RdmaManagerActor>,
+    // A globally unique identifier of the buffer, used for releasing the buffer
+    // cross language and RPC boundaries.
+    pub buffer_id: Uuid,
     pub mr_id: usize,
     pub lkey: u32,
     pub rkey: u32,

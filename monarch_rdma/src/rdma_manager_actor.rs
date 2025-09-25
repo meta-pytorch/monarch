@@ -28,6 +28,7 @@
 //!
 //! See test examples: `test_rdma_write_loopback` and `test_rdma_read_loopback`.
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -43,15 +44,16 @@ use hyperactor::RefClient;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::ibverbs_primitives::IbverbsConfig;
-use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaQpInfo;
 use crate::ibverbs_primitives::ibverbs_supported;
+use crate::mr_registry::MemoryRegionRegistry;
+use crate::mr_registry::RdmaMemoryRegionView;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
-use crate::rdma_components::get_registered_cuda_segments;
 use crate::validate_execution_context;
 
 /// Represents a reference to a remote RDMA buffer that can be accessed via RDMA operations.
@@ -124,15 +126,19 @@ pub struct RdmaManagerActor {
     // This domain is initialized during the creation of the `RdmaManagerActor`
     // and is used throughout the actor's lifecycle to manage RDMA connections
     // and operations.
-    domain: RdmaDomain,
+    domain: Arc<RdmaDomain>,
     config: IbverbsConfig,
 
     // Flag indicating PyTorch CUDA allocator compatibility
     // True if both C10 CUDA allocator is enabled AND expandable segments are enabled
     pt_cuda_alloc: bool,
 
-    // Map of memory region IDs to (RdmaMemoryRegionView, ibv_mr* as usize (optional)), representing registered memory regions
-    mr_map: HashMap<usize, (RdmaMemoryRegionView, usize)>,
+    mr_registry: MemoryRegionRegistry,
+    // Maps buffer_id to RdmaMemoryRegionView. This maintains ownership of memory region views
+    // on behalf of callers who receive RdmaBuffer handles from request_buffer(). Since buffers
+    // may cross language/RPC boundaries, callers are responsible for calling release_buffer()
+    // to clean up when the buffer is no longer needed, at which point the view is removed.
+    pending_mrvs: HashMap<Uuid, RdmaMemoryRegionView>,
 }
 
 impl RdmaManagerActor {
@@ -141,131 +147,7 @@ impl RdmaManagerActor {
         addr: usize,
         size: usize,
     ) -> Option<RdmaMemoryRegionView> {
-        let registered_segments = get_registered_cuda_segments();
-        for segment in registered_segments {
-            let start_addr = segment.phys_address;
-            let end_addr = start_addr + segment.phys_size;
-
-            if start_addr <= addr && addr + size <= end_addr {
-                let offset = addr - start_addr;
-                return Some(RdmaMemoryRegionView {
-                    virtual_addr: addr,
-                    rdma_addr: segment.mr_addr + offset,
-                    size,
-                    lkey: segment.lkey,
-                    rkey: segment.rkey,
-                });
-            }
-        }
         None
-    }
-
-    fn register_mr(
-        &mut self,
-        actor_id: ActorId,
-        addr: usize,
-        size: usize,
-    ) -> Result<RdmaMemoryRegionView, anyhow::Error> {
-        unsafe {
-            let mut mem_type: i32 = 0;
-            let ptr = addr as cuda_sys::CUdeviceptr;
-            let err = cuda_sys::cuPointerGetAttribute(
-                &mut mem_type as *mut _ as *mut std::ffi::c_void,
-                cuda_sys::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-                ptr,
-            );
-            let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
-
-            let access = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-
-            let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
-            let mut mrv: Option<RdmaMemoryRegionView> = None;
-
-            if is_cuda && self.pt_cuda_alloc {
-                // Get registered segments and check if our memory range is covered
-                mrv = self.find_cuda_segment_for_address(addr, size);
-                // not found, lets re-sync with caching allocator  and retry
-                if mrv.is_none() {
-                    let qp = self.qp_map.get(&actor_id).unwrap();
-                    rdmaxcel_sys::register_segments(
-                        self.domain.pd,
-                        qp.qp as *mut rdmaxcel_sys::ibv_qp,
-                    );
-                    mrv = self.find_cuda_segment_for_address(addr, size);
-                }
-                // if still not found, throw exception
-                if mrv.is_none() {
-                    return Err(anyhow::anyhow!(
-                        "MR registration failed for cuda (addr: 0x{:x}, size: {}), unable to find segment in CudaCachingAllocator",
-                        addr,
-                        size
-                    ));
-                }
-            } else if is_cuda {
-                let mut fd: i32 = -1;
-                cuda_sys::cuMemGetHandleForAddressRange(
-                    &mut fd as *mut i32 as *mut std::ffi::c_void,
-                    addr as cuda_sys::CUdeviceptr,
-                    size,
-                    cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-                    0,
-                );
-                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(
-                    self.domain.pd,
-                    0,
-                    size,
-                    0,
-                    fd,
-                    access.0 as i32,
-                );
-                mrv = Some(RdmaMemoryRegionView {
-                    virtual_addr: addr,
-                    rdma_addr: (*mr).addr as usize,
-                    size,
-                    lkey: (*mr).lkey,
-                    rkey: (*mr).rkey,
-                });
-            } else {
-                // CPU memory path
-                mr = rdmaxcel_sys::ibv_reg_mr(
-                    self.domain.pd,
-                    addr as *mut std::ffi::c_void,
-                    size,
-                    access.0 as i32,
-                );
-
-                if mr.is_null() {
-                    return Err(anyhow::anyhow!("failed to register memory region (MR)"));
-                }
-
-                mrv = Some(RdmaMemoryRegionView {
-                    virtual_addr: addr,
-                    rdma_addr: (*mr).addr as usize,
-                    size,
-                    lkey: (*mr).lkey,
-                    rkey: (*mr).rkey,
-                });
-            }
-
-            let result_mrv = mrv.unwrap();
-            self.mr_map.insert(addr, (result_mrv.clone(), mr as usize));
-            Ok(result_mrv)
-        }
-    }
-
-    fn deregister_mr(&mut self, id: usize) -> Result<(), anyhow::Error> {
-        let mr_tuple = self.mr_map.remove(&id);
-        if let Some((_, mr_ptr)) = mr_tuple {
-            if mr_ptr != 0 {
-                unsafe {
-                    rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -302,15 +184,17 @@ impl Actor for RdmaManagerActor {
             }
         }
 
-        let domain = RdmaDomain::new(config.device.clone())
-            .map_err(|e| anyhow::anyhow!("rdmaManagerActor could not create domain: {}", e))?;
+        let domain: Arc<RdmaDomain> = RdmaDomain::new(config.device.clone())
+            .map_err(|e| anyhow::anyhow!("rdmaManagerActor could not create domain: {}", e))?
+            .into();
 
         Ok(Self {
             qp_map: HashMap::new(),
-            domain,
+            domain: domain.clone(),
             config,
             pt_cuda_alloc,
-            mr_map: HashMap::new(),
+            mr_registry: MemoryRegionRegistry::new(domain),
+            pending_mrvs: HashMap::new(),
         })
     }
 
@@ -376,20 +260,18 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         addr: usize,
         size: usize,
     ) -> Result<RdmaBuffer, anyhow::Error> {
-        let mrv = if let Some((mrv_, _)) = self.mr_map.get(&addr) {
-            mrv_
-        } else {
-            let actor_id = cx.bind::<RdmaManagerActor>().actor_id().clone();
-            &self.register_mr(actor_id, addr, size)?
-        };
-
+        tracing::debug!("requesting buffer at {:?} with size {:?}", addr, size);
+        let mrv = self.mr_registry.request_mrv(addr, size)?;
+        let buffer_id = Uuid::new_v4();
+        self.pending_mrvs.insert(buffer_id, mrv.clone());
         Ok(RdmaBuffer {
+            mr_id: mrv.memory_region.virtual_addr,
+            buffer_id,
             owner: cx.bind().clone(),
-            mr_id: mrv.virtual_addr,
-            addr: mrv.rdma_addr,
+            addr: mrv.memory_region.rdma_addr + mrv.offset,
             size: mrv.size,
-            rkey: mrv.rkey,
-            lkey: mrv.lkey,
+            lkey: mrv.memory_region.lkey,
+            rkey: mrv.memory_region.rkey,
         })
     }
 
@@ -408,11 +290,26 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// * `Result<(), anyhow::Error>` - On success, returns `Ok(())`. On failure, returns an error.
     async fn release_buffer(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         buffer: RdmaBuffer,
     ) -> Result<(), anyhow::Error> {
-        self.deregister_mr(buffer.mr_id)
-            .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
+        let self_ref = cx.bind::<Self>();
+        let self_id = self_ref.actor_id();
+        let owner_id = buffer.owner.actor_id();
+        if self_id != owner_id {
+            return Err(anyhow::anyhow!(
+                "release_buffer() must be called on the owner of the RDMABuffer. self={:}, owner={:}",
+                self_id,
+                owner_id
+            ));
+        }
+        let buffer_id = buffer.buffer_id;
+        if self.pending_mrvs.remove(&buffer_id).is_none() {
+            return Err(anyhow::anyhow!(
+                "Buffer {:?} not found, is it already released?",
+                buffer
+            ));
+        }
         Ok(())
     }
 
