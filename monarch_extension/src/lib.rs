@@ -236,6 +236,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.logging",
     )?)?;
 
+    monarch_hyperactor::v1::logging::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.v1.logging",
+    )?)?;
+
     crate::trace::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.trace",

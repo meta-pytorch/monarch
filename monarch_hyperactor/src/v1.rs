@@ -10,4 +10,5 @@
 
 pub mod actor_mesh;
 pub mod host_mesh;
+pub mod logging;
 pub mod proc_mesh;

@@ -1146,7 +1146,11 @@ async def test_multiple_ongoing_flushes_no_deadlock() -> None:
     for _ in range(5):
         # FIXME: the order of futures doesn't necessarily mean the order of flushes due to the async nature.
         await asyncio.sleep(0.1)
-        futures.append(Future(coro=log_mesh.flush().spawn().task()))
+        futures.append(
+            Future(
+                coro=log_mesh.flush(context().actor_instance._as_rust()).spawn().task()
+            )
+        )
 
     # The last flush should not block
     futures[-1].get()

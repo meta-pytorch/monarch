@@ -49,7 +49,7 @@ impl PyProcMesh {
         Self::Ref(PyProcMeshRefImpl(inner))
     }
 
-    fn mesh_ref(&self) -> Result<ProcMeshRef, anyhow::Error> {
+    pub(crate) fn mesh_ref(&self) -> Result<ProcMeshRef, anyhow::Error> {
         match self {
             PyProcMesh::Owned(inner) => Ok(inner.0.borrow()?.clone()),
             PyProcMesh::Ref(inner) => Ok(inner.0.clone()),
@@ -137,10 +137,13 @@ impl PyProcMesh {
             let r = get_tokio_runtime().block_on(mesh_impl)?;
             Python::with_gil(|py| r.into_py_any(py))
         } else {
-            let r = PythonActorMesh::new(async move {
-                let mesh_impl: Box<dyn ActorMeshProtocol> = mesh_impl.await?;
-                Ok(mesh_impl)
-            });
+            let r = PythonActorMesh::new(
+                async move {
+                    let mesh_impl: Box<dyn ActorMeshProtocol> = mesh_impl.await?;
+                    Ok(mesh_impl)
+                },
+                false,
+            );
             Python::with_gil(|py| r.into_py_any(py))
         }
     }
@@ -156,7 +159,9 @@ impl PyProcMesh {
         let bytes = bincode::serialize(&self.mesh_ref()?)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
-        let from_bytes = wrap_pyfunction!(py_proc_mesh_from_bytes, py)?.into_any();
+        let from_bytes =
+            PyModule::import(py, "monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh")?
+                .getattr("py_proc_mesh_from_bytes")?;
         Ok((from_bytes, py_bytes))
     }
 
@@ -220,6 +225,7 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
         "__module__",
         "monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh",
     )?;
+    hyperactor_mod.add_function(f)?;
     hyperactor_mod.add_class::<PyProcMesh>()?;
     Ok(())
 }

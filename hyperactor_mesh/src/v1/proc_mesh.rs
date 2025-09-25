@@ -46,6 +46,7 @@ use crate::proc_mesh::mesh_agent;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::proc_mesh::mesh_agent::ReconfigurableMailboxSender;
 use crate::resource;
 use crate::v1;
 use crate::v1::ActorMesh;
@@ -256,16 +257,37 @@ impl ProcMesh {
         let (proc_channel_addr, rx) = channel::serve(ChannelAddr::any(alloc.transport()))?;
         proc.clone().serve(rx);
 
-        let router = proc
-            .forwarder()
-            .downcast_ref::<DialMailboxRouter>()
-            .ok_or(Error::UnroutableMesh())?;
-        // Route all of the allocated procs:
-        for AllocatedProc { proc_id, addr, .. } in running.iter() {
-            if proc_id.is_direct() {
-                continue;
+        let bind_allocated_procs = |router: &DialMailboxRouter| {
+            // Route all of the allocated procs:
+            for AllocatedProc { proc_id, addr, .. } in running.iter() {
+                if proc_id.is_direct() {
+                    continue;
+                }
+                router.bind(proc_id.clone().into(), addr.clone());
             }
-            router.bind(proc_id.clone().into(), addr.clone());
+        };
+
+        // Temporary for backward compatibility with ranked procs and v0 API.
+        // Proc meshes can be allocated either using the root client proc (which
+        // has a DialMailboxRouter forwarder) or a mesh agent proc (which has a
+        // ReconfigurableMailboxSender forwarder with an inner DialMailboxRouter).
+        if let Some(router) = proc.forwarder().downcast_ref() {
+            bind_allocated_procs(router);
+        } else if let Some(router) = proc
+            .forwarder()
+            .downcast_ref::<ReconfigurableMailboxSender>()
+        {
+            bind_allocated_procs(
+                router
+                    .as_inner()
+                    .map_err(|_| Error::UnroutableMesh())?
+                    .as_configured()
+                    .ok_or(Error::UnroutableMesh())?
+                    .downcast_ref()
+                    .ok_or(Error::UnroutableMesh())?,
+            );
+        } else {
+            return Err(Error::UnroutableMesh());
         }
 
         // Set up the mesh agents. Since references are not owned, we don't supervise it.
@@ -631,11 +653,6 @@ impl view::RankedSliceable for ProcMeshRef {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
-    use hyperactor::mailbox;
     use ndslice::ViewExt;
     use ndslice::extent;
     use timed_test::async_timed_test;

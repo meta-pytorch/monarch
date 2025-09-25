@@ -14,6 +14,7 @@ use std::mem::take;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::sync::RwLockWriteGuard;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
@@ -523,6 +524,16 @@ impl std::fmt::Debug for ReconfigurableMailboxSender {
     }
 }
 
+pub(crate) struct ReconfigurableMailboxSenderInner<'a> {
+    guard: RwLockWriteGuard<'a, ReconfigurableMailboxSenderState>,
+}
+
+impl<'a> ReconfigurableMailboxSenderInner<'a> {
+    pub(crate) fn as_configured(&self) -> Option<&BoxedMailboxSender> {
+        self.guard.as_configured()
+    }
+}
+
 type Post = (MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>);
 
 #[derive(EnumAsInner, Debug)]
@@ -559,6 +570,17 @@ impl ReconfigurableMailboxSender {
         }
         *state = ReconfigurableMailboxSenderState::Configured(sender);
         true
+    }
+
+    pub(crate) fn as_inner<'a>(
+        &'a self,
+    ) -> Result<ReconfigurableMailboxSenderInner<'a>, anyhow::Error> {
+        let state = self.state.write().unwrap();
+        if state.is_configured() {
+            Ok(ReconfigurableMailboxSenderInner { guard: state })
+        } else {
+            Err(anyhow::anyhow!("cannot get inner sender: not configured"))
+        }
     }
 }
 

@@ -102,12 +102,12 @@ pub(crate) struct PythonActorMesh {
 }
 
 impl PythonActorMesh {
-    pub(crate) fn new<F>(f: F) -> Self
+    pub(crate) fn new<F>(f: F, supervised: bool) -> Self
     where
         F: Future<Output = PyResult<Box<dyn ActorMeshProtocol>>> + Send + 'static,
     {
         PythonActorMesh {
-            inner: Box::new(AsyncActorMesh::new_queue(f)),
+            inner: Box::new(AsyncActorMesh::new_queue(f, supervised)),
         }
     }
     pub(crate) fn from_impl(inner: Box<dyn ActorMeshProtocol>) -> Self {
@@ -551,7 +551,7 @@ pub(crate) struct AsyncActorMesh {
 }
 
 impl AsyncActorMesh {
-    pub(crate) fn new_queue<F>(f: F) -> AsyncActorMesh
+    pub(crate) fn new_queue<F>(f: F, supervised: bool) -> AsyncActorMesh
     where
         F: Future<Output = PyResult<Box<dyn ActorMeshProtocol>>> + Send + 'static,
     {
@@ -567,7 +567,7 @@ impl AsyncActorMesh {
                 }
             }
         });
-        AsyncActorMesh::new(queue, true, f)
+        AsyncActorMesh::new(queue, supervised, f)
     }
     fn new<F>(
         queue: UnboundedSender<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,

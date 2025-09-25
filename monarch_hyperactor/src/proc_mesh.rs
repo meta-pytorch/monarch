@@ -366,10 +366,13 @@ impl PyProcMesh {
                 actor_events,
             )))
         };
-        let r = PythonActorMesh::new(async move {
-            let meshimpl: Box<dyn ActorMeshProtocol> = meshimpl.await?;
-            Ok(meshimpl)
-        });
+        let r = PythonActorMesh::new(
+            async move {
+                let meshimpl: Box<dyn ActorMeshProtocol> = meshimpl.await?;
+                Ok(meshimpl)
+            },
+            true,
+        );
         Python::with_gil(|py| r.into_py_any(py))
     }
 

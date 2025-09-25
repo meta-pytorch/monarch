@@ -56,17 +56,23 @@ macro_rules! instance_dispatch {
             $crate::context::ContextInstance::PythonActor($cx) => $code,
         }
     };
+    ($ins:expr, async |$cx:ident| $code:block) => {
+        match $ins.context_instance() {
+            $crate::context::ContextInstance::Client($cx) => async $code.await,
+            $crate::context::ContextInstance::PythonActor($cx) => async $code.await,
+        }
+    };
     ($ins:expr, async move |$cx:ident| $code:block) => {
         match $ins.context_instance() {
             $crate::context::ContextInstance::Client($cx) => async move $code.await,
             $crate::context::ContextInstance::PythonActor($cx) => async move $code.await,
         }
-    }
+    };
 }
 
 #[derive(Clone)]
 #[pyclass(name = "Instance", module = "monarch._src.actor.actor_mesh")]
-pub(crate) struct PyInstance {
+pub struct PyInstance {
     inner: ContextInstance,
     #[pyo3(get, set)]
     proc_mesh: Option<PyObject>,

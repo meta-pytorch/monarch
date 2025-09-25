@@ -6,12 +6,14 @@
 
 # pyre-strict
 
-from typing import final
+from typing import final, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.context import Instance
-
-from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+
+from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import ProcMesh
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.context import Instance
 
 @final
 class LoggingMeshClient:
