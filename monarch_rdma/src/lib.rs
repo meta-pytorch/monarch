@@ -10,8 +10,10 @@
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 mod ibverbs_primitives;
+mod mr_registry;
 mod rdma_components;
 mod rdma_manager_actor;
+mod utils;
 
 #[macro_use]
 mod macros;
