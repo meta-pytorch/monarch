@@ -97,8 +97,13 @@ pub trait Actor: Sized + Send + Debug + 'static {
     ///
     /// Actors spawned through `spawn_detached` are not attached to a supervision
     /// hierarchy, and not managed by a [`Proc`].
-    async fn spawn_detached(params: Self::Params) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::local().spawn("anon", params).await
+    async fn spawn_detached(
+        params: Self::Params,
+    ) -> Result<(Instance<()>, ActorHandle<Self>), anyhow::Error> {
+        let proc = Proc::local();
+        let client = proc.client_instance()?;
+        let actor = proc.spawn("anon", params).await?;
+        Ok((client, actor))
     }
 
     /// This method is used by the runtime to spawn the actor server. It can be
@@ -592,11 +597,15 @@ impl<A: Actor> ActorHandle<A> {
 
     /// Send a message to the actor. Messages sent through the handle
     /// are always queued in process, and do not require serialization.
-    pub fn send<M: Message>(&self, message: M) -> Result<(), MailboxSenderError>
+    pub fn send<M: Message>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+    ) -> Result<(), MailboxSenderError>
     where
         A: Handler<M>,
     {
-        self.ports.get().send(message)
+        self.ports.get().send(cx, message)
     }
 
     /// Return a port for the provided message type handled by the actor.
@@ -710,10 +719,10 @@ mod tests {
     #[tokio::test]
     async fn test_server_basic() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let client = proc.client_instance().unwrap();
         let (tx, mut rx) = client.open_port();
         let handle = proc.spawn::<EchoActor>("echo", tx.bind()).await.unwrap();
-        handle.send(123u64).unwrap();
+        handle.send(&client, 123u64).unwrap();
         handle.drain_and_stop().unwrap();
         handle.await;
 
@@ -723,7 +732,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_pong() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let client = proc.client_instance().unwrap();
         let (undeliverable_msg_tx, _) = client.open_port();
 
         let ping_pong_actor_params =
@@ -740,7 +749,10 @@ mod tests {
         let (local_port, local_receiver) = client.open_once_port();
 
         ping_handle
-            .send(PingPongMessage(10, pong_handle.bind(), local_port.bind()))
+            .send(
+                &client,
+                PingPongMessage(10, pong_handle.bind(), local_port.bind()),
+            )
             .unwrap();
 
         assert!(local_receiver.recv().await.unwrap());
@@ -749,7 +761,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_pong_on_handler_error() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let client = proc.client_instance().unwrap();
         let (undeliverable_msg_tx, _) = client.open_port();
 
         // Need to set a supervison coordinator for this Proc because there will
@@ -771,11 +783,14 @@ mod tests {
         let (local_port, local_receiver) = client.open_once_port();
 
         ping_handle
-            .send(PingPongMessage(
-                error_ttl + 1, // will encounter an error at TTL=66
-                pong_handle.bind(),
-                local_port.bind(),
-            ))
+            .send(
+                &client,
+                PingPongMessage(
+                    error_ttl + 1, // will encounter an error at TTL=66
+                    pong_handle.bind(),
+                    local_port.bind(),
+                ),
+            )
             .unwrap();
 
         // TODO: Fix this receiver hanging issue in T200423722.
@@ -806,10 +821,10 @@ mod tests {
     impl Handler<OncePortHandle<bool>> for InitActor {
         async fn handle(
             &mut self,
-            _cx: &Context<Self>,
+            cx: &Context<Self>,
             port: OncePortHandle<bool>,
         ) -> Result<(), anyhow::Error> {
-            port.send(self.0)?;
+            port.send(cx, self.0)?;
             Ok(())
         }
     }
@@ -818,10 +833,10 @@ mod tests {
     async fn test_init() {
         let proc = Proc::local();
         let handle = proc.spawn::<InitActor>("init", ()).await.unwrap();
-        let client = proc.attach("client").unwrap();
+        let client = proc.client_instance().unwrap();
 
         let (port, receiver) = client.open_once_port();
-        handle.send(port).unwrap();
+        handle.send(&client, port).unwrap();
         assert!(receiver.recv().await.unwrap());
 
         handle.drain_and_stop().unwrap();
@@ -903,12 +918,12 @@ mod tests {
             M: RemoteMessage,
             MultiActor: Handler<M>,
         {
-            self.handle.send(message).unwrap()
+            self.handle.send(&self.client, message).unwrap()
         }
 
         async fn sync(&self) {
             let (port, done) = self.client.open_once_port::<bool>();
-            self.handle.send(port).unwrap();
+            self.handle.send(&self.client, port).unwrap();
             assert!(done.recv().await.unwrap());
         }
 
@@ -956,10 +971,10 @@ mod tests {
     impl Handler<OncePortHandle<bool>> for MultiActor {
         async fn handle(
             &mut self,
-            _cx: &Context<Self>,
+            cx: &Context<Self>,
             message: OncePortHandle<bool>,
         ) -> Result<(), anyhow::Error> {
-            message.send(true).unwrap();
+            message.send(&cx, true).unwrap();
             Ok(())
         }
     }

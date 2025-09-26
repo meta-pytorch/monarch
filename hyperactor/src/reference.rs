@@ -719,7 +719,7 @@ impl<A: RemoteActor> ActorRef<A> {
     /// Send an [`M`]-typed message to the referenced actor.
     pub fn send<M: RemoteMessage>(
         &self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         message: M,
     ) -> Result<(), MailboxSenderError>
     where

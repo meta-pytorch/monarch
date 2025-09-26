@@ -542,11 +542,11 @@ class Port(Generic[R]):
     def __init__(
         self,
         port_ref: PortRef | OncePortRef,
-        mailbox: Mailbox,
+        instance: HyInstance,
         rank: Optional[int],
     ) -> None:
         self._port_ref = port_ref
-        self._mailbox = mailbox
+        self._instance = instance
         self._rank = rank
 
     def send(self, obj: R) -> None:
@@ -558,7 +558,7 @@ class Port(Generic[R]):
             obj: R-typed object to send.
         """
         self._port_ref.send(
-            self._mailbox,
+            self._instance,
             PythonMessage(PythonMessageKind.Result(self._rank), _pickle(obj)),
         )
 
@@ -566,7 +566,7 @@ class Port(Generic[R]):
         # we deliver each error exactly once, so if there is no port to respond to,
         # the error is sent to the current actor as an exception.
         self._port_ref.send(
-            self._mailbox,
+            self._instance,
             PythonMessage(PythonMessageKind.Exception(self._rank), _pickle(obj)),
         )
 
@@ -609,11 +609,12 @@ class Channel(Generic[R]):
     @staticmethod
     def open(once: bool = False) -> Tuple["Port[R]", "PortReceiver[R]"]:
         """ """
-        mailbox = context().actor_instance._mailbox
+        actor_instance = context().actor_instance
+        mailbox = actor_instance._mailbox
         handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
         port_ref = handle.bind()
         return (
-            Port(port_ref, mailbox, rank=None),
+            Port(port_ref, actor_instance._as_rust(), rank=None),
             PortReceiver(mailbox, receiver),
         )
 

@@ -20,11 +20,12 @@
 //! # use hyperactor::reference::{ActorId, ProcId, WorldId};
 //! # tokio_test::block_on(async {
 //! # let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
+//! # let client = proc_id.client_instance().unwrap();
 //! # let actor_id = ActorId(proc_id, "actor".to_string(), 0);
 //! let mbox = Mailbox::new_detached(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
-//! port.send(123).unwrap();
+//! port.send(&client, 123).unwrap();
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -37,12 +38,13 @@
 //! # use hyperactor::reference::{ActorId, ProcId, WorldId};
 //! # tokio_test::block_on(async {
 //! # let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
+//! let client = proc_id.client_instance().unwrap();
 //! # let actor_id = ActorId(proc_id, "actor".to_string(), 0);
 //! let mbox = Mailbox::new_detached(actor_id);
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
 //!
-//! port.send(123u64).unwrap();
+//! port.send(&client, 123u64).unwrap();
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -1087,7 +1089,9 @@ impl MailboxClient {
             tokio::spawn(async move {
                 let result = return_receiver.await;
                 if let Ok(message) = result {
-                    let _ = return_handle_0.send(Undeliverable(message));
+                    // When returning messages, we do not care whether the messages are delivered
+                    // out of order.
+                    let _ = return_handle_0.anon_send(Undeliverable(message));
                 } else {
                     // Sender dropped, this task can end.
                 }
@@ -1577,11 +1581,31 @@ impl<M: Message> PortHandle<M> {
     }
 
     /// Send a message to this port.
-    pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
+    pub fn send(&self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
+        // TODO(pzhang) Use cx to add SEQ_INFO header.
 
+        self.sender.send(headers, message).map_err(|err| {
+            MailboxSenderError::new_unbound::<M>(
+                self.mailbox.actor_id().clone(),
+                MailboxSenderErrorKind::Other(err),
+            )
+        })
+    }
+
+    /// Send a message to this port without a known sender. This method should
+    /// only be used if you do not care about out-of-ordering delivery.
+    pub fn anon_send(&self, message: M) -> Result<(), MailboxSenderError> {
+        let mut headers = Attrs::new();
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+
+        self.send_with_header(message, headers)
+    }
+
+    /// Send a message to this port.
+    fn send_with_header(&self, message: M, headers: Attrs) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
@@ -1663,7 +1687,7 @@ impl<M: Message> OncePortHandle<M> {
 
     /// Send a message to this port. The send operation will consume the
     /// port handle, as the port accepts at most one message.
-    pub fn send(self, message: M) -> Result<(), MailboxSenderError> {
+    pub fn send(self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
         let actor_id = self.mailbox.actor_id().clone();
         self.sender.send(message).map_err(|_| {
             // Here, the value is returned when the port is
@@ -2577,6 +2601,7 @@ mod tests {
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
+    use crate::context::Mailbox as _;
     use crate::data::Serialized;
     use crate::id;
     use crate::proc::Proc;
@@ -2620,32 +2645,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_accum() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
-        let (port, mut receiver) = mbox.open_accum_port(accum::max::<i64>());
+        let proc = Proc::local();
+        let client = proc.client_instance().unwrap();
+        let (port, mut receiver) = client.mailbox().open_accum_port(accum::max::<i64>());
 
         for i in -3..4 {
-            port.send(i).unwrap();
+            port.send(&client, i).unwrap();
             let received: accum::Max<i64> = receiver.recv().await.unwrap();
             let msg = received.get();
             assert_eq!(msg, &i);
         }
         // Send a smaller or same value. Should still receive the previous max.
         for i in -3..4 {
-            port.send(i).unwrap();
+            port.send(&client, i).unwrap();
             assert_eq!(receiver.recv().await.unwrap().get(), &3);
         }
         // send a larger value. Should receive the new max.
-        port.send(4).unwrap();
+        port.send(&client, 4).unwrap();
         assert_eq!(receiver.recv().await.unwrap().get(), &4);
 
         // Send multiple updates. Should only receive the final change.
         for i in 5..10 {
-            port.send(i).unwrap();
+            port.send(&client, i).unwrap();
         }
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
-        port.send(1).unwrap();
-        port.send(3).unwrap();
-        port.send(2).unwrap();
+        port.send(&client, 1).unwrap();
+        port.send(&client, 3).unwrap();
+        port.send(&client, 2).unwrap();
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
     }
 
@@ -2673,13 +2699,14 @@ mod tests {
     #[tokio::test]
     #[ignore] // error behavior changed, but we will bring it back
     async fn test_mailbox_once() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let proc = Proc::local();
+        let client = proc.client_instance().unwrap();
 
-        let (port, receiver) = mbox.open_once_port::<u64>();
+        let (port, receiver) = client.open_once_port::<u64>();
 
         // let port_id = port.port_id().clone();
 
-        port.send(123u64).unwrap();
+        port.send(&client, 123u64).unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
 
         // // The borrow checker won't let us send again on the port
@@ -2744,7 +2771,9 @@ mod tests {
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
-        port.send(123u64).unwrap();
+        let proc = Proc::local();
+        let client = proc.client_instance().unwrap();
+        port.send(&client, 123u64).unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
 
         /*
@@ -2944,19 +2973,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_enqueue_port() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let proc = Proc::local();
+        let client = proc.client_instance().unwrap();
 
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = count.clone();
-        let port = mbox.open_enqueue_port(move |_, n| {
+        let port = client.mailbox().open_enqueue_port(move |_, n| {
             count_clone.fetch_add(n, Ordering::SeqCst);
             Ok(())
         });
 
-        port.send(10).unwrap();
-        port.send(5).unwrap();
-        port.send(1).unwrap();
-        port.send(0).unwrap();
+        port.send(&client, 10).unwrap();
+        port.send(&client, 5).unwrap();
+        port.send(&client, 1).unwrap();
+        port.send(&client, 0).unwrap();
 
         assert_eq!(count.load(Ordering::SeqCst), 16);
     }
@@ -3030,7 +3060,7 @@ mod tests {
             Serialized::serialize(&1u64).unwrap(),
             Attrs::new(),
         );
-        return_handle.send(Undeliverable(message)).unwrap();
+        return_handle.anon_send(Undeliverable(message)).unwrap();
 
         RealClock
             .sleep(tokio::time::Duration::from_millis(100))
@@ -3062,7 +3092,9 @@ mod tests {
             Serialized::serialize(&1u64).unwrap(),
             Attrs::new(),
         );
-        return_handle.send(Undeliverable(envelope.clone())).unwrap();
+        return_handle
+            .anon_send(Undeliverable(envelope.clone()))
+            .unwrap();
         // Check we receive the undelivered message.
         assert!(
             RealClock
@@ -3619,12 +3651,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_port_contramap() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
-        let (handle, mut rx) = mbox.open_port();
+        let proc = Proc::local();
+        let client = proc.client_instance().unwrap();
+        let (handle, mut rx) = client.open_port();
 
         handle
             .contramap(|m| (1, m))
-            .send("hello".to_string())
+            .send(&client, "hello".to_string())
             .unwrap();
         assert_eq!(rx.recv().await.unwrap(), (1, "hello".to_string()));
     }

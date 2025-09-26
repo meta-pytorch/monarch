@@ -87,13 +87,6 @@ pub struct PyInstance {
 #[pymethods]
 impl PyInstance {
     #[getter]
-    pub(crate) fn _mailbox(&self) -> PyMailbox {
-        PyMailbox {
-            inner: self.inner.mailbox_for_py().clone(),
-        }
-    }
-
-    #[getter]
     fn actor_id(&self) -> PyActorId {
         self.inner.self_id().clone().into()
     }

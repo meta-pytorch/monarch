@@ -911,7 +911,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     let mut impl_methods = Vec::new();
 
     let send_message = if is_handle {
-        quote! { self.send(message)? }
+        quote! { self.send(cx, message)? }
     } else {
         quote! { self.send(cx, message)? }
     };
