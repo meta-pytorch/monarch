@@ -11,8 +11,10 @@
 //! the bootstrap binary, which is not built in test mode (and anyway, test mode
 //! does not work across crate boundaries)
 
+#[cfg(test)]
 use std::collections::HashSet;
 use std::collections::VecDeque;
+#[cfg(test)]
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -27,17 +29,23 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
+#[cfg(test)]
 use hyperactor::clock::Clock as _;
+#[cfg(test)]
 use hyperactor::clock::RealClock;
+#[cfg(test)]
 use hyperactor::mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Point;
-use ndslice::ViewExt;
+#[cfg(test)]
+use ndslice::ViewExt as _;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::comm::multicast::CastInfo;
+#[cfg(test)]
 use crate::v1::ActorMesh;
+#[cfg(test)]
 use crate::v1::ActorMeshRef;
 #[cfg(test)]
 use crate::v1::testing;
@@ -55,9 +63,10 @@ use crate::v1::testing;
 )]
 pub struct TestActor;
 
-/// A message that returns the recipient actor's id.
+/// A message that returns the recipient actor's id and cast message's sequence
+/// number.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
-pub struct GetActorId(#[binding(include)] pub PortRef<ActorId>);
+pub struct GetActorId(#[binding(include)] pub PortRef<(ActorId, Option<u64>)>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SupervisionEventType {
@@ -78,7 +87,8 @@ impl Handler<GetActorId> for TestActor {
         cx: &Context<Self>,
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
-        reply.send(cx, cx.self_id().clone())?;
+        let seq = cx.seq_info().map(|seq_info| seq_info.seq);
+        reply.send(cx, (cx.self_id().clone(), seq))?;
         Ok(())
     }
 }
@@ -212,28 +222,7 @@ impl Handler<GetCastInfo> for TestActor {
 pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
     let instance = testing::instance().await;
     // Verify casting to the root actor mesh
-    {
-        let (port, mut rx) = mailbox::open_port(&instance);
-        actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();
-
-        let mut expected_actor_ids: HashSet<_> = actor_mesh
-            .values()
-            .map(|actor_ref| actor_ref.actor_id().clone())
-            .collect();
-
-        while !expected_actor_ids.is_empty() {
-            let actor_id = rx.recv().await.unwrap();
-            assert!(
-                expected_actor_ids.remove(&actor_id),
-                "got {actor_id}, expect {expected_actor_ids:?}"
-            );
-        }
-
-        // No more messages
-        RealClock.sleep(Duration::from_secs(1)).await;
-        let result = rx.try_recv();
-        assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
-    }
+    verify_casting(&actor_mesh, instance, None).await;
 
     // Just pick the first dimension. Slice half of it off.
     // actor_mesh.extent().
@@ -242,28 +231,53 @@ pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
 
     // Verify casting to the sliced actor mesh
     let sliced_actor_mesh = actor_mesh.range(&label, 0..size).unwrap();
-    {
-        let (port, mut rx) = mailbox::open_port(instance);
-        sliced_actor_mesh
-            .cast(instance, GetActorId(port.bind()))
-            .unwrap();
+    verify_casting(&sliced_actor_mesh, instance, None).await;
+}
 
-        let mut expected_actor_ids: HashSet<_> = sliced_actor_mesh
-            .values()
-            .map(|actor_ref| actor_ref.actor_id().clone())
-            .collect();
+#[cfg(test)]
+/// Cast to the actor mesh, and verify that all actors are reached.
+pub async fn verify_casting(
+    actor_mesh: &ActorMeshRef<TestActor>,
+    instance: &Instance<()>,
+    expected_seqs: Option<Vec<u64>>,
+) {
+    use std::collections::HashMap;
 
-        while !expected_actor_ids.is_empty() {
-            let actor_id = rx.recv().await.unwrap();
-            assert!(
-                expected_actor_ids.remove(&actor_id),
-                "got {actor_id}, expect {expected_actor_ids:?}"
+    let (port, mut rx) = mailbox::open_port(&instance);
+    actor_mesh.cast(&instance, GetActorId(port.bind())).unwrap();
+    let expected_actor_ids = actor_mesh
+        .values()
+        .map(|actor_ref| actor_ref.actor_id().clone())
+        .collect::<Vec<_>>();
+    let mut expected: HashMap<&ActorId, Option<u64>> = match expected_seqs {
+        None => expected_actor_ids
+            .iter()
+            .map(|actor_id| (actor_id, None))
+            .collect(),
+        Some(seqs) => expected_actor_ids
+            .iter()
+            .zip(seqs.into_iter().map(Some))
+            .collect(),
+    };
+
+    while !expected.is_empty() {
+        let (actor_id, seq) = rx.recv().await.unwrap();
+        let expected_seq = expected.remove(&actor_id);
+        assert!(
+            expected_seq.is_some(),
+            "got {actor_id}, expect {expected_actor_ids:?}"
+        );
+        if let Some(expected_seq) = seq {
+            assert_eq!(
+                expected_seq,
+                seq.unwrap(),
+                "got different seq for {actor_id}"
             );
         }
-
-        // No more messages
-        RealClock.sleep(Duration::from_secs(1)).await;
-        let result = rx.try_recv();
-        assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
     }
+
+    // No more messages
+    RealClock.sleep(Duration::from_secs(1)).await;
+    let result = rx.try_recv();
+    assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
 }
