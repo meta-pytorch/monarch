@@ -52,6 +52,7 @@ use crate::actor::RemoteActor;
 use crate::attrs::Attrs;
 use crate::cap;
 use crate::channel::ChannelAddr;
+use crate::context;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
 use crate::mailbox::MailboxSenderError;
@@ -69,6 +70,9 @@ use parse::Lexer;
 use parse::ParseError;
 use parse::Token;
 use parse::parse;
+
+use crate::proc::SEQ_INFO;
+use crate::proc::SeqInfo;
 
 /// A universal reference to hierarchical identifiers in Hyperactor.
 ///
@@ -725,6 +729,33 @@ impl<A: RemoteActor> ActorRef<A> {
         A: RemoteHandles<M>,
     {
         self.port().send(cap, message)
+    }
+
+    /// Assign a sequence number to an [`M`]-typed message, and send it to the
+    /// referenced actor.
+    /// TODO: temporary, and should be replaced with the existing `send` method
+    /// after it is updated with `&impl context::Actor`.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
+    pub fn seq_send<M: RemoteMessage>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+    ) -> Result<(), MailboxSenderError>
+    where
+        A: RemoteHandles<M>,
+    {
+        let dest_actor = self.actor_id();
+        let mut headers = Attrs::new();
+        let mut sequencer_lock = cx.instance().lock_sequencer();
+        let seq = sequencer_lock.next_seq(dest_actor);
+        let seq_info = SeqInfo {
+            session_id: sequencer_lock.session_id(),
+            seq,
+        };
+        headers.set(SEQ_INFO, seq_info);
+        self.port().send_with_headers(cx, headers, message)?;
+        sequencer_lock.incr(dest_actor);
+        Ok(())
     }
 
     /// Send an [`M`]-typed message to the referenced actor, with additional context provided by
