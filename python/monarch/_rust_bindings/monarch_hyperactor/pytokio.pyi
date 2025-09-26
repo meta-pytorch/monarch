@@ -82,6 +82,9 @@ class PythonTask(Generic[T], Awaitable[T]):
         """
         ...
 
+    @staticmethod
+    def sleep(seconds: float) -> "PythonTask[None]": ...
+
 class Shared(Generic[T]):
     """
     The result of a spawned PythonTask, which can be awaited on multiple times like Python Futures.

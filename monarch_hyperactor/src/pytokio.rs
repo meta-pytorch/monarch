@@ -288,6 +288,16 @@ impl PyPythonTask {
         })
     }
 
+    #[staticmethod]
+    fn sleep(seconds: f64) -> PyResult<PyPythonTask> {
+        PyPythonTask::new(async move {
+            RealClock
+                .sleep(tokio::time::Duration::from_secs_f64(seconds))
+                .await;
+            Ok(())
+        })
+    }
+
     #[classmethod]
     fn __class_getitem__(cls: &Bound<'_, PyType>, _arg: PyObject) -> PyObject {
         cls.clone().unbind().into()

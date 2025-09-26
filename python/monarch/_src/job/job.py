@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Sequence
+from typing import Dict, Literal, NamedTuple, Optional, Sequence
 
 # note: the jobs api is intended as a library so it should
 # only be importing _public_ monarch API functions.
@@ -34,10 +34,14 @@ class JobState:
             raise AttributeError(attr)
 
 
+class CachedRunning(NamedTuple):
+    job: "JobTrait"
+
+
 class JobTrait(ABC):
     def __init__(self):
         super().__init__()
-        self._created = False
+        self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
 
     """
     A job object represents a specification and set of machines that can be
@@ -69,6 +73,16 @@ class JobTrait(ABC):
     specification itself.
     """
 
+    @property
+    def _running(self) -> "Optional[JobTrait]":
+        match self._status:
+            case "not_running":
+                return None
+            case "running":
+                return self
+            case CachedRunning(job=job):
+                return job
+
     def apply(self, client_script: Optional[str] = None):
         """
         Request the job as specified is brought into existence or modified to the current specification/
@@ -83,9 +97,9 @@ class JobTrait(ABC):
         Then we will schedule the job including that .monarch/job_state.pkl.
         When the client calls `.state()`, it will find the .monarch/job_state.pkl and connect to it.
         """
-        if not self._created:
+        if self._running is None:
             self._create(client_script)
-            self._created = True
+            self._status = "running"
 
     def state(self, cached_path: Optional[str] = ".monarch/job_state.pkl") -> JobState:
         """
@@ -107,21 +121,22 @@ class JobTrait(ABC):
         """
         # this is implemented uniquely for each scheduler, but it will ultimately make
         # calls to attach_to_workers and return the HostMeshes
-        if self._created:
-            job = self
-        else:
-            job = self._load_cached(cached_path)
-            if job is None:
-                job = self
-                self.apply()
-                if cached_path is not None:
-                    # Create the directory for cached_path if it doesn't exist
-                    cache_dir = os.path.dirname(cached_path)
-                    if cache_dir:  # Only create if there's a directory component
-                        os.makedirs(cache_dir, exist_ok=True)
-                    self.dump(cached_path)
+        running_job = self._running
+        if running_job is not None:
+            return running_job._state()
 
-        return job._state()
+        cached = self._load_cached(cached_path)
+        if cached is not None:
+            self._status = CachedRunning(cached)
+            return cached._state()
+        self.apply()
+        if cached_path is not None:
+            # Create the directory for cached_path if it doesn't exist
+            cache_dir = os.path.dirname(cached_path)
+            if cache_dir:  # Only create if there's a directory component
+                os.makedirs(cache_dir, exist_ok=True)
+            self.dump(cached_path)
+        return self._state()
 
     def _load_cached(self, cached_path: Optional[str]) -> "Optional[JobTrait]":
         if cached_path is None:
@@ -130,7 +145,8 @@ class JobTrait(ABC):
             job = job_load(cached_path)
         except FileNotFoundError:
             return None
-        if not job.can_run(self):
+        running = job._running
+        if running is None or not running.can_run(self):
             return None
         return job
 
@@ -139,11 +155,6 @@ class JobTrait(ABC):
             Save job to a file. Helper to make it more apparent
         Jobs are serializable across processes.
         """
-        # Ensure the directory exists
-        directory = os.path.dirname(filename)
-        if directory:  # Only create if there's a directory component
-            os.makedirs(directory, exist_ok=True)
-
         with open(filename, "wb") as file:
             # @lint-ignore PYTHONPICKLEISBAD
             pickle.dump(self, file)
@@ -151,6 +162,10 @@ class JobTrait(ABC):
     def dumps(self) -> bytes:
         # @lint-ignore PYTHONPICKLEISBAD
         return pickle.dumps(self)
+
+    @property
+    def _job(self):
+        return self if self._delegate is None else self._delegate._job
 
     @abstractmethod
     def _state(self) -> JobState: ...
@@ -169,8 +184,13 @@ class JobTrait(ABC):
 
         ...
 
-    @abstractmethod
     def kill(self):
+        running = self._running
+        if running is not None:
+            running._kill()
+
+    @abstractmethod
+    def _kill(self):
         """
         Stop the job/reservation.
         """
@@ -204,7 +224,7 @@ class LocalJob(JobTrait):
         self._log_dir: Optional[str] = None
         super().__init__()
 
-    def kill(self):
+    def _kill(self):
         pass
 
     def can_run(self, spec: "JobTrait"):
