@@ -341,6 +341,7 @@ mod tests {
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::mailbox;
+    use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
     use ndslice::view::Ranked;
@@ -527,7 +528,10 @@ mod tests {
     async fn test_cast() {
         let instance = testing::instance().await;
         let host_mesh = testing::host_mesh(extent!(host = 4)).await;
-        let proc_mesh = host_mesh.spawn(instance, "test").await.unwrap();
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", Extent::unity())
+            .await
+            .unwrap();
         let actor_mesh = proc_mesh
             .spawn::<testactor::TestActor>(instance, "test", &())
             .await

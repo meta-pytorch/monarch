@@ -217,10 +217,10 @@ impl ProcMesh {
     pub(crate) async fn create_owned_unchecked(
         cx: &impl context::Actor,
         name: Name,
+        extent: Extent,
         hosts: HostMeshRef,
         ranks: Vec<ProcRef>,
     ) -> v1::Result<Self> {
-        let extent = hosts.extent();
         Self::create(
             cx,
             name,

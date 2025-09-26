@@ -25,7 +25,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocConstraints,
     AllocSpec,
 )
-from monarch._rust_bindings.monarch_hyperactor.shape import Region, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcessAllocator
 
 if TYPE_CHECKING:
@@ -256,7 +256,7 @@ async def test_host_mesh() -> None:
     async def run() -> None:
         cmd, args, bootstrap_env = _get_bootstrap_args()
         allocator = ProcessAllocator(cmd, args, bootstrap_env)
-        spec: AllocSpec = AllocSpec(AllocConstraints(), replicas=2, hosts=2, gpus=4)
+        spec: AllocSpec = AllocSpec(AllocConstraints(), hosts=2)
         alloc = allocator.allocate(spec)
 
         host_mesh = await HostMesh.allocate_nonblocking(
@@ -271,34 +271,35 @@ async def test_host_mesh() -> None:
             ),
         ).spawn()
 
-        assert host_mesh.region.labels() == ["replicas", "hosts", "gpus"]
-        assert host_mesh.region.slice() == Slice(
-            offset=0, sizes=[2, 2, 4], strides=[8, 4, 1]
-        )
+        assert host_mesh.region.labels() == ["hosts"]
+        assert host_mesh.region.slice() == Slice(offset=0, sizes=[2], strides=[1])
 
         proc_mesh = await host_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(), "proc_mesh"
+            context().actor_instance._as_rust(),
+            "proc_mesh",
+            Extent(["gpus", "replicas"], [2, 4]),
         ).spawn()
         actor_mesh = await spawn_actor_mesh(proc_mesh)
 
         await verify_cast_to_call(actor_mesh, context().actor_instance, list(range(16)))
 
-        # Ranks 4, 6, 12, 14 (gpus 0 and 2 on host 1 on both replicas)
         sliced_hm = host_mesh.sliced(
             Region(
-                labels=["replicas", "gpus"],
-                slice=Slice(offset=4, sizes=[2, 2], strides=[8, 2]),
+                labels=["hosts"],
+                slice=Slice(offset=1, sizes=[1], strides=[1]),
             )
         )
 
-        assert sliced_hm.region.labels() == ["replicas", "gpus"]
-        assert sliced_hm.region.slice() == Slice(offset=4, sizes=[2, 2], strides=[8, 2])
+        assert sliced_hm.region.labels() == ["hosts"]
+        assert sliced_hm.region.slice() == Slice(offset=1, sizes=[1], strides=[1])
 
         sliced_pm = await sliced_hm.spawn_nonblocking(
-            context().actor_instance._as_rust(), "sliced_pm"
+            context().actor_instance._as_rust(),
+            "sliced_pm",
+            Extent(["gpus", "replicas"], [2, 3]),
         )
         sliced_am = await spawn_actor_mesh(sliced_pm)
 
-        await verify_cast_to_call(sliced_am, context().actor_instance, list(range(4)))
+        await verify_cast_to_call(sliced_am, context().actor_instance, list(range(6)))
 
     run()
