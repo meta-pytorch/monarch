@@ -92,6 +92,10 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
     from monarch._src.actor.proc_mesh import _ControllerController, ProcMesh
+    from monarch._src.actor.v1.proc_mesh import (
+        _ControllerController as _ControllerControllerV1,
+        ProcMesh as ProcMeshV1,
+    )
 from monarch._src.actor.telemetry import get_monarch_tracer
 
 CallMethod = PythonMessageKind.CallMethod
@@ -142,7 +146,7 @@ class Instance(abc.ABC):
         ...
 
     @property
-    def proc(self) -> "ProcMesh":
+    def proc(self) -> "ProcMesh | ProcMeshV1":
         """
         The singleton proc mesh that corresponds to just this actor.
         """
@@ -155,14 +159,14 @@ class Instance(abc.ABC):
     The actors __init__ message.
     """
     rank: Point
-    proc_mesh: "ProcMesh"
-    _controller_controller: "_ControllerController"
+    proc_mesh: "ProcMesh | ProcMeshV1"
+    _controller_controller: "_ControllerController | _ControllerControllerV1"
 
     # this property is used to hold the handles to actors and processes launched by this actor
     # in order to keep them alive until this actor exits.
-    _children: "Optional[List[ActorMesh | ProcMesh]]"
+    _children: "Optional[List[ActorMesh | ProcMesh | ProcMeshV1]]"
 
-    def _add_child(self, child: "ActorMesh | ProcMesh") -> None:
+    def _add_child(self, child: "ActorMesh | ProcMesh | ProcMeshV1") -> None:
         if self._children is None:
             self._children = [child]
         else:
@@ -207,18 +211,27 @@ _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
 )
 
 
-def context() -> Context:
+def context(v1=False) -> Context:
     c = _context.get(None)
     if c is None:
         c = Context._root_client_context()
         _context.set(c)
-        from monarch._src.actor.host_mesh import create_local_host_mesh
-        from monarch._src.actor.proc_mesh import _get_controller_controller
 
-        c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
-            _get_controller_controller()
-        )
-        c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()
+        if not v1:
+            from monarch._src.actor.host_mesh import create_local_host_mesh
+            from monarch._src.actor.proc_mesh import _get_controller_controller
+
+            c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
+                _get_controller_controller()
+            )
+
+            c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
+        else:
+            from monarch._src.actor.v1.proc_mesh import _get_controller_controller
+
+            c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
+                _get_controller_controller()
+            )
     return c
 
 
@@ -281,7 +294,7 @@ class ActorEndpoint(Endpoint[P, R]):
         self,
         actor_mesh: "ActorMeshProtocol",
         shape: Shape,
-        proc_mesh: "Optional[ProcMesh]",
+        proc_mesh: "Optional[ProcMesh] | Optional[ProcMeshV1]",
         name: MethodSpecifier,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
@@ -931,7 +944,7 @@ class ActorMesh(MeshTrait, Generic[T]):
         Class: Type[T],
         inner: "ActorMeshProtocol",
         shape: Shape,
-        proc_mesh: "Optional[ProcMesh]",
+        proc_mesh: "Optional[ProcMesh] | Optional[ProcMeshV1]",
     ) -> None:
         self.__name__: str = Class.__name__
         self._class: Type[T] = Class
@@ -987,8 +1000,9 @@ class ActorMesh(MeshTrait, Generic[T]):
         actor_mesh: "PythonActorMesh",
         mailbox: Mailbox,
         shape: Shape,
-        proc_mesh: "ProcMesh",
-        controller_controller: Optional["_ControllerController"],
+        proc_mesh: "ProcMesh | ProcMeshV1",
+        controller_controller: Optional["_ControllerController"]
+        | Optional["_ControllerControllerV1"],
         # args and kwargs are passed to the __init__ method of the user defined
         # python actor object.
         *args: Any,
@@ -1020,7 +1034,7 @@ class ActorMesh(MeshTrait, Generic[T]):
         return cls(Class, _SingletonActorAdapator(actor_id), singleton_shape, None)
 
     def __reduce_ex__(self, protocol: ...) -> "Tuple[Type[ActorMesh], Tuple[Any, ...]]":
-        return ActorMesh, (self._class, self._inner, self._shape, None)
+        return ActorMesh, (self._class, self._inner, self._shape, self._proc_mesh)
 
     @property
     def _ndslice(self) -> NDSlice:

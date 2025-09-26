@@ -41,10 +41,13 @@ _global_flush_registered = False
 _global_flush_lock = threading.Lock()
 
 
-def flush_all_proc_mesh_logs() -> None:
+def flush_all_proc_mesh_logs(v1: bool = False) -> None:
     """Flush logs from all active ProcMesh instances."""
-    # import `get_active_proc_meshes` here to avoid circular import dependency
-    from monarch._src.actor.proc_mesh import get_active_proc_meshes
+    if not v1:
+        # import `get_active_proc_meshes` here to avoid circular import dependency
+        from monarch._src.actor.proc_mesh import get_active_proc_meshes
+    else:
+        from monarch._src.actor.v1.proc_mesh import get_active_proc_meshes
 
     for pm in get_active_proc_meshes():
         pm._logging_manager.flush()
@@ -87,7 +90,13 @@ class LoggingManager:
                 global _global_flush_registered
                 if not _global_flush_registered:
                     get_ipython().events.register(
-                        "post_run_cell", lambda _: flush_all_proc_mesh_logs()
+                        "post_run_cell",
+                        lambda _: flush_all_proc_mesh_logs(
+                            self._logging_mesh_client is not None
+                            and isinstance(
+                                self._logging_mesh_client, LoggingMeshClientV1
+                            )
+                        ),
                     )
                     _global_flush_registered = True
 

@@ -12,6 +12,7 @@ use ndslice::Point;
 use ndslice::Region;
 use ndslice::Shape;
 use ndslice::Slice;
+use ndslice::View;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -94,6 +95,13 @@ impl PyExtent {
     fn keys<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
         Ok(self.inner.labels().into_bound_py_any(py)?.into())
     }
+
+    #[getter]
+    fn region(&self) -> PyRegion {
+        PyRegion {
+            inner: self.inner.region(),
+        }
+    }
 }
 
 impl From<Extent> for PyExtent {
@@ -139,12 +147,31 @@ impl PyRegion {
         }
     }
 
+    #[getter]
     fn labels(&self) -> Vec<String> {
         self.inner.labels().to_vec()
     }
 
     fn slice(&self) -> PySlice {
         self.inner.slice().clone().into()
+    }
+
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let bytes = bincode::serialize(&self.inner)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
+        let from_bytes = py
+            .import("monarch._rust_bindings.monarch_hyperactor.shape")?
+            .getattr("Region")?
+            .getattr("from_bytes")?;
+        Ok((from_bytes, py_bytes))
+    }
+
+    #[staticmethod]
+    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        Ok(bincode::deserialize::<Region>(bytes.as_bytes())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?
+            .into())
     }
 }
 

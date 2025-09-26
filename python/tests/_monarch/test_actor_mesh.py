@@ -271,7 +271,7 @@ async def test_host_mesh() -> None:
             ),
         ).spawn()
 
-        assert host_mesh.region.labels() == ["hosts"]
+        assert host_mesh.region.labels == ["hosts"]
         assert host_mesh.region.slice() == Slice(offset=0, sizes=[2], strides=[1])
 
         proc_mesh = await host_mesh.spawn_nonblocking(
@@ -290,7 +290,7 @@ async def test_host_mesh() -> None:
             )
         )
 
-        assert sliced_hm.region.labels() == ["hosts"]
+        assert sliced_hm.region.labels == ["hosts"]
         assert sliced_hm.region.slice() == Slice(offset=1, sizes=[1], strides=[1])
 
         sliced_pm = await sliced_hm.spawn_nonblocking(

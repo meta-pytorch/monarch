@@ -11,6 +11,7 @@ use hyperactor_mesh::v1::proc_mesh::ProcMesh;
 use hyperactor_mesh::v1::proc_mesh::ProcMeshRef;
 use monarch_types::PickledPyObject;
 use ndslice::View;
+use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyNotImplementedError;
@@ -179,6 +180,12 @@ impl PyProcMesh {
     fn stop_nonblocking(&self) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(
             "v1::PyProcMesh::stop not implemented",
+        ))
+    }
+
+    fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
+        Ok(Self::new_ref(
+            self.mesh_ref()?.sliced(region.as_inner().clone()),
         ))
     }
 }

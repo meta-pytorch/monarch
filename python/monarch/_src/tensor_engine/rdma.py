@@ -143,7 +143,7 @@ def _ensure_init_rdma_manager() -> Shared[None]:
     async def task() -> None:
         await (
             await get_or_spawn_controller("rdma_controller", RdmaController)
-        ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh))
+        ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh))  # type: ignore
 
     return PythonTask.from_coroutine(task()).spawn()
 
