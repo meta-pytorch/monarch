@@ -264,7 +264,6 @@ impl Invocation {
         }
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn add_user(
         &mut self,
         sender: &impl context::Actor,
@@ -302,7 +301,6 @@ impl Invocation {
         }
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn complete(&mut self, sender: &impl context::Actor) -> Result<(), MailboxSenderError> {
         let old_status = std::mem::replace(&mut self.status, Status::Complete {});
         match old_status {
@@ -326,7 +324,6 @@ impl Invocation {
     /// Incomplete, it may have users that will also become errored. This function
     /// will return those users so the error can be propagated. It does not autmoatically
     /// propagate the error to avoid deep recursive invocations.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn set_exception(
         &mut self,
         sender: &impl context::Actor,
@@ -464,7 +461,6 @@ impl History {
     }
 
     /// Add an invocation to the history.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn add_invocation(
         &mut self,
         sender: &impl context::Actor,
@@ -504,7 +500,6 @@ impl History {
 
     /// Propagate worker error to the invocation with the given Seq. This will also propagate
     /// to all seqs that depend on this seq directly or indirectly.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn propagate_exception(
         &mut self,
         sender: &impl context::Actor,
@@ -558,7 +553,6 @@ impl History {
 
     /// Mark the given rank as completed up to but excluding the given Seq. This will also purge history for
     /// any Seqs that are no longer relevant (completed on all ranks).
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn rank_completed(
         &mut self,
         sender: &impl context::Actor,

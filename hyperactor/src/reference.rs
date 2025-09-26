@@ -717,7 +717,6 @@ impl<A: RemoteActor> ActorRef<A> {
     }
 
     /// Send an [`M`]-typed message to the referenced actor.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send<M: RemoteMessage>(
         &self,
         cx: &impl context::Mailbox,
@@ -731,7 +730,6 @@ impl<A: RemoteActor> ActorRef<A> {
 
     /// Send an [`M`]-typed message to the referenced actor, with additional context provided by
     /// headers.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send_with_headers<M: RemoteMessage>(
         &self,
         cx: &impl context::Mailbox,
@@ -1002,7 +1000,6 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, cx: &impl context::Mailbox, message: M) -> Result<(), MailboxSenderError> {
         self.send_with_headers(cx, Attrs::new(), message)
     }
@@ -1010,7 +1007,6 @@ impl<M: RemoteMessage> PortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`]. Additional context can be provided in the form of
     /// headers.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send_with_headers(
         &self,
         cx: &impl context::Mailbox,
@@ -1117,14 +1113,12 @@ impl<M: RemoteMessage> OncePortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(self, cx: &impl context::Mailbox, message: M) -> Result<(), MailboxSenderError> {
         self.send_with_headers(cx, Attrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`]. Additional context can be provided in the form of headers.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send_with_headers(
         self,
         cx: &impl context::Mailbox,
