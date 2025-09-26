@@ -19,6 +19,7 @@ use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::RemoteActor;
 use hyperactor::attrs::Attrs;
+use hyperactor::config;
 use hyperactor::context;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
@@ -26,6 +27,7 @@ use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::MapIntoExt;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -36,6 +38,8 @@ use serde::Serializer;
 use crate::CommActor;
 use crate::actor_mesh as v0_actor_mesh;
 use crate::comm::multicast;
+use crate::comm::multicast::CastMessageV1;
+use crate::metrics;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::reference::ActorMeshId;
 use crate::resource;
@@ -137,7 +141,11 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            self.cast_v0(cx, message, root_comm_actor)
+            if config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT) {
+                self.cast_v1(cx, message, root_comm_actor)
+            } else {
+                self.cast_v0(cx, message, root_comm_actor)
+            }
         } else {
             for (point, actor) in self.iter() {
                 let mut headers = Attrs::new();
@@ -192,6 +200,56 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
             )
             .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
         }
+    }
+
+    fn cast_v1<M>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        root_comm_actor: &ActorRef<CommActor>,
+    ) -> v1::Result<()>
+    where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+
+        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_id(&self.name));
+        // TODO: pick a random actor to send the cast to so we can have
+        // round-robin load balancing.
+        let comm_actor_id = actor_ids
+            .iter()
+            .next()
+            .expect("mesh should have at least one actor")
+            .1
+            .proc_id()
+            .actor_id(root_comm_actor.actor_id().name(), 0);
+        let comm_actor_ref = ActorRef::<CommActor>::attest(comm_actor_id);
+
+        let mut sequencer_lock = cx.instance().lock_sequencer();
+        let seqs = actor_ids.map_into(|actor_id| sequencer_lock.next_seq(actor_id));
+
+        let cast_message = CastMessageV1::new::<A, M>(
+            cx.instance().self_id().clone(),
+            &self.name,
+            self.region(),
+            message,
+            sequencer_lock.session_id(),
+            seqs,
+        )
+        .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+        comm_actor_ref
+            .send_with_lock(cx, cast_message, &mut sequencer_lock)
+            .map_err(|e| Error::SendingError(comm_actor_ref.actor_id().clone(), Box::new(e)))?;
+
+        // increment seqs only after casting successfully.
+        for actor_id in actor_ids.values() {
+            sequencer_lock.incr(&actor_id);
+        }
+        Ok(())
     }
 
     pub async fn actor_states(

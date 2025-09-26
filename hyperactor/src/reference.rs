@@ -71,6 +71,7 @@ use parse::ParseError;
 use parse::Token;
 use parse::parse;
 
+use crate::ordering::SequencerLock;
 use crate::proc::SEQ_INFO;
 use crate::proc::SeqInfo;
 
@@ -744,9 +745,24 @@ impl<A: RemoteActor> ActorRef<A> {
     where
         A: RemoteHandles<M>,
     {
+        let mut sequencer_lock = cx.instance().lock_sequencer();
+        self.send_with_lock(cx, message, &mut sequencer_lock)
+    }
+
+    /// Same as [seq_send], except the sequencer lock is provided. Used only
+    /// when cx's lock needs to be acquired before calling this function.
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
+    pub fn send_with_lock<'a, M: RemoteMessage>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        sequencer_lock: &mut SequencerLock<'a>,
+    ) -> Result<(), MailboxSenderError>
+    where
+        A: RemoteHandles<M>,
+    {
         let dest_actor = self.actor_id();
         let mut headers = Attrs::new();
-        let mut sequencer_lock = cx.instance().lock_sequencer();
         let seq = sequencer_lock.next_seq(dest_actor);
         let seq_info = SeqInfo {
             session_id: sequencer_lock.session_id(),
