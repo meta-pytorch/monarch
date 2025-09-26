@@ -18,7 +18,7 @@ use crate::proc::PyActorId;
 use crate::runtime;
 use crate::shape::PyPoint;
 
-pub(crate) enum ContextInstance {
+pub enum ContextInstance {
     Client(hyperactor::Instance<()>),
     PythonActor(hyperactor::Instance<PythonActor>),
 }
@@ -100,7 +100,7 @@ impl PyInstance {
 }
 
 impl PyInstance {
-    pub(crate) fn context_instance(&self) -> &ContextInstance {
+    pub fn context_instance(&self) -> &ContextInstance {
         &self.inner
     }
 }

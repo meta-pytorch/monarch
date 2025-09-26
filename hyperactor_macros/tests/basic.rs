@@ -78,6 +78,46 @@ enum TestVariantForms {
     },
 }
 
+#[derive(Debug, Default, Actor)]
+#[hyperactor::export(handlers = [TestVariantForms])]
+struct TestVariantFormsActor {}
+
+#[async_trait]
+#[forward(TestVariantForms)]
+impl TestVariantFormsHandler for TestVariantFormsActor {
+    async fn one_way_struct(&mut self, _cx: &Context<Self>, _a: u64, _b: u64) -> Result<()> {
+        Ok(())
+    }
+
+    async fn one_way_tuple(&mut self, _cx: &Context<Self>, _a: u64, _b: u64) -> Result<()> {
+        Ok(())
+    }
+
+    async fn one_way_tuple_no_args(&mut self, _cx: &Context<Self>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn one_way_struct_no_args(&mut self, _cx: &Context<Self>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn call_struct(&mut self, _cx: &Context<Self>, a: u64) -> Result<u64> {
+        Ok(a)
+    }
+
+    async fn call_tuple(&mut self, _cx: &Context<Self>, a: u64) -> Result<u64> {
+        Ok(a)
+    }
+
+    async fn call_tuple_no_args(&mut self, _cx: &Context<Self>) -> Result<u64> {
+        Ok(0)
+    }
+
+    async fn call_struct_no_args(&mut self, _cx: &Context<Self>) -> Result<u64> {
+        Ok(0)
+    }
+}
+
 #[instrument(fields(name = 4))]
 async fn yolo() -> Result<i32, i32> {
     Ok(10)
@@ -86,11 +126,6 @@ async fn yolo() -> Result<i32, i32> {
 #[instrument_infallible(fields(crow = "black"))]
 async fn yeet() -> String {
     String::from("cawwww")
-}
-
-#[test]
-fn basic() {
-    // nothing, just checks whether this file will compile
 }
 
 #[derive(Debug, Handler, HandleClient)]
@@ -145,4 +180,33 @@ static_assertions::assert_type_eq_all!(
 struct SimpleStructMessage {
     field1: String,
     field2: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::proc::Proc;
+    use timed_test::async_timed_test;
+
+    use super::*;
+
+    #[test]
+    fn basic() {
+        // nothing, just checks whether this file will compile
+    }
+
+    // Verify it compiles
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_client_macros() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let actor_handle = proc
+            .spawn::<TestVariantFormsActor>("foo", ())
+            .await
+            .unwrap();
+
+        assert_eq!(actor_handle.call_struct(&client, 10).await.unwrap(), 10,);
+
+        let actor_ref = actor_handle.bind::<TestVariantFormsActor>();
+        assert_eq!(actor_ref.call_struct(&client, 10).await.unwrap(), 10,);
+    }
 }

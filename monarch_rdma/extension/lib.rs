@@ -13,7 +13,8 @@ use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
-use monarch_hyperactor::mailbox::PyMailbox;
+use monarch_hyperactor::context::PyInstance;
+use monarch_hyperactor::instance_dispatch;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::signal_safe_block_on;
@@ -52,17 +53,18 @@ async fn create_rdma_buffer(
     addr: usize,
     size: usize,
     proc_id: ProcId,
-    client: PyMailbox,
+    client: PyInstance,
 ) -> PyResult<PyRdmaBuffer> {
     // Get the owning RdmaManagerActor's ActorRef
     let owner_id = ActorId(proc_id, "rdma_manager".to_string(), 0);
     let owner_ref: ActorRef<RdmaManagerActor> = ActorRef::attest(owner_id);
 
-    let caps = client.get_inner();
     // Create the RdmaBuffer
-    let buffer = owner_ref
-        .request_buffer_deprecated(caps, addr, size)
-        .await?;
+    let buffer = instance_dispatch!(client, |cx_instance| {
+        owner_ref
+            .request_buffer_deprecated(&cx_instance, addr, size)
+            .await?
+    });
     Ok(PyRdmaBuffer { buffer, owner_ref })
 }
 
@@ -75,7 +77,7 @@ impl PyRdmaBuffer {
         addr: usize,
         size: usize,
         proc_id: String,
-        client: PyMailbox,
+        client: PyInstance,
     ) -> PyResult<PyPythonTask> {
         if !ibverbs_supported() {
             return Err(PyException::new_err(
@@ -97,7 +99,7 @@ impl PyRdmaBuffer {
         addr: usize,
         size: usize,
         proc_id: String,
-        client: PyMailbox,
+        client: PyInstance,
     ) -> PyResult<PyRdmaBuffer> {
         if !ibverbs_supported() {
             return Err(PyException::new_err(
@@ -135,7 +137,7 @@ impl PyRdmaBuffer {
     /// * `addr` - The address of the local buffer to read from
     /// * `size` - The size of the data to transfer
     /// * `local_proc_id` - The process ID where the local buffer resides
-    /// * `client` - The mailbox for communication
+    /// * `client` - The actor who does the reading.
     /// * `timeout` - Maximum time in milliseconds to wait for the operation
     #[pyo3(signature = (addr, size, local_proc_id, client, timeout))]
     fn read_into<'py>(
@@ -144,19 +146,24 @@ impl PyRdmaBuffer {
         addr: usize,
         size: usize,
         local_proc_id: String,
-        client: PyMailbox,
+        client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
         PyPythonTask::new(async move {
-            let caps = client.get_inner();
-            let local_buffer = local_owner_ref
-                .request_buffer_deprecated(caps, addr, size)
-                .await?;
-            let _result_ = local_buffer
-                .write_from(caps, buffer, timeout)
-                .await
-                .map_err(|e| PyException::new_err(format!("failed to read into buffer: {}", e)))?;
+            let local_buffer = instance_dispatch!(client, |cx_instance| {
+                local_owner_ref
+                    .request_buffer_deprecated(cx_instance, addr, size)
+                    .await?
+            });
+            let _result_ = instance_dispatch!(client, |cx_instance| {
+                local_buffer
+                    .write_from(cx_instance, buffer, timeout)
+                    .await
+                    .map_err(|e| {
+                        PyException::new_err(format!("failed to read into buffer: {}", e))
+                    })?
+            });
             Ok(())
         })
     }
@@ -171,7 +178,7 @@ impl PyRdmaBuffer {
     /// * `addr` - The address of the local buffer to write to
     /// * `size` - The size of the data to transfer
     /// * `local_proc_id` - The process ID where the local buffer resides
-    /// * `client` - The mailbox for communication
+    /// * `client` - The actor who does the writing
     /// * `timeout` - Maximum time in milliseconds to wait for the operation
     #[pyo3(signature = (addr, size, local_proc_id, client, timeout))]
     fn write_from<'py>(
@@ -180,19 +187,24 @@ impl PyRdmaBuffer {
         addr: usize,
         size: usize,
         local_proc_id: String,
-        client: PyMailbox,
+        client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
         PyPythonTask::new(async move {
-            let caps = client.get_inner();
-            let local_buffer = local_owner_ref
-                .request_buffer_deprecated(caps, addr, size)
-                .await?;
-            let _result_ = local_buffer
-                .read_into(caps, buffer, timeout)
-                .await
-                .map_err(|e| PyException::new_err(format!("failed to write from buffer: {}", e)))?;
+            let local_buffer = instance_dispatch!(client, |cx_instance| {
+                local_owner_ref
+                    .request_buffer_deprecated(cx_instance, addr, size)
+                    .await?
+            });
+            let _result_ = instance_dispatch!(&client, |cx_instance| {
+                local_buffer
+                    .read_into(cx_instance, buffer, timeout)
+                    .await
+                    .map_err(|e| {
+                        PyException::new_err(format!("failed to write from buffer: {}", e))
+                    })?
+            });
             Ok(())
         })
     }
