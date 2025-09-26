@@ -336,7 +336,11 @@ class ProcMesh(MeshTrait):
         pm = ProcMesh(hy_proc_mesh, shape)
         if _attach_controller_controller:
             instance = context().actor_instance
-            pm._controller_controller = instance._controller_controller
+            pm._controller_controller = (
+                _get_controller_controller()[1]
+                if not instance._controller_controller
+                else instance._controller_controller
+            )
             instance._add_child(pm)
 
         async def task(
