@@ -8,6 +8,7 @@
 
 pub mod mesh_agent;
 
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -237,31 +238,69 @@ impl HostMeshRef {
         }
     }
 
-    /// Spawn a ProcMesh onto this host mesh.
-    // TODO: add an "additional dims" API
-    pub async fn spawn(&self, cx: &impl context::Actor, name: &str) -> v1::Result<ProcMesh> {
-        let name = Name::new(name);
-        let mut procs = Vec::new();
-        for (rank, host) in self.ranks.iter().enumerate() {
-            let _ok = host
-                .mesh_agent()
-                .create_or_update(cx, name.clone(), ())
-                .await
-                .map_err(|e| {
-                    v1::Error::HostMeshAgentConfigurationError(
-                        host.mesh_agent().actor_id().clone(),
-                        format!("failed while creating proc: {}", e),
-                    )
-                })?;
-            procs.push(ProcRef::new(
-                host.named_proc(&name),
-                rank,
-                // TODO: specify or retrieve from state instead, to avoid attestation.
-                ActorRef::attest(host.named_proc(&name).actor_id("agent", 0)),
-            ));
+    /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
+    /// of the procs to spawn on each host.
+    pub async fn spawn(
+        &self,
+        cx: &impl context::Actor,
+        name: &str,
+        per_host: Extent,
+    ) -> v1::Result<ProcMesh> {
+        let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
+        let host_labels = self.region.labels().iter().collect::<HashSet<_>>();
+        if !per_host_labels
+            .intersection(&host_labels)
+            .collect::<Vec<_>>()
+            .is_empty()
+        {
+            return Err(v1::Error::ConfigurationError(anyhow::anyhow!(
+                "per_host dims overlap with existing dims when spawning proc mesh"
+            )));
         }
 
-        ProcMesh::create_owned_unchecked(cx, name, self.clone(), procs).await
+        let labels = self
+            .region
+            .labels()
+            .to_vec()
+            .into_iter()
+            .chain(per_host.labels().to_vec().into_iter())
+            .collect();
+        let sizes = self
+            .region
+            .extent()
+            .sizes()
+            .to_vec()
+            .into_iter()
+            .chain(per_host.sizes().to_vec().into_iter())
+            .collect();
+        let extent =
+            Extent::new(labels, sizes).map_err(|err| v1::Error::ConfigurationError(err.into()))?;
+
+        let mesh_name = Name::new(name);
+        let mut procs = Vec::new();
+        for (host_rank, host) in self.ranks.iter().enumerate() {
+            for per_host_rank in 0..per_host.num_ranks() {
+                let proc_name = Name::new(format!("{}-{}", name, per_host_rank));
+                let _ok = host
+                    .mesh_agent()
+                    .create_or_update(cx, proc_name.clone(), ())
+                    .await
+                    .map_err(|e| {
+                        v1::Error::HostMeshAgentConfigurationError(
+                            host.mesh_agent().actor_id().clone(),
+                            format!("failed while creating proc: {}", e),
+                        )
+                    })?;
+                procs.push(ProcRef::new(
+                    host.named_proc(&proc_name),
+                    per_host.num_ranks() * host_rank + per_host_rank,
+                    // TODO: specify or retrieve from state instead, to avoid attestation.
+                    ActorRef::attest(host.named_proc(&proc_name).actor_id("agent", 0)),
+                ));
+            }
+        }
+
+        ProcMesh::create_owned_unchecked(cx, mesh_name, extent, self.clone(), procs).await
     }
 }
 
@@ -394,12 +433,28 @@ mod tests {
             let host_mesh = HostMesh::allocate(instance, alloc, "test", None)
                 .await
                 .unwrap();
-            let proc_mesh1 = host_mesh.spawn(instance, "test_1").await.unwrap();
+            let proc_mesh1 = host_mesh
+                .spawn(instance, "test_1", Extent::unity())
+                .await
+                .unwrap();
             let actor_mesh1: ActorMesh<testactor::TestActor> =
                 proc_mesh1.spawn(instance, "test", &()).await.unwrap();
-            let proc_mesh2 = host_mesh.spawn(instance, "test_2").await.unwrap();
+            let proc_mesh2 = host_mesh
+                .spawn(instance, "test_2", extent!(gpus = 3, extra = 2))
+                .await
+                .unwrap();
+            assert_eq!(
+                proc_mesh2.extent(),
+                extent!(replicas = 4, gpus = 3, extra = 2)
+            );
+            assert_eq!(proc_mesh2.values().count(), 24);
             let actor_mesh2: ActorMesh<testactor::TestActor> =
                 proc_mesh2.spawn(instance, "test", &()).await.unwrap();
+            assert_eq!(
+                actor_mesh2.extent(),
+                extent!(replicas = 4, gpus = 3, extra = 2)
+            );
+            assert_eq!(actor_mesh2.values().count(), 24);
 
             // Host meshes can be dereferenced to produce a concrete ref.
             let host_mesh_ref: HostMeshRef = host_mesh.clone();
@@ -410,23 +465,24 @@ mod tests {
             );
 
             // Validate we can cast:
+            for actor_mesh in [&actor_mesh1, &actor_mesh2] {
+                let (port, mut rx) = instance.mailbox().open_port();
+                actor_mesh
+                    .cast(instance, testactor::GetActorId(port.bind()))
+                    .unwrap();
 
-            let (port, mut rx) = instance.mailbox().open_port();
-            actor_mesh1
-                .cast(instance, testactor::GetActorId(port.bind()))
-                .unwrap();
+                let mut expected_actor_ids: HashSet<_> = actor_mesh
+                    .values()
+                    .map(|actor_ref| actor_ref.actor_id().clone())
+                    .collect();
 
-            let mut expected_actor_ids: HashSet<_> = actor_mesh1
-                .values()
-                .map(|actor_ref| actor_ref.actor_id().clone())
-                .collect();
-
-            while !expected_actor_ids.is_empty() {
-                let actor_id = rx.recv().await.unwrap();
-                assert!(
-                    expected_actor_ids.remove(&actor_id),
-                    "got {actor_id}, expect {expected_actor_ids:?}"
-                );
+                while !expected_actor_ids.is_empty() {
+                    let actor_id = rx.recv().await.unwrap();
+                    assert!(
+                        expected_actor_ids.remove(&actor_id),
+                        "got {actor_id}, expect {expected_actor_ids:?}"
+                    );
+                }
             }
 
             // Now forward a message through all directed edges across the two meshes.
@@ -487,7 +543,7 @@ mod tests {
 
         let host_mesh = HostMeshRef::from_hosts(hosts);
         let proc_mesh = host_mesh
-            .spawn(&testing::instance().await, "test")
+            .spawn(&testing::instance().await, "test", Extent::unity())
             .await
             .unwrap();
         let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh

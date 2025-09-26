@@ -102,6 +102,12 @@ impl From<Extent> for PyExtent {
     }
 }
 
+impl From<PyExtent> for Extent {
+    fn from(py_extent: PyExtent) -> Self {
+        py_extent.inner
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[pyclass(
     name = "Region",
