@@ -177,7 +177,9 @@ impl PyHostMesh {
         let bytes = bincode::serialize(&self.mesh_ref()?)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
-        let from_bytes = wrap_pyfunction!(py_host_mesh_from_bytes, py)?.into_any();
+        let from_bytes =
+            PyModule::import(py, "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh")?
+                .getattr("py_host_mesh_from_bytes")?;
         Ok((from_bytes, py_bytes))
     }
 }

@@ -89,9 +89,8 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn supervision_event(&self) -> PyResult<Option<PyShared>> {
-        Err(PyErr::new::<PyNotImplementedError, _>(
-            "supervision_event is not implemented yet for v1::PythonActorMeshImpl",
-        ))
+        // FIXME: implement supervision events for v1 actor mesh.
+        Ok(None)
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {

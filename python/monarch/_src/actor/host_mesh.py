@@ -25,7 +25,9 @@ def this_host() -> "HostMesh":
 
     This is just shorthand for looking it up via the context
     """
-    return context().actor_instance.proc.host_mesh
+    host_mesh = context().actor_instance.proc.host_mesh
+    assert isinstance(host_mesh, HostMesh), "expected v0 HostMesh, got v1 HostMesh"
+    return host_mesh
 
 
 def this_proc() -> "ProcMesh":
@@ -33,7 +35,9 @@ def this_proc() -> "ProcMesh":
     The current singleton process that this specific actor is
     running on
     """
-    return context().actor_instance.proc
+    proc = context().actor_instance.proc
+    assert isinstance(proc, ProcMesh), "expected v1 ProcMesh, got v0 ProcMesh"
+    return proc
 
 
 def create_local_host_mesh() -> "HostMesh":
