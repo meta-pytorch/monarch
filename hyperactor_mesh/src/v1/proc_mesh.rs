@@ -522,7 +522,7 @@ impl ProcMeshRef {
     }
 
     /// Spawn an actor on all of the procs in this mesh, returning a new ActorMesh.
-    pub async fn spawn<A: Actor + RemoteActor>(
+    pub async fn spawn<A: RemoteActor>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -534,7 +534,7 @@ impl ProcMeshRef {
         self.spawn_with_name(cx, Name::new(name), params).await
     }
 
-    pub async fn spawn_with_name<A: Actor + RemoteActor>(
+    pub async fn spawn_with_name<A: RemoteActor>(
         &self,
         cx: &impl context::Actor,
         name: Name,

@@ -234,7 +234,7 @@ where
 
 impl<A> RemotableActor for A
 where
-    A: Actor + RemoteActor,
+    A: RemoteActor,
     A: Binds<A>,
     A::Params: RemoteMessage,
 {
@@ -655,7 +655,7 @@ impl<A: Actor> Clone for ActorHandle<A> {
 /// remote actor references. All [`Actor`]s are thus referencable;
 /// but other types may also implement this in order to separately
 /// specify actor interfaces.
-pub trait RemoteActor: Named + Send + Sync {}
+pub trait RemoteActor: Actor + Named + Send + Sync {}
 
 /// Binds determines how an actor's ports are bound to a specific
 /// reference type.

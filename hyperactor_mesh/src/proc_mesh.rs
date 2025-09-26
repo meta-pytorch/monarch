@@ -460,7 +460,7 @@ impl ProcMesh {
         })
     }
 
-    async fn spawn_on_procs<A: Actor + RemoteActor>(
+    async fn spawn_on_procs<A: RemoteActor>(
         cx: &impl context::Actor,
         agents: impl IntoIterator<Item = ActorRef<ProcMeshAgent>> + '_,
         actor_name: &str,
@@ -537,7 +537,7 @@ impl ProcMesh {
     /// - `actor_name`: Name for all spawned actors.
     /// - `params`: Reference to the parameter struct, reused for all
     ///   actors.
-    pub async fn spawn<A: Actor + RemoteActor>(
+    pub async fn spawn<A: RemoteActor>(
         &self,
         actor_name: &str,
         params: &A::Params,
@@ -857,7 +857,7 @@ impl ProcEvents {
 /// static lifetimes.
 #[async_trait]
 pub trait SharedSpawnable {
-    async fn spawn<A: Actor + RemoteActor>(
+    async fn spawn<A: RemoteActor>(
         self,
         actor_name: &str,
         params: &A::Params,
@@ -868,7 +868,7 @@ pub trait SharedSpawnable {
 
 #[async_trait]
 impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D {
-    async fn spawn<A: Actor + RemoteActor>(
+    async fn spawn<A: RemoteActor>(
         self,
         actor_name: &str,
         params: &A::Params,

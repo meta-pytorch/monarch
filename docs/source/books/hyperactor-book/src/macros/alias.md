@@ -87,6 +87,12 @@ pub struct ShoppingApi;
 
 impl hyperactor::actor::RemoteActor for ShoppingApi {}
 
+#[hyperactor::async_trait::async_trait]
+impl hyperactor::Actor for ShoppingApi {
+    type Params = ();
+    async fn new(_: ()) -> Result<Self, hyperactor::anyhow::Error> { panic!("RemoteActor instances should not be created!") }
+}
+
 impl<A> hyperactor::actor::Binds<A> for ShoppingApi
 where
     A: Actor

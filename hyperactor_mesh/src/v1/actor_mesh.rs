@@ -128,7 +128,7 @@ pub struct ActorMeshRef<A: RemoteActor> {
     _phantom: PhantomData<A>,
 }
 
-impl<A: Actor + RemoteActor> ActorMeshRef<A> {
+impl<A: RemoteActor> ActorMeshRef<A> {
     /// Cast a message to all actors in this mesh.
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> v1::Result<()>
     where

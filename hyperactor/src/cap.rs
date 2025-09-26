@@ -79,7 +79,7 @@ pub(crate) mod sealed {
     }
 
     pub trait CanResolveActorRef: Send + Sync {
-        fn resolve_actor_ref<A: RemoteActor + Actor>(
+        fn resolve_actor_ref<A: RemoteActor>(
             &self,
             actor_ref: &ActorRef<A>,
         ) -> Option<ActorHandle<A>>;

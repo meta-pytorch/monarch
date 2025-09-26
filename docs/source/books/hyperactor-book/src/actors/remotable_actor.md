@@ -56,7 +56,7 @@ This allows `A` to be remotely registered and instantiated from serialized data,
 ```rust
 impl<A> RemotableActor for A
 where
-    A: Actor + RemoteActor,
+    A: RemoteActor,
     A: Binds<A>,
     A::Params: RemoteMessage,
 {

@@ -1643,7 +1643,11 @@ pub fn alias(input: TokenStream) -> TokenStream {
         #[derive(Debug, hyperactor::Named, serde::Serialize, serde::Deserialize)]
         pub struct #alias;
         impl hyperactor::actor::RemoteActor for #alias {}
-
+        #[hyperactor::async_trait::async_trait]
+        impl hyperactor::Actor for #alias {
+            type Params = ();
+            async fn new(_: ()) -> Result<Self, hyperactor::anyhow::Error> { panic!("RemoteActor instances should not be created!") }
+        }
         impl<A> hyperactor::actor::Binds<A> for #alias
         where
             A: hyperactor::Actor #(+ hyperactor::Handler<#tys>)* {

@@ -266,7 +266,7 @@ impl MailboxSender for ProcOrDial {
 pub trait ProcHandle: Clone + Send + Sync + 'static {
     /// The type of the agent actor installed in ths proc by the
     /// manager.
-    type Agent: Actor + RemoteActor;
+    type Agent: RemoteActor;
 
     /// The proc's logical identity on this host.
     fn proc_id(&self) -> &ProcId;
@@ -354,14 +354,14 @@ impl<A: Actor> LocalProcManager<A> {
 /// host code can treat local and external procs through the same
 /// trait.
 #[derive(Debug)]
-pub struct LocalHandle<A: Actor + RemoteActor> {
+pub struct LocalHandle<A: RemoteActor> {
     proc_id: ProcId,
     addr: ChannelAddr,
     agent_ref: ActorRef<A>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
-impl<A: Actor + RemoteActor> Clone for LocalHandle<A> {
+impl<A: RemoteActor> Clone for LocalHandle<A> {
     fn clone(&self) -> Self {
         Self {
             proc_id: self.proc_id.clone(),
@@ -371,7 +371,7 @@ impl<A: Actor + RemoteActor> Clone for LocalHandle<A> {
     }
 }
 
-impl<A: Actor + RemoteActor> ProcHandle for LocalHandle<A> {
+impl<A: RemoteActor> ProcHandle for LocalHandle<A> {
     type Agent = A;
 
     fn proc_id(&self) -> &ProcId {
@@ -388,7 +388,7 @@ impl<A: Actor + RemoteActor> ProcHandle for LocalHandle<A> {
 #[async_trait]
 impl<A> ProcManager for LocalProcManager<A>
 where
-    A: Actor + RemoteActor + Binds<A>,
+    A: RemoteActor + Binds<A>,
     A::Params: Sync + Clone,
 {
     type Handle = LocalHandle<A>;
@@ -482,14 +482,14 @@ impl<A> Drop for ProcessProcManager<A> {
 /// and agent reference so host code can interact uniformly with local
 /// and external procs.
 #[derive(Debug)]
-pub struct ProcessHandle<A: Actor + RemoteActor> {
+pub struct ProcessHandle<A: RemoteActor> {
     proc_id: ProcId,
     addr: ChannelAddr,
     agent_ref: ActorRef<A>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
-impl<A: Actor + RemoteActor> Clone for ProcessHandle<A> {
+impl<A: RemoteActor> Clone for ProcessHandle<A> {
     fn clone(&self) -> Self {
         Self {
             proc_id: self.proc_id.clone(),
@@ -499,7 +499,7 @@ impl<A: Actor + RemoteActor> Clone for ProcessHandle<A> {
     }
 }
 
-impl<A: Actor + RemoteActor> ProcHandle for ProcessHandle<A> {
+impl<A: RemoteActor> ProcHandle for ProcessHandle<A> {
     type Agent = A;
 
     fn proc_id(&self) -> &ProcId {
@@ -516,7 +516,7 @@ impl<A: Actor + RemoteActor> ProcHandle for ProcessHandle<A> {
 #[async_trait]
 impl<A> ProcManager for ProcessProcManager<A>
 where
-    A: Actor + RemoteActor,
+    A: RemoteActor,
 {
     type Handle = ProcessHandle<A>;
 
@@ -573,7 +573,7 @@ where
 
 impl<A> ProcessProcManager<A>
 where
-    A: Actor + RemoteActor + Binds<A>,
+    A: RemoteActor + Binds<A>,
 {
     /// Boot a process in a ProcessProcManager<A>. Should be called from processes spawned
     /// by the process manager. `boot_proc` will spawn the provided actor type (with parameters)
@@ -613,7 +613,7 @@ pub async fn spawn_proc<A, S, F>(
     spawn: S,
 ) -> Result<Proc, HostError>
 where
-    A: Actor + RemoteActor + Binds<A>,
+    A: RemoteActor + Binds<A>,
     S: FnOnce(Proc) -> F,
     F: Future<Output = Result<ActorHandle<A>, anyhow::Error>>,
 {
