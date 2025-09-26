@@ -56,8 +56,8 @@ Here are some suggested steps to get started with Monarch:
 :caption: Contents
 :hidden:
 installation
-examples/getting_started
-examples/index
+./generated/examples/getting_started
+./generated/examples/index
 api/index
 rust-api
 ```
