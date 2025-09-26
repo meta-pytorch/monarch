@@ -29,6 +29,7 @@ use hyperactor::attrs::Attrs;
 use hyperactor::attrs::declare_attrs;
 use hyperactor::cap;
 use hyperactor::cap::CanSend;
+use hyperactor::config;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
@@ -39,6 +40,10 @@ use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
 use ndslice::SliceError;
+use ndslice::reshape::Limit;
+use ndslice::reshape::ReshapeError;
+use ndslice::reshape::ReshapeSliceExt;
+use ndslice::reshape::reshape_selection;
 use ndslice::selection;
 use ndslice::selection::EvalOpts;
 use ndslice::selection::ReifySlice;
@@ -53,6 +58,7 @@ use crate::Mesh;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::Uslice;
+use crate::config::MAX_CAST_DIMENSION_SIZE;
 use crate::metrics;
 use crate::proc_mesh::ProcMesh;
 use crate::reference::ActorMeshId;
@@ -93,13 +99,37 @@ where
         cast_mesh_shape.clone(),
         message,
     )?;
+
+    // Mesh's shape might have large extents on some dimensions. Those
+    // dimensions would cause large fanout in our comm actor
+    // implementation. To avoid that, we reshape it by increasing
+    // dimensionality and limiting the extent of each dimension. Note
+    // the reshape is only visible to the internal algorithm. The
+    // shape that user sees maintains intact.
+    //
+    // For example, a typical shape is [hosts=1024, gpus=8]. By using
+    // limit 8, it becomes [8, 8, 8, 2, 8] during casting. In other
+    // words, it adds 3 extra layers to the comm actor tree, while
+    // keeping the fanout in each layer per dimension at 8 or smaller.
+    //
+    // An important note here is that max dimension size != max fanout.
+    // Rank 0 must send a message to all ranks at index 0 for every dimension.
+    // If our reshaped shape is [8, 8, 8, 2, 8], rank 0 must send
+    // 7 + 7 + 7 + 1 + 7 = 21 messages.
+
+    let slice_of_root = root_mesh_shape.slice();
+
+    let max_cast_dimension_size = config::global::get(MAX_CAST_DIMENSION_SIZE);
+
+    let slice_of_cast = slice_of_root.reshape_with_limit(Limit::from(max_cast_dimension_size));
+
+    let selection_of_cast =
+        reshape_selection(selection_of_root, root_mesh_shape.slice(), &slice_of_cast)?;
+
     let cast_message = CastMessage {
-        // Note: `dest` is on the root mesh' shape, which could be different
-        // from the cast mesh's shape if the cast is on a view, e.g. a sliced
-        // mesh.
         dest: Uslice {
-            slice: root_mesh_shape.slice().clone(),
-            selection: selection_of_root,
+            slice: slice_of_cast,
+            selection: selection_of_cast,
         },
         message,
     };
@@ -454,6 +484,9 @@ pub enum CastError {
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+
+    #[error(transparent)]
+    ReshapeError(#[from] ReshapeError),
 }
 
 // This has to be compiled outside of test mode because the bootstrap binary
@@ -1465,5 +1498,184 @@ mod tests {
         use crate::alloc::sim::SimAllocator;
 
         actor_mesh_test_suite!(SimAllocator::new_and_start_simnet());
+    }
+
+    mod reshape_cast {
+        use async_trait::async_trait;
+        use hyperactor::Actor;
+        use hyperactor::Context;
+        use hyperactor::Handler;
+        use hyperactor::channel::ChannelAddr;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::channel::ChannelTx;
+        use hyperactor::channel::Rx;
+        use hyperactor::channel::Tx;
+        use hyperactor::channel::dial;
+        use hyperactor::channel::serve;
+        use hyperactor_mesh_macros::sel;
+        use ndslice::Selection;
+        use ndslice::extent;
+
+        use crate::Mesh;
+        use crate::ProcMesh;
+        use crate::RootActorMesh;
+        use crate::actor_mesh::ActorMesh;
+        use crate::alloc::AllocSpec;
+        use crate::alloc::Allocator;
+        use crate::alloc::LocalAllocator;
+        use crate::config::MAX_CAST_DIMENSION_SIZE;
+
+        #[derive(Debug)]
+        #[hyperactor::export(
+            spawn = true,
+            handlers = [() { cast = true }],
+        )]
+        struct EchoActor(ChannelTx<usize>);
+
+        #[async_trait]
+        impl Actor for EchoActor {
+            type Params = ChannelAddr;
+
+            async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {
+                Ok(Self(dial::<usize>(params)?))
+            }
+        }
+
+        #[async_trait]
+        impl Handler<()> for EchoActor {
+            async fn handle(
+                &mut self,
+                cx: &Context<Self>,
+                _message: (),
+            ) -> Result<(), anyhow::Error> {
+                let Self(port) = self;
+                port.post(cx.self_id().rank());
+                Ok(())
+            }
+        }
+
+        #[tokio::test]
+        async fn test_reshaped_actor_mesh_cast() {
+            let config = hyperactor::config::global::lock();
+            let _guard = config.override_key(MAX_CAST_DIMENSION_SIZE, 2);
+
+            let alloc = LocalAllocator
+                .allocate(AllocSpec {
+                    extent: extent!(host = 16, gpu = 4),
+                    constraints: Default::default(),
+                    proc_name: None,
+                })
+                .await
+                .unwrap();
+            let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
+            let (_, mut rx) = serve::<u64>(addr.clone()).await.unwrap();
+            let actor_mesh: RootActorMesh<EchoActor> =
+                proc_mesh.spawn("echo", &addr).await.unwrap();
+
+            actor_mesh.cast(proc_mesh.client(), sel!(*), ()).unwrap();
+
+            for _ in 0..(16 * 4) {
+                assert!(rx.recv().await.is_ok());
+            }
+        }
+
+        #[tokio::test]
+        async fn test_reshaped_actor_mesh_ref_cast() {
+            let config = hyperactor::config::global::lock();
+            let _guard = config.override_key(MAX_CAST_DIMENSION_SIZE, 2);
+
+            let alloc = LocalAllocator
+                .allocate(AllocSpec {
+                    extent: extent!(host = 16, gpu = 4),
+                    constraints: Default::default(),
+                    proc_name: None,
+                })
+                .await
+                .unwrap();
+            let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
+            let (_, mut rx) = serve::<u64>(addr.clone()).await.unwrap();
+
+            let actor_mesh: RootActorMesh<EchoActor> =
+                proc_mesh.spawn("echo", &addr).await.unwrap();
+
+            let mesh_ref = actor_mesh.bind();
+            mesh_ref.cast(proc_mesh.client(), sel!(*), ()).unwrap();
+
+            for _ in 0..(16 * 4) {
+                assert!(rx.recv().await.is_ok());
+            }
+        }
+
+        #[tokio::test]
+        async fn test_reshaped_actor_mesh_slice_cast() {
+            let config = hyperactor::config::global::lock();
+            let _guard = config.override_key(MAX_CAST_DIMENSION_SIZE, 2);
+
+            let alloc = LocalAllocator
+                .allocate(AllocSpec {
+                    extent: extent!(host = 8, gpu = 4),
+                    constraints: Default::default(),
+                    proc_name: None,
+                })
+                .await
+                .unwrap();
+            let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
+            let (_, mut rx) = serve::<u64>(addr.clone()).await.unwrap();
+
+            let actor_mesh: RootActorMesh<EchoActor> =
+                proc_mesh.spawn("echo", &addr).await.unwrap();
+            let slice = actor_mesh.select("host", 2..6).unwrap();
+            let slice = slice.select("gpu", 2..6).unwrap();
+
+            slice.cast(proc_mesh.client(), sel!(*), ()).unwrap();
+
+            let mut received_ranks = vec![];
+            for _ in 0..8 {
+                let rank = rx.recv().await.unwrap();
+                received_ranks.push(rank);
+            }
+            received_ranks.sort();
+            assert_eq!(received_ranks, vec![10, 11, 14, 15, 18, 19, 22, 23]);
+        }
+
+        #[tokio::test]
+        async fn test_reshaped_actor_mesh_cast_with_selection() {
+            let config = hyperactor::config::global::lock();
+            let _guard = config.override_key(MAX_CAST_DIMENSION_SIZE, 2);
+
+            let alloc = LocalAllocator
+                .allocate(AllocSpec {
+                    extent: extent!(host = 8, gpu = 4),
+                    constraints: Default::default(),
+                    proc_name: None,
+                })
+                .await
+                .unwrap();
+            let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
+            let (_, mut rx) = serve::<u64>(addr.clone()).await.unwrap();
+
+            let actor_mesh: RootActorMesh<EchoActor> =
+                proc_mesh.spawn("echo", &addr).await.unwrap();
+
+            actor_mesh
+                .cast(proc_mesh.client(), sel!(2:6, 2:6), ())
+                .unwrap();
+
+            let mut received_ranks = vec![];
+            for _ in 0..8 {
+                let rank = rx.recv().await.unwrap();
+                received_ranks.push(rank);
+            }
+            received_ranks.sort();
+            assert_eq!(received_ranks, vec![10, 11, 14, 15, 18, 19, 22, 23]);
+        }
     }
 }

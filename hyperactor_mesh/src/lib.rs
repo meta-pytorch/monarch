@@ -18,6 +18,7 @@ pub mod alloc;
 mod assign;
 pub mod bootstrap;
 pub mod comm;
+pub mod config;
 pub mod connect;
 pub mod logging;
 pub mod mesh;
