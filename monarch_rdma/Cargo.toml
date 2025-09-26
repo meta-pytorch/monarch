@@ -25,6 +25,7 @@ hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
