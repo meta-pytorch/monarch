@@ -104,29 +104,29 @@ impl HostMesh {
     /// channel, established by the host.
     ///
     /// ```text
-    ///                        ┌ ─ ─┌────────────────────┐                   
-    ///                             │allocated Proc:     │                   
-    ///                        │    │ ┌─────────────────┐│                   
-    ///                             │ │TrampolineActor  ││                   
-    ///                        │    │ │ ┌──────────────┐││                   
-    ///                             │ │ │Host          │││                   
-    ///               ┌────┬ ─ ┘    │ │ │ ┌──────────┐ │││                   
-    ///            ┌─▶│Proc│        │ │ │ │HostAgent │ │││                   
-    ///            │  └────┴ ─ ┐    │ │ │ └──────────┘ │││                   
-    ///            │  ┌────┐        │ │ │             ██████                 
-    /// ┌────────┐ ├─▶│Proc│   │    │ │ └──────────────┘││ ▲                 
+    ///                        ┌ ─ ─┌────────────────────┐
+    ///                             │allocated Proc:     │
+    ///                        │    │ ┌─────────────────┐│
+    ///                             │ │TrampolineActor  ││
+    ///                        │    │ │ ┌──────────────┐││
+    ///                             │ │ │Host          │││
+    ///               ┌────┬ ─ ┘    │ │ │ ┌──────────┐ │││
+    ///            ┌─▶│Proc│        │ │ │ │HostAgent │ │││
+    ///            │  └────┴ ─ ┐    │ │ │ └──────────┘ │││
+    ///            │  ┌────┐        │ │ │             ██████
+    /// ┌────────┐ ├─▶│Proc│   │    │ │ └──────────────┘││ ▲
     /// │ Client │─┤  └────┘        │ └─────────────────┘│ listening channel
-    /// └────────┘ │  ┌────┐   └ ─ ─└────────────────────┘                   
-    ///            ├─▶│Proc│                                                 
-    ///            │  └────┘                                                 
-    ///            │  ┌────┐                                                 
-    ///            └─▶│Proc│                                                 
-    ///               └────┘                                                 
-    ///                 ▲                                                    
-    ///                                                                     
-    ///          `Alloc`-provided                                            
-    ///                procs               
-    /// ```                                  
+    /// └────────┘ │  ┌────┐   └ ─ ─└────────────────────┘
+    ///            ├─▶│Proc│
+    ///            │  └────┘
+    ///            │  ┌────┐
+    ///            └─▶│Proc│
+    ///               └────┘
+    ///                 ▲
+    ///
+    ///          `Alloc`-provided
+    ///                procs
+    /// ```
     pub async fn allocate(
         cx: &impl context::Actor,
         alloc: Box<dyn Alloc + Send + Sync>,
@@ -343,10 +343,12 @@ mod tests {
     use std::collections::HashSet;
     use std::collections::VecDeque;
 
+    use hyperactor::config::ENABLE_CLIENT_SEQ_ASSIGNMENT;
     use hyperactor::context::Mailbox as _;
     use itertools::Itertools;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::async_timed_test;
     use tokio::process::Command;
 
     use super::*;
@@ -388,8 +390,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_allocate() {
+    async fn execute_allocate() {
         // This only works with the process allocator since we assume a working
         // bootstrap binary.
         //
@@ -440,7 +441,7 @@ mod tests {
             .collect();
 
         while !expected_actor_ids.is_empty() {
-            let actor_id = rx.recv().await.unwrap();
+            let (actor_id, _) = rx.recv().await.unwrap();
             assert!(
                 expected_actor_ids.remove(&actor_id),
                 "got {actor_id}, expect {expected_actor_ids:?}"
@@ -475,6 +476,20 @@ mod tests {
 
         let forward = last_rx.recv().await.unwrap();
         assert_eq!(forward.visited, expect_visited);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_allocate() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        execute_allocate().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_allocate_v0_casting() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_CLIENT_SEQ_ASSIGNMENT, false);
+        execute_allocate().await;
     }
 
     /// Allocate a new port on localhost. This drops the listener, releasing the socket,

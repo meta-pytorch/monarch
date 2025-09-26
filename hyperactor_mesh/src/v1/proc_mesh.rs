@@ -43,6 +43,7 @@ use crate::assign::Ranks;
 use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent;
 use crate::proc_mesh::mesh_agent::ActorState;
+use crate::proc_mesh::mesh_agent::MeshAgentMessage;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::proc_mesh::mesh_agent::ReconfigurableMailboxSender;
@@ -207,7 +208,7 @@ impl ProcMesh {
             // mesh mode.
             for (rank, comm_actor) in &address_book {
                 comm_actor
-                    .send(cx, CommActorMode::Mesh(*rank, address_book.clone()))
+                    .seq_send(cx, CommActorMode::Mesh(*rank, address_book.clone()))
                     .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
             }
         }
@@ -301,18 +302,17 @@ impl ProcMesh {
 
         let (config_handle, mut config_receiver) = cx.mailbox().open_port();
         for (rank, AllocatedProc { mesh_agent, .. }) in running.iter().enumerate() {
+            let message = MeshAgentMessage::Configure {
+                rank,
+                forwarder: proc_channel_addr.clone(),
+                supervisor: None, // no supervisor; we just crash
+                address_book: address_book.clone(),
+                configured: config_handle.bind(),
+                record_supervision_events: true,
+            };
             mesh_agent
-                .configure(
-                    cx,
-                    rank,
-                    proc_channel_addr.clone(),
-                    None, // no supervisor; we just crash
-                    address_book.clone(),
-                    config_handle.bind(),
-                    true,
-                )
-                .await
-                .map_err(Error::ConfigurationError)?;
+                .seq_send(cx, message)
+                .map_err(|e| Error::ConfigurationError(e.into()))?;
         }
         let mut completed = Ranks::new(running.len());
         while !completed.is_full() {
@@ -555,7 +555,7 @@ impl ProcMeshRef {
         for (rank, proc_ref) in self.ranks.iter().enumerate() {
             proc_ref
                 .agent
-                .send(
+                .seq_send(
                     cx,
                     resource::CreateOrUpdate::<mesh_agent::ActorSpec> {
                         name: name.clone(),
@@ -644,6 +644,19 @@ impl view::RankedSliceable for ProcMeshRef {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::ops::Deref;
+    use std::time::Duration;
+
+    use hyperactor::Instance;
+    use hyperactor::Proc;
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
+    use hyperactor::config::ENABLE_CLIENT_SEQ_ASSIGNMENT;
+    use hyperactor::id;
+    use hyperactor::mailbox;
+    use hyperactor::mailbox::BoxableMailboxSender;
+    use hyperactor::mailbox::DialMailboxRouter;
     use ndslice::ViewExt;
     use ndslice::extent;
     use timed_test::async_timed_test;
@@ -674,8 +687,7 @@ mod tests {
         );
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_spawn_actor() {
+    async fn execute_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
         let instance = testing::instance().await;
@@ -683,6 +695,108 @@ mod tests {
         for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             testactor::assert_mesh_shape(proc_mesh.spawn(instance, "test", &()).await.unwrap())
                 .await;
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_actor() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        execute_spawn_actor().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_actor_v0_casting() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_CLIENT_SEQ_ASSIGNMENT, false);
+        execute_spawn_actor().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_seq_no_same_sender_to_different_meshes() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+
+        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        let instance = testing::instance().await;
+
+        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
+            let proc_mesh_ref = proc_mesh.deref();
+
+            // Sequence numbers are scoped based on the (client, dest) pair.
+            // So casts to different meshes from the same client instance would
+            // result in seq 1 for all casts.
+            let handles = (0..3)
+                .map(|_| {
+                    let proc_mesh_ref_clone = proc_mesh_ref.clone();
+                    tokio::spawn(async move {
+                        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh_ref_clone
+                            .spawn(instance, "test", &())
+                            .await
+                            .unwrap();
+                        let expected_seqs = vec![1; 8];
+                        testactor::verify_casting(&actor_mesh, instance, Some(expected_seqs)).await;
+                    })
+                })
+                .collect::<Vec<_>>();
+            futures::future::join_all(handles).await;
+        }
+    }
+
+    // Verify that the seq numbers are assigned correctly when we cast to
+    // different views of the same root mesh.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_seq_no_sanme_sender_to_difference_views() {
+        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+
+        let instance = testing::instance().await;
+
+        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
+            let actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(instance, "test", &()).await.unwrap();
+
+            // First cast. The seq should be 1 for all actors.
+            let expected_seqs = vec![1; 8];
+            testactor::verify_casting(&actor_mesh, instance, Some(expected_seqs)).await;
+
+            // Verify casting to the sliced actor mesh
+            let sliced_actor_mesh = actor_mesh.range("replicas", 1..3).unwrap();
+            // Second cast. The seq should be 2 for actors in the sliced mesh.
+            let expected_seqs = vec![2; 4];
+            testactor::verify_casting(&sliced_actor_mesh, instance, Some(expected_seqs)).await;
+
+            // Verify casting to a different sliced actor mesh
+            let sliced_actor_mesh = actor_mesh.range("replicas", 0..2).unwrap();
+            // For actors in the previous sliced mesh, the seq should be 3 since
+            // this is the third cast for them. For other actors, the seq should
+            // be 2.
+            let expected_seqs = vec![2, 2, 3, 3];
+            testactor::verify_casting(&sliced_actor_mesh, instance, Some(expected_seqs)).await;
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_seq_no_from_different_senders() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+
+        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        let proc = Proc::new(id!(test[0]), DialMailboxRouter::new().boxed());
+        let (instance, _) = proc.instance("test_client").unwrap();
+        let (first_instance, _) = proc.instance("first_client").unwrap();
+        let (second_instance, _) = proc.instance("second_client").unwrap();
+        let (third_instance, _) = proc.instance("third_client").unwrap();
+
+        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
+            let actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(&instance, "test", &()).await.unwrap();
+
+            // Sequence numbers are calculated based on the sequencer, i.e. the
+            // client name. So three casts would result in seq 1 for all actors.
+            for inst in [&first_instance, &second_instance, &third_instance] {
+                let expected_seqs = vec![1; 8];
+                testactor::verify_casting(&actor_mesh, inst, Some(expected_seqs)).await;
+            }
         }
     }
 }

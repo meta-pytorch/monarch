@@ -7,6 +7,8 @@
  */
 
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
+use crate::comm::multicast::CastMessageV1;
+use crate::comm::multicast::ForwardMessageV1;
 use crate::reference::ActorMeshId;
 pub mod multicast;
 
@@ -25,6 +27,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::WorldId;
+use hyperactor::cap;
 use hyperactor::data::Serialized;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
@@ -32,7 +35,12 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::message::ErasedUnbound;
+use hyperactor::proc::SeqInfo;
 use hyperactor::reference::UnboundPort;
+use hyperactor_mesh_macros::sel;
+use ndslice::Selection;
+use ndslice::View;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
@@ -81,6 +89,8 @@ struct ReceiveState {
         CommActorMode,
         CastMessage,
         ForwardMessage,
+        CastMessageV1,
+        ForwardMessageV1,
     ],
 )]
 pub struct CommActor {
@@ -260,20 +270,7 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
-        // Split ports, if any, and update message with new ports. In this
-        // way, children actors will reply to this comm actor's ports, instead
-        // of to the original ports provided by parent.
-        message
-            .data_mut()
-            .visit_mut::<UnboundPort>(|UnboundPort(port_id, reducer_spec)| {
-                let split = port_id.split(cx, reducer_spec.clone())?;
-
-                #[cfg(test)]
-                tests::collect_split_port(port_id, &split, deliver_here);
-
-                *port_id = split;
-                Ok(())
-            })?;
+        split_ports(cx, message.data_mut(), deliver_here)?;
 
         // Deliver message here, if necessary.
         if deliver_here {
@@ -285,7 +282,7 @@ impl CommActor {
                 .point_of_rank(cast_rank)
                 .expect("rank out of bounds");
             let mut headers = cx.headers().clone();
-            set_cast_info_on_headers(&mut headers, point, message.sender().clone());
+            set_cast_info_on_headers(&mut headers, point, message.sender().clone(), None);
             cx.post(
                 cx.self_id()
                     .proc_id()
@@ -442,6 +439,100 @@ impl Handler<ForwardMessage> for CommActor {
             Ordering::Greater => {
                 tracing::warn!("received duplicate message with seq {}: {:?}", seq, message);
             }
+        }
+
+        Ok(())
+    }
+}
+
+// Split ports, if any, and update message with new ports. In this
+// way, child actors will reply to this comm actor's ports, instead
+// of to the original ports provided by parent.
+fn split_ports(
+    caps: &impl cap::CanSplitPort,
+    data: &mut ErasedUnbound,
+    _deliver_here: bool,
+) -> anyhow::Result<()> {
+    data.visit_mut::<UnboundPort>(|UnboundPort(port_id, reducer_spec)| {
+        let split = port_id.split(caps, reducer_spec.clone())?;
+
+        #[cfg(test)]
+        tests::collect_split_port(port_id, &split, _deliver_here);
+
+        *port_id = split;
+        Ok(())
+    })
+}
+
+#[async_trait]
+impl Handler<CastMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessageV1) -> Result<()> {
+        let slice = cast_message.dest_region.slice().clone();
+        let frame = RoutingFrame::root(sel!(*), slice);
+        let forward_message = ForwardMessageV1 {
+            dests: vec![frame],
+            message: cast_message,
+        };
+        Handler::<ForwardMessageV1>::handle(self, cx, forward_message).await
+    }
+}
+
+#[async_trait]
+impl Handler<ForwardMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessageV1) -> Result<()> {
+        let ForwardMessageV1 { dests, mut message } = fwd_message;
+        // Resolve/dedup routing frames.
+        let rank_on_root_mesh = self.mode.self_rank(cx.self_id())?;
+        let (deliver_here, next_steps) =
+            ndslice::selection::routing::resolve_routing(rank_on_root_mesh, dests, &mut |_| {
+                panic!("Choice encountered in CommActor routing")
+            })?;
+
+        split_ports(cx, &mut message.data, deliver_here)?;
+
+        // Deliver message here, if necessary.
+        if deliver_here {
+            let cast_point = message.dest_region.point_of_base_rank(rank_on_root_mesh)?;
+            let seq = message
+                .seqs
+                .get(cast_point.rank())
+                .expect("mismatched seqs and dest_region");
+            // headers should already contain SEQ_INFO, which was set when
+            // the last comm actor forwarded the message. We overwrite it here
+            // with the SEQ_INFO from original sender put in the CastMessageV1.
+            // In this way, the destination actor only sees the SEQ_INFO from
+            // the original sender.
+            let mut headers = cx.headers().clone();
+            set_cast_info_on_headers(
+                &mut headers,
+                cast_point,
+                message.sender.clone(),
+                Some(SeqInfo {
+                    session_id: message.session_id,
+                    seq,
+                }),
+            );
+            // TODO: Use PortId::send once the API is ready.
+            cx.post(
+                cx.self_id()
+                    .proc_id()
+                    .actor_id(message.dest_port.actor_name(), 0)
+                    .port_id(message.dest_port.port()),
+                headers,
+                Serialized::serialize(&message.data)?,
+            );
+        }
+
+        // Forward to peers.
+        for (peer_rank_on_root_mesh, dests) in next_steps {
+            let forward_message = ForwardMessageV1 {
+                dests,
+                message: message.clone(),
+            };
+            let child = self
+                .mode
+                .peer_for_rank(cx.self_id(), peer_rank_on_root_mesh)?;
+            child.seq_send(cx, forward_message)?;
         }
 
         Ok(())
