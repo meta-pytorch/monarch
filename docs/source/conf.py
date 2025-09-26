@@ -108,7 +108,7 @@ html_theme_options = {
 }
 
 html_sidebars = {
-    "examples/getting_started": [],
+    "generated/examples/getting_started": [],
     "rust-api": [],
     "installation": [],
 }
