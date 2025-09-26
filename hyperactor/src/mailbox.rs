@@ -568,8 +568,8 @@ impl fmt::Display for PortLocation {
 /// is associated with the port ID of the operation.
 #[derive(Debug)]
 pub struct MailboxSenderError {
-    location: PortLocation,
-    kind: MailboxSenderErrorKind,
+    location: Box<PortLocation>,
+    kind: Box<MailboxSenderErrorKind>,
 }
 
 /// The kind of mailbox sending errors.
@@ -617,8 +617,8 @@ impl MailboxSenderError {
     /// Create a new mailbox sender error to an unbound port.
     pub fn new_unbound<M>(actor_id: ActorId, kind: MailboxSenderErrorKind) -> Self {
         Self {
-            location: PortLocation::Unbound(actor_id, std::any::type_name::<M>()),
-            kind,
+            location: Box::new(PortLocation::Unbound(actor_id, std::any::type_name::<M>())),
+            kind: Box::new(kind),
         }
     }
 
@@ -629,16 +629,16 @@ impl MailboxSenderError {
         ty: &'static str,
     ) -> Self {
         Self {
-            location: PortLocation::Unbound(actor_id, ty),
-            kind,
+            location: Box::new(PortLocation::Unbound(actor_id, ty)),
+            kind: Box::new(kind),
         }
     }
 
     /// Create a new mailbox sender error with the provided port ID and kind.
     pub fn new_bound(port_id: PortId, kind: MailboxSenderErrorKind) -> Self {
         Self {
-            location: PortLocation::Bound(port_id),
-            kind,
+            location: Box::new(PortLocation::Bound(port_id)),
+            kind: Box::new(kind),
         }
     }
 
@@ -695,7 +695,6 @@ pub trait MailboxSender: Send + Sync + Debug + Any {
 /// for sending messages over ports
 pub trait PortSender: MailboxSender {
     /// Deliver a message to the provided port.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send<M: RemoteMessage>(
         &self,
         port: &PortRef<M>,
@@ -718,7 +717,6 @@ pub trait PortSender: MailboxSender {
 
     /// Deliver a message to a one-shot port, consuming the provided port,
     /// which is not reusable.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send_once<M: RemoteMessage>(
         &self,
         once_port: OncePortRef<M>,
@@ -1579,7 +1577,6 @@ impl<M: Message> PortHandle<M> {
     }
 
     /// Send a message to this port.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
 
@@ -1666,7 +1663,6 @@ impl<M: Message> OncePortHandle<M> {
 
     /// Send a message to this port. The send operation will consume the
     /// port handle, as the port accepts at most one message.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(self, message: M) -> Result<(), MailboxSenderError> {
         let actor_id = self.mailbox.actor_id().clone();
         self.sender.send(message).map_err(|_| {
@@ -1937,7 +1933,6 @@ impl<M: Message> UnboundedSender<M> {
         Self { sender, port_id }
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send(&self, headers: Attrs, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
@@ -2017,7 +2012,6 @@ impl<M: Message> OnceSender<M> {
         }
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send_once(&self, message: M) -> Result<bool, MailboxSenderError> {
         // TODO: we should replace the sender on error
         match self.sender.lock().unwrap().take() {
@@ -2496,7 +2490,6 @@ impl DialMailboxRouter {
         prefixes
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn dial(
         &self,
         addr: &ChannelAddr,
