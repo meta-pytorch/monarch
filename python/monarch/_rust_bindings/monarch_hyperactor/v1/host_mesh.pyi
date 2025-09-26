@@ -12,7 +12,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
-from monarch._rust_bindings.monarch_hyperactor.shape import Region
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import ProcMesh
 
 @final
@@ -40,6 +40,7 @@ class HostMesh:
         self,
         instance: Instance,
         name: str,
+        per_host: Extent,
     ) -> PythonTask[ProcMesh]:
         """
         Spawn a new actor on this mesh.
@@ -47,6 +48,7 @@ class HostMesh:
         Arguments:
         - `instance`: The instance to use to spawn the mesh.
         - `name`: Name of the proc mesh
+        - `per_host`: Extent describing the shape of the proc mesh on each host.
         """
         ...
 

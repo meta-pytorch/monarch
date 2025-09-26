@@ -1665,6 +1665,7 @@ mod tests {
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
     use hyperactor::id;
+    use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
     use tokio::process::Command;
@@ -2813,7 +2814,10 @@ mod tests {
         //
         // (4) We collect the per-host procs into a `ProcMesh` and
         // return it.
-        let proc_mesh = host_mesh.spawn(&instance, "p0").await.unwrap();
+        let proc_mesh = host_mesh
+            .spawn(&instance, "p0", Extent::unity())
+            .await
+            .unwrap();
 
         // Note: There is no support for status() in v1.
         // assert!(proc_mesh.status(&instance).await.is_err());
