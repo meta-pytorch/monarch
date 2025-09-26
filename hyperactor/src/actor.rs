@@ -592,7 +592,6 @@ impl<A: Actor> ActorHandle<A> {
 
     /// Send a message to the actor. Messages sent through the handle
     /// are always queued in process, and do not require serialization.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send<M: Message>(&self, message: M) -> Result<(), MailboxSenderError>
     where
         A: Handler<M>,
