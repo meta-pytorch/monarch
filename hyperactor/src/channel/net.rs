@@ -966,7 +966,9 @@ impl<M: RemoteMessage> NetTx<M> {
 
             if !matches!(state, State::Closing { .. }) {
                 if let Conn::Disconnected(ref mut backoff) = conn {
-                    RealClock.sleep(backoff.next_backoff().unwrap()).await;
+                    if let Some(nxt_backoff) = backoff.next_backoff() {
+                        RealClock.sleep(nxt_backoff).await;
+                    }
                 }
             }
         }; // loop
