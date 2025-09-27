@@ -397,18 +397,16 @@ class ProcMesh(MeshTrait):
             )
 
         actor_mesh = HyProcMesh.spawn_async(pm, name, _Actor)
-        instance = context().actor_instance
         service = ActorMesh._create(
             Class,
             actor_mesh,
-            instance._mailbox,
             self._shape,
             self,
             self._controller_controller,
             *args,
             **kwargs,
         )
-        instance._add_child(service)
+        context().actor_instance._add_child(service)
         return cast(T, service)
 
     @property

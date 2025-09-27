@@ -47,6 +47,8 @@ use serde::Serialize;
 
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
+use crate::context::PyInstance;
+use crate::instance_dispatch;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
@@ -264,10 +266,12 @@ pub(super) struct PythonPortHandle {
 
 #[pymethods]
 impl PythonPortHandle {
-    fn send(&self, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+    fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
+        instance_dispatch!(instance, |cx_instance| {
+            self.inner
+                .send(cx_instance, message)
+                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        });
         Ok(())
     }
 
@@ -483,13 +487,14 @@ pub(super) struct PythonOncePortHandle {
 
 #[pymethods]
 impl PythonOncePortHandle {
-    fn send(&mut self, message: PythonMessage) -> PyResult<()> {
+    fn send(&mut self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
         let Some(port) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
-
-        port.send(message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        instance_dispatch!(instance, |cx_instance| {
+            port.send(cx_instance, message)
+                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        });
         Ok(())
     }
 

@@ -48,6 +48,8 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 
 use crate::config::SHARED_ASYNCIO_RUNTIME;
+use crate::context::PyInstance;
+use crate::instance_dispatch;
 use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
@@ -282,7 +284,7 @@ impl PythonMessage {
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).unwrap();
                 let (send, recv) = cx.open_once_port();
-                broker.send(LocalStateBrokerMessage::Get(id, send))?;
+                broker.send(cx, LocalStateBrokerMessage::Get(id, send))?;
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
                 Python::with_gil(|py| {
@@ -410,10 +412,12 @@ pub(super) struct PythonActorHandle {
 #[pymethods]
 impl PythonActorHandle {
     // TODO: do the pickling in rust
-    fn send(&self, message: &PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(message.clone())
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    fn send(&self, instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
+        instance_dispatch!(instance, |cx_instance| {
+            self.inner
+                .send(cx_instance, message.clone())
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        });
         Ok(())
     }
 
@@ -651,7 +655,7 @@ impl Actor for PythonActorPanicWatcher {
     }
 
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        this.handle().send(HandlePanic {})?;
+        this.handle().send(this, HandlePanic {})?;
         Ok(())
     }
 }
@@ -667,7 +671,7 @@ impl Handler<HandlePanic> for PythonActorPanicWatcher {
                 // async endpoint executed successfully.
                 // run again
                 let h = cx.deref().handle();
-                h.send(HandlePanic {})?;
+                h.send(cx, HandlePanic {})?;
             }
             Some(Err(err)) => {
                 tracing::error!("caught error in async endpoint {}", err);
@@ -791,13 +795,19 @@ where
 
 #[pymethods]
 impl LocalPort {
-    fn send(&mut self, obj: PyObject) -> PyResult<()> {
+    fn send(&mut self, instance: &PyInstance, obj: PyObject) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(Ok(obj)).map_err(to_py_error)
+        instance_dispatch!(instance, |cx_instance| {
+            port.send(cx_instance, Ok(obj)).map_err(to_py_error)?;
+        });
+        Ok(())
     }
-    fn exception(&mut self, e: PyObject) -> PyResult<()> {
+    fn exception(&mut self, instance: &PyInstance, e: PyObject) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(Err(e)).map_err(to_py_error)
+        instance_dispatch!(instance, |cx_instance| {
+            port.send(cx_instance, Err(e)).map_err(to_py_error)?;
+        });
+        Ok(())
     }
 }
 

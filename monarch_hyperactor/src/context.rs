@@ -18,7 +18,7 @@ use crate::proc::PyActorId;
 use crate::runtime;
 use crate::shape::PyPoint;
 
-pub(crate) enum ContextInstance {
+pub enum ContextInstance {
     Client(hyperactor::Instance<()>),
     PythonActor(hyperactor::Instance<PythonActor>),
 }
@@ -87,20 +87,13 @@ pub struct PyInstance {
 #[pymethods]
 impl PyInstance {
     #[getter]
-    pub(crate) fn _mailbox(&self) -> PyMailbox {
-        PyMailbox {
-            inner: self.inner.mailbox_for_py().clone(),
-        }
-    }
-
-    #[getter]
     fn actor_id(&self) -> PyActorId {
         self.inner.self_id().clone().into()
     }
 }
 
 impl PyInstance {
-    pub(crate) fn context_instance(&self) -> &ContextInstance {
+    pub fn context_instance(&self) -> &ContextInstance {
         &self.inner
     }
 }
