@@ -36,7 +36,7 @@ mod tests {
             println!("Skipping test: RDMA devices not available");
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_0"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -59,7 +59,7 @@ mod tests {
             println!("Skipping test: RDMA devices not available");
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_0"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -84,7 +84,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -109,7 +109,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -138,7 +138,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -165,7 +165,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -189,7 +189,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_2 = env
             .actor_2
             .request_queue_pair(&env.client_2, env.actor_1.clone())
@@ -213,8 +213,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE * 2, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cpu:0", "cpu:1").await?;
         let mut qp_2 = env
             .actor_2
             .request_queue_pair(&env.client_2, env.actor_1.clone())
@@ -248,8 +247,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE * 2, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cpu:0", "cpu:1").await?;
         let mut qp_2 = env
             .actor_2
             .request_queue_pair(&env.client_2, env.actor_1.clone())
@@ -281,7 +279,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
             .read_into(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
@@ -303,7 +301,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
             .write_from(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
@@ -344,8 +342,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -382,8 +379,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -415,8 +411,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -465,8 +460,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE * 2, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1"))
-            .await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -535,8 +529,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE * 2, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1"))
-            .await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cuda:0", "cuda:1").await?;
         let _qp_1 = env
             .actor_1
             .request_queue_pair(&env.client_1, env.actor_2.clone())
@@ -591,7 +584,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cpu:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .actor_1
@@ -622,8 +615,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .actor_1
@@ -653,7 +645,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cpu")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cpu:1").await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
 
         // Pre-initialize comms, and wait for hardware to transition to send state
@@ -686,8 +678,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut _qp_1 = env
             .actor_1
@@ -719,8 +710,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env =
-            RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cuda:0", "cuda:1")).await?;
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut _qp_1 = env
             .actor_1
