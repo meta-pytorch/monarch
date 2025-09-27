@@ -74,7 +74,8 @@ html_theme_options = {
     "navigation_with_keys": False,
     "show_lf_header": False,
     "show_lf_footer": False,
-    "analytics_id": "GTM-T8XT4PS",
+    "analytics_id": "GTM-NPLPKN5G",
+    "canonical_url": "https://meta-pytorch.org/monarch",
     "logo": {
         "text": "",
         "image_light": "_static/torch-monarch-logo.svg",
@@ -104,6 +105,12 @@ html_theme_options = {
     ],
     "use_edit_page_button": True,
     "navbar_center": "navbar-nav",
+}
+
+html_sidebars = {
+    "generated/examples/getting_started": [],
+    "rust-api": [],
+    "installation": [],
 }
 
 theme_variables = pytorch_sphinx_theme2.get_theme_variables()
