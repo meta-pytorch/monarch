@@ -64,7 +64,7 @@ declare_attrs! {
     /// `std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG",
     /// "false")`.
     @meta(CONFIG_ENV_VAR = "HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG".to_string())
-    attr MESH_BOOTSTRAP_ENABLE_PDEATHSIG: bool = true;
+    pub attr MESH_BOOTSTRAP_ENABLE_PDEATHSIG: bool = true;
 }
 
 pub const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";

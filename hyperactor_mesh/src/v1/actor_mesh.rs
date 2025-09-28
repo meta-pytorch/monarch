@@ -525,11 +525,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast() {
-        // SAFETY: unit-test scoped
-        unsafe {
-            // PDEATHSIG is a production safety net. Disable for tests.
-            std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
-        }
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance().await;
         let host_mesh = testing::host_mesh(extent!(host = 4)).await;

@@ -611,11 +611,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_allocate() {
-        // SAFETY: unit-test scoped
-        unsafe {
-            // PDEATHSIG is a production safety net. Disable for tests.
-            std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
-        }
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance().await;
 
@@ -704,11 +701,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_extrinsic_allocation() {
-        // SAFETY: unit-test scoped
-        unsafe {
-            // PDEATHSIG is a production safety net. Disable for tests.
-            std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
-        }
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let program = buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap();
 
