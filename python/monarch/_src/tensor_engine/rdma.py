@@ -234,7 +234,7 @@ class RDMABuffer:
                 addr=addr,
                 size=size,
                 proc_id=ctx.actor_instance.proc_id,
-                client=ctx.actor_instance._mailbox,
+                client=ctx.actor_instance,
             )
         # TODO - specific exception
         except Exception as e:
@@ -276,7 +276,7 @@ class RDMABuffer:
             )
 
         local_proc_id = context().actor_instance.proc_id
-        client = context().actor_instance._mailbox
+        client = context().actor_instance
 
         async def read_into_nonblocking() -> Optional[int]:
             await _ensure_init_rdma_manager()
@@ -327,7 +327,7 @@ class RDMABuffer:
                 f"Source tensor size ({src_size}) must be <= RDMA buffer size ({self.size()})"
             )
         local_proc_id = context().actor_instance.proc_id
-        client = context().actor_instance._mailbox
+        client = context().actor_instance
 
         async def write_from_nonblocking() -> None:
             await _ensure_init_rdma_manager()

@@ -18,7 +18,6 @@ mod tests {
 
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::context::Mailbox as _;
 
     use crate::PollTarget;
     use crate::ibverbs_primitives::get_all_devices;
@@ -284,7 +283,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .read_into(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
+            .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -306,7 +305,7 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, ("mlx5_0", "mlx5_4"), ("cpu", "cpu")).await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .write_from(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
+            .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -664,7 +663,7 @@ mod tests {
         RealClock.sleep(std::time::Duration::from_millis(50)).await;
 
         rdma_handle_1
-            .read_into(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
+            .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -697,7 +696,7 @@ mod tests {
 
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .read_into(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
+            .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;
@@ -729,7 +728,7 @@ mod tests {
         RealClock.sleep(std::time::Duration::from_millis(50)).await;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .write_from(env.client_1.mailbox(), env.rdma_handle_2.clone(), 2)
+            .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE).await?;

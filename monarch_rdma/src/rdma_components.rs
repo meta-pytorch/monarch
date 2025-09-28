@@ -47,10 +47,10 @@ use std::result::Result;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
-use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::context;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -106,7 +106,7 @@ impl RdmaBuffer {
     /// This involves calling a `Put` operation on the RdmaBuffer's actor side.
     ///
     /// # Arguments
-    /// * `client` - Mailbox used for communication
+    /// * `client` - The actor who is reading.
     /// * `remote` - RdmaBuffer representing the remote memory region
     /// * `timeout` - Timeout in seconds for the RDMA operation to complete.
     ///
@@ -114,7 +114,7 @@ impl RdmaBuffer {
     /// `Ok(bool)` indicating if the operation completed successfully.
     pub async fn read_into(
         &self,
-        client: &Mailbox,
+        client: &impl context::Actor,
         remote: RdmaBuffer,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
@@ -141,7 +141,7 @@ impl RdmaBuffer {
     /// This involves calling a `Fetch` operation on the RdmaBuffer's actor side.
     ///
     /// # Arguments
-    /// * `client` - Mailbox used for communication
+    /// * `client` - The actor who is writing.
     /// * `remote` - RdmaBuffer representing the remote memory region
     /// * `timeout` - Timeout in seconds for the RDMA operation to complete.
     ///
@@ -149,7 +149,7 @@ impl RdmaBuffer {
     /// `Ok(bool)` indicating if the operation completed successfully.
     pub async fn write_from(
         &self,
-        client: &Mailbox,
+        client: &impl context::Actor,
         remote: RdmaBuffer,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {

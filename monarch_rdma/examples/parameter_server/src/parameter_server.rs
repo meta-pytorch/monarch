@@ -368,9 +368,7 @@ impl Handler<WorkerStep> for WorkerActor {
             )
             .await?;
 
-        buffer
-            .read_into(cx.mailbox(), ps_grad_handle.clone(), 5)
-            .await?;
+        buffer.read_into(cx, ps_grad_handle.clone(), 5).await?;
 
         self.local_gradients.fill(0);
 
@@ -409,9 +407,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
             .ps_weights_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        buffer
-            .write_from(cx.mailbox(), ps_weights_handle.clone(), 5)
-            .await?;
+        buffer.write_from(cx, ps_weights_handle.clone(), 5).await?;
         reply.send(cx, true)?;
         Ok(())
     }

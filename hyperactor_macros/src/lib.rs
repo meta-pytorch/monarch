@@ -737,14 +737,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated client method for this enum variant."]
                     async fn #variant_name_snake(
                         &self,
-                        cx: &impl hyperactor::context::Mailbox,
+                        cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
                         -> Result<#return_type, hyperactor::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
-                        cx: &impl hyperactor::context::Mailbox,
+                        cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
                         -> Result<#return_type, hyperactor::anyhow::Error>;
                 });
@@ -811,14 +811,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated client method for this enum variant."]
                     async fn #variant_name_snake(
                         &self,
-                        cx: &impl hyperactor::context::Mailbox,
+                        cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
-                        cx: &impl hyperactor::context::Mailbox,
+                        cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error>;
                 });
@@ -963,7 +963,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
                         async fn #variant_name_snake(
                             &self,
-                            cx: &impl hyperactor::context::Mailbox,
+                            cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -977,7 +977,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
                         async fn #variant_name_snake_deprecated(
                             &self,
-                            cx: &impl hyperactor::context::Mailbox,
+                            cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -993,7 +993,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
                         async fn #variant_name_snake(
                             &self,
-                            cx: &impl hyperactor::context::Mailbox,
+                            cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -1008,7 +1008,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
                         async fn #variant_name_snake_deprecated(
                             &self,
-                            cx: &impl hyperactor::context::Mailbox,
+                            cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -1054,7 +1054,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 impl_methods.push(quote! {
                     async fn #variant_name_snake(
                         &self,
-                        cx: &impl hyperactor::context::Mailbox,
+                        cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error> {
                         let message = #constructor;
@@ -1065,7 +1065,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
 
                     async fn #variant_name_snake_deprecated(
                         &self,
-                        cx: &impl hyperactor::context::Mailbox,
+                        cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error> {
                         let message = #constructor;
