@@ -24,7 +24,7 @@ class MasterNodeServer:
         self.server_running = True
         self.httpd = None
         self.port = port
-        self.master_ip = self.get_master_ip()
+        self.master_ip = self.get_master_public_ip_curl()
 
     @staticmethod
     def get_master_ip():
@@ -171,17 +171,17 @@ class MasterNodeServer:
 
     def start_registration_server(self):
         """Start the HTTP registration server with safe port handling"""
-        print(f"Starting server on port 8080...")
+        print(f"Starting server on port {self.port}...")
         handler_class = self.create_handler_class()
 
         try:
             # Create server with socket reuse option
-            self.httpd = HTTPServer(("0.0.0.0", 8080), handler_class)
+            self.httpd = HTTPServer(("0.0.0.0", self.port), handler_class)
 
             # Enable socket reuse to handle TIME_WAIT states
             self.httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-            print(f"Server started on {self.master_ip}:8080")
+            print(f"Server started on {self.master_ip}:{self.port}")
 
             # Handle requests until all workers register
             while (
@@ -200,13 +200,13 @@ class MasterNodeServer:
 
         except OSError as e:
             if e.errno == 98:  # Address already in use
-                print(f"Port 8080 is busy!")
+                print(f"Port {self.port} is busy!")
                 print(f"Solutions:")
                 print(f"   1. Wait a few minutes and try again")
                 print(f"   2. Restart your notebook kernel")
-                print(f"   3. Check: lsof -i :8080 (to see what's using it)")
+                print(f"   3. Check: lsof -i :{self.port} (to see what's using it)")
                 raise RuntimeError(
-                    "Port 8080 is not available. Please try again in a few minutes."
+                    "Port {self.port} is not available. Please try again in a few minutes."
                 )
             else:
                 print(f"Server error: {e}")
@@ -290,7 +290,7 @@ class MasterNodeServer:
         return cluster_info
 
 
-def run_master_server(expected_workers=2, max_wait_hours=0):
+def run_master_server(expected_workers=2, max_wait_hours=0, port=8080):
     """
     Notebook-friendly function to run the master server.
 
@@ -302,7 +302,7 @@ def run_master_server(expected_workers=2, max_wait_hours=0):
         dict: Cluster information when complete
     """
     server = MasterNodeServer(
-        expected_workers=expected_workers, max_wait_hours=max_wait_hours
+        expected_workers=expected_workers, max_wait_hours=max_wait_hours, port=port
     )
     return server.run()
 

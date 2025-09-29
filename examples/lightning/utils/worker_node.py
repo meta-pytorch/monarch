@@ -1,9 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
 import argparse
 import json
 import random
@@ -92,7 +86,7 @@ def get_public_ip_with_curl():
     return None
 
 
-def register_with_master(master_ip):
+def register_with_master(master_ip, master_port=8080):
     # worker_ip = get_local_ip()
     worker_ip = get_public_ip_with_curl()
     hostname = socket.gethostname()
@@ -104,7 +98,7 @@ def register_with_master(master_ip):
     }
 
     print(
-        f"Worker {hostname} trying to register IP {worker_ip} with master {master_ip}"
+        f"Worker {hostname} trying to register IP {worker_ip} with master {master_ip} and {master_port}"
     )
 
     # Retry indefinitely with exponential backoff
@@ -115,7 +109,7 @@ def register_with_master(master_ip):
     while True:
         try:
             response = requests.post(
-                f"http://{master_ip}:8080/register",
+                f"http://{master_ip}:{master_port}/register",
                 data=json.dumps(registration_data),
                 headers={"Content-Type": "application/json"},
                 timeout=10,
@@ -140,15 +134,21 @@ def register_with_master(master_ip):
 def main():
     parser = argparse.ArgumentParser(description="Worker node registration")
     parser.add_argument("master_ip", help="IP address of the master node")
+    parser.add_argument(
+        "master_port",
+        help="PORT address of the connection between the worker and master node",
+    )
 
     args = parser.parse_args()
 
-    print(f"Starting worker registration with master: {args.master_ip}")
+    print(
+        f"Starting worker registration with master: {args.master_ip} and PORT {args.master_port}"
+    )
 
     # Add a small random delay to avoid all workers hitting at once
     time.sleep(random.uniform(1, 10))
 
-    success = register_with_master(args.master_ip)
+    success = register_with_master(args.master_ip, args.master_port)
     if success:
         print("Registration completed successfully")
         return 0
