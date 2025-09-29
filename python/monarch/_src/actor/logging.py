@@ -8,10 +8,18 @@
 
 import logging
 import threading
+from typing import Optional, Union
 
 from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
 
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
+from monarch._rust_bindings.monarch_hyperactor.v1.logging import (
+    LoggingMeshClient as LoggingMeshClientV1,
+)
+from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
+    ProcMesh as HyProcMeshV1,
+)
+from monarch._src.actor.actor_mesh import context
 from monarch._src.actor.future import Future
 
 IN_IPYTHON = False
@@ -21,7 +29,7 @@ try:
     from IPython import get_ipython
 
     # pyre-ignore[21]
-    from IPython.core.interactiveshell import ExecutionResult
+    from IPython.core.interactiveshell import ExecutionResult  # noqa: F401
 
     IN_IPYTHON = get_ipython() is not None
 except ImportError:
@@ -44,14 +52,28 @@ def flush_all_proc_mesh_logs() -> None:
 
 class LoggingManager:
     def __init__(self) -> None:
-        self._logging_mesh_client: LoggingMeshClient | None = None
+        self._logging_mesh_client: Optional[
+            Union[LoggingMeshClient, LoggingMeshClientV1]
+        ] = None
 
-    async def init(self, proc_mesh: HyProcMesh, stream_to_client: bool) -> None:
+    async def init(
+        self, proc_mesh: Union[HyProcMesh, HyProcMeshV1], stream_to_client: bool
+    ) -> None:
         if self._logging_mesh_client is not None:
             return
 
-        self._logging_mesh_client = await LoggingMeshClient.spawn(proc_mesh=proc_mesh)
+        instance = context().actor_instance._as_rust()
+        if isinstance(proc_mesh, HyProcMesh):
+            self._logging_mesh_client = await LoggingMeshClient.spawn(
+                instance, proc_mesh=proc_mesh
+            )
+        else:
+            assert isinstance(proc_mesh, HyProcMeshV1)
+            self._logging_mesh_client = await LoggingMeshClientV1.spawn(
+                instance, proc_mesh=proc_mesh
+            )
         self._logging_mesh_client.set_mode(
+            instance,
             stream_to_client=stream_to_client,
             aggregate_window_sec=3 if stream_to_client else None,
             level=logging.INFO,
@@ -80,6 +102,7 @@ class LoggingManager:
 
         assert self._logging_mesh_client is not None
         self._logging_mesh_client.set_mode(
+            context().actor_instance._as_rust(),
             stream_to_client=stream_to_client,
             aggregate_window_sec=aggregate_window_sec,
             level=level,
@@ -90,7 +113,13 @@ class LoggingManager:
         assert self._logging_mesh_client is not None
         try:
             # blocks for this proc mesh until 3 seconds timeout
-            Future(coro=self._logging_mesh_client.flush().spawn().task()).get(timeout=3)
+            Future(
+                coro=self._logging_mesh_client.flush(
+                    context().actor_instance._as_rust()
+                )
+                .spawn()
+                .task()
+            ).get(timeout=3)
         except Exception:
             # TODO: A harmless exception happens to come through due to coroutine
             # accessing shared resources via logging_mesh_client. Flush works fine

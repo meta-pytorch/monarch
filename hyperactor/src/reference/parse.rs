@@ -28,14 +28,16 @@ pub enum Token<'a> {
     LeftBracket,
     /// "]"
     RightBracket,
+    /// "<"
+    LessThan,
+    /// ">"
+    GreaterThan,
     /// A decimal unsigned integer.
     Uint(usize),
     /// An element is any valid non-raw Rust identifier.
     Elem(&'a str),
     /// "@"
     At,
-    /// ":"
-    Colon,
     /// "."
     Dot,
     /// ","
@@ -58,7 +60,7 @@ impl<'a> Lexer<'a> {
         Self {
             // TODO: compose iterators directly; would be simpler with
             // existential type support.
-            tokens: chop(input, &["[", "]", ".", "@", ","]).collect(),
+            tokens: chop(input, &["[", "]", "<", ">", ".", "@", ","]).collect(),
         }
     }
 }
@@ -71,14 +73,15 @@ impl<'a> Iterator for Lexer<'a> {
             None => None,
             Some("[") => Some(Token::LeftBracket),
             Some("]") => Some(Token::RightBracket),
+            Some("<") => Some(Token::LessThan),
+            Some(">") => Some(Token::GreaterThan),
             Some("@") => Some(Token::At),
-            Some(":") => Some(Token::Colon),
             Some(".") => Some(Token::Dot),
             Some(",") => Some(Token::Comma),
             Some(elem) => Some({
                 if let Ok(uint) = elem.parse::<usize>() {
                     Token::Uint(uint)
-                } else if is_valid_ident(elem) {
+                } else if is_valid_path_ident(elem) {
                     Token::Elem(elem)
                 } else {
                     Token::InvalidElem(elem)
@@ -160,19 +163,28 @@ fn chop<'a>(mut s: &'a str, delims: &'a [&'a str]) -> impl Iterator<Item = &'a s
 
 /// Determines whether the provided token is a valid
 /// [Rust identifier](https://doc.rust-lang.org/reference/identifiers.html),
-/// excluding raw identifiers.
-fn is_valid_ident(token: &str) -> bool {
+/// excluding raw identifiers. We allow path double colons (::) in identifiers.
+fn is_valid_path_ident(token: &str) -> bool {
     // Disallow raw identifiers;
-    if token.starts_with("r#") {
+    if token.starts_with("r#") || token.is_empty() {
         return false;
     }
     let mut chars = token.chars();
-    match chars.next() {
-        Some(ch) if ch == '_' || unicode_ident::is_xid_start(ch) => {
-            chars.all(unicode_ident::is_xid_continue)
+    let mut first = true;
+    while let Some(ch) = chars.next() {
+        let valid = if ch == ':' {
+            chars.next() == Some(':')
+        } else if first {
+            ch == '_' || unicode_ident::is_xid_start(ch)
+        } else {
+            unicode_ident::is_xid_continue(ch)
+        };
+        if !valid {
+            return false;
         }
-        _ => false,
+        first = false;
     }
+    true
 }
 
 #[cfg(test)]

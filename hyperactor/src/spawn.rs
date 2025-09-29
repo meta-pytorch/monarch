@@ -14,7 +14,6 @@ use async_trait::async_trait;
 
 use crate::actor::Actor;
 use crate::actor::ActorHandle;
-use crate::cap::sealed::CanSpawn;
 use crate::mailbox::BoxedMailboxSender;
 use crate::reference::ActorId;
 #[derive(Debug)]

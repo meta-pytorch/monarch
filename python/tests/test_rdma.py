@@ -72,12 +72,10 @@ class ParameterClient(Actor):
 @needs_cuda
 async def test_proc_mesh_rdma():
     proc = this_host().spawn_procs(per_host={"gpus": 1})
-    server = await proc.spawn("server", ParameterServer)
+    server = proc.spawn("server", ParameterServer)
 
     # --- CPU TESTS ---
-    client_cpu = await proc.spawn(
-        "client_cpu", ParameterClient, server, torch.ones(10, 10)
-    )
+    client_cpu = proc.spawn("client_cpu", ParameterClient, server, torch.ones(10, 10))
     x = await client_cpu.get_buffer.call_one()
     assert torch.sum(x.view(torch.float32).view(10, 10)) == 100
     zeros = torch.zeros(10, 10)
@@ -97,7 +95,7 @@ async def test_proc_mesh_rdma():
     assert torch.allclose(buffer.view(torch.float32).view(10, 10), remote_grad)
 
     # --- GPU TESTS ---
-    client_gpu = await proc.spawn(
+    client_gpu = proc.spawn(
         "client_gpu", ParameterClient, server, torch.ones(10, 10, device="cuda")
     )
     x = await client_gpu.get_buffer.call_one()
@@ -171,8 +169,8 @@ class GeneratorActor(Actor):
 async def test_gpu_trainer_generator():
     trainer_proc = this_host().spawn_procs(per_host={"gpus": 2})
     gen_proc = this_host().spawn_procs(per_host={"gpus": 2})
-    trainer = await trainer_proc.spawn("trainer", TrainerActor)
-    generator = await gen_proc.spawn("gen", GeneratorActor)
+    trainer = trainer_proc.spawn("trainer", TrainerActor)
+    generator = gen_proc.spawn("gen", GeneratorActor)
 
     await generator.init.call(trainer)
     await trainer.init.call(generator)
@@ -188,8 +186,8 @@ async def test_gpu_trainer_generator():
 def test_gpu_trainer_generator_sync() -> None:
     trainer_proc = this_host().spawn_procs(per_host={"gpus": 1})
     gen_proc = this_host().spawn_procs(per_host={"gpus": 1})
-    trainer = trainer_proc.spawn("trainer", TrainerActor).get()
-    generator = gen_proc.spawn("gen", GeneratorActor).get()
+    trainer = trainer_proc.spawn("trainer", TrainerActor)
+    generator = gen_proc.spawn("gen", GeneratorActor)
 
     generator.init.call(trainer).get()
     trainer.init.call(generator).get()

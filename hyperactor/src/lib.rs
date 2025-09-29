@@ -71,7 +71,6 @@
 pub mod accum;
 pub mod actor;
 pub mod attrs;
-pub mod cap;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
@@ -83,8 +82,8 @@ mod init;
 pub mod mailbox;
 pub mod message;
 pub mod metrics;
+mod ordering;
 pub mod panic_handler;
-mod parse;
 pub mod proc;
 pub mod reference;
 mod signal_handler;
@@ -104,6 +103,7 @@ pub use actor::RemoteHandles;
 pub use anyhow;
 #[doc(hidden)]
 pub use async_trait;
+pub use attrs::AttrValue;
 // Re-exported to use in Named derive macro.
 #[doc(hidden)]
 pub use cityhasher;
@@ -112,6 +112,8 @@ pub use dashmap; // For intern_typename!
 pub use data::Named;
 #[doc(hidden)]
 pub use hyperactor_macros::Actor;
+#[doc(inline)]
+pub use hyperactor_macros::AttrValue;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]
@@ -205,4 +207,6 @@ mod private {
     impl<A: crate::Actor> Sealed for &crate::proc::Instance<A> {}
     impl<A: crate::Actor> Sealed for crate::proc::Context<'_, A> {}
     impl<A: crate::Actor> Sealed for &crate::proc::Context<'_, A> {}
+    impl Sealed for crate::mailbox::Mailbox {}
+    impl Sealed for &crate::mailbox::Mailbox {}
 }

@@ -122,7 +122,7 @@ impl PyProc {
         let mut inner = self.inner.clone();
         let (_stopped, aborted) = signal_safe_block_on(py, async move {
             inner
-                .destroy_and_wait(Duration::from_secs(timeout_in_secs), None)
+                .destroy_and_wait::<()>(Duration::from_secs(timeout_in_secs), None)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })??;

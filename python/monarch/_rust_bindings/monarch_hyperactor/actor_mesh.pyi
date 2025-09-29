@@ -6,32 +6,27 @@
 
 # pyre-strict
 
-from typing import AsyncIterator, final, NoReturn, Optional, Protocol
+from typing import final, Optional, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
-from monarch._rust_bindings.monarch_hyperactor.mailbox import (
-    Mailbox,
-    OncePortReceiver,
-    PortReceiver,
-)
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.selection import Selection
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._rust_bindings.monarch_hyperactor.shape import Region
 from typing_extensions import Self
 
 class ActorMeshProtocol(Protocol):
     """
-    Protocol defining the common interface for actor mesh, mesh ref and _ActorMeshRefImpl.
+    Protocol defining the common interface for actor mesh and mesh ref.
     """
 
     def cast(
         self,
         message: PythonMessage,
         selection: str,
-        mailbox: Mailbox,
+        instance: Instance,
     ) -> None: ...
-    def new_with_shape(self, shape: Shape) -> Self: ...
+    def new_with_region(self, region: Region) -> Self: ...
     def supervision_event(self) -> "Optional[Shared[Exception]]": ...
     def stop(self) -> PythonTask[None]: ...
     def initialized(self) -> PythonTask[None]: ...
@@ -39,34 +34,6 @@ class ActorMeshProtocol(Protocol):
 @final
 class PythonActorMesh(ActorMeshProtocol):
     pass
-
-class PythonActorMeshImpl:
-    def get_supervision_event(self) -> ActorSupervisionEvent | None:
-        """
-        Returns supervision event if there is any.
-        """
-        ...
-
-    def get(self, rank: int) -> ActorId | None:
-        """
-        Get the actor id for the actor at the given rank.
-        """
-        ...
-
-    def stop(self) -> PythonTask[None]:
-        """
-        Stop all actors that are part of this mesh.
-        Using this mesh after stop() is called will raise an Exception.
-        """
-        ...
-
-    def supervision_event(self) -> "Optional[Shared[Exception]]": ...
-    @property
-    def stopped(self) -> bool:
-        """
-        If the mesh has been stopped.
-        """
-        ...
 
 @final
 class ActorSupervisionEvent:

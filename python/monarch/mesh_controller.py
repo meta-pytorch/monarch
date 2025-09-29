@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from monarch.actor import ProcMesh
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Point
+from monarch._src.actor.actor_mesh import context, Instance
 from monarch._src.actor.device_utils import _local_device_count
 
 from monarch.common.client import Client
@@ -80,7 +81,7 @@ logger: Logger = logging.getLogger(__name__)
 class Controller(_Controller):
     def __init__(self, workers: "HyProcMesh") -> None:
         super().__init__()
-        self._mailbox: Mailbox = workers.client
+        self._mailbox: Mailbox = Instance._as_py(workers.client)._mailbox
         # Buffer for messages unrelated to debugging that are received while a
         # debugger session is active.
         self._non_debugger_pending_messages: deque[
@@ -312,7 +313,7 @@ def _cast_call_method_indirect(
         ),
         args_kwargs_tuple,
     )
-    endpoint._actor_mesh.cast(actor_msg, selection, endpoint._mailbox)
+    endpoint._actor_mesh.cast(actor_msg, selection, context().actor_instance._as_rust())
     return broker_id
 
 

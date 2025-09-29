@@ -33,13 +33,12 @@ logging.basicConfig(
 )
 logger: logging.Logger = logging.getLogger(__name__)
 
-# Replace these constants with values specific from your cluster
-HOST_TYPE = "aws_g5.12xlarge"
-# TODO: Fix torchx so this should not be required from the user.
-HOST_MEMORY = 186777
+# pre-configured for H100
+HOST_TYPE = "gpu.xlarge"
+HOST_MEMORY = 2062607
 
 
-async def get_appdef(num_hosts):
+async def get_appdef(num_hosts: int, host_type: str = HOST_TYPE):
     # similar to Docker image; should contain a conda env in the $img_root/conda/ directory
     # when config.workspace is not None, an ephemeral fbpkg version is created
     # that conda-packs the currently active local conda env AND the directory specified by workspace
@@ -47,18 +46,17 @@ async def get_appdef(num_hosts):
 
     appdef = hyperactor.host_mesh(
         image=image,
-        # TODO: For some reason gpu.medium doens't work here
-        meshes=[f"mesh0:{num_hosts}:{HOST_TYPE}"],  # mesh_name:num_hosts:host_type
+        meshes=[f"mesh0:{num_hosts}:{host_type}"],  # mesh_name:num_hosts:host_type
     )
     return appdef
 
 
-async def get_server_info(appdef):
+async def get_server_info(appdef, host_memory: int = HOST_MEMORY):
     jobname = f"monarch-{USER}"
 
     # TODO: Register this so we don't have to do this every time
     for role in appdef.roles:
-        role.resource.memMB = HOST_MEMORY
+        role.resource.memMB = host_memory
 
     config = Config(
         scheduler="slurm",
@@ -75,8 +73,6 @@ async def get_server_info(appdef):
 
 
 async def create_proc_mesh(num_hosts, appdef, server_info):
-    # TODO: why is gpus equal to -1 in server_info?
-
     num_gpus_per_host = appdef.roles[0].resource.gpu
 
     logger.info(

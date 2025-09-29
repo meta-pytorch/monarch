@@ -417,7 +417,7 @@ impl ProcActor {
         labels: HashMap<String, String>,
         lifecycle_mode: ProcLifecycleMode,
     ) -> Result<BootstrappedProc, anyhow::Error> {
-        let (local_addr, rx) = channel::serve(listen_addr).await?;
+        let (local_addr, rx) = channel::serve(listen_addr)?;
         let mailbox_handle = proc.clone().serve(rx);
         let (state_tx, mut state_rx) = watch::channel(ProcState::AwaitingJoin);
 
@@ -758,7 +758,7 @@ impl ProcMessageHandler for ProcActor {
         tracing::info!("stopping proc {}", self.params.proc.proc_id());
         self.params
             .proc
-            .destroy_and_wait(timeout, Some(cx.self_id()))
+            .destroy_and_wait(timeout, Some(cx))
             .await
             .map(|(stopped, aborted)| {
                 tracing::info!("stopped proc {}", self.params.proc.proc_id());
@@ -1080,7 +1080,7 @@ mod tests {
 
         assert!(tracing_test::internal::logs_with_scope_contain(
             "hyperactor::proc",
-            "world[0].proc[0]: aborting JoinHandle"
+            "world[0].proc[0]: aborting (delayed) JoinHandle"
         ));
         for i in 1..3 {
             assert!(tracing_test::internal::logs_with_scope_contain(
@@ -1091,7 +1091,10 @@ mod tests {
         logs_assert(|logs| {
             let count = logs
                 .iter()
-                .filter(|log| log.contains("aborting JoinHandle"))
+                .filter(|log| {
+                    log.contains("aborting JoinHandle")
+                        || log.contains("aborting (delayed) JoinHandle")
+                })
                 .count();
             if count == actors_aborted {
                 Ok(())

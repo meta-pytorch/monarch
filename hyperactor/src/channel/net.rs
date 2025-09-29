@@ -1127,7 +1127,7 @@ pub enum ServerError {
 }
 
 /// serve new connections that are accepted from the given listener.
-pub async fn serve<M: RemoteMessage, L: Listener + Send + Unpin + 'static>(
+pub fn serve<M: RemoteMessage, L: Listener + Send + Unpin + 'static>(
     listener: L,
     channel_addr: ChannelAddr,
     is_tls: bool,
@@ -1277,7 +1277,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                         break (
                             next,
                             Err::<(), anyhow::Error>(err.into())
-                                .context(format!("{log_id}: error serializing ack",)),
+                                .context(format!("{log_id}: serializing ack")),
                             false,
                         );
                     }
@@ -1316,7 +1316,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             break (
                                 next,
                                 Err::<(), anyhow::Error>(err.into())
-                                    .context(format!("{log_id}: error acking peer message: {v:?}")),
+                                    .context(format!("{log_id}: acking peer message: {v:?}")),
                                 false
                             );
                         }
@@ -1339,7 +1339,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "{log_id}: error reading into Frame with M = {}",
+                                    "{log_id}: reading into Frame with M = {}",
                                     type_name::<M>(),
                                 )
                             ),
@@ -1354,7 +1354,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "{log_id}: failed to de-frame message with M = {}",
+                                    "{log_id}: de-frame message with M = {}",
                                     type_name::<M>(),
                                 )
                             ),
@@ -1399,7 +1399,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     next.seq = seq+1;
                                 }
                                 Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: error relaying message to mspc channel")), false)
+                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: relaying message to mspc channel")), false)
                                 }
                             }
                         },
@@ -1407,7 +1407,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
-                                    "{log_id}: failed to deserialize message with M = {}",
+                                    "{log_id}: deserialize message with M = {}",
                                     type_name::<M>(),
                                 )
                             ),
@@ -1665,7 +1665,7 @@ impl SessionManager {
         let session_id = conn
             .handshake::<M>()
             .await
-            .context("error occoured when serving handshake")?;
+            .context("while serving handshake")?;
 
         let session_var = match self.sessions.entry(session_id) {
             Entry::Occupied(entry) => entry.get().clone(),
@@ -1864,7 +1864,7 @@ pub(crate) mod unix {
     }
 
     /// Listen and serve connections on this socket address.
-    pub async fn serve<M: RemoteMessage>(
+    pub fn serve<M: RemoteMessage>(
         addr: SocketAddr,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
         let caddr = ChannelAddr::Unix(addr.clone());
@@ -1885,7 +1885,7 @@ pub(crate) mod unix {
             .map_err(|err| ServerError::Resolve(caddr.clone(), err))?;
         let listener: UnixListener = UnixListener::from_std(std_listener)
             .map_err(|err| ServerError::Io(caddr.clone(), err))?;
-        super::serve(listener, local_addr.into(), false).await
+        super::serve(listener, local_addr.into(), false)
     }
 
     /// Wrapper around std-lib's unix::SocketAddr that lets us implement equality functions
@@ -2127,16 +2127,22 @@ pub(crate) mod tcp {
 
     /// Serve the given address. Supports both v4 and v6 address. If port 0 is provided as
     /// dynamic port will be resolved and is available on the returned ServerHandle.
-    pub async fn serve<M: RemoteMessage>(
+    pub fn serve<M: RemoteMessage>(
         addr: SocketAddr,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        let listener = TcpListener::bind(&addr)
-            .await
+        // Construct our own std TcpListener to avoid having to await, making this function
+        // non-async.
+        let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(addr), err))?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
+        let listener = TcpListener::from_std(std_listener)
+            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
         let local_addr = listener
             .local_addr()
             .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp(addr), err))?;
-        super::serve(listener, ChannelAddr::Tcp(local_addr), false).await
+        super::serve(listener, ChannelAddr::Tcp(local_addr), false)
     }
 }
 
@@ -2188,12 +2194,12 @@ pub(crate) mod meta {
         let ca_cert_path =
             std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV).unwrap_or(DEFAULT_SRV_CA_PATH.into());
         let ca_certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(ca_cert_path).context("Failed to open {ca_cert_path:?}")?,
+            File::open(ca_cert_path).context("open {ca_cert_path:?}")?,
         ))?;
         for cert in ca_certs {
             root_cert_store
                 .add(cert.into())
-                .context("Failed to add certificate to root store")?;
+                .context("adding certificate to root store")?;
         }
         Ok(root_cert_store)
     }
@@ -2202,16 +2208,15 @@ pub(crate) mod meta {
     pub(crate) fn tls_acceptor(enforce_client_tls: bool) -> Result<TlsAcceptor> {
         let server_cert_path = DEFAULT_SERVER_PEM_PATH;
         let certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(server_cert_path).context("failed to open {server_cert_path}")?,
+            File::open(server_cert_path).context("open {server_cert_path}")?,
         ))?
         .into_iter()
         .map(CertificateDer::from)
         .collect();
         // certs are good here
         let server_key_path = DEFAULT_SERVER_PEM_PATH;
-        let mut key_reader = BufReader::new(
-            File::open(server_key_path).context("failed to open {server_key_path}")?,
-        );
+        let mut key_reader =
+            BufReader::new(File::open(server_key_path).context("open {server_key_path}")?);
         let key = loop {
             break match rustls_pemfile::read_one(&mut key_reader)? {
                 Some(rustls_pemfile::Item::RSAKey(key)) => key,
@@ -2253,13 +2258,12 @@ pub(crate) mod meta {
             return Ok(None);
         };
         let certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(cert_path).context("failed to open {cert_path}")?,
+            File::open(cert_path).context("open {cert_path}")?,
         ))?
         .into_iter()
         .map(CertificateDer::from)
         .collect();
-        let mut key_reader =
-            BufReader::new(File::open(key_path).context("failed to open {key_path}")?);
+        let mut key_reader = BufReader::new(File::open(key_path).context("open {key_path}")?);
         let key = loop {
             break match rustls_pemfile::read_one(&mut key_reader)? {
                 Some(rustls_pemfile::Item::RSAKey(key)) => key,
@@ -2286,7 +2290,7 @@ pub(crate) mod meta {
         let config = if let Some((certs, key)) = result {
             config
                 .with_client_auth_cert(certs, key)
-                .context("Failed to load client certs")?
+                .context("load client certs")?
         } else {
             config.with_no_client_auth()
         };
@@ -2355,7 +2359,7 @@ pub(crate) mod meta {
 
     /// Serve the given address with hostname and port. If port 0 is provided,
     /// dynamic port will be resolved and is available on the returned ServerHandle.
-    pub async fn serve<M: RemoteMessage>(
+    pub fn serve<M: RemoteMessage>(
         hostname: Hostname,
         port: Port,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
@@ -2367,9 +2371,16 @@ pub(crate) mod meta {
             io::Error::other("no available socket addr"),
         ))?;
         let channel_addr = ChannelAddr::MetaTls(hostname.clone(), port);
-        let listener = TcpListener::bind(addr)
-            .await
+
+        // Go by way of a std listener to avoid making this function async.
+        let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
+        let listener = TcpListener::from_std(std_listener)
+            .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
+
         let local_addr = listener
             .local_addr()
             .map_err(|err| ServerError::Resolve(channel_addr, err))?;
@@ -2378,7 +2389,6 @@ pub(crate) mod meta {
             ChannelAddr::MetaTls(hostname, local_addr.port()),
             true,
         )
-        .await
     }
 }
 
@@ -2421,7 +2431,6 @@ mod tests {
 
         let (addr, mut rx) =
             net::unix::serve::<u64>(unix::SocketAddr::from_abstract_name(&unique_address)?)
-                .await
                 .unwrap();
 
         // It is important to keep Tx alive until all expected messages are
@@ -2469,7 +2478,7 @@ mod tests {
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
         tx.try_post(123, unused_return_channel()).unwrap();
 
-        let (_, mut rx) = net::unix::serve::<u64>(socket_addr).await.unwrap();
+        let (_, mut rx) = net::unix::serve::<u64>(socket_addr).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         tx.try_post(321, unused_return_channel()).unwrap();
@@ -2486,7 +2495,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_tcp_basic() {
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).await.unwrap();
+        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
         {
             let tx = dial::<u64>(addr.clone()).unwrap();
             tx.try_post(123, unused_return_channel()).unwrap();
@@ -2514,9 +2523,7 @@ mod tests {
         let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
-        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap())
-            .await
-            .unwrap();
+        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap()).unwrap();
 
         let tx = dial::<String>(addr.clone()).unwrap();
         // Default size is okay
@@ -2547,7 +2554,7 @@ mod tests {
         let _guard_delivery_timeout =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
 
-        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).await.unwrap();
+        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
         let net_tx = dial::<u64>(addr.clone()).unwrap();
         let (tx, rx) = oneshot::channel();
         net_tx.try_post(1, tx).unwrap();
@@ -2566,7 +2573,7 @@ mod tests {
             ChannelAddr::MetaTls(hostname, port) => (hostname, port),
             _ => ("".to_string(), 0),
         };
-        let (local_addr, mut rx) = net::meta::serve::<u64>(hostname, port).await.unwrap();
+        let (local_addr, mut rx) = net::meta::serve::<u64>(hostname, port).unwrap();
         {
             let tx = dial::<u64>(local_addr.clone()).unwrap();
             tx.try_post(123, unused_return_channel()).unwrap();
@@ -3614,7 +3621,7 @@ mod tests {
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.local_addr().unwrap();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
-            super::serve(listener, local_addr, false).await.unwrap();
+            super::serve(listener, local_addr, false).unwrap();
         let tx = NetTx::<u64>::new(link);
         let messages: Vec<_> = (0..10001).collect();
         let messages_clone = messages.clone();
@@ -3693,7 +3700,7 @@ mod tests {
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.local_addr().unwrap();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
-            super::serve(listener, local_addr, false).await.unwrap();
+            super::serve(listener, local_addr, false).unwrap();
         let tx = NetTx::<u64>::new(link);
         let messages: Vec<_> = (0..20001).collect();
         let messages_clone = messages.clone();
@@ -3750,7 +3757,7 @@ mod tests {
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).await.unwrap();
+        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).unwrap();
 
         // Test with 10 connections (senders), each sends 500K messages, 5M messages in total.
         let total_num_msgs = 500000;

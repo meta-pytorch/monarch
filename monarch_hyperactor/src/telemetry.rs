@@ -33,6 +33,13 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
     let file = record.getattr(py, "filename")?;
     let file: &str = file.extract(py)?;
     let level: i32 = record.getattr(py, "levelno")?.extract(py)?;
+
+    // Extract actor_id from the Python record object if available
+    let actor_id = record
+        .getattr(py, "actor_id")
+        .ok()
+        .and_then(|attr| attr.extract::<String>(py).ok());
+
     // Map level number to level name
     match level {
         40 | 50 => {
@@ -53,21 +60,36 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
                         file = file,
                         lineno = lineno,
                         stacktrace = traceback,
+                        actor_id = actor_id.as_deref(),
                         message
                     );
                 }
                 None => {
-                    tracing::error!(file = file, lineno = lineno, message);
+                    tracing::error!(
+                        file = file,
+                        lineno = lineno,
+                        actor_id = actor_id.as_deref(),
+                        message
+                    );
                 }
             }
         }
-        30 => tracing::warn!(target:"log_events", file = file, lineno = lineno, message),
-        20 => tracing::info!(target:"log_events", file = file, lineno = lineno, message),
-        10 => tracing::debug!(target:"log_events", file = file, lineno = lineno, message),
-        _ => tracing::info!(target:"log_events", file = file, lineno = lineno, message),
+        30 => {
+            tracing::warn!(target:"log_events", file = file, lineno = lineno, actor_id = actor_id.as_deref(), message)
+        }
+        20 => {
+            tracing::info!(target:"log_events", file = file, lineno = lineno, actor_id = actor_id.as_deref(), message)
+        }
+        10 => {
+            tracing::debug!(target:"log_events", file = file, lineno = lineno, actor_id = actor_id.as_deref(), message)
+        }
+        _ => {
+            tracing::info!(target:"log_events", file = file, lineno = lineno, actor_id = actor_id.as_deref(), message)
+        }
     }
     Ok(())
 }
+
 #[pyfunction]
 pub fn use_real_clock() -> PyResult<()> {
     swap_telemetry_clock(ClockKind::Real(RealClock));

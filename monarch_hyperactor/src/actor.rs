@@ -331,7 +331,7 @@ impl PythonMessage {
                                 .unwrap()
                         },
                         |x| {
-                            let point = cx.cast_info();
+                            let point = cx.cast_point();
                             py.import("monarch._src.actor.actor_mesh")
                                 .unwrap()
                                 .call_method1("Port", (x, mailbox, point.rank()))
@@ -509,19 +509,42 @@ impl Actor for PythonActor {
 
     async fn handle_undeliverable_message(
         &mut self,
-        cx: &Instance<Self>,
+        ins: &Instance<Self>,
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        assert_eq!(envelope.0.sender(), cx.self_id());
+        assert_eq!(envelope.0.sender(), ins.self_id());
+
+        let cx = Context::new(ins, envelope.0.headers().clone());
 
         let (envelope, handled) = Python::with_gil(|py| {
+            let py_cx = match self.instance {
+                Some(ref instance) => crate::context::PyContext::new(&cx, instance.clone_ref(py)),
+                None => {
+                    let py_instance: crate::context::PyInstance = ins.into();
+                    crate::context::PyContext::new(
+                        &cx,
+                        py_instance
+                            .into_py_any(py)?
+                            .downcast_bound(py)
+                            .map_err(PyErr::from)?
+                            .clone()
+                            .unbind(),
+                    )
+                }
+            }
+            .into_bound_py_any(py)?;
             let py_envelope = PythonUndeliverableMessageEnvelope {
                 inner: Some(envelope),
             }
             .into_bound_py_any(py)?;
             let handled = self
                 .actor
-                .call_method(py, "_handle_undeliverable_message", (&py_envelope,), None)
+                .call_method(
+                    py,
+                    "_handle_undeliverable_message",
+                    (&py_cx, &py_envelope),
+                    None,
+                )
                 .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?
                 .extract::<bool>(py)?;
             Ok::<_, anyhow::Error>((
@@ -536,7 +559,7 @@ impl Actor for PythonActor {
         })?;
 
         if !handled {
-            hyperactor::actor::handle_undeliverable_message(cx, envelope)
+            hyperactor::actor::handle_undeliverable_message(ins, envelope)
         } else {
             Ok(())
         }
@@ -759,7 +782,7 @@ struct LocalPort {
     inner: Option<OncePortHandle<Result<PyObject, PyObject>>>,
 }
 
-fn to_py_error<T>(e: T) -> PyErr
+pub(crate) fn to_py_error<T>(e: T) -> PyErr
 where
     T: Error,
 {

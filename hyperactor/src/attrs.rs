@@ -10,7 +10,7 @@
 //!
 //! This module provides `Attrs`, a type-safe dictionary that can store heterogeneous values
 //! and serialize/deserialize them using serde. All stored values must implement
-//! `Serialize + DeserializeOwned` to ensure the entire dictionary can be serialized.
+//! `AttrValue` to ensure the entire dictionary can be serialized.
 //!
 //! Keys are automatically registered at compile time using the `declare_attrs!` macro and the
 //! inventory crate, eliminating the need for manual registry management.
@@ -65,13 +65,43 @@
 //!
 //! assert_eq!(deserialized.get(TIMEOUT), Some(&Duration::from_secs(30)));
 //! ```
+//!
+//! ## Meta attributes
+//!
+//! An attribute can be assigned a set of attribute values,
+//! associated with the attribute key. These are specified by
+//! @-annotations in the `declare_attrs!` macro:
+//!
+//! ```
+//! use std::time::Duration;
+//!
+//! use hyperactor::attrs::Attrs;
+//! use hyperactor::attrs::declare_attrs;
+//!
+//! declare_attrs! {
+//!   /// Is experimental?
+//!   pub attr EXPERIMENTAL: bool;
+//!
+//!   /// Request timeout
+//!   @meta(EXPERIMENTAL = true)
+//!   pub attr TIMEOUT: Duration;
+//! }
+//!
+//! assert!(TIMEOUT.attrs().get(EXPERIMENTAL).unwrap());
+//! ```
+//!
+//! Meta attributes can be used to provide more generic functionality
+//! on top of the basic attributes. For example, a library can use
+//! meta-attributes to specify the behavior of an attribute.
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::ops::Index;
 use std::ops::IndexMut;
+use std::sync::LazyLock;
 
+use chrono::DateTime;
+use chrono::Utc;
 use erased_serde::Deserializer as ErasedDeserializer;
 use erased_serde::Serialize as ErasedSerialize;
 use serde::Deserialize;
@@ -97,6 +127,14 @@ pub struct AttrKeyInfo {
     /// Deserializer function that deserializes directly from any deserializer
     pub deserialize_erased:
         fn(&mut dyn ErasedDeserializer) -> Result<Box<dyn SerializableValue>, erased_serde::Error>,
+    /// Meta-attributes.
+    pub meta: &'static LazyLock<Attrs>,
+    /// Display an attribute value using AttrValue::display.
+    pub display: fn(&dyn SerializableValue) -> String,
+    /// Parse an attribute value using AttrValue::parse.
+    pub parse: fn(&str) -> Result<Box<dyn SerializableValue>, anyhow::Error>,
+    /// Default value for the attribute, if any.
+    pub default: Option<&'static dyn SerializableValue>,
 }
 
 inventory::collect!(AttrKeyInfo);
@@ -109,25 +147,20 @@ inventory::collect!(AttrKeyInfo);
 pub struct Key<T: 'static> {
     name: &'static str,
     default_value: Option<&'static T>,
-    _phantom: PhantomData<T>,
+    attrs: &'static LazyLock<Attrs>,
 }
 
 impl<T: Named + 'static> Key<T> {
     /// Creates a new key with the given name.
-    pub const fn new(name: &'static str) -> Self {
+    pub const fn new(
+        name: &'static str,
+        default_value: Option<&'static T>,
+        attrs: &'static LazyLock<Attrs>,
+    ) -> Self {
         Self {
             name,
-            default_value: None,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Creates a new key with the given name and default value reference.
-    pub const fn with_default(name: &'static str, default_value: &'static T) -> Self {
-        Self {
-            name,
-            default_value: Some(default_value),
-            _phantom: PhantomData,
+            default_value,
+            attrs,
         }
     }
 
@@ -150,6 +183,11 @@ impl<T: Named + 'static> Key<T> {
     pub fn typehash(&self) -> u64 {
         T::typehash()
     }
+
+    /// The attributes associated with this key.
+    pub fn attrs(&self) -> &'static LazyLock<Attrs> {
+        self.attrs
+    }
 }
 
 impl<T: 'static> Clone for Key<T> {
@@ -162,7 +200,7 @@ impl<T: 'static> Clone for Key<T> {
 impl<T: 'static> Copy for Key<T> {}
 
 // Enable attr[key] syntax.
-impl<T: Send + Sync + Serialize + DeserializeOwned + Named + 'static> Index<Key<T>> for Attrs {
+impl<T: AttrValue> Index<Key<T>> for Attrs {
     type Output = T;
 
     fn index(&self, key: Key<T>) -> &Self::Output {
@@ -172,11 +210,110 @@ impl<T: Send + Sync + Serialize + DeserializeOwned + Named + 'static> Index<Key<
 
 // TODO: separately type keys with defaults, so that we can statically enforce that indexmut is only
 // called on keys with defaults.
-impl<T: Send + Sync + Serialize + DeserializeOwned + Named + Clone + 'static> IndexMut<Key<T>>
-    for Attrs
-{
+impl<T: AttrValue> IndexMut<Key<T>> for Attrs {
     fn index_mut(&mut self, key: Key<T>) -> &mut Self::Output {
         self.get_mut(key).unwrap()
+    }
+}
+
+/// This trait must be implemented by all attribute values. In addition to enforcing
+/// the supertrait `Named + Sized + Serialize + DeserializeOwned + Send + Sync + Clone`,
+/// `AttrValue` requires that the type be representable in "display" format.
+///
+/// `AttrValue` includes its own `display` and `parse` so that behavior can be tailored
+/// for attribute purposes specifically, allowing common types like `Duration` to be used
+/// without modification.
+///
+/// This crate includes a derive macro for AttrValue, which uses the type's
+/// `std::string::ToString` for display, and `std::str::FromStr` for parsing.
+pub trait AttrValue:
+    Named + Sized + Serialize + DeserializeOwned + Send + Sync + Clone + 'static
+{
+    /// Display the value, typically using [`std::fmt::Display`].
+    /// This is called to show the output in human-readable form.
+    fn display(&self) -> String;
+
+    /// Parse a value from a string, typically using [`std::str::FromStr`].
+    fn parse(value: &str) -> Result<Self, anyhow::Error>;
+}
+
+/// Macro to implement AttrValue for types that implement ToString and FromStr.
+///
+/// This macro provides a convenient way to implement AttrValue for types that already
+/// have string conversion capabilities through the standard ToString and FromStr traits.
+///
+/// # Usage
+///
+/// ```ignore
+/// impl_attrvalue!(i32, u64, f64);
+/// ```
+///
+/// This will generate AttrValue implementations for i32, u64, and f64 that use
+/// their ToString and FromStr implementations for display and parsing.
+#[macro_export]
+macro_rules! impl_attrvalue {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl $crate::attrs::AttrValue for $ty {
+                fn display(&self) -> String {
+                    self.to_string()
+                }
+
+                fn parse(value: &str) -> Result<Self, anyhow::Error> {
+                    value.parse().map_err(|e| anyhow::anyhow!("failed to parse {}: {}", stringify!($ty), e))
+                }
+            }
+        )+
+    };
+}
+
+// pub use impl_attrvalue;
+
+// Implement AttrValue for common standard library types
+impl_attrvalue!(
+    bool,
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
+    isize,
+    u8,
+    u16,
+    u32,
+    u64,
+    u128,
+    usize,
+    f32,
+    f64,
+    String,
+    std::net::IpAddr,
+    std::net::Ipv4Addr,
+    std::net::Ipv6Addr,
+    crate::ActorId,
+    ndslice::Shape,
+    ndslice::Point,
+);
+
+impl AttrValue for std::time::Duration {
+    fn display(&self) -> String {
+        humantime::format_duration(*self).to_string()
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        Ok(humantime::parse_duration(value)?)
+    }
+}
+
+impl AttrValue for std::time::SystemTime {
+    fn display(&self) -> String {
+        let datetime: DateTime<Utc> = self.clone().into();
+        datetime.to_rfc3339()
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        let datetime = DateTime::parse_from_rfc3339(value)?;
+        Ok(datetime.into())
     }
 }
 
@@ -191,9 +328,11 @@ pub trait SerializableValue: Send + Sync {
     fn as_erased_serialize(&self) -> &dyn ErasedSerialize;
     /// Clone the underlying value, retaining dyn compatibility.
     fn cloned(&self) -> Box<dyn SerializableValue>;
+    /// Display the value
+    fn display(&self) -> String;
 }
 
-impl<T: Serialize + Send + Sync + Clone + 'static> SerializableValue for T {
+impl<T: AttrValue> SerializableValue for T {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -209,13 +348,17 @@ impl<T: Serialize + Send + Sync + Clone + 'static> SerializableValue for T {
     fn cloned(&self) -> Box<dyn SerializableValue> {
         Box::new(self.clone())
     }
+
+    fn display(&self) -> String {
+        self.display()
+    }
 }
 
 /// A heterogeneous, strongly-typed attribute dictionary with serialization support.
 ///
 /// This dictionary stores key-value pairs where:
 /// - Keys are type-safe and must be predefined with their associated types
-/// - Values must implement `Send + Sync + Serialize + DeserializeOwned + Named + 'static`
+/// - Values must implement [`AttrValue`]
 /// - The entire dictionary can be serialized to/from JSON automatically
 ///
 /// # Type Safety
@@ -241,20 +384,11 @@ impl Attrs {
     }
 
     /// Set a value for the given key.
-    pub fn set<T: Send + Sync + Serialize + DeserializeOwned + Named + Clone + 'static>(
-        &mut self,
-        key: Key<T>,
-        value: T,
-    ) {
+    pub fn set<T: AttrValue>(&mut self, key: Key<T>, value: T) {
         self.values.insert(key.name, Box::new(value));
     }
 
-    fn maybe_set_from_default<
-        T: Send + Sync + Serialize + DeserializeOwned + Named + Clone + 'static,
-    >(
-        &mut self,
-        key: Key<T>,
-    ) {
+    fn maybe_set_from_default<T: AttrValue>(&mut self, key: Key<T>) {
         if self.contains_key(key) {
             return;
         }
@@ -264,10 +398,7 @@ impl Attrs {
 
     /// Get a value for the given key, returning None if not present. If the key has a default value,
     /// that is returned instead.
-    pub fn get<T: Send + Sync + Serialize + DeserializeOwned + Named + 'static>(
-        &self,
-        key: Key<T>,
-    ) -> Option<&T> {
+    pub fn get<T: AttrValue>(&self, key: Key<T>) -> Option<&T> {
         self.values
             .get(key.name)
             .and_then(|value| value.as_any().downcast_ref::<T>())
@@ -276,10 +407,7 @@ impl Attrs {
 
     /// Get a mutable reference to a value for the given key. If the key has a default value, it is
     /// first set, and then returned as a mutable reference.
-    pub fn get_mut<T: Send + Sync + Serialize + DeserializeOwned + Named + Clone + 'static>(
-        &mut self,
-        key: Key<T>,
-    ) -> Option<&mut T> {
+    pub fn get_mut<T: AttrValue>(&mut self, key: Key<T>) -> Option<&mut T> {
         self.maybe_set_from_default(key);
         self.values
             .get_mut(key.name)
@@ -287,19 +415,13 @@ impl Attrs {
     }
 
     /// Remove a value for the given key, returning it if present.
-    pub fn remove<T: Send + Sync + Serialize + DeserializeOwned + Named + 'static>(
-        &mut self,
-        key: Key<T>,
-    ) -> bool {
+    pub fn remove<T: AttrValue>(&mut self, key: Key<T>) -> bool {
         // TODO: return value (this is tricky because of the type erasure)
         self.values.remove(key.name).is_some()
     }
 
     /// Checks if the given key exists in the dictionary.
-    pub fn contains_key<T: Send + Sync + Serialize + DeserializeOwned + Named + 'static>(
-        &self,
-        key: Key<T>,
-    ) -> bool {
+    pub fn contains_key<T: AttrValue>(&self, key: Key<T>) -> bool {
         self.values.contains_key(key.name)
     }
 
@@ -320,7 +442,7 @@ impl Attrs {
 
     // Internal methods for config guard support
     /// Take a value by key name, returning the boxed value if present
-    pub(crate) fn take_value<T: 'static>(
+    pub(crate) fn remove_value<T: 'static>(
         &mut self,
         key: Key<T>,
     ) -> Option<Box<dyn SerializableValue>> {
@@ -328,7 +450,7 @@ impl Attrs {
     }
 
     /// Restore a value by key name
-    pub(crate) fn restore_value<T: 'static>(
+    pub(crate) fn insert_value<T: 'static>(
         &mut self,
         key: Key<T>,
         value: Box<dyn SerializableValue>,
@@ -336,9 +458,13 @@ impl Attrs {
         self.values.insert(key.name, value);
     }
 
-    /// Remove a value by key name
-    pub(crate) fn remove_value<T: 'static>(&mut self, key: Key<T>) -> bool {
-        self.values.remove(key.name).is_some()
+    /// Restore a value by key name
+    pub(crate) fn insert_value_by_name_unchecked(
+        &mut self,
+        name: &'static str,
+        value: Box<dyn SerializableValue>,
+    ) {
+        self.values.insert(name, value);
     }
 }
 
@@ -349,6 +475,21 @@ impl Clone for Attrs {
             values.insert(*key, value.cloned());
         }
         Self { values }
+    }
+}
+
+impl std::fmt::Display for Attrs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut first = true;
+        for (key, value) in &self.values {
+            if first {
+                first = false;
+            } else {
+                write!(f, ",")?;
+            }
+            write!(f, "{}={}", key, value.display())?
+        }
+        Ok(())
     }
 }
 
@@ -503,6 +644,19 @@ macro_rules! const_ascii_lowercase {
     }};
 }
 
+/// Macro to check check that a trait is implemented, generating a
+/// nice error message if it isn't.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! assert_impl {
+    ($ty:ty, $trait:path) => {
+        const _: fn() = || {
+            fn check<T: $trait>() {}
+            check::<$ty>();
+        };
+    };
+}
+
 /// Declares attribute keys using a lazy_static! style syntax.
 ///
 /// # Syntax
@@ -547,31 +701,51 @@ macro_rules! const_ascii_lowercase {
 /// ```
 #[macro_export]
 macro_rules! declare_attrs {
-    // Handle multiple attribute keys with optional default values
+    // Handle multiple attribute keys with optional default values and optional meta attributes
     ($(
         $(#[$attr:meta])*
+        $(@meta($($meta_key:ident = $meta_value:expr),* $(,)?))*
         $vis:vis attr $name:ident: $type:ty $(= $default:expr)?;
     )*) => {
         $(
-            $crate::declare_attrs! { @single $(#[$attr])* ; $vis attr $name: $type $(= $default)?; }
+            $crate::declare_attrs! {
+                @single
+                $(@meta($($meta_key = $meta_value),*))*
+                $(#[$attr])* ;
+                $vis attr $name: $type $(= $default)?;
+            }
         )*
     };
 
-    // Handle single attribute key with default value
-    (@single $(#[$attr:meta])* ; $vis:vis attr $name:ident: $type:ty = $default:expr;) => {
+    // Handle single attribute key with default value and meta attributes
+    (@single $(@meta($($meta_key:ident = $meta_value:expr),* $(,)?))* $(#[$attr:meta])* ; $vis:vis attr $name:ident: $type:ty = $default:expr;) => {
+        $crate::assert_impl!($type, $crate::attrs::AttrValue);
+
         // Create a static default value
         $crate::paste! {
             static [<$name _DEFAULT>]: $type = $default;
+            static [<$name _META_ATTRS>]: std::sync::LazyLock<$crate::attrs::Attrs> =
+                std::sync::LazyLock::new(|| {
+                    #[allow(unused_mut)]
+                    let mut attrs = $crate::attrs::Attrs::new();
+                    $($(
+                        attrs.set($meta_key, $meta_value);
+                    )*)*
+                    attrs
+                });
         }
 
         $(#[$attr])*
         $vis static $name: $crate::attrs::Key<$type> = {
+            $crate::assert_impl!($type, $crate::attrs::AttrValue);
+
             const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
             const LOWER_NAME: &str = $crate::const_ascii_lowercase!(FULL_NAME);
             $crate::paste! {
-                $crate::attrs::Key::with_default(
+                $crate::attrs::Key::new(
                     LOWER_NAME,
-                    &[<$name _DEFAULT>]
+                    Some(&[<$name _DEFAULT>]),
+                    $crate::paste! { &[<$name _META_ATTRS>] },
                 )
             }
         };
@@ -588,18 +762,45 @@ macro_rules! declare_attrs {
                     let value: $type = erased_serde::deserialize(deserializer)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
+                meta: $crate::paste! { &[<$name _META_ATTRS>] },
+                display: |value: &dyn $crate::attrs::SerializableValue| {
+                    let value = value.as_any().downcast_ref::<$type>().unwrap();
+                    $crate::attrs::AttrValue::display(value)
+                },
+                parse: |value: &str| {
+                    let value: $type = $crate::attrs::AttrValue::parse(value)?;
+                    Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
+                },
+                default: Some($crate::paste! { &[<$name _DEFAULT>] }),
             }
         }
     };
 
-    // Handle single attribute key without default value
-    (@single $(#[$attr:meta])* ; $vis:vis attr $name:ident: $type:ty;) => {
+    // Handle single attribute key without default value but with meta attributes
+    (@single $(@meta($($meta_key:ident = $meta_value:expr),* $(,)?))* $(#[$attr:meta])* ; $vis:vis attr $name:ident: $type:ty;) => {
+        $crate::assert_impl!($type, $crate::attrs::AttrValue);
+
+        $crate::paste! {
+            static [<$name _META_ATTRS>]: std::sync::LazyLock<$crate::attrs::Attrs> =
+            std::sync::LazyLock::new(|| {
+                #[allow(unused_mut)]
+                let mut attrs = $crate::attrs::Attrs::new();
+                $($(
+                    // Note: This assumes meta keys are already declared somewhere
+                    // The user needs to ensure the meta keys exist and are in scope
+                    attrs.set($meta_key, $meta_value);
+                )*)*
+                attrs
+            });
+        }
+
         $(#[$attr])*
         $vis static $name: $crate::attrs::Key<$type> = {
             const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
             const LOWER_NAME: &str = $crate::const_ascii_lowercase!(FULL_NAME);
-            $crate::attrs::Key::new(LOWER_NAME)
+            $crate::attrs::Key::new(LOWER_NAME, None, $crate::paste! { &[<$name _META_ATTRS>] })
         };
+
 
         // Register the key for serialization
         $crate::submit! {
@@ -613,6 +814,16 @@ macro_rules! declare_attrs {
                     let value: $type = erased_serde::deserialize(deserializer)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
+                meta: $crate::paste! { &[<$name _META_ATTRS>] },
+                display: |value: &dyn $crate::attrs::SerializableValue| {
+                    let value = value.as_any().downcast_ref::<$type>().unwrap();
+                    $crate::attrs::AttrValue::display(value)
+                },
+                parse: |value: &str| {
+                    let value: $type = $crate::attrs::AttrValue::parse(value)?;
+                    Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
+                },
+                default: None,
             }
         }
     };
@@ -629,7 +840,8 @@ mod tests {
     declare_attrs! {
         attr TEST_TIMEOUT: Duration;
         attr TEST_COUNT: u32;
-        attr TEST_NAME: String;
+        @meta(TEST_COUNT = 42)
+        pub attr TEST_NAME: String;
     }
 
     #[test]
@@ -653,6 +865,9 @@ mod tests {
         // Test len
         assert_eq!(attrs.len(), 3);
         assert!(!attrs.is_empty());
+
+        // Meta attribute:
+        assert_eq!(TEST_NAME.attrs().get(TEST_COUNT).unwrap(), &42u32);
     }
 
     #[test]

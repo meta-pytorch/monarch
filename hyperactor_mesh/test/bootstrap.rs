@@ -10,11 +10,15 @@
 /// simply invoking [`hyperactor_mesh::bootstrap_or_die`].
 #[tokio::main]
 async fn main() {
-    // Logs are written to /tmp/$USER/monarch_log*.
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("failed to set subscriber");
+    // This causes folly to intercept SIGTERM. When run in
+    // '@fbcode//mode/dev-nosan' that translates into SEGFAULTs.
+    hyperactor::initialize_with_current_runtime();
+    // SAFETY: Does not derefrence pointers or rely on undefined
+    // memory. No other threads are likely to be modifying it
+    // concurrently.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+    }
 
     hyperactor_mesh::bootstrap_or_die().await;
 }

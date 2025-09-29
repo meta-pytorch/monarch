@@ -119,10 +119,8 @@ class RdmaController(Actor):
 
     @endpoint
     async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -> None:
-        if not _RdmaBuffer.rdma_supported():
-            raise RuntimeError(
-                "Cannot spawn _RdmaManager because RDMA is not supported on this machine"
-            )
+        # Note: RdmaController acts as coordinator and can run on any node
+        # The RDMA support check should happen on the target proc_mesh nodes, not on RdmaController's node
 
         if proc_mesh in self._managers:
             return

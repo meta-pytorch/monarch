@@ -51,10 +51,10 @@
 // RDMA requires frequent unsafe code blocks
 #![allow(clippy::undocumented_unsafe_blocks)]
 
-// Import our custom CUDA FFI module
-mod cuda_ping_pong_ffi;
-
 // Import the cuda-sys and rdmaxcel-sys crates
+// FFI bindings to CUDA RDMA kernels - merged inline
+use std::os::raw::c_int;
+
 use async_trait::async_trait;
 use clap::Arg;
 use clap::Command as ClapCommand;
@@ -83,6 +83,55 @@ use monarch_rdma::cu_check;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
+
+/// RDMA parameters structure for CUDA RDMA operations
+#[repr(C)]
+#[derive(Debug)]
+pub struct rdma_params_t {
+    pub cu_ptr: usize,                       // CUDA pointer
+    pub laddr: usize,                        // Local buffer address
+    pub lsize: usize,                        // Local buffer size
+    pub lkey: u32,                           // Local memory key
+    pub raddr: usize,                        // Remote buffer address
+    pub rsize: usize,                        // Remote buffer size
+    pub rkey: u32,                           // Remote memory key
+    pub qp_num: u32,                         // Queue pair number
+    pub rq_buf: *mut u8,                     // Receive queue buffer
+    pub rq_cnt: u32,                         // Receive queue count
+    pub sq_buf: *mut u8,                     // Send queue buffer
+    pub sq_cnt: u32,                         // Send queue count
+    pub qp_dbrec: *mut u32,                  // Queue pair doorbell record
+    pub send_cqe_buf: *mut std::ffi::c_void, // Send completion queue entry buffer
+    pub send_cqe_size: u32,                  // Send completion queue entry size
+    pub send_cqe_cnt: u32,                   // Send completion queue entry count
+    pub send_cqe_dbrec: *mut u32,            // Send completion queue doorbell record
+    pub recv_cqe_buf: *mut std::ffi::c_void, // Receive completion queue entry buffer
+    pub recv_cqe_size: u32,                  // Receive completion queue entry size
+    pub recv_cqe_cnt: u32,                   // Receive completion queue entry count
+    pub recv_cqe_dbrec: *mut u32,            // Receive completion queue doorbell record
+    pub qp_db: *mut std::ffi::c_void,        // Queue pair doorbell register
+}
+
+unsafe extern "C" {
+    pub unsafe fn launchPingPong(
+        params: *mut rdma_params_t,
+        iterations: c_int,
+        initial_length: c_int,
+        device_id: c_int,
+    ) -> c_int;
+}
+
+/// Safe wrapper for performing ping-pong test with RDMA parameters
+pub fn ping_pong(
+    params: &mut rdma_params_t,
+    iterations: i32,
+    initial_length: i32,
+    device_id: i32,
+) -> Result<(), i32> {
+    let result = unsafe { launchPingPong(params, iterations, initial_length, device_id) };
+
+    if result == 0 { Ok(()) } else { Err(result) }
+}
 
 // Constants for default values
 const DEFAULT_BUFFER_SIZE_MB: usize = 32; // `must be multiple of 2MB
@@ -426,7 +475,7 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
             let dv_send_cq = qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq;
             let dv_recv_cq = qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq;
-            let mut params = cuda_ping_pong_ffi::rdma_params_t {
+            let mut params = rdma_params_t {
                 cu_ptr: self.cu_ptr,
                 laddr: local_buffer.addr,
                 lsize: local_buffer.size,
@@ -450,7 +499,7 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
                 recv_cqe_dbrec: (*dv_recv_cq).dbrec,
                 qp_db: (*dv_qp).bf.reg,
             };
-            match cuda_ping_pong_ffi::ping_pong(
+            match ping_pong(
                 &mut params,
                 iters,
                 initial_length,
@@ -656,12 +705,12 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // Create RDMA manager for the first device
     let device_1_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = device_1_proc_mesh
-        .spawn("device_1_rdma_manager", &device_1_ibv_config)
+        .spawn("device_1_rdma_manager", &Some(device_1_ibv_config))
         .await?;
 
     // Create RDMA manager for the second device
     let device_2_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = device_2_proc_mesh
-        .spawn("device_2_rdma_manager", &device_2_ibv_config)
+        .spawn("device_2_rdma_manager", &Some(device_2_ibv_config))
         .await?;
 
     // Get the RDMA manager actor references

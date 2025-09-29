@@ -157,6 +157,8 @@ class Shape:
     def unity() -> "Shape": ...
     @property
     def extent(self) -> "Extent": ...
+    @property
+    def region(self) -> "Region": ...
 
 # TODO: should be an abc.Mapping similar to Point so it can be used a dictionary.
 class Extent(collections.abc.Mapping):
@@ -190,3 +192,26 @@ class Point(collections.abc.Mapping):
     @property
     def extent(self) -> "Extent": ...
     def __iter__(self) -> "Iterator[str]": ...
+
+class Region:
+    """
+    `Region` describes a region of a possibly-larger space of ranks, organized into
+    a hyper rectangle.
+
+    Internally, region consist of a set of labels and a [`Slice`], as it allows for
+    a compact but useful representation of the ranks. However, this representation
+    may change in the future.
+    """
+    def __init__(self, labels: Sequence[str], slice: Slice) -> None: ...
+    def as_shape(self) -> "Shape": ...
+    def labels(self) -> List[str]:
+        """
+        The labels for each dimension of the region.
+        """
+        ...
+
+    def slice(self) -> Slice:
+        """
+        The slice of the region.
+        """
+        ...

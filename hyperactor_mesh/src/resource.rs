@@ -16,13 +16,27 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
+use hyperactor::RemoteMessage;
+use hyperactor::message::Bind;
+use hyperactor::message::Bindings;
+use hyperactor::message::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::v1::Name;
 
 /// The current lifecycle status of a resource.
-#[derive(Debug, Serialize, Deserialize, Named, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq
+)]
 pub enum Status {
     /// The resource does not exist.
     NotExist,
@@ -39,7 +53,7 @@ pub enum Status {
 }
 
 /// The state of a resource.
-#[derive(Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct State<S> {
     /// The name of the resource.
     pub name: Name,
@@ -69,4 +83,37 @@ pub struct GetState<S> {
     /// A reply containing the state.
     #[reply]
     pub reply: PortRef<State<S>>,
+}
+
+// Cannot derive Bind and Unbind for this generic, implement manually.
+impl<S> Unbind for GetState<S>
+where
+    S: RemoteMessage,
+    S: Unbind,
+{
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.reply.unbind(bindings)
+    }
+}
+
+impl<S> Bind for GetState<S>
+where
+    S: RemoteMessage,
+    S: Bind,
+{
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.reply.bind(bindings)
+    }
+}
+
+impl<S> Clone for GetState<S>
+where
+    S: RemoteMessage,
+{
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            reply: self.reply.clone(),
+        }
+    }
 }

@@ -48,14 +48,12 @@ use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
 use hyperactor::ActorId;
-use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
-use hyperactor::cap::CanOpenPort;
-use hyperactor::cap::CanSend;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::context;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::open_once_port;
@@ -96,7 +94,7 @@ pub struct OwnedReadHalf {
 
 /// Wrap a `PortRef<IoMsg>` as a `AsyncWrite`.
 #[pin_project(PinnedDrop)]
-pub struct OwnedWriteHalf<C: CanSend> {
+pub struct OwnedWriteHalf<C: context::Actor> {
     peer: ActorId,
     #[pin]
     caps: C,
@@ -108,14 +106,14 @@ pub struct OwnedWriteHalf<C: CanSend> {
 
 /// A duplex bytestream connection between two actors.  Can generally be used like a `TcpStream`.
 #[pin_project]
-pub struct ActorConnection<C: CanSend> {
+pub struct ActorConnection<C: context::Actor> {
     #[pin]
     reader: OwnedReadHalf,
     #[pin]
     writer: OwnedWriteHalf<C>,
 }
 
-impl<C: CanSend> ActorConnection<C> {
+impl<C: context::Actor> ActorConnection<C> {
     pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf<C>) {
         (self.reader, self.writer)
     }
@@ -140,7 +138,7 @@ impl OwnedReadHalf {
         &self.peer
     }
 
-    pub fn reunited<C: CanSend>(self, other: OwnedWriteHalf<C>) -> ActorConnection<C> {
+    pub fn reunited<C: context::Actor>(self, other: OwnedWriteHalf<C>) -> ActorConnection<C> {
         ActorConnection {
             reader: self,
             writer: other,
@@ -148,7 +146,7 @@ impl OwnedReadHalf {
     }
 }
 
-impl<C: CanSend> OwnedWriteHalf<C> {
+impl<C: context::Actor> OwnedWriteHalf<C> {
     fn new(peer: ActorId, caps: C, port: PortRef<Io>) -> Self {
         Self {
             peer,
@@ -171,7 +169,7 @@ impl<C: CanSend> OwnedWriteHalf<C> {
 }
 
 #[pinned_drop]
-impl<C: CanSend> PinnedDrop for OwnedWriteHalf<C> {
+impl<C: context::Actor> PinnedDrop for OwnedWriteHalf<C> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
         if !*this.shutdown {
@@ -180,7 +178,7 @@ impl<C: CanSend> PinnedDrop for OwnedWriteHalf<C> {
     }
 }
 
-impl<C: CanSend> AsyncRead for ActorConnection<C> {
+impl<C: context::Actor> AsyncRead for ActorConnection<C> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -192,7 +190,7 @@ impl<C: CanSend> AsyncRead for ActorConnection<C> {
     }
 }
 
-impl<C: CanSend> AsyncWrite for ActorConnection<C> {
+impl<C: context::Actor> AsyncWrite for ActorConnection<C> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -255,7 +253,7 @@ impl AsyncRead for OwnedReadHalf {
     }
 }
 
-impl<C: CanSend> AsyncWrite for OwnedWriteHalf<C> {
+impl<C: context::Actor> AsyncWrite for OwnedWriteHalf<C> {
     fn poll_write(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -301,7 +299,7 @@ pub struct ConnectionCompleter<C> {
     port: OncePortReceiver<Accept>,
 }
 
-impl<C: CanOpenPort + CanSend> ConnectionCompleter<C> {
+impl<C: context::Actor> ConnectionCompleter<C> {
     /// Wait for the server to accept the connection and return the streams that can be used to communicate
     /// with the server.
     pub async fn complete(self) -> Result<ActorConnection<C>> {
@@ -328,10 +326,7 @@ pub struct Connect {
 impl Connect {
     /// Allocate a new `Connect` message and return the associated `ConnectionCompleter` that can be used
     /// to finish setting up the connection.
-    pub fn allocate<C: CanOpenPort + CanSend>(
-        id: ActorId,
-        caps: C,
-    ) -> (Self, ConnectionCompleter<C>) {
+    pub fn allocate<C: context::Actor>(id: ActorId, caps: C) -> (Self, ConnectionCompleter<C>) {
         let (conn_tx, conn_rx) = open_port::<Io>(&caps);
         let (return_tx, return_rx) = open_once_port::<Accept>(&caps);
         (
@@ -375,7 +370,7 @@ impl Unbind for Connect {
 
 /// Helper used by `Handler<Connect>`s to accept a connection initiated by a `Connect` message and
 /// return `AsyncRead` and `AsyncWrite` streams that can be used to communicate with the other side.
-pub async fn accept<C: CanOpenPort + CanSend>(
+pub async fn accept<C: context::Actor>(
     caps: C,
     self_id: ActorId,
     message: Connect,
@@ -392,18 +387,6 @@ pub async fn accept<C: CanOpenPort + CanSend>(
         reader: OwnedReadHalf::new(message.id.clone(), rx),
         writer: OwnedWriteHalf::new(message.id, caps, message.conn),
     })
-}
-
-/// Helper used by clients to initiate a connection by sending a `Connect` message to the given port
-/// and awaiting an `Accept` response. Returns `AsyncRead` and `AsyncWrite` streams that can be used
-/// to communicate with the remote actor.
-pub async fn connect(
-    mailbox: &Mailbox,
-    port: PortRef<Connect>,
-) -> Result<ActorConnection<Mailbox>> {
-    let (connect, completer) = Connect::allocate(mailbox.actor_id().clone(), mailbox.clone());
-    port.send(mailbox, connect)?;
-    completer.complete().await
 }
 
 #[cfg(test)]
@@ -442,9 +425,11 @@ mod tests {
     #[tokio::test]
     async fn test_simple_connection() -> Result<()> {
         let proc = Proc::local();
-        let client = proc.attach("client")?;
+        let (client, _client_handle) = proc.instance("client")?;
+        let (connect, completer) = Connect::allocate(client.self_id().clone(), client);
         let actor = proc.spawn::<EchoActor>("actor", ()).await?;
-        let (mut rd, mut wr) = connect(&client, actor.port().bind()).await?.into_split();
+        actor.send(connect)?;
+        let (mut rd, mut wr) = completer.complete().await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];
         try_join!(
             async move {
@@ -465,10 +450,11 @@ mod tests {
     #[tokio::test]
     async fn test_connection_close_on_drop() -> Result<()> {
         let proc = Proc::local();
-        let client = proc.attach("client")?;
+        let (client, _client_handle) = proc.instance("client")?;
 
-        let (connect, completer) = Connect::allocate(client.actor_id().clone(), client.clone());
-        let (mut rd, _) = accept(&client, client.actor_id().clone(), connect)
+        let (connect, completer) =
+            Connect::allocate(client.self_id().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_id().clone(), connect)
             .await?
             .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
@@ -491,10 +477,11 @@ mod tests {
     #[tokio::test]
     async fn test_no_eof_on_drop_after_shutdown() -> Result<()> {
         let proc = Proc::local();
-        let client = proc.attach("client")?;
+        let (client, _client_handle) = proc.instance("client")?;
 
-        let (connect, completer) = Connect::allocate(client.actor_id().clone(), client.clone());
-        let (mut rd, _) = accept(&client, client.actor_id().clone(), connect)
+        let (connect, completer) =
+            Connect::allocate(client.self_id().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_id().clone(), connect)
             .await?
             .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();

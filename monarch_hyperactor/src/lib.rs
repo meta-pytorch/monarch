@@ -31,6 +31,7 @@ pub mod selection;
 pub mod shape;
 pub mod supervision;
 pub mod telemetry;
+pub mod v1;
 pub mod value_mesh;
 
 #[cfg(fbcode_build)]

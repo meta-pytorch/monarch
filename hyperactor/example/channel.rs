@@ -65,9 +65,7 @@ async fn client(
     let server_tx = channel::dial(server_addr)?;
 
     let (client_addr, mut client_rx) =
-        channel::serve::<Message>(ChannelAddr::any(server_tx.addr().transport().clone()))
-            .await
-            .unwrap();
+        channel::serve::<Message>(ChannelAddr::any(server_tx.addr().transport().clone())).unwrap();
 
     server_tx.post(Message::Hello(client_addr));
 
@@ -166,9 +164,7 @@ async fn main() -> Result<(), anyhow::Error> {
     match args.command {
         Some(Commands::Server) => {
             let (server_addr, server_rx) =
-                channel::serve::<Message>(ChannelAddr::any(args.transport.clone()))
-                    .await
-                    .unwrap();
+                channel::serve::<Message>(ChannelAddr::any(args.transport.clone())).unwrap();
             eprintln!("server listening on {}", server_addr);
             server(server_rx).await?;
         }
@@ -180,9 +176,7 @@ async fn main() -> Result<(), anyhow::Error> {
         // No command: run a self-contained benchmark.
         None => {
             let (server_addr, server_rx) =
-                channel::serve::<Message>(ChannelAddr::any(args.transport.clone()))
-                    .await
-                    .unwrap();
+                channel::serve::<Message>(ChannelAddr::any(args.transport.clone())).unwrap();
             let _server_handle = tokio::spawn(server(server_rx));
             let client_handle = tokio::spawn(client(server_addr, args.message_size, args.num_iter));
 

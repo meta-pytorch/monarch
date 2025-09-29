@@ -41,8 +41,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.selection import Selection
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._src.actor.actor_mesh import Instance
 
 S = TypeVar("S")
 U = TypeVar("U")
@@ -117,7 +116,7 @@ def _python_task_test(
 @_python_task_test
 async def test_accumulator() -> None:
     proc_mesh = await allocate()
-    mailbox: Mailbox = proc_mesh.client
+    mailbox: Mailbox = Instance._as_py(proc_mesh.client)._mailbox
 
     def my_accumulate(state: str, update: int) -> str:
         return f"{state}+{update}"
@@ -182,7 +181,9 @@ async def test_reducer() -> None:
 
     accumulator = Accumulator("", my_accumulate, my_reduce)
     receiver: PortReceiver
-    handle, receiver = proc_mesh.client.open_accum_port(accumulator)
+    handle, receiver = Instance._as_py(proc_mesh.client)._mailbox.open_accum_port(
+        accumulator
+    )
     port_ref = handle.bind()
 
     actor_mesh.cast(

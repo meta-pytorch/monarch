@@ -170,7 +170,7 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
 
         proc_mesh = ProcMesh.from_alloc(alloc, setup=setup_multiple_env_vars)
         try:
-            actor = await proc_mesh.spawn("env_check", EnvCheckActor)
+            actor = proc_mesh.spawn("env_check", EnvCheckActor)
 
             for name, expected_value in env_vars.items():
                 actual_value = await actor.get_env_var.call_one(name)
@@ -197,7 +197,7 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
         proc_mesh = ProcMesh.from_alloc(alloc, setup=setup_with_rank)
 
         try:
-            actor = await proc_mesh.spawn("env_check", EnvCheckActor)
+            actor = proc_mesh.spawn("env_check", EnvCheckActor)
 
             rank_info = await actor.get_env_var.call_one(context_var_name)
 
@@ -318,10 +318,10 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             )
             alloc = allocator.allocate(spec)
             proc_mesh = ProcMesh.from_alloc(alloc)
-            actor = await proc_mesh.spawn("test_actor", TestActor)
+            actor = proc_mesh.spawn("test_actor", TestActor)
 
             values = await actor.compute_world_size.call(
-                master_addr="0.0.0.0",
+                master_addr="localhost",
                 master_port=get_free_port(),
             )
 
@@ -340,7 +340,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # XXX - it is not clear why this trying to use
             # async code in a sync context.
             with fake_sync_state():
-                actor = proc_mesh.spawn("test_actor", TestActor).get()
+                actor = proc_mesh.spawn("test_actor", TestActor)
                 proc_mesh.stop().get()
             with self.assertRaises(
                 RuntimeError, msg="`ProcMesh` has already been stopped"
@@ -385,11 +385,11 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             )
             spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
             proc_mesh = ProcMesh.from_alloc(allocator.allocate(spec))
-            actor_mesh = await proc_mesh.spawn("actor", FailInitActor)
+            actor_mesh = proc_mesh.spawn("actor", FailInitActor)
 
             with self.assertRaisesRegex(
                 Exception,
-                r"(?s)fail on init",
+                r"(?s)fail on init(?s)",
             ):
                 await actor_mesh.dummy.call()
 
@@ -404,7 +404,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             )
             alloc = allocator.allocate(spec)
             proc_mesh = ProcMesh.from_alloc(alloc)
-            actor = await proc_mesh.spawn("test_actor", TestActor)
+            actor = proc_mesh.spawn("test_actor", TestActor)
 
             await proc_mesh.stop()
 
@@ -431,7 +431,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             proc_mesh = ProcMesh.from_alloc(alloc)
             with self.assertRaises(ValueError, msg="foo"):
                 async with proc_mesh:
-                    actor = await proc_mesh.spawn("test_actor", TestActor)
+                    actor = proc_mesh.spawn("test_actor", TestActor)
                     # Ensure that proc mesh is stopped when context manager exits.
                     raise ValueError("foo")
 
@@ -466,7 +466,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             proc_mesh = ProcMesh.from_alloc(alloc, setup=setup_env_vars)
             await proc_mesh.initialized
             try:
-                actor = await proc_mesh.spawn("env_check", EnvCheckActor)
+                actor = proc_mesh.spawn("env_check", EnvCheckActor)
 
                 env_var_values = await actor.get_env_var.call(test_var_name)
                 env_var_value = env_var_values.item(host=0, gpu=0)
@@ -494,7 +494,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # one closes the mesh and it cannot be used after that.
             async with proc_mesh:
                 async with proc_mesh:
-                    actor = await proc_mesh.spawn("test_actor", TestActor)
+                    actor = proc_mesh.spawn("test_actor", TestActor)
 
                 with self.assertRaises(
                     RuntimeError, msg="`ProcMesh` has already been stopped"
@@ -543,14 +543,14 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             proc_mesh_a = ProcMesh.from_alloc(allocator_a.allocate(spec_a))
             proc_mesh_b = ProcMesh.from_alloc(allocator_b.allocate(spec_b))
 
-            actor_a = await proc_mesh_a.spawn("actor_a", TestActor)
-            actor_b = await proc_mesh_b.spawn("actor_b", TestActor)
+            actor_a = proc_mesh_a.spawn("actor_a", TestActor)
+            actor_b = proc_mesh_b.spawn("actor_b", TestActor)
 
             results_a = await actor_a.compute_world_size.call(
-                master_addr="0.0.0.0", master_port=get_free_port()
+                master_addr="localhost", master_port=get_free_port()
             )
             results_b = await actor_b.compute_world_size.call(
-                master_addr="0.0.0.0", master_port=get_free_port()
+                master_addr="localhost", master_port=get_free_port()
             )
 
             self.assert_computed_world_size(results_a, 2)  # a is a 1x2 mesh
@@ -604,12 +604,12 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                     name="x",
                     num_hosts=1,
                     transport="tcp",
-                    hostnames=["0.0.0.0"],
+                    hostnames=["localhost"],
                 )
             ],
         )
         port = get_free_port()
-        with remote_process_allocator(addr=f"tcp!{get_sockaddr('0.0.0.0', port)}"):
+        with remote_process_allocator(addr=f"tcp!{get_sockaddr('localhost', port)}"):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
                 allocator = RemoteAllocator(
@@ -618,9 +618,9 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 )
                 alloc = allocator.allocate(AllocSpec(AllocConstraints(), host=1, gpu=4))
                 proc_mesh = ProcMesh.from_alloc(alloc)
-                actor = await proc_mesh.spawn("test_actor", TestActor)
+                actor = proc_mesh.spawn("test_actor", TestActor)
                 results = await actor.compute_world_size.call(
-                    master_addr="0.0.0.0", master_port=get_free_port()
+                    master_addr="localhost", master_port=get_free_port()
                 )
                 self.assert_computed_world_size(results, 4)  # 1x4 mesh
 
@@ -634,12 +634,12 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                     name="x",
                     num_hosts=1,
                     transport="tcp",
-                    hostnames=["0.0.0.0"],
+                    hostnames=["localhost"],
                 )
             ],
         )
         port = get_free_port()
-        with remote_process_allocator(addr=f"tcp!{get_sockaddr('0.0.0.0', port)}"):
+        with remote_process_allocator(addr=f"tcp!{get_sockaddr('localhost', port)}"):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
                 allocator = RemoteAllocator(
@@ -656,9 +656,9 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 proc_mesh = ProcMesh.from_alloc(alloc)
-                actor = await proc_mesh.spawn("test_actor", TestActor)
+                actor = proc_mesh.spawn("test_actor", TestActor)
                 results = await actor.compute_world_size.call(
-                    master_addr="0.0.0.0", master_port=get_free_port()
+                    master_addr="localhost", master_port=get_free_port()
                 )
                 self.assert_computed_world_size(results, 3)  # 1x3 mesh
 
@@ -712,7 +712,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
             # Generate aggregated log every 1 second.
             await proc_mesh.logging_option(True, 1)
-            actor = await proc_mesh.spawn("actor", TestActor)
+            actor = proc_mesh.spawn("actor", TestActor)
             # Run for 4 seconds, every second generates 5 logs, so we expect to see
             # 2 actors x 5 logs/actor/sec * 1 sec = 10 logs per aggregation.
             for _ in range(20):

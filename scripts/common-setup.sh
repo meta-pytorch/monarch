@@ -56,7 +56,51 @@ install_wheel_from_artifact() {
 # Setup and install dependencies for Tensor Engine
 setup_tensor_engine() {
     echo "Installing Tensor Engine dependencies..."
+    # Install the fmt library for C++ headers in pytorch.
+    conda install -y -c conda-forge fmt
     dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
+}
+
+# Install PyTorch with C++ development headers (libtorch) for Rust compilation
+setup_pytorch_with_headers() {
+    local gpu_arch_version=${1:-"12.6"}
+    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126"}
+
+    echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
+
+    # Extract CUDA version for libtorch URL (remove dots: "12.6" -> "126")
+    local cuda_version_short=$(echo "${gpu_arch_version}" | tr -d '.')
+    local libtorch_url="https://download.pytorch.org/libtorch/nightly/cu${cuda_version_short}/libtorch-cxx11-abi-shared-with-deps-latest.zip"
+
+    echo "Downloading libtorch from: ${libtorch_url}"
+    wget -q "${libtorch_url}"
+    unzip -q "libtorch-cxx11-abi-shared-with-deps-latest.zip"
+
+    # Set environment variables for libtorch
+    export LIBTORCH_ROOT="$PWD/libtorch"
+    export LD_LIBRARY_PATH="$LIBTORCH_ROOT/lib:${LD_LIBRARY_PATH:-}"
+    export CMAKE_PREFIX_PATH="$LIBTORCH_ROOT:${CMAKE_PREFIX_PATH:-}"
+
+    # Install PyTorch Python package using provided torch-spec
+    echo "Installing PyTorch Python package with: ${torch_spec}"
+    pip install ${torch_spec}
+
+    # Verify installation
+    echo "LibTorch C++ headers available at: $LIBTORCH_ROOT/include"
+    if [[ -d "$LIBTORCH_ROOT/include/torch/csrc/api/include/torch" ]]; then
+        echo "✓ PyTorch C++ API headers found"
+    else
+        echo "⚠ PyTorch C++ API headers not found at expected location"
+    fi
+
+    if [[ -d "$LIBTORCH_ROOT/include/c10/cuda" ]]; then
+        echo "✓ C10 CUDA headers found"
+    else
+        echo "⚠ C10 CUDA headers not found"
+    fi
+
+    echo "LibTorch libraries available at: $LIBTORCH_ROOT/lib"
+    ls -la "$LIBTORCH_ROOT/lib/lib"*.so | head -5 || echo "No .so files found"
 }
 
 # Common setup for build workflows (environment + system deps + rust)
@@ -67,6 +111,36 @@ setup_build_environment() {
     install_system_dependencies
     setup_rust_toolchain
     install_build_dependencies "${install_args}"
+}
+
+# Detect and configure CUDA environment for linking
+setup_cuda_environment() {
+    echo "Setting up CUDA environment..."
+
+    # Detect CUDA installation
+    DETECTED_CUDA_HOME=""
+    if command -v nvcc >/dev/null 2>&1; then
+        DETECTED_CUDA_HOME=$(dirname $(dirname $(which nvcc)))
+    elif [ -d "/usr/local/cuda" ]; then
+        DETECTED_CUDA_HOME="/usr/local/cuda"
+    fi
+
+    # Set CUDA_LIB_DIR (resolve symlinks if needed)
+    if [ -n "$DETECTED_CUDA_HOME" ] && [ -d "$DETECTED_CUDA_HOME/lib64" ]; then
+        export CUDA_LIB_DIR=$(readlink -f "$DETECTED_CUDA_HOME/lib64")
+    elif [ -n "$DETECTED_CUDA_HOME" ] && [ -d "$DETECTED_CUDA_HOME/lib" ]; then
+        export CUDA_LIB_DIR=$(readlink -f "$DETECTED_CUDA_HOME/lib")
+    else
+        export CUDA_LIB_DIR="/usr/local/cuda/lib64"
+    fi
+
+    # Configure library paths to fix CUDA linking issues
+    # Prioritize CUDA libraries over potentially incompatible system versions
+    export LIBRARY_PATH="$CUDA_LIB_DIR:/lib64:/usr/lib64:${LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="$CUDA_LIB_DIR:/lib64:/usr/lib64:${LD_LIBRARY_PATH:-}"
+    export RUSTFLAGS="-L native=$CUDA_LIB_DIR -L native=/lib64 -L native=/usr/lib64 ${RUSTFLAGS:-}"
+
+    echo "✓ CUDA environment configured (CUDA_LIB_DIR: $CUDA_LIB_DIR)"
 }
 
 # Common setup for test workflows (environment only)

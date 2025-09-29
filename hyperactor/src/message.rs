@@ -44,6 +44,7 @@ use crate::Named;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::actor::RemoteActor;
+use crate::context;
 use crate::data::Serialized;
 
 /// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
@@ -222,16 +223,22 @@ impl<M: DeserializeOwned + Named> IndexedErasedUnbound<M> {
 impl<M: Bind> IndexedErasedUnbound<M> {
     /// Used in unit tests to bind CastBlobT<M> to the given actor. Do not use in
     /// production.
-    pub fn bind_for_test_only<A>(actor_ref: ActorRef<A>, mailbox: &Mailbox) -> anyhow::Result<()>
+    pub fn bind_for_test_only<A, C>(
+        actor_ref: ActorRef<A>,
+        cx: C,
+        mailbox: Mailbox,
+    ) -> anyhow::Result<()>
     where
         A: RemoteActor + RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: RemoteMessage,
+        C: context::Actor + Send + Sync + 'static,
     {
-        let mailbox_clone = mailbox.clone();
-        let port_handle = mailbox.open_enqueue_port::<IndexedErasedUnbound<M>>(move |_, m| {
-            let bound_m = m.downcast()?.bind()?;
-            actor_ref.send(&mailbox_clone, bound_m)?;
-            Ok(())
+        let port_handle = mailbox.open_enqueue_port::<IndexedErasedUnbound<M>>({
+            move |_, m| {
+                let bound_m = m.downcast()?.bind()?;
+                actor_ref.send(&cx, bound_m)?;
+                Ok(())
+            }
         });
         port_handle.bind_to(IndexedErasedUnbound::<M>::port());
         Ok(())

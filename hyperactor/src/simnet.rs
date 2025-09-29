@@ -47,10 +47,12 @@ use crate::ActorId;
 use crate::Mailbox;
 use crate::OncePortRef;
 use crate::ProcId;
+use crate::attrs::Attrs;
 use crate::channel::ChannelAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
+use crate::context::MailboxExt;
 use crate::data::Serialized;
 
 static HANDLE: OnceLock<SimNetHandle> = OnceLock::new();
@@ -154,10 +156,12 @@ impl Event for TorchOpEvent {
     }
 
     async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
-        self.done_tx
-            .clone()
-            .send(&self.mailbox, ())
-            .map_err(|err| SimNetError::Closed(err.to_string()))?;
+        let mut headers = Attrs::new();
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+        let serialized =
+            Serialized::serialize(&()).map_err(|err| SimNetError::Closed(err.to_string()))?;
+        self.mailbox
+            .post(self.done_tx.port_id().clone(), headers, serialized);
         Ok(())
     }
 
@@ -227,10 +231,12 @@ impl Event for SleepEvent {
     }
 
     async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
-        self.done_tx
-            .clone()
-            .send(&self.mailbox, ())
-            .map_err(|_err| SimNetError::Closed("TODO".to_string()))?;
+        let mut headers = Attrs::new();
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+        let serialized =
+            Serialized::serialize(&()).map_err(|err| SimNetError::Closed(err.to_string()))?;
+        self.mailbox
+            .post(self.done_tx.port_id().clone(), headers, serialized);
         Ok(())
     }
 
@@ -729,7 +735,7 @@ impl SimNet {
             }
 
             {
-                // If the training script is runnning and issuing commands
+                // If the training script is running and issuing commands
                 // it is not safe to advance past the training script time
                 // otherwise a command issued by the training script may
                 // be scheduled for a time in the past

@@ -1,4 +1,4 @@
-name: Test CPU
+name: Test CPU Python
 
 on:
   workflow_call:
@@ -9,12 +9,12 @@ on:
         type: string
 
 concurrency:
-  group: test-cpu-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: test-cpu-python-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test-cpu-no-tensor-engine:
-    name: Test CPU - No Tensor Engine
+  test-cpu-python:
+    name: Test CPU Python - No Tensor Engine
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 60
@@ -38,3 +38,7 @@ jobs:
         # Tests requiring tensor engine / GPU need to be identified and flagged to skip.
         # We will just ensure monarch can be imported successfully.
         python -c "import monarch; print('Monarch imported successfully')"
+
+        # Run CPU Python tests (excluding GPU/tensor engine tests)
+        # TODO: Add appropriate test filters for CPU-only Python tests
+        echo "CPU Python tests would run here - currently placeholder"

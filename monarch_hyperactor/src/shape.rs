@@ -9,6 +9,7 @@
 use monarch_types::MapPyErr;
 use ndslice::Extent;
 use ndslice::Point;
+use ndslice::Region;
 use ndslice::Shape;
 use ndslice::Slice;
 use pyo3::IntoPyObjectExt;
@@ -98,6 +99,52 @@ impl PyExtent {
 impl From<Extent> for PyExtent {
     fn from(inner: Extent) -> Self {
         PyExtent { inner }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[pyclass(
+    name = "Region",
+    module = "monarch._rust_bindings.monarch_hyperactor.shape",
+    frozen
+)]
+pub struct PyRegion {
+    pub(crate) inner: Region,
+}
+
+impl PyRegion {
+    pub(crate) fn as_inner(&self) -> &Region {
+        &self.inner
+    }
+}
+
+#[pymethods]
+impl PyRegion {
+    #[new]
+    fn new(labels: Vec<String>, slice: PySlice) -> PyResult<Self> {
+        Ok(PyRegion {
+            inner: Region::new(labels, slice.into()),
+        })
+    }
+
+    fn as_shape(&self) -> PyShape {
+        PyShape {
+            inner: (&self.inner).into(),
+        }
+    }
+
+    fn labels(&self) -> Vec<String> {
+        self.inner.labels().to_vec()
+    }
+
+    fn slice(&self) -> PySlice {
+        self.inner.slice().clone().into()
+    }
+}
+
+impl From<Region> for PyRegion {
+    fn from(inner: Region) -> Self {
+        PyRegion { inner }
     }
 }
 
@@ -245,6 +292,13 @@ impl PyShape {
     fn extent(&self) -> PyExtent {
         self.inner.extent().into()
     }
+
+    #[getter]
+    fn region(&self) -> PyRegion {
+        PyRegion {
+            inner: self.inner.region(),
+        }
+    }
 }
 
 impl From<Shape> for PyShape {
@@ -368,5 +422,6 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     PyMapping::register::<PyPoint>(py)?;
     module.add_class::<PyExtent>()?;
     PyMapping::register::<PyExtent>(py)?;
+    module.add_class::<PyRegion>()?;
     Ok(())
 }

@@ -305,7 +305,7 @@ impl Handler<WorkerInit> for WorkerActor {
         cx: &Context<Self>,
         WorkerInit(ps_ref, rdma_managers): WorkerInit,
     ) -> Result<(), anyhow::Error> {
-        let rank = cx.cast_info().rank();
+        let rank = cx.cast_point().rank();
 
         tracing::info!("[worker_actor_{}] initializing", rank);
 
@@ -337,7 +337,7 @@ impl Handler<WorkerStep> for WorkerActor {
         cx: &Context<Self>,
         WorkerStep(reply): WorkerStep,
     ) -> Result<(), anyhow::Error> {
-        let rank = cx.cast_info().rank();
+        let rank = cx.cast_point().rank();
 
         for (grad_value, weight) in self
             .local_gradients
@@ -387,7 +387,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
         cx: &Context<Self>,
         WorkerUpdate(reply): WorkerUpdate,
     ) -> Result<(), anyhow::Error> {
-        let rank = cx.cast_info().rank();
+        let rank = cx.cast_point().rank();
 
         tracing::info!(
             "[worker_actor_{}] pulling new weights from parameter server (before: {:?})",
@@ -421,7 +421,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
 impl Handler<Log> for WorkerActor {
     /// Logs the worker's weights
     async fn handle(&mut self, cx: &Context<Self>, _: Log) -> Result<(), anyhow::Error> {
-        let rank = cx.cast_info().rank();
+        let rank = cx.cast_point().rank();
         tracing::info!("[worker_actor_{}] weights: {:?}", rank, self.weights_data);
         Ok(())
     }
@@ -495,7 +495,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // We spin this up manually here, but in Python-land we assume this will
     // be spun up with the PyProcMesh.
     let ps_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = ps_proc_mesh
-        .spawn("ps_rdma_manager", &ps_ibv_config)
+        .spawn("ps_rdma_manager", &Some(ps_ibv_config))
         .await
         .unwrap();
 
@@ -518,7 +518,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     );
     // Similarly, create an RdmaManagerActor corresponding to each worker.
     let worker_rdma_manager_mesh: RootActorMesh<'_, RdmaManagerActor> = worker_proc_mesh
-        .spawn("ps_rdma_manager", &worker_ibv_config)
+        .spawn("ps_rdma_manager", &Some(worker_ibv_config))
         .await
         .unwrap();
 

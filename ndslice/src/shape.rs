@@ -7,11 +7,13 @@
  */
 
 use std::fmt;
+use std::str::FromStr;
 
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::DimSliceIterator;
+use crate::Region;
 use crate::Slice;
 use crate::SliceError;
 use crate::selection::Selection;
@@ -49,6 +51,9 @@ pub enum ShapeError {
         dim: String,
         size: usize,
     },
+
+    #[error("failed to parse shape: {reason}")]
+    ParseError { reason: String },
 
     #[error(transparent)]
     SliceError(#[from] SliceError),
@@ -202,6 +207,18 @@ impl Shape {
     pub fn extent(&self) -> Extent {
         Extent::new(self.labels.clone(), self.slice.sizes().to_vec()).unwrap()
     }
+
+    /// The region corresponding to this shape.
+    pub fn region(&self) -> Region {
+        self.into()
+    }
+}
+
+impl From<&Region> for Shape {
+    fn from(region: &Region) -> Self {
+        Shape::new(region.labels().to_vec(), region.slice().clone())
+            .expect("Shape::new should not fail because a Region by definition is a valid Shape")
+    }
 }
 
 /// Iterator over subshapes obtained by fixing a prefix of dimensions.
@@ -261,6 +278,72 @@ impl fmt::Display for Shape {
             }
         }
         write!(f, "}}")
+    }
+}
+
+impl FromStr for Shape {
+    type Err = ShapeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+
+        if !s.starts_with('{') || !s.ends_with('}') {
+            return Err(ShapeError::ParseError {
+                reason: "shape string must be enclosed in braces".to_string(),
+            });
+        }
+
+        let inner = &s[1..s.len() - 1].trim();
+
+        if inner.is_empty() {
+            return Ok(Shape::unity());
+        }
+
+        let mut labels = Vec::new();
+        let mut sizes = Vec::new();
+
+        for part in inner.split(',') {
+            let part = part.trim();
+            let mut split = part.split('=');
+
+            let label = split
+                .next()
+                .ok_or_else(|| ShapeError::ParseError {
+                    reason: format!("invalid dimension format: '{}'", part),
+                })?
+                .trim();
+
+            let size_str = split
+                .next()
+                .ok_or_else(|| ShapeError::ParseError {
+                    reason: format!("missing size for dimension '{}'", label),
+                })?
+                .trim();
+
+            if split.next().is_some() {
+                return Err(ShapeError::ParseError {
+                    reason: format!("invalid dimension format: '{}'", part),
+                });
+            }
+
+            if label.is_empty() {
+                return Err(ShapeError::ParseError {
+                    reason: format!("missing label in dimension: '{}'", part),
+                });
+            }
+
+            let size = size_str
+                .parse::<usize>()
+                .map_err(|_| ShapeError::ParseError {
+                    reason: format!("invalid size '{}' for dimension '{}'", size_str, label),
+                })?;
+
+            labels.push(label.to_string());
+            sizes.push(size);
+        }
+
+        let slice = Slice::new_row_major(sizes);
+        Shape::new(labels, slice)
     }
 }
 
@@ -652,5 +735,60 @@ mod tests {
 
         let result = shape.at("batch", 5); // batch only has size 2
         assert!(matches!(result, Err(ShapeError::OutOfRange { .. })));
+    }
+
+    #[test]
+    fn test_shape_from_str_round_trip() {
+        let test_cases = vec![
+            shape!(host = 2, gpu = 8),
+            shape!(x = 1),
+            shape!(batch = 10, height = 224, width = 224, channels = 3),
+            Shape::unity(), // empty shape
+        ];
+
+        for original in test_cases {
+            let display_str = original.to_string();
+            let parsed: Shape = display_str.parse().unwrap();
+            assert_eq!(
+                parsed, original,
+                "Round-trip failed for shape: {}",
+                display_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_shape_from_str_valid_cases() {
+        let test_cases = vec![
+            ("{host=2,gpu=8}", shape!(host = 2, gpu = 8)),
+            ("{x=1}", shape!(x = 1)),
+            ("{ host = 2 , gpu = 8 }", shape!(host = 2, gpu = 8)), // with spaces
+            ("{}", Shape::unity()),                                // empty shape
+        ];
+
+        for (input, expected) in test_cases {
+            let parsed: Shape = input.parse().unwrap();
+            assert_eq!(parsed, expected, "Failed to parse: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_shape_from_str_error_cases() {
+        let error_cases = vec![
+            "host=2,gpu=8",
+            "{host=2,gpu=8",
+            "host=2,gpu=8}",
+            "{host=2,gpu=}",
+            "{host=,gpu=8}",
+            "{host=2=3,gpu=8}",
+            "{host=abc,gpu=8}",
+            "{host=2,}",
+            "{=8}",
+        ];
+
+        for input in error_cases {
+            let result: Result<Shape, ShapeError> = input.parse();
+            assert!(result.is_err(), "expected error for input: {}", input);
+        }
     }
 }

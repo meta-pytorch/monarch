@@ -217,10 +217,10 @@ class ActorLatency(Benchmark):
     async def setup(self) -> None:
         self.setup_env()
         reload_config_from_env()
-        pong_mesh = await proc_mesh(hosts=self.host_count, gpus=self.gpu_count)
+        pong_mesh = proc_mesh(hosts=self.host_count, gpus=self.gpu_count)
         await pong_mesh.logging_option(stream_to_client=True, aggregate_window_sec=None)
 
-        self.pong_actors = await pong_mesh.spawn("pong", Pong)
+        self.pong_actors = pong_mesh.spawn("pong", Pong)
         self.pong_mesh = pong_mesh
         self.message = bytes(self.message_size)
 

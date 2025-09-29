@@ -129,6 +129,11 @@ impl GetItemCountHandler<usize> for ShoppingListActor {
     }
 }
 
+// Define an alias actor `ShoppingApi`. Clients can use
+// `ActorRef<ShoppingApi>` instead of referencing the concrete
+// `ShoppingListActor` directly.
+hyperactor::alias!(ShoppingApi, ShoppingList, ClearList, GetItemCount<usize>,);
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let mut proc = Proc::local();
@@ -136,7 +141,10 @@ async fn main() -> Result<(), anyhow::Error> {
     // Spawn our actor, and get a handle for rank 0.
     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
         proc.spawn("shopping", ()).await?;
-
+    // We attest this is safe because we know this is the id of an
+    // actor we just spawned.
+    let shopping_api: hyperactor::ActorRef<ShoppingApi> =
+        hyperactor::ActorRef::attest(shopping_list_actor.actor_id().clone());
     // We join the system, so that we can send messages to actors.
     let (client, _) = proc.instance("client").unwrap();
 
@@ -147,7 +155,8 @@ async fn main() -> Result<(), anyhow::Error> {
     // the destination actor, and the method arguments.
 
     shopping_list_actor.add(&client, "milk".into()).await?;
-    shopping_list_actor.add(&client, "eggs".into()).await?;
+    // We can perfrom operations through `shopping_api` too.
+    shopping_api.add(&client, "eggs".into()).await?;
 
     println!(
         "got milk? {}",
@@ -200,6 +209,8 @@ async fn main() -> Result<(), anyhow::Error> {
         shopping_list_actor.list(&client).await?
     );
 
-    let _ = proc.destroy_and_wait(Duration::from_secs(1), None).await?;
+    let _ = proc
+        .destroy_and_wait::<()>(Duration::from_secs(1), None)
+        .await?;
     Ok(())
 }

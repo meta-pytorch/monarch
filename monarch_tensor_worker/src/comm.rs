@@ -57,6 +57,7 @@ use torch_sys_cuda::nccl::group_start;
 /// these do.
 #[allow(dead_code)]
 #[derive(Handler, HandleClient, Debug, Named)]
+#[named(register = false)]
 pub enum CommMessage {
     AllReduce(TensorCell, ReduceOp, Stream, #[reply] OncePortHandle<Event>),
 

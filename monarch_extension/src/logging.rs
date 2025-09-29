@@ -21,6 +21,7 @@ use hyperactor_mesh::logging::LogForwardActor;
 use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::selection::Selection;
 use hyperactor_mesh::shared_cell::SharedCell;
+use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::logging::LoggerRuntimeActor;
 use monarch_hyperactor::logging::LoggerRuntimeMessage;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
@@ -85,7 +86,7 @@ impl LoggingMeshClient {
 #[pymethods]
 impl LoggingMeshClient {
     #[staticmethod]
-    fn spawn(proc_mesh: &PyProcMesh) -> PyResult<PyPythonTask> {
+    fn spawn(_instance: &PyInstance, proc_mesh: &PyProcMesh) -> PyResult<PyPythonTask> {
         let proc_mesh = proc_mesh.try_inner()?;
         PyPythonTask::new(async move {
             let client_actor = proc_mesh.client_proc().spawn("log_client", ()).await?;
@@ -135,6 +136,7 @@ impl LoggingMeshClient {
     fn set_mode<'py>(
         &self,
         _py: Python<'py>,
+        _instance: &PyInstance,
         stream_to_client: bool,
         aggregate_window_sec: Option<u64>,
         level: u8,
@@ -175,7 +177,7 @@ impl LoggingMeshClient {
     }
 
     // A sync flush mechanism for the client make sure all the stdout/stderr are streamed back and flushed.
-    fn flush(&self) -> PyResult<PyPythonTask> {
+    fn flush(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
         let forwarder_mesh = self.forwarder_mesh.clone();
         let client_actor = self.client_actor.clone();
 

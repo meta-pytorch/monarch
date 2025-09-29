@@ -33,7 +33,6 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor_mesh::comm::multicast::set_cast_info_on_headers;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
 use pyo3::IntoPyObjectExt;
@@ -52,7 +51,6 @@ use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::runtime::signal_safe_block_on;
-use crate::shape::PyShape;
 
 #[derive(Clone, Debug)]
 #[pyclass(
@@ -131,37 +129,6 @@ impl PyMailbox {
             message,
             Attrs::new(),
         );
-        let return_handle = self
-            .inner
-            .bound_return_handle()
-            .unwrap_or(monitored_return_handle());
-        self.inner.post(envelope, return_handle);
-        Ok(())
-    }
-
-    pub(super) fn post_cast(
-        &self,
-        dest: &PyActorId,
-        rank: usize,
-        shape: &PyShape,
-        message: &PythonMessage,
-    ) -> PyResult<()> {
-        let port_id = dest.inner.port_id(PythonMessage::port());
-        let mut headers = Attrs::new();
-        set_cast_info_on_headers(
-            &mut headers,
-            rank,
-            shape.inner.clone(),
-            self.inner.actor_id().clone(),
-        );
-        let message = Serialized::serialize(message).map_err(|err| {
-            PyRuntimeError::new_err(format!(
-                "failed to serialize message ({:?}) to Serialized: {}",
-                message, err
-            ))
-        })?;
-        let envelope =
-            MessageEnvelope::new(self.inner.actor_id().clone(), port_id, message, headers);
         let return_handle = self
             .inner
             .bound_return_handle()
@@ -660,6 +627,7 @@ impl Bind for EitherPortRef {
 }
 
 #[derive(Debug, Named)]
+#[named(register = false)]
 struct PythonReducer(PyObject);
 
 impl PythonReducer {

@@ -30,7 +30,11 @@ use hyperactor::actor::RemoteActor;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelTransport;
+use hyperactor::config;
+use hyperactor::config::CONFIG_ENV_VAR;
 use hyperactor::context;
+use hyperactor::declare_attrs;
 use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -78,6 +82,12 @@ pub mod mesh_agent;
 
 use std::sync::OnceLock;
 use std::sync::RwLock;
+
+declare_attrs! {
+    /// Transport type to use for the root client.
+    @meta(CONFIG_ENV_VAR = "HYPERACTOR_MESH_ROOT_CLIENT_TRANSPORT".to_string())
+    attr ROOT_CLIENT_TRANSPORT: ChannelTransport = ChannelTransport::Unix;
+}
 
 /// Single, process-wide supervision sink storage.
 ///
@@ -140,11 +150,17 @@ pub(crate) fn get_global_supervision_sink() -> Option<PortHandle<ActorSupervisio
 /// messages will be sent to.
 pub fn global_root_client() -> &'static Instance<()> {
     static GLOBAL_INSTANCE: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-    let (instance, _) = GLOBAL_INSTANCE.get_or_init(|| {
-        let world_id = WorldId(ShortUuid::generate().to_string());
-        let client_proc_id = ProcId::Ranked(world_id.clone(), 0);
-        let client_proc = Proc::new(client_proc_id.clone(), router::global().boxed());
-        router::global().bind(world_id.clone().into(), client_proc.clone());
+    &GLOBAL_INSTANCE.get_or_init(|| {
+        let client_proc = Proc::direct_with_default(
+            ChannelAddr::any(config::global::get_cloned(ROOT_CLIENT_TRANSPORT)),
+            "mesh_root_client_proc".into(),
+            router::global().clone().boxed(),
+        )
+        .unwrap();
+
+        // Make this proc reachable through the global router, so that we can use the
+        // same client in both direct-addressed and ranked-addressed modes.
+        router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
 
         let (client, handle) = client_proc
             .instance("client")
@@ -180,8 +196,7 @@ pub fn global_root_client() -> &'static Instance<()> {
         );
 
         (client, handle)
-    });
-    instance
+    }).0
 }
 
 type ActorEventRouter = Arc<DashMap<ActorMeshName, mpsc::UnboundedSender<ActorSupervisionEvent>>>;
@@ -271,7 +286,6 @@ impl ProcMesh {
         let client_proc_id =
             ProcId::Ranked(WorldId(format!("{}_client", alloc.world_id().name())), 0);
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
-            .await
             .map_err(|err| AllocatorError::Other(err.into()))?;
         tracing::info!(
             name = "ProcMesh::Allocate::ChannelServe",
@@ -289,7 +303,7 @@ impl ProcMesh {
         //    connected to a single root.
         router::global().bind_dial_router(&router);
 
-        let supervisor = client_proc.attach("supervisor")?;
+        let (supervisor, _supervisor_handle) = client_proc.instance("supervisor")?;
         let (supervision_port, supervision_events) =
             supervisor.open_port::<ActorSupervisionEvent>();
 
@@ -337,7 +351,6 @@ impl ProcMesh {
 
         // Ensure that the router is served so that agents may reach us.
         let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
-            .await
             .map_err(|err| AllocatorError::Other(err.into()))?;
         router.serve(router_rx);
         tracing::info!("router channel started listening on addr: {router_channel_addr}");
@@ -705,12 +718,12 @@ impl ProcEvents {
                     for entry in self.actor_event_router.iter() {
                         // Make a dummy actor supervision event, all actors on the proc are affected if a proc stops.
                         // TODO(T231868026): find a better way to represent all actors in a proc for supervision event
-                        let event = ActorSupervisionEvent {
-                            actor_id: proc_id.actor_id("any", 0),
-                            actor_status: ActorStatus::Failed(format!("proc {} is stopped", proc_id)),
-                            message_headers: None,
-                            caused_by: None,
-                        };
+                        let event = ActorSupervisionEvent::new(
+                            proc_id.actor_id("any", 0),
+                            ActorStatus::Failed(format!("proc {} is stopped", proc_id)),
+                            None,
+                            None,
+                        );
                         tracing::debug!(name = "ActorSupervisionEventDelivery", event = ?event);
                         if entry.value().send(event.clone()).is_err() {
                             tracing::warn!(

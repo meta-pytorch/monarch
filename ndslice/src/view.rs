@@ -29,6 +29,7 @@
 //! - [`View`]: a collection of items indexed by [`Region`]. Views provide standard
 //!             manipulation operations and use ranks as an efficient indexing scheme.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -472,6 +473,10 @@ pub enum PointError {
         /// The invalid coordinate index that was requested.
         index: usize,
     },
+
+    /// Failed to parse a point from a string.
+    #[error("failed to parse point: {reason}")]
+    ParseError { reason: String },
 }
 
 /// `Point` represents a specific coordinate within the
@@ -789,6 +794,180 @@ impl std::fmt::Display for Point {
     }
 }
 
+impl FromStr for Point {
+    type Err = PointError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+
+        if s.is_empty() {
+            let empty_extent = Extent::unity();
+            return empty_extent.point(vec![]);
+        }
+
+        let mut labels = Vec::new();
+        let mut coords = Vec::new();
+        let mut sizes = Vec::new();
+
+        let mut chars = s.chars().peekable();
+
+        while chars.peek().is_some() {
+            while chars.peek() == Some(&' ') {
+                chars.next();
+            }
+
+            if chars.peek().is_none() {
+                break;
+            }
+
+            let label = if chars.peek() == Some(&'"') {
+                chars.next(); // quote
+                let mut label = String::new();
+                let mut escaped = false;
+
+                // Consume label until closing quote
+                for ch in chars.by_ref() {
+                    if escaped {
+                        match ch {
+                            '"' => label.push('"'),
+                            '\\' => label.push('\\'),
+                            _ => {
+                                label.push('\\');
+                                label.push(ch);
+                            }
+                        }
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        break;
+                    } else {
+                        label.push(ch);
+                    }
+                }
+
+                if label.is_empty() {
+                    return Err(PointError::ParseError {
+                        reason: "empty quoted label".to_string(),
+                    });
+                }
+
+                label
+            } else {
+                let mut label = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch == '=' || ch == ' ' {
+                        break;
+                    }
+                    label.push(chars.next().unwrap());
+                }
+
+                if label.is_empty() {
+                    return Err(PointError::ParseError {
+                        reason: "missing label".to_string(),
+                    });
+                }
+
+                label
+            };
+
+            while chars.peek() == Some(&' ') {
+                chars.next();
+            }
+
+            if chars.next() != Some('=') {
+                return Err(PointError::ParseError {
+                    reason: format!("expected '=' after label '{}'", label),
+                });
+            }
+
+            while chars.peek() == Some(&' ') {
+                chars.next();
+            }
+
+            let mut coord = String::new();
+            while let Some(&ch) = chars.peek() {
+                if ch == '/' || ch == ' ' {
+                    break;
+                }
+                coord.push(chars.next().unwrap());
+            }
+
+            if coord.is_empty() {
+                return Err(PointError::ParseError {
+                    reason: format!("missing coordinate for dimension '{}'", label),
+                });
+            }
+
+            while chars.peek() == Some(&' ') {
+                chars.next();
+            }
+
+            if chars.next() != Some('/') {
+                return Err(PointError::ParseError {
+                    reason: format!("expected '/' after coordinate for dimension '{}'", label),
+                });
+            }
+
+            while chars.peek() == Some(&' ') {
+                chars.next();
+            }
+
+            let mut size = String::new();
+            while let Some(&ch) = chars.peek() {
+                if ch == ',' || ch == ' ' {
+                    break;
+                }
+                size.push(chars.next().unwrap());
+            }
+
+            if size.is_empty() {
+                return Err(PointError::ParseError {
+                    reason: format!("missing size for dimension '{}'", label),
+                });
+            }
+
+            let coord = coord.parse::<usize>().map_err(|e| PointError::ParseError {
+                reason: format!(
+                    "invalid coordinate '{}' for dimension '{}': {}",
+                    coord, label, e
+                ),
+            })?;
+
+            let size = size.parse::<usize>().map_err(|e| PointError::ParseError {
+                reason: format!("invalid size '{}' for dimension '{}': {}", size, label, e),
+            })?;
+
+            labels.push(label);
+            coords.push(coord);
+            sizes.push(size);
+
+            while chars.peek() == Some(&' ') {
+                chars.next();
+            }
+
+            if chars.peek() == Some(&',') {
+                chars.next(); // consume comma
+                while chars.peek() == Some(&' ') {
+                    chars.next();
+                }
+                // After consuming a comma, there must be another dimension
+                if chars.peek().is_none() {
+                    return Err(PointError::ParseError {
+                        reason: "trailing comma".to_string(),
+                    });
+                }
+            }
+        }
+
+        let extent = Extent::new(labels, sizes).map_err(|e| PointError::ParseError {
+            reason: format!("failed to create extent: {}", e),
+        })?;
+
+        extent.point(coords)
+    }
+}
+
 /// Errors that occur while operating on views.
 #[derive(Debug, Error)]
 pub enum ViewError {
@@ -812,6 +991,16 @@ pub enum ViewError {
         base: Box<Region>,
         selected: Box<Region>,
     },
+}
+
+/// Errors that occur while operating on Region.
+#[derive(Debug, Error)]
+pub enum RegionError {
+    #[error("invalid point: this point does not belong to this region: {0}")]
+    InvalidPoint(String),
+
+    #[error("out of range base rank: this base rank {0} does not belong to this region: {0}")]
+    OutOfRangeBaseRank(usize, String),
 }
 
 /// `Region` describes a region of a possibly-larger space of ranks, organized into
@@ -930,6 +1119,34 @@ impl Region {
     pub fn num_ranks(&self) -> usize {
         self.slice.len()
     }
+
+    /// Convert a rank in this region's extent into its corresponding rank in
+    /// the base space defined by the region's `Slice`.
+    pub fn base_rank_of_point(&self, p: Point) -> Result<usize, RegionError> {
+        if p.extent() != &self.extent() {
+            return Err(RegionError::InvalidPoint(
+                "mismatched extent: p must be a point in this region’s extent".to_string(),
+            ));
+        }
+
+        Ok(self
+            .slice()
+            .location(&p.coords())
+            .expect("should have valid location since extent is checked"))
+    }
+
+    /// Convert a rank in the base space into the corresponding `Point` in this
+    /// region's extent (if the base rank lies within the region's `Slice`).
+    pub fn point_of_base_rank(&self, rank: usize) -> Result<Point, RegionError> {
+        let coords = self
+            .slice()
+            .coordinates(rank)
+            .map_err(|e| RegionError::OutOfRangeBaseRank(rank, e.to_string()))?;
+        Ok(self
+            .extent()
+            .point(coords)
+            .expect("should have valid point since coords is from this region"))
+    }
 }
 
 // We would make this impl<T: Viewable> From<T> for View,
@@ -940,6 +1157,21 @@ impl From<Extent> for Region {
             labels: extent.labels().to_vec(),
             slice: extent.to_slice(),
         }
+    }
+}
+
+impl From<&Shape> for Region {
+    fn from(s: &Shape) -> Self {
+        Region {
+            labels: s.labels().to_vec(),
+            slice: s.slice().clone(),
+        }
+    }
+}
+
+impl From<Shape> for Region {
+    fn from(s: Shape) -> Self {
+        Region::from(&s)
     }
 }
 
@@ -2057,6 +2289,59 @@ mod test {
         );
     }
 
+    #[test]
+    fn test_base_local_rank_conversion() {
+        fn point(rank: usize, region: &Region) -> Point {
+            region.extent().point_of_rank(rank).unwrap()
+        }
+
+        let extent = extent!(replicas = 4, gpus = 2);
+        let region = extent.range("replicas", 1..3).unwrap();
+        // region is a 2x2 region of extent, with the ranks in the region and
+        // and ranks in the extent are mapped as follows:
+        //  0,        1
+        // [2] -> 0, [3] -> 1
+        // [4] -> 2, [5] -> 3
+        //  6,        7
+        // Use a point from an extent different from this region should fail:
+        assert!(
+            region
+                .base_rank_of_point(extent.point_of_rank(0).unwrap())
+                .is_err()
+        );
+        // Convert ranks in the extent to ranks in the region:
+        assert_eq!(region.base_rank_of_point(point(0, &region)).unwrap(), 2);
+        assert_eq!(region.base_rank_of_point(point(1, &region)).unwrap(), 3);
+        assert_eq!(region.base_rank_of_point(point(2, &region)).unwrap(), 4);
+        assert_eq!(region.base_rank_of_point(point(3, &region)).unwrap(), 5);
+        // Convert ranks in the region to ranks in the extent:
+        assert_eq!(region.point_of_base_rank(2).unwrap(), point(0, &region));
+        assert_eq!(region.point_of_base_rank(3).unwrap(), point(1, &region));
+        assert_eq!(region.point_of_base_rank(4).unwrap(), point(2, &region));
+        assert_eq!(region.point_of_base_rank(5).unwrap(), point(3, &region));
+        // Coverting ranks outside the region should fail:
+        assert!(region.point_of_base_rank(1).is_err());
+        assert!(region.point_of_base_rank(6).is_err());
+
+        // Slice region to give a subregion:
+        let subset = region
+            .range("replicas", 1..2)
+            .unwrap()
+            .range("gpus", 1..2)
+            .unwrap();
+        // subset is a 1x1 region of extent, with ranksmapped as follows:
+        // 0,  1
+        // 2,  3
+        // 4, [5] -> 0
+        // 6,  7
+        // Convert ranks in the extent to ranks in the subset:
+        assert_eq!(subset.base_rank_of_point(point(0, &subset)).unwrap(), 5);
+        assert_eq!(subset.point_of_base_rank(5).unwrap(), point(0, &subset));
+        // or fail if the rank is not in the subset:
+        assert!(subset.point_of_base_rank(4).is_err());
+        assert!(subset.point_of_base_rank(6).is_err());
+    }
+
     use proptest::prelude::*;
 
     use crate::strategy::gen_extent;
@@ -2178,9 +2463,119 @@ mod test {
         }
     }
 
+    #[test]
+    fn test_point_from_str_round_trip() {
+        let points = vec![
+            extent!(x = 4, y = 5, z = 6).point(vec![1, 2, 3]).unwrap(),
+            extent!(host = 2, gpu = 8).point(vec![0, 7]).unwrap(),
+            extent!().point(vec![]).unwrap(),
+            extent!(x = 10).point(vec![5]).unwrap(),
+        ];
+
+        for point in points {
+            assert_eq!(point, point.to_string().parse().unwrap());
+        }
+    }
+
+    #[test]
+    fn test_point_from_str_basic() {
+        let cases = vec![
+            ("x=1/4,y=2/5", extent!(x = 4, y = 5), vec![1, 2]),
+            ("host=0/2,gpu=7/8", extent!(host = 2, gpu = 8), vec![0, 7]),
+            ("z=3/6", extent!(z = 6), vec![3]),
+            ("", extent!(), vec![]), // empty point
+            // Test with spaces
+            (" x = 1 / 4 , y = 2 / 5 ", extent!(x = 4, y = 5), vec![1, 2]),
+        ];
+
+        for (input, expected_extent, expected_coords) in cases {
+            let parsed: Point = input.parse().unwrap();
+            let expected = expected_extent.point(expected_coords).unwrap();
+            assert_eq!(parsed, expected, "failed to parse: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_point_from_str_quoted() {
+        // Test parsing points with quoted labels
+        let extent = Extent::new(vec!["dim/0".into(), "dim,1".into()], vec![3, 5]).unwrap();
+        let point = extent.point(vec![1, 2]).unwrap();
+
+        let display_str = point.to_string();
+        assert_eq!(display_str, "\"dim/0\"=1/3,\"dim,1\"=2/5");
+
+        let parsed: Point = display_str.parse().unwrap();
+        assert_eq!(parsed, point);
+
+        let parsed: Point = "\"dim/0\"=1/3,\"dim,1\"=2/5".parse().unwrap();
+        assert_eq!(parsed, point);
+    }
+
+    #[test]
+    fn test_point_from_str_error_cases() {
+        // Test various error cases
+        let error_cases = vec![
+            "x=1,y=2/5",     // missing size for x
+            "x=1/4,y=2",     // missing size for y
+            "x=1/4,y=/5",    // missing coord for y
+            "x=/4,y=2/5",    // missing coord for x
+            "x=1/4,y=2/",    // missing size after /
+            "x=1/,y=2/5",    // missing size after /
+            "x=1/4=5,y=2/5", // extra equals
+            "x=1/4/6,y=2/5", // extra slash
+            "x=abc/4,y=2/5", // invalid coord
+            "x=1/abc,y=2/5", // invalid size
+            "=1/4,y=2/5",    // missing label
+            "x=1/4,",        // trailing comma with empty part
+            "x=1/4,=2/5",    // missing label after comma
+            "x=1/4,y",       // incomplete dimension
+            "x",             // just a label
+            "x=",            // label with equals but no coord/size
+            "x=1/4,y=10/5",  // coord out of bounds (y has size 5, max coord is 4)
+        ];
+
+        for input in error_cases {
+            let result: Result<Point, PointError> = input.parse();
+            assert!(result.is_err(), "Expected error for input: '{}'", input);
+        }
+    }
+
+    #[test]
+    fn test_point_from_str_coordinate_validation() {
+        // Test that coordinates are validated against sizes
+        let input = "x=5/4,y=2/5"; // x coord is 5 but size is 4 (max valid coord is 3)
+        let result: Result<Point, PointError> = input.parse();
+        assert!(
+            result.is_err(),
+            "Expected error for out-of-bounds coordinate"
+        );
+
+        match result.unwrap_err() {
+            PointError::OutOfRangeIndex { size, index } => {
+                assert_eq!(size, 4);
+                assert_eq!(index, 5);
+            }
+            _ => panic!("Expected OutOfRangeIndex error"),
+        }
+    }
+
+    #[test]
+    fn test_point_from_str_consistency_validation() {
+        // Test that all dimension must be consistent (same labels and sizes for given extent)
+        // This is implicitly tested by the round-trip tests, but let's be explicit
+
+        // Valid consistent point
+        let input = "x=1/4,y=2/5,z=3/6";
+        let parsed: Point = input.parse().unwrap();
+
+        assert_eq!(parsed.extent().labels(), &["x", "y", "z"]);
+        assert_eq!(parsed.extent().sizes(), &[4, 5, 6]);
+        assert_eq!(parsed.coords(), vec![1, 2, 3]);
+    }
+
     proptest! {
-        // `Point.coord(i)` and `(&Point).into_iter()` must agree with
-        // `coords()`.
+        /// `Point.coord(i)` and `(&Point).into_iter()` must agree with
+        /// `coords()`.
         #[test]
         fn point_coord_and_iter_agree(extent in gen_extent(0..=4, 8)) {
             for p in extent.points() {
@@ -2291,6 +2686,16 @@ mod test {
                     prop_assert_eq!(r, total, "reported rank mismatch");
                 }
                 other => prop_assert!(false, "expected OutOfRangeRank, got {:?}", other),
+            }
+        }
+
+        // Property test: Point display/parse round-trip should always work
+        #[test]
+        fn point_display_parse_round_trip(extent in gen_extent(0..=4, 8)) {
+            for point in extent.points() {
+                let display = point.to_string();
+                let parsed: Point = display.parse().unwrap();
+                prop_assert_eq!(parsed, point, "round-trip failed for point: {}", display);
             }
         }
     }

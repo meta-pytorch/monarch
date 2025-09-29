@@ -22,20 +22,22 @@ use hyperactor::attrs::Attrs;
 use hyperactor::context;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
-use ndslice::Shape;
 use ndslice::ViewExt as _;
 use ndslice::view;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 
 use crate::actor_mesh as v0_actor_mesh;
 use crate::comm::multicast;
+use crate::proc_mesh::mesh_agent::ActorState;
 use crate::reference::ActorMeshId;
+use crate::resource;
 use crate::v1;
 use crate::v1::Error;
 use crate::v1::Name;
@@ -71,6 +73,18 @@ impl<A: RemoteActor> Deref for ActorMesh<A> {
     }
 }
 
+/// Manual implementation of Clone because `A` doesn't need to implement Clone
+/// but we still want to be able to clone the ActorMesh.
+impl<A: RemoteActor> Clone for ActorMesh<A> {
+    fn clone(&self) -> Self {
+        Self {
+            proc_mesh: self.proc_mesh.clone(),
+            name: self.name.clone(),
+            current_ref: self.current_ref.clone(),
+        }
+    }
+}
+
 /// Influences paging behavior for the lazy cache. Smaller pages
 /// reduce over-allocation for sparse access; larger pages reduce the
 /// number of heap allocations for contiguous scans.
@@ -94,7 +108,6 @@ impl<A: RemoteActor> Page<A> {
 }
 
 /// A reference to a stable snapshot of an [`ActorMesh`].
-#[derive(Serialize, Deserialize)]
 pub struct ActorMeshRef<A: RemoteActor> {
     proc_mesh: ProcMeshRef,
     name: Name,
@@ -108,10 +121,8 @@ pub struct ActorMeshRef<A: RemoteActor> {
     /// - A `Page<A>` is a boxed slice of `OnceCell<ActorRef<A>>`,
     ///   i.e. the actual storage for actor references within that
     ///   page.
-    #[serde(skip, default)]
     pages: OnceCell<Vec<OnceCell<Box<Page<A>>>>>,
     // Page size knob (not serialize; defaults after deserialize).
-    #[serde(skip, default)]
     page_size: usize,
 
     _phantom: PhantomData<A>,
@@ -125,11 +136,11 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            let cast_mesh_shape = to_shape(view::Ranked::region(self));
+            let cast_mesh_shape = view::Ranked::region(self).into();
             let actor_mesh_id = ActorMeshId::V1(self.name.clone());
             match &self.proc_mesh.root_region {
                 Some(root_region) => {
-                    let root_mesh_shape = to_shape(root_region);
+                    let root_mesh_shape = root_region.into();
                     v0_actor_mesh::cast_to_sliced_mesh::<A, M>(
                         cx,
                         actor_mesh_id,
@@ -169,12 +180,11 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         }
     }
 
-    pub async fn supervision_events(
+    pub async fn actor_states(
         &self,
         cx: &impl context::Actor,
-        name: Name,
-    ) -> v1::Result<ValueMesh<Vec<ActorSupervisionEvent>>> {
-        self.proc_mesh.supervision_events(cx, name).await
+    ) -> v1::Result<ValueMesh<resource::State<ActorState>>> {
+        self.proc_mesh.actor_states(cx, self.name.clone()).await
     }
 }
 
@@ -277,6 +287,28 @@ impl<A: RemoteActor> fmt::Debug for ActorMeshRef<A> {
     }
 }
 
+// Implement Serialize manually, without requiring A: Serialize
+impl<A: RemoteActor> Serialize for ActorMeshRef<A> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Serialize only the fields that don't depend on A
+        (&self.proc_mesh, &self.name).serialize(serializer)
+    }
+}
+
+// Implement Deserialize manually, without requiring A: Deserialize
+impl<'de, A: RemoteActor> Deserialize<'de> for ActorMeshRef<A> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let (proc_mesh, name) = <(ProcMeshRef, Name)>::deserialize(deserializer)?;
+        Ok(ActorMeshRef::with_page_size(name, proc_mesh, DEFAULT_PAGE))
+    }
+}
+
 impl<A: RemoteActor> view::Ranked for ActorMeshRef<A> {
     type Item = ActorRef<A>;
 
@@ -299,11 +331,6 @@ impl<A: RemoteActor> view::RankedSliceable for ActorMeshRef<A> {
     }
 }
 
-fn to_shape(region: &Region) -> Shape {
-    Shape::new(region.labels().to_vec(), region.slice().clone())
-        .expect("Shape::new should not fail because a Region by definition is a valid Shape")
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
@@ -314,7 +341,6 @@ mod tests {
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::mailbox;
-    use hyperactor::supervision::ActorSupervisionEvent;
     use ndslice::ViewExt;
     use ndslice::extent;
     use ndslice::view::Ranked;
@@ -322,6 +348,8 @@ mod tests {
     use tokio::time::Duration;
 
     use super::ActorMesh;
+    use crate::proc_mesh::mesh_agent::ActorState;
+    use crate::resource;
     use crate::v1::ActorMeshRef;
     use crate::v1::Name;
     use crate::v1::ProcMesh;
@@ -428,13 +456,13 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_status() {
+    async fn test_actor_states() {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance().await;
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<ActorSupervisionEvent>();
+            instance.open_port::<resource::State<ActorState>>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
@@ -462,18 +490,11 @@ mod tests {
         // Now that all ranks have completed, set up a continuous poll of the
         // status such that when a process switches to unhealthy it sets a
         // supervision event.
-        let child_name_clone = child_name.clone();
         let supervision_task = tokio::spawn(async move {
-            match actor_mesh
-                .supervision_events(instance, child_name_clone)
-                .await
-            {
+            match actor_mesh.actor_states(&instance).await {
                 Ok(events) => {
-                    for event_list in events.values() {
-                        assert!(!event_list.is_empty());
-                        for event in event_list {
-                            supervisor.send(instance, event).unwrap();
-                        }
+                    for state in events.values() {
+                        supervisor.send(instance, state.clone()).unwrap();
                     }
                 }
                 Err(e) => {
@@ -485,14 +506,18 @@ mod tests {
         supervision_task.await.unwrap();
 
         for _ in 0..num_replicas {
-            match supervision_receiver.recv().await {
-                Ok(event) => {
+            let state = supervision_receiver.recv().await.unwrap();
+            if let resource::Status::Failed(s) = state.status {
+                assert!(s.contains("supervision events"));
+            } else {
+                panic!("Not failed: {:?}", state.status);
+            }
+            if let Some(ref inner) = state.state {
+                assert!(!inner.supervision_events.is_empty());
+                for event in &inner.supervision_events {
                     println!("receiving event: {:?}", event);
                     assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
                     assert_matches!(event.actor_status, ActorStatus::Failed(_));
-                }
-                Err(e) => {
-                    panic!("error: {:?}", e);
                 }
             }
         }
@@ -500,6 +525,9 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+
         let instance = testing::instance().await;
         let host_mesh = testing::host_mesh(extent!(host = 4)).await;
         let proc_mesh = host_mesh.spawn(instance, "test").await.unwrap();
@@ -529,5 +557,7 @@ mod tests {
             );
             assert_eq!(&sender_actor_id, instance.self_id());
         }
+
+        let _ = host_mesh.shutdown(&instance).await;
     }
 }

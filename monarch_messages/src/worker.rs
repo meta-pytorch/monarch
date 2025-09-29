@@ -520,6 +520,7 @@ pub enum StreamCreationMode {
 /// action associated with the sequence number, or if it was defined by
 /// another action that dependend on the failing one.
 #[derive(Debug, Named)]
+#[named(register = false)]
 pub struct SeqError {
     pub seq: Seq,
     pub error: anyhow::Error,
@@ -535,6 +536,7 @@ impl Display for SeqError {
 /// failed (Error) or because an input to the function already had an error value
 /// DependentError.
 #[derive(Error, Debug, Named)]
+#[named(register = false)]
 pub enum CallFunctionError {
     #[error("{0}")]
     Error(#[from] anyhow::Error),

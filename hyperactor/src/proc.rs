@@ -36,6 +36,8 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
+use hyperactor_macros::AttrValue;
+use hyperactor_macros::Named;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -60,16 +62,17 @@ use crate::actor::RemoteActor;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
 use crate::attrs::Attrs;
-use crate::cap;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
 use crate::clock::RealClock;
+use crate::config;
 use crate::context;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
+use crate::declare_attrs;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -88,6 +91,9 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::ordering::OrderedSender;
+use crate::ordering::OrderedSenderError;
+use crate::ordering::ordered_channel;
 use crate::panic_handler;
 use crate::reference::ActorId;
 use crate::reference::Index;
@@ -326,9 +332,25 @@ impl Proc {
 
     /// Create a new direct-addressed proc.
     pub async fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
-        let (addr, rx) = channel::serve(addr).await?;
+        let (addr, rx) = channel::serve(addr)?;
         let proc_id = ProcId::Direct(addr, name);
         let proc = Self::new(proc_id, DialMailboxRouter::new().into_boxed());
+        proc.clone().serve(rx);
+        Ok(proc)
+    }
+
+    /// Create a new direct-addressed proc with a default sender for the forwarder.
+    pub fn direct_with_default(
+        addr: ChannelAddr,
+        name: String,
+        default: BoxedMailboxSender,
+    ) -> Result<Self, ChannelError> {
+        let (addr, rx) = channel::serve(addr)?;
+        let proc_id = ProcId::Direct(addr, name);
+        let proc = Self::new(
+            proc_id,
+            DialMailboxRouter::new_with_default(default).into_boxed(),
+        );
         proc.clone().serve(rx);
         Ok(proc)
     }
@@ -552,7 +574,11 @@ impl Proc {
     /// Call `abort` on the `JoinHandle` associated with the given
     /// root actor. If successful return `Some(root.clone())` else
     /// `None`.
-    pub fn abort_root_actor(&self, root: &ActorId) -> Option<impl Future<Output = ActorId>> {
+    pub fn abort_root_actor(
+        &self,
+        root: &ActorId,
+        this_handle: Option<&JoinHandle<()>>,
+    ) -> Option<impl Future<Output = ActorId>> {
         self.state()
             .ledger
             .roots
@@ -562,6 +588,13 @@ impl Proc {
             .map(|cell| {
                 let r1 = root.clone();
                 let r2 = root.clone();
+                // If abort_root_actor was called from inside an actor task, we don't want to abort that actor's task yet.
+                let skip_abort = this_handle.is_some_and(|this_h| {
+                    cell.inner
+                        .actor_task_handle
+                        .get()
+                        .is_some_and(|other_h| std::ptr::eq(this_h, other_h))
+                });
                 // `start` was called on the actor's instance
                 // immediately following `root`'s insertion into the
                 // ledger. `Instance::start()` is infallible and should
@@ -569,9 +602,11 @@ impl Proc {
                 // should be safe (i.e., not hang forever).
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        let h = cell.inner.actor_task_handle.wait();
-                        tracing::debug!("{}: aborting {:?}", r1, h);
-                        h.abort()
+                        if !skip_abort {
+                            let h = cell.inner.actor_task_handle.wait();
+                            tracing::debug!("{}: aborting {:?}", r1, h);
+                            h.abort();
+                        }
                     })
                     .await
                     .unwrap();
@@ -612,14 +647,23 @@ impl Proc {
     /// - the actors observed to stop;
     /// - the actors not observed to stop when timeout.
     ///
-    /// The "skip_waiting" actor, if it is Some, is always not observed to stop.
+    /// If `cx` is specified, it means this method was called from inside an actor
+    /// in which case we shouldn't wait for it to stop and need to delay aborting
+    /// its task.
     #[hyperactor::instrument]
-    pub async fn destroy_and_wait(
+    pub async fn destroy_and_wait<A: Actor>(
         &mut self,
         timeout: Duration,
-        skip_waiting: Option<&ActorId>,
+        cx: Option<&Context<'_, A>>,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         tracing::debug!("{}: proc stopping", self.proc_id());
+
+        let (this_handle, this_actor_id) = cx.map_or((None, None), |cx| {
+            (
+                Some(cx.actor_task_handle().expect("cannot call destroy_and_wait from inside an actor unless actor has finished starting")),
+                Some(cx.self_id())
+            )
+        });
 
         let mut statuses = HashMap::new();
         for actor_id in self
@@ -638,7 +682,7 @@ impl Proc {
 
         let waits: Vec<_> = statuses
             .iter_mut()
-            .filter(|(actor_id, _)| Some(*actor_id) != skip_waiting)
+            .filter(|(actor_id, _)| Some(*actor_id) != this_actor_id)
             .map(|(actor_id, root)| {
                 let actor_id = actor_id.clone();
                 async move {
@@ -666,7 +710,7 @@ impl Proc {
             .iter()
             .filter(|(actor_id, _)| !stopped_actors.contains(actor_id))
             .map(|(actor_id, _)| {
-                let f = self.abort_root_actor(actor_id);
+                let f = self.abort_root_actor(actor_id, this_handle.clone());
                 async move {
                     let _ = if let Some(f) = f { Some(f.await) } else { None };
                     // If `is_none(&_)` then the proc's `ledger.roots`
@@ -680,6 +724,13 @@ impl Proc {
             })
             .collect();
         let aborted_actors = futures::future::join_all(aborted_actors).await;
+
+        if let Some(this_handle) = this_handle
+            && let Some(this_actor_id) = this_actor_id
+        {
+            tracing::debug!("{}: aborting (delayed) {:?}", this_actor_id, this_handle);
+            this_handle.abort()
+        };
 
         tracing::info!(
             "destroy_and_wait: {} actors stopped, {} actors aborted",
@@ -880,7 +931,10 @@ impl<A: Actor> Instance<A> {
     ) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
-        let (work_tx, work_rx) = mpsc::unbounded_channel();
+        let (work_tx, work_rx) = ordered_channel(
+            actor_id.to_string(),
+            config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
+        );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
@@ -960,7 +1014,7 @@ impl<A: Actor> Instance<A> {
 
     /// Send a message to the actor running on the proc.
     pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
-        <Self as cap::sealed::CanSend>::post(self, port_id, headers, message)
+        <Self as context::MailboxExt>::post(self, port_id, headers, message)
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
@@ -1032,12 +1086,12 @@ impl<A: Actor> Instance<A> {
             }) => (event.actor_status.clone(), Some(event)),
             Err(err) => (
                 ActorStatus::Failed(err.to_string()),
-                Some(ActorSupervisionEvent {
-                    actor_id: self.cell.actor_id().clone(),
-                    actor_status: ActorStatus::Failed(err.to_string()),
-                    message_headers: None,
-                    caused_by: None,
-                }),
+                Some(ActorSupervisionEvent::new(
+                    self.cell.actor_id().clone(),
+                    ActorStatus::Failed(err.to_string()),
+                    None,
+                    None,
+                )),
             ),
         };
 
@@ -1232,28 +1286,23 @@ impl<A: Actor> Instance<A> {
             }
             Ok(false) => {
                 // The supervision event wasn't handled by this actor, chain it and bubble it up.
-                let supervision_event = ActorSupervisionEvent {
-                    actor_id: self.self_id().clone(),
-                    actor_status: ActorStatus::Failed(
-                        "did not handle supervision event".to_string(),
-                    ),
-                    message_headers: None,
-                    caused_by: Some(Box::new(supervision_event)),
-                };
+                let supervision_event = ActorSupervisionEvent::new(
+                    self.self_id().clone(),
+                    ActorStatus::Failed("did not handle supervision event".to_string()),
+                    None,
+                    Some(Box::new(supervision_event)),
+                );
                 Err(supervision_event.into())
             }
             Err(err) => {
                 // The actor failed to handle the supervision event, it should die.
                 // Create a new supervision event for this failure and propagate it.
-                let supervision_event = ActorSupervisionEvent {
-                    actor_id: self.self_id().clone(),
-                    actor_status: ActorStatus::Failed(format!(
-                        "failed to handle supervision event: {}",
-                        err
-                    )),
-                    message_headers: None,
-                    caused_by: Some(Box::new(supervision_event)),
-                };
+                let supervision_event = ActorSupervisionEvent::new(
+                    self.self_id().clone(),
+                    ActorStatus::Failed(format!("failed to handle supervision event: {}", err)),
+                    None,
+                    Some(Box::new(supervision_event)),
+                );
                 Err(supervision_event.into())
             }
         }
@@ -1362,6 +1411,11 @@ impl<A: Actor> Instance<A> {
             ports: self.ports.clone(),
             status_tx: self.status_tx.clone(),
         }
+    }
+
+    /// Get the join handle associated with this actor.
+    fn actor_task_handle(&self) -> Option<&JoinHandle<()>> {
+        self.cell.inner.actor_task_handle.get()
     }
 }
 
@@ -1739,11 +1793,46 @@ pub struct Ports<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
-    workq: mpsc::UnboundedSender<WorkCell<A>>,
+    workq: OrderedSender<WorkCell<A>>,
+}
+
+/// A message's sequencer number infomation.
+#[derive(Serialize, Deserialize, Clone, Named, AttrValue)]
+pub struct SeqInfo {
+    /// Message's sender
+    pub sender: String,
+    /// Message's sequence number in the given session.
+    pub seq: usize,
+}
+
+impl fmt::Display for SeqInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{};{}", self.sender, self.seq)
+    }
+}
+
+impl std::str::FromStr for SeqInfo {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<_> = s.split(';').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("invalid SeqInfo: {}", s));
+        }
+        let sender: String = parts[0].parse()?;
+        let seq: usize = parts[2].parse()?;
+        Ok(SeqInfo { sender, seq })
+    }
+}
+
+declare_attrs! {
+    /// The name of the client who sent this message, and the message's sequence
+    /// number assigned by that client.
+    pub attr SEQ_INFO: SeqInfo;
 }
 
 impl<A: Actor> Ports<A> {
-    fn new(mailbox: Mailbox, workq: mpsc::UnboundedSender<WorkCell<A>>) -> Self {
+    fn new(mailbox: Mailbox, workq: OrderedSender<WorkCell<A>>) -> Self {
         Self {
             ports: DashMap::new(),
             bound: DashMap::new(),
@@ -1771,6 +1860,8 @@ impl<A: Actor> Ports<A> {
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
+                    let client_seq = headers.get(SEQ_INFO).cloned();
+
                     let work = WorkCell::new(move |actor: &mut A, instance: &mut Instance<A>| {
                         Box::pin(async move {
                             // SAFETY: we guarantee that the passed type_info is for type M.
@@ -1785,7 +1876,22 @@ impl<A: Actor> Ports<A> {
                         1,
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
-                    workq.send(work).map_err(anyhow::Error::from)
+                    if workq.enable_buffering {
+                        let SeqInfo { sender, seq } =
+                            client_seq.expect("SEQ_INFO must be set when buffering is enabled");
+
+                        // TODO: return the message contained in the error instead of dropping them when converting
+                        // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
+                        workq.send(sender, seq, work).map_err(|e| match e {
+                            OrderedSenderError::InvalidZeroSeq(_) => {
+                                anyhow::anyhow!("seq must be greater than 0")
+                            }
+                            OrderedSenderError::SendError(e) => anyhow::Error::from(e),
+                            OrderedSenderError::FlushError(e) => e,
+                        })
+                    } else {
+                        workq.direct_send(work).map_err(anyhow::Error::from)
+                    }
                 });
                 entry.insert(Box::new(port.clone()));
                 port
@@ -2745,22 +2851,23 @@ mod tests {
 
         assert_eq!(
             event_rx.recv().await.unwrap(),
-            ActorSupervisionEvent {
-                actor_id: child_actor_id,
-                actor_status: ActorStatus::Failed(
+            // The time field is ignored for Eq and PartialEq.
+            ActorSupervisionEvent::new(
+                child_actor_id,
+                ActorStatus::Failed(
                     "failed to handle supervision event: failed to handle supervision event!"
-                        .to_string()
+                        .to_string(),
                 ),
-                message_headers: None,
-                caused_by: Some(Box::new(ActorSupervisionEvent {
-                    actor_id: grandchild_actor_id,
-                    actor_status: ActorStatus::Failed(
+                None,
+                Some(Box::new(ActorSupervisionEvent::new(
+                    grandchild_actor_id,
+                    ActorStatus::Failed(
                         "serving local[0].parent[2]: processing error: trigger failure".to_string()
                     ),
-                    message_headers: None,
-                    caused_by: None,
-                })),
-            }
+                    None,
+                    None,
+                ))),
+            )
         );
 
         assert!(event_rx.try_recv().is_err());

@@ -21,6 +21,7 @@ use ndslice::Extent;
 use tokio::process::Command;
 use tokio::sync::OnceCell;
 
+use crate::alloc::Alloc;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
@@ -56,7 +57,9 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
             .await
             .unwrap();
 
-        ProcMesh::allocate(cx, alloc, "test.local").await.unwrap()
+        ProcMesh::allocate(cx, Box::new(alloc), "test.local")
+            .await
+            .unwrap()
     });
 
     meshes.push({
@@ -72,10 +75,33 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
             .await
             .unwrap();
 
-        ProcMesh::allocate(cx, alloc, "test.process").await.unwrap()
+        ProcMesh::allocate(cx, Box::new(alloc), "test.process")
+            .await
+            .unwrap()
     });
 
     meshes
+}
+
+/// Return different alloc implementations with the provided extent.
+pub async fn allocs(extent: Extent) -> Vec<Box<dyn Alloc + Send + Sync>> {
+    let spec = AllocSpec {
+        extent: extent.clone(),
+        constraints: Default::default(),
+        proc_name: None,
+    };
+
+    vec![
+        Box::new(LocalAllocator.allocate(spec.clone()).await.unwrap()),
+        Box::new(
+            ProcessAllocator::new(Command::new(
+                buck_resources::get("monarch/hyperactor_mesh/bootstrap").unwrap(),
+            ))
+            .allocate(spec.clone())
+            .await
+            .unwrap(),
+        ),
+    ]
 }
 
 /// Create a local proc mesh with the provided extent, returning the
@@ -94,7 +120,9 @@ pub async fn local_proc_mesh(extent: Extent) -> (ProcMesh, Instance<()>, DialMai
         .await
         .unwrap();
     (
-        ProcMesh::allocate(&actor, alloc, "test").await.unwrap(),
+        ProcMesh::allocate(&actor, Box::new(alloc), "test")
+            .await
+            .unwrap(),
         actor,
         router,
     )
@@ -114,7 +142,7 @@ pub async fn host_mesh(extent: Extent) -> HostMesh {
         .await
         .unwrap();
 
-    HostMesh::allocate(instance().await, alloc, "test")
+    HostMesh::allocate(instance().await, Box::new(alloc), "test", None)
         .await
         .unwrap()
 }

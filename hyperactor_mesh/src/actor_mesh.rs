@@ -27,8 +27,7 @@ use hyperactor::WorldId;
 use hyperactor::actor::RemoteActor;
 use hyperactor::attrs::Attrs;
 use hyperactor::attrs::declare_attrs;
-use hyperactor::cap;
-use hyperactor::cap::CanSend;
+use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
@@ -70,7 +69,7 @@ declare_attrs! {
 /// an `M`-typed message
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
 pub(crate) fn actor_mesh_cast<A, M>(
-    caps: &impl cap::CanSend,
+    cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
     comm_actor_ref: &ActorRef<CommActor>,
     selection_of_root: Selection,
@@ -89,7 +88,7 @@ where
 
     let message = CastMessageEnvelope::new::<A, M>(
         actor_mesh_id.clone(),
-        caps.actor_id().clone(),
+        cx.mailbox().actor_id().clone(),
         cast_mesh_shape.clone(),
         message,
     )?;
@@ -109,14 +108,14 @@ where
 
     comm_actor_ref
         .port()
-        .send_with_headers(caps, headers, cast_message)?;
+        .send_with_headers(cx, headers, cast_message)?;
 
     Ok(())
 }
 
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
 pub(crate) fn cast_to_sliced_mesh<A, M>(
-    caps: &impl cap::CanSend,
+    cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
     comm_actor_ref: &ActorRef<CommActor>,
     sel_of_sliced: &Selection,
@@ -144,7 +143,7 @@ where
 
     // Cast.
     actor_mesh_cast::<A, M>(
-        caps,
+        cx,
         actor_mesh_id,
         comm_actor_ref,
         sel_of_root,
@@ -165,7 +164,7 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
     fn cast<M>(
         &self,
-        sender: &impl CanSend,
+        cx: &impl context::Actor,
         selection: Selection,
         message: M,
     ) -> Result<(), CastError>
@@ -174,7 +173,7 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
         M: Castable + RemoteMessage,
     {
         actor_mesh_cast::<Self::Actor, M>(
-            sender,                        // send capability
+            cx,                            // actor context
             self.id(),                     // actor mesh id (destination mesh)
             self.proc_mesh().comm_actor(), // comm actor
             selection,                     // the selected actors
@@ -414,13 +413,13 @@ impl<A: RemoteActor> ActorMesh for SlicedActorMesh<'_, A> {
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-    fn cast<M>(&self, sender: &impl CanSend, sel: Selection, message: M) -> Result<(), CastError>
+    fn cast<M>(&self, cx: &impl context::Actor, sel: Selection, message: M) -> Result<(), CastError>
     where
         Self::Actor: RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
         cast_to_sliced_mesh::<A, M>(
-            /*caps=*/ sender,
+            /*cx=*/ cx,
             /*actor_mesh_id=*/ self.id(),
             /*comm_actor_ref*/ self.proc_mesh().comm_actor(),
             /*sel_of_sliced=*/ &sel,
@@ -510,7 +509,7 @@ pub(crate) mod test_util {
             cx: &Context<Self>,
             GetRank(ok, reply): GetRank,
         ) -> Result<(), anyhow::Error> {
-            let point = cx.cast_info();
+            let point = cx.cast_point();
             reply.send(cx, point.rank())?;
             anyhow::ensure!(ok, "intentional error!"); // If `!ok` exit with `Err()`.
             Ok(())
@@ -1035,10 +1034,6 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                // TODO: Replace `Shape` with `Extent` in
-                // `set_cast_info_on_headers` (and wherever else - it
-                // is to be retired).
-                let shape = Shape::new(extent.labels().to_vec(), extent.to_slice()).unwrap();
 
                 let mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (reply_port_handle, mut reply_port_receiver) = mesh.client().open_port::<usize>();
@@ -1047,17 +1042,17 @@ mod tests {
                 let actor_mesh: RootActorMesh<TestActor> = mesh.spawn("test", &()).await.unwrap();
                 let actor_ref = actor_mesh.get(0).unwrap();
                 let mut headers = Attrs::new();
-                set_cast_info_on_headers(&mut headers, 0, shape.clone(), mesh.client().self_id().clone());
+                set_cast_info_on_headers(&mut headers, extent.point_of_rank(0).unwrap(), mesh.client().self_id().clone());
                 actor_ref.send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone())).unwrap();
                 assert_eq!(0, reply_port_receiver.recv().await.unwrap());
 
-                set_cast_info_on_headers(&mut headers, 1, shape.clone(), mesh.client().self_id().clone());
+                set_cast_info_on_headers(&mut headers, extent.point_of_rank(1).unwrap(), mesh.client().self_id().clone());
                 actor_ref.port()
                     .send_with_headers(mesh.client(), headers.clone(), GetRank(true, reply_port.clone()))
                     .unwrap();
                 assert_eq!(1, reply_port_receiver.recv().await.unwrap());
 
-                set_cast_info_on_headers(&mut headers, 2, shape.clone(), mesh.client().self_id().clone());
+                set_cast_info_on_headers(&mut headers, extent.point_of_rank(2).unwrap(), mesh.client().self_id().clone());
                 actor_ref.actor_id()
                     .port_id(GetRank::port())
                     .send_with_headers(
@@ -1284,6 +1279,8 @@ mod tests {
 
         use bytes::Bytes;
         use hyperactor::PortId;
+        use hyperactor::clock::Clock;
+        use hyperactor::clock::RealClock;
         use hyperactor::mailbox::MessageEnvelope;
         use rand::Rng;
         use tokio::process::Command;
@@ -1346,7 +1343,7 @@ mod tests {
                 .unwrap();
             let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
             let mut proc_events = proc_mesh.events().unwrap();
-            let mut actor_mesh: RootActorMesh<TestActor> =
+            let actor_mesh: RootActorMesh<TestActor> =
                 proc_mesh.spawn("ingest", &()).await.unwrap();
             let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
             let dest = actor_mesh.get(0).unwrap();
@@ -1366,9 +1363,9 @@ mod tests {
             // Send direct. A cast message is > 1024 bytes.
             dest.send(proc_mesh.client(), payload).unwrap();
             #[allow(clippy::disallowed_methods)]
-            let result =
-                tokio::time::timeout(tokio::time::Duration::from_secs(2), reply_receiver.recv())
-                    .await;
+            let result = RealClock
+                .timeout(Duration::from_secs(2), reply_receiver.recv())
+                .await;
             assert!(result.is_ok(), "Operation should not time out");
 
             // Message sized to max frame length + 1.
@@ -1397,12 +1394,11 @@ mod tests {
             // does not depend on a timeout.
             {
                 let event = proc_events.next().await.unwrap();
-                assert_matches!(event, ProcEvent::Crashed(_, _),);
-            }
-            {
-                let mut actor_mesh_events = actor_mesh.events().unwrap();
-                let event = actor_mesh_events.next().await.unwrap();
-                assert_eq!(event.actor_id.name(), &actor_mesh.name);
+                assert_matches!(
+                    event,
+                    ProcEvent::Crashed(_, _),
+                    "Should have received crash event"
+                );
             }
         }
 

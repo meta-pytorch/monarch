@@ -659,7 +659,9 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///         shopping_list_actor.list(&client).await?
 ///     );
 ///
-///     let _ = proc.destroy_and_wait(Duration::from_secs(1), None).await?;
+///     let _ = proc
+///         .destroy_and_wait::<()>(Duration::from_secs(1), None)
+///         .await?;
 ///     Ok(())
 /// }
 /// ```
@@ -716,7 +718,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => cx.self_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -735,14 +737,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated client method for this enum variant."]
                     async fn #variant_name_snake(
                         &self,
-                        cx: &impl hyperactor::context::Actor,
+                        cx: &impl hyperactor::context::Mailbox,
                         #(#arg_names: #arg_types),*)
                         -> Result<#return_type, hyperactor::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
-                        cx: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                        cx: &impl hyperactor::context::Mailbox,
                         #(#arg_names: #arg_types),*)
                         -> Result<#return_type, hyperactor::anyhow::Error>;
                 });
@@ -790,7 +792,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => cx.self_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -809,14 +811,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                     #[doc = "The generated client method for this enum variant."]
                     async fn #variant_name_snake(
                         &self,
-                        cx: &impl hyperactor::context::Actor,
+                        cx: &impl hyperactor::context::Mailbox,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
-                        cx: &impl hyperactor::cap::CanSend,
+                        cx: &impl hyperactor::context::Mailbox,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error>;
                 });
@@ -948,7 +950,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => self.actor_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -961,7 +963,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
                         async fn #variant_name_snake(
                             &self,
-                            cx: &impl hyperactor::context::Actor,
+                            cx: &impl hyperactor::context::Mailbox,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -975,7 +977,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
                         async fn #variant_name_snake_deprecated(
                             &self,
-                            cx: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                            cx: &impl hyperactor::context::Mailbox,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -991,7 +993,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
                         async fn #variant_name_snake(
                             &self,
-                            cx: &impl hyperactor::context::Actor,
+                            cx: &impl hyperactor::context::Mailbox,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -1006,7 +1008,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
                         async fn #variant_name_snake_deprecated(
                             &self,
-                            cx: &(impl hyperactor::cap::CanSend + hyperactor::cap::CanOpenPort),
+                            cx: &impl hyperactor::context::Mailbox,
                             #(#arg_names: #arg_types),*)
                             -> Result<#return_type, hyperactor::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
@@ -1052,7 +1054,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 impl_methods.push(quote! {
                     async fn #variant_name_snake(
                         &self,
-                        cx: &impl hyperactor::context::Actor,
+                        cx: &impl hyperactor::context::Mailbox,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error> {
                         let message = #constructor;
@@ -1063,7 +1065,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
 
                     async fn #variant_name_snake_deprecated(
                         &self,
-                        cx: &impl hyperactor::cap::CanSend,
+                        cx: &impl hyperactor::context::Mailbox,
                         #(#arg_names: #arg_types),*)
                         -> Result<(), hyperactor::anyhow::Error> {
                         let message = #constructor;
@@ -1245,8 +1247,16 @@ pub fn instrument_infallible(args: TokenStream, input: TokenStream) -> TokenStre
 /// provided type URI. The name of the type is its fully-qualified Rust
 /// path. The name may be overridden by providing a string value for the
 /// `name` attribute.
+///
+/// In addition to deriving [`hyperactor::data::Named`], this macro will
+/// register the type using the [`hyperactor::register_type`] macro for
+/// concrete types. This behavior can be overridden by providing a literal
+/// booolean for the `register` attribute.
+///
+/// This also requires the type to implement [`serde::Serialize`]
+/// and [`serde::Deserialize`].
 #[proc_macro_derive(Named, attributes(named))]
-pub fn named_derive(input: TokenStream) -> TokenStream {
+pub fn derive_named(input: TokenStream) -> TokenStream {
     // Parse the input struct or enum
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
@@ -1254,6 +1264,11 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
     let mut typename = quote! {
         concat!(std::module_path!(), "::", stringify!(#struct_name))
     };
+
+    let type_params: Vec<_> = input.generics.type_params().collect();
+    let has_generics = !type_params.is_empty();
+    // By default, register concrete types.
+    let mut register = !has_generics;
 
     for attr in &input.attrs {
         if attr.path().is_ident("named") {
@@ -1270,12 +1285,26 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
                         if path.is_ident("name") {
                             if let Lit::Str(name) = expr_lit.lit {
                                 typename = quote! { #name };
+                            } else {
+                                return TokenStream::from(
+                                    syn::Error::new_spanned(path, "invalid name")
+                                        .to_compile_error(),
+                                );
+                            }
+                        } else if path.is_ident("register") {
+                            if let Lit::Bool(flag) = expr_lit.lit {
+                                register = flag.value;
+                            } else {
+                                return TokenStream::from(
+                                    syn::Error::new_spanned(path, "invalid registration flag")
+                                        .to_compile_error(),
+                                );
                             }
                         } else {
                             return TokenStream::from(
                                 syn::Error::new_spanned(
                                     path,
-                                    "unsupported attribute (only `name` is supported)",
+                                    "unsupported attribute (only `name` or `register` is supported)",
                                 )
                                 .to_compile_error(),
                             );
@@ -1285,10 +1314,6 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
             }
         }
     }
-
-    // Extract type parameters and add Named bounds
-    let type_params: Vec<_> = input.generics.type_params().collect();
-    let has_generics = !type_params.is_empty();
 
     // Create a version of generics with Named bounds for the impl block
     let mut generics_with_bounds = input.generics.clone();
@@ -1352,6 +1377,22 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
         _ => quote! {},
     };
 
+    // Try to register the type so we can get runtime TypeInfo.
+    // We can only do this for concrete types.
+    //
+    // TODO: explore making type hashes "structural", so that we
+    // can derive generic type hashes and reconstruct their runtime
+    // TypeInfos.
+    let registration = if register {
+        quote! {
+            hyperactor::register_type!(#struct_name);
+        }
+    } else {
+        quote! {
+            // Registration not requested
+        }
+    };
+
     let (_, ty_generics, where_clause) = input.generics.split_for_impl();
     // Ideally we would compute the has directly in the macro itself, however, we don't
     // have access to the fully expanded pathname here as we use the intrinsic std::module_path!() macro.
@@ -1361,6 +1402,8 @@ pub fn named_derive(input: TokenStream) -> TokenStream {
             fn typehash() -> u64 { #typehash_impl }
             #arm_impl
         }
+
+        #registration
     };
 
     TokenStream::from(expanded)
@@ -1511,6 +1554,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
+    let mut type_registrations = Vec::new();
 
     for ty in &tys {
         handles.push(quote! {
@@ -1518,6 +1562,9 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
         bindings.push(quote! {
             ports.bind::<#ty>();
+        });
+        type_registrations.push(quote! {
+            hyperactor::register_type!(#ty);
         });
     }
 
@@ -1527,6 +1574,8 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl hyperactor::actor::RemoteActor for #data_type_name {}
 
         #(#handles)*
+
+        #(#type_registrations)*
 
         // Always export the `Signal` type.
         impl hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name {}
@@ -1545,7 +1594,6 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     if spawn {
         expanded.extend(quote! {
-
             hyperactor::remote!(#data_type_name);
         });
     }
@@ -1591,7 +1639,7 @@ pub fn alias(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #[doc = "The generated alias struct."]
-        #[derive(Debug, Named)]
+        #[derive(Debug, hyperactor::Named, serde::Serialize, serde::Deserialize)]
         pub struct #alias;
         impl hyperactor::actor::RemoteActor for #alias {}
 
@@ -2266,4 +2314,57 @@ pub fn observe_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Derive the [`hyperactor::attrs::AttrValue`] trait for a struct or enum.
+///
+/// This macro generates an implementation that uses the type's `ToString` and `FromStr`
+/// implementations for the `display` and `parse` methods respectively.
+///
+/// The type must already implement the required super-traits:
+/// `Named + Sized + Serialize + DeserializeOwned + Send + Sync + Clone + 'static`
+/// as well as `ToString` and `FromStr`.
+///
+/// # Example
+///
+/// ```
+/// #[derive(AttrValue, Named, Serialize, Deserialize, Clone)]
+/// struct MyCustomType {
+///     value: String,
+/// }
+///
+/// impl std::fmt::Display for MyCustomType {
+///     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+///         write!(f, "{}", self.value)
+///     }
+/// }
+///
+/// impl std::str::FromStr for MyCustomType {
+///     type Err = std::io::Error;
+///
+///     fn from_str(s: &str) -> Result<Self, Self::Err> {
+///         Ok(MyCustomType {
+///             value: s.to_string(),
+///         })
+///     }
+/// }
+/// ```
+#[proc_macro_derive(AttrValue)]
+pub fn derive_attr_value(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    TokenStream::from(quote! {
+        impl #impl_generics hyperactor::attrs::AttrValue for #name #ty_generics #where_clause {
+            fn display(&self) -> String {
+                self.to_string()
+            }
+
+            fn parse(value: &str) -> Result<Self, anyhow::Error> {
+                value.parse().map_err(|e| anyhow::anyhow!("failed to parse {}: {}", stringify!(#name), e))
+            }
+        }
+    })
 }

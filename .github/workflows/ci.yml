@@ -22,30 +22,38 @@ jobs:
     name: Build CPU
     uses: ./.github/workflows/build-cpu.yml
 
-  test-cuda:
-    name: Test CUDA
+  test-cpu-python:
+    name: Test CPU Python
+    needs: build-cpu
+    uses: ./.github/workflows/test-cpu-python.yml
+    with:
+      artifact-name: monarch-cpu-${{ github.sha }}
+
+  test-gpu-python:
+    name: Test GPU Python
     needs: build-cuda
-    uses: ./.github/workflows/test-cuda.yml
+    uses: ./.github/workflows/test-gpu-python.yml
     with:
       artifact-name: monarch-cuda-${{ github.sha }}
 
-  test-cpu:
-    name: Test CPU
-    needs: build-cpu
-    uses: ./.github/workflows/test-cpu.yml
+  test-gpu-rust:
+    name: Test GPU Rust
+    needs: build-cuda
+    uses: ./.github/workflows/test-gpu-rust.yml
     with:
-      artifact-name: monarch-cpu-${{ github.sha }}
+      artifact-name: monarch-cuda-${{ github.sha }}
 
   status-check:
     name: Status Check
     runs-on: ubuntu-latest
-    needs: [test-cuda, test-cpu]
+    needs: [test-cpu-python, test-gpu-python, test-gpu-rust]
     if: always()
     steps:
       - name: Check all jobs status
         run: |
-          if [[ "${{ needs.test-cuda.result }}" != "success" ]] ||
-             [[ "${{ needs.test-cpu.result }}" != "success" ]]; then
+          if [[ "${{ needs.test-cpu-python.result }}" != "success" ]] ||
+             [[ "${{ needs.test-gpu-python.result }}" != "success" ]] ||
+             [[ "${{ needs.test-gpu-rust.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           else

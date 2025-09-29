@@ -47,5 +47,6 @@
   - [`#[derive(Named)]`](macros/named.md)
   - [`#[export]`](macros/export.md)
   - [`#[forward]`](macros/forward.md)
+  - [`#[alias]`](macros/alias.md)
 - [Appendix](appendix/index.md)
   - [Typed Message Lifecycle](appendix/lifecycle.md)

@@ -8,6 +8,8 @@
 
 from typing import final
 
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
+
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
@@ -17,8 +19,14 @@ class LoggingMeshClient:
     Python binding for the Rust LoggingMeshClient.
     """
     @staticmethod
-    def spawn(proc_mesh: ProcMesh) -> PythonTask[LoggingMeshClient]: ...
+    def spawn(
+        instance: Instance, proc_mesh: ProcMesh
+    ) -> PythonTask[LoggingMeshClient]: ...
     def set_mode(
-        self, stream_to_client: bool, aggregate_window_sec: int | None, level: int
+        self,
+        instance: Instance,
+        stream_to_client: bool,
+        aggregate_window_sec: int | None,
+        level: int,
     ) -> None: ...
-    def flush(self) -> PythonTask[None]: ...
+    def flush(self, instance: Instance) -> PythonTask[None]: ...

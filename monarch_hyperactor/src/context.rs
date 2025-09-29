@@ -15,9 +15,10 @@ use pyo3::prelude::*;
 use crate::actor::PythonActor;
 use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
+use crate::runtime;
 use crate::shape::PyPoint;
 
-enum ContextInstance {
+pub(crate) enum ContextInstance {
     Client(hyperactor::Instance<()>),
     PythonActor(hyperactor::Instance<PythonActor>),
 }
@@ -38,15 +39,47 @@ impl ContextInstance {
     }
 }
 
+impl Clone for ContextInstance {
+    fn clone(&self) -> Self {
+        match self {
+            ContextInstance::Client(ins) => ContextInstance::Client(ins.clone_for_py()),
+            ContextInstance::PythonActor(ins) => ContextInstance::PythonActor(ins.clone_for_py()),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! instance_dispatch {
+    ($ins:expr, |$cx:ident| $code:block) => {
+        match $ins.context_instance() {
+            $crate::context::ContextInstance::Client($cx) => $code,
+            $crate::context::ContextInstance::PythonActor($cx) => $code,
+        }
+    };
+    ($ins:expr, async |$cx:ident| $code:block) => {
+        match $ins.context_instance() {
+            $crate::context::ContextInstance::Client($cx) => async $code.await,
+            $crate::context::ContextInstance::PythonActor($cx) => async $code.await,
+        }
+    };
+    ($ins:expr, async move |$cx:ident| $code:block) => {
+        match $ins.context_instance() {
+            $crate::context::ContextInstance::Client($cx) => async move $code.await,
+            $crate::context::ContextInstance::PythonActor($cx) => async move $code.await,
+        }
+    };
+}
+
+#[derive(Clone)]
 #[pyclass(name = "Instance", module = "monarch._src.actor.actor_mesh")]
-pub(crate) struct PyInstance {
+pub struct PyInstance {
     inner: ContextInstance,
     #[pyo3(get, set)]
     proc_mesh: Option<PyObject>,
     #[pyo3(get, set, name = "_controller_controller")]
     controller_controller: Option<PyObject>,
     #[pyo3(get, set)]
-    rank: PyPoint,
+    pub(crate) rank: PyPoint,
     #[pyo3(get, set, name = "_children")]
     children: Option<PyObject>,
 }
@@ -54,7 +87,7 @@ pub(crate) struct PyInstance {
 #[pymethods]
 impl PyInstance {
     #[getter]
-    fn _mailbox(&self) -> PyMailbox {
+    pub(crate) fn _mailbox(&self) -> PyMailbox {
         PyMailbox {
             inner: self.inner.mailbox_for_py().clone(),
         }
@@ -63,6 +96,12 @@ impl PyInstance {
     #[getter]
     fn actor_id(&self) -> PyActorId {
         self.inner.self_id().clone().into()
+    }
+}
+
+impl PyInstance {
+    pub(crate) fn context_instance(&self) -> &ContextInstance {
+        &self.inner
     }
 }
 
@@ -122,6 +161,7 @@ impl PyContext {
 
     #[staticmethod]
     fn _root_client_context(py: Python<'_>) -> PyResult<PyContext> {
+        let _guard = runtime::get_tokio_runtime().enter();
         let instance: PyInstance = global_root_client().into();
         Ok(PyContext {
             instance: instance.into_pyobject(py)?.into(),
@@ -137,7 +177,7 @@ impl PyContext {
     ) -> PyContext {
         PyContext {
             instance,
-            rank: cx.cast_info(),
+            rank: cx.cast_point(),
         }
     }
 }

@@ -10,6 +10,7 @@ These macros support a complete message-passing workflow: from defining message 
 - [`#[derive(Named)]`](named.md) — give a type a globally unique name and port for routing and reflection
 - [`#[export]`](export.md) — make an actor remotely spawnable and routable by registering its type, handlers, and and optionally spawnable from outside the current runtime
 - [`#[forward]`](forward.md) — route messages to a user-defined handler trait implementation
+- [`#[alias]`](alias.md) - define a façade actor type that exposes only a curated set of messages, allowing you to hand out stable or restricted APIs without tying clients to the concrete actor
 
 ## Macro Summary
 
@@ -30,3 +31,6 @@ These macros support a complete message-passing workflow: from defining message 
 
 - **`#[forward]`**
   Forwards messages to a user-defined handler trait implementation.
+
+- **`#[alias]`**
+  Defines a façade actor that exposes only a curated set of messages.

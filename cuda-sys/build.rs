@@ -9,16 +9,14 @@
 use std::env;
 use std::path::PathBuf;
 
-use build_utils::*;
-
 #[cfg(target_os = "macos")]
 fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Validate CUDA installation and get CUDA home path
-    let cuda_home = match build_utils::validate_cuda_installation() {
-        Ok(home) => home,
+    // Discover CUDA configuration including include and lib directories
+    let cuda_config = match build_utils::discover_cuda_config() {
+        Ok(config) => config,
         Err(_) => {
             build_utils::print_cuda_error_help();
             std::process::exit(1);
@@ -44,9 +42,10 @@ fn main() {
             is_global: false,
         });
 
-    // Add CUDA include path (we already validated it exists)
-    let cuda_include_path = format!("{}/include", cuda_home);
-    builder = builder.clang_arg(format!("-I{}", cuda_include_path));
+    // Add CUDA include paths from the discovered configuration
+    for include_dir in &cuda_config.include_dirs {
+        builder = builder.clang_arg(format!("-I{}", include_dir.display()));
+    }
 
     // Include headers and libs from the active environment.
     let python_config = match build_utils::python_env_dirs_with_interpreter("python3") {
@@ -82,20 +81,19 @@ fn main() {
     println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
 
+    // Generate bindings - fail fast if this doesn't work
+    let bindings = builder.generate().expect("Unable to generate bindings");
+
     // Write the bindings to the $OUT_DIR/bindings.rs file
     match env::var("OUT_DIR") {
         Ok(out_dir) => {
             let out_path = PathBuf::from(out_dir);
-            match builder.generate() {
-                Ok(bindings) => match bindings.write_to_file(out_path.join("bindings.rs")) {
-                    Ok(_) => {
-                        println!("cargo::rustc-cfg=cargo");
-                        println!("cargo::rustc-check-cfg=cfg(cargo)");
-                    }
-                    Err(e) => eprintln!("Warning: Couldn't write bindings: {}", e),
-                },
-                Err(e) => eprintln!("Warning: Unable to generate bindings: {}", e),
-            }
+            bindings
+                .write_to_file(out_path.join("bindings.rs"))
+                .expect("Couldn't write bindings");
+
+            println!("cargo::rustc-cfg=cargo");
+            println!("cargo::rustc-check-cfg=cfg(cargo)");
         }
         Err(_) => {
             println!("Note: OUT_DIR not set, skipping bindings file generation");

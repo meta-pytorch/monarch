@@ -14,7 +14,7 @@ use std::sync::Weak;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::ActorRef;
-use hyperactor::Mailbox;
+use hyperactor::actor::ActorStatus;
 use hyperactor::id;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::Mesh;
@@ -42,6 +42,8 @@ use tokio::sync::mpsc::unbounded_channel;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
+use crate::context::PyInstance;
+use crate::instance_dispatch;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
@@ -49,18 +51,20 @@ use crate::proc_mesh::Keepalive;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
-use crate::shape::PyShape;
+use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
 
 /// Trait defining the common interface for actor mesh, mesh ref and actor mesh implementations.
 /// This corresponds to the Python ActorMeshProtocol ABC.
-trait ActorMeshProtocol: Send + Sync {
+pub(crate) trait ActorMeshProtocol: Send + Sync {
     /// Cast a message to actors selected by the given selection using the specified mailbox.
-    fn cast(&self, message: PythonMessage, selection: Selection, mailbox: Mailbox) -> PyResult<()>;
-
-    /// Create a new actor mesh with the specified shape.
-    fn new_with_shape(&self, shape: PyShape) -> PyResult<Box<dyn ActorMeshProtocol>>;
+    fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()>;
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)>;
 
@@ -81,9 +85,11 @@ trait ActorMeshProtocol: Send + Sync {
 
     /// Initialize the actor mesh asynchronously.
     /// Default implementation returns None (no initialization needed).
-    fn initialized<'py>(&self) -> PyResult<PyPythonTask> {
+    fn initialized(&self) -> PyResult<PyPythonTask> {
         PyPythonTask::new(async { Ok(None::<()>) })
     }
+
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>>;
 }
 
 /// This just forwards to the rust trait that can implement these bindings
@@ -96,25 +102,20 @@ pub(crate) struct PythonActorMesh {
 }
 
 impl PythonActorMesh {
-    pub(crate) fn new<F>(f: F) -> Self
+    pub(crate) fn new<F>(f: F, supervised: bool) -> Self
     where
-        F: Future<Output = PyResult<PythonActorMeshImpl>> + Send + 'static,
+        F: Future<Output = PyResult<Box<dyn ActorMeshProtocol>>> + Send + 'static,
     {
         PythonActorMesh {
-            inner: Box::new(AsyncActorMesh::new_queue(async {
-                let b: Box<dyn ActorMeshProtocol> = Box::new(f.await?);
-                Ok(b)
-            })),
+            inner: Box::new(AsyncActorMesh::new_queue(f, supervised)),
         }
     }
-    pub(crate) fn from_impl(im: PythonActorMeshImpl) -> Self {
-        PythonActorMesh {
-            inner: Box::new(im),
-        }
+    pub(crate) fn from_impl(inner: Box<dyn ActorMeshProtocol>) -> Self {
+        PythonActorMesh { inner }
     }
 }
 
-fn to_hy_sel(selection: &str) -> PyResult<Selection> {
+pub(crate) fn to_hy_sel(selection: &str) -> PyResult<Selection> {
     match selection {
         "choose" => Ok(sel!(?)),
         "all" => Ok(sel!(*)),
@@ -127,13 +128,18 @@ fn to_hy_sel(selection: &str) -> PyResult<Selection> {
 
 #[pymethods]
 impl PythonActorMesh {
-    fn cast(&self, message: &PythonMessage, selection: &str, mailbox: &PyMailbox) -> PyResult<()> {
+    fn cast(
+        &self,
+        message: &PythonMessage,
+        selection: &str,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
         let sel = to_hy_sel(selection)?;
-        self.inner.cast(message.clone(), sel, mailbox.inner.clone())
+        self.inner.cast(message.clone(), sel, instance)
     }
 
-    fn new_with_shape(&self, shape: PyShape) -> PyResult<PythonActorMesh> {
-        let inner = self.inner.new_with_shape(shape)?;
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
+        let inner = self.inner.new_with_region(region)?;
         Ok(PythonActorMesh { inner })
     }
 
@@ -251,7 +257,12 @@ impl PythonActorMeshImpl {
 }
 
 impl ActorMeshProtocol for PythonActorMeshImpl {
-    fn cast(&self, message: PythonMessage, selection: Selection, mailbox: Mailbox) -> PyResult<()> {
+    fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
         let unhealthy_event = self
             .health_state
             .unhealthy_event
@@ -273,33 +284,40 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             }
         }
 
-        self.try_inner()?
-            .cast(&mailbox, selection, message.clone())
-            .map_err(|err| PyException::new_err(err.to_string()))?;
+        instance_dispatch!(instance, |cx_instance| {
+            self.try_inner()?
+                .cast(cx_instance, selection, message)
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+        });
         Ok(())
     }
+
     fn supervision_event(&self) -> PyResult<Option<PyShared>> {
         let mut receiver = self.health_state.user_monitor_sender.subscribe();
         PyPythonTask::new(async move {
             let event = receiver.recv().await;
             let event = match event {
                 Ok(Some(event)) => PyActorSupervisionEvent::from(event.clone()),
-                Ok(None) | Err(_) => PyActorSupervisionEvent {
+                Ok(None) | Err(_) => PyActorSupervisionEvent::from(ActorSupervisionEvent::new(
                     // Dummy actor as placeholder to indicate the whole mesh is stopped
                     // TODO(albertli): remove this when pushing all supervision logic to rust.
-                    actor_id: id!(default[0].actor[0]).into(),
-                    actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
-                },
+                    id!(default[0].actor[0]),
+                    ActorStatus::Failed("actor mesh is stopped due to proc mesh shutdown".into()),
+                    None,
+                    None,
+                )),
             };
             Ok(PyErr::new::<SupervisionError, _>(format!(
                 "Actor {:?} exited because of the following reason: {}",
-                event.actor_id, event.actor_status
+                event.actor_id(),
+                event.__repr__()?
             )))
         })
         .map(|mut x| x.spawn().map(Some))?
     }
-    fn new_with_shape(&self, shape: PyShape) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        self.bind()?.new_with_shape(shape)
+
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
+        self.bind()?.new_with_region(region)
     }
 
     fn stop<'py>(&self) -> PyResult<PyPythonTask> {
@@ -331,12 +349,20 @@ impl PythonActorMeshImpl {
 
         match &*unhealthy_event {
             Unhealthy::SoFarSoGood => Ok(None),
-            Unhealthy::StreamClosed => Ok(Some(PyActorSupervisionEvent {
-                // Dummy actor as place holder to indicate the whole mesh is stopped
-                // TODO(albertli): remove this when pushing all supervision logic to rust.
-                actor_id: id!(default[0].actor[0]).into(),
-                actor_status: "actor mesh is stopped due to proc mesh shutdown".to_string(),
-            })),
+            Unhealthy::StreamClosed => {
+                Ok(Some(PyActorSupervisionEvent::from(
+                    ActorSupervisionEvent::new(
+                        // Dummy actor as placeholder to indicate the whole mesh is stopped
+                        // TODO(albertli): remove this when pushing all supervision logic to rust.
+                        id!(default[0].actor[0]),
+                        ActorStatus::Failed(
+                            "actor mesh is stopped due to proc mesh shutdown".into(),
+                        ),
+                        None,
+                        None,
+                    ),
+                )))
+            }
             Unhealthy::Crashed(event) => Ok(Some(PyActorSupervisionEvent::from(event.clone()))),
         }
     }
@@ -380,7 +406,12 @@ struct PythonActorMeshRef {
 }
 
 impl ActorMeshProtocol for PythonActorMeshRef {
-    fn cast(&self, message: PythonMessage, selection: Selection, client: Mailbox) -> PyResult<()> {
+    fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
         if let Some(root_health_state) = &self.root_health_state {
             // MeshRef has not been serialized and sent over the wire so we can actually validate
             // if the underlying mesh still exists
@@ -419,16 +450,19 @@ impl ActorMeshProtocol for PythonActorMeshRef {
                 ));
             }
         }
-        self.inner
-            .cast(&client, selection, message.clone())
-            .map_err(|err| PyException::new_err(err.to_string()))?;
+
+        instance_dispatch!(instance, |cx_instance| {
+            self.inner
+                .cast(cx_instance, selection, message)
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+        });
         Ok(())
     }
 
-    fn new_with_shape(&self, shape: PyShape) -> PyResult<Box<dyn ActorMeshProtocol>> {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
         let sliced = self
             .inner
-            .new_with_shape(shape.get_inner().clone())
+            .new_with_shape(region.as_inner().into())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         Ok(Box::new(Self {
             inner: sliced,
@@ -510,14 +544,14 @@ impl Clone for ClonePyErr {
 }
 
 type ActorMeshResult = Result<Arc<dyn ActorMeshProtocol>, ClonePyErr>;
-struct AsyncActorMesh {
+pub(crate) struct AsyncActorMesh {
     mesh: Shared<Pin<Box<dyn Future<Output = ActorMeshResult> + Send>>>,
     queue: UnboundedSender<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
     supervised: bool,
 }
 
 impl AsyncActorMesh {
-    fn new_queue<F>(f: F) -> AsyncActorMesh
+    pub(crate) fn new_queue<F>(f: F, supervised: bool) -> AsyncActorMesh
     where
         F: Future<Output = PyResult<Box<dyn ActorMeshProtocol>>> + Send + 'static,
     {
@@ -533,7 +567,7 @@ impl AsyncActorMesh {
                 }
             }
         });
-        AsyncActorMesh::new(queue, true, f)
+        AsyncActorMesh::new(queue, supervised, f)
     }
     fn new<F>(
         queue: UnboundedSender<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
@@ -560,14 +594,20 @@ impl AsyncActorMesh {
 }
 
 impl ActorMeshProtocol for AsyncActorMesh {
-    fn cast(&self, message: PythonMessage, selection: Selection, client: Mailbox) -> PyResult<()> {
+    fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
         let mesh = self.mesh.clone();
-        self.push(async {
+        let instance = instance.clone();
+        self.push(async move {
             let port = match &message.kind {
                 PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
                 _ => None,
             };
-            let result = async { mesh.await?.cast(message, selection, client.clone()) }.await;
+            let result = async { mesh.await?.cast(message, selection, &instance) }.await;
             match (port, result) {
                 (Some(p), Err(pyerr)) => Python::with_gil(|py: Python<'_>| {
                     let port_ref = match p {
@@ -578,7 +618,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
                     let port = py
                         .import("monarch._src.actor.actor_mesh")
                         .unwrap()
-                        .call_method1("Port", (port_ref, PyMailbox { inner: client }, 0))
+                        .call_method1("Port", (port_ref, instance._mailbox(), 0))
                         .unwrap();
                     port.call_method1("exception", (pyerr.value(py),)).unwrap();
                 }),
@@ -588,12 +628,13 @@ impl ActorMeshProtocol for AsyncActorMesh {
         Ok(())
     }
 
-    fn new_with_shape(&self, shape: PyShape) -> PyResult<Box<dyn ActorMeshProtocol>> {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
         let mesh = self.mesh.clone();
+        let region = region.clone();
         Ok(Box::new(AsyncActorMesh::new(
             self.queue.clone(),
             self.supervised,
-            async { mesh.await?.new_with_shape(shape) },
+            async move { mesh.await?.new_with_region(&region) },
         )))
     }
 
@@ -638,31 +679,29 @@ impl ActorMeshProtocol for AsyncActorMesh {
 )]
 #[derive(Debug)]
 pub struct PyActorSupervisionEvent {
-    /// Actor ID of the actor where supervision event originates from.
-    #[pyo3(get)]
-    actor_id: PyActorId,
-    /// String representation of the actor status.
-    /// TODO(T230628951): make it an enum or a struct for easier consumption.
-    #[pyo3(get)]
-    actor_status: String,
+    inner: ActorSupervisionEvent,
 }
 
 #[pymethods]
 impl PyActorSupervisionEvent {
     fn __repr__(&self) -> PyResult<String> {
-        Ok(format!(
-            "<PyActorSupervisionEvent: actor_id: {:?}, status: {}>",
-            self.actor_id, self.actor_status
-        ))
+        Ok(format!("<PyActorSupervisionEvent: {}>", self.inner))
+    }
+
+    #[getter]
+    fn actor_id(&self) -> PyResult<PyActorId> {
+        Ok(PyActorId::from(self.inner.actor_id.clone()))
+    }
+
+    #[getter]
+    fn actor_status(&self) -> PyResult<String> {
+        Ok(self.inner.actor_status.to_string())
     }
 }
 
 impl From<ActorSupervisionEvent> for PyActorSupervisionEvent {
     fn from(event: ActorSupervisionEvent) -> Self {
-        PyActorSupervisionEvent {
-            actor_id: event.actor_id.clone().into(),
-            actor_status: event.actor_status.to_string(),
-        }
+        PyActorSupervisionEvent { inner: event }
     }
 }
 

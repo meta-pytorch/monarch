@@ -20,7 +20,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-// use strum::EnumIter;
 use crate as hyperactor;
 use crate::config;
 
@@ -107,37 +106,20 @@ impl_basic!(usize);
 impl_basic!(f32);
 impl_basic!(f64);
 impl_basic!(String);
+impl_basic!(std::net::IpAddr);
+impl_basic!(std::net::Ipv4Addr);
+impl_basic!(std::net::Ipv6Addr);
+impl_basic!(std::time::Duration);
+impl_basic!(std::time::SystemTime);
+impl_basic!(bytes::Bytes);
+// This is somewhat unfortunate. We should separate this module out into
+// its own crate, and just derive(Named) in `ndslice`. As it is, this would
+// create a circular (and heavy!) dependency for `ndslice`.
+impl_basic!(ndslice::Point);
 
 impl Named for &'static str {
     fn typename() -> &'static str {
         "&str"
-    }
-}
-
-impl Named for std::time::Duration {
-    fn typename() -> &'static str {
-        "std::time::Duration"
-    }
-}
-
-impl Named for std::time::SystemTime {
-    fn typename() -> &'static str {
-        "std::time::SystemTime"
-    }
-}
-
-impl Named for bytes::Bytes {
-    fn typename() -> &'static str {
-        "bytes::Bytes"
-    }
-}
-
-// This is somewhat unfortunate. We should separate this module out into
-// its own crate, and just derive(Named) in `ndslice`. As it is, this would
-// create a circular (and heavy!) dependency for `ndslice`.
-impl Named for ndslice::Point {
-    fn typename() -> &'static str {
-        "ndslice::Point"
     }
 }
 
@@ -333,6 +315,7 @@ macro_rules! register_type {
     Deserialize,
     PartialEq,
     Eq,
+    crate::AttrValue,
     crate::Named,
     strum::EnumIter,
     strum::Display,
@@ -741,7 +724,7 @@ mod tests {
     use crate as hyperactor; // for macros
     use crate::Named;
 
-    #[derive(Named)]
+    #[derive(Named, Serialize, Deserialize)]
     struct TestStruct;
 
     #[test]
@@ -865,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_arms() {
-        #[derive(Named)]
+        #[derive(Named, Serialize, Deserialize)]
         enum TestArm {
             #[allow(dead_code)]
             A(u32),

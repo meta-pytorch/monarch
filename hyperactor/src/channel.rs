@@ -30,6 +30,7 @@ use tokio::sync::watch;
 use crate as hyperactor;
 use crate::Named;
 use crate::RemoteMessage;
+use crate::attrs::AttrValue;
 use crate::channel::sim::SimAddr;
 use crate::simnet::SimNetError;
 
@@ -332,6 +333,27 @@ impl ChannelTransport {
     pub fn any(&self) -> ChannelAddr {
         ChannelAddr::any(self.clone())
     }
+
+    /// Returns true if this transport type represents a remote channel.
+    pub fn is_remote(&self) -> bool {
+        match self {
+            ChannelTransport::Tcp => true,
+            ChannelTransport::MetaTls(_) => true,
+            ChannelTransport::Local => false,
+            ChannelTransport::Sim(_) => false,
+            ChannelTransport::Unix => false,
+        }
+    }
+}
+
+impl AttrValue for ChannelTransport {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(s: &str) -> Result<Self, anyhow::Error> {
+        s.parse()
+    }
 }
 
 /// The type of (TCP) hostnames.
@@ -618,21 +640,21 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 /// Serve on the provided channel address. The server is turned down
 /// when the returned Rx is dropped.
 #[crate::instrument]
-pub async fn serve<M: RemoteMessage>(
+pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     tracing::debug!(name = "serve", "serving channel address {}", addr);
     match addr {
         ChannelAddr::Tcp(addr) => {
-            let (addr, rx) = net::tcp::serve::<M>(addr).await?;
+            let (addr, rx) = net::tcp::serve::<M>(addr)?;
             Ok((addr, ChannelRxKind::Tcp(rx)))
         }
         ChannelAddr::MetaTls(hostname, port) => {
-            let (addr, rx) = net::meta::serve::<M>(hostname, port).await?;
+            let (addr, rx) = net::meta::serve::<M>(hostname, port)?;
             Ok((addr, ChannelRxKind::MetaTls(rx)))
         }
         ChannelAddr::Unix(path) => {
-            let (addr, rx) = net::unix::serve::<M>(path).await?;
+            let (addr, rx) = net::unix::serve::<M>(path)?;
             Ok((addr, ChannelRxKind::Unix(rx)))
         }
         ChannelAddr::Local(0) => {
@@ -750,7 +772,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_connections() {
         for addr in ChannelTransport::all().map(ChannelAddr::any) {
-            let (listen_addr, mut rx) = crate::channel::serve::<u64>(addr).await.unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<u64>(addr).unwrap();
 
             let mut sends: JoinSet<()> = JoinSet::new();
             for message in 0u64..100u64 {
@@ -789,7 +811,7 @@ mod tests {
                 continue;
             }
 
-            let (listen_addr, rx) = crate::channel::serve::<u64>(addr).await.unwrap();
+            let (listen_addr, rx) = crate::channel::serve::<u64>(addr).unwrap();
 
             let tx = dial::<u64>(listen_addr).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
@@ -836,7 +858,7 @@ mod tests {
     #[tokio::test]
     async fn test_dial_serve() {
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).await.unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
@@ -854,7 +876,7 @@ mod tests {
         );
         let _guard2 = config.override_key(crate::config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).await.unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();
             tx.send(123).await.unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);

@@ -69,7 +69,7 @@ async def setup_env_for_distributed(
     assert (
         (master_addr is None) == (master_port is None)
     ), "Either both master_addr and master_port must be specified or neither must be specified."
-    am = await proc_mesh.spawn("_TorchDistributedInitActor", _TorchDistributedInitActor)
+    am = proc_mesh.spawn("_TorchDistributedInitActor", _TorchDistributedInitActor)
     if master_addr is None:
         # We use call instead of call_one because call_one can't handle tuple return types.
         vm = await am.flatten("rank").slice(rank=0).get_host_port.call()

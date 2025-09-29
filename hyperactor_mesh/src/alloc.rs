@@ -265,6 +265,12 @@ pub trait Alloc {
         }
         Ok(())
     }
+
+    /// Returns whether the alloc is a local alloc: that is, its procs are
+    /// not independent processes, but just threads in the selfsame process.
+    fn is_local(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -618,16 +624,14 @@ pub(crate) mod testing {
     async fn spawn_proc(
         transport: ChannelTransport,
     ) -> (DialMailboxRouter, Instance<()>, Proc, ChannelAddr) {
-        let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(transport.clone()))
-            .await
-            .unwrap();
+        let (router_channel_addr, router_rx) =
+            channel::serve(ChannelAddr::any(transport.clone())).unwrap();
         let router =
             DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
         router.clone().serve(router_rx);
 
         let client_proc_id = ProcId::Ranked(WorldId("test_stuck".to_string()), 0);
-        let (client_proc_addr, client_rx) =
-            channel::serve(ChannelAddr::any(transport)).await.unwrap();
+        let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
         let client_proc = Proc::new(
             client_proc_id.clone(),
             BoxedMailboxSender::new(router.clone()),
@@ -649,7 +653,7 @@ pub(crate) mod testing {
         router_channel_addr: ChannelAddr,
         mesh_agent: ActorRef<ProcMeshAgent>,
     ) -> ActorRef<TestActor> {
-        let supervisor = client_proc.attach("supervisor").unwrap();
+        let (supervisor, _supervisor_handle) = client_proc.instance("supervisor").unwrap();
         let (supervison_port, _) = supervisor.open_port();
         let (config_handle, _) = cx.mailbox().open_port();
         mesh_agent

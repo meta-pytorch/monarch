@@ -11,7 +11,11 @@
 //! the bootstrap binary, which is not built in test mode (and anyway, test mode
 //! does not work across crate boundaries)
 
+#[cfg(test)]
+use std::collections::HashSet;
 use std::collections::VecDeque;
+#[cfg(test)]
+use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -25,12 +29,24 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
+#[cfg(test)]
+use hyperactor::clock::Clock as _;
+#[cfg(test)]
+use hyperactor::clock::RealClock;
+#[cfg(test)]
+use hyperactor::mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Point;
+#[cfg(test)]
+use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::comm::multicast::CastInfo;
+#[cfg(test)]
+use crate::v1::ActorMesh;
+#[cfg(test)]
+use crate::v1::testing;
 
 /// A simple test actor used by various unit tests.
 #[derive(Actor, Default, Debug)]
@@ -190,7 +206,70 @@ impl Handler<GetCastInfo> for TestActor {
         cx: &Context<Self>,
         GetCastInfo { cast_info }: GetCastInfo,
     ) -> Result<(), anyhow::Error> {
-        cast_info.send(cx, (cx.cast_info(), cx.bind(), cx.sender().clone()))?;
+        cast_info.send(cx, (cx.cast_point(), cx.bind(), cx.sender().clone()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+/// Asserts that the provided actor mesh has the expected shape,
+/// and all actors are assigned the correct ranks. We also test
+/// slicing the mesh.
+pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
+    let instance = testing::instance().await;
+    // Verify casting to the root actor mesh
+    {
+        let (port, mut rx) = mailbox::open_port(&instance);
+        actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();
+
+        let mut expected_actor_ids: HashSet<_> = actor_mesh
+            .values()
+            .map(|actor_ref| actor_ref.actor_id().clone())
+            .collect();
+
+        while !expected_actor_ids.is_empty() {
+            let actor_id = rx.recv().await.unwrap();
+            assert!(
+                expected_actor_ids.remove(&actor_id),
+                "got {actor_id}, expect {expected_actor_ids:?}"
+            );
+        }
+
+        // No more messages
+        RealClock.sleep(Duration::from_secs(1)).await;
+        let result = rx.try_recv();
+        assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
+    }
+
+    // Just pick the first dimension. Slice half of it off.
+    // actor_mesh.extent().
+    let label = actor_mesh.extent().labels()[0].clone();
+    let size = actor_mesh.extent().sizes()[0] / 2;
+
+    // Verify casting to the sliced actor mesh
+    let sliced_actor_mesh = actor_mesh.range(&label, 0..size).unwrap();
+    {
+        let (port, mut rx) = mailbox::open_port(instance);
+        sliced_actor_mesh
+            .cast(instance, GetActorId(port.bind()))
+            .unwrap();
+
+        let mut expected_actor_ids: HashSet<_> = sliced_actor_mesh
+            .values()
+            .map(|actor_ref| actor_ref.actor_id().clone())
+            .collect();
+
+        while !expected_actor_ids.is_empty() {
+            let actor_id = rx.recv().await.unwrap();
+            assert!(
+                expected_actor_ids.remove(&actor_id),
+                "got {actor_id}, expect {expected_actor_ids:?}"
+            );
+        }
+
+        // No more messages
+        RealClock.sleep(Duration::from_secs(1)).await;
+        let result = rx.try_recv();
+        assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
     }
 }

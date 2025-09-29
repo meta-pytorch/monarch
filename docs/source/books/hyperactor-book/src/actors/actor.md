@@ -16,10 +16,10 @@ pub trait Actor: Sized + Send + Debug + 'static {
     }
 
     async fn spawn(
-        cap: &impl cap::CanSpawn,
+        cx: &impl context::Actor,
         params: Self::Params,
     ) -> anyhow::Result<ActorHandle<Self>> {
-        cap.spawn(params).await
+        cx.instance().spawn(params).await
     }
 
     async fn spawn_detached(params: Self::Params) -> Result<ActorHandle<Self>, anyhow::Error> {
@@ -94,14 +94,14 @@ The `spawn` method provides a default implementation for creating a new actor fr
 
 ```rust
 async fn spawn(
-    cap: &impl cap::CanSpawn,
+    cx: &impl context::Actor,
     params: Self::Params,
 ) -> anyhow::Result<ActorHandle<Self>> {
-    cap.spawn(params).await
+    cx.instance().spawn(params).await
 }
 ```
 
-In practice, `CanSpawn` is only implemented for `Instance<A>`, which represents a running actor. As a result, `Actor::spawn(...)` always constructs a child actor: the new actor receives a child ID and is linked to its parent through the runtime.
+In practice, `context::Actor` is implemented for types such as `Instance<A>` and `Context<A>`, which represent running actors. As a result, `Actor::spawn(...)` always constructs a child actor: the new actor receives a child ID and is linked to its parent through the runtime.
 
 ## Detached Spawning: `spawn_detached`
 

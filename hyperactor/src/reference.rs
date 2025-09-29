@@ -37,7 +37,9 @@ use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
 use rand::Rng;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 
 use crate as hyperactor;
 use crate::Actor;
@@ -48,19 +50,26 @@ use crate::RemoteMessage;
 use crate::accum::ReducerSpec;
 use crate::actor::RemoteActor;
 use crate::attrs::Attrs;
-use crate::cap;
 use crate::channel::ChannelAddr;
+use crate::context;
+use crate::context::MailboxExt;
 use crate::data::Serialized;
+use crate::data::TypeInfo;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
-use crate::parse::Lexer;
-use crate::parse::ParseError;
-use crate::parse::Token;
-use crate::parse::parse;
+
+pub mod lex;
+pub mod name;
+mod parse;
+
+use parse::Lexer;
+use parse::ParseError;
+use parse::Token;
+use parse::parse;
 
 /// A universal reference to hierarchical identifiers in Hyperactor.
 ///
@@ -373,6 +382,20 @@ impl FromStr for Reference {
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
                         Token::LeftBracket Token::Uint(rank) Token::RightBracket =>
                         Self::Actor(ActorId(ProcId::Direct(channel_addr, proc_name.to_string()), actor_name.to_string(), rank)),
+
+                    // channeladdr,proc_name,actor_name[rank][port]
+                    Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
+                        Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                        Token::LeftBracket Token::Uint(index) Token::RightBracket  =>
+                        Self::Port(PortId(ActorId(ProcId::Direct(channel_addr, proc_name.to_string()), actor_name.to_string(), rank), index as u64)),
+
+                    // channeladdr,proc_name,actor_name[rank][port<type>]
+                    Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
+                        Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                        Token::LeftBracket Token::Uint(index)
+                            Token::LessThan Token::Elem(_type) Token::GreaterThan
+                        Token::RightBracket =>
+                        Self::Port(PortId(ActorId(ProcId::Direct(channel_addr, proc_name.to_string()), actor_name.to_string(), rank), index as u64)),
                 }?)
             }
 
@@ -404,6 +427,15 @@ impl FromStr for Reference {
                         Token::Dot Token::Elem(actor)
                         Token::LeftBracket Token::Uint(pid) Token::RightBracket
                         Token::LeftBracket Token::Uint(index) Token::RightBracket =>
+                        Self::Port(PortId(ActorId(ProcId::Ranked(WorldId(world.into()), rank), actor.into(), pid), index as u64)),
+
+                    // world[rank].actor[pid][port<type>]
+                    Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                        Token::Dot Token::Elem(actor)
+                        Token::LeftBracket Token::Uint(pid) Token::RightBracket
+                        Token::LeftBracket Token::Uint(index)
+                            Token::LessThan Token::Elem(_type) Token::GreaterThan
+                        Token::RightBracket =>
                         Self::Port(PortId(ActorId(ProcId::Ranked(WorldId(world.into()), rank), actor.into(), pid), index as u64)),
 
                     // world.actor
@@ -638,7 +670,10 @@ impl ActorId {
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ActorId(proc_id, name, pid) = self;
-        write!(f, "{}.{}[{}]", proc_id, name, pid)
+        match proc_id {
+            ProcId::Ranked(..) => write!(f, "{}.{}[{}]", proc_id, name, pid),
+            ProcId::Direct(..) => write!(f, "{},{}[{}]", proc_id, name, pid),
+        }
     }
 }
 impl<A: RemoteActor> From<ActorRef<A>> for ActorId {
@@ -665,10 +700,11 @@ impl FromStr for ActorId {
 }
 
 /// ActorRefs are typed references to actors.
-#[derive(Debug, Serialize, Deserialize, Named)]
+#[derive(Debug, Named)]
 pub struct ActorRef<A: RemoteActor> {
     pub(crate) actor_id: ActorId,
-    phantom: PhantomData<A>,
+    // fn() -> A so that the struct remains Send
+    phantom: PhantomData<fn() -> A>,
 }
 
 impl<A: RemoteActor> ActorRef<A> {
@@ -681,31 +717,29 @@ impl<A: RemoteActor> ActorRef<A> {
     }
 
     /// Send an [`M`]-typed message to the referenced actor.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send<M: RemoteMessage>(
         &self,
-        cap: &impl cap::CanSend,
+        cx: &impl context::Mailbox,
         message: M,
     ) -> Result<(), MailboxSenderError>
     where
         A: RemoteHandles<M>,
     {
-        self.port().send(cap, message)
+        self.port().send(cx, message)
     }
 
     /// Send an [`M`]-typed message to the referenced actor, with additional context provided by
     /// headers.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send_with_headers<M: RemoteMessage>(
         &self,
-        cap: &impl cap::CanSend,
+        cx: &impl context::Mailbox,
         headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError>
     where
         A: RemoteHandles<M>,
     {
-        self.port().send_with_headers(cap, headers, message)
+        self.port().send_with_headers(cx, headers, message)
     }
 
     /// The caller guarantees that the provided actor ID is also a valid,
@@ -732,11 +766,36 @@ impl<A: RemoteActor> ActorRef<A> {
     /// Attempt to downcast this reference into a (local) actor handle.
     /// This will only succeed when the referenced actor is in the same
     /// proc as the caller.
-    pub fn downcast_handle(&self, cap: &impl cap::CanResolveActorRef) -> Option<ActorHandle<A>>
+    pub fn downcast_handle(&self, cx: &impl context::Actor) -> Option<ActorHandle<A>>
     where
         A: Actor,
     {
-        cap.resolve_actor_ref(self)
+        cx.instance().proc().resolve_actor_ref(self)
+    }
+}
+
+// Implement Serialize manually, without requiring A: Serialize
+impl<A: RemoteActor> Serialize for ActorRef<A> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Serialize only the fields that don't depend on A
+        self.actor_id().serialize(serializer)
+    }
+}
+
+// Implement Deserialize manually, without requiring A: Deserialize
+impl<'de, A: RemoteActor> Deserialize<'de> for ActorRef<A> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let actor_id = <ActorId>::deserialize(deserializer)?;
+        Ok(ActorRef {
+            actor_id,
+            phantom: PhantomData,
+        })
     }
 }
 
@@ -820,10 +879,10 @@ impl PortId {
     /// Send a serialized message to this port, provided a sending capability,
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
-    pub fn send(&self, caps: &impl cap::CanSend, serialized: &Serialized) {
+    pub fn send(&self, cx: &impl context::Mailbox, serialized: &Serialized) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        caps.post(self.clone(), headers, serialized.clone());
+        cx.post(self.clone(), headers, serialized.clone());
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -831,22 +890,22 @@ impl PortId {
     /// It is the sender's responsibility to ensure that the provided message is well-typed.
     pub fn send_with_headers(
         &self,
-        caps: &impl cap::CanSend,
+        cx: &impl context::Mailbox,
         serialized: &Serialized,
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        caps.post(self.clone(), headers, serialized.clone());
+        cx.post(self.clone(), headers, serialized.clone());
     }
 
     /// Split this port, returning a new port that relays messages to the port
     /// through a local proxy, which may coalesce messages.
     pub fn split(
         &self,
-        caps: &impl cap::CanSplitPort,
+        cx: &impl context::Mailbox,
         reducer_spec: Option<ReducerSpec>,
     ) -> anyhow::Result<PortId> {
-        caps.split(self.clone(), reducer_spec)
+        cx.split(self.clone(), reducer_spec)
     }
 }
 
@@ -864,7 +923,13 @@ impl FromStr for PortId {
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let PortId(actor_id, port) = self;
-        write!(f, "{}[{}]", actor_id, port)
+        if port & (1 << 63) != 0 {
+            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !(1 << 63)));
+            let typename = type_info.map_or("unknown", TypeInfo::typename);
+            write!(f, "{}[{}<{}>]", actor_id, port, typename)
+        } else {
+            write!(f, "{}[{}]", actor_id, port)
+        }
     }
 }
 
@@ -935,18 +1000,16 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
-    pub fn send(&self, caps: &impl cap::CanSend, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(caps, Attrs::new(), message)
+    pub fn send(&self, cx: &impl context::Mailbox, message: M) -> Result<(), MailboxSenderError> {
+        self.send_with_headers(cx, Attrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`]. Additional context can be provided in the form of
     /// headers.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send_with_headers(
         &self,
-        caps: &impl cap::CanSend,
+        cx: &impl context::Mailbox,
         mut headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
@@ -957,19 +1020,19 @@ impl<M: RemoteMessage> PortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        self.send_serialized(caps, serialized, headers);
+        self.send_serialized(cx, serialized, headers);
         Ok(())
     }
 
     /// Send a serialized message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    pub fn send_serialized(&self, caps: &impl cap::CanSend, message: Serialized, headers: Attrs) {
-        caps.post(self.port_id.clone(), headers, message);
+    pub fn send_serialized(&self, cx: &impl context::Mailbox, message: Serialized, headers: Attrs) {
+        cx.post(self.port_id.clone(), headers, message);
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
-    pub fn into_sink<C: cap::CanSend>(self, caps: C) -> PortSink<C, M> {
-        PortSink::new(caps, self)
+    pub fn into_sink<C: context::Mailbox>(self, cx: C) -> PortSink<C, M> {
+        PortSink::new(cx, self)
     }
 }
 
@@ -1050,17 +1113,15 @@ impl<M: RemoteMessage> OncePortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
-    pub fn send(self, caps: &impl cap::CanSend, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(caps, Attrs::new(), message)
+    pub fn send(self, cx: &impl context::Mailbox, message: M) -> Result<(), MailboxSenderError> {
+        self.send_with_headers(cx, Attrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`]. Additional context can be provided in the form of headers.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send_with_headers(
         self,
-        caps: &impl cap::CanSend,
+        cx: &impl context::Mailbox,
         mut headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
@@ -1071,7 +1132,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        caps.post(self.port_id.clone(), headers, serialized);
+        cx.post(self.port_id.clone(), headers, serialized);
         Ok(())
     }
 }
@@ -1312,11 +1373,23 @@ mod tests {
                 )
                 .into(),
             ),
+            (
+                // type annotations are ignored
+                "tcp:[::1]:1234,test,testactor[0][123<my::type>]",
+                PortId(
+                    ActorId(
+                        ProcId::Direct("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
+                        "testactor".to_string(),
+                        0,
+                    ),
+                    123,
+                )
+                .into(),
+            ),
         ];
 
         for (s, expected) in cases {
-            let got: Reference = s.parse().unwrap();
-            assert_eq!(got, expected);
+            assert_eq!(s.parse::<Reference>().unwrap(), expected, "for {}", s);
         }
     }
 
@@ -1383,5 +1456,23 @@ mod tests {
         sorted.sort();
 
         assert_eq!(sorted, expected);
+    }
+
+    #[test]
+    fn test_port_type_annotation() {
+        #[derive(Named, Serialize, Deserialize)]
+        struct MyType;
+        let port_id = PortId(
+            ActorId(
+                ProcId::Ranked(WorldId("test".into()), 234),
+                "testactor".into(),
+                1,
+            ),
+            MyType::port(),
+        );
+        assert_eq!(
+            port_id.to_string(),
+            "test[234].testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
+        );
     }
 }

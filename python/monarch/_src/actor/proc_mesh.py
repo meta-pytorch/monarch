@@ -67,7 +67,7 @@ from monarch._src.actor.code_sync import (
 from monarch._src.actor.device_utils import _local_device_count
 
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.future import DeprecatedNotAFuture, Future
+from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
 from monarch._src.actor.shape import MeshTrait
 from monarch.tools.config.environment import CondaEnvironment
@@ -119,17 +119,6 @@ try:
     IN_PAR = bool(fbmake.get("par_style"))
 except ImportError:
     IN_PAR = False
-
-
-# A temporary gate used by the PythonActorMesh/PythonActorMeshRef migration.
-# We can use this gate to quickly roll back to using _ActorMeshRefImpl, if we
-# encounter any issues with the migration.
-#
-# This should be removed once we confirm PythonActorMesh/PythonActorMeshRef is
-# working correctly in production.
-@cache
-def _use_standin_mesh() -> bool:
-    return os.getenv("USE_STANDIN_ACTOR_MESH", default="0") != "0"
 
 
 class ProcMeshRef:
@@ -186,7 +175,7 @@ def _deref_proc_mesh(proc_mesh: ProcMeshRef) -> "ProcMesh":
     return _proc_mesh_registry[proc_mesh]
 
 
-class ProcMesh(MeshTrait, DeprecatedNotAFuture):
+class ProcMesh(MeshTrait):
     """
     A distributed mesh of processes for actor computation.
 
@@ -407,19 +396,17 @@ class ProcMesh(MeshTrait, DeprecatedNotAFuture):
                 f"{Class} must subclass monarch.service.Actor to spawn it."
             )
 
-        actor_mesh = HyProcMesh.spawn_async(pm, name, _Actor, _use_standin_mesh())
-        instance = context().actor_instance
+        actor_mesh = HyProcMesh.spawn_async(pm, name, _Actor)
         service = ActorMesh._create(
             Class,
             actor_mesh,
-            instance._mailbox,
             self._shape,
             self,
             self._controller_controller,
             *args,
             **kwargs,
         )
-        instance._add_child(service)
+        context().actor_instance._add_child(service)
         return cast(T, service)
 
     @property

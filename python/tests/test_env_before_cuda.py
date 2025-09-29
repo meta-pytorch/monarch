@@ -80,7 +80,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
         proc_mesh = ProcMesh.from_alloc(alloc, setup=setup_cuda_env)
 
         try:
-            actor = await proc_mesh.spawn("cuda_init", CudaInitTestActor)
+            actor = proc_mesh.spawn("cuda_init", CudaInitTestActor)
 
             env_vars = await actor.init_cuda_and_check_env.call_one(
                 list(cuda_env_vars.keys())
@@ -113,7 +113,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
         proc_mesh_instance = proc_mesh(gpus=1, hosts=1, setup=setup_cuda_env)
 
         try:
-            actor = await proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
+            actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
 
             env_vars = await actor.init_cuda_and_check_env.call_one(
                 list(cuda_env_vars.keys())
@@ -139,7 +139,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
         proc_mesh_instance = proc_mesh(gpus=1, hosts=1, env=cuda_env_vars)
 
         try:
-            actor = await proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
+            actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
             env_vars = await actor.init_cuda_and_check_env.call_one(
                 list(cuda_env_vars.keys())
             )

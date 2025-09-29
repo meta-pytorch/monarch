@@ -10,17 +10,11 @@ use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 
-use build_utils::*;
-
 #[cfg(target_os = "macos")]
 fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Tell cargo to look for shared libraries in the specified directory
-    println!("cargo:rustc-link-search=/usr/lib");
-    println!("cargo:rustc-link-search=/usr/lib64");
-
     // Link against the ibverbs library
     println!("cargo:rustc-link-lib=ibverbs");
 
@@ -30,7 +24,6 @@ fn main() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
     println!("cargo:rerun-if-changed=src/rdmaxcel.c");
-    println!("cargo:rerun-if-changed=src/rdmaxcel.cpp");
 
     // Validate CUDA installation and get CUDA home path
     let cuda_home = match build_utils::validate_cuda_installation() {
@@ -91,8 +84,8 @@ fn main() {
         .allowlist_function("launch_recv_wqe")
         .allowlist_function("rdma_get_active_segment_count")
         .allowlist_function("rdma_get_all_segment_info")
-        .allowlist_function("register_segments")
         .allowlist_function("pt_cuda_allocator_compatibility")
+        .allowlist_function("register_segments")
         .allowlist_type("ibv_.*")
         .allowlist_type("mlx5dv_.*")
         .allowlist_type("mlx5_wqe_.*")
@@ -142,8 +135,6 @@ fn main() {
     }
     if let Some(lib_dir) = &python_config.lib_dir {
         println!("cargo:rustc-link-search=native={}", lib_dir);
-        // Set cargo metadata to inform dependent binaries about how to set their
-        // RPATH (see controller/build.rs for an example).
         println!("cargo:metadata=LIB_PATH={}", lib_dir);
     }
 
@@ -159,13 +150,40 @@ fn main() {
     println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
 
+    // Link PyTorch C++ libraries for c10 symbols
+    let use_pytorch_apis = build_utils::get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS")
+        .unwrap_or_else(|_| "1".to_owned());
+    if use_pytorch_apis == "1" {
+        // Try to get PyTorch library directory
+        let python_interpreter = std::path::PathBuf::from("python");
+        if let Ok(output) = std::process::Command::new(&python_interpreter)
+            .arg("-c")
+            .arg(build_utils::PYTHON_PRINT_PYTORCH_DETAILS)
+            .output()
+        {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(path) = line.strip_prefix("LIBTORCH_LIB: ") {
+                    println!("cargo:rustc-link-search=native={}", path);
+                    break;
+                }
+            }
+        }
+        // Link core PyTorch libraries needed for C10 symbols
+        println!("cargo:rustc-link-lib=torch_cpu");
+        println!("cargo:rustc-link-lib=torch");
+        println!("cargo:rustc-link-lib=c10");
+    }
+
     // Generate bindings
     let bindings = builder.generate().expect("Unable to generate bindings");
 
     // Write the bindings to the $OUT_DIR/bindings.rs file
     match env::var("OUT_DIR") {
         Ok(out_dir) => {
-            let out_path = PathBuf::from(out_dir);
+            // Export OUT_DIR so dependent crates can find our compiled libraries
+            println!("cargo:out_dir={}", out_dir);
+
+            let out_path = PathBuf::from(&out_dir);
             match bindings.write_to_file(out_path.join("bindings.rs")) {
                 Ok(_) => {
                     println!("cargo:rustc-cfg=cargo");
@@ -251,6 +269,85 @@ fn main() {
                 cpp_build.compile("rdmaxcel_cpp");
             } else {
                 panic!("C++ source file not found at {}", cpp_source_path);
+            }
+            // Compile the CUDA source file
+            let cuda_source_path = format!("{}/src/rdmaxcel.cu", manifest_dir);
+            if Path::new(&cuda_source_path).exists() {
+                // Use the CUDA home path we already validated
+                let nvcc_path = format!("{}/bin/nvcc", cuda_home);
+
+                // Set up fixed output directory - use a predictable path instead of dynamic OUT_DIR
+                let cuda_build_dir = format!("{}/target/cuda_build", manifest_dir);
+                std::fs::create_dir_all(&cuda_build_dir)
+                    .expect("Failed to create CUDA build directory");
+
+                let cuda_obj_path = format!("{}/rdmaxcel_cuda.o", cuda_build_dir);
+                let cuda_lib_path = format!("{}/librdmaxcel_cuda.a", cuda_build_dir);
+
+                // Use nvcc to compile the CUDA file
+                let nvcc_output = std::process::Command::new(&nvcc_path)
+                    .args(&[
+                        "-c",
+                        &cuda_source_path,
+                        "-o",
+                        &cuda_obj_path,
+                        "--compiler-options",
+                        "-fPIC",
+                        "-std=c++20",
+                        "--expt-extended-lambda",
+                        "-Xcompiler",
+                        "-fPIC",
+                        &format!("-I{}", cuda_include_path),
+                        &format!("-I{}/src", manifest_dir),
+                        &format!("-I/usr/include"),
+                        &format!("-I/usr/include/infiniband"),
+                    ])
+                    .output();
+
+                match nvcc_output {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            eprintln!("nvcc stderr: {}", String::from_utf8_lossy(&output.stderr));
+                            eprintln!("nvcc stdout: {}", String::from_utf8_lossy(&output.stdout));
+                            panic!("Failed to compile CUDA source with nvcc");
+                        }
+                        println!("cargo:rerun-if-changed={}", cuda_source_path);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to run nvcc: {}", e);
+                        panic!("nvcc not found or failed to execute");
+                    }
+                }
+
+                // Create static library from the compiled CUDA object
+                let ar_output = std::process::Command::new("ar")
+                    .args(&["rcs", &cuda_lib_path, &cuda_obj_path])
+                    .output();
+
+                match ar_output {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            eprintln!("ar stderr: {}", String::from_utf8_lossy(&output.stderr));
+                            panic!("Failed to create CUDA static library with ar");
+                        }
+                        // Emit metadata so dependent crates can find this library
+                        println!("cargo:rustc-link-lib=static=rdmaxcel_cuda");
+                        println!("cargo:rustc-link-search=native={}", cuda_build_dir);
+
+                        // Copy the library to OUT_DIR as well for Cargo dependency mechanism
+                        if let Err(e) =
+                            std::fs::copy(&cuda_lib_path, format!("{}/librdmaxcel_cuda.a", out_dir))
+                        {
+                            eprintln!("Warning: Failed to copy CUDA library to OUT_DIR: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to run ar: {}", e);
+                        panic!("ar not found or failed to execute");
+                    }
+                }
+            } else {
+                panic!("CUDA source file not found at {}", cuda_source_path);
             }
         }
         Err(_) => {

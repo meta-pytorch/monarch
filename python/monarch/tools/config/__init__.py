@@ -7,7 +7,7 @@
 # pyre-strict
 import warnings
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 from monarch.tools.config.workspace import Workspace
 
@@ -18,10 +18,15 @@ try:
 except ImportError:
     pass
 
+if TYPE_CHECKING:
+    from torchx.specs import CfgVal
+
 NOT_SET: str = "__NOT_SET__"
 
 
 def _empty_appdef() -> "specs.AppDef":
+    from torchx import specs
+
     return specs.AppDef(name=NOT_SET)
 
 
@@ -29,10 +34,23 @@ def _empty_appdef() -> "specs.AppDef":
 class Config:
     """
     All configs needed to schedule a mesh of allocators.
+
+    Args:
+        scheduler: the name of the scheduler to use, must be one of the registered schedulers in
+          `monarch.tools.config.defaults.scheduler_factories`.
+        scheduler_args: additional arguments to pass to the scheduler. Scheduler args are different
+           for each scheduler. You can run `torchx runopts {scheduler}` from the commandline to get
+           a help string. For additional details refer to the scheduler documentation
+           in https://docs.pytorch.org/torchx/latest/schedulers.
+        workspace: the local workspace to package and mirror on the remote side.
+        dryrun: useful for debugging job specs, if `True`, will return the actual scheduler request that
+          would've been used to submit the job.
+        appdef: the job spec to submit to the scheduler.
+
     """
 
     scheduler: str = NOT_SET
-    scheduler_args: dict[str, Any] = field(default_factory=dict)
+    scheduler_args: dict[str, "CfgVal"] = field(default_factory=dict)
     workspace: Workspace = field(default_factory=Workspace.null)
     dryrun: bool = False
     appdef: "specs.AppDef" = field(default_factory=_empty_appdef)
@@ -40,7 +58,7 @@ class Config:
     def __post_init__(self) -> None:
         # workspace used to be Optional[str]
         # while we type it as class Workspace now, handle workspace=None and str for BC
-        if self.workspace is None:
+        if self.workspace is None or self.workspace == "":
             deprecation_msg = (
                 "Setting `workspace=None` is deprecated."
                 " Use `workspace=monarch.tools.config.workspace.Workspace(env=None)` instead."

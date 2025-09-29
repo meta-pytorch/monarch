@@ -143,6 +143,7 @@ enum RecordingState {
 /// Messages handled by the stream. Generally these are stream-local versions of
 /// [`crate::WorkerMessage`].
 #[derive(Handler, HandleClient, Debug, Named)]
+#[named(register = false)]
 pub enum StreamMessage {
     CallFunction(
         CallFunctionParams,
@@ -2200,11 +2201,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            allclose(
+            let result = allclose(
                 &factory_float_tensor(data, "cpu".try_into().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap()
+            .unwrap();
+            // rustfmt-ignore
+            result
         }
 
         async fn validate_dependent_error(&mut self, reference: Ref, error: Arc<SeqError>) {

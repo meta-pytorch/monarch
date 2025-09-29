@@ -107,7 +107,7 @@ class DDPActor(Actor):
 async def create_ddp_actors():
     """Create the process mesh and spawn DDP actors."""
     # Spawn a process mesh
-    local_proc_mesh = await proc_mesh(
+    local_proc_mesh = proc_mesh(
         gpus=WORLD_SIZE,
         env={
             "MASTER_ADDR": "localhost",
@@ -115,7 +115,7 @@ async def create_ddp_actors():
         },
     )
     # Spawn our actor mesh on top of the process mesh
-    ddp_actor = await local_proc_mesh.spawn("ddp_actor", DDPActor)
+    ddp_actor = local_proc_mesh.spawn("ddp_actor", DDPActor)
     return ddp_actor, local_proc_mesh
 
 

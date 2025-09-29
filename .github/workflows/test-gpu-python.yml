@@ -1,4 +1,4 @@
-name: Test CUDA
+name: Test GPU Python
 
 on:
   workflow_call:
@@ -9,12 +9,12 @@ on:
         type: string
 
 concurrency:
-  group: test-cuda-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: test-gpu-python-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test-cuda:
-    name: Test CUDA (cuda12.6-py3.10)
+  test-gpu-python:
+    name: Test GPU Python (cuda12.6-py3.10)
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: true
@@ -42,7 +42,8 @@ jobs:
         # Setup Tensor Engine dependencies
         setup_tensor_engine
 
-        export CUDA_LIB_DIR=/usr/lib64
+        # Setup CUDA environment and library paths
+        setup_cuda_environment
 
         # Install the built wheel from artifact
         install_wheel_from_artifact
@@ -51,7 +52,7 @@ jobs:
         # pyre currently does not check these assertions
         pyright python/tests/test_python_actors.py
 
-        # Run CUDA tests
+        # Run GPU Python tests
         LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip"
         # TODO(meriksen): temporarily disabled to unblock lands while debugging
         # mock CUDA issues on the OSS setup

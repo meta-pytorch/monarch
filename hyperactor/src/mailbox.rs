@@ -87,7 +87,6 @@ use std::task::Poll;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use dashmap::DashSet;
 use dashmap::mapref::entry::Entry;
 use futures::Sink;
 use futures::Stream;
@@ -104,19 +103,17 @@ use crate as hyperactor; // for macros
 use crate::Named;
 use crate::OncePortRef;
 use crate::PortRef;
-use crate::accum;
 use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
 use crate::attrs::Attrs;
-use crate::cap;
-use crate::cap::CanSend;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
+use crate::context;
 use crate::data::Serialized;
 use crate::id;
 use crate::metrics;
@@ -571,8 +568,8 @@ impl fmt::Display for PortLocation {
 /// is associated with the port ID of the operation.
 #[derive(Debug)]
 pub struct MailboxSenderError {
-    location: PortLocation,
-    kind: MailboxSenderErrorKind,
+    location: Box<PortLocation>,
+    kind: Box<MailboxSenderErrorKind>,
 }
 
 /// The kind of mailbox sending errors.
@@ -620,8 +617,8 @@ impl MailboxSenderError {
     /// Create a new mailbox sender error to an unbound port.
     pub fn new_unbound<M>(actor_id: ActorId, kind: MailboxSenderErrorKind) -> Self {
         Self {
-            location: PortLocation::Unbound(actor_id, std::any::type_name::<M>()),
-            kind,
+            location: Box::new(PortLocation::Unbound(actor_id, std::any::type_name::<M>())),
+            kind: Box::new(kind),
         }
     }
 
@@ -632,16 +629,16 @@ impl MailboxSenderError {
         ty: &'static str,
     ) -> Self {
         Self {
-            location: PortLocation::Unbound(actor_id, ty),
-            kind,
+            location: Box::new(PortLocation::Unbound(actor_id, ty)),
+            kind: Box::new(kind),
         }
     }
 
     /// Create a new mailbox sender error with the provided port ID and kind.
     pub fn new_bound(port_id: PortId, kind: MailboxSenderErrorKind) -> Self {
         Self {
-            location: PortLocation::Bound(port_id),
-            kind,
+            location: Box::new(PortLocation::Bound(port_id)),
+            kind: Box::new(kind),
         }
     }
 
@@ -698,7 +695,6 @@ pub trait MailboxSender: Send + Sync + Debug + Any {
 /// for sending messages over ports
 pub trait PortSender: MailboxSender {
     /// Deliver a message to the provided port.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send<M: RemoteMessage>(
         &self,
         port: &PortRef<M>,
@@ -721,7 +717,6 @@ pub trait PortSender: MailboxSender {
 
     /// Deliver a message to a one-shot port, consuming the provided port,
     /// which is not reusable.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn serialize_and_send_once<M: RemoteMessage>(
         &self,
         once_port: OncePortRef<M>,
@@ -788,6 +783,8 @@ impl MailboxSender for UndeliverableMailboxSender {
             actor_name = sender_name,
             actor_id = envelope.sender.to_string(),
             dest = envelope.dest.to_string(),
+            headers = envelope.headers().to_string(), // todo: implement tracing::Value for Attrs
+            data = envelope.data().to_string(),
             "message not delivered, {}",
             error_str,
         );
@@ -1153,8 +1150,7 @@ impl MailboxSender for MailboxClient {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        // tracing::trace!(name = "post", "posting message to {}", envelope.dest);
-        tracing::event!(target:"messages", tracing::Level::DEBUG, "crc"=envelope.data.crc(), "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.0, "port"= envelope.dest.1, "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
+        tracing::event!(target:"messages", tracing::Level::DEBUG,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.0, "port"= envelope.dest.1, "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
             self.buffer.send((envelope, return_handle))
         {
@@ -1167,19 +1163,19 @@ impl MailboxSender for MailboxClient {
 }
 
 /// Wrapper to turn `PortRef` into a `Sink`.
-pub struct PortSink<C: CanSend, M: RemoteMessage> {
+pub struct PortSink<C: context::Mailbox, M: RemoteMessage> {
     caps: C,
     port: PortRef<M>,
 }
 
-impl<C: CanSend, M: RemoteMessage> PortSink<C, M> {
+impl<C: context::Mailbox, M: RemoteMessage> PortSink<C, M> {
     /// Create new PortSink
     pub fn new(caps: C, port: PortRef<M>) -> Self {
         Self { caps, port }
     }
 }
 
-impl<C: CanSend, M: RemoteMessage> Sink<M> for PortSink<C, M> {
+impl<C: context::Mailbox, M: RemoteMessage> Sink<M> for PortSink<C, M> {
     type Error = MailboxSenderError;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1346,6 +1342,10 @@ impl Mailbox {
             .map(|sender| PortHandle::new(self.clone(), self.inner.allocate_port(), sender))
     }
 
+    pub(crate) fn allocate_port(&self) -> u64 {
+        self.inner.allocate_port()
+    }
+
     fn bind<M: RemoteMessage>(&self, handle: &PortHandle<M>) -> PortRef<M> {
         assert_eq!(
             handle.mailbox.actor_id(),
@@ -1398,7 +1398,7 @@ impl Mailbox {
         }
     }
 
-    fn bind_untyped(&self, port_id: &PortId, sender: UntypedUnboundedSender) {
+    pub(crate) fn bind_untyped(&self, port_id: &PortId, sender: UntypedUnboundedSender) {
         assert_eq!(
             port_id.actor_id(),
             self.actor_id(),
@@ -1414,20 +1414,26 @@ impl Mailbox {
     }
 }
 
+impl context::Mailbox for Mailbox {
+    fn mailbox(&self) -> &Mailbox {
+        self
+    }
+}
+
 // TODO: figure out what to do with these interfaces -- possibly these caps
 // do not have to be private.
 
 /// Open a port given a capability.
-pub fn open_port<M: Message>(caps: &impl cap::CanOpenPort) -> (PortHandle<M>, PortReceiver<M>) {
-    caps.mailbox().open_port()
+pub fn open_port<M: Message>(cx: &impl context::Mailbox) -> (PortHandle<M>, PortReceiver<M>) {
+    cx.mailbox().open_port()
 }
 
 /// Open a one-shot port given a capability. This is a public method primarily to
 /// enable macro-generated clients.
 pub fn open_once_port<M: Message>(
-    caps: &impl cap::CanOpenPort,
+    cx: &impl context::Mailbox,
 ) -> (OncePortHandle<M>, OncePortReceiver<M>) {
-    caps.mailbox().open_once_port()
+    cx.mailbox().open_once_port()
 }
 
 impl MailboxSender for Mailbox {
@@ -1510,65 +1516,13 @@ impl MailboxSender for Mailbox {
     }
 }
 
-// Tracks mailboxes that have emitted a `CanSend::post` warning due to
-// missing an `Undeliverable<MessageEnvelope>` binding. In this
-// context, mailboxes are few and long-lived; unbounded growth is not
-// a realistic concern.
-pub(crate) static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
-
-impl cap::sealed::CanSend for Mailbox {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
-        let return_handle = self.bound_return_handle().unwrap_or_else(|| {
-            let actor_id = self.actor_id();
-            if CAN_SEND_WARNED_MAILBOXES
-                .get_or_init(DashSet::new)
-                .insert(actor_id.clone())
-            {
-                let bt = std::backtrace::Backtrace::force_capture();
-                tracing::warn!(
-                    actor_id = ?actor_id,
-                    backtrace = ?bt,
-                    "mailbox attempted to post a message without binding Undeliverable<MessageEnvelope>"
-                );
-            }
-            monitored_return_handle()
-        });
-
-        let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data, headers);
-        MailboxSender::post(self, envelope, return_handle);
-    }
-    fn actor_id(&self) -> &ActorId {
-        self.actor_id()
-    }
-}
-impl cap::sealed::CanSend for &Mailbox {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
-        cap::sealed::CanSend::post(*self, dest, headers, data)
-    }
-    fn actor_id(&self) -> &ActorId {
-        (**self).actor_id()
-    }
-}
-
-impl cap::sealed::CanOpenPort for &Mailbox {
-    fn mailbox(&self) -> &Mailbox {
-        self
-    }
-}
-
-impl cap::sealed::CanOpenPort for Mailbox {
-    fn mailbox(&self) -> &Mailbox {
-        self
-    }
-}
-
 #[derive(Default)]
-struct SplitPortBuffer(Vec<Serialized>);
+pub(crate) struct SplitPortBuffer(Vec<Serialized>);
 
 impl SplitPortBuffer {
     /// Push a new item to the buffer, and optionally return any items that should
     /// be flushed.
-    fn push(&mut self, serialized: Serialized) -> Option<Vec<Serialized>> {
+    pub(crate) fn push(&mut self, serialized: Serialized) -> Option<Vec<Serialized>> {
         let limit = crate::config::global::get(crate::config::SPLIT_MAX_BUFFER_SIZE);
 
         self.0.push(serialized);
@@ -1577,70 +1531,6 @@ impl SplitPortBuffer {
         } else {
             None
         }
-    }
-}
-
-impl cap::sealed::CanSplitPort for Mailbox {
-    fn split(&self, port_id: PortId, reducer_spec: Option<ReducerSpec>) -> anyhow::Result<PortId> {
-        fn post(mailbox: &Mailbox, port_id: PortId, msg: Serialized) {
-            mailbox.post(
-                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Attrs::new()),
-                // TODO(pzhang) figure out how to use upstream's return handle,
-                // instead of getting a new one like this.
-                // This is okay for now because upstream is currently also using
-                // the same handle singleton, but that could change in the future.
-                monitored_return_handle(),
-            );
-        }
-
-        let port_index = self.inner.allocate_port();
-        let split_port = self.actor_id().port_id(port_index);
-        let mailbox = self.clone();
-        let reducer = reducer_spec
-            .map(
-                |ReducerSpec {
-                     typehash,
-                     builder_params,
-                 }| { accum::resolve_reducer(typehash, builder_params) },
-            )
-            .transpose()?
-            .flatten();
-        let enqueue: Box<
-            dyn Fn(Serialized) -> Result<(), (Serialized, anyhow::Error)> + Send + Sync,
-        > = match reducer {
-            None => Box::new(move |serialized: Serialized| {
-                post(&mailbox, port_id.clone(), serialized);
-                Ok(())
-            }),
-            Some(r) => {
-                let buffer = Mutex::new(SplitPortBuffer::default());
-                Box::new(move |serialized: Serialized| {
-                    // Hold the lock until messages are sent. This is to avoid another
-                    // invocation of this method trying to send message concurrently and
-                    // cause messages delivered out of order.
-                    let mut buf = buffer.lock().unwrap();
-                    if let Some(buffered) = buf.push(serialized) {
-                        let reduced = r.reduce_updates(buffered).map_err(|(e, mut b)| {
-                            (
-                                b.pop()
-                                    .expect("there should be at least one update from buffer"),
-                                e,
-                            )
-                        })?;
-                        post(&mailbox, port_id.clone(), reduced);
-                    }
-                    Ok(())
-                })
-            }
-        };
-        self.bind_untyped(
-            &split_port,
-            UntypedUnboundedSender {
-                sender: enqueue,
-                port_id: split_port.clone(),
-            },
-        );
-        Ok(split_port)
     }
 }
 
@@ -1687,7 +1577,6 @@ impl<M: Message> PortHandle<M> {
     }
 
     /// Send a message to this port.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
 
@@ -1774,7 +1663,6 @@ impl<M: Message> OncePortHandle<M> {
 
     /// Send a message to this port. The send operation will consume the
     /// port handle, as the port accepts at most one message.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     pub fn send(self, message: M) -> Result<(), MailboxSenderError> {
         let actor_id = self.mailbox.actor_id().clone();
         self.sender.send(message).map_err(|_| {
@@ -2045,7 +1933,6 @@ impl<M: Message> UnboundedSender<M> {
         Self { sender, port_id }
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send(&self, headers: Attrs, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
@@ -2125,7 +2012,6 @@ impl<M: Message> OnceSender<M> {
         }
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn send_once(&self, message: M) -> Result<bool, MailboxSenderError> {
         // TODO: we should replace the sender on error
         match self.sender.lock().unwrap().take() {
@@ -2191,9 +2077,10 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
 }
 
 /// Use the provided function to send untyped messages (i.e. Serialized objects).
-struct UntypedUnboundedSender {
-    sender: Box<dyn Fn(Serialized) -> Result<(), (Serialized, anyhow::Error)> + Send + Sync>,
-    port_id: PortId,
+pub(crate) struct UntypedUnboundedSender {
+    pub(crate) sender:
+        Box<dyn Fn(Serialized) -> Result<(), (Serialized, anyhow::Error)> + Send + Sync>,
+    pub(crate) port_id: PortId,
 }
 
 impl SerializedSender for UntypedUnboundedSender {
@@ -2482,6 +2369,10 @@ pub struct DialMailboxRouter {
     // The default sender, to which messages for unknown recipients
     // are sent. (This is like a default route in a routing table.)
     default: BoxedMailboxSender,
+
+    // When true, only dial direct-addressed procs if their transport
+    // type is remote. Otherwise, fall back to the default sender.
+    direct_addressed_remote_only: bool,
 }
 
 impl DialMailboxRouter {
@@ -2492,12 +2383,27 @@ impl DialMailboxRouter {
 
     /// Create a new [`DialMailboxRouter`] with an empty routing table,
     /// and a default sender. Any message with an unknown destination is
-    /// dispatched on this default sender.
+    /// dispatched on this default sender, unless the destination is
+    /// direct-addressed, in which case it is dialed directly.
     pub fn new_with_default(default: BoxedMailboxSender) -> Self {
         Self {
             address_book: Arc::new(RwLock::new(BTreeMap::new())),
             sender_cache: Arc::new(DashMap::new()),
             default,
+            direct_addressed_remote_only: false,
+        }
+    }
+
+    /// Create a new [`DialMailboxRouter`] with an empty routing table,
+    /// and a default sender. Any message with an unknown destination is
+    /// dispatched on this default sender, unless the destination is
+    /// direct-addressed *and* has a remote channel transport type.
+    pub fn new_with_default_direct_addressed_remote_only(default: BoxedMailboxSender) -> Self {
+        Self {
+            address_book: Arc::new(RwLock::new(BTreeMap::new())),
+            sender_cache: Arc::new(DashMap::new()),
+            default,
+            direct_addressed_remote_only: true,
         }
     }
 
@@ -2557,7 +2463,11 @@ impl DialMailboxRouter {
             Some(addr.clone())
         } else if actor_id.proc_id().is_direct() {
             let (addr, _name) = actor_id.proc_id().clone().into_direct().unwrap();
-            Some(addr)
+            if self.direct_addressed_remote_only {
+                addr.transport().is_remote().then_some(addr)
+            } else {
+                Some(addr)
+            }
         } else {
             None
         }
@@ -2580,7 +2490,6 @@ impl DialMailboxRouter {
         prefixes
     }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `MailboxSenderError`.
     fn dial(
         &self,
         addr: &ChannelAddr,
@@ -2658,6 +2567,8 @@ mod tests {
 
     use super::*;
     use crate::Actor;
+    use crate::ActorHandle;
+    use crate::Instance;
     use crate::PortId;
     use crate::accum;
     use crate::channel::ChannelTransport;
@@ -2877,9 +2788,7 @@ mod tests {
             .unwrap(),
         );
 
-        let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone()))
-            .await
-            .unwrap();
+        let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone())).unwrap();
         let tx = dial::<MessageEnvelope>(src_to_dst).unwrap();
         let mbox = Mailbox::new_detached(id!(test[0].actor0));
         let serve_handle = mbox.clone().serve(rx);
@@ -3008,9 +2917,7 @@ mod tests {
 
         let mut handles = Vec::new(); // hold on to handles, or channels get closed
         for mbox in mailboxes.iter() {
-            let (addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Local))
-                .await
-                .unwrap();
+            let (addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Local)).unwrap();
             let handle = (*mbox).clone().serve(rx);
             handles.push(handle);
 
@@ -3139,7 +3046,7 @@ mod tests {
                 quux[0].foo[0] to corge[0].bar[0][9999] was undeliverable and returned"
         ));
 
-        proc.destroy_and_wait(tokio::time::Duration::from_secs(1), None)
+        proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None)
             .await
             .unwrap();
     }
@@ -3334,8 +3241,10 @@ mod tests {
 
     struct Setup {
         receiver: PortReceiver<u64>,
-        actor0: Mailbox,
-        actor1: Mailbox,
+        actor0: Instance<()>,
+        actor1: Instance<()>,
+        _actor0_handle: ActorHandle<()>,
+        _actor1_handle: ActorHandle<()>,
         port_id: PortId,
         port_id1: PortId,
         port_id2: PortId,
@@ -3343,11 +3252,9 @@ mod tests {
     }
 
     async fn setup_split_port_ids(reducer_spec: Option<ReducerSpec>) -> Setup {
-        let muxer = MailboxMuxer::new();
-        let actor0 = Mailbox::new(id!(test[0].actor), BoxedMailboxSender::new(muxer.clone()));
-        let actor1 = Mailbox::new(id!(test[1].actor1), BoxedMailboxSender::new(muxer.clone()));
-        muxer.bind_mailbox(actor0.clone());
-        muxer.bind_mailbox(actor1.clone());
+        let proc = Proc::local();
+        let (actor0, actor0_handle) = proc.instance("actor0").unwrap();
+        let (actor1, actor1_handle) = proc.instance("actor1").unwrap();
 
         // Open a port on actor0
         let (port_handle, receiver) = actor0.open_port::<u64>();
@@ -3364,6 +3271,8 @@ mod tests {
             receiver,
             actor0,
             actor1,
+            _actor0_handle: actor0_handle,
+            _actor1_handle: actor1_handle,
             port_id,
             port_id1,
             port_id2,
@@ -3371,11 +3280,9 @@ mod tests {
         }
     }
 
-    fn post(mailbox: &Mailbox, port_id: PortId, msg: u64) {
-        mailbox.post(
-            MessageEnvelope::new_unknown(port_id.clone(), Serialized::serialize(&msg).unwrap()),
-            monitored_return_handle(),
-        );
+    fn post(cx: &impl context::Actor, port_id: PortId, msg: u64) {
+        let serialized = Serialized::serialize(&msg).unwrap();
+        port_id.send(cx, &serialized);
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -3388,6 +3295,7 @@ mod tests {
             port_id1,
             port_id2,
             port_id2_1,
+            ..
         } = setup_split_port_ids(None).await;
         // Can send messages to receiver from all port handles
         post(&actor0, port_id.clone(), 1);
@@ -3441,6 +3349,7 @@ mod tests {
             port_id1,
             port_id2,
             port_id2_1,
+            ..
         } = setup_split_port_ids(reducer_spec).await;
         post(&actor0, port_id.clone(), 4);
         post(&actor1, port_id1.clone(), 2);
@@ -3462,10 +3371,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_id_every_n_messages() {
-        let actor = Mailbox::new(
-            id!(test[0].actor),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let proc = Proc::local();
+        let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_id().clone();
         // Split it
