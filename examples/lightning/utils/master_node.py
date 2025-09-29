@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -29,6 +30,57 @@ class MasterNodeServer:
     def get_master_ip():
         hostname = socket.gethostname()
         return socket.gethostbyname(hostname)
+
+    @staticmethod
+    def get_master_public_ip():
+        """Get the public IP address of the master node by querying an external service"""
+        try:
+            # Try multiple services in case one is down
+            services = [
+                "https://api.ipify.org",
+                "https://checkip.amazonaws.com",
+                "https://ipecho.net/plain",
+            ]
+
+            for service in services:
+                try:
+                    with urllib.request.urlopen(service, timeout=10) as response:
+                        public_ip = response.read().decode("utf-8").strip()
+                        # Basic validation that we got an IP address
+                        if "." in public_ip and len(public_ip.split(".")) == 4:
+                            return public_ip
+                except Exception:
+                    continue
+
+            # If all services fail, return None
+            return None
+
+        except Exception as e:
+            print(f"Error getting public IP: {e}")
+            return None
+
+    @staticmethod
+    def get_master_public_ip_curl():
+        """Get the public IP address using curl command (simpler approach)"""
+        try:
+            result = subprocess.run(
+                ["curl", "-4", "ifconfig.me"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            if result.returncode == 0:
+                public_ip = result.stdout.strip()
+                # Basic validation that we got an IP address
+                if "." in public_ip and len(public_ip.split(".")) == 4:
+                    return public_ip
+
+            return None
+
+        except Exception as e:
+            print(f"Error getting public IP with curl: {e}")
+            return None
 
     def create_handler_class(self):
         """Create handler class with access to server instance"""
