@@ -177,6 +177,11 @@ pub enum Name {
     Reserved(String),
 }
 
+// The delimiter between the name and the uuid when a Name::Suffixed is stringified.
+// Actor names must be parseable as a Rust identifier, so this delimiter must be
+// something that is part of a valid Rust identifier.
+static NAME_SUFFIX_DELIMITER: &str = "_";
+
 impl Name {
     /// Create a new `Name` from a user-provided base name.
     pub fn new(name: impl Into<String>) -> Self {
@@ -238,7 +243,7 @@ impl FromStr for Name {
     type Err = NameParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        if let Some((name, uuid)) = s.split_once('-') {
+        if let Some((name, uuid)) = s.split_once(NAME_SUFFIX_DELIMITER) {
             if name.is_empty() {
                 return Err(NameParseError::MissingName);
             }
@@ -260,7 +265,7 @@ impl std::fmt::Display for Name {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Suffixed(n, uuid) => {
-                write!(f, "{}-", n)?;
+                write!(f, "{}{}", n, NAME_SUFFIX_DELIMITER)?;
                 uuid.format(f, true /*raw*/)
             }
             Self::Reserved(n) => write!(f, "{}", n),
@@ -281,7 +286,44 @@ mod tests {
 
     #[test]
     fn test_name_roundtrip() {
+        let uuid = "111111111111".parse::<ShortUuid>().unwrap();
+        let name = Name::new_with_uuid("foo", Some(uuid));
+        let str = name.to_string();
+        assert_eq!(str, "foo_111111111111");
+        assert_eq!(name, Name::from_str(&str).unwrap());
+    }
+
+    #[test]
+    fn test_name_roundtrip_with_underscore() {
+        // A ShortUuid may have an underscore prefix if the first character is a digit.
+        // Make sure this doesn't impact parsing.
+        let uuid = "_1a2b3c4d5e6f".parse::<ShortUuid>().unwrap();
+        let name = Name::new_with_uuid("foo", Some(uuid));
+        let str = name.to_string();
+        // Leading underscore is stripped as not needed.
+        assert_eq!(str, "foo_1a2b3c4d5e6f");
+        assert_eq!(name, Name::from_str(&str).unwrap());
+    }
+
+    #[test]
+    fn test_name_roundtrip_random() {
         let name = Name::new("foo");
         assert_eq!(name, Name::from_str(&name.to_string()).unwrap());
+    }
+
+    #[test]
+    fn test_name_roundtrip_reserved() {
+        let name = Name::new_reserved("foo");
+        let str = name.to_string();
+        assert_eq!(str, "foo");
+        assert_eq!(name, Name::from_str(&str).unwrap());
+    }
+
+    #[test]
+    fn test_name_parse() {
+        // Multiple underscores are allowed in the name, as ShortUuid will discard
+        // them.
+        let name = Name::from_str("foo__1a2b3c4_d5e6f").unwrap();
+        assert_eq!(format!("{}", name), "foo_1a2b3c4d5e6f");
     }
 }

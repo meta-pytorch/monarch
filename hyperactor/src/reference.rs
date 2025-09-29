@@ -1386,6 +1386,16 @@ mod tests {
                 )
                 .into(),
             ),
+            (
+                // References with v1::Name::Suffixed for actor names are parseable
+                "test[234].testactor_12345[6]",
+                ActorId(
+                    ProcId::Ranked(WorldId("test".into()), 234),
+                    "testactor_12345".into(),
+                    6,
+                )
+                .into(),
+            ),
         ];
 
         for (s, expected) in cases {
@@ -1395,7 +1405,12 @@ mod tests {
 
     #[test]
     fn test_reference_parse_error() {
-        let cases: Vec<&str> = vec!["(blah)", "world(1, 2, 3)"];
+        let cases: Vec<&str> = vec![
+            "(blah)",
+            "world(1, 2, 3)",
+            // hyphen is not allowed in actor name
+            "test[234].testactor-12345[6]",
+        ];
 
         for s in cases {
             let result: Result<Reference, ReferenceParsingError> = s.parse();
