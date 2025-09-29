@@ -11,15 +11,18 @@
 use std::io;
 use std::io::IoSlice;
 use std::mem::take;
+use std::task::Poll;
 
 use bytes::Buf;
 use bytes::BufMut;
 use bytes::Bytes;
 use bytes::BytesMut;
+use futures::future::poll_fn;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
+use tokio::io::ReadBuf;
 
 /// A FrameReader reads frames from an underlying [`AsyncRead`].
 pub struct FrameReader<R> {
@@ -32,11 +35,7 @@ enum FrameReaderState {
     /// Accumulating 8-byte length prefix.
     ReadLen { buf: [u8; 8], off: usize },
     /// Accumulating body of exactly `len` bytes.
-    ReadBody {
-        buf: Vec<u8>,
-        off: usize,
-        len: usize,
-    }, // off <= len
+    ReadBody { buf: Vec<u8>, len: usize }, // buf.len() <= len
 }
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
@@ -98,24 +97,40 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
                     self.state = FrameReaderState::ReadBody {
-                        // TODO: allow for uninitialized fills
-                        buf: vec![0; len],
-                        off: 0,
+                        buf: Vec::with_capacity(len),
                         len,
                     };
                 }
 
-                FrameReaderState::ReadBody { buf, off, len } if *off < *len => {
-                    let n = self.reader.read(&mut buf[*off..*len]).await?;
-                    if n == 0 {
+                FrameReaderState::ReadBody { buf, len } if buf.len() < *len => {
+                    let num_to_read = *len - buf.len();
+
+                    let num_read = poll_fn(|cx| {
+                        let spare = buf.spare_capacity_mut();
+
+                        assert!(spare.len() >= num_to_read);
+
+                        let mut buf = ReadBuf::uninit(&mut spare[..num_to_read]);
+
+                        match std::pin::Pin::new(&mut self.reader).poll_read(cx, &mut buf) {
+                            Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.filled().len())),
+                            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                            Poll::Pending => Poll::Pending,
+                        }
+                    })
+                    .await?;
+
+                    if num_read == 0 {
                         return Err(io::ErrorKind::UnexpectedEof.into());
                     }
-                    *off += n;
-                    assert!(*off <= *len)
+                    // SAFETY: Adding the number of bytes that were just read should be the correct length of this buffer
+                    unsafe {
+                        buf.set_len(buf.len() + num_read);
+                    }
                 }
 
-                FrameReaderState::ReadBody { buf, off, len } => {
-                    assert_eq!(*off, *len);
+                FrameReaderState::ReadBody { buf, len } => {
+                    assert_eq!(buf.len(), *len);
                     let frame = take(buf).into();
                     self.state = FrameReaderState::ReadLen {
                         buf: [0; 8],
