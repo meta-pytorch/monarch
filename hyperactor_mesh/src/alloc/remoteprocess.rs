@@ -459,10 +459,17 @@ impl RemoteProcessAllocator {
                             tx.post(RemoteProcessProcStateMessage::Update(alloc_key.clone(), event));
                         }
                         None => {
-                            tracing::debug!("sending done");
-                            tx.post(RemoteProcessProcStateMessage::Done(alloc_key.clone()));
-                            running = false;
-                            break;
+                            let done_message = RemoteProcessProcStateMessage::Done(alloc_key.clone());
+                            tracing::debug!("{:?}", done_message);
+                            match tx.send(done_message).await {
+                                Ok(_) => {
+                                    running = false;
+                                    break;
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to send done message: {}", e);
+                                }
+                            }
                         }
                     }
                 }
