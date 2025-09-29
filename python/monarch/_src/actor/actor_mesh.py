@@ -985,7 +985,6 @@ class ActorMesh(MeshTrait, Generic[T]):
         cls,
         Class: Type[T],
         actor_mesh: "PythonActorMesh",
-        mailbox: Mailbox,
         shape: Shape,
         proc_mesh: "ProcMesh",
         controller_controller: Optional["_ControllerController"],
