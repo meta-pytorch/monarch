@@ -13,7 +13,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import pytest
 import torch
 from monarch.actor import Actor, current_rank, endpoint, this_host
-from monarch.tensor_engine import is_available as rdma_available, RDMABuffer
+from monarch.rdma import is_rdma_available, RDMABuffer
 
 
 needs_cuda = pytest.mark.skipif(
@@ -21,7 +21,7 @@ needs_cuda = pytest.mark.skipif(
     reason="CUDA not available",
 )
 needs_rdma = pytest.mark.skipif(
-    not rdma_available(),
+    not is_rdma_available(),
     reason="RDMA not available",
 )
 

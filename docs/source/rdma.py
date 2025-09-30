@@ -15,7 +15,7 @@ This is meant to be merged with the getting_started guide.
 
 import torch
 from monarch.actor import Actor, endpoint, this_host
-from monarch.tensor_engine import RDMABuffer
+from monarch.rdma import RDMABuffer
 
 # %%
 # Point-to-Point RDMA

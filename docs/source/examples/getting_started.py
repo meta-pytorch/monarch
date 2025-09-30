@@ -293,7 +293,7 @@ class SupervisorActor(Actor):
 # once an actor has a handle to a buffer, it can read or write to the buffer without the owner of the buffer.
 
 import torch
-from monarch.tensor_engine import RDMABuffer
+from monarch.rdma import RDMABuffer
 
 
 class ParameterServer(Actor):
@@ -346,8 +346,6 @@ worker.sync_weights.call_one(server).get()
 # This lets a single actor directly compute with tensors distributed across a mesh of processes.
 #
 # We can use distributed features by 'activating' a ProcMesh:
-
-import torch
 
 with trainer_procs.activate():
     t = torch.rand(3, 4)

@@ -14,10 +14,10 @@ behavior when RDMA support is missing.
 """
 
 import pytest
-from monarch.tensor_engine import is_available as rdma_available
+from monarch.rdma import is_rdma_available
 
 needs_no_rdma = pytest.mark.skipif(
-    rdma_available(),
+    is_rdma_available(),
     reason="RDMA is available, test only runs on systems without RDMA support",
 )
 
