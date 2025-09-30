@@ -90,10 +90,10 @@ pub mod test_utils {
     use ndslice::extent;
 
     use crate::IbverbsConfig;
-    use crate::PollTarget;
     use crate::RdmaBuffer;
     use crate::cu_check;
     use crate::ibverbs_primitives::get_all_devices;
+    use crate::rdma_components::PollTarget;
     use crate::rdma_components::RdmaQueuePair;
     use crate::rdma_manager_actor::RdmaManagerActor;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
@@ -142,7 +142,7 @@ pub mod test_utils {
                 laddr: lhandle.addr,
                 length: lhandle.size,
                 lkey: lhandle.lkey,
-                wr_id: u32::from_be(*(*dv_qp).dbrec.wrapping_add(1)) as u64,
+                wr_id: qp.send_wqe_idx,
                 signaled: true,
                 op_type,
                 raddr: rhandle.addr,
@@ -174,7 +174,7 @@ pub mod test_utils {
                 laddr: lhandle.addr,
                 length: lhandle.size,
                 lkey: lhandle.lkey,
-                wr_id: u32::from_be(*(*dv_qp).dbrec) as u64,
+                wr_id: qp.recv_wqe_idx,
                 op_type,
                 signaled: true,
                 qp_num: (*ibv_qp).qp_num,
@@ -196,11 +196,11 @@ pub mod test_utils {
             let base_ptr = (*dv_qp).sq.buf as *mut u8;
             let wqe_cnt = (*dv_qp).sq.wqe_cnt;
             let stride = (*dv_qp).sq.stride;
-            if wqe_cnt < (qp.send_wqe_idx - qp.send_db_idx) {
+            if (wqe_cnt as u64) < (qp.send_wqe_idx - qp.send_db_idx) {
                 return Err(anyhow::anyhow!("Overflow of WQE, possible data loss"));
             }
             while qp.send_db_idx < qp.send_wqe_idx {
-                let offset = (qp.send_db_idx % wqe_cnt) * stride;
+                let offset = (qp.send_db_idx % wqe_cnt as u64) * stride as u64;
                 let src_ptr = (base_ptr as *mut u8).wrapping_add(offset as usize);
                 rdmaxcel_sys::launch_db_ring((*dv_qp).bf.reg, src_ptr as *mut std::ffi::c_void);
                 qp.send_db_idx += 1;
@@ -223,18 +223,19 @@ pub mod test_utils {
             let (cq, idx, cq_type_str) = match poll_target {
                 PollTarget::Send => (
                     qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq,
-                    qp.send_cq_idx as i32,
+                    qp.send_cq_idx,
                     "send",
                 ),
                 PollTarget::Recv => (
                     qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq,
-                    qp.recv_cq_idx as i32,
+                    qp.recv_cq_idx,
                     "receive",
                 ),
             };
 
             // Poll the completion queue
-            let result = unsafe { rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx) };
+            let result =
+                unsafe { rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx as i32) };
 
             match result {
                 rdmaxcel_sys::CQE_POLL_TRUE => {

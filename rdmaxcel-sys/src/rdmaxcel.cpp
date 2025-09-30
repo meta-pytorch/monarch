@@ -11,9 +11,12 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda.h>
 #include <unistd.h>
-#include <iostream>
 #include <mutex>
+#include <set>
 #include <unordered_map>
+
+// TODO: explicitly obtain from ibverbs config, for now assume 32
+const int SGE_MAX = 32;
 
 // Structure to hold segment information
 struct SegmentInfo {
@@ -26,6 +29,7 @@ struct SegmentInfo {
   uint32_t rkey;
   size_t mr_size;
   uintptr_t mr_addr;
+  struct mlx5dv_mkey* mkey;
 
   // Default constructor - initialize mr as null, keys as 0
   SegmentInfo()
@@ -34,10 +38,9 @@ struct SegmentInfo {
         device(-1),
         is_expandable(false),
         mrs(),
-        lkey(0),
-        rkey(0),
         mr_size(0),
-        mr_addr(0) {}
+        mr_addr(0),
+        mkey(nullptr) {}
 
   // Parameterized constructor
   SegmentInfo(size_t addr, size_t sz, int32_t dev, bool expandable)
@@ -46,10 +49,9 @@ struct SegmentInfo {
         device(dev),
         is_expandable(expandable),
         mrs(),
-        lkey(0),
-        rkey(0),
         mr_size(0),
-        mr_addr(0) {}
+        mr_addr(0),
+        mkey(nullptr) {}
 };
 
 // Global map to track active CUDA segments by address
@@ -63,21 +65,46 @@ void scan_existing_segments() {
   // Get current snapshot from the allocator
   auto snapshot = c10::cuda::CUDACachingAllocator::snapshot();
 
-  // Clear current segments
-  activeSegments.clear();
+  // Create a set to track snapshot segments
+  std::set<std::pair<size_t, int32_t>> snapshotSegments;
 
-  // Process snapshot segments directly
+  // Process snapshot segments
   for (const auto& segment : snapshot.segments) {
     size_t segment_address = reinterpret_cast<size_t>(segment.address);
+    int32_t device = segment.device;
 
-    // Create segment info
-    SegmentInfo segInfo(
-        segment_address,
-        segment.total_size,
-        segment.device,
-        segment.is_expandable);
+    snapshotSegments.insert({segment_address, device});
 
-    activeSegments[segment_address] = segInfo;
+    // Look for existing segment by address and device
+    auto it = activeSegments.find(segment_address);
+    if (it != activeSegments.end() && it->second.device == device) {
+      // Existing segment found - update total_size if needed
+      if (it->second.phys_size != segment.total_size) {
+        it->second.phys_size = segment.total_size;
+      }
+    } else {
+      // New segment - add it
+      SegmentInfo segInfo(
+          segment_address, segment.total_size, device, segment.is_expandable);
+
+      activeSegments[segment_address] = segInfo;
+    }
+  }
+
+  // Remove segments that are no longer in the snapshot
+  for (auto it = activeSegments.begin(); it != activeSegments.end();) {
+    std::pair<size_t, int32_t> key = {it->first, it->second.device};
+    if (snapshotSegments.find(key) == snapshotSegments.end()) {
+      // Deregister all MRs before removing segment
+      for (auto* mr : it->second.mrs) {
+        if (mr) {
+          ibv_dereg_mr(mr);
+        }
+      }
+      it = activeSegments.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 
@@ -100,7 +127,7 @@ int rdma_get_active_segment_count() {
 // Get all segment info into an array
 int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count) {
   if (!info_array || max_count <= 0) {
-    return -1; // Invalid parameters
+    return RDMAXCEL_INVALID_PARAMS; // Invalid parameters
   }
 
   std::lock_guard<std::mutex> lock(segmentsMutex);
@@ -116,8 +143,8 @@ int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count) {
     info_array[count].phys_size = seg.phys_size;
     info_array[count].device = seg.device;
     info_array[count].is_expandable = seg.is_expandable ? 1 : 0;
-    info_array[count].lkey = seg.lkey;
-    info_array[count].rkey = seg.rkey;
+    info_array[count].lkey = seg.mkey ? seg.mkey->lkey : 0;
+    info_array[count].rkey = seg.mkey ? seg.mkey->rkey : 0;
     info_array[count].mr_size = seg.mr_size;
     info_array[count].mr_addr = seg.mr_addr;
     count++;
@@ -126,29 +153,33 @@ int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count) {
   return count; // Return number of segments copied
 }
 
-void check(void* ptr, const char* errorMessage) {
-  if (!ptr) {
-    std::cerr << errorMessage << ": " << strerror(errno) << std::endl;
-    exit(2);
-  }
-}
-
-struct mlx5dv_mkey* bind_mrs(
+int bind_mrs(
     struct ibv_pd* pd,
     struct ibv_qp* qp,
     int access_flags,
-    std::vector<ibv_mr*> mrs) {
-  ibv_qp_ex* qpx = ibv_qp_to_qp_ex(qp);
-  check(qpx, "qpx");
-  mlx5dv_qp_ex* mqpx = mlx5dv_qp_ex_from_ibv_qp_ex(qpx);
-  check(mqpx, "mqpx");
+    struct SegmentInfo& seg) {
+  auto mrs = seg.mrs;
   auto mrs_cnt = mrs.size();
-  struct mlx5dv_mkey_init_attr mkey_attr = {};
-  mkey_attr.pd = pd;
-  mkey_attr.create_flags = MLX5DV_MKEY_INIT_ATTR_FLAGS_INDIRECT;
-  mkey_attr.max_entries = mrs_cnt;
-  struct mlx5dv_mkey* mkey = mlx5dv_create_mkey(&mkey_attr);
-  check(mkey, "mkey");
+  ibv_qp_ex* qpx = ibv_qp_to_qp_ex(qp);
+  if (!qpx) {
+    return RDMAXCEL_QP_EX_FAILED;
+  }
+  mlx5dv_qp_ex* mqpx = mlx5dv_qp_ex_from_ibv_qp_ex(qpx);
+  if (!mqpx) {
+    return RDMAXCEL_MLX5DV_QP_EX_FAILED;
+  }
+
+  if (!seg.mkey) {
+    struct mlx5dv_mkey_init_attr mkey_attr = {};
+    mkey_attr.pd = pd;
+    mkey_attr.create_flags = MLX5DV_MKEY_INIT_ATTR_FLAGS_INDIRECT;
+    mkey_attr.max_entries = 32;
+    auto mkey = mlx5dv_create_mkey(&mkey_attr);
+    if (!mkey) {
+      return RDMAXCEL_MKEY_CREATE_FAILED;
+    }
+    seg.mkey = mkey;
+  }
 
   std::vector<ibv_sge> sgl(mrs_cnt);
   for (size_t i = 0; i < mrs_cnt; i++) {
@@ -160,52 +191,97 @@ struct mlx5dv_mkey* bind_mrs(
   qpx->wr_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
   ibv_wr_start(qpx);
   struct mlx5dv_mkey_conf_attr mkey_cattr = {};
-  mlx5dv_wr_mkey_configure(mqpx, mkey, 2, &mkey_cattr);
+  mlx5dv_wr_mkey_configure(mqpx, seg.mkey, 2, &mkey_cattr);
   mlx5dv_wr_set_mkey_access_flags(mqpx, access_flags);
   mlx5dv_wr_set_mkey_layout_list(mqpx, mrs_cnt, sgl.data());
   int ret = ibv_wr_complete(qpx);
 
   if (ret != 0) {
-    std::cout << "ibv_wr_complete failed " << strerror(ret) << "\n";
-    exit(1);
+    return RDMAXCEL_WR_COMPLETE_FAILED;
   }
 
-  // Poll for completion and verify it matches the expected wr_id
   struct ibv_wc wc {};
   while (ibv_poll_cq(qp->send_cq, 1, &wc) == 0) {
     // Continue polling until completion arrives
   }
 
   if (wc.status != IBV_WC_SUCCESS) {
-    std::cout << "memory registration wc failed: " << wc.status << "\n";
-    exit(1);
+    return RDMAXCEL_WC_STATUS_FAILED;
   }
 
-  // Now increment wr_id for the next work request
   qpx->wr_id += 1;
   qpx->wr_flags = 0;
 
-  return mkey;
+  return 0;
+}
+
+// Compact multiple MRs into a single MR for a segment if SGE_MAX hit
+// TODO: setup a global lock, may be needed to safely do this
+int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
+  if (seg.mrs.empty()) {
+    return 0; // Nothing to compact
+  }
+
+  size_t total_size = seg.phys_size;
+  size_t start_addr = seg.phys_address;
+
+  // Deregister all existing MRs
+  for (auto* mr : seg.mrs) {
+    if (mr) {
+      ibv_dereg_mr(mr);
+    }
+  }
+  seg.mrs.clear();
+
+  // Get dmabuf handle for the entire segment
+  int fd = -1;
+  CUresult cu_result = cuMemGetHandleForAddressRange(
+      &fd,
+      static_cast<CUdeviceptr>(start_addr),
+      total_size,
+      CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+      0);
+
+  if (cu_result != CUDA_SUCCESS || fd < 0) {
+    return RDMAXCEL_DMABUF_HANDLE_FAILED;
+  }
+
+  // Register the consolidated dmabuf
+  auto mr = ibv_reg_dmabuf_mr(pd, 0, total_size, 0, fd, access_flags);
+  close(fd); // Close fd after registration
+
+  if (!mr) {
+    return RDMAXCEL_MR_REGISTRATION_FAILED;
+  }
+  seg.mrs.push_back(mr);
+
+  return 0;
 }
 
 // Register memory region for a specific segment address, assume cuda
 int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
   if (!pd) {
-    return -1; // Invalid parameter
+    return RDMAXCEL_INVALID_PARAMS; // Invalid parameter
   }
   scan_existing_segments();
   std::lock_guard<std::mutex> lock(segmentsMutex);
 
-  // Conservative access flags - remove ATOMIC for CUDA DMA-BUF compatibility
   int access_flags =
       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
 
+  // Logic, we have active segments but only registered up to mr_size. need to
+  // register the rest in extra MR, and push unto MRS vector.
   for (auto& pair : activeSegments) {
     SegmentInfo& seg = pair.second;
     if (seg.mr_size != seg.phys_size) {
       auto mr_start = seg.phys_address + seg.mr_size;
       auto mr_end = seg.phys_address + seg.phys_size;
       auto mr_size = mr_end - mr_start;
+
+      // TODO: resolve 4GiB limit
+      if (seg.phys_size > (1ULL << 32)) {
+        return RDMAXCEL_MKEY_REG_LIMIT;
+      }
       int fd = -1;
       CUresult cu_result = cuMemGetHandleForAddressRange(
           &fd,
@@ -215,26 +291,69 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
           0);
 
       if (cu_result != CUDA_SUCCESS || fd < 0) {
-        return -3; // Failed to get dmabuf handle
+        return RDMAXCEL_DMABUF_HANDLE_FAILED; // Failed to get dmabuf handle
       }
 
-      // Register the dmabuf with fd, address is 0.
+      // Register the dmabuf with fd, address is always 0.
       auto mr = ibv_reg_dmabuf_mr(pd, 0, mr_size, 0, fd, access_flags);
-      close(fd); // Close fd after registration
+      close(fd);
 
       if (!mr) {
-        return -4; // MR registration failed
+        return RDMAXCEL_MR_REG_FAILED; // MR registration failed
       }
 
       seg.mrs.push_back(mr);
-      seg.mr_size = mr_size;
+      seg.mr_size = seg.phys_size;
+
+      // If we have too many MRs, compact them into a single MR
+      if (seg.mrs.size() > SGE_MAX) {
+        // TODO: find a safe way to compact with low performance cost.
+        // return MAX_SGE error auto err = compact_mrs(pd, seg, access_flags);
+        // if (err != 0) {
+        //   return err;
+        // }
+        return RDMAXCEL_MKEY_REG_LIMIT;
+      }
+
       // Create vector of GPU addresses for bind_mrs
-      auto keys = bind_mrs(pd, qp, access_flags, seg.mrs);
-      seg.lkey = keys->lkey;
-      seg.rkey = keys->rkey;
+      auto err = bind_mrs(pd, qp, access_flags, seg);
+      if (err != 0) {
+        return err; // Bind MR's failed
+      }
     }
   }
   return 0; // Success
+}
+
+const char* rdmaxcel_error_string(int error_code) {
+  switch (error_code) {
+    case RDMAXCEL_SUCCESS:
+      return "Success";
+    case RDMAXCEL_INVALID_PARAMS:
+      return "Invalid parameters provided";
+    case RDMAXCEL_MR_REGISTRATION_FAILED:
+      return "Memory region registration failed during compaction";
+    case RDMAXCEL_DMABUF_HANDLE_FAILED:
+      return "Failed to get dmabuf handle for CUDA memory region";
+    case RDMAXCEL_MR_REG_FAILED:
+      return "Memory region registration failed in register_segments";
+    case RDMAXCEL_MEMORY_BINDING_FAILED:
+      return "Memory binding failed - hardware limit exceeded or MLX5 constraint";
+    case RDMAXCEL_QP_EX_FAILED:
+      return "Failed to get extended queue pair (ibv_qp_to_qp_ex)";
+    case RDMAXCEL_MLX5DV_QP_EX_FAILED:
+      return "Failed to get MLX5DV extended queue pair (mlx5dv_qp_ex_from_ibv_qp_ex)";
+    case RDMAXCEL_MKEY_CREATE_FAILED:
+      return "Failed to create MLX5 memory key (mlx5dv_create_mkey)";
+    case RDMAXCEL_WR_COMPLETE_FAILED:
+      return "Work request completion failed (ibv_wr_complete)";
+    case RDMAXCEL_WC_STATUS_FAILED:
+      return "Work completion status failed - memory registration unsuccessful";
+    case RDMAXCEL_MKEY_REG_LIMIT:
+      return "mkey registration failed - segment size > 4 GiB or SGL max exceeded";
+    default:
+      return "Unknown RDMAXCEL error code";
+  }
 }
 
 } // extern "C"
