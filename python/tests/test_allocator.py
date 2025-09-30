@@ -20,6 +20,7 @@ from typing import Generator, Optional
 from unittest import mock
 
 import cloudpickle
+import pytest
 
 import torch
 import torch.distributed as dist
@@ -594,6 +595,8 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                     AllocSpec(AllocConstraints(), host=1, gpu=1)
                 ).initialized
 
+    # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
+    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_torchx_remote_alloc_initializer_no_match_label_1_mesh(self) -> None:
         server = ServerSpec(
             name=UNUSED,
@@ -624,6 +627,8 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assert_computed_world_size(results, 4)  # 1x4 mesh
 
+    # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
+    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_torchx_remote_alloc_initializer_with_match_label(self) -> None:
         server = ServerSpec(
             name=UNUSED,
