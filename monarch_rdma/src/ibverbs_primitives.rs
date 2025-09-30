@@ -138,20 +138,20 @@ impl Default for IbverbsConfig {
     fn default() -> Self {
         Self {
             device: RdmaDevice::default(),
-            cq_entries: 10,
+            cq_entries: 256,
             port_num: 1,
             gid_index: 3,
-            max_send_wr: 1,
-            max_recv_wr: 1,
-            max_send_sge: 4, // min value 4, may need to be muliple of 2.
-            max_recv_sge: 4, // min value 4, may need to be muliple of 2.
-            path_mtu: rdmaxcel_sys::IBV_MTU_1024,
+            max_send_wr: 128,
+            max_recv_wr: 128,
+            max_send_sge: 32,
+            max_recv_sge: 32,
+            path_mtu: rdmaxcel_sys::IBV_MTU_4096,
             retry_cnt: 7,
             rnr_retry: 7,
             qp_timeout: 14, // 4.096 μs * 2^14 = ~67 ms
             min_rnr_timer: 12,
-            max_dest_rd_atomic: 1,
-            max_rd_atomic: 1,
+            max_dest_rd_atomic: 16,
+            max_rd_atomic: 16,
             pkey_index: 0,
             psn: rand::random::<u32>() & 0xffffff,
             use_gpu_direct: false, // nv_peermem enabled for cuda
@@ -630,6 +630,8 @@ pub fn ibverbs_supported() -> bool {
     Copy
 )]
 pub struct RdmaMemoryRegionView {
+    // id should be unique with a given rdmam manager
+    pub id: usize,
     /// Virtual address in the process address space.
     /// This is the pointer/address as seen by the local process.
     pub virtual_addr: usize,
@@ -660,8 +662,16 @@ unsafe impl Sync for RdmaMemoryRegionView {}
 
 impl RdmaMemoryRegionView {
     /// Creates a new `RdmaMemoryRegionView` with the given address and size.
-    pub fn new(virtual_addr: usize, rdma_addr: usize, size: usize, lkey: u32, rkey: u32) -> Self {
+    pub fn new(
+        id: usize,
+        virtual_addr: usize,
+        rdma_addr: usize,
+        size: usize,
+        lkey: u32,
+        rkey: u32,
+    ) -> Self {
         Self {
+            id,
             virtual_addr,
             rdma_addr,
             size,
