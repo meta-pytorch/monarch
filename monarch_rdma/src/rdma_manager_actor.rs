@@ -54,6 +54,23 @@ use crate::rdma_components::RdmaQueuePair;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::validate_execution_context;
 
+/// Represents the state of a queue pair in the manager, either available or checked out.
+#[derive(Debug, Clone)]
+pub enum QueuePairState {
+    Available(RdmaQueuePair),
+    CheckedOut,
+}
+
+/// Helper function to get detailed error messages from RDMAXCEL error codes
+pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
+    unsafe {
+        let c_str = rdmaxcel_sys::rdmaxcel_error_string(error_code);
+        std::ffi::CStr::from_ptr(c_str)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 /// Represents a reference to a remote RDMA buffer that can be accessed via RDMA operations.
 /// This struct encapsulates all the information needed to identify and access a memory region
 /// on a remote host using RDMA.
@@ -75,13 +92,6 @@ pub enum RdmaManagerMessage {
         /// `reply` - Reply channel to return the queue pair for communication
         reply: OncePortRef<RdmaQueuePair>,
     },
-    IsConnected {
-        /// `other` - The ActorId of the actor to check connection with
-        other: ActorRef<RdmaManagerActor>,
-        #[reply]
-        /// `reply` - Reply channel to return whether the actors have connected
-        reply: OncePortRef<bool>,
-    },
     Connect {
         /// `other` - The ActorId of the actor to connect to
         other: ActorRef<RdmaManagerActor>,
@@ -101,6 +111,12 @@ pub enum RdmaManagerMessage {
         /// `reply` - Reply channel to return the connection info
         reply: OncePortRef<RdmaQpInfo>,
     },
+    ReleaseQueuePair {
+        /// `other` - The ActorId to release queue pair for  
+        other: ActorRef<RdmaManagerActor>,
+        /// `qp` - The queue pair to return (ownership transferred back)
+        qp: RdmaQueuePair,
+    },
 }
 
 #[derive(Debug)]
@@ -112,7 +128,10 @@ pub enum RdmaManagerMessage {
 )]
 pub struct RdmaManagerActor {
     // Map between ActorIds and their corresponding RdmaQueuePair
-    qp_map: HashMap<ActorId, RdmaQueuePair>,
+    qp_map: HashMap<ActorId, QueuePairState>,
+
+    // MR configuration QP for self that cannot be loaned out
+    loopback_qp: Option<RdmaQueuePair>,
 
     // The RDMA domain associated with this actor.
     //
@@ -131,13 +150,16 @@ pub struct RdmaManagerActor {
     // True if both C10 CUDA allocator is enabled AND expandable segments are enabled
     pt_cuda_alloc: bool,
 
-    // Map of memory region IDs to (RdmaMemoryRegionView, ibv_mr* as usize (optional)), representing registered memory regions
-    mr_map: HashMap<usize, (RdmaMemoryRegionView, usize)>,
+    // Map of unique RdmaMemoryRegionView to ibv_mr*.  In case of cuda w/ pytorch its -1
+    // since its managed independently.  Only used for registration/deregistration purposes
+    mr_map: HashMap<usize, usize>,
+    // Id for next mrv created
+    mrv_id: usize,
 }
 
 impl RdmaManagerActor {
     fn find_cuda_segment_for_address(
-        &self,
+        &mut self,
         addr: usize,
         size: usize,
     ) -> Option<RdmaMemoryRegionView> {
@@ -145,16 +167,20 @@ impl RdmaManagerActor {
         for segment in registered_segments {
             let start_addr = segment.phys_address;
             let end_addr = start_addr + segment.phys_size;
-
             if start_addr <= addr && addr + size <= end_addr {
                 let offset = addr - start_addr;
-                return Some(RdmaMemoryRegionView {
+                let rdma_addr = segment.mr_addr + offset;
+
+                let mrv = RdmaMemoryRegionView {
+                    id: self.mrv_id,
                     virtual_addr: addr,
-                    rdma_addr: segment.mr_addr + offset,
+                    rdma_addr,
                     size,
                     lkey: segment.lkey,
                     rkey: segment.rkey,
-                });
+                };
+                self.mrv_id += 1;
+                return Some(mrv);
             }
         }
         None
@@ -162,7 +188,6 @@ impl RdmaManagerActor {
 
     fn register_mr(
         &mut self,
-        actor_id: ActorId,
         addr: usize,
         size: usize,
     ) -> Result<RdmaMemoryRegionView, anyhow::Error> {
@@ -182,28 +207,39 @@ impl RdmaManagerActor {
                 | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
 
             let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
-            let mut mrv: Option<RdmaMemoryRegionView> = None;
+            let mrv;
 
             if is_cuda && self.pt_cuda_alloc {
                 // Get registered segments and check if our memory range is covered
-                mrv = self.find_cuda_segment_for_address(addr, size);
+                let mut maybe_mrv = self.find_cuda_segment_for_address(addr, size);
                 // not found, lets re-sync with caching allocator  and retry
-                if mrv.is_none() {
-                    let qp = self.qp_map.get(&actor_id).unwrap();
-                    rdmaxcel_sys::register_segments(
+                if maybe_mrv.is_none() {
+                    let qp = self.loopback_qp.as_mut().unwrap();
+                    let err = rdmaxcel_sys::register_segments(
                         self.domain.pd,
                         qp.qp as *mut rdmaxcel_sys::ibv_qp,
                     );
-                    mrv = self.find_cuda_segment_for_address(addr, size);
+                    if err != 0 {
+                        let error_msg = get_rdmaxcel_error_message(err);
+                        return Err(anyhow::anyhow!(
+                            "RdmaXcel register_sements failed (addr: 0x{:x}, size: {}): {}",
+                            addr,
+                            size,
+                            error_msg
+                        ));
+                    }
+
+                    maybe_mrv = self.find_cuda_segment_for_address(addr, size);
                 }
                 // if still not found, throw exception
-                if mrv.is_none() {
+                if maybe_mrv.is_none() {
                     return Err(anyhow::anyhow!(
                         "MR registration failed for cuda (addr: 0x{:x}, size: {}), unable to find segment in CudaCachingAllocator",
                         addr,
                         size
                     ));
                 }
+                mrv = maybe_mrv.unwrap();
             } else if is_cuda {
                 let mut fd: i32 = -1;
                 cuda_sys::cuMemGetHandleForAddressRange(
@@ -221,13 +257,18 @@ impl RdmaManagerActor {
                     fd,
                     access.0 as i32,
                 );
-                mrv = Some(RdmaMemoryRegionView {
+                if mr.is_null() {
+                    return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
+                }
+                mrv = RdmaMemoryRegionView {
+                    id: self.mrv_id,
                     virtual_addr: addr,
                     rdma_addr: (*mr).addr as usize,
                     size,
                     lkey: (*mr).lkey,
                     rkey: (*mr).rkey,
-                });
+                };
+                self.mrv_id += 1;
             } else {
                 // CPU memory path
                 mr = rdmaxcel_sys::ibv_reg_mr(
@@ -238,27 +279,26 @@ impl RdmaManagerActor {
                 );
 
                 if mr.is_null() {
-                    return Err(anyhow::anyhow!("failed to register memory region (MR)"));
+                    return Err(anyhow::anyhow!("failed to register standard MR"));
                 }
 
-                mrv = Some(RdmaMemoryRegionView {
+                mrv = RdmaMemoryRegionView {
+                    id: self.mrv_id,
                     virtual_addr: addr,
                     rdma_addr: (*mr).addr as usize,
                     size,
                     lkey: (*mr).lkey,
                     rkey: (*mr).rkey,
-                });
+                };
+                self.mrv_id += 1;
             }
-
-            let result_mrv = mrv.unwrap();
-            self.mr_map.insert(addr, (result_mrv.clone(), mr as usize));
-            Ok(result_mrv)
+            self.mr_map.insert(mrv.id, mr as usize);
+            Ok(mrv)
         }
     }
 
     fn deregister_mr(&mut self, id: usize) -> Result<(), anyhow::Error> {
-        let mr_tuple = self.mr_map.remove(&id);
-        if let Some((_, mr_ptr)) = mr_tuple {
+        if let Some(mr_ptr) = self.mr_map.remove(&id) {
             if mr_ptr != 0 {
                 unsafe {
                     rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
@@ -307,36 +347,31 @@ impl Actor for RdmaManagerActor {
 
         Ok(Self {
             qp_map: HashMap::new(),
+            loopback_qp: None,
             domain,
             config,
             pt_cuda_alloc,
             mr_map: HashMap::new(),
+            mrv_id: 0,
         })
     }
 
-    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+    async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Create a loopback queue pair for self-communication
-        let self_ref: ActorRef<RdmaManagerActor> = this.bind().clone();
-        let self_id = self_ref.actor_id().clone();
+        let mut qp = RdmaQueuePair::new(self.domain.context, self.domain.pd, self.config.clone())
+            .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
 
-        // Initialize the queue pair directly (without going through message handler)
-        if !self.qp_map.contains_key(&self_id) {
-            let mut qp =
-                RdmaQueuePair::new(self.domain.context, self.domain.pd, self.config.clone())
-                    .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
+        // Get connection info for loopback
+        let endpoint = qp
+            .get_qp_info()
+            .map_err(|e| anyhow::anyhow!("could not get QP info: {}", e))?;
 
-            // Get connection info for loopback
-            let endpoint = qp
-                .get_qp_info()
-                .map_err(|e| anyhow::anyhow!("could not get QP info: {}", e))?;
+        // Connect to itself
+        qp.connect(&endpoint)
+            .map_err(|e| anyhow::anyhow!("could not connect to RDMA endpoint: {}", e))?;
 
-            // Connect to itself
-            qp.connect(&endpoint)
-                .map_err(|e| anyhow::anyhow!("could not connect to RDMA endpoint: {}", e))?;
-
-            self.qp_map.insert(self_id, qp);
-            tracing::debug!("successfully created loopback connection");
-        }
+        self.loopback_qp = Some(qp);
+        tracing::debug!("successfully created special loopback connection");
 
         Ok(())
     }
@@ -376,16 +411,11 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         addr: usize,
         size: usize,
     ) -> Result<RdmaBuffer, anyhow::Error> {
-        let mrv = if let Some((mrv_, _)) = self.mr_map.get(&addr) {
-            mrv_
-        } else {
-            let actor_id = cx.bind::<RdmaManagerActor>().actor_id().clone();
-            &self.register_mr(actor_id, addr, size)?
-        };
+        let mrv = self.register_mr(addr, size)?;
 
         Ok(RdmaBuffer {
             owner: cx.bind().clone(),
-            mr_id: mrv.virtual_addr,
+            mr_id: mrv.id,
             addr: mrv.rdma_addr,
             size: mrv.size,
             rkey: mrv.rkey,
@@ -418,13 +448,11 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
     /// Requests a queue pair for communication with a remote RDMA manager actor.
     ///
-    /// This function checks if a connection already exists with the specified remote actor.
-    /// If not, it initializes a new queue pair and establishes a connection with the remote actor.
-    /// It then retrieves the queue pair associated with the remote actor for communication.
+    /// Basic logic: if queue pair exists in map, return it; if None, create connection first.
     ///
     /// # Arguments
     ///
-    /// * `this` - The context of the actor requesting the queue pair.
+    /// * `cx` - The context of the actor requesting the queue pair.
     /// * `remote` - The ActorRef of the remote RDMA manager actor to communicate with.
     ///
     /// # Returns
@@ -436,31 +464,58 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         cx: &Context<Self>,
         remote: ActorRef<RdmaManagerActor>,
     ) -> Result<RdmaQueuePair, anyhow::Error> {
-        if !self.is_connected(cx, remote.clone()).await? {
-            let is_loopback =
-                remote.actor_id().clone() == cx.bind::<RdmaManagerActor>().actor_id().clone();
+        let remote_id = remote.actor_id().clone();
 
-            if is_loopback {
-                self.initialize_qp(cx, remote.clone()).await?;
-                let endpoint = self.connection_info(cx, remote.clone()).await?;
-                self.connect(cx, remote.clone(), endpoint).await?;
-            } else {
-                self.initialize_qp(cx, remote.clone()).await?;
-                remote.initialize_qp(cx, cx.bind().clone()).await?;
-                let remote_endpoint = remote.connection_info(cx, cx.bind().clone()).await?;
-                self.connect(cx, remote.clone(), remote_endpoint).await?;
-                let local_endpoint = self.connection_info(cx, remote.clone()).await?;
-                remote
-                    .connect(cx, cx.bind().clone(), local_endpoint)
-                    .await?;
+        // Check if queue pair exists in map.
+        // IMPOTRANT we clone QP here, but its all simple metadata
+        // and subsequent owner will update it and return it.
+        match self.qp_map.get(&remote_id).cloned() {
+            Some(QueuePairState::Available(qp)) => {
+                // Queue pair exists and is available - return it
+                self.qp_map.insert(remote_id, QueuePairState::CheckedOut);
+                Ok(qp)
+            }
+            Some(QueuePairState::CheckedOut) => {
+                // Queue pair exists but is already checked out
+                Err(anyhow::anyhow!(
+                    "Queue pair for actor {} is already checked out",
+                    remote_id
+                ))
+            }
+            None => {
+                // Queue pair doesn't exist - need to create connection
+                let is_loopback = remote_id == cx.bind::<RdmaManagerActor>().actor_id().clone();
+
+                if is_loopback {
+                    // Loopback connection setup
+                    self.initialize_qp(cx, remote.clone()).await?;
+                    let endpoint = self.connection_info(cx, remote.clone()).await?;
+                    self.connect(cx, remote.clone(), endpoint).await?;
+                } else {
+                    // Remote connection setup
+                    self.initialize_qp(cx, remote.clone()).await?;
+                    remote.initialize_qp(cx, cx.bind().clone()).await?;
+                    let remote_endpoint = remote.connection_info(cx, cx.bind().clone()).await?;
+                    self.connect(cx, remote.clone(), remote_endpoint).await?;
+                    let local_endpoint = self.connection_info(cx, remote.clone()).await?;
+                    remote
+                        .connect(cx, cx.bind().clone(), local_endpoint)
+                        .await?;
+                }
+
+                // Now that connection is established, get the queue pair
+                match self.qp_map.get(&remote_id).cloned() {
+                    Some(QueuePairState::Available(qp)) => {
+                        self.qp_map.insert(remote_id, QueuePairState::CheckedOut);
+                        Ok(qp)
+                    }
+                    _ => Err(anyhow::anyhow!(
+                        "Failed to create connection for actor {}",
+                        remote_id
+                    )),
+                }
             }
         }
-
-        let qp = self
-            .qp_map
-            .get_mut(&remote.actor_id().clone())
-            .ok_or_else(|| anyhow::anyhow!("on get, no connection found for actor {}", remote))?;
-        Ok(qp.clone())
     }
 
     /// Convenience utility to create a new RdmaQueuePair.
@@ -482,34 +537,10 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         if let std::collections::hash_map::Entry::Vacant(e) = self.qp_map.entry(key) {
             let qp = RdmaQueuePair::new(self.domain.context, self.domain.pd, self.config.clone())
                 .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
-            e.insert(qp);
+            e.insert(QueuePairState::Available(qp));
             tracing::debug!("successfully created a connection with {:?}", other);
         }
         Ok(true)
-    }
-
-    /// Checks if a connection exists with another actor.
-    ///
-    /// # Arguments
-    /// * `other` - The ActorRef of the actor to check the connection with.
-    ///
-    /// # Returns
-    /// * `bool` - Returns true if connected, false otherwise.
-    async fn is_connected(
-        &mut self,
-        _cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
-    ) -> Result<bool, anyhow::Error> {
-        tracing::debug!("checking if connected with {:?}", other);
-        if !self.qp_map.contains_key(&other.actor_id().clone()) {
-            return Ok(false);
-        }
-        let qp_state = self
-            .qp_map
-            .get_mut(&other.actor_id().clone())
-            .unwrap()
-            .state()?;
-        Ok(qp_state == rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS)
     }
 
     /// Establishes a connection with another actor
@@ -524,15 +555,23 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         endpoint: RdmaQpInfo,
     ) -> Result<(), anyhow::Error> {
         tracing::debug!("connecting with {:?}", other);
-        let qp = self
-            .qp_map
-            .get_mut(&other.actor_id().clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!("on connect, no connection found for actor {}", other)
-            })?;
-        qp.connect(&endpoint)
-            .map_err(|e| anyhow::anyhow!("could not connect to RDMA endpoint: {}", e))?;
-        Ok(())
+        let other_id = other.actor_id().clone();
+
+        match self.qp_map.get_mut(&other_id) {
+            Some(QueuePairState::Available(qp)) => {
+                qp.connect(&endpoint)
+                    .map_err(|e| anyhow::anyhow!("could not connect to RDMA endpoint: {}", e))?;
+                Ok(())
+            }
+            Some(QueuePairState::CheckedOut) => Err(anyhow::anyhow!(
+                "Cannot connect: queue pair for actor {} is checked out",
+                other_id
+            )),
+            None => Err(anyhow::anyhow!(
+                "On connect, no connection found for actor {}",
+                other_id
+            )),
+        }
     }
 
     /// Gets connection information for establishing an RDMA connection
@@ -548,12 +587,57 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
     ) -> Result<RdmaQpInfo, anyhow::Error> {
         tracing::debug!("getting connection info with {:?}", other);
+        let other_id = other.actor_id().clone();
 
-        let connection_info = self
-            .qp_map
-            .get_mut(&other.actor_id().clone())
-            .ok_or_else(|| anyhow::anyhow!("no connection found for actor {}", other))?
-            .get_qp_info()?;
-        Ok(connection_info)
+        match self.qp_map.get_mut(&other_id) {
+            Some(QueuePairState::Available(qp)) => {
+                let connection_info = qp.get_qp_info()?;
+                Ok(connection_info)
+            }
+            Some(QueuePairState::CheckedOut) => Err(anyhow::anyhow!(
+                "Cannot get connection info: queue pair for actor {} is checked out",
+                other_id
+            )),
+            None => Err(anyhow::anyhow!(
+                "No connection found for actor {}",
+                other_id
+            )),
+        }
+    }
+
+    /// Releases a queue pair back to the HashMap
+    ///
+    /// This method returns a queue pair to the HashMap after the caller has finished
+    /// using it. This completes the request/release cycle, similar to RdmaBuffer.
+    ///
+    /// # Arguments
+    /// * `other` - The ActorRef to release queue pair for
+    /// * `qp` - The queue pair to return (ownership transferred back)
+    async fn release_queue_pair(
+        &mut self,
+        _cx: &Context<Self>,
+        other: ActorRef<RdmaManagerActor>,
+        qp: RdmaQueuePair,
+    ) -> Result<(), anyhow::Error> {
+        let remote_id = other.actor_id().clone();
+
+        // Check if the queue pair is in the expected CheckedOut state
+        match self.qp_map.get(&remote_id) {
+            Some(QueuePairState::CheckedOut) => {
+                // Restore the queue pair to Available state
+                self.qp_map
+                    .insert(remote_id.clone(), QueuePairState::Available(qp));
+                tracing::debug!("Released queue pair for actor {:?}", remote_id);
+                Ok(())
+            }
+            Some(QueuePairState::Available(_)) => Err(anyhow::anyhow!(
+                "Cannot release queue pair for actor {}: queue pair is not checked out",
+                remote_id
+            )),
+            None => Err(anyhow::anyhow!(
+                "Cannot release queue pair for actor {}: no queue pair found",
+                remote_id
+            )),
+        }
     }
 }
