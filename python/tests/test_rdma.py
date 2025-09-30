@@ -260,3 +260,100 @@ def test_gpu_trainer_generator_sync() -> None:
     for _ in range(1):
         trainer.weights_ready.call().get()
         generator.update_weights.call().get()
+
+
+@needs_rdma
+async def test_rdma_concurrent_2gb_writes_in_order():
+    """Test concurrent 2GB RDMA buffer writes with reverse-order awaiting"""
+    proc = this_host().spawn_procs(per_host={"processes": 1})
+    num_elem = 500_000_000  # 500M elements
+
+    class BufferOwnerActor(Actor):
+        def __init__(self):
+            # Create a 2GB buffer (500M float32 elements * 4 bytes = 2GB)
+            self.data = torch.zeros(num_elem, dtype=torch.float32)
+            self.rdma_buffer = None
+
+        @endpoint
+        async def create_buffer(self) -> RDMABuffer:
+            """Create a 2GB RDMABuffer"""
+            byte_tensor = self.data.view(torch.uint8).flatten()
+            self.rdma_buffer = RDMABuffer(byte_tensor)
+            return self.rdma_buffer
+
+        @endpoint
+        async def get_buffer_data(self) -> torch.Tensor:
+            """Return the current buffer data for verification"""
+            return self.data
+
+    class WriterActor(Actor):
+        def __init__(self):
+            # Create a 2GB buffer (500M float32 elements * 4 bytes = 2GB)
+            self.tensor_a = torch.ones(
+                num_elem, dtype=torch.float32
+            )  # Will receive data
+            self.tensor_b = torch.full(
+                (num_elem,), 2.0, dtype=torch.float32
+            )  # Will send data
+
+        @endpoint
+        async def perform_concurrent_writes(self, buffer: RDMABuffer):
+            """Perform concurrent read/write operations and await in reverse order"""
+            # Convert tensors to byte views for RDMA
+            byte_tensor_a = self.tensor_a.view(torch.uint8).flatten()
+            byte_tensor_b = self.tensor_b.view(torch.uint8).flatten()
+
+            # Start both operations concurrently
+            future_a = buffer.read_into(
+                byte_tensor_a, timeout=10
+            )  # Read FROM buffer INTO tensor_a
+            future_b = buffer.write_from(
+                byte_tensor_b, timeout=10
+            )  # Write FROM tensor_b INTO buffer
+
+            # Await in reverse order - sets actual execution order
+            await future_b  # Await write operation first
+            await future_a  # Await read operation second
+
+            return "SUCCESS"
+
+        @endpoint
+        async def get_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
+            """Return both tensors for verification"""
+            return (self.tensor_a, self.tensor_b)
+
+    # Create actors
+    buffer_owner = proc.spawn("buffer_owner", BufferOwnerActor)
+    writer = proc.spawn("writer", WriterActor)
+
+    # Create the 2GB RDMA buffer
+    buffer = await buffer_owner.create_buffer.call_one()
+    print(f"✓ Created 2GB RDMA buffer (size: {buffer.size() / (1024**3):.2f} GB)")
+
+    # Perform concurrent writes with reverse-order awaiting
+    result = await writer.perform_concurrent_writes.call_one(buffer)
+    assert result == "SUCCESS", f"Concurrent writes failed: {result}"
+
+    # Verify the data flow worked correctly using torch.allclose
+    tensor_a_actual, tensor_b_actual = await writer.get_tensors.call_one()
+    buffer_data_actual = await buffer_owner.get_buffer_data.call_one()
+
+    expected_result = torch.full((num_elem,), 2.0, dtype=torch.float32)
+
+    # Verify using torch.allclose
+    assert torch.allclose(
+        tensor_a_actual, expected_result
+    ), "tensor_a does not match expected 2.0s"
+    assert torch.allclose(
+        tensor_b_actual, expected_result
+    ), "tensor_b does not match expected 2.0s"
+
+    assert torch.allclose(
+        buffer_data_actual, expected_result
+    ), "RDMABuffer does not contain expected 2.0s"
+
+    print("✓ Concurrent 2GB operations completed successfully")
+
+    # Drop the buffer
+    await buffer.drop()
+    print("✓ Buffer dropped successfully")

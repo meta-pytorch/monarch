@@ -40,6 +40,9 @@
 //! 6. Poll for completions
 //! 7. Resources are cleaned up when dropped
 
+/// Maximum size for a single RDMA operation in bytes (1 GiB)
+const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
+
 use std::ffi::CStr;
 use std::fs;
 use std::io::Error;
@@ -788,20 +791,37 @@ impl RdmaQueuePair {
     }
 
     pub fn put(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<(), anyhow::Error> {
-        let idx = self.send_wqe_idx;
-        self.send_wqe_idx += 1;
-        self.post_op(
-            lhandle.addr,
-            lhandle.lkey,
-            lhandle.size,
-            idx,
-            true,
-            RdmaOperation::Write,
-            rhandle.addr,
-            rhandle.rkey,
-        )
-        .unwrap();
-        self.send_db_idx += 1;
+        let total_size = lhandle.size;
+        if rhandle.size < total_size {
+            return Err(anyhow::anyhow!(
+                "Remote buffer size ({}) is smaller than local buffer size ({})",
+                rhandle.size,
+                total_size
+            ));
+        }
+
+        let mut remaining = total_size;
+        let mut offset = 0;
+        while remaining > 0 {
+            let chunk_size = std::cmp::min(remaining, MAX_RDMA_MSG_SIZE);
+            let idx = self.send_wqe_idx;
+            self.send_wqe_idx += 1;
+            self.post_op(
+                lhandle.addr + offset,
+                lhandle.lkey,
+                chunk_size,
+                idx,
+                true,
+                RdmaOperation::Write,
+                rhandle.addr + offset,
+                rhandle.rkey,
+            )?;
+            self.send_db_idx += 1;
+
+            remaining -= chunk_size;
+            offset += chunk_size;
+        }
+
         Ok(())
     }
 
@@ -932,20 +952,38 @@ impl RdmaQueuePair {
     }
 
     pub fn get(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<(), anyhow::Error> {
-        let idx = self.send_wqe_idx;
-        self.send_wqe_idx += 1;
-        self.post_op(
-            lhandle.addr,
-            lhandle.lkey,
-            lhandle.size,
-            idx,
-            true,
-            RdmaOperation::Read,
-            rhandle.addr,
-            rhandle.rkey,
-        )
-        .unwrap();
-        self.send_db_idx += 1;
+        let total_size = lhandle.size;
+        if rhandle.size < total_size {
+            return Err(anyhow::anyhow!(
+                "Remote buffer size ({}) is smaller than local buffer size ({})",
+                rhandle.size,
+                total_size
+            ));
+        }
+
+        let mut remaining = total_size;
+        let mut offset = 0;
+
+        while remaining > 0 {
+            let chunk_size = std::cmp::min(remaining, MAX_RDMA_MSG_SIZE);
+            let idx = self.send_wqe_idx;
+            self.send_wqe_idx += 1;
+            self.post_op(
+                lhandle.addr + offset,
+                lhandle.lkey,
+                chunk_size,
+                idx,
+                true,
+                RdmaOperation::Read,
+                rhandle.addr + offset,
+                rhandle.rkey,
+            )?;
+            self.send_db_idx += 1;
+
+            remaining -= chunk_size;
+            offset += chunk_size;
+        }
+
         Ok(())
     }
 
@@ -1122,7 +1160,7 @@ impl RdmaQueuePair {
     ///
     /// # Arguments
     ///
-    /// * `target` - Which completion queue(s) to poll (Send, Receive, or Both)
+    /// * `target` - Which completion queue(s) to poll (Send, Receive)
     ///
     /// # Returns
     ///
@@ -1168,9 +1206,10 @@ impl RdmaQueuePair {
                     // This should be a send completion - verify it's the one we're waiting for
                     if wc.wr_id() == self.send_cq_idx {
                         self.send_cq_idx += 1;
+                    }
+                    // finished polling, return the last completion
+                    if self.send_cq_idx == self.send_db_idx {
                         return Ok(Some(IbvWc::from(wc)));
-                    } else {
-                        // This completion is for a different operation - keep polling
                     }
                 }
             }
@@ -1193,17 +1232,23 @@ impl RdmaQueuePair {
                     if !wc.is_valid() {
                         if let Some((status, vendor_err)) = wc.error() {
                             return Err(anyhow::anyhow!(
-                                "Receive work completion failed with status: {:?}, vendor error: {}",
+                                "Recv work completion failed with status: {:?}, vendor error: {}, wr_id: {}, send_cq_idx: {}",
                                 status,
-                                vendor_err
+                                vendor_err,
+                                wc.wr_id(),
+                                self.recv_cq_idx,
                             ));
                         }
                     }
 
-                    // This should be a receive completion
-                    self.recv_cq_idx += 1;
-
-                    return Ok(Some(IbvWc::from(wc)));
+                    // This should be a send completion - verify it's the one we're waiting for
+                    if wc.wr_id() == self.recv_cq_idx {
+                        self.recv_cq_idx += 1;
+                    }
+                    // finished polling, return the last completion
+                    if self.recv_cq_idx == self.recv_db_idx {
+                        return Ok(Some(IbvWc::from(wc)));
+                    }
                 }
             }
 
