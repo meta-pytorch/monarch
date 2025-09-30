@@ -233,3 +233,12 @@ mod inner {
 }
 
 pub use inner::*;
+
+// RDMA error string function
+unsafe extern "C" {
+    pub fn rdmaxcel_error_string(error_code: std::os::raw::c_int) -> *const std::os::raw::c_char;
+}
+
+// Test module for error mapping functionality
+#[cfg(test)]
+mod test_error_mapping;
