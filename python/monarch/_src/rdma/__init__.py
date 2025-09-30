@@ -5,8 +5,3 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
-
-# Currently empty - RDMA has moved to monarch.rdma
-# Future tensor engine functionality will be added here
-
-__all__ = []

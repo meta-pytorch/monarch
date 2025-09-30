@@ -6,7 +6,7 @@
 
 # pyre-unsafe
 """
-Unit tests for python/monarch/_src/tensor_engine/rdma.py
+Unit tests for python/monarch/_src/rdma/rdma.py
 
 RDMA Testing Architecture - Dataflow Summary
 ===========================================
@@ -87,7 +87,7 @@ import pytest
 
 import torch
 from monarch.actor import Actor, endpoint, this_host
-from monarch.tensor_engine import is_available as rdma_available, RDMABuffer
+from monarch.rdma import is_rdma_available, RDMABuffer
 
 TIMEOUT = 60  # 60 seconds
 
@@ -110,7 +110,7 @@ needs_cuda = pytest.mark.skipif(
     reason="CUDA not available",
 )
 needs_rdma = pytest.mark.skipif(
-    not rdma_available(),
+    not is_rdma_available(),
     reason="RDMA not available",
 )
 
