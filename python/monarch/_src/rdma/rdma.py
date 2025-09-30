@@ -43,7 +43,7 @@ warnings.simplefilter("once", RDMAReadTransferWarning)
 warnings.simplefilter("once", RDMAWriteTransferWarning)
 
 
-def is_available():
+def is_rdma_available():
     return _RdmaBuffer.rdma_supported()
 
 
@@ -218,7 +218,7 @@ class RDMABuffer:
             _check_cuda_expandable_segments_enabled()
 
         assert (
-            is_available()
+            is_rdma_available()
         ), "Tried to create an RDMABuffer, but RDMA is not available on this platform."
 
         # We need to ensure that _RdmaManager is initialized at this point, because under the hood

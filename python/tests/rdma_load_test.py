@@ -61,7 +61,7 @@ else:
 # pyre-ignore
 import torch
 from monarch.actor import Actor, endpoint, this_host
-from monarch.tensor_engine import RDMABuffer
+from monarch.rdma import RDMABuffer
 
 
 class RDMATest(Actor):

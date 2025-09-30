@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from monarch.actor import Actor, endpoint, this_host
-from monarch.tensor_engine import RDMABuffer
+from monarch.rdma import RDMABuffer
 from torch.distributions import Categorical, kl_divergence
 
 # %%
@@ -503,14 +503,14 @@ async def main():
     gen_mesh = this_host().spawn_procs(per_host={"gpus": 2})
 
     # Spawn actors on the learner mesh
-    traj_q = await learner_mesh.spawn("traj", TrajectoryQueue)
-    replay_buf = await learner_mesh.spawn("rb", ReplayBuffer)
-    learner = await learner_mesh.spawn("learner", Learner, replay_buf)
-    scorer = await learner_mesh.spawn("scorer", Scorer, traj_q, replay_buf)
+    traj_q = learner_mesh.spawn("traj", TrajectoryQueue)
+    replay_buf = learner_mesh.spawn("rb", ReplayBuffer)
+    learner = learner_mesh.spawn("learner", Learner, replay_buf)
+    scorer = learner_mesh.spawn("scorer", Scorer, traj_q, replay_buf)
 
     # Get weight buffers and spawn generators on the generator mesh
     wb = await learner.weights_handle.call_one()
-    generators = await gen_mesh.spawn(
+    generators = gen_mesh.spawn(
         "generator",
         Generator,
         wb,
@@ -531,10 +531,12 @@ async def main():
             learner.step.call_one(),
         )
         print(f"[Step {step:02d}] loss={loss:.3f}")
-    # Clean up
+    # Clean up - stop the scorer and wait for background task to complete
+    print("🛑 Stopping scorer...")
     await scorer.stop.call_one()
     await scorer_run_future
-    print("✅ done")
+
+    print("✅ Training complete")
 
 
 # %%
