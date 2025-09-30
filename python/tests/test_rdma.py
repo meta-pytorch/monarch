@@ -117,6 +117,70 @@ async def test_proc_mesh_rdma():
     assert torch.allclose(buffer_gpu.cpu(), remote_grad.cpu())
 
 
+@needs_rdma
+async def test_rdma_buffer_drop():
+    """Test the new drop() and owner methods on RDMABuffer with two actors"""
+    proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    class ProducerActor(Actor):
+        def __init__(self):
+            self.data = torch.ones(10, 10, dtype=torch.float32)  # 400 bytes
+            self.buffer = None
+
+        @endpoint
+        async def create_buffer(self) -> RDMABuffer:
+            """Create an RDMABuffer and return it"""
+            byte_tensor = self.data.view(torch.uint8).flatten()
+            self.buffer = RDMABuffer(byte_tensor)
+            return self.buffer
+
+    class ConsumerActor(Actor):
+        def __init__(self):
+            self.received_data = torch.zeros(10, 10, dtype=torch.float32)
+
+        @endpoint
+        async def receive_data(self, buffer: RDMABuffer):
+            """Receive data from the buffer into local storage"""
+            byte_tensor = self.received_data.view(torch.uint8).flatten()
+            await buffer.read_into(byte_tensor)  # Read FROM buffer INTO local tensor
+            return torch.sum(self.received_data).item()  # Should be 100 (10*10*1)
+
+        @endpoint
+        async def test_buffer_after_drop(self, buffer: RDMABuffer):
+            """Try to use buffer after it's been dropped - should fail"""
+            byte_tensor = self.received_data.view(torch.uint8).flatten()
+            try:
+                await buffer.read_into(byte_tensor)  # Try to read from dropped buffer
+                return "SUCCESS"  # This should not happen
+            except Exception as e:
+                return f"EXPECTED_ERROR: {e}"
+
+    # Create both actors
+    producer = proc.spawn("producer", ProducerActor)
+    consumer = proc.spawn("consumer", ConsumerActor)
+
+    # Create an RDMA buffer in the producer
+    buffer = await producer.create_buffer.call_one()
+
+    # Pass buffer to consumer and test write operation
+    result = await consumer.receive_data.call_one(buffer)
+    assert result == 100.0, f"Expected 100.0, got {result}"
+
+    # Now drop the buffer
+    await buffer.drop()
+
+    # Test that we can call drop multiple times (should be idempotent)
+    await buffer.drop()
+
+    # Try to use the buffer after dropping - this should fail
+    error_result = await consumer.test_buffer_after_drop.call_one(buffer)
+    assert error_result.startswith(
+        "EXPECTED_ERROR:"
+    ), f"Expected an error after drop, but got: {error_result}"
+
+    print(f"✓ Buffer operations failed after drop as expected: {error_result}")
+
+
 class TrainerActor(Actor):
     def __init__(self):
         super().__init__()

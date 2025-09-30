@@ -342,3 +342,27 @@ class RDMABuffer:
             return res
 
         return Future(coro=write_from_nonblocking())
+
+    def drop(self) -> Future[None]:
+        """
+        Release the handle on the memory that the remote holds to this memory.
+        """
+        local_proc_id = context().actor_instance.proc_id
+        client = context().actor_instance
+
+        async def drop_nonblocking() -> None:
+            await _ensure_init_rdma_manager()
+
+            await self._buffer.drop(
+                local_proc_id=local_proc_id,
+                client=client,
+            )
+
+        return Future(coro=drop_nonblocking())
+
+    @property
+    def owner(self) -> ProcMesh:
+        """
+        The proc that owns this buffer
+        """
+        return context().actor_instance.proc
