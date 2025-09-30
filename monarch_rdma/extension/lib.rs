@@ -156,13 +156,18 @@ impl PyRdmaBuffer {
                     .request_buffer_deprecated(cx_instance, addr, size)
                     .await?
             });
-            let _result_ = instance_dispatch!(client, |cx_instance| {
+            instance_dispatch!(client, |cx_instance| {
                 local_buffer
                     .write_from(cx_instance, buffer, timeout)
                     .await
                     .map_err(|e| {
                         PyException::new_err(format!("failed to read into buffer: {}", e))
                     })?
+            });
+            instance_dispatch!(client, |cx_instance| {
+                local_owner_ref
+                    .release_buffer_deprecated(cx_instance, local_buffer)
+                    .await?
             });
             Ok(())
         })
@@ -197,13 +202,18 @@ impl PyRdmaBuffer {
                     .request_buffer_deprecated(cx_instance, addr, size)
                     .await?
             });
-            let _result_ = instance_dispatch!(&client, |cx_instance| {
+            instance_dispatch!(&client, |cx_instance| {
                 local_buffer
                     .read_into(cx_instance, buffer, timeout)
                     .await
                     .map_err(|e| {
                         PyException::new_err(format!("failed to write from buffer: {}", e))
                     })?
+            });
+            instance_dispatch!(client, |cx_instance| {
+                local_owner_ref
+                    .release_buffer_deprecated(cx_instance, local_buffer)
+                    .await?
             });
             Ok(())
         })
@@ -232,10 +242,23 @@ impl PyRdmaBuffer {
         Ok(deserialized)
     }
 
-    fn drop<'py>(&self) -> PyResult<PyPythonTask> {
-        // no op with CPUs, currently a stub.
-        // TODO - replace with correct GPU behavior.
-        PyPythonTask::new(async move { Ok(()) })
+    fn drop<'py>(
+        &self,
+        _py: Python<'py>,
+        local_proc_id: String,
+        client: PyInstance,
+    ) -> PyResult<PyPythonTask> {
+        let (_local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
+        PyPythonTask::new(async move {
+            // Call the drop method on the buffer to release remote handles
+            instance_dispatch!(client, |cx_instance| {
+                buffer
+                    .drop_buffer(cx_instance)
+                    .await
+                    .map_err(|e| PyException::new_err(format!("Failed to drop buffer: {}", e)))?
+            });
+            Ok(())
+        })
     }
 }
 
