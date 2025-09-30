@@ -158,37 +158,38 @@ def _check_cuda_expandable_segments_enabled() -> bool:
 
     Returns:
         bool: True if expandable segments are enabled, False otherwise
-
-    Raises:
-        RuntimeError: If expandable segments are not enabled but required for RDMA
     """
     try:
         # Use the new Rust utility function that calls the C++ pt_cuda_allocator_compatibility()
         pt_cuda_compat = _RdmaBuffer.pt_cuda_allocator_compatibility()
 
         if not pt_cuda_compat:
-            raise RuntimeError(
+            warnings.warn(
                 "CUDA caching allocator is not using expandable segments.\n"
-                "This is required for RDMA to work correctly with CUDA tensors.\n\n"
+                "This is required to maximize RDMA performance with CUDA tensors.\n\n"
                 "To fix this, set the environment variable BEFORE importing PyTorch:\n"
                 "1. In shell:\n"
                 '   export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"\n'
                 "2. Or in Python script (BEFORE any PyTorch imports):\n"
                 "   import os\n"
                 '   os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"\n'
-                "   import torch  # Must come after setting the env var\n\n"
-                "Note: This setting must be configured before PyTorch's CUDA allocator is initialized."
+                "   import torch  # Must come after setting the env var\n\n",
+                UserWarning,
+                stacklevel=2,
             )
+            return False
         return True
 
     except Exception as e:
-        logging.error(f"Failed to check CUDA allocator configuration: {e}")
-        raise RuntimeError(
+        warnings.warn(
             "Unable to verify CUDA allocator configuration.\n"
-            "Please ensure expandable segments are enabled:\n"
+            "Please ensure expandable segments are enabled for best RDMA performance with CUDA tensors:\n"
             '   export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"\n'
-            "Set this environment variable before importing PyTorch."
+            "Set this environment variable before importing PyTorch.",
+            UserWarning,
+            stacklevel=2,
         )
+        return False
 
 
 class RDMABuffer:
