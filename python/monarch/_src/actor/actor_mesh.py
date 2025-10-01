@@ -48,6 +48,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
+from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -324,19 +325,19 @@ class ActorEndpoint(Endpoint[P, R]):
         This sends the message to all actors but does not wait for any result.
         """
         self._check_arguments(args, kwargs)
-        objects, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
+        objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
         if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
             message = PythonMessage(
                 PythonMessageKind.CallMethod(
                     self._name, None if port is None else port._port_ref
                 ),
-                bytes,
+                buffer,
             )
             self._actor_mesh.cast(
                 message, selection, context().actor_instance._as_rust()
             )
         else:
-            actor_send(self, bytes, objects, port, selection)
+            actor_send(self, buffer, objects, port, selection)
         shape = self._shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
@@ -348,9 +349,9 @@ class ActorEndpoint(Endpoint[P, R]):
 
     def _rref(self, args, kwargs):
         self._check_arguments(args, kwargs)
-        refs, bytes = flatten((args, kwargs), _is_ref_or_mailbox)
+        refs, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
 
-        return actor_rref(self, bytes, refs)
+        return actor_rref(self, buffer, refs)
 
 
 @overload
@@ -728,7 +729,7 @@ class _Actor:
         self,
         ctx: Context,
         method: MethodSpecifier,
-        message: bytes,
+        message: FrozenBuffer,
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
@@ -881,9 +882,9 @@ def _is_ref_or_mailbox(x: object) -> bool:
     return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
-def _pickle(obj: object) -> bytes:
-    _, msg = flatten(obj, _is_mailbox)
-    return msg
+def _pickle(obj: object) -> bytes | FrozenBuffer:
+    _, buff = flatten(obj, _is_mailbox)
+    return buff
 
 
 class Actor(MeshTrait):

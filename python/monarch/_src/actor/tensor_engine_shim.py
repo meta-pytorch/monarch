@@ -22,6 +22,8 @@ time it is used.
 if TYPE_CHECKING:
     from monarch._src.actor.actor_mesh import ActorEndpoint, Port, Selection
 
+from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
+
 
 def shim(fn=None, *, module=None):
     if fn is None:
@@ -50,7 +52,7 @@ def actor_send(
 
 
 @shim(module="monarch.mesh_controller")
-def actor_rref(endpoint, args_kwargs_tuple: bytes, refs: Sequence[Any]): ...
+def actor_rref(endpoint, args_kwargs_tuple: FrozenBuffer, refs: Sequence[Any]): ...
 
 
 @shim(module="monarch.common.remote")

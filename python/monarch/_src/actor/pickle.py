@@ -6,13 +6,16 @@
 
 # pyre-unsafe
 
+import collections.abc as abc
 import io
+import os
 import pickle
 import sys
 from contextlib import contextmanager, ExitStack
 from typing import Any, Callable, Iterable, List, Tuple
 
 import cloudpickle
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 
 
 def maybe_torch():
@@ -49,8 +52,8 @@ cloudpickle.cloudpickle._function_getstate = _function_getstate
 
 
 class _Pickler(cloudpickle.Pickler):
-    def __init__(self, filter):
-        self.f = io.BytesIO()
+    def __init__(self, filter, f: Buffer | io.BytesIO):
+        self.f = f
         super().__init__(self.f)
         self._filter = filter
         self._saved = []
@@ -63,8 +66,11 @@ class _Pickler(cloudpickle.Pickler):
 
 
 class _Unpickler(pickle.Unpickler):
-    def __init__(self, data, sequence: Iterable[Any]):
-        super().__init__(io.BytesIO(data))
+    def __init__(self, data: bytes | FrozenBuffer, sequence: Iterable[Any]):
+        if isinstance(data, FrozenBuffer):
+            super().__init__(data)
+        else:
+            super().__init__(io.BytesIO(data))
         self._iter = iter(sequence)
         self._values = []
 
@@ -74,13 +80,15 @@ class _Unpickler(pickle.Unpickler):
         return self._values[id]
 
 
-def flatten(obj: Any, filter: Callable[[Any], bool]) -> Tuple[List[Any], bytes]:
-    pickler = _Pickler(filter)
+def flatten(obj: Any, filter: Callable[[Any], bool]) -> Tuple[List[Any], FrozenBuffer]:
+    buffer = Buffer()
+    pickler = _Pickler(filter, buffer)
     pickler.dump(obj)
-    return pickler._saved, pickler.f.getvalue()
+
+    return pickler._saved, buffer.freeze()
 
 
-def unflatten(data: bytes, values: Iterable[Any]) -> Any:
+def unflatten(data: FrozenBuffer | bytes, values: Iterable[Any]) -> Any:
     with ExitStack() as stack:
         torch = maybe_torch()
         if torch is not None:
@@ -99,7 +107,9 @@ def load_tensors_on_cpu():
     old = torch.storage._load_from_bytes
     try:
         torch.storage._load_from_bytes = lambda b: torch.load(
-            io.BytesIO(b), map_location="cpu", weights_only=False
+            io.BytesIO(b) if isinstance(b, bytes) else b,
+            map_location="cpu",
+            weights_only=False,
         )
         yield
     finally:

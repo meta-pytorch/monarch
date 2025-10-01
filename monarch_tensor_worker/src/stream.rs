@@ -38,6 +38,7 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
+use monarch_hyperactor::buffers::FrozenBuffer;
 use monarch_hyperactor::local_state_broker::BrokerId;
 use monarch_hyperactor::local_state_broker::LocalState;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerMessage;
@@ -103,7 +104,7 @@ fn pickle_python_result(
         .unwrap()
         .getattr("_pickle")
         .unwrap();
-    let data: Vec<u8> = pickle
+    let data: FrozenBuffer = pickle
         .call1((result,))
         .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?
         .extract()
@@ -112,7 +113,7 @@ fn pickle_python_result(
         PythonMessageKind::Result {
             rank: Some(worker_actor_id.rank()),
         },
-        data,
+        data.inner,
     ))
 }
 

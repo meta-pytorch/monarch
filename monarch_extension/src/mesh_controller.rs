@@ -38,6 +38,7 @@ use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
+use monarch_hyperactor::buffers::FrozenBuffer;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::ndslice::PySlice;
@@ -532,8 +533,11 @@ impl History {
             let exe = remote_exception
                 .call1((exception.backtrace, traceback, rank))
                 .unwrap();
-            let data: Vec<u8> = pickle.call1((exe,)).unwrap().extract().unwrap();
-            PythonMessage::new_from_buf(PythonMessageKind::Exception { rank: Some(rank) }, data)
+            let data: FrozenBuffer = pickle.call1((exe,)).unwrap().extract().unwrap();
+            PythonMessage::new_from_buf(
+                PythonMessageKind::Exception { rank: Some(rank) },
+                data.inner,
+            )
         }));
 
         let mut invocation = invocation.lock().unwrap();

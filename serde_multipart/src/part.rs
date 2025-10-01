@@ -23,7 +23,7 @@ use crate::ser;
 /// shared ownership of the underlying buffers. Part itself provides a customized
 /// serialization implementation that is specialized for the multipart codecs in
 /// this crate, skipping copying the bytes whenever possible.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Part(pub(crate) Bytes);
 
 impl Part {
