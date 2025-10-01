@@ -61,6 +61,8 @@ use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
+use crate::proc::SEQ_INFO;
+use crate::proc::SeqInfo;
 
 pub mod lex;
 pub mod name;
@@ -1032,7 +1034,19 @@ impl<M: RemoteMessage> PortRef<M> {
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.port_id.clone(), headers, message);
+
+        // This block is infallible so is okay to assign the sequence number
+        // without worrying about rollback.
+        {
+            let sequencer = cx.instance().sequencer();
+            let seq = sequencer.assign_seq(self.port_id.actor_id());
+            let seq_info = SeqInfo {
+                session_id: sequencer.session_id(),
+                seq,
+            };
+            headers.set(SEQ_INFO, seq_info);
+            cx.post(self.port_id.clone(), headers, message);
+        }
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.

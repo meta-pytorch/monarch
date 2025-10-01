@@ -119,6 +119,8 @@ use crate::context;
 use crate::data::Serialized;
 use crate::id;
 use crate::metrics;
+use crate::proc::SEQ_INFO;
+use crate::proc::SeqInfo;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
@@ -1581,13 +1583,20 @@ impl<M: Message> PortHandle<M> {
     }
 
     /// Send a message to this port.
-    pub fn send(&self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+    pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        // TODO(pzhang) Use cx to add SEQ_INFO header.
+        let sequencer = cx.instance().sequencer();
+        let (seq, lock) = sequencer.assign_seq_with_lock(self.mailbox.actor_id());
+        let seq_info = SeqInfo {
+            session_id: sequencer.session_id(),
+            seq,
+        };
+        headers.set(SEQ_INFO, seq_info);
 
         self.sender.send(headers, message).map_err(|err| {
+            sequencer.rollback_seq(self.mailbox.actor_id(), lock);
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
                 MailboxSenderErrorKind::Other(err),
@@ -1600,12 +1609,6 @@ impl<M: Message> PortHandle<M> {
     pub fn anon_send(&self, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-
-        self.send_with_header(message, headers)
-    }
-
-    /// Send a message to this port.
-    fn send_with_header(&self, message: M, headers: Attrs) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
