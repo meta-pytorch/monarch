@@ -1652,11 +1652,14 @@ impl Handler<MaintainWorldHealth> for SystemActor {
 
                 // The proc has expired heartbeating and it manages the lifecycle of system, schedule system stop
                 let (tx, _) = cx.open_once_port::<()>();
-                cx.port().send(SystemMessage::Stop {
-                    worlds: None,
-                    proc_timeout: Duration::from_secs(5),
-                    reply_port: tx.bind(),
-                })?;
+                cx.port().send(
+                    &cx,
+                    SystemMessage::Stop {
+                        worlds: None,
+                        proc_timeout: Duration::from_secs(5),
+                        reply_port: tx.bind(),
+                    },
+                )?;
             }
 
             if world.state.status == WorldStatus::Live {
