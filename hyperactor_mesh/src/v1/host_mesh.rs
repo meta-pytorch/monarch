@@ -767,7 +767,10 @@ mod tests {
         let mut children = Vec::new();
         for host in hosts.iter() {
             let mut cmd = Command::new(program.clone());
-            let boot = Bootstrap::Host { addr: host.clone() };
+            let boot = Bootstrap::Host {
+                addr: host.clone(),
+                config: None,
+            };
             boot.to_env(&mut cmd);
             cmd.kill_on_drop(true);
             children.push(cmd.spawn().unwrap());

@@ -176,6 +176,13 @@ async fn halt<R>() -> R {
 }
 
 /// Bootstrap configures the bootstrap behavior of a binary.
+///
+/// Both `Proc` and `Host` variants may carry an optional config
+/// snapshot. This is a base64-encoded JSON serialization of
+/// `hyperactor::config::Attrs`. Base64 is used to enable safe
+/// transport through env vars and CLI args. If present, the child
+/// installs it as its global config at startup; otherwise it falls
+/// back to environment variables and defaults.
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Bootstrap {
     /// "v1" proc bootstrap
@@ -187,6 +194,12 @@ pub enum Bootstrap {
         backend_addr: ChannelAddr,
         /// The callback address used to indicate successful spawning.
         callback_addr: ChannelAddr,
+        /// Optional config snapshot (base64-encoded JSON
+        /// `hyperactor::config::Attrs`). If present, it is
+        /// **applied** as the child's global config during bootstrap
+        /// (before any runtime/actors initialize). If absent, the
+        /// child falls back to env/defaults.
+        config: Option<String>,
     },
 
     /// Host bootstrap. This sets up a new `Host`, managed by a
@@ -194,6 +207,13 @@ pub enum Bootstrap {
     Host {
         /// The address on which to serve the host.
         addr: ChannelAddr,
+
+        /// Optional config snapshot (base64-encoded JSON
+        /// `hyperactor::config::Attrs`). If present, it is
+        /// **applied** as the process's global config during
+        /// bootstrap (before the host runtime initializes). If
+        /// absent, the process falls back to env/defaults.
+        config: Option<String>,
     },
 
     #[default]
@@ -274,7 +294,14 @@ impl Bootstrap {
                 proc_id,
                 backend_addr,
                 callback_addr,
+                config,
             } => {
+                // If provided, apply the producer-supplied config
+                // snapshot as this proc's global config (freezes
+                // further re-init). Otherwise the proc falls back to
+                // env/defaults.
+                hyperactor::config::global::maybe_apply_snapshot_from_b64("Proc", &config);
+
                 if hyperactor::config::global::get(MESH_BOOTSTRAP_ENABLE_PDEATHSIG) {
                     // Safety net: normal shutdown is via
                     // `host_mesh.shutdown(&instance)`; PR_SET_PDEATHSIG
@@ -295,7 +322,13 @@ impl Bootstrap {
                     Err(e) => e.into(),
                 }
             }
-            Bootstrap::Host { addr } => {
+            Bootstrap::Host { addr, config } => {
+                // If provided, apply the producer-supplied config
+                // snapshot as this host's global config (freezes
+                // further re-init). Otherwise the host falls back to
+                // env/defaults.
+                hyperactor::config::global::maybe_apply_snapshot_from_b64("Host", &config);
+
                 let command = ok!(BootstrapCommand::current());
                 let manager = BootstrapProcManager::new(command);
                 let (host, _handle) = ok!(Host::serve(manager, addr).await);
@@ -1453,9 +1486,13 @@ impl ProcManager for BootstrapProcManager {
     /// Launch a new proc under this [`BootstrapProcManager`].
     ///
     /// Spawns the configured bootstrap binary (`self.program`) in a
-    /// fresh child process, passing environment variables that
-    /// describe the [`BootstrapMode::Proc`] (proc ID, backend
-    /// address, callback address).
+    /// fresh child process. The environment is populated with
+    /// variables that describe the bootstrap context - most
+    /// importantly `HYPERACTOR_MESH_BOOTSTRAP_MODE`, which carries a
+    /// base64-encoded JSON [`Bootstrap::Proc`] payload (proc id,
+    /// backend addr, callback addr, optional config snapshot).
+    /// Additional variables like `BOOTSTRAP_LOG_CHANNEL` are also set
+    /// for logging/control.
     ///
     /// Responsibilities performed here:
     /// - Create a one-shot callback channel so the child can confirm
@@ -1483,10 +1520,17 @@ impl ProcManager for BootstrapProcManager {
         let (callback_addr, mut callback_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
 
+        // Producer-side: capture current global attrs and embed as
+        // the child's bootstrap snapshot.
+        let cfg = hyperactor::config::global::attrs();
+        let cfg_json = serde_json::to_vec(&cfg).unwrap();
+        let cfg_json_b64 = BASE64_STANDARD.encode(cfg_json);
+
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
             backend_addr,
             callback_addr,
+            config: Some(cfg_json_b64),
         };
         let mut cmd = Command::new(&self.command.program);
         if let Some(arg0) = &self.command.arg0 {
@@ -1842,13 +1886,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bootstrap_mode_env_string() {
+    fn test_bootstrap_mode_env_string_none_config_proc() {
         let values = [
             Bootstrap::default(),
             Bootstrap::Proc {
                 proc_id: id!(foo[0]),
                 backend_addr: ChannelAddr::any(ChannelTransport::Tcp),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
+                config: None,
             },
         ];
 
@@ -1856,6 +1901,105 @@ mod tests {
             let safe = value.to_env_safe_string().unwrap();
             assert_eq!(value, Bootstrap::from_env_safe_string(&safe).unwrap());
         }
+    }
+
+    #[test]
+    fn test_bootstrap_mode_env_string_none_config_host() {
+        let value = Bootstrap::Host {
+            addr: ChannelAddr::any(ChannelTransport::Unix),
+            config: None,
+        };
+        let safe = value.to_env_safe_string().unwrap();
+        assert_eq!(value, Bootstrap::from_env_safe_string(&safe).unwrap());
+    }
+
+    #[test]
+    fn test_bootstrap_mode_env_string_invalid() {
+        // Not valid base64
+        assert!(Bootstrap::from_env_safe_string("!!!").is_err());
+    }
+
+    #[test]
+    fn test_bootstrap_env_roundtrip_with_config_proc_and_host() {
+        let cfg_json = r#"{"hyperactor::config::message_delivery_timeout":"1500ms"}"#;
+        let cfg_b64 = BASE64_STANDARD.encode(cfg_json.as_bytes());
+
+        let cases = [
+            Bootstrap::Proc {
+                proc_id: id!(foo[42]),
+                backend_addr: ChannelAddr::any(ChannelTransport::Unix),
+                callback_addr: ChannelAddr::any(ChannelTransport::Unix),
+                config: Some(cfg_b64.clone()),
+            },
+            Bootstrap::Host {
+                addr: ChannelAddr::any(ChannelTransport::Unix),
+                config: Some(cfg_b64.clone()),
+            },
+        ];
+
+        for value in cases {
+            let safe = value.to_env_safe_string().unwrap();
+            let decoded = Bootstrap::from_env_safe_string(&safe).unwrap();
+            assert_eq!(decoded, value, "config payload must survive exactly");
+        }
+    }
+
+    // "Opaque string" guarantee: inner payload can be arbitrary bytes
+    // (we don't validate here).
+    #[test]
+    fn test_bootstrap_env_config_is_opaque_string() {
+        // Arbitrary binary blob -> base64. This simulates non-UTF8
+        // JSON (in a possible future) or compressed payloads.
+        let raw: Vec<u8> = (0..=255).collect();
+        let cfg_b64 = BASE64_STANDARD.encode(&raw);
+
+        let value = Bootstrap::Proc {
+            proc_id: id!(bar[0]),
+            backend_addr: ChannelAddr::any(ChannelTransport::Unix),
+            callback_addr: ChannelAddr::any(ChannelTransport::Unix),
+            config: Some(cfg_b64.clone()),
+        };
+
+        let safe = value.to_env_safe_string().unwrap();
+        let decoded = Bootstrap::from_env_safe_string(&safe).unwrap();
+        match decoded {
+            Bootstrap::Proc { config, .. } => assert_eq!(config, Some(cfg_b64)),
+            _ => panic!("decoded variant mismatch"),
+        }
+    }
+
+    // Size/regression guard: large-ish config payload doesn't break
+    // env encoding.
+    #[test]
+    fn test_bootstrap_env_config_large_payload() {
+        // ~64KB of JSON-ish text; env-encoding must still succeed.
+        let big_json = "{\"k\":\"v\"}\n".repeat(4 * 1024); // ~44KB
+        let cfg_b64 = BASE64_STANDARD.encode(big_json.as_bytes());
+
+        // Guard: the base64 snapshot itself should be big.
+        assert!(
+            cfg_b64.len() > 50_000,
+            "expected large base64 config, got {} bytes",
+            cfg_b64.len()
+        );
+
+        let v = Bootstrap::Host {
+            addr: ChannelAddr::any(ChannelTransport::Unix),
+            config: Some(cfg_b64),
+        };
+
+        // Should encode and decode without error.
+        let safe = v.to_env_safe_string().unwrap();
+
+        // Guard: the wrapped env string must also remain large.
+        assert!(
+            safe.len() > 50_000,
+            "expected large env-encoded bootstrap, got {} bytes",
+            safe.len()
+        );
+
+        let back = Bootstrap::from_env_safe_string(&safe).unwrap();
+        assert_eq!(back, v);
     }
 
     #[tokio::test]
