@@ -786,7 +786,7 @@ impl StreamActor {
     fn call_python_fn<'py>(
         &mut self,
         py: Python<'py>,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
         function: Option<ResolvableFunction>,
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
@@ -1088,7 +1088,7 @@ impl StreamActor {
 
         let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
         broker
-            .send(message)
+            .send(cx, message)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
         let result = recv
             .recv()
@@ -1152,7 +1152,7 @@ impl StreamMessageHandler for StreamActor {
 
     async fn borrow_create(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         borrow: u64,
         tensor: Ref,
         first_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,

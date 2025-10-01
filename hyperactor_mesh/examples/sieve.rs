@@ -76,7 +76,7 @@ impl Handler<NextNumber> for SieveActor {
         if msg.number % self.prime != 0 {
             match &self.next {
                 Some(next) => {
-                    next.send(msg)?;
+                    next.send(cx, msg)?;
                 }
                 None => {
                     msg.prime_collector.send(cx, msg.number)?;

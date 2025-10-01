@@ -29,6 +29,7 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
+use hyperactor::Proc;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor_mesh::Mesh;
@@ -77,6 +78,7 @@ pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult
     module = "monarch._rust_bindings.monarch_extension.mesh_controller"
 )]
 struct _Controller {
+    instance: Instance<()>, // The actor that represents this object.
     controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>>,
     all_ranks: Slice,
     broker_id: (String, usize),
@@ -122,7 +124,11 @@ impl _Controller {
                 r
             })??;
 
+        let proc = Proc::local();
+        let (instance, _) = proc.instance(&format!("_controller_{id}")).unwrap();
+
         Ok(Self {
+            instance,
             controller_handle,
             all_ranks,
             // note that 0 is the _pid_ of the broker, which will be 0 for
@@ -164,23 +170,26 @@ impl _Controller {
         };
         self.controller_handle
             .blocking_lock()
-            .send(msg)
+            .send(&self.instance, msg)
             .map_err(to_py_error)
     }
 
     fn drop_refs(&mut self, refs: Vec<Ref>) -> PyResult<()> {
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::DropRefs { refs })
+            .send(&self.instance, ClientToControllerMessage::DropRefs { refs })
             .map_err(to_py_error)
     }
 
     fn sync_at_exit(&mut self, port: PyPortId) -> PyResult<()> {
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::SyncAtExit {
-                port: PortRef::attest(port.into()),
-            })
+            .send(
+                &self.instance,
+                ClientToControllerMessage::SyncAtExit {
+                    port: PortRef::attest(port.into()),
+                },
+            )
             .map_err(to_py_error)
     }
 
@@ -194,16 +203,22 @@ impl _Controller {
         let message: WorkerMessage = convert(message)?;
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::Send { slices, message })
+            .send(
+                &self.instance,
+                ClientToControllerMessage::Send { slices, message },
+            )
             .map_err(to_py_error)
     }
     fn _drain_and_stop(&mut self) -> PyResult<()> {
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::Send {
-                slices: vec![self.all_ranks.clone()],
-                message: WorkerMessage::Exit { error: None },
-            })
+            .send(
+                &self.instance,
+                ClientToControllerMessage::Send {
+                    slices: vec![self.all_ranks.clone()],
+                    message: WorkerMessage::Exit { error: None },
+                },
+            )
             .map_err(to_py_error)?;
         self.controller_handle
             .blocking_lock()
