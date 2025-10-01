@@ -115,7 +115,7 @@ def _python_task_test(
 
 @_python_task_test
 async def test_accumulator() -> None:
-    proc_mesh = await allocate()
+    proc_mesh: ProcMesh = await allocate()
     mailbox: Mailbox = Instance._as_py(proc_mesh.client)._mailbox
 
     def my_accumulate(state: str, update: int) -> str:
@@ -128,7 +128,7 @@ async def test_accumulator() -> None:
 
     def post_message(value: int) -> None:
         port_ref.send(
-            mailbox,
+            proc_mesh.client,
             PythonMessage(
                 PythonMessageKind.CallMethod(
                     MethodSpecifier.ReturnsResponse("test_accumulator"), None

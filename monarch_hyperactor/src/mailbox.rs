@@ -47,6 +47,7 @@ use serde::Serialize;
 
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
+use crate::context::PyInstance;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
@@ -264,7 +265,8 @@ pub(super) struct PythonPortHandle {
 
 #[pymethods]
 impl PythonPortHandle {
-    fn send(&self, message: PythonMessage) -> PyResult<()> {
+    // TODO(pzhang) Use instance after its required by PortHandle.
+    fn send(&self, _instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
         self.inner
             .send(message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
@@ -318,9 +320,9 @@ impl PythonPortRef {
         Ok((slf.get_type(), (id,)))
     }
 
-    fn send(&self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
+    fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
         self.inner
-            .send(&mailbox.inner, message)
+            .send(&instance._mailbox().inner, message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
         Ok(())
     }
@@ -530,13 +532,13 @@ impl PythonOncePortRef {
         Ok((slf.get_type(), (id,)))
     }
 
-    fn send(&mut self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
+    fn send(&mut self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
         let Some(port_ref) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
         };
 
         port_ref
-            .send(&mailbox.inner, message)
+            .send(&instance._mailbox().inner, message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
         Ok(())
     }
