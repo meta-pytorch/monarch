@@ -1682,14 +1682,17 @@ mod tests {
         // Join the world.
         server_handle
             .system_actor_handle()
-            .send(SystemMessage::Join {
-                proc_id: local_proc_id.clone(),
-                world_id,
-                proc_message_port: local_proc_message_port.bind(),
-                proc_addr: local_proc_addr,
-                labels: HashMap::new(),
-                lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
-            })
+            .send(
+                &client_mailbox,
+                SystemMessage::Join {
+                    proc_id: local_proc_id.clone(),
+                    world_id,
+                    proc_message_port: local_proc_message_port.bind(),
+                    proc_addr: local_proc_addr,
+                    labels: HashMap::new(),
+                    lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
+                },
+            )
             .unwrap();
 
         assert_matches!(
@@ -1784,14 +1787,17 @@ mod tests {
         // Join the world.
         server_handle
             .system_actor_handle()
-            .send(SystemMessage::Join {
-                proc_id: local_proc_id.clone(),
-                world_id,
-                proc_message_port: local_proc_message_port.bind(),
-                proc_addr: local_proc_addr,
-                labels: HashMap::new(),
-                lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
-            })
+            .send(
+                &client_mailbox,
+                SystemMessage::Join {
+                    proc_id: local_proc_id.clone(),
+                    world_id,
+                    proc_message_port: local_proc_message_port.bind(),
+                    proc_addr: local_proc_addr,
+                    labels: HashMap::new(),
+                    lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
+                },
+            )
             .unwrap();
 
         assert_matches!(

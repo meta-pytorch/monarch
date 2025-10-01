@@ -47,6 +47,8 @@ use serde::Serialize;
 
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
+use crate::context::PyInstance;
+use crate::instance_dispatch;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
@@ -264,10 +266,12 @@ pub(super) struct PythonPortHandle {
 
 #[pymethods]
 impl PythonPortHandle {
-    fn send(&self, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+    fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
+        instance_dispatch!(instance, |cx_instance| {
+            self.inner
+                .send(cx_instance, message)
+                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        });
         Ok(())
     }
 
@@ -318,10 +322,12 @@ impl PythonPortRef {
         Ok((slf.get_type(), (id,)))
     }
 
-    fn send(&self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(&mailbox.inner, message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+    fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
+        instance_dispatch!(instance, |cx_instance| {
+            self.inner
+                .send(cx_instance, message)
+                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        });
         Ok(())
     }
 
@@ -530,14 +536,16 @@ impl PythonOncePortRef {
         Ok((slf.get_type(), (id,)))
     }
 
-    fn send(&mut self, mailbox: &PyMailbox, message: PythonMessage) -> PyResult<()> {
+    fn send(&mut self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
         let Some(port_ref) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
         };
 
-        port_ref
-            .send(&mailbox.inner, message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        instance_dispatch!(instance, |cx_instance| {
+            port_ref
+                .send(cx_instance, message)
+                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        });
         Ok(())
     }
 

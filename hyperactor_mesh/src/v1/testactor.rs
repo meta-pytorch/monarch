@@ -12,7 +12,7 @@
 //! does not work across crate boundaries)
 
 #[cfg(test)]
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 #[cfg(test)]
 use std::time::Duration;
@@ -35,6 +35,7 @@ use hyperactor::clock::Clock as _;
 use hyperactor::clock::RealClock;
 #[cfg(test)]
 use hyperactor::mailbox;
+use hyperactor::proc::SEQ_INFO;
 use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Point;
 #[cfg(test)]
@@ -63,9 +64,10 @@ use crate::v1::testing;
 )]
 pub struct TestActor;
 
-/// A message that returns the recipient actor's id.
+/// A message that returns the recipient actor's id and cast message's sequence
+/// number.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
-pub struct GetActorId(#[binding(include)] pub PortRef<ActorId>);
+pub struct GetActorId(#[binding(include)] pub PortRef<(ActorId, Option<u64>)>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SupervisionEventType {
@@ -86,7 +88,8 @@ impl Handler<GetActorId> for TestActor {
         cx: &Context<Self>,
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
-        reply.send(cx, cx.self_id().clone())?;
+        let seq = cx.headers().get(SEQ_INFO).map(|seq_info| seq_info.seq);
+        reply.send(cx, (cx.self_id().clone(), seq))?;
         Ok(())
     }
 }
@@ -220,7 +223,7 @@ impl Handler<GetCastInfo> for TestActor {
 pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
     let instance = testing::instance().await;
     // Verify casting to the root actor mesh
-    assert_casting_correctness(&actor_mesh, instance).await;
+    assert_casting_correctness(&actor_mesh, instance, None).await;
 
     // Just pick the first dimension. Slice half of it off.
     // actor_mesh.extent().
@@ -229,29 +232,48 @@ pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
 
     // Verify casting to the sliced actor mesh
     let sliced_actor_mesh = actor_mesh.range(&label, 0..size).unwrap();
-    assert_casting_correctness(&sliced_actor_mesh, instance).await;
+    assert_casting_correctness(&sliced_actor_mesh, instance, None).await;
 }
 
 #[cfg(test)]
-/// Cast to the actor mesh, and verify that all actors are reached.
+/// Cast to the actor mesh, and verify that all actors are reached, and the
+/// sequence numbers, if provided, are correct.
 pub async fn assert_casting_correctness(
     actor_mesh: &ActorMeshRef<TestActor>,
     instance: &Instance<()>,
+    expected_seqs: Option<Vec<u64>>,
 ) {
-    let (port, mut rx) = mailbox::open_port(instance);
-    actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();
-
-    let mut expected_actor_ids: HashSet<_> = actor_mesh
+    let (port, mut rx) = mailbox::open_port(&instance);
+    actor_mesh.cast(&instance, GetActorId(port.bind())).unwrap();
+    let expected_actor_ids = actor_mesh
         .values()
         .map(|actor_ref| actor_ref.actor_id().clone())
-        .collect();
+        .collect::<Vec<_>>();
+    let mut expected: HashMap<&ActorId, Option<u64>> = match expected_seqs {
+        None => expected_actor_ids
+            .iter()
+            .map(|actor_id| (actor_id, None))
+            .collect(),
+        Some(seqs) => expected_actor_ids
+            .iter()
+            .zip(seqs.into_iter().map(Some))
+            .collect(),
+    };
 
-    while !expected_actor_ids.is_empty() {
-        let actor_id = rx.recv().await.unwrap();
+    while !expected.is_empty() {
+        let (actor_id, seq) = rx.recv().await.unwrap();
+        let expected_seq = expected.remove(&actor_id);
         assert!(
-            expected_actor_ids.remove(&actor_id),
+            expected_seq.is_some(),
             "got {actor_id}, expect {expected_actor_ids:?}"
         );
+        if let Some(expected_seq) = seq {
+            assert_eq!(
+                expected_seq,
+                seq.unwrap(),
+                "got different seq for {actor_id}"
+            );
+        }
     }
 
     // No more messages

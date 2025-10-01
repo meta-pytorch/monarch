@@ -200,6 +200,33 @@ impl Sequencer {
         *mut_ref
     }
 
+    // Same as [assign_seq], but also return the lock. Useful when the caller
+    // needs to rollback.
+    pub fn assign_seq_with_lock(
+        &self,
+        actor_id: &ActorId,
+    ) -> (u64, std::sync::MutexGuard<'_, HashMap<ActorId, u64>>) {
+        let mut guard = self.last_seqs.lock().unwrap();
+        let mut_ref = match guard.get_mut(actor_id) {
+            Some(m) => m,
+            None => guard.entry(actor_id.clone()).or_default(),
+        };
+        *mut_ref += 1;
+        (*mut_ref, guard)
+    }
+
+    /// Rollback the last seq for the given actor ID.
+    pub fn rollback_seq(
+        &self,
+        actor_id: &ActorId,
+        mut lock: std::sync::MutexGuard<'_, HashMap<ActorId, u64>>,
+    ) {
+        let mut_ref = lock
+            .get_mut(actor_id)
+            .expect("actor id not found during seq rollback");
+        *mut_ref -= 1;
+    }
+
     /// Id of the session this sequencer belongs to.
     pub fn session_id(&self) -> Uuid {
         self.session_id

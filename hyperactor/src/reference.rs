@@ -61,6 +61,8 @@ use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
+use crate::proc::SEQ_INFO;
+use crate::proc::SeqInfo;
 
 pub mod lex;
 pub mod name;
@@ -70,9 +72,6 @@ use parse::Lexer;
 use parse::ParseError;
 use parse::Token;
 use parse::parse;
-
-use crate::proc::SEQ_INFO;
-use crate::proc::SeqInfo;
 
 /// A universal reference to hierarchical identifiers in Hyperactor.
 ///
@@ -722,7 +721,7 @@ impl<A: RemoteActor> ActorRef<A> {
     /// Send an [`M`]-typed message to the referenced actor.
     pub fn send<M: RemoteMessage>(
         &self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         message: M,
     ) -> Result<(), MailboxSenderError>
     where
@@ -735,7 +734,7 @@ impl<A: RemoteActor> ActorRef<A> {
     /// headers.
     pub fn send_with_headers<M: RemoteMessage>(
         &self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError>
@@ -882,7 +881,7 @@ impl PortId {
     /// Send a serialized message to this port, provided a sending capability,
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
-    pub fn send(&self, cx: &impl context::Mailbox, serialized: Serialized) {
+    pub fn send(&self, cx: &impl context::Actor, serialized: Serialized) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         cx.post(self.clone(), headers, serialized);
@@ -893,7 +892,7 @@ impl PortId {
     /// It is the sender's responsibility to ensure that the provided message is well-typed.
     pub fn send_with_headers(
         &self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         serialized: Serialized,
         mut headers: Attrs,
     ) {
@@ -1003,7 +1002,7 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    pub fn send(&self, cx: &impl context::Mailbox, message: M) -> Result<(), MailboxSenderError> {
+    pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
         self.send_with_headers(cx, Attrs::new(), message)
     }
 
@@ -1012,7 +1011,7 @@ impl<M: RemoteMessage> PortRef<M> {
     /// headers.
     pub fn send_with_headers(
         &self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
@@ -1030,16 +1029,28 @@ impl<M: RemoteMessage> PortRef<M> {
     /// [`crate::actor::Instance`].
     pub fn send_serialized(
         &self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         message: Serialized,
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.port_id.clone(), headers, message);
+
+        // This block is infallible so is okay to assign the sequence number
+        // without worrying about rollback.
+        {
+            let sequencer = cx.instance().sequencer();
+            let seq = sequencer.assign_seq(self.port_id.actor_id());
+            let seq_info = SeqInfo {
+                session_id: sequencer.session_id(),
+                seq,
+            };
+            headers.set(SEQ_INFO, seq_info);
+            cx.post(self.port_id.clone(), headers, message);
+        }
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
-    pub fn into_sink<C: context::Mailbox>(self, cx: C) -> PortSink<C, M> {
+    pub fn into_sink<C: context::Actor>(self, cx: C) -> PortSink<C, M> {
         PortSink::new(cx, self)
     }
 }
@@ -1121,7 +1132,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    pub fn send(self, cx: &impl context::Mailbox, message: M) -> Result<(), MailboxSenderError> {
+    pub fn send(self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
         self.send_with_headers(cx, Attrs::new(), message)
     }
 
@@ -1129,7 +1140,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
     /// [`crate::actor::Instance`]. Additional context can be provided in the form of headers.
     pub fn send_with_headers(
         self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         mut headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
