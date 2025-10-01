@@ -11,7 +11,6 @@
 #![feature(assert_matches)]
 #![feature(exit_status_error)]
 #![feature(impl_trait_in_bindings)]
-#![feature(let_chains)]
 
 pub mod actor_mesh;
 pub mod alloc;
