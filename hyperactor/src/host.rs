@@ -41,6 +41,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -48,6 +49,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::Future;
+use futures::StreamExt;
+use futures::stream;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -300,6 +303,133 @@ pub enum TerminateError<TerminalStatus> {
     Io(anyhow::Error),
 }
 
+impl<T: fmt::Debug> fmt::Display for TerminateError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TerminateError::Unsupported => write!(f, "terminate/kill unsupported by manager"),
+            TerminateError::AlreadyTerminated(st) => {
+                write!(f, "proc already terminated (status: {st:?})")
+            }
+            TerminateError::ChannelClosed => {
+                write!(f, "lifecycle channel closed; cannot observe state")
+            }
+            TerminateError::Io(err) => write!(f, "I/O error during terminate/kill: {err}"),
+        }
+    }
+}
+
+impl<T: fmt::Debug> std::error::Error for TerminateError<T> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            TerminateError::Io(err) => Some(err.root_cause()),
+            _ => None,
+        }
+    }
+}
+
+/// Summary of results from a bulk termination attempt.
+///
+/// - `attempted`: total number of child procs for which termination
+///   was attempted.
+/// - `ok`: number of procs successfully terminated (includes those
+///   that were already in a terminal state).
+/// - `failed`: number of procs that could not be terminated (e.g.
+///   signaling errors or lost lifecycle channel).
+#[derive(Debug)]
+pub struct TerminateSummary {
+    /// Total number of child procs for which termination was
+    /// attempted.
+    pub attempted: usize,
+    /// Number of procs that successfully reached a terminal state.
+    ///
+    /// This count includes both procs that exited cleanly after
+    /// `terminate(timeout)` and those that were already in a terminal
+    /// state before termination was attempted.
+    pub ok: usize,
+    /// Number of procs that failed to terminate.
+    ///
+    /// Failures typically arise from signaling errors (e.g., OS
+    /// failure to deliver SIGTERM/SIGKILL) or a lost lifecycle
+    /// channel, meaning the manager could no longer observe state
+    /// transitions.
+    pub failed: usize,
+}
+
+impl fmt::Display for TerminateSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "attempted={} ok={} failed={}",
+            self.attempted, self.ok, self.failed
+        )
+    }
+}
+
+/// Trait for managers that can terminate many child **units** in
+/// bulk.
+///
+/// Implementors provide a concurrency-bounded, graceful shutdown over
+/// all currently tracked children (polite stop → wait → forceful
+/// stop), returning a summary of outcomes. The exact stop/kill
+/// semantics are manager-specific: for example, an OS-process manager
+/// might send signals, while an in-process manager might drain/abort
+/// tasks.
+#[async_trait::async_trait]
+pub trait BulkTerminate: Send + Sync {
+    /// Gracefully terminate all known children.
+    ///
+    /// Initiates a polite shutdown for each child, waits up to
+    /// `timeout` for completion, then escalates to a forceful stop
+    /// for any that remain. Work may be done in parallel, capped by
+    /// `max_in_flight`. The returned [`TerminateSummary`] reports how
+    /// many children were attempted, succeeded, and failed.
+    ///
+    /// Implementation notes:
+    /// - "Polite shutdown" and "forceful stop" are intentionally
+    ///   abstract. Implementors should map these to whatever
+    ///   semantics they control (e.g., proc-level drain/abort, RPCs,
+    ///   OS signals).
+    /// - The operation must be idempotent and tolerate races with
+    ///   concurrent termination or external exits.
+    ///
+    /// # Parameters
+    /// - `timeout`: Per-child grace period before escalation to a
+    ///   forceful stop.
+    /// - `max_in_flight`: Upper bound on concurrent terminations (≥
+    ///   1) to prevent resource spikes (I/O, CPU, file descriptors,
+    ///   etc.).
+    async fn terminate_all(
+        &self,
+        timeout: std::time::Duration,
+        max_in_flight: usize,
+    ) -> TerminateSummary;
+}
+
+// Host convenience that's available only when its manager supports
+// bulk termination.
+impl<M: ProcManager + BulkTerminate> Host<M> {
+    /// Gracefully terminate all procs spawned by this host.
+    ///
+    /// Delegates to the underlying manager’s
+    /// [`BulkTerminate::terminate_all`] implementation. Use this to
+    /// perform orderly teardown during scale-down or shutdown.
+    ///
+    /// # Parameters
+    /// - `timeout`: Per-child grace period before escalation.
+    /// - `max_in_flight`: Upper bound on concurrent terminations.
+    ///
+    /// # Returns
+    /// A [`TerminateSummary`] with counts of attempted/ok/failed
+    /// terminations.
+    pub async fn terminate_children(
+        &self,
+        timeout: Duration,
+        max_in_flight: usize,
+    ) -> TerminateSummary {
+        self.manager.terminate_all(timeout, max_in_flight).await
+    }
+}
+
 /// Minimal uniform surface for a spawned-**proc** handle returned by
 /// a `ProcManager`. Each manager can return its own concrete handle,
 /// as long as it exposes these. A **proc** is the Hyperactor runtime
@@ -454,6 +584,48 @@ impl<S> LocalProcManager<S> {
         Self {
             procs: Arc::new(Mutex::new(HashMap::new())),
             spawn,
+        }
+    }
+}
+
+#[async_trait]
+impl<S> BulkTerminate for LocalProcManager<S>
+where
+    S: Send + Sync,
+{
+    async fn terminate_all(
+        &self,
+        timeout: std::time::Duration,
+        max_in_flight: usize,
+    ) -> TerminateSummary {
+        // Snapshot procs so we don't hold the lock across awaits.
+        let procs: Vec<Proc> = {
+            let guard = self.procs.lock().await;
+            guard.values().cloned().collect()
+        };
+
+        let attempted = procs.len();
+
+        let results = stream::iter(procs.into_iter().map(|mut p| async move {
+            // For local manager, graceful proc-level stop.
+            match p.destroy_and_wait::<()>(timeout, None).await {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::warn!(error=%e, "terminate_all(local): destroy_and_wait failed");
+                    false
+                }
+            }
+        }))
+        .buffer_unordered(max_in_flight.max(1))
+        .collect::<Vec<bool>>()
+        .await;
+
+        let ok = results.into_iter().filter(|b| *b).count();
+
+        TerminateSummary {
+            attempted,
+            ok,
+            failed: attempted.saturating_sub(ok),
         }
     }
 }

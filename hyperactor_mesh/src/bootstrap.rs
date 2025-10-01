@@ -24,6 +24,8 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use base64::prelude::*;
+use futures::StreamExt;
+use futures::stream;
 use humantime::format_duration;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -40,7 +42,9 @@ use hyperactor::declare_attrs;
 use hyperactor::host;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
+use hyperactor::host::ProcHandle;
 use hyperactor::host::ProcManager;
+use hyperactor::host::TerminateSummary;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 use libc::c_int;
@@ -74,6 +78,11 @@ declare_attrs! {
     @meta(CONFIG_ENV_VAR = "HYPERACTOR_MESH_TAIL_LOG_LINES".to_string())
     pub attr MESH_TAIL_LOG_LINES: usize = 100;
 
+    @meta(CONFIG_ENV_VAR = "HYPERACTOR_MESH_TERMINATE_CONCURRENCY".to_string())
+    pub attr MESH_TERMINATE_CONCURRENCY: usize = 16;
+
+    @meta(CONFIG_ENV_VAR = "HYPERACTOR_MESH_TERMINATE_TIMEOUT".to_string())
+    pub attr MESH_TERMINATE_TIMEOUT: Duration = Duration::from_secs(10);
 }
 
 pub const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";
@@ -1072,18 +1081,39 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         }
     }
 
+    /// Attempt to terminate the underlying OS process.
+    ///
+    /// This drives **process-level** teardown only:
+    /// - Sends `SIGTERM` to the process.
+    /// - Waits up to `timeout` for it to exit cleanly.
+    /// - Escalates to `SIGKILL` if still alive, then waits a short
+    ///   hard-coded grace period (`HARD_WAIT_AFTER_KILL`) to ensure
+    ///   the process is reaped.
+    ///
+    /// If the process was already in a terminal state when called,
+    /// returns [`TerminateError::AlreadyTerminated`].
+    ///
+    /// # Notes
+    /// - This does *not* attempt a graceful proc-level stop via
+    ///   `ProcMeshAgent` or other actor messaging. That integration
+    ///   will come later once proc-level control is wired up.
+    /// - Errors may also be returned if the process PID cannot be
+    ///   determined, if signal delivery fails, or if the status
+    ///   channel is closed unexpectedly.
+    ///
+    /// # Parameters
+    /// - `timeout`: Grace period to wait after `SIGTERM` before
+    ///   escalating.
+    ///
+    /// # Returns
+    /// - `Ok(ProcStatus)` if the process exited during the
+    ///   termination sequence.
+    /// - `Err(TerminateError)` if already exited, signaling failed,
+    ///   or the channel was lost.
     async fn terminate(
         &self,
         timeout: Duration,
     ) -> Result<ProcStatus, hyperactor::host::TerminateError<Self::TerminalStatus>> {
-        // NOTE: This only drives OS-level process teardown:
-        //   - sends SIGTERM, waits up to `timeout`
-        //   - escalates to SIGKILL if still alive
-        //
-        // It does *not* request a graceful proc-level stop via
-        // ProcMeshAgent or other actor messaging. That integration
-        // will come later once proc-level control is wired up.
-
         const HARD_WAIT_AFTER_KILL: Duration = Duration::from_secs(5);
 
         // If already terminal, return that.
@@ -1159,6 +1189,31 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         }
     }
 
+    /// Forcibly kill the underlying OS process with `SIGKILL`.
+    ///
+    /// This bypasses any graceful shutdown semantics and immediately
+    /// delivers a non-catchable `SIGKILL` to the child. It is
+    /// intended as a last-resort termination mechanism when
+    /// `terminate()` fails or when no grace period is desired.
+    ///
+    /// # Behavior
+    /// - If the process was already in a terminal state, returns
+    ///   [`TerminateError::AlreadyTerminated`].
+    /// - Otherwise attempts to send `SIGKILL` to the current PID.
+    /// - Then waits for the exit monitor to observe a terminal state.
+    ///
+    /// # Notes
+    /// - This is strictly an **OS-level kill**. It does *not* attempt
+    ///   proc-level shutdown via `ProcMeshAgent` or actor messages.
+    ///   That integration will be layered in later.
+    /// - Errors may be returned if the PID cannot be determined, if
+    ///   signal delivery fails, or if the status channel closes
+    ///   unexpectedly.
+    ///
+    /// # Returns
+    /// - `Ok(ProcStatus)` if the process exited after `SIGKILL`.
+    /// - `Err(TerminateError)` if already exited, signaling failed,
+    ///   or the channel was lost.
     async fn kill(
         &self,
     ) -> Result<ProcStatus, hyperactor::host::TerminateError<Self::TerminalStatus>> {
@@ -1472,9 +1527,6 @@ impl ProcManager for BootstrapProcManager {
     /// Returns a [`BootstrapProcHandle`] that exposes the child
     /// process's lifecycle (status, wait/ready, termination). Errors
     /// are surfaced as [`HostError`].
-    ///
-    /// Note: graceful shutdown (SIGTERM → wait → SIGKILL) is not yet
-    /// implemented; see the `terminate_all` TODO.
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1589,6 +1641,61 @@ impl ProcManager for BootstrapProcManager {
 
         // Callers do `handle.read().await` for mesh readiness.
         Ok(handle)
+    }
+}
+
+#[async_trait]
+impl hyperactor::host::BulkTerminate for BootstrapProcManager {
+    /// Attempt to gracefully terminate all child procs managed by
+    /// this `BootstrapProcManager`.
+    ///
+    /// Each child handle is asked to `terminate(timeout)`, which
+    /// sends SIGTERM, waits up to the deadline, and escalates to
+    /// SIGKILL if necessary. Termination is attempted concurrently,
+    /// with at most `max_in_flight` tasks running at once.
+    ///
+    /// Returns a [`TerminateSummary`] with counts of how many procs
+    /// were attempted, how many successfully terminated (including
+    /// those that were already terminal), and how many failed.
+    ///
+    /// Logs a warning for each failure.
+    async fn terminate_all(&self, timeout: Duration, max_in_flight: usize) -> TerminateSummary {
+        // Snapshot to avoid holding the lock across awaits.
+        let handles: Vec<BootstrapProcHandle> = {
+            let guard = self.children.lock().await;
+            guard.values().cloned().collect()
+        };
+
+        let attempted = handles.len();
+        let mut ok = 0usize;
+
+        let results = stream::iter(handles.into_iter().map(|h| async move {
+            match h.terminate(timeout).await {
+                Ok(_) | Err(hyperactor::host::TerminateError::AlreadyTerminated(_)) => {
+                    // Treat "already terminal" as success.
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(error=%e, "terminate_all: failed to terminate child");
+                    false
+                }
+            }
+        }))
+        .buffer_unordered(max_in_flight.max(1))
+        .collect::<Vec<bool>>()
+        .await;
+
+        for r in results {
+            if r {
+                ok += 1;
+            }
+        }
+
+        TerminateSummary {
+            attempted,
+            ok,
+            failed: attempted.saturating_sub(ok),
+        }
     }
 }
 
@@ -2937,7 +3044,7 @@ mod tests {
         // Request a new allocation of procs from the ProcessAllocator.
         let alloc = allocator
             .allocate(AllocSpec {
-                extent: extent!(replicas = 1),
+                extent: extent!(replicas = 48),
                 constraints: Default::default(),
                 proc_name: None,
             })

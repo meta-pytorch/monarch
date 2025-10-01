@@ -130,6 +130,12 @@ impl Handler<resource::CreateOrUpdate<()>> for HostMeshAgent {
 
 #[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient)]
 pub struct ShutdownHost {
+    /// Grace window: send SIGTERM and wait this long before
+    /// escalating.
+    pub timeout: std::time::Duration,
+    /// Max number of children to terminate concurrently on this host.
+    pub max_in_flight: usize,
+    /// Ack that the agent finished shutdown work (best-effort).
     #[reply]
     pub ack: hyperactor::PortRef<()>,
 }
@@ -137,15 +143,27 @@ pub struct ShutdownHost {
 #[async_trait]
 impl Handler<ShutdownHost> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
-        // Prove we ran and let caller wait until this returns.
+        // Ack immediately so caller can await.
         msg.ack.send(cx, ())?;
 
-        // Take ownership and drop the host; this drops the embedded
-        // BootstrapProcManager (which sends SIGKILL to any children
-        // it has spawned).
         if let Some(host_mode) = self.host.take() {
-            drop(host_mode);
+            match host_mode {
+                HostAgentMode::Process(host) => {
+                    let summary = host
+                        .terminate_children(msg.timeout, msg.max_in_flight.clamp(1, 256))
+                        .await;
+                    tracing::info!(?summary, "terminated children on host");
+                }
+                HostAgentMode::Local(host) => {
+                    let summary = host
+                        .terminate_children(msg.timeout, msg.max_in_flight)
+                        .await;
+                    tracing::info!(?summary, "terminated children on local host");
+                }
+            }
         }
+        // Drop the host to release any resources that somehow survived.
+        let _ = self.host.take();
 
         Ok(())
     }

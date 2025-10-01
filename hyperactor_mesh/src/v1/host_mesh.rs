@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use futures::stream;
+use futures::stream::StreamExt;
 use hyperactor::channel::ChannelTransport;
 pub mod mesh_agent;
 
@@ -61,9 +63,33 @@ impl HostRef {
         ProcId::Direct(self.0.clone(), "service".to_string())
     }
 
+    /// Request an orderly teardown of this host and all procs it
+    /// spawned.
+    ///
+    /// This resolves the per-child grace **timeout** and the maximum
+    /// termination **concurrency** from config and sends a
+    /// [`ShutdownHost`] message to the host's agent. The agent then:
+    ///
+    /// 1) Performs a graceful termination pass over all tracked
+    ///    children (TERM → wait(`timeout`) → KILL), with at most
+    ///    `max_in_flight` running concurrently.
+    /// 2) After the pass completes, **drops the Host**, which also
+    ///    drops the embedded `BootstrapProcManager`. The manager's
+    ///    `Drop` serves as a last-resort safety net (it SIGKILLs
+    ///    anything that somehow remains).
+    ///
+    /// This call returns `Ok(()))` only after the agent has finished
+    /// the termination pass and released the host, so the host is no
+    /// longer reachable when this returns.
     async fn shutdown(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         let agent = self.mesh_agent();
-        agent.shutdown_host(cx).await?;
+        let terminate_timeout =
+            hyperactor::config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+        let max_in_flight =
+            hyperactor::config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
+        agent
+            .shutdown_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
+            .await?;
         Ok(())
     }
 }
@@ -461,8 +487,8 @@ impl HostMeshRef {
         }
     }
 
-    /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
-    /// of the procs to spawn on each host.
+    /// Spawn a ProcMesh onto this host mesh. The per_host extent
+    /// specifies the shape of the procs to spawn on each host.
     pub async fn spawn(
         &self,
         cx: &impl context::Actor,
@@ -500,12 +526,26 @@ impl HostMeshRef {
             Extent::new(labels, sizes).map_err(|err| v1::Error::ConfigurationError(err.into()))?;
 
         let mesh_name = Name::new(name);
-        let mut procs = Vec::new();
-        for (host_rank, host) in self.ranks.iter().enumerate() {
-            for per_host_rank in 0..per_host.num_ranks() {
-                let proc_name = Name::new(format!("{}-{}", name, per_host_rank));
-                let _ok = host
-                    .mesh_agent()
+
+        // Bounded concurrency (TODO: consider adding a config).
+        let k = 64usize;
+
+        // Snapshot owned inputs so closures are 'move and lifetime-agnostic.
+        let per_host_count = per_host.num_ranks();
+        let hosts: Vec<(usize, HostRef)> = self.ranks.iter().cloned().enumerate().collect();
+
+        // Fire all host/per_host_rank spawns concurrently.
+        let items = hosts.into_iter().flat_map(move |(host_rank, host)| {
+            (0..per_host_count).map(move |per_host_rank| (host_rank, per_host_rank, host.clone()))
+        });
+
+        let results = stream::iter(items.map(|(host_rank, per_host_rank, host)| {
+            let proc_name = Name::new(format!("{}-{}", name, per_host_rank));
+            let proc_rank = per_host_count * host_rank + per_host_rank;
+            async move {
+                // Send CreateOrUpdate. This will drive `Host::spawn`
+                // (which waits Ready).
+                host.mesh_agent()
                     .create_or_update(cx, proc_name.clone(), ())
                     .await
                     .map_err(|e| {
@@ -514,14 +554,32 @@ impl HostMeshRef {
                             format!("failed while creating proc: {}", e),
                         )
                     })?;
-                procs.push(ProcRef::new(
+
+                let proc_ref = ProcRef::new(
                     host.named_proc(&proc_name),
-                    per_host.num_ranks() * host_rank + per_host_rank,
-                    // TODO: specify or retrieve from state instead, to avoid attestation.
+                    proc_rank,
+                    // TODO: specify or retrieve from state instead,
+                    // to avoid attestation.
                     ActorRef::attest(host.named_proc(&proc_name).actor_id("agent", 0)),
-                ));
+                );
+
+                Ok::<(usize, ProcRef), v1::Error>((proc_rank, proc_ref))
             }
+        }))
+        .buffer_unordered(k)
+        .collect::<Vec<_>>()
+        .await;
+
+        // Surface first error.
+        let mut procs_ranked = Vec::with_capacity(results.len());
+        for r in results {
+            let (rank, pref) = r?;
+            procs_ranked.push((rank, pref));
         }
+
+        // Restore deterministic rank order.
+        procs_ranked.sort_by_key(|(rank, _)| *rank);
+        let procs: Vec<ProcRef> = procs_ranked.into_iter().map(|(_, p)| p).collect();
 
         ProcMesh::create_owned_unchecked(cx, mesh_name, extent, self.clone(), procs).await
     }
