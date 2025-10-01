@@ -15,6 +15,8 @@ use futures::Future;
 use ndslice::view;
 use ndslice::view::Ranked;
 use ndslice::view::Region;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A mesh of values, where each value is associated with a rank.
 ///
@@ -22,7 +24,7 @@ use ndslice::view::Region;
 /// The mesh is *complete*: `ranks.len()` always equals
 /// `region.num_ranks()`. Every rank in the region has exactly one
 /// associated value.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)] // only if T implements
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)] // only if T implements
 pub struct ValueMesh<T> {
     region: Region,
     ranks: Vec<T>,
