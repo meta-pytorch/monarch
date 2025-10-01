@@ -33,6 +33,7 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 
+use crate::CommActor;
 use crate::actor_mesh as v0_actor_mesh;
 use crate::comm::multicast;
 use crate::proc_mesh::mesh_agent::ActorState;
@@ -136,33 +137,7 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            let cast_mesh_shape = view::Ranked::region(self).into();
-            let actor_mesh_id = ActorMeshId::V1(self.name.clone());
-            match &self.proc_mesh.root_region {
-                Some(root_region) => {
-                    let root_mesh_shape = root_region.into();
-                    v0_actor_mesh::cast_to_sliced_mesh::<A, M>(
-                        cx,
-                        actor_mesh_id,
-                        root_comm_actor,
-                        &sel!(*),
-                        message,
-                        &cast_mesh_shape,
-                        &root_mesh_shape,
-                    )
-                    .map_err(|e| Error::CastingError(self.name.clone(), e.into()))
-                }
-                None => v0_actor_mesh::actor_mesh_cast::<A, M>(
-                    cx,
-                    actor_mesh_id,
-                    root_comm_actor,
-                    sel!(*),
-                    &cast_mesh_shape,
-                    &cast_mesh_shape,
-                    message,
-                )
-                .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
-            }
+            self.cast_v0(cx, message, root_comm_actor)
         } else {
             for (point, actor) in self.iter() {
                 let mut headers = Attrs::new();
@@ -177,6 +152,45 @@ impl<A: Actor + RemoteActor> ActorMeshRef<A> {
                     .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
             }
             Ok(())
+        }
+    }
+
+    fn cast_v0<M>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        root_comm_actor: &ActorRef<CommActor>,
+    ) -> v1::Result<()>
+    where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
+    {
+        let cast_mesh_shape = view::Ranked::region(self).into();
+        let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+        match &self.proc_mesh.root_region {
+            Some(root_region) => {
+                let root_mesh_shape = root_region.into();
+                v0_actor_mesh::cast_to_sliced_mesh::<A, M>(
+                    cx,
+                    actor_mesh_id,
+                    root_comm_actor,
+                    &sel!(*),
+                    message,
+                    &cast_mesh_shape,
+                    &root_mesh_shape,
+                )
+                .map_err(|e| Error::CastingError(self.name.clone(), e.into()))
+            }
+            None => v0_actor_mesh::actor_mesh_cast::<A, M>(
+                cx,
+                actor_mesh_id,
+                root_comm_actor,
+                sel!(*),
+                &cast_mesh_shape,
+                &cast_mesh_shape,
+                message,
+            )
+            .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
         }
     }
 

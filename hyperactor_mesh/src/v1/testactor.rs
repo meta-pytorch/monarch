@@ -38,13 +38,15 @@ use hyperactor::mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Point;
 #[cfg(test)]
-use ndslice::ViewExt;
+use ndslice::ViewExt as _;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::comm::multicast::CastInfo;
 #[cfg(test)]
 use crate::v1::ActorMesh;
+#[cfg(test)]
+use crate::v1::ActorMeshRef;
 #[cfg(test)]
 use crate::v1::testing;
 
@@ -218,28 +220,7 @@ impl Handler<GetCastInfo> for TestActor {
 pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
     let instance = testing::instance().await;
     // Verify casting to the root actor mesh
-    {
-        let (port, mut rx) = mailbox::open_port(&instance);
-        actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();
-
-        let mut expected_actor_ids: HashSet<_> = actor_mesh
-            .values()
-            .map(|actor_ref| actor_ref.actor_id().clone())
-            .collect();
-
-        while !expected_actor_ids.is_empty() {
-            let actor_id = rx.recv().await.unwrap();
-            assert!(
-                expected_actor_ids.remove(&actor_id),
-                "got {actor_id}, expect {expected_actor_ids:?}"
-            );
-        }
-
-        // No more messages
-        RealClock.sleep(Duration::from_secs(1)).await;
-        let result = rx.try_recv();
-        assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
-    }
+    assert_casting_correctness(&actor_mesh, instance).await;
 
     // Just pick the first dimension. Slice half of it off.
     // actor_mesh.extent().
@@ -248,28 +229,33 @@ pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
 
     // Verify casting to the sliced actor mesh
     let sliced_actor_mesh = actor_mesh.range(&label, 0..size).unwrap();
-    {
-        let (port, mut rx) = mailbox::open_port(instance);
-        sliced_actor_mesh
-            .cast(instance, GetActorId(port.bind()))
-            .unwrap();
+    assert_casting_correctness(&sliced_actor_mesh, instance).await;
+}
 
-        let mut expected_actor_ids: HashSet<_> = sliced_actor_mesh
-            .values()
-            .map(|actor_ref| actor_ref.actor_id().clone())
-            .collect();
+#[cfg(test)]
+/// Cast to the actor mesh, and verify that all actors are reached.
+pub async fn assert_casting_correctness(
+    actor_mesh: &ActorMeshRef<TestActor>,
+    instance: &Instance<()>,
+) {
+    let (port, mut rx) = mailbox::open_port(instance);
+    actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();
 
-        while !expected_actor_ids.is_empty() {
-            let actor_id = rx.recv().await.unwrap();
-            assert!(
-                expected_actor_ids.remove(&actor_id),
-                "got {actor_id}, expect {expected_actor_ids:?}"
-            );
-        }
+    let mut expected_actor_ids: HashSet<_> = actor_mesh
+        .values()
+        .map(|actor_ref| actor_ref.actor_id().clone())
+        .collect();
 
-        // No more messages
-        RealClock.sleep(Duration::from_secs(1)).await;
-        let result = rx.try_recv();
-        assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
+    while !expected_actor_ids.is_empty() {
+        let actor_id = rx.recv().await.unwrap();
+        assert!(
+            expected_actor_ids.remove(&actor_id),
+            "got {actor_id}, expect {expected_actor_ids:?}"
+        );
     }
+
+    // No more messages
+    RealClock.sleep(Duration::from_secs(1)).await;
+    let result = rx.try_recv();
+    assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
 }
