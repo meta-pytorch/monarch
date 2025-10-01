@@ -46,6 +46,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
+use uuid::Uuid;
 
 use crate as hyperactor;
 use crate::Actor;
@@ -93,6 +94,7 @@ use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 use crate::ordering::OrderedSender;
 use crate::ordering::OrderedSenderError;
+use crate::ordering::Sequencer;
 use crate::ordering::ordered_channel;
 use crate::panic_handler;
 use crate::reference::ActorId;
@@ -915,6 +917,12 @@ pub struct Instance<A: Actor> {
 
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
+
+    /// This instance's globally unique ID.
+    id: Uuid,
+
+    /// Used to assign sequence numbers for messages sent from this actor.
+    sequencer: Sequencer,
 }
 
 impl<A: Actor> Instance<A> {
@@ -965,7 +973,7 @@ impl<A: Actor> Instance<A> {
             parent,
             ports.clone(),
         );
-
+        let instance_id = Uuid::now_v7();
         (
             Self {
                 proc,
@@ -973,6 +981,8 @@ impl<A: Actor> Instance<A> {
                 mailbox,
                 ports,
                 status_tx,
+                sequencer: Sequencer::new(instance_id),
+                id: instance_id,
             },
             actor_loop_receivers,
             work_rx,
@@ -1410,12 +1420,24 @@ impl<A: Actor> Instance<A> {
             mailbox: self.mailbox.clone(),
             ports: self.ports.clone(),
             status_tx: self.status_tx.clone(),
+            sequencer: self.sequencer.clone(),
+            id: self.id.clone(),
         }
     }
 
     /// Get the join handle associated with this actor.
     fn actor_task_handle(&self) -> Option<&JoinHandle<()>> {
         self.cell.inner.actor_task_handle.get()
+    }
+
+    /// Return this instance's sequencer.
+    pub fn sequencer(&self) -> &Sequencer {
+        &self.sequencer
+    }
+
+    /// Return this instance's ID.
+    pub fn instance_id(&self) -> Uuid {
+        self.id
     }
 }
 
@@ -1799,15 +1821,15 @@ pub struct Ports<A: Actor> {
 /// A message's sequencer number infomation.
 #[derive(Serialize, Deserialize, Clone, Named, AttrValue)]
 pub struct SeqInfo {
-    /// Message's sender
-    pub sender: String,
+    /// Message's session ID
+    pub session_id: Uuid,
     /// Message's sequence number in the given session.
-    pub seq: usize,
+    pub seq: u64,
 }
 
 impl fmt::Display for SeqInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{};{}", self.sender, self.seq)
+        write!(f, "{}:{}", self.session_id, self.seq)
     }
 }
 
@@ -1815,19 +1837,19 @@ impl std::str::FromStr for SeqInfo {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<_> = s.split(';').collect();
+        let parts: Vec<_> = s.split(':').collect();
         if parts.len() != 2 {
             return Err(anyhow::anyhow!("invalid SeqInfo: {}", s));
         }
-        let sender: String = parts[0].parse()?;
-        let seq: usize = parts[2].parse()?;
-        Ok(SeqInfo { sender, seq })
+        let session_id: Uuid = parts[0].parse()?;
+        let seq: u64 = parts[1].parse()?;
+        Ok(SeqInfo { session_id, seq })
     }
 }
 
 declare_attrs! {
-    /// The name of the client who sent this message, and the message's sequence
-    /// number assigned by that client.
+    /// The sender of this message, the session ID, and the message's sequence
+    /// number assigned by this session.
     pub attr SEQ_INFO: SeqInfo;
 }
 
@@ -1860,7 +1882,7 @@ impl<A: Actor> Ports<A> {
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
-                    let client_seq = headers.get(SEQ_INFO).cloned();
+                    let seq_info = headers.get(SEQ_INFO).cloned();
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &mut Instance<A>| {
                         Box::pin(async move {
@@ -1877,12 +1899,12 @@ impl<A: Actor> Ports<A> {
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
                     if workq.enable_buffering {
-                        let SeqInfo { sender, seq } =
-                            client_seq.expect("SEQ_INFO must be set when buffering is enabled");
+                        let SeqInfo { session_id, seq } =
+                            seq_info.expect("SEQ_INFO must be set when buffering is enabled");
 
                         // TODO: return the message contained in the error instead of dropping them when converting
                         // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                        workq.send(sender, seq, work).map_err(|e| match e {
+                        workq.send(session_id, seq, work).map_err(|e| match e {
                             OrderedSenderError::InvalidZeroSeq(_) => {
                                 anyhow::anyhow!("seq must be greater than 0")
                             }

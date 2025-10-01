@@ -71,6 +71,9 @@ use parse::ParseError;
 use parse::Token;
 use parse::parse;
 
+use crate::proc::SEQ_INFO;
+use crate::proc::SeqInfo;
+
 /// A universal reference to hierarchical identifiers in Hyperactor.
 ///
 /// References implement a concrete syntax which can be parsed via
@@ -879,10 +882,10 @@ impl PortId {
     /// Send a serialized message to this port, provided a sending capability,
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
-    pub fn send(&self, cx: &impl context::Mailbox, serialized: &Serialized) {
+    pub fn send(&self, cx: &impl context::Mailbox, serialized: Serialized) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized.clone());
+        cx.post(self.clone(), headers, serialized);
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -891,11 +894,11 @@ impl PortId {
     pub fn send_with_headers(
         &self,
         cx: &impl context::Mailbox,
-        serialized: &Serialized,
+        serialized: Serialized,
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized.clone());
+        cx.post(self.clone(), headers, serialized);
     }
 
     /// Split this port, returning a new port that relays messages to the port
@@ -1010,10 +1013,9 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn send_with_headers(
         &self,
         cx: &impl context::Mailbox,
-        mut headers: Attrs,
+        headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
-        crate::mailbox::headers::set_send_timestamp(&mut headers);
         let serialized = Serialized::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),
@@ -1026,7 +1028,13 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// Send a serialized message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    pub fn send_serialized(&self, cx: &impl context::Mailbox, message: Serialized, headers: Attrs) {
+    pub fn send_serialized(
+        &self,
+        cx: &impl context::Mailbox,
+        message: Serialized,
+        mut headers: Attrs,
+    ) {
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
         cx.post(self.port_id.clone(), headers, message);
     }
 

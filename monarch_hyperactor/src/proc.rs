@@ -493,7 +493,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         actor_id
             .inner
             .port_id(message.port())
-            .send(&self.instance, &message.inner);
+            .send(&self.instance, message.inner.clone());
         Ok(())
     }
 

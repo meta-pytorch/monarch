@@ -3282,7 +3282,7 @@ mod tests {
 
     fn post(cx: &impl context::Actor, port_id: PortId, msg: u64) {
         let serialized = Serialized::serialize(&msg).unwrap();
-        port_id.send(cx, &serialized);
+        port_id.send(cx, serialized);
     }
 
     #[async_timed_test(timeout_secs = 30)]
