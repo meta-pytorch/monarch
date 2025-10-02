@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
-import asyncio
 import ctypes
 import functools
 import logging
@@ -118,26 +117,24 @@ def _get_addr_and_size(buf: torch.Tensor | memoryview) -> tuple[int, int]:
 
 class RdmaController(Actor):
     def __init__(self) -> None:
-        self._managers: Dict[ProcMesh, _RdmaManager] = {}
-        self._lock = asyncio.Lock()
+        self._manager_futures: Dict[ProcMesh, Future[_RdmaManager]] = {}
 
     @endpoint
     async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -> None:
         # Note: RdmaController acts as coordinator and can run on any node
         # The RDMA support check should happen on the target proc_mesh nodes, not on RdmaController's node
 
-        if proc_mesh in self._managers:
-            return
+        if proc_mesh not in self._manager_futures:
 
-        async with self._lock:
-            if proc_mesh not in self._managers:
-                self._managers[proc_mesh] = none_throws(
-                    await Future(
-                        coro=_RdmaManager.create_rdma_manager_nonblocking(
-                            await Future(coro=proc_mesh._proc_mesh.task())
-                        )
-                    )
+            async def create_manager() -> _RdmaManager:
+                proc_mesh_result = await Future(coro=proc_mesh._proc_mesh.task())
+                return none_throws(
+                    await _RdmaManager.create_rdma_manager_nonblocking(proc_mesh_result)
                 )
+
+            self._manager_futures[proc_mesh] = Future(coro=create_manager())
+
+        await self._manager_futures[proc_mesh]
 
 
 @functools.cache
