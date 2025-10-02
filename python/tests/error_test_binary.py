@@ -11,10 +11,21 @@ import ctypes
 
 import click
 from monarch._rust_bindings.monarch_extension.blocking import blocking_function
-
 from monarch._rust_bindings.monarch_extension.panic import panicking_function
+from monarch._src.actor.proc_mesh import ProcMesh
+from monarch._src.actor.v1.host_mesh import this_host as this_host_v1
+from monarch._src.actor.v1.proc_mesh import ProcMesh as ProcMeshV1
 
-from monarch.actor import Actor, endpoint, proc_mesh, send
+from monarch.actor import Actor, endpoint, send, this_host
+
+
+def spawn_procs_on_this_host(
+    v1: bool, per_host: dict[str, int]
+) -> ProcMesh | ProcMeshV1:
+    if v1:
+        return this_host_v1().spawn_procs(name="proc", per_host=per_host)
+    else:
+        return this_host().spawn_procs(per_host)
 
 
 class ErrorActor(Actor):
@@ -77,13 +88,13 @@ class ErrorActorSync(Actor):
         panicking_function()
 
 
-def _run_error_test_sync(num_procs, sync_endpoint, endpoint_name):
-    proc = proc_mesh(gpus=num_procs).get()
+def _run_error_test_sync(num_procs, sync_endpoint, endpoint_name, v1):
+    proc = spawn_procs_on_this_host(v1, {"gpus": num_procs})
     if sync_endpoint:
         actor_class = ErrorActorSync
     else:
         actor_class = ErrorActor
-    error_actor = proc.spawn("error_actor", actor_class).get()
+    error_actor = proc.spawn("error_actor", actor_class)
 
     # This output is checked in the test to make sure that the process actually got here
     print("Started function error_test", flush=True)
@@ -103,7 +114,7 @@ def _run_error_test_sync(num_procs, sync_endpoint, endpoint_name):
         endpoint.call().get()
 
 
-def _run_error_test(num_procs, sync_endpoint, endpoint_name):
+def _run_error_test(num_procs, sync_endpoint, endpoint_name, v1):
     import asyncio
 
     if sync_endpoint:
@@ -112,7 +123,7 @@ def _run_error_test(num_procs, sync_endpoint, endpoint_name):
         actor_class = ErrorActor
 
     async def run_test():
-        proc = proc_mesh(gpus=num_procs)
+        proc = spawn_procs_on_this_host(v1, per_host={"gpus": num_procs})
         error_actor = proc.spawn("error_actor", actor_class)
 
         # This output is checked in the test to make sure that the process actually got here
@@ -145,29 +156,31 @@ def main():
 @click.option("--sync-test-impl", type=bool, required=True)
 @click.option("--sync-endpoint", type=bool, required=True)
 @click.option("--endpoint-name", type=str, required=True)
-def error_endpoint(num_procs, sync_test_impl, sync_endpoint, endpoint_name):
+@click.option("--v1", type=bool, required=True)
+def error_endpoint(num_procs, sync_test_impl, sync_endpoint, endpoint_name, v1):
     print(
         f"Running segfault test: {num_procs=} {sync_test_impl=} {sync_endpoint=}, {endpoint_name=}"
     )
 
     if sync_test_impl:
-        _run_error_test_sync(num_procs, sync_endpoint, endpoint_name)
+        _run_error_test_sync(num_procs, sync_endpoint, endpoint_name, v1)
     else:
-        _run_error_test(num_procs, sync_endpoint, endpoint_name)
+        _run_error_test(num_procs, sync_endpoint, endpoint_name, v1)
 
 
 @main.command("error-bootstrap")
-def error_bootstrap():
+@click.option("--v1", type=bool, required=True)
+def error_bootstrap(v1):
     print("Started function error_bootstrap", flush=True)
-    proc_mesh(
-        gpus=4, env={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}
+    spawn_procs_on_this_host(
+        v1, {"gpus": 4}, env={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}
     ).initialized.get()
 
 
-async def _error_unmonitored():
+async def _error_unmonitored(v1):
     print("Started function _error_unmonitored", flush=True)
 
-    proc = proc_mesh(gpus=1)
+    proc = spawn_procs_on_this_host(v1, {"gpus": 1})
     actor = proc.spawn("error_actor", ErrorActor)
 
     # fire and forget
@@ -183,11 +196,11 @@ async def _error_unmonitored():
 
 """
 TODO: This test should be enabled when stop() is fully implemented.
-async def _error_unmonitored():
+async def _error_unmonitored(v1):
     print("I actually ran")
     sys.stdout.flush()
 
-    proc = proc_mesh(gpus=1)
+    proc = spawn_procs_on_this_host(v1, {"gpus": 1})
     actor = proc.spawn("error_actor", ErrorActor)
 
     # fire and forget
@@ -204,16 +217,17 @@ async def _error_unmonitored():
 
 
 @main.command("error-unmonitored")
-def error_unmonitored():
-    asyncio.run(_error_unmonitored())
+@click.option("--v1", type=bool, required=True)
+def error_unmonitored(v1):
+    asyncio.run(_error_unmonitored(v1))
 
 
-async def _error_cleanup():
+async def _error_cleanup(v1):
     """Test function that spawns an 8 process procmesh and calls an endpoint that returns a normal exception."""
     print("Started function _error_cleanup() for parent process", flush=True)
 
     # Spawn an 8 process procmesh
-    proc = proc_mesh(gpus=8)
+    proc = spawn_procs_on_this_host(v1, {"gpus": 8})
     error_actor = proc.spawn("error_actor", ErrorActor)
 
     print("Procmesh spawned, collecting child PIDs from actors", flush=True)
@@ -239,9 +253,10 @@ async def _error_cleanup():
 
 
 @main.command("error-cleanup")
-def error_cleanup():
+@click.option("--v1", type=bool, required=True)
+def error_cleanup(v1):
     """Command that spawns an 8 process procmesh and calls an endpoint that returns a normal exception."""
-    asyncio.run(_error_cleanup())
+    asyncio.run(_error_cleanup(v1))
 
 
 if __name__ == "__main__":
