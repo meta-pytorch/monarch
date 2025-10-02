@@ -43,7 +43,7 @@ class ToyActor(Actor):
 async def create_toy_actors():
     local_proc_mesh = proc_mesh(gpus=NUM_ACTORS)
     # This spawns 4 instances of 'ToyActor'
-    toy_actor = await local_proc_mesh.spawn("toy_actor", ToyActor)
+    toy_actor = local_proc_mesh.spawn("toy_actor", ToyActor)
     return toy_actor, local_proc_mesh
 
 
@@ -100,14 +100,14 @@ class ExampleActor(Actor):
 async def create_ping_pong_actors():
     # Spawn two different Actors in different meshes, with two instances each
     local_mesh_0 = proc_mesh(gpus=2)
-    actor_0 = await local_mesh_0.spawn(
+    actor_0 = local_mesh_0.spawn(
         "actor_0",
         ExampleActor,
         "actor_0",  # this arg is passed to ExampleActor.__init__
     )
 
     local_mesh_1 = proc_mesh(gpus=2)
-    actor_1 = await local_mesh_1.spawn(
+    actor_1 = local_mesh_1.spawn(
         "actor_1",
         ExampleActor,
         "actor_1",  # this arg is passed to ExampleActor.__init__
