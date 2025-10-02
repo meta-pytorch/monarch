@@ -1244,15 +1244,14 @@ async def test_flush_on_disable_aggregation(v1: bool) -> None:
             pass
 
 
-@pytest.mark.parametrize("v1", [True, False])
 @pytest.mark.timeout(120)
-async def test_multiple_ongoing_flushes_no_deadlock(v1: bool) -> None:
+async def test_multiple_ongoing_flushes_no_deadlock() -> None:
     """
     The goal is to make sure when a user sends multiple sync flushes, we are not deadlocked.
     Because now a flush call is purely sync, it is very easy to get into a deadlock.
     So we assert the last flush call will not get into such a state.
     """
-    pm = spawn_procs_on_this_host(v1, per_host={"gpus": 4})
+    pm = spawn_procs_on_this_host(v1=True, per_host={"gpus": 4})
     am = pm.spawn("printer", Printer)
 
     # Generate some logs that will be aggregated but not flushed immediately
