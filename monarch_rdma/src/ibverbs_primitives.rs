@@ -129,6 +129,9 @@ pub struct IbverbsConfig {
     pub psn: u32,
     /// `use_gpu_direct` - Whether to enable GPU Direct RDMA support on init.
     pub use_gpu_direct: bool,
+    /// `hw_init_delay_ms` - The delay in milliseconds before initializing the hardware.
+    /// This is used to allow the hardware to settle before starting the first transmission.
+    pub hw_init_delay_ms: u64,
 }
 
 /// Default RDMA parameters below are based on common values from rdma-core examples
@@ -155,6 +158,7 @@ impl Default for IbverbsConfig {
             pkey_index: 0,
             psn: rand::random::<u32>() & 0xffffff,
             use_gpu_direct: false, // nv_peermem enabled for cuda
+            hw_init_delay_ms: 2,
         }
     }
 }

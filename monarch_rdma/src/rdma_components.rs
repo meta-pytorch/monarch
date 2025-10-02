@@ -47,6 +47,7 @@ use std::ffi::CStr;
 use std::fs;
 use std::io::Error;
 use std::result::Result;
+use std::thread::sleep;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
@@ -445,9 +446,35 @@ pub struct RdmaQueuePair {
     pub recv_wqe_idx: u64,
     pub recv_db_idx: u64,
     pub recv_cq_idx: u64,
+    rts_timestamp: u64,
 }
 
 impl RdmaQueuePair {
+    /// Applies hardware initialization delay if this is the first operation since RTS.
+    ///
+    /// This ensures the hardware has sufficient time to settle after reaching
+    /// Ready-to-Send state before the first actual operation.
+    fn apply_first_op_delay(&self, wr_id: u64) {
+        if wr_id == 0 {
+            assert!(
+                self.rts_timestamp != u64::MAX,
+                "First operation attempted before queue pair reached RTS state! Call connect() first."
+            );
+            let current_nanos = RealClock
+                .system_time_now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64;
+            let elapsed_nanos = current_nanos - self.rts_timestamp;
+            let elapsed = Duration::from_nanos(elapsed_nanos);
+            let init_delay = Duration::from_millis(self.config.hw_init_delay_ms);
+            if elapsed < init_delay {
+                let remaining_delay = init_delay - elapsed;
+                sleep(remaining_delay);
+            }
+        }
+    }
+
     /// Creates a new RdmaQueuePair from a given RdmaDomain.
     ///
     /// This function initializes a new Queue Pair (QP) and associated Completion Queue (CQ)
@@ -539,6 +566,7 @@ impl RdmaQueuePair {
                 send_db_idx: 0,
                 send_wqe_idx: 0,
                 send_cq_idx: 0,
+                rts_timestamp: u64::MAX,
             })
         }
     }
@@ -746,6 +774,13 @@ impl RdmaQueuePair {
                 "connection sequence has successfully completed (qp: {:?})",
                 qp
             );
+
+            // Record RTS time now that the queue pair is ready to send
+            self.rts_timestamp = RealClock
+                .system_time_now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64;
 
             Ok(())
         }
@@ -1039,6 +1074,8 @@ impl RdmaQueuePair {
                 || op_type == RdmaOperation::Read
                 || op_type == RdmaOperation::WriteWithImm
             {
+                // Apply hardware initialization delay if this is the first operation
+                self.apply_first_op_delay(wr_id);
                 let send_flags = if signaled {
                     rdmaxcel_sys::ibv_send_flags::IBV_SEND_SIGNALED.0
                 } else {
