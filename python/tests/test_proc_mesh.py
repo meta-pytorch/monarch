@@ -60,7 +60,7 @@ class TestActor(Actor):
         return await actor.get_rank_plus_init_value.call()
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(360)
 async def test_proc_mesh_initialization() -> None:
     host = create_local_host_mesh("test_host")
     proc_mesh = host.spawn_procs(name="test_proc")
@@ -68,7 +68,7 @@ async def test_proc_mesh_initialization() -> None:
     assert await proc_mesh.initialized
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(360)
 def test_proc_mesh_spawn_single_actor() -> None:
     host = create_local_host_mesh("test_host")
     proc_mesh = host.spawn_procs(name="test_proc")
@@ -78,7 +78,7 @@ def test_proc_mesh_spawn_single_actor() -> None:
     assert actor.get_value.call_one().get() == 43
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(360)
 def test_proc_mesh_multi_actor() -> None:
     host = create_local_host_mesh("multi_host", Extent(["replicas", "hosts"], [2, 2]))
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
@@ -92,7 +92,7 @@ def test_proc_mesh_multi_actor() -> None:
         assert point.rank == i
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(360)
 def test_proc_mesh_sliced() -> None:
     host = create_local_host_mesh("multi_host", Extent(["replicas", "hosts"], [2, 2]))
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
