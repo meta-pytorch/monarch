@@ -52,8 +52,32 @@ jobs:
         # pyre currently does not check these assertions
         pyright python/tests/test_python_actors.py
 
-        # Run GPU Python tests
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip"
+        # Run GPU Python tests split into 10 groups sequentially
+        # Each group runs separately with process cleanup in between
+        for GROUP in {1..10}; do
+          echo "Running test group $GROUP of 10..."
+
+          # Kill any existing Python processes to ensure clean state
+          echo "Cleaning up Python processes before group $GROUP..."
+          pkill -9 python || true
+          pkill -9 pytest || true
+
+          # Wait a moment for processes to terminate
+          sleep 2
+
+          # Run tests for this group
+          LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+            --dist=no \
+            --group=$GROUP \
+            --splits=10 || {
+            echo "Test group $GROUP failed with exit code $?"
+            exit 1
+          }
+
+          echo "Completed test group $GROUP of 10"
+        done
+
+        echo "All test groups completed successfully!"
         # TODO(meriksen): temporarily disabled to unblock lands while debugging
         # mock CUDA issues on the OSS setup
         # python python/tests/test_mock_cuda.py
