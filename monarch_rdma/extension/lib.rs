@@ -260,6 +260,10 @@ impl PyRdmaBuffer {
             Ok(())
         })
     }
+
+    fn owner_actor_id(&self) -> String {
+        self.owner_ref.actor_id().to_string()
+    }
 }
 
 #[pyclass(name = "_RdmaManager", module = "monarch._rust_bindings.rdma")]

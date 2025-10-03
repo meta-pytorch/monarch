@@ -9,16 +9,19 @@ import ctypes
 import functools
 import logging
 import warnings
-from typing import cast, Optional
+from collections import defaultdict
+from typing import cast, List, Optional, Tuple
 
 import torch
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from typing_extensions import Self
 
 try:
     from monarch._rust_bindings.rdma import _RdmaBuffer, _RdmaManager
 except ImportError as e:
     logging.error("RDMA is not available: {}".format(e))
     raise e
+from enum import Enum
 from typing import Dict
 
 from monarch._src.actor.actor_mesh import Actor, context
@@ -335,7 +338,7 @@ class RDMABuffer:
 
     def drop(self) -> Future[None]:
         """
-        Release the handle on the memory that the remote holds to this memory.
+        Release the handle on the memory that the src holds to this memory.
         """
         local_proc_id = context().actor_instance.proc_id
         client = context().actor_instance
@@ -351,10 +354,221 @@ class RDMABuffer:
         return Future(coro=drop_nonblocking())
 
     @property
-    def owner(self) -> ProcMesh:
+    def owner(self) -> str:
         """
-        The proc that owns this buffer
+        The owner reference (str)
         """
-        # FIXME(slurye): Fix this once controller API is working properly
-        # for v1.
-        return cast(ProcMesh, context().actor_instance.proc)
+        return self._buffer.owner_actor_id()
+
+
+LocalMemory = torch.Tensor | memoryview
+
+
+class RDMAAction:
+    """
+    Schedule a bunch of actions at once. This provides an opportunity to
+    optimize bulk RDMA transactions without exposing complexity to users.
+
+    """
+
+    class RDMAOp(Enum):
+        """Enumeration of RDMA operation types."""
+
+        READ_INTO = "read_into"
+        WRITE_FROM = "write_from"
+        FETCH_ADD = "fetch_add"
+        COMPARE_AND_SWAP = "compare_and_swap"
+
+    def __init__(self) -> None:
+        self._instructs: List[Tuple[RDMAAction.RDMAOp, RDMABuffer, LocalMemory]] = []
+        self._memory_dependencies: Dict[Tuple[int, int], RDMAAction.RDMAOp] = {}
+
+    def _check_and_merge_overlapping_range(
+        self, addr: int, size: int, op: "RDMAAction.RDMAOp"
+    ) -> None:
+        """
+        Check for overlapping ranges and merge if found.
+
+        Returns the final range to use (either new_range or expanded merged range).
+        Updates self._memory_dependencies in place if merging occurs.
+        """
+        new_start, new_end = addr, addr + size
+
+        # Find overlapping range
+        overlapping_range = None
+        for existing_start, existing_end in self._memory_dependencies:
+            # Check if ranges overlap
+            if not (new_end <= existing_start or existing_end <= new_start):
+                overlapping_range = (existing_start, existing_end)
+                break
+
+        # No overlap found - good to go
+        if overlapping_range is None:
+            self._memory_dependencies[(new_start, new_end)] = op
+            return
+
+        # Overlap found - merge ranges
+        existing_op = self._memory_dependencies[overlapping_range]
+
+        # Merge ops, only safe if neither is write_from at the moment
+        if existing_op == self.RDMAOp.WRITE_FROM or op == self.RDMAOp.WRITE_FROM:
+            raise ValueError(
+                f"Same data range already has a write_from within RDMAAction: {existing_op} vs {op}"
+            )
+
+        # Create expanded range that covers both
+        expanded_range = (
+            min(overlapping_range[0], new_start),
+            max(overlapping_range[1], new_end),
+        )
+
+        # range is unchanged - no need to update
+        if expanded_range == (new_start, new_end):
+            return
+
+        # Update dictionary: remove old range, add expanded range
+        del self._memory_dependencies[overlapping_range]
+        self._memory_dependencies[expanded_range] = op
+
+        # now since merged, possible need to merge again
+        return self._check_and_merge_overlapping_range(
+            expanded_range[0], expanded_range[1] - expanded_range[0], op
+        )
+
+    def read_into(self, src: RDMABuffer, dst: LocalMemory | List[LocalMemory]) -> Self:
+        """
+        Read from src RDMA buffer into dst memory.
+
+        Args:
+            src: Source RDMA buffer to read from
+            dst: Destination local memory to read into
+                   If dst is a list, it is the concatenation of the data in the list
+        """
+        # Throw NotImplementedError for lists to simplify logic
+        if isinstance(dst, list):
+            raise NotImplementedError("List destinations not yet supported")
+
+        addr, size = _get_addr_and_size(dst)
+
+        if size < src.size():
+            raise ValueError(
+                f"dst memory size ({size}) must be >= src buffer size ({src.size()})"
+            )
+
+        self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.READ_INTO)
+
+        self._instructs.append((self.RDMAOp.READ_INTO, src, dst))
+
+        return self
+
+    def write_from(self, src: RDMABuffer, dst: LocalMemory | List[LocalMemory]) -> Self:
+        """
+        Write from dst memory to src RDMA buffer.
+
+        Args:
+            src: Destination RDMA buffer to write to
+            dst: Source local memory to write from
+                   If local is a list, it is the concatenation of the data in the list
+        """
+        # Throw NotImplementedError for lists to simplify logic
+        if isinstance(dst, list):
+            raise NotImplementedError("List sources not yet supported")
+
+        addr, size = _get_addr_and_size(dst)
+
+        if size > src.size():
+            raise ValueError(
+                f"Local memory size ({size}) must be <= src buffer size ({src.size()})"
+            )
+
+        self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.WRITE_FROM)
+
+        self._instructs.append((self.RDMAOp.WRITE_FROM, src, dst))
+
+        return self
+
+    def fetch_add(self, src: RDMABuffer, dst: LocalMemory, add: int) -> Self:
+        """
+        Perform atomic fetch-and-add operation on src RDMA buffer.
+
+        Args:
+            src: src RDMA buffer to perform operation on
+            dst: Local memory to store the original value
+            add: Value to add to the src buffer
+
+        Atomically:
+            *dst = *src
+            *src = *src + add
+
+        Note: src/dst are 8 bytes
+        """
+        raise NotImplementedError("Not yet supported")
+
+    def compare_and_swap(
+        self, src: RDMABuffer, dst: LocalMemory, compare: int, swap: int
+    ) -> Self:
+        """
+        Perform atomic compare-and-swap operation on src RDMA buffer.
+
+        Args:
+            src: src RDMA buffer to perform operation on
+            dst: Local memory to store the original value
+            compare: Value to compare against
+            swap: Value to swap in if comparison succeeds
+
+        Atomically:
+            *dst = *src;
+            if (*src == compare) {
+                *src = swap
+            }
+
+        Note: src/dst are 8 bytes
+        """
+        raise NotImplementedError("Not yet supported")
+
+    def submit(self) -> Future[None]:
+        """
+        Schedules the work (can be called multiple times to schedule the same work more than once).
+        Future completes when all the work is done.
+
+        Executes futures for each src actor independently and concurrently for optimal performance.
+        """
+
+        async def submit_all_work() -> None:
+            if not self._instructs:
+                return
+
+            work = defaultdict(list)
+
+            # Group operations by owner for concurrent execution per owner
+            for op, src, dst in self._instructs:
+                if op == self.RDMAOp.READ_INTO:
+                    fut = src.read_into(dst)
+                elif op == self.RDMAOp.WRITE_FROM:
+                    fut = src.write_from(dst)
+                else:
+                    raise NotImplementedError(f"Unknown RDMA operation: {op}")
+                work[src.owner].append(fut)
+
+            # Create a list of tasks, one per owner, that wait for all that owner's futures sequentially
+            owner_tasks = []
+
+            for _, futures in work.items():
+                # Create a coroutine that processes all futures for a qp sequentially
+                async def process_owner_futures(owner_futures_list=futures):
+                    """Process all futures for a single qp sequentially"""
+                    for future in owner_futures_list:
+                        await future
+
+                # Convert to PythonTask for Monarch's native concurrency
+                owner_task = PythonTask.from_coroutine(process_owner_futures())
+                owner_tasks.append(owner_task)
+
+            # Spawn all owner tasks concurrently and collect their shared handles
+            shared_tasks = [task.spawn() for task in owner_tasks]
+
+            # Wait for all owner tasks to complete concurrently
+            for shared_task in shared_tasks:
+                await shared_task
+
+        return Future(coro=submit_all_work())

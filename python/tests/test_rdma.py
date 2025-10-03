@@ -13,7 +13,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import pytest
 import torch
 from monarch.actor import Actor, current_rank, endpoint, this_host
-from monarch.rdma import is_rdma_available, RDMABuffer
+from monarch.rdma import is_rdma_available, RDMAAction, RDMABuffer
 
 
 needs_cuda = pytest.mark.skipif(
@@ -357,3 +357,340 @@ async def test_rdma_concurrent_2gb_writes_in_order():
     # Drop the buffer
     await buffer.drop()
     print("✓ Buffer dropped successfully")
+
+
+class DataServerActor(Actor):
+    def __init__(self, name: str, size: int = 100):
+        super().__init__()
+        self.name = name
+        self.data = torch.full(
+            (size,), float(ord(name)), dtype=torch.float32
+        )  # Fill with ASCII value of name
+        self.buffer = None
+
+    @endpoint
+    async def create_buffer(self) -> RDMABuffer:
+        """Create an RDMABuffer from our data"""
+        byte_tensor = self.data.view(torch.uint8).flatten()
+        self.buffer = RDMABuffer(byte_tensor)
+        return self.buffer
+
+    @endpoint
+    async def update_data(self, value: float):
+        """Update our data with a new value"""
+        self.data.fill_(value)
+
+    @endpoint
+    async def get_sum(self) -> float:
+        """Get the sum of our data for verification"""
+        return torch.sum(self.data).item()
+
+
+class ClientActor(Actor):
+    def __init__(self, size: int = 100):
+        super().__init__()
+        self.data_a = torch.zeros(size, dtype=torch.float32)
+        self.data_b = torch.zeros(size, dtype=torch.float32)
+        self.data_c = torch.zeros(size, dtype=torch.float32)
+        self.action = None
+        self.size = size
+
+    @endpoint
+    async def perform_batch_operations(
+        self, buffer_a: RDMABuffer, buffer_b: RDMABuffer, buffer_c: RDMABuffer
+    ) -> None:
+        """Perform batched operations using RDMAAction across multiple remote actors"""
+
+        # Create RDMAAction instance
+        action = RDMAAction()
+
+        # Chain multiple operations across different remote actors
+        # Read from buffer A into local data_a
+        action.read_into(buffer_a, self.data_a.view(torch.uint8).flatten())
+
+        # # Write data_a to buffer B (modified data goes from A -> B)
+        action.write_from(buffer_b, self.data_b.view(torch.uint8).flatten())
+
+        # Read from buffer C into local data_c
+        action.read_into(buffer_c, self.data_c.view(torch.uint8).flatten())
+
+        # Let's read from buffer A into local data_a again; this covers edge case
+        # but will result in duplicate work for now; which is fine for now.
+        action.read_into(buffer_a, self.data_a.view(torch.uint8).flatten())
+        self.action = action
+
+    @endpoint
+    async def run_action(self) -> None:
+        """Run the RDMAAction instance"""
+        assert self.action is not None, "action is not initialized"
+        await self.action.submit()
+
+    @endpoint
+    async def perform_data_race(
+        self, buffer_a: RDMABuffer, buffer_b: RDMABuffer, buffer_c: RDMABuffer
+    ) -> None:
+        """Perform batched operations using RDMAAction across multiple remote actors"""
+
+        # Create RDMAAction instance
+        action = RDMAAction()
+
+        # Chain multiple operations across different remote actors
+        # Read from buffer A into local data_a
+        action.read_into(buffer_a, self.data_a.view(torch.uint8).flatten())
+
+        # # Write data_a to buffer B (modified data goes from A -> B) - Data race!
+        action.write_from(buffer_b, self.data_a.view(torch.uint8).flatten())
+
+    @endpoint
+    async def perform_data_race_w_slices(
+        self, buffer_a: RDMABuffer, buffer_b: RDMABuffer, buffer_c: RDMABuffer
+    ) -> None:
+        """Perform batched operations using RDMAAction across multiple remote actors"""
+        assert self.size == 250, "Size must be 100 for this test"
+        # Create RDMAAction instance
+        action = RDMAAction()
+
+        # Chain multiple operations across different remote actors
+        # Read from buffer A into local data_a
+        action.read_into(buffer_a, self.data_a.view(torch.uint8)[0 : 100 * 4].flatten())
+        action.write_from(buffer_a, self.data_a.view(torch.uint8)[150 * 4 :].flatten())
+        action.read_into(
+            buffer_a, self.data_a.view(torch.uint8)[75 * 4 : 175 * 4].flatten()
+        )
+
+    @endpoint
+    async def get_local_data_sums(self) -> dict:
+        """Get sums of local data for verification"""
+        return {
+            "data_a_sum": torch.sum(self.data_a).item(),
+            "data_b_sum": torch.sum(self.data_b).item(),
+            "data_c_sum": torch.sum(self.data_c).item(),
+        }
+
+    @endpoint
+    async def perform_ok_w_slices(
+        self, buffer_a: RDMABuffer, buffer_b: RDMABuffer, buffer_c: RDMABuffer
+    ) -> None:
+        """Perform batched operations using RDMAAction across multiple remote actors"""
+        assert self.size == 250, "Size must be 100 for this test"
+        # Create RDMAAction instance
+        action = RDMAAction()
+
+        # Chain multiple operations across different remote actors
+        # Read from buffer A into local data_a
+        action.read_into(buffer_a, self.data_a.view(torch.uint8)[0 : 100 * 4].flatten())
+        action.read_into(buffer_a, self.data_a.view(torch.uint8)[150 * 4 :].flatten())
+        action.read_into(
+            buffer_a, self.data_a.view(torch.uint8)[50 * 4 : 150 * 4].flatten()
+        )
+        self.action = action
+
+    @endpoint
+    async def get_local_data_sums(self) -> dict:
+        """Get sums of local data for verification"""
+        return {
+            "data_a_sum": torch.sum(self.data_a).item(),
+            "data_b_sum": torch.sum(self.data_b).item(),
+            "data_c_sum": torch.sum(self.data_c).item(),
+        }
+
+
+@needs_rdma
+async def test_rdma_action_concurrent_execution():
+    """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
+
+    # Setup: Create 3 separate processes (2 remote + 1 local)
+    server_proc_1 = this_host().spawn_procs(per_host={"processes": 1})
+    server_proc_2 = this_host().spawn_procs(per_host={"processes": 1})
+    client_proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    # Create actors on different processes
+    server_a = server_proc_1.spawn(
+        "server_a", DataServerActor, "A"
+    )  # Data filled with 65.0 (ASCII 'A')
+    server_b = server_proc_2.spawn(
+        "server_b", DataServerActor, "B"
+    )  # Data filled with 66.0 (ASCII 'B')
+    server_c = server_proc_1.spawn(
+        "server_c", DataServerActor, "C"
+    )  # Data filled with 67.0 (ASCII 'C')
+    client = client_proc.spawn("client", ClientActor)
+
+    # Create RDMA buffers on each server
+    buffer_a = await server_a.create_buffer.call_one()
+    buffer_b = await server_b.create_buffer.call_one()
+    buffer_c = await server_c.create_buffer.call_one()
+
+    # Verify initial server data
+    sum_a_initial = await server_a.get_sum.call_one()
+    sum_b_initial = await server_b.get_sum.call_one()
+    sum_c_initial = await server_c.get_sum.call_one()
+
+    assert sum_a_initial == 6500.0  # 100 * 65.0 (ASCII 'A')
+    assert sum_b_initial == 6600.0  # 100 * 66.0 (ASCII 'B')
+    assert sum_c_initial == 6700.0  # 100 * 67.0 (ASCII 'C')
+
+    # Execute: Perform batch operations with RDMAAction
+    # This will test concurrent execution across multiple remote actors
+    await client.perform_batch_operations.call_one(buffer_a, buffer_b, buffer_c)
+
+    await client.run_action.call_one()
+    operation_results = await client.get_local_data_sums.call_one()
+
+    # Verify the results
+    assert operation_results["data_a_sum"] == sum_a_initial
+    assert operation_results["data_c_sum"] == sum_c_initial
+
+    # Verify that server B received the modified data from A
+    sum_b_after = await server_b.get_sum.call_one()
+    assert sum_b_after == 0.0
+
+    # Verify servers A and C are unchanged
+    sum_a_after = await server_a.get_sum.call_one()
+    sum_c_after = await server_c.get_sum.call_one()
+    assert sum_a_after == 6500.0  # A should be unchanged
+    assert sum_c_after == 6700.0  # C should be unchanged
+
+
+@needs_rdma
+async def test_rdma_action_second_call():
+    """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
+
+    # Setup: Create 3 separate processes (2 remote + 1 local)
+    server_proc_1 = this_host().spawn_procs(per_host={"processes": 1})
+    server_proc_2 = this_host().spawn_procs(per_host={"processes": 1})
+    client_proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    # Create actors on different processes
+    server_a = server_proc_1.spawn(
+        "server_a", DataServerActor, "A"
+    )  # Data filled with 65.0 (ASCII 'A')
+    server_b = server_proc_2.spawn(
+        "server_b", DataServerActor, "B"
+    )  # Data filled with 66.0 (ASCII 'B')
+    server_c = server_proc_1.spawn(
+        "server_c", DataServerActor, "C"
+    )  # Data filled with 67.0 (ASCII 'C')
+    client = client_proc.spawn("client", ClientActor)
+
+    # Create RDMA buffers on each server
+    buffer_a = await server_a.create_buffer.call_one()
+    buffer_b = await server_b.create_buffer.call_one()
+    buffer_c = await server_c.create_buffer.call_one()
+
+    # Verify initial server data
+    sum_a_initial = await server_a.get_sum.call_one()
+    sum_b_initial = await server_b.get_sum.call_one()
+    sum_c_initial = await server_c.get_sum.call_one()
+
+    assert sum_a_initial == 6500.0  # 100 * 65.0 (ASCII 'A')
+    assert sum_b_initial == 6600.0  # 100 * 66.0 (ASCII 'B')
+    assert sum_c_initial == 6700.0  # 100 * 67.0 (ASCII 'C')
+
+    # Execute: Perform batch operations with RDMAAction
+    # This will test concurrent execution across multiple remote actors
+    await client.perform_batch_operations.call_one(buffer_a, buffer_b, buffer_c)
+
+    await client.run_action.call_one()
+    operation_results = await client.get_local_data_sums.call_one()
+
+    # Verify the results
+    assert operation_results["data_a_sum"] == sum_a_initial
+    assert operation_results["data_c_sum"] == sum_c_initial
+
+    # Verify that server B received the modified data from A
+    sum_b_after = await server_b.get_sum.call_one()
+    assert sum_b_after == 0.0
+
+    # Verify servers A and C are unchanged
+    sum_a_after = await server_a.get_sum.call_one()
+    sum_c_after = await server_c.get_sum.call_one()
+    assert sum_a_after == 6500.0  # A should be unchanged
+    assert sum_c_after == 6700.0  # C should be unchanged
+
+    # update data of server_a
+    await server_a.update_data.call_one(1.0)
+
+    await client.run_action.call_one()
+    operation_results = await client.get_local_data_sums.call_one()
+
+    # Verify the results
+    assert operation_results["data_a_sum"] == 100.0
+    assert operation_results["data_c_sum"] == sum_c_initial
+
+    # Verify that server B, C same as before
+    assert 0.0 == await server_b.get_sum.call_one()
+    assert sum_c_after == await server_c.get_sum.call_one()
+
+
+@needs_rdma
+async def test_rdma_action_data_races():
+    """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
+
+    # Setup: Create 3 separate processes (2 remote + 1 local)
+    server_proc_1 = this_host().spawn_procs(per_host={"processes": 1})
+    server_proc_2 = this_host().spawn_procs(per_host={"processes": 1})
+    client_proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    # Create actors on different processes
+    server_a = server_proc_1.spawn(
+        "server_a",
+        DataServerActor,
+        "A",
+    )  # Data filled with 65.0 (ASCII 'A')
+    server_b = server_proc_2.spawn(
+        "server_b", DataServerActor, "B"
+    )  # Data filled with 66.0 (ASCII 'B')
+    server_c = server_proc_1.spawn(
+        "server_c", DataServerActor, "C"
+    )  # Data filled with 67.0 (ASCII 'C')
+    client = client_proc.spawn("client", ClientActor, 250)
+
+    # Create RDMA buffers on each server
+    buffer_a = await server_a.create_buffer.call_one()
+    buffer_b = await server_b.create_buffer.call_one()
+    buffer_c = await server_c.create_buffer.call_one()
+
+    with pytest.raises(Exception):
+        await client.perform_data_race.call_one(buffer_a, buffer_b, buffer_c)
+
+    with pytest.raises(Exception):
+        await client.perform_data_race_w_slices.call_one(buffer_a, buffer_b, buffer_c)
+
+
+@needs_rdma
+async def test_rdma_action_slicing():
+    """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
+
+    # Setup: Create 3 separate processes (2 remote + 1 local)
+    server_proc_1 = this_host().spawn_procs(per_host={"processes": 1})
+    server_proc_2 = this_host().spawn_procs(per_host={"processes": 1})
+    client_proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    # Create actors on different processes
+    server_a = server_proc_1.spawn(
+        "server_a",
+        DataServerActor,
+        "A",
+    )  # Data filled with 65.0 (ASCII 'A')
+    server_b = server_proc_2.spawn(
+        "server_b", DataServerActor, "B"
+    )  # Data filled with 66.0 (ASCII 'B')
+    server_c = server_proc_1.spawn(
+        "server_c", DataServerActor, "C"
+    )  # Data filled with 67.0 (ASCII 'C')
+    client = client_proc.spawn("client", ClientActor, 250)
+
+    # Create RDMA buffers on each server
+    buffer_a = await server_a.create_buffer.call_one()
+    buffer_b = await server_b.create_buffer.call_one()
+    buffer_c = await server_c.create_buffer.call_one()
+
+    sum_a_initial = await server_a.get_sum.call_one()
+    await client.perform_ok_w_slices.call_one(buffer_a, buffer_b, buffer_c)
+    await client.run_action.call_one()
+    # Verify that server A received local values
+    operation_results = await client.get_local_data_sums.call_one()
+    assert (
+        operation_results["data_a_sum"] == sum_a_initial * 2.5
+    )  # multi-filled from 100 to 250
