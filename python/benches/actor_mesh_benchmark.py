@@ -209,13 +209,7 @@ class ActorLatency(Benchmark):
         assert self.pong_mesh is not None
         await self.pong_mesh.stop()
 
-    def setup_env(self) -> None:
-        # ensure any changes are reflected
-        os.environ["HYPERACTOR_DEFAULT_ENCODING"] = "serde_bincode"
-        os.environ["HYPERACTOR_CHANNEL_MULTIPART"] = "0"
-
     async def setup(self) -> None:
-        self.setup_env()
         reload_config_from_env()
         pong_mesh = proc_mesh(hosts=self.host_count, gpus=self.gpu_count)
         await pong_mesh.logging_option(stream_to_client=True, aggregate_window_sec=None)
@@ -223,12 +217,6 @@ class ActorLatency(Benchmark):
         self.pong_actors = pong_mesh.spawn("pong", Pong)
         self.pong_mesh = pong_mesh
         self.message = bytes(self.message_size)
-
-
-class ActorLatencyMultipart(ActorLatency):
-    def setup_env(self) -> None:
-        os.environ["HYPERACTOR_DEFAULT_ENCODING"] = "serde_multipart"
-        os.environ["HYPERACTOR_CHANNEL_MULTIPART"] = "1"
 
 
 @dataclass
@@ -253,22 +241,14 @@ class ActorThroughput(ActorLatency):
         self.bump_counter("messages", pong.size() * self.request_batch_size)
 
 
-class ActorThroughputMultipart(ActorThroughput):
-    def setup_env(self) -> None:
-        os.environ["HYPERACTOR_DEFAULT_ENCODING"] = "serde_multipart"
-        os.environ["HYPERACTOR_CHANNEL_MULTIPART"] = "1"
-
-
-message_sizes: list[int] = [10**n for n in range(1, 9)]
-host_counts = [1, 8, 16]
-gpu_counts = [1, 8]
+message_sizes: list[int] = [10**n for n in range(3, 9, 2)]
+host_counts = [1, 10]
+gpu_counts = [1, 10]
 host_counts = [1]
 gpu_counts = [1]
 runners = [
     ActorLatency,
-    ActorLatencyMultipart,
     ActorThroughput,
-    ActorThroughputMultipart,
 ]
 
 for hosts, gpus, message_size, Runner in itertools.product(
