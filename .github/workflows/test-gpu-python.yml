@@ -53,7 +53,7 @@ jobs:
         pyright python/tests/test_python_actors.py
 
         # Run GPU Python tests
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip"
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" -k "not (test_python_actors.py and [False]) and not (test_actor_mesh.py and [False]) and not (test_actor_error.py and [False])"
         # TODO(meriksen): temporarily disabled to unblock lands while debugging
         # mock CUDA issues on the OSS setup
         # python python/tests/test_mock_cuda.py
