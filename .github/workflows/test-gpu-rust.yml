@@ -58,3 +58,7 @@ jobs:
         echo "Running OSS Rust tests..."
         # TODO: fix broken tests, then update to `cargo test --no-fail-fast`
         cargo test -p monarch_rdma
+        # Uses cargo nextest to run tests in separate processes, which better matches
+        # internal buck test behavior.
+        # TODO: increase coverage to more crates.
+        cargo nextest run -p hyperactor --no-fail-fast

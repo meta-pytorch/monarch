@@ -369,6 +369,8 @@ mod tests {
 
     #[tracing_test::traced_test]
     #[test]
+    // TODO: OSS: The logs_assert function returned an error: missing log lines: {"# export HYPERACTOR_DEFAULT_ENCODING=serde_multipart", ...}
+    #[cfg_attr(not(feature = "fb"), ignore)]
     fn test_from_env() {
         // Set environment variables
         // SAFETY: TODO: Audit that the environment access only happens in single-threaded code.

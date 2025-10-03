@@ -919,6 +919,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO: OSS: called `Result::unwrap()` on an `Err` value: Server(Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }))
+    #[cfg_attr(not(feature = "fb"), ignore)]
     async fn test_dial_serve() {
         for addr in addrs() {
             let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
@@ -929,6 +931,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO: OSS: called `Result::unwrap()` on an `Err` value: Server(Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }))
+    #[cfg_attr(not(feature = "fb"), ignore)]
     async fn test_send() {
         let config = crate::config::global::lock();
 

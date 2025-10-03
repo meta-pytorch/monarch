@@ -33,6 +33,10 @@ setup_rust_toolchain() {
     source "${HOME}"/.cargo/env
     rustup toolchain install nightly
     rustup default nightly
+    # We use cargo nextest to run tests in individual processes for similarity
+    # to buck test.
+    # Replace "cargo test" commands with "cargo nextest run".
+    cargo install cargo-nextest --locked
 }
 
 install_build_dependencies() {
