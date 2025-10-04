@@ -50,8 +50,7 @@ def flush_all_proc_mesh_logs(v1: bool = False) -> None:
         from monarch._src.actor.v1.proc_mesh import get_active_proc_meshes
 
     for pm in get_active_proc_meshes():
-        if pm._logging_manager._logging_mesh_client is not None:
-            pm._logging_manager.flush()
+        pm._logging_manager.flush()
 
 
 class LoggingManager:
