@@ -50,18 +50,19 @@ View Monarch's hosted documentation [at this link](https://meta-pytorch.org/mona
 ## Installation
 Note for running distributed tensors, the local torch version must match the version that monarch was built with.
 
-### On Fedora distributions
-## Stable
+### Stable
 `pip install torchmonarch`
 
 torchmonarch stable is built with the latest stable torch.
 
-## Nightly
+### Nightly
 `pip install torchmonarch-nightly`
 
 torchmonarch-nightly is built with torch nightly.
 
-or manually
+### Build and Install from Source
+
+#### On Fedora distributions
 
 ```sh
 
@@ -99,11 +100,11 @@ pip install --no-build-isolation .
 # or setup for development
 pip install --no-build-isolation -e .
 
-# Run unit tests. consider -s for more verbose output
-pytest python/tests/ -v -m "not oss_skip"
+# Verify installation
+pip list | grep monarch
 ```
 
-### On Ubuntu distributions
+#### On Ubuntu distributions
 
 ```sh
 # Clone the repository and navigate to it
@@ -144,7 +145,7 @@ pip install --no-build-isolation -e .
 pip list | grep monarch
 ```
 
-### On MacOS
+#### On MacOS
 
 You can also build Monarch to run locally on a MacOS system.
 
@@ -172,6 +173,8 @@ USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
 # or setup for development
 USE_TENSOR_ENGINE=0 pip install --no-build-isolation -e .
 
+# Verify installation
+pip list | grep monarch
 ```
 
 
@@ -180,6 +183,30 @@ USE_TENSOR_ENGINE=0 pip install --no-build-isolation -e .
 Check out the `examples/` directory for demonstrations of how to use Monarch's APIs.
 
 We'll be adding more examples as we stabilize and polish functionality!
+
+## Running tests
+
+We have both Rust and Python unit tests. Rust tests are run with `cargo-nextest`
+and Python tests are run with `pytest`.
+
+Rust tests:
+```sh
+# We use cargo-nextest to run our tests, as they can provide strong process isolation
+# between every test.
+# Here we install it from source, but you can instead use a pre-built binary described
+# here: https://nexte.st/docs/installation/pre-built-binaries/
+cargo install cargo-nextest --locked
+cargo nextest run
+```
+cargo-nextest supports all of the filtering flags of "cargo test".
+
+Python tests:
+```sh
+# Make sure to install test dependencies first
+pip install -r python/tests/requirements.txt
+# Run unit tests. consider -s for more verbose output
+pytest python/tests/ -v -m "not oss_skip"
+```
 
 ## License
 
