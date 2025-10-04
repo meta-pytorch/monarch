@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
@@ -50,9 +49,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
-use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
+use crate::context::PyInstance;
 use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
@@ -275,10 +274,9 @@ impl PythonMessage {
             _ => panic!("PythonMessage is not a response but {:?}", self),
         }
     }
-
-    async fn resolve_indirect_call<T: Actor>(
+    async fn resolve_indirect_call(
         self,
-        cx: &Context<'_, T>,
+        cx: &Context<'_, PythonActor>,
     ) -> anyhow::Result<ResolvedCallMethod> {
         match self.kind {
             PythonMessageKind::CallMethodIndirect {
@@ -331,6 +329,7 @@ impl PythonMessage {
                     .call_method1("repeat", (mailbox.clone(),))
                     .unwrap()
                     .unbind();
+                let instance: PyInstance = cx.into();
                 let response_port = response_port
                     .map_or_else(
                         || {
@@ -343,7 +342,7 @@ impl PythonMessage {
                             let point = cx.cast_point();
                             py.import("monarch._src.actor.actor_mesh")
                                 .unwrap()
-                                .call_method1("Port", (x, mailbox, point.rank()))
+                                .call_method1("Port", (x, instance, point.rank()))
                                 .unwrap()
                         },
                     )
@@ -435,7 +434,8 @@ pub(super) struct PythonActorHandle {
 #[pymethods]
 impl PythonActorHandle {
     // TODO: do the pickling in rust
-    fn send(&self, message: &PythonMessage) -> PyResult<()> {
+    // TODO(pzhang) Use instance after its required by PortHandle.
+    fn send(&self, _instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
         self.inner
             .send(message.clone())
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
@@ -708,7 +708,11 @@ impl Handler<HandlePanic> for PythonActorPanicWatcher {
 
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
-    async fn handle(&mut self, cx: &Context<Self>, message: PythonMessage) -> anyhow::Result<()> {
+    async fn handle(
+        &mut self,
+        cx: &Context<PythonActor>,
+        message: PythonMessage,
+    ) -> anyhow::Result<()> {
         let resolved = message.resolve_indirect_call(cx).await?;
 
         // Create a channel for signaling panics in async endpoints.

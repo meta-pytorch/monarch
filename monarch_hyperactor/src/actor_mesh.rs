@@ -618,7 +618,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
                     let port = py
                         .import("monarch._src.actor.actor_mesh")
                         .unwrap()
-                        .call_method1("Port", (port_ref, instance._mailbox(), 0))
+                        .call_method1("Port", (port_ref, instance, 0))
                         .unwrap();
                     port.call_method1("exception", (pyerr.value(py),)).unwrap();
                 }),

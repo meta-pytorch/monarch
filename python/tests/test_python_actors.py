@@ -1551,14 +1551,14 @@ class UndeliverableMessageReceiver(Actor):
 class UndeliverableMessageSender(Actor):
     @endpoint
     def send_undeliverable(self) -> None:
-        mailbox = context().actor_instance._mailbox
+        actor_instance = context().actor_instance
         port_id = PortId(
             actor_id=ActorId(world_name="bogus", rank=0, actor_name="bogus"),
             port=1234,
         )
         port_ref = PortRef(port_id)
         port_ref.send(
-            mailbox,
+            actor_instance._as_rust(),
             PythonMessage(PythonMessageKind.Result(None), b"123"),
         )
 

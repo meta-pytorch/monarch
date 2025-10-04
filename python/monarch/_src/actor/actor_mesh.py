@@ -550,11 +550,11 @@ class Port(Generic[R]):
     def __init__(
         self,
         port_ref: PortRef | OncePortRef,
-        mailbox: Mailbox,
+        instance: HyInstance,
         rank: Optional[int],
     ) -> None:
         self._port_ref = port_ref
-        self._mailbox = mailbox
+        self._instance = instance
         self._rank = rank
 
     def send(self, obj: R) -> None:
@@ -566,7 +566,7 @@ class Port(Generic[R]):
             obj: R-typed object to send.
         """
         self._port_ref.send(
-            self._mailbox,
+            self._instance,
             PythonMessage(PythonMessageKind.Result(self._rank), _pickle(obj)),
         )
 
@@ -574,8 +574,25 @@ class Port(Generic[R]):
         # we deliver each error exactly once, so if there is no port to respond to,
         # the error is sent to the current actor as an exception.
         self._port_ref.send(
-            self._mailbox,
+            self._instance,
             PythonMessage(PythonMessageKind.Exception(self._rank), _pickle(obj)),
+        )
+
+    def __reduce__(self):
+        """
+        When Port is sent over the wire, we do not want to send the actor instance
+        from the current context. Instead, we want to reconstruct the Port with
+        the receiver's context, since that is where the message will be sent
+        from through this port.
+        """
+
+        def _reconstruct_port(port_ref, rank):
+            instance = context().actor_instance._as_rust()
+            return Port(port_ref, instance, rank)
+
+        return (
+            _reconstruct_port,
+            (self._port_ref, self._rank),
         )
 
 
@@ -617,11 +634,14 @@ class Channel(Generic[R]):
     @staticmethod
     def open(once: bool = False) -> Tuple["Port[R]", "PortReceiver[R]"]:
         """ """
-        mailbox = context().actor_instance._mailbox
+        actor_instance = context().actor_instance
+        mailbox = actor_instance._mailbox
         handle, receiver = mailbox.open_once_port() if once else mailbox.open_port()
         port_ref = handle.bind()
+        hy_instance = actor_instance._as_rust()
+        port = Port(port_ref, hy_instance, None)
         return (
-            Port(port_ref, mailbox, rank=None),
+            port,
             PortReceiver(mailbox, receiver),
         )
 

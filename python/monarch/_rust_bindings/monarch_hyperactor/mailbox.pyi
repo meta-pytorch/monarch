@@ -9,11 +9,9 @@
 from typing import final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
-
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape
 
 @final
 class PortId:
@@ -52,7 +50,7 @@ class PortHandle:
     A handle to a port over which PythonMessages can be sent.
     """
 
-    def send(self, message: PythonMessage) -> None:
+    def send(self, instance: Instance, message: PythonMessage) -> None:
         """Send a message to the port's receiver."""
 
     def bind(self) -> PortRef:
@@ -71,7 +69,7 @@ class PortRef:
         """
         ...
 
-    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+    def send(self, instance: Instance, message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
 
@@ -123,7 +121,7 @@ class OncePortRef:
     A reference to a remote once port over which a single PythonMessages can be sent.
     """
 
-    def send(self, mailbox: Mailbox, message: PythonMessage) -> None:
+    def send(self, instance: Instance, message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
 
