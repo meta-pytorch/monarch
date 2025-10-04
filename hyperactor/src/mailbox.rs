@@ -1164,19 +1164,19 @@ impl MailboxSender for MailboxClient {
 }
 
 /// Wrapper to turn `PortRef` into a `Sink`.
-pub struct PortSink<C: context::Mailbox, M: RemoteMessage> {
-    caps: C,
+pub struct PortSink<C: context::Actor, M: RemoteMessage> {
+    cx: C,
     port: PortRef<M>,
 }
 
-impl<C: context::Mailbox, M: RemoteMessage> PortSink<C, M> {
+impl<C: context::Actor, M: RemoteMessage> PortSink<C, M> {
     /// Create new PortSink
-    pub fn new(caps: C, port: PortRef<M>) -> Self {
-        Self { caps, port }
+    pub fn new(cx: C, port: PortRef<M>) -> Self {
+        Self { cx, port }
     }
 }
 
-impl<C: context::Mailbox, M: RemoteMessage> Sink<M> for PortSink<C, M> {
+impl<C: context::Actor, M: RemoteMessage> Sink<M> for PortSink<C, M> {
     type Error = MailboxSenderError;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1184,7 +1184,7 @@ impl<C: context::Mailbox, M: RemoteMessage> Sink<M> for PortSink<C, M> {
     }
 
     fn start_send(self: Pin<&mut Self>, item: M) -> Result<(), Self::Error> {
-        self.port.send(&self.caps, item)
+        self.port.send(&self.cx, item)
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

@@ -111,7 +111,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_binds() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let params = TestActorParams {
             forward_port: tx.bind(),
@@ -192,7 +192,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ref_alias() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let params = TestActorParams {
             forward_port: tx.bind(),
