@@ -33,6 +33,8 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     PortRef,
@@ -62,7 +64,10 @@ from monarch._src.actor.v1.host_mesh import (
     this_host as this_host_v1,
     this_proc as this_proc_v1,
 )
-from monarch._src.actor.v1.proc_mesh import ProcMesh as ProcMeshV1
+from monarch._src.actor.v1.proc_mesh import (
+    get_or_spawn_controller as get_or_spawn_controller_v1,
+    ProcMesh as ProcMeshV1,
+)
 
 from monarch.actor import (
     Accumulator,
@@ -1696,15 +1701,18 @@ class SpawningActorFromEndpointActor(Actor):
         return self._root
 
     @endpoint
-    async def spawning_from_endpoint(self, name, root) -> None:
-        await get_or_spawn_controller(name, SpawningActorFromEndpointActor, root=root)
+    async def spawning_from_endpoint(self, name, root, get_or_spawn) -> None:
+        await get_or_spawn(name, SpawningActorFromEndpointActor, root=root)
 
 
+@pytest.mark.parametrize(
+    "get_or_spawn", [get_or_spawn_controller, get_or_spawn_controller_v1]
+)
 @pytest.mark.timeout(60)
-def test_get_or_spawn_controller_inside_actor_endpoint():
-    actor_1 = get_or_spawn_controller("actor_1", SpawningActorFromEndpointActor).get()
-    actor_1.spawning_from_endpoint.call_one("actor_2", root="actor_1").get()
-    actor_2 = get_or_spawn_controller("actor_2", SpawningActorFromEndpointActor).get()
+def test_get_or_spawn_controller_inside_actor_endpoint(get_or_spawn):
+    actor_1 = get_or_spawn("actor_1", SpawningActorFromEndpointActor).get()
+    actor_1.spawning_from_endpoint.call_one("actor_2", "actor_1", get_or_spawn).get()
+    actor_2 = get_or_spawn("actor_2", SpawningActorFromEndpointActor).get()
     # verify that actor_2 was spawned from actor_1 with the correct root
     assert actor_2.return_root.call_one().get() == "actor_1"
 
@@ -1746,3 +1754,43 @@ def test_simple_bootstrap():
         for proc in procs:
             proc.kill()
             proc.wait()
+
+
+@pytest.mark.timeout(60)
+def test_root_client_context_reloaded_when_transport_set() -> None:
+    configure(default_transport=ChannelTransport.Unix)
+    actor_id = str(context().actor_instance.actor_id)
+    assert actor_id.startswith("unix:@") and actor_id.endswith(
+        "mesh_root_client_proc,client[0]"
+    )
+    configure(default_transport=ChannelTransport.Local)
+    actor_id = str(context().actor_instance.actor_id)
+    assert actor_id.startswith("local:") and actor_id.endswith(
+        "mesh_root_client_proc,client[0]"
+    )
+
+
+class ActorIdActor(Actor):
+    @endpoint
+    def actor_id(self) -> str:
+        return str(context().actor_instance.actor_id)
+
+
+@pytest.mark.timeout(60)
+def test_controller_controller_respawned_when_transport_set() -> None:
+    configure(default_transport=ChannelTransport.Unix)
+    actor_id = (
+        get_or_spawn_controller_v1("actor_id", ActorIdActor)
+        .get()
+        .actor_id.call_one()
+        .get()
+    )
+    assert actor_id.startswith("unix:@")
+    configure(default_transport=ChannelTransport.Local)
+    actor_id = (
+        get_or_spawn_controller_v1("actor_id", ActorIdActor)
+        .get()
+        .actor_id.call_one()
+        .get()
+    )
+    assert actor_id.startswith("local:")

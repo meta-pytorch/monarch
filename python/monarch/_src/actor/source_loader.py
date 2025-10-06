@@ -10,10 +10,13 @@ import importlib
 import importlib.abc
 import linecache
 
-from monarch._src.actor.actor_mesh import _context, Actor
+from monarch._src.actor.actor_mesh import _context, Actor, context
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.proc_mesh import get_or_spawn_controller
+from monarch._src.actor.proc_mesh import (
+    get_or_spawn_controller as get_or_spawn_controller_v0,
+)
 from monarch._src.actor.sync_state import fake_sync_state
+from monarch._src.actor.v1.proc_mesh import get_or_spawn_controller, ProcMesh
 
 
 class SourceLoaderController(Actor):
@@ -25,7 +28,14 @@ class SourceLoaderController(Actor):
 @functools.cache
 def source_loader_controller() -> SourceLoaderController:
     with fake_sync_state():
-        return get_or_spawn_controller("source_loader", SourceLoaderController).get()
+        if isinstance(context().actor_instance.proc_mesh, ProcMesh):
+            return get_or_spawn_controller(
+                "source_loader", SourceLoaderController
+            ).get()
+        else:
+            return get_or_spawn_controller_v0(
+                "source_loader", SourceLoaderController
+            ).get()
 
 
 @functools.cache

@@ -28,7 +28,7 @@ from typing import (
 from weakref import WeakSet
 
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.shape import Region, Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
 
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
@@ -372,7 +372,9 @@ class _ControllerController(Actor):
         if name not in self._controllers:
             from monarch._src.actor.v1.host_mesh import this_proc
 
-            self._controllers[name] = this_proc().spawn(name, Class, *args, **kwargs)
+            proc = this_proc()
+            proc._controller_controller = _get_controller_controller()[1]
+            self._controllers[name] = proc.spawn(name, Class, *args, **kwargs)
         return cast(TActor, self._controllers[name])
 
 
@@ -386,19 +388,28 @@ _controller_controller: Optional["_ControllerController"] = None
 # otherwise two initializing procs will both try to init resulting in duplicates. The critical
 # region is not blocking: it spawns a separate task to do the init, assigns the
 # Shared[_ControllerController] from that task to the global and releases the lock.
-def _get_controller_controller() -> "Tuple[ProcMesh, _ControllerController]":
+def _get_controller_controller(
+    force_respawn: bool = False,
+) -> "Tuple[ProcMesh, _ControllerController]":
     global _controller_controller, _cc_proc_mesh
     with _cc_init:
-        if _controller_controller is None:
+        if context().is_root_client and (
+            _controller_controller is None or force_respawn
+        ):
             from monarch._src.actor.v1.host_mesh import fake_in_process_host
 
             _cc_proc_mesh = fake_in_process_host(
                 "controller_controller_host"
-            ).spawn_procs(name="controller_controller_proc")
+            )._spawn_nonblocking(
+                name="controller_controller_proc",
+                per_host=Extent([], []),
+                setup=None,
+                _attach_controller_controller=False,
+            )
             _controller_controller = _cc_proc_mesh.spawn(
                 "controller_controller", _ControllerController
             )
-    assert _cc_proc_mesh is not None
+    assert _cc_proc_mesh is not None and _controller_controller is not None
     return _cc_proc_mesh, _controller_controller
 
 
@@ -419,7 +430,11 @@ def get_or_spawn_controller(
         A Future that resolves to a reference to the actor.
     """
     cc = context().actor_instance._controller_controller
-    if not isinstance(cc, _ControllerController):
+    if (
+        cc is not None
+        and cast(ActorMesh[_ControllerController], cc)._class
+        is not _ControllerController
+    ):
         # This can happen in the client process
         cc = _get_controller_controller()[1]
     return cc.get_or_spawn.call_one(name, Class, *args, **kwargs)

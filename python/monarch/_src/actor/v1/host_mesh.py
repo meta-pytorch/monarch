@@ -147,7 +147,7 @@ class HostMesh(MeshTrait):
             name = ""
 
         return self._spawn_nonblocking(
-            name, Extent(list(per_host.keys()), list(per_host.values())), setup, False
+            name, Extent(list(per_host.keys()), list(per_host.values())), setup, True
         )
 
     def _spawn_nonblocking(

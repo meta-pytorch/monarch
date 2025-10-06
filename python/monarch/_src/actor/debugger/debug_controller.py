@@ -9,7 +9,7 @@ import asyncio
 import functools
 from typing import Dict, List, Optional, Tuple
 
-from monarch._src.actor.actor_mesh import Actor
+from monarch._src.actor.actor_mesh import Actor, context
 from monarch._src.actor.debugger.debug_command import (
     Attach,
     Cast,
@@ -33,8 +33,11 @@ from monarch._src.actor.debugger.debug_session import (
 )
 from monarch._src.actor.debugger.pdb_wrapper import DebuggerWrite
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.proc_mesh import get_or_spawn_controller
+from monarch._src.actor.proc_mesh import (
+    get_or_spawn_controller as get_or_spawn_controller_v0,
+)
 from monarch._src.actor.sync_state import fake_sync_state
+from monarch._src.actor.v1.proc_mesh import get_or_spawn_controller, ProcMesh
 from monarch.tools.debug_env import (
     _get_debug_server_host,
     _get_debug_server_port,
@@ -243,4 +246,7 @@ class DebugController(Actor):
 @functools.cache
 def debug_controller() -> DebugController:
     with fake_sync_state():
-        return get_or_spawn_controller("debug_controller", DebugController).get()
+        if isinstance(context().actor_instance.proc_mesh, ProcMesh):
+            return get_or_spawn_controller("debug_controller", DebugController).get()
+        else:
+            return get_or_spawn_controller_v0("debug_controller", DebugController).get()
