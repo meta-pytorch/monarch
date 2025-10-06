@@ -160,15 +160,6 @@ class Mailbox:
         """
         ...
 
-    def undeliverable_receiver(self) -> UndeliverablePortReceiver:
-        """
-        Open a port to receive undeliverable messages.
-
-        This may only be called at most once per mailbox. Calling it
-        more than once may panic due to the port already being bound.
-        """
-        ...
-
     @property
     def actor_id(self) -> ActorId: ...
 

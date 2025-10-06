@@ -52,7 +52,6 @@ use crate::instance_dispatch;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
-use crate::runtime::signal_safe_block_on;
 
 #[derive(Clone, Debug)]
 #[pyclass(
@@ -144,22 +143,6 @@ impl PyMailbox {
         PyActorId {
             inner: self.inner.actor_id().clone(),
         }
-    }
-
-    fn undeliverable_receiver<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Py<PythonUndeliverablePortReceiver>> {
-        let (handle, receiver) = self.inner.open_port();
-        handle.bind_to(Undeliverable::<MessageEnvelope>::port());
-        let receiver = Py::new(
-            py,
-            PythonUndeliverablePortReceiver {
-                inner: Arc::new(tokio::sync::Mutex::new(receiver)),
-            },
-        )?;
-
-        Ok(receiver)
     }
 
     fn __repr__(&self) -> String {
@@ -278,22 +261,6 @@ impl PythonPortHandle {
         PythonPortRef {
             inner: self.inner.bind(),
         }
-    }
-}
-
-#[derive(Clone, Debug)]
-#[pyclass(
-    name = "UndeliverablePortHandle",
-    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
-)]
-pub(super) struct PythonUndeliverablePortHandle {
-    inner: PortHandle<Undeliverable<MessageEnvelope>>,
-}
-
-#[pymethods]
-impl PythonUndeliverablePortHandle {
-    fn bind_undeliverable(&self) {
-        self.inner.bind_to(Undeliverable::<MessageEnvelope>::port());
     }
 }
 
@@ -434,46 +401,6 @@ impl PythonUndeliverableMessageEnvelope {
             .0
             .error_msg()
             .unwrap_or_else(|| "None".to_string()))
-    }
-}
-
-#[derive(Debug)]
-#[pyclass(
-    name = "UndeliverablePortReceiver",
-    module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
-)]
-pub(super) struct PythonUndeliverablePortReceiver {
-    inner: Arc<tokio::sync::Mutex<PortReceiver<Undeliverable<MessageEnvelope>>>>,
-}
-
-#[pymethods]
-impl PythonUndeliverablePortReceiver {
-    fn recv<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let receiver = self.inner.clone();
-        crate::runtime::future_into_py(py, async move {
-            let message = receiver
-                .lock()
-                .await
-                .recv()
-                .await
-                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
-            Ok(PythonUndeliverableMessageEnvelope {
-                inner: Some(message),
-            })
-        })
-    }
-
-    fn blocking_recv<'py>(
-        &mut self,
-        py: Python<'py>,
-    ) -> PyResult<PythonUndeliverableMessageEnvelope> {
-        let receiver = self.inner.clone();
-        let message = signal_safe_block_on(py, async move { receiver.lock().await.recv().await })?
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
-
-        Ok(PythonUndeliverableMessageEnvelope {
-            inner: Some(message),
-        })
     }
 }
 
@@ -728,10 +655,8 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PyMailbox>()?;
     hyperactor_mod.add_class::<PyPortId>()?;
     hyperactor_mod.add_class::<PythonPortHandle>()?;
-    hyperactor_mod.add_class::<PythonUndeliverablePortHandle>()?;
     hyperactor_mod.add_class::<PythonPortRef>()?;
     hyperactor_mod.add_class::<PythonPortReceiver>()?;
-    hyperactor_mod.add_class::<PythonUndeliverablePortReceiver>()?;
     hyperactor_mod.add_class::<PythonOncePortHandle>()?;
     hyperactor_mod.add_class::<PythonOncePortRef>()?;
     hyperactor_mod.add_class::<PythonOncePortReceiver>()?;
