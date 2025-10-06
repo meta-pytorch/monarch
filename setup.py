@@ -158,6 +158,12 @@ setup(
     package_dir={"": "python"},
     python_requires=">= 3.10",
     install_requires=reqs.strip().split("\n"),
+    extras_require={
+        "examples": [
+            "bs4",
+            "ipython",
+        ],
+    },
     license="BSD-3-Clause",
     author="Meta",
     author_email="oncall+monarch@xmail.facebook.com",
