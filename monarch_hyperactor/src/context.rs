@@ -145,6 +145,8 @@ impl<I: Into<ContextInstance>> From<I> for PyInstance {
 pub(crate) struct PyContext {
     instance: Py<PyInstance>,
     rank: Point,
+    #[pyo3(get)]
+    is_root_client: bool,
 }
 
 #[pymethods]
@@ -162,10 +164,11 @@ impl PyContext {
     #[staticmethod]
     fn _root_client_context(py: Python<'_>) -> PyResult<PyContext> {
         let _guard = runtime::get_tokio_runtime().enter();
-        let instance: PyInstance = global_root_client().into();
+        let instance: PyInstance = global_root_client().as_ref().into();
         Ok(PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),
+            is_root_client: true,
         })
     }
 }
@@ -178,6 +181,7 @@ impl PyContext {
         PyContext {
             instance,
             rank: cx.cast_point(),
+            is_root_client: false,
         }
     }
 }

@@ -9,6 +9,8 @@
 Monarch Actor API - Public interface for actor functionality.
 """
 
+from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import (
     Accumulator,
@@ -45,6 +47,9 @@ from monarch._src.actor.proc_mesh import (
     ProcMesh,
     sim_proc_mesh,
 )
+from monarch._src.actor.v1.proc_mesh import (
+    get_or_spawn_controller as get_or_spawn_controller_v1,
+)
 
 __all__ = [
     "Accumulator",
@@ -77,4 +82,7 @@ __all__ = [
     "Extent",
     "run_worker_loop_forever",
     "attach_to_workers",
+    "get_or_spawn_controller_v1",
+    "configure",
+    "ChannelTransport",
 ]

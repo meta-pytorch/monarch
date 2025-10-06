@@ -57,7 +57,11 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import (
+    is_tokio_thread,
+    PythonTask,
+    Shared,
+)
 from monarch._rust_bindings.monarch_hyperactor.selection import (
     Selection as HySelection,  # noqa: F401
 )
@@ -206,6 +210,13 @@ class Context:
     @staticmethod
     def _root_client_context() -> "Context": ...
 
+    @property
+    def is_root_client(self) -> bool:
+        """
+        Whether this is the root client context.
+        """
+        ...
+
 
 _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
@@ -227,6 +238,22 @@ def context() -> Context:
         )
 
         c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
+    # If we are in the root client, and the default transport has changed, then the
+    # root client context needs to be updated. However, if this is called from a
+    # pytokio PythonTask, it isn't safe to update the root client context and we need
+    # to return the original context.
+    elif c.is_root_client and not is_tokio_thread():
+        root_client = Context._root_client_context()
+        if c.actor_instance.actor_id != root_client.actor_instance.actor_id:
+            c = root_client
+            _context.set(c)
+
+            # This path is only relevant to the v1 APIs
+            from monarch._src.actor.v1.proc_mesh import _get_controller_controller
+
+            c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
+                _get_controller_controller(force_respawn=True)
+            )
     return c
 
 

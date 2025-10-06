@@ -11,6 +11,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -153,14 +154,19 @@ pub(crate) fn get_global_supervision_sink() -> Option<PortHandle<ActorSupervisio
     sink_cell().read().unwrap().clone()
 }
 
-/// Context use by root client to send messages.
+/// Context used by root client to send messages.
 /// This mailbox allows us to open ports before we know which proc the
 /// messages will be sent to.
-pub fn global_root_client() -> &'static Instance<()> {
-    static GLOBAL_INSTANCE: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-    &GLOBAL_INSTANCE.get_or_init(|| {
+///
+/// Although the current client is stored in a static variable, it is
+/// reinitialized every time the default transport changes.
+pub fn global_root_client() -> Arc<Instance<()>> {
+    static GLOBAL_INSTANCE: OnceLock<
+        Mutex<(Arc<Instance<()>>, ActorHandle<()>, ChannelTransport)>,
+    > = OnceLock::new();
+    let init_fn = |transport: ChannelTransport| {
         let client_proc = Proc::direct_with_default(
-            ChannelAddr::any(default_transport()),
+            ChannelAddr::any(transport.clone()),
             "mesh_root_client_proc".into(),
             router::global().clone().boxed(),
         )
@@ -203,8 +209,20 @@ pub fn global_root_client() -> &'static Instance<()> {
             },
         );
 
-        (client, handle)
-    }).0
+        (Arc::new(client), handle, transport)
+    };
+
+    let mut instance_lock = GLOBAL_INSTANCE
+        .get_or_init(|| Mutex::new(init_fn(default_transport())))
+        .lock()
+        .unwrap();
+    let new_transport = default_transport();
+    let old_transport = instance_lock.2.clone();
+    if old_transport != new_transport {
+        *instance_lock = init_fn(new_transport);
+    }
+
+    instance_lock.0.clone()
 }
 
 type ActorEventRouter = Arc<DashMap<ActorMeshName, mpsc::UnboundedSender<ActorSupervisionEvent>>>;

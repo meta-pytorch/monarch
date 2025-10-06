@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 import asyncio
+import enum
 import functools
 import importlib.resources
 import os
@@ -14,7 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
-from typing import cast, List, Optional, Tuple
+from typing import cast, List, Optional, Tuple, Type, TypeVar
 from unittest.mock import AsyncMock, patch
 
 import cloudpickle
@@ -25,7 +26,13 @@ import monarch.actor as actor
 import pytest
 
 import torch
-from monarch._src.actor.actor_mesh import Actor, ActorError, current_rank, IN_PAR
+from monarch._src.actor.actor_mesh import (
+    Actor,
+    ActorError,
+    context,
+    current_rank,
+    IN_PAR,
+)
 from monarch._src.actor.debugger.debug_command import (
     Attach,
     Cast,
@@ -42,15 +49,62 @@ from monarch._src.actor.debugger.debug_session import (
     DebugSessionInfo,
     DebugSessions,
 )
-from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.proc_mesh import proc_mesh
+from monarch._src.actor.endpoint import endpoint, Extent
+from monarch._src.actor.future import Future
+from monarch._src.actor.proc_mesh import (
+    proc_mesh as proc_mesh_v0,
+    ProcMesh as ProcMeshV0,
+)
 from monarch._src.actor.source_loader import SourceLoaderController
+from monarch._src.actor.v1.host_mesh import (
+    create_local_host_mesh,
+    ProcMesh as ProcMeshV1,
+    this_host as this_host_v1,
+)
 from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
 )
 
 from pyre_extensions import none_throws
+
+
+class ApiVersion(enum.Enum):
+    V0 = "v0"
+    V1 = "v1"
+
+
+TActor = TypeVar("TActor", bound=Actor)
+
+
+def get_or_spawn_controller(
+    api: ApiVersion, name: str, klass: Type[TActor], *args, **kwargs
+) -> Future[TActor]:
+    match api:
+        case ApiVersion.V0:
+            return actor.get_or_spawn_controller(name, klass, *args, **kwargs)
+        case ApiVersion.V1:
+            return actor.get_or_spawn_controller_v1(name, klass, *args, **kwargs)
+        case _:
+            raise ValueError(f"Unknown API version: {api}")
+
+
+def proc_mesh(
+    api: ApiVersion,
+    *,
+    gpus: int = 1,
+    hosts: int = 1,
+) -> ProcMeshV0 | ProcMeshV1:
+    match api:
+        case ApiVersion.V0:
+            return proc_mesh_v0(gpus=gpus, hosts=hosts)
+        case ApiVersion.V1:
+            return create_local_host_mesh(
+                "hosts", extent=Extent(["hosts"], [hosts])
+            ).spawn_procs(per_host={"gpus": gpus})
+        case _:
+            raise ValueError(f"Unknown API version: {api}")
+
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
@@ -155,6 +209,18 @@ class DebugeeActor(Actor):
         rank = current_rank().rank
         return _debugee_actor_internal(rank)
 
+    @endpoint
+    async def name(self) -> str:
+        return context().actor_instance.actor_id.actor_name
+
+    @endpoint
+    async def nested(self) -> "DebugeeActor":
+        return (
+            this_host_v1()
+            .spawn_procs(per_host={"gpus": 2})
+            .spawn("debugee_nested", DebugeeActor)
+        )
+
 
 class DebugControllerForTesting(DebugController):
     def __init__(self):
@@ -186,42 +252,43 @@ async def _wait_for_breakpoints(
     raise RuntimeError("timed out waiting for breakpoints")
 
 
-# We have to run this test in a separate process because there is only one
-# debug controller per process, and we don't want this to interfere with
-# the other two tests that access the debug controller.
-@isolate_in_subprocess(env=debug_env)
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
-@pytest.mark.timeout(60)
-async def test_debug() -> None:
+async def _test_debug(api: ApiVersion, nested: bool) -> None:
+    if not nested:
+        proc = proc_mesh(api, hosts=2, gpus=2)
+        debugee = proc.spawn("debugee", DebugeeActor)
+    else:
+        proc = create_local_host_mesh(
+            "host", extent=Extent(["hosts"], [2])
+        ).spawn_procs()
+        debugee = proc.spawn("debugee", DebugeeActor).nested.choose().get()
+    name = debugee.name.choose().get()
+
     input_mock = AsyncMock()
     input_mock.side_effect = [
-        "attach debugee 1",
+        f"attach {name} 1",
         "n",
         "n",
         "n",
         "n",
         "detach",
-        "attach debugee 1",
+        f"attach {name} 1",
         "detach",
         "quit",
-        "cast debugee ranks(0,3) n",
-        "cast debugee ranks(0,3) n",
+        f"cast {name} ranks(0,3) n",
+        f"cast {name} ranks(0,3) n",
         # Attaching to 0 and 3 ensures that when we call "list"
         # the next time, their function/lineno info will be
         # up-to-date.
-        "attach debugee 0",
+        f"attach {name} 0",
         "detach",
-        "attach debugee 3",
+        f"attach {name} 3",
         "detach",
         "quit",
-        "attach debugee 2",
+        f"attach {name} 2",
         "c",
         "detach",
         "quit",
-        "attach debugee 2",
+        f"attach {name} 2",
         "bt",
         "c",
         "quit",
@@ -241,10 +308,8 @@ async def test_debug() -> None:
     with patch(
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock
     ), patch("monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock):
-        proc = proc_mesh(hosts=2, gpus=2)
-        debugee = proc.spawn("debugee", DebugeeActor)
-        debug_controller = await actor.get_or_spawn_controller(
-            "debug_controller", DebugControllerForTesting
+        debug_controller = await get_or_spawn_controller(
+            api, "debug_controller", DebugControllerForTesting
         )
 
         fut = debugee.to_debug.call()
@@ -357,26 +422,60 @@ async def test_debug() -> None:
             await fut
 
 
-# See earlier comment
+# We have to run this test in a separate process because there is only one
+# debug controller per process, and we don't want this to interfere with
+# the other tests that access the debug controller.
 @isolate_in_subprocess(env=debug_env)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
 @pytest.mark.timeout(60)
-async def test_debug_multi_actor() -> None:
+async def test_debug_v0():
+    await _test_debug(ApiVersion.V0, nested=False)
+
+
+# See earlier comment.
+@isolate_in_subprocess(env=debug_env)
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+@pytest.mark.timeout(60)
+async def test_debug_v1():
+    await _test_debug(ApiVersion.V1, nested=False)
+
+
+# See earlier comment.
+@isolate_in_subprocess(env=debug_env)
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+@pytest.mark.timeout(60)
+async def test_debug_v1_nested():
+    await _test_debug(ApiVersion.V1, nested=True)
+
+
+async def _test_debug_multi_actor(api: ApiVersion) -> None:
+    proc = proc_mesh(api, hosts=2, gpus=2)
+    debugee_1 = proc.spawn("debugee_1", DebugeeActor)
+    debugee_2 = proc.spawn("debugee_2", DebugeeActor)
+    name_1 = debugee_1.name.choose().get()
+    name_2 = debugee_2.name.choose().get()
+
     input_mock = AsyncMock()
     input_mock.side_effect = [
-        "attach debugee_2 2",
+        f"attach {name_2} 2",
         "n",
         "detach",
-        "attach debugee_1 1",
+        f"attach {name_1} 1",
         "n",
         "detach",
         "quit",
-        "cast debugee_1 ranks(:) c",
-        "cast debugee_2 ranks(:) c",
-        "attach debugee_2 2",
+        f"cast {name_1} ranks(:) c",
+        f"cast {name_2} ranks(:) c",
+        f"attach {name_2} 2",
         "c",
         "quit",
         "continue",
@@ -386,11 +485,8 @@ async def test_debug_multi_actor() -> None:
     with patch(
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", side_effect=input_mock
     ):
-        proc = proc_mesh(hosts=2, gpus=2)
-        debugee_1 = proc.spawn("debugee_1", DebugeeActor)
-        debugee_2 = proc.spawn("debugee_2", DebugeeActor)
-        debug_controller = await actor.get_or_spawn_controller(
-            "debug_controller", DebugControllerForTesting
+        debug_controller = await get_or_spawn_controller(
+            api, "debug_controller", DebugControllerForTesting
         )
 
         fut_1 = debugee_1.to_debug.call()
@@ -404,7 +500,7 @@ async def test_debug_multi_actor() -> None:
             info = breakpoints[i]
             initial_linenos[info.rank] = info.lineno
             assert info.rank == i % 4
-            assert info.actor_name == "debugee_1" if i < 4 else "debugee_2"
+            assert info.actor_name == name_1 if i < 4 else name_2
             assert info.coords == {"hosts": info.rank // 2, "gpus": info.rank % 2}
             assert info.function == "test_debugger._debugee_actor_internal"
             assert info.lineno == cast(int, breakpoints[0].lineno) + 5 * info.rank
@@ -414,17 +510,15 @@ async def test_debug_multi_actor() -> None:
         breakpoints = await _wait_for_breakpoints(debug_controller, 8)
         for i in range(len(breakpoints)):
             if i == 1:
-                assert breakpoints[i].actor_name == "debugee_1"
+                assert breakpoints[i].actor_name == name_1
                 assert breakpoints[i].rank == 1
                 assert breakpoints[i].lineno == initial_linenos[breakpoints[i].rank] + 1
             elif i == 6:
-                assert breakpoints[i].actor_name == "debugee_2"
+                assert breakpoints[i].actor_name == name_2
                 assert breakpoints[i].rank == 2
                 assert breakpoints[i].lineno == initial_linenos[breakpoints[i].rank] + 1
             else:
-                assert (
-                    breakpoints[i].actor_name == "debugee_1" if i < 4 else "debugee_2"
-                )
+                assert breakpoints[i].actor_name == name_1 if i < 4 else name_2
                 assert breakpoints[i].rank == i % 4
                 assert breakpoints[i].lineno == initial_linenos[breakpoints[i].rank]
 
@@ -433,7 +527,7 @@ async def test_debug_multi_actor() -> None:
         breakpoints = await _wait_for_breakpoints(debug_controller, 1)
         with pytest.raises(ActorError, match="ValueError: bad rank"):
             await fut_2
-        assert breakpoints[0].actor_name == "debugee_1"
+        assert breakpoints[0].actor_name == name_1
         assert breakpoints[0].rank == 2
         assert breakpoints[0].function == "test_debugger._bad_rank"
 
@@ -442,6 +536,28 @@ async def test_debug_multi_actor() -> None:
         breakpoints = await _wait_for_breakpoints(debug_controller, 0)
         with pytest.raises(ActorError, match="ValueError: bad rank"):
             await fut_1
+
+
+# See earlier comment
+@isolate_in_subprocess(env=debug_env)
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+@pytest.mark.timeout(60)
+async def test_debug_multi_actor_v0():
+    await _test_debug_multi_actor(ApiVersion.V0)
+
+
+# See earlier comment
+@isolate_in_subprocess(env=debug_env)
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+@pytest.mark.timeout(60)
+async def test_debug_multi_actor_v1():
+    await _test_debug_multi_actor(ApiVersion.V1)
 
 
 async def test_debug_sessions_insert_get_remove() -> None:
@@ -778,18 +894,12 @@ async def test_debug_command_parser_invalid_inputs(invalid_input):
     assert await DebugCommand.parse(DebugStdIO(), invalid_input) is None
 
 
-# See earlier comment
-@isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
-@pytest.mark.timeout(60)
-async def test_debug_cli():
-    proc = proc_mesh(hosts=2, gpus=2)
+async def _test_debug_cli(api: ApiVersion):
+    proc = proc_mesh(api, hosts=2, gpus=2)
     debugee = proc.spawn("debugee", DebugeeActor)
-    debug_controller = actor.get_or_spawn_controller(
-        "debug_controller", DebugControllerForTesting
+    name = debugee.name.choose().get()
+    debug_controller = get_or_spawn_controller(
+        api, "debug_controller", DebugControllerForTesting
     ).get()
 
     fut = debugee.to_debug.call()
@@ -860,13 +970,13 @@ async def test_debug_cli():
 
     debug_cli_stdin.writelines(
         [
-            b"attach debugee 1\n",
+            f"attach {name} 1\n".encode(),
             b"n\n",
             b"n\n",
             b"n\n",
             b"n\n",
             b"detach\n",
-            b"attach debugee 1\n",
+            f"attach {name} 1\n".encode(),
             b"print('test separator')\n",
             b"detach\n",
         ]
@@ -911,14 +1021,14 @@ async def test_debug_cli():
 
     debug_cli_stdin.writelines(
         [
-            b"cast debugee ranks(0,3) n\n",
-            b"cast debugee ranks(0,3) n\n",
+            f"cast {name} ranks(0,3) n\n".encode(),
+            f"cast {name} ranks(0,3) n\n".encode(),
             # Attaching to 0 and 3 ensures that when we call "list"
             # the next time, their function/lineno info will be
             # up-to-date.
-            b"attach debugee 0\n",
+            f"attach {name} 0\n".encode(),
             b"detach\n",
-            b"attach debugee 3\n",
+            f"attach {name} 3\n".encode(),
             b"detach\n",
         ]
     )
@@ -926,7 +1036,9 @@ async def test_debug_cli():
 
     # Make sure we have run all the commands before killing the CLI, otherwise
     # the commands may not actually be sent to the debug controller.
-    await debug_cli_stdout.readuntil(b"Detached from debug session for debugee 3")
+    await debug_cli_stdout.readuntil(
+        f"Detached from debug session for {name} 3".encode()
+    )
     if debug_cli_proc:
         # Even if we kill the proc using a signal, we should be able to reconnect
         # without issue.
@@ -953,7 +1065,7 @@ async def test_debug_cli():
         debug_cli_stdout,
     ) = await create_debug_cli_proc()
 
-    debug_cli_stdin.writelines([b"attach debugee 2\n", b"c\n"])
+    debug_cli_stdin.writelines([f"attach {name} 2\n".encode(), b"c\n"])
     await debug_cli_stdin.drain()
 
     # Make sure we have run all the commands before killing the CLI, otherwise
@@ -980,7 +1092,7 @@ async def test_debug_cli():
         debug_cli_stdout,
     ) = await create_debug_cli_proc()
 
-    debug_cli_stdin.writelines([b"attach debugee 2\n", b"bt\n", b"c\n"])
+    debug_cli_stdin.writelines([f"attach {name} 2\n".encode(), b"bt\n", b"c\n"])
     await debug_cli_stdin.drain()
 
     expected_output = (
@@ -990,7 +1102,9 @@ async def test_debug_cli():
     )
 
     output = (
-        await debug_cli_stdout.readuntil(b"Detached from debug session for debugee 2")
+        await debug_cli_stdout.readuntil(
+            f"Detached from debug session for {name} 2".encode()
+        )
     ).decode()
     assert len(re.findall(expected_output, output)) == 1
 
@@ -1027,6 +1141,28 @@ async def test_debug_cli():
         monarch._src.actor.actor_mesh.ActorError, match="ValueError: bad rank"
     ):
         await fut
+
+
+# See earlier comment
+@isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+@pytest.mark.timeout(60)
+async def test_debug_cli_v0():
+    await _test_debug_cli(ApiVersion.V0)
+
+
+# See earlier comment
+@isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+@pytest.mark.timeout(60)
+async def test_debug_cli_v1():
+    await _test_debug_cli(ApiVersion.V1)
 
 
 class_closure_source = """class ClassClosure:
@@ -1088,12 +1224,12 @@ class ClosureDebugeeActor(Actor):
     def debug_func(self, func, class_closure) -> int:
         return func(class_closure)
 
+    @endpoint
+    async def name(self) -> str:
+        return context().actor_instance.actor_id.actor_name
 
-# We have to run this test in a subprocess because it requires a special
-# instantiation of the debug controller singleton.
-@isolate_in_subprocess(env=debug_env)
-@pytest.mark.timeout(60)
-async def test_debug_with_pickle_by_value():
+
+async def _test_debug_with_pickle_by_value(api: ApiVersion):
     """
     This test tests debugger functionality when there are breakpoints in
     code that has been pickled by value (as opposed to pickling by reference,
@@ -1118,22 +1254,25 @@ async def test_debug_with_pickle_by_value():
     The test unpickles these and sends them to an actor endpoint, in which
     breakpoints will be hit and we can test the special pdb handling logic.
     """
+    pm = proc_mesh(api, gpus=1, hosts=1)
+    debugee = pm.spawn("debugee", ClosureDebugeeActor)
+    name = debugee.name.choose().get()
 
     input_mock = AsyncMock()
     input_mock.side_effect = [
-        "attach debugee 0",
+        f"attach {name} 0",
         "c",
         "quit",
-        "attach debugee 0",
+        f"attach {name} 0",
         "bt",
         "c",
         "quit",
-        "attach debugee 0",
+        f"attach {name} 0",
         "b /tmp/monarch_test/class_closure:10",
         "c",
         "detach",
         "quit",
-        "attach debugee 0",
+        f"attach {name} 0",
         "c",
         "detach",
         "quit",
@@ -1153,20 +1292,16 @@ async def test_debug_with_pickle_by_value():
     with patch(
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock
     ), patch("monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock):
-        pm = proc_mesh(gpus=1, hosts=1)
-
-        debug_controller = actor.get_or_spawn_controller(
-            "debug_controller", DebugControllerForTesting
+        debug_controller = get_or_spawn_controller(
+            api, "debug_controller", DebugControllerForTesting
         ).get()
 
         # Spawn a special source loader that knows how to retrieve the source code
         # for /tmp/monarch_test/class_closure.py and
         # /tmp/monarch_test/function_closure.py
-        actor.get_or_spawn_controller(
-            "source_loader", SourceLoaderControllerWithMockedSource
+        get_or_spawn_controller(
+            api, "source_loader", SourceLoaderControllerWithMockedSource
         ).get()
-
-        debugee = pm.spawn("debugee", ClosureDebugeeActor)
 
         class_closure = load_class_closure()
         func_bp_true, func_bp_false = load_func_closure()
@@ -1240,3 +1375,19 @@ async def test_debug_with_pickle_by_value():
 
         await fut
         await pm.stop()
+
+
+# We have to run this test in a subprocess because it requires a special
+# instantiation of the debug controller singleton.
+@isolate_in_subprocess(env=debug_env)
+@pytest.mark.timeout(60)
+async def test_debug_with_pickle_by_value_v0():
+    await _test_debug_with_pickle_by_value(ApiVersion.V0)
+
+
+# We have to run this test in a subprocess because it requires a special
+# instantiation of the debug controller singleton.
+@isolate_in_subprocess(env=debug_env)
+@pytest.mark.timeout(60)
+async def test_debug_with_pickle_by_value_v1():
+    await _test_debug_with_pickle_by_value(ApiVersion.V1)

@@ -10,7 +10,7 @@
 Type hints for the monarch_hyperactor.config Rust bindings.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 
@@ -24,6 +24,11 @@ def reload_config_from_env() -> None:
     ...
 
 def configure(
-    default_transport: ChannelTransport = ChannelTransport.Unix,
-) -> None: ...
+    default_transport: Optional[ChannelTransport] = None,
+) -> None:
+    """
+    Configure typed key-value pairs in the hyperactor global configuration.
+    """
+    ...
+
 def get_configuration() -> Dict[str, Any]: ...
