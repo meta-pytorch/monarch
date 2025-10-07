@@ -191,6 +191,7 @@ pub mod test_utils {
     }
 
     pub async fn ring_db_gpu(qp: &mut RdmaQueuePair) -> Result<(), anyhow::Error> {
+        RealClock.sleep(Duration::from_millis(2)).await;
         unsafe {
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
             let base_ptr = (*dv_qp).sq.buf as *mut u8;

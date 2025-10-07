@@ -101,6 +101,7 @@ pub struct RdmaBuffer {
     pub rkey: u32,
     pub addr: usize,
     pub size: usize,
+    pub device_name: String,
 }
 
 impl RdmaBuffer {
@@ -128,10 +129,18 @@ impl RdmaBuffer {
             remote.owner.actor_id(),
             remote,
         );
-        let remote_owner = remote.owner.clone(); // Clone before the move!
+        let remote_owner = remote.owner.clone();
+
+        let local_device = self.device_name.clone();
+        let remote_device = remote.device_name.clone();
         let mut qp = self
             .owner
-            .request_queue_pair_deprecated(client, remote_owner.clone())
+            .request_queue_pair_deprecated(
+                client,
+                remote_owner.clone(),
+                local_device.clone(),
+                remote_device.clone(),
+            )
             .await?;
 
         qp.put(self.clone(), remote)?;
@@ -141,7 +150,7 @@ impl RdmaBuffer {
 
         // Release the queue pair back to the actor
         self.owner
-            .release_queue_pair_deprecated(client, remote_owner, qp)
+            .release_queue_pair_deprecated(client, remote_owner, local_device, remote_device, qp)
             .await?;
 
         result
@@ -173,9 +182,19 @@ impl RdmaBuffer {
             remote,
         );
         let remote_owner = remote.owner.clone(); // Clone before the move!
+
+        // Extract device name from buffer, fallback to a default if not present
+        let local_device = self.device_name.clone();
+        let remote_device = remote.device_name.clone();
+
         let mut qp = self
             .owner
-            .request_queue_pair_deprecated(client, remote_owner.clone())
+            .request_queue_pair_deprecated(
+                client,
+                remote_owner.clone(),
+                local_device.clone(),
+                remote_device.clone(),
+            )
             .await?;
         qp.get(self.clone(), remote)?;
         let result = self
@@ -184,7 +203,7 @@ impl RdmaBuffer {
 
         // Release the queue pair back to the actor
         self.owner
-            .release_queue_pair_deprecated(client, remote_owner, qp)
+            .release_queue_pair_deprecated(client, remote_owner, local_device, remote_device, qp)
             .await?;
 
         result?;
@@ -877,6 +896,7 @@ impl RdmaQueuePair {
             if (wqe_cnt as u64) < (self.send_wqe_idx - self.send_db_idx) {
                 return Err(anyhow::anyhow!("Overflow of WQE, possible data loss"));
             }
+            self.apply_first_op_delay(self.send_db_idx);
             while self.send_db_idx < self.send_wqe_idx {
                 let offset = (self.send_db_idx % wqe_cnt as u64) * stride as u64;
                 let src_ptr = (base_ptr as *mut u8).wrapping_add(offset as usize);

@@ -325,6 +325,70 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
   return 0; // Success
 }
 
+// Get PCI address from CUDA pointer
+int get_cuda_pci_address_from_ptr(
+    CUdeviceptr cuda_ptr,
+    char* pci_addr_out,
+    size_t pci_addr_size) {
+  if (!pci_addr_out || pci_addr_size < 16) {
+    return RDMAXCEL_INVALID_PARAMS;
+  }
+
+  int device_ordinal = -1;
+  CUresult err = cuPointerGetAttribute(
+      &device_ordinal, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL, cuda_ptr);
+
+  if (err != CUDA_SUCCESS) {
+    return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
+  }
+
+  CUdevice device;
+  err = cuDeviceGet(&device, device_ordinal);
+  if (err != CUDA_SUCCESS) {
+    return RDMAXCEL_CUDA_GET_DEVICE_FAILED;
+  }
+
+  int pci_bus_id = -1;
+  int pci_device_id = -1;
+  int pci_domain_id = -1;
+
+  // Get PCI bus ID
+  err =
+      cuDeviceGetAttribute(&pci_bus_id, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device);
+  if (err != CUDA_SUCCESS) {
+    return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
+  }
+
+  // Get PCI device ID
+  err = cuDeviceGetAttribute(
+      &pci_device_id, CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID, device);
+  if (err != CUDA_SUCCESS) {
+    return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
+  }
+
+  // Get PCI domain ID
+  err = cuDeviceGetAttribute(
+      &pci_domain_id, CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID, device);
+  if (err != CUDA_SUCCESS) {
+    return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
+  }
+
+  // Format PCI address as "domain:bus:device.0"
+  int written = snprintf(
+      pci_addr_out,
+      pci_addr_size,
+      "%04x:%02x:%02x.0",
+      pci_domain_id,
+      pci_bus_id,
+      pci_device_id);
+
+  if (written < 0 || written >= (int)pci_addr_size) {
+    return RDMAXCEL_BUFFER_TOO_SMALL;
+  }
+
+  return 0; // Success
+}
+
 const char* rdmaxcel_error_string(int error_code) {
   switch (error_code) {
     case RDMAXCEL_SUCCESS:
@@ -351,6 +415,12 @@ const char* rdmaxcel_error_string(int error_code) {
       return "Work completion status failed - memory registration unsuccessful";
     case RDMAXCEL_MKEY_REG_LIMIT:
       return "mkey registration failed - segment size > 4 GiB or SGL max exceeded";
+    case RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED:
+      return "Failed to get CUDA device attribute";
+    case RDMAXCEL_CUDA_GET_DEVICE_FAILED:
+      return "Failed to get CUDA device handle";
+    case RDMAXCEL_BUFFER_TOO_SMALL:
+      return "Output buffer too small";
     default:
       return "Unknown RDMAXCEL error code";
   }

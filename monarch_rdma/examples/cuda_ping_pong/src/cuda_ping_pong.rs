@@ -468,7 +468,12 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         }
         let qp = self
             .rdma_manager
-            .request_queue_pair(cx, remote_buffer.owner.clone())
+            .request_queue_pair(
+                cx,
+                remote_buffer.owner.clone(),
+                local_buffer.device_name.clone(),
+                remote_buffer.device_name.clone(),
+            )
             .await?;
 
         unsafe {

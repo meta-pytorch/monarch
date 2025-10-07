@@ -439,6 +439,31 @@ pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevic
     }
 }
 
+/// Creates a mapping from CUDA PCI addresses to optimal RDMA devices
+///
+/// This function discovers all available CUDA devices and determines the best
+/// RDMA device for each one using the device selection algorithm.
+///
+/// # Returns
+///
+/// * `HashMap<String, RdmaDevice>` - Map from CUDA PCI address to optimal RDMA device
+pub fn create_cuda_to_rdma_mapping() -> HashMap<String, RdmaDevice> {
+    let mut mapping = HashMap::new();
+
+    // Try to discover CUDA devices (GPU 0-8 should be sufficient for most systems)
+    for gpu_idx in 0..8 {
+        let gpu_idx_str = gpu_idx.to_string();
+        if let Some(cuda_pci_addr) = get_cuda_pci_address(&gpu_idx_str) {
+            let cuda_hint = format!("cuda:{}", gpu_idx);
+            if let Some(rdma_device) = select_optimal_rdma_device(Some(&cuda_hint)) {
+                mapping.insert(cuda_pci_addr, rdma_device);
+            }
+        }
+    }
+
+    mapping
+}
+
 /// Resolves RDMA device using auto-detection logic when needed
 ///
 /// This function applies auto-detection for default devices, but otherwise  
