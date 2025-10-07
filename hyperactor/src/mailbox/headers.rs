@@ -56,6 +56,6 @@ pub fn log_message_latency_if_sampling(headers: &Attrs, actor_id: String) {
         return;
     };
     let now = RealClock.system_time_now();
-    let latency = now.duration_since(*send_timestamp).unwrap();
+    let latency = now.duration_since(*send_timestamp).unwrap_or_default();
     MESSAGE_LATENCY_MICROS.record(latency.as_micros() as f64, metric_pairs);
 }
