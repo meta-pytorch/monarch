@@ -624,14 +624,13 @@ impl<A: Actor> ActorHandle<A> {
     /// are always queued in process, and do not require serialization.
     pub fn send<M: Message>(
         &self,
-        // TODO(pzhang): use this parameter to generate sequence number.
-        _cx: &impl context::Actor,
+        cx: &impl context::Actor,
         message: M,
     ) -> Result<(), MailboxSenderError>
     where
         A: Handler<M>,
     {
-        self.ports.get().send(message)
+        self.ports.get().send(cx, message)
     }
 
     /// Return a port for the provided message type handled by the actor.

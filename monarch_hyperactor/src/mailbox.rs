@@ -249,11 +249,12 @@ pub(super) struct PythonPortHandle {
 
 #[pymethods]
 impl PythonPortHandle {
-    // TODO(pzhang) Use instance after its required by PortHandle.
-    fn send(&self, _instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+    fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
+        instance_dispatch!(instance, |cx_instance| {
+            self.inner
+                .send(cx_instance, message)
+                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        });
         Ok(())
     }
 

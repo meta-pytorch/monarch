@@ -389,9 +389,9 @@ impl Proc {
             .map_err(|existing| anyhow::anyhow!("coordinator port is already set to {existing}"))
     }
 
-    fn handle_supervision_event(&self, event: ActorSupervisionEvent) {
+    fn handle_supervision_event(&self, cx: &impl context::Actor, event: ActorSupervisionEvent) {
         let result = match self.state().supervision_coordinator_port.get() {
-            Some(port) => port.send(event).map_err(anyhow::Error::from),
+            Some(port) => port.send(cx, event).map_err(anyhow::Error::from),
             None => Err(anyhow::anyhow!(
                 "coordinator port is not set for proc {}",
                 self.proc_id()
@@ -1044,7 +1044,9 @@ impl<A: Actor> Instance<A> {
         let clock = self.proc.state().clock.clone();
         tokio::spawn(async move {
             clock.non_advancing_sleep(delay).await;
-            if let Err(e) = port.send(message) {
+            // There is only one message from this context, so there is no need
+            // to worry out-of-order delivery.
+            if let Err(e) = port.anon_send(message) {
                 // TODO: this is a fire-n-forget thread. We need to
                 // handle errors in a better way.
                 tracing::info!("{}: error sending delayed message: {}", self_id, e);
@@ -1113,7 +1115,7 @@ impl<A: Actor> Instance<A> {
         if let Some(parent) = self.cell.maybe_unlink_parent() {
             if let Some(event) = event {
                 // Parent exists, failure should be propagated to the parent.
-                parent.send_supervision_event_or_crash(event);
+                parent.send_supervision_event_or_crash(&self, event);
             }
             // TODO: we should get rid of this signal, and use *only* supervision events for
             // the purpose of conveying lifecycle changes
@@ -1132,7 +1134,7 @@ impl<A: Actor> Instance<A> {
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
             if let Some(event) = event {
-                self.proc.handle_supervision_event(event);
+                self.proc.handle_supervision_event(&self, event);
             }
         }
         self.change_status(actor_status);
@@ -1667,7 +1669,9 @@ impl InstanceCell {
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
         if let Some((signal_port, _)) = &self.inner.actor_loop {
-            signal_port.send(signal).map_err(ActorError::from)
+            // The owner of InstanceCell would not use PortRef to send signal.
+            // So we do not need to worry about out-of-order delivery here.
+            signal_port.anon_send(signal).map_err(ActorError::from)
         } else {
             tracing::warn!(
                 "{}: attempted to send signal {} to detached actor",
@@ -1686,10 +1690,14 @@ impl InstanceCell {
     /// Note that "let it crash" is the default behavior when a supervision event
     /// cannot be delivered upstream. It is the upstream's responsibility to
     /// detect and handle crashes.
-    pub fn send_supervision_event_or_crash(&self, event: ActorSupervisionEvent) {
+    pub fn send_supervision_event_or_crash(
+        &self,
+        cx: &impl context::Actor,
+        event: ActorSupervisionEvent,
+    ) {
         match &self.inner.actor_loop {
             Some((_, supervision_port)) => {
-                if let Err(err) = supervision_port.send(event) {
+                if let Err(err) = supervision_port.send(cx, event) {
                     tracing::error!(
                         "{}: failed to send supervision event to actor: {:?}. Crash the process.",
                         self.actor_id(),
@@ -2662,7 +2670,7 @@ mod tests {
         let (tx, rx) = client.open_once_port();
         handle.send(&client, tx).unwrap();
         let usize_handle = rx.recv().await.unwrap();
-        usize_handle.send(123).unwrap();
+        usize_handle.send(&client, 123).unwrap();
 
         handle.drain_and_stop().unwrap();
         handle.await;
