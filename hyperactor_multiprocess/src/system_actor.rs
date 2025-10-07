@@ -2242,8 +2242,7 @@ mod tests {
 
         // Build a supervisor.
         let supervisor = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = supervisor.open_port::<ProcSupervisionMessage>();
-        sup_tx.bind_to(ProcSupervisionMessage::port());
+        let (_sup_tx, _sup_rx) = supervisor.bind_actor_port::<ProcSupervisionMessage>();
         let sup_ref = ActorRef::<ProcSupervisor>::attest(supervisor.self_id().clone());
 
         // Construct a system sender.

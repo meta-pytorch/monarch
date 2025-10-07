@@ -22,7 +22,6 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
@@ -188,9 +187,8 @@ pub fn global_root_client() -> &'static Instance<()> {
         // The hook logs each undeliverable, along with whether a sink
         // was present at the time of receipt, which helps diagnose
         // lost or misrouted events.
-        let (undeliverable_tx, undeliverable_rx) =
-            client.open_port::<Undeliverable<MessageEnvelope>>();
-        undeliverable_tx.bind_to(Undeliverable::<MessageEnvelope>::port());
+        let (_undeliverable_tx, undeliverable_rx) =
+            client.bind_actor_port::<Undeliverable<MessageEnvelope>>();
         hyperactor::mailbox::supervise_undeliverable_messages_with(
             undeliverable_rx,
             crate::proc_mesh::get_global_supervision_sink,
@@ -346,9 +344,8 @@ impl ProcMesh {
         // `global_root_client()`.
         let (client, _handle) = client_proc.instance("client")?;
         // Bind an undeliverable message port in the client.
-        let (undeliverable_messages, client_undeliverable_receiver) =
-            client.open_port::<Undeliverable<MessageEnvelope>>();
-        undeliverable_messages.bind_to(Undeliverable::<MessageEnvelope>::port());
+        let (_undeliverable_messages, client_undeliverable_receiver) =
+            client.bind_actor_port::<Undeliverable<MessageEnvelope>>();
         hyperactor::mailbox::supervise_undeliverable_messages(
             supervision_port.clone(),
             client_undeliverable_receiver,

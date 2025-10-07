@@ -22,7 +22,6 @@ use serde::Serialize;
 
 use crate::Mailbox;
 use crate::channel::ChannelAddr;
-use crate::data::Named;
 use crate::id;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::MailboxSender;
@@ -261,9 +260,8 @@ impl SimClock {
         static SIMCLOCK_MAILBOX: OnceLock<Mailbox> = OnceLock::new();
         SIMCLOCK_MAILBOX.get_or_init(|| {
             let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
-            let (undeliverable_messages, mut rx) =
-                mailbox.open_port::<Undeliverable<MessageEnvelope>>();
-            undeliverable_messages.bind_to(Undeliverable::<MessageEnvelope>::port());
+            let (_undeliverable_messages, mut rx) =
+                mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
             tokio::spawn(async move {
                 while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
                     envelope.set_error(DeliveryError::BrokenLink(

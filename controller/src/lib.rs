@@ -634,7 +634,6 @@ mod tests {
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
-    use hyperactor::data::Named;
     use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::DialMailboxRouter;
@@ -1129,8 +1128,7 @@ mod tests {
 
         // Build a supervisor.
         let sup_mail = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = sup_mail.open_port::<ProcSupervisionMessage>();
-        sup_tx.bind_to(ProcSupervisionMessage::port());
+        let (_sup_tx, _sup_rx) = sup_mail.bind_actor_port::<ProcSupervisionMessage>();
         let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.self_id().clone());
 
         // Construct a system sender.
@@ -1360,8 +1358,7 @@ mod tests {
 
         // Build a supervisor.
         let sup_mail = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = sup_mail.open_port::<ProcSupervisionMessage>();
-        sup_tx.bind_to(ProcSupervisionMessage::port());
+        let (_sup_tx, _sup_rx) = sup_mail.bind_actor_port::<ProcSupervisionMessage>();
         let sup_ref = ActorRef::<ProcSupervisor>::attest(sup_mail.self_id().clone());
 
         // Construct a system sender.
@@ -1665,9 +1662,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (client_supervision_tx, mut client_supervision_rx) =
-            client_mailbox.open_port::<ClientMessage>();
-        client_supervision_tx.bind_to(ClientMessage::port());
+        let (_client_supervision_tx, mut client_supervision_rx) =
+            client_mailbox.bind_actor_port::<ClientMessage>();
 
         // mock a proc actor that doesn't update supervision state
         let (
@@ -1726,9 +1722,8 @@ mod tests {
         // Client actor.
         let mut system = System::new(server_handle.local_addr().clone());
         let client_mailbox = system.attach().await.unwrap();
-        let (client_supervision_tx, mut client_supervision_rx) =
-            client_mailbox.open_port::<ClientMessage>();
-        client_supervision_tx.bind_to(ClientMessage::port());
+        let (_client_supervision_tx, mut client_supervision_rx) =
+            client_mailbox.bind_actor_port::<ClientMessage>();
 
         // Bootstrap the controller
         let controller_id = id!(controller[0].root);
@@ -1865,9 +1860,8 @@ mod tests {
         // Client actor.
         let mut system = System::new(server_handle.local_addr().clone());
         let client_mailbox = system.attach().await.unwrap();
-        let (client_supervision_tx, mut client_supervision_rx) =
+        let (_client_supervision_tx, mut client_supervision_rx) =
             client_mailbox.open_port::<ClientMessage>();
-        client_supervision_tx.bind_to(ClientMessage::port());
 
         // Bootstrap the controller
         let controller_id = id!(controller[0].root);

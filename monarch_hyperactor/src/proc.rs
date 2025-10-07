@@ -25,7 +25,6 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::channel;
@@ -453,11 +452,9 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
     fn new_with_instance_and_clock(instance: Instance<()>, clock: ClockKind) -> Result<Self> {
         // TEMPORARY: remove after using fixed message ports.
-        let (message_port, message_receiver) = instance.open_port::<M>();
-        message_port.bind_to(M::port());
+        let (_message_port, message_receiver) = instance.bind_actor_port::<M>();
 
-        let (signal_port, signal_receiver) = instance.open_port::<Signal>();
-        signal_port.bind_to(<Signal as Named>::port());
+        let (signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
 
         let (controller_error_sender, controller_error_receiver) = watch::channel("".to_string());
         let actor_id = instance.self_id().clone();
