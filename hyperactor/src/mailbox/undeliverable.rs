@@ -17,6 +17,7 @@ use crate::ActorId;
 use crate::Message;
 use crate::Named;
 use crate::PortId;
+use crate::Proc;
 use crate::actor::ActorStatus;
 use crate::id;
 use crate::mailbox::DeliveryError;
@@ -94,7 +95,7 @@ pub(crate) fn return_undeliverable(
     envelope: MessageEnvelope,
 ) {
     let envelope_copy = envelope.clone();
-    if (return_handle.send(Undeliverable(envelope))).is_err() {
+    if (return_handle.anon_send(Undeliverable(envelope))).is_err() {
         UndeliverableMailboxSender.post(envelope_copy, /*unsued*/ return_handle)
     }
 }
@@ -157,6 +158,9 @@ pub fn supervise_undeliverable_messages_with<R, F>(
     F: Fn(&MessageEnvelope) + Send + Sync + 'static,
 {
     crate::init::get_runtime().spawn(async move {
+        // Create a local client for this task.
+        let proc = Proc::local();
+        let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
         while let Ok(Undeliverable(mut env)) = rx.recv().await {
             // Let caller log/trace before we mutate.
             on_undeliverable(&env);
@@ -173,12 +177,15 @@ pub fn supervise_undeliverable_messages_with<R, F>(
                     let actor_id = env.dest().actor_id().clone();
                     let headers = env.headers().clone();
 
-                    if let Err(e) = sink.send(ActorSupervisionEvent::new(
-                        actor_id,
-                        ActorStatus::Failed(format!("message not delivered: {}", env)),
-                        Some(headers),
-                        None,
-                    )) {
+                    if let Err(e) = sink.send(
+                        &client,
+                        ActorSupervisionEvent::new(
+                            actor_id,
+                            ActorStatus::Failed(format!("message not delivered: {}", env)),
+                            Some(headers),
+                            None,
+                        ),
+                    ) {
                         tracing::warn!(
                             %e,
                             actor=%env.dest().actor_id(),

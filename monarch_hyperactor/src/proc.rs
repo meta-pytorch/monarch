@@ -680,7 +680,7 @@ async fn check_actor_supervision_state(
             // TODO: should allow for multiple attempts
             tracing::error!("system actor is not alive, aborting!");
             // Send a signal to the client to abort.
-            signal_port.send(Signal::Stop).unwrap();
+            signal_port.send(&instance, Signal::Stop).unwrap();
         }
     }
     Ok(())

@@ -1160,7 +1160,7 @@ impl StreamMessageHandler for StreamActor {
 
     async fn borrow_create(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         borrow: u64,
         tensor: Ref,
         first_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
@@ -1189,7 +1189,7 @@ impl StreamMessageHandler for StreamActor {
         };
 
         let event = self.cuda_stream().map(|stream| stream.record_event(None));
-        first_use_sender.send((event, result)).map_err(|err| {
+        first_use_sender.send(cx, (event, result)).map_err(|err| {
             anyhow!(
                 "failed sending first use event for borrow {:?}: {:?}",
                 borrow,
@@ -1246,7 +1246,7 @@ impl StreamMessageHandler for StreamActor {
 
     async fn borrow_last_use(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         borrow: u64,
         result: Ref,
         last_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
@@ -1270,7 +1270,7 @@ impl StreamMessageHandler for StreamActor {
             _ => bail!("invalid rvalue type for borrow_last_use"),
         };
 
-        last_use_sender.send((event, tensor)).map_err(|err| {
+        last_use_sender.send(cx, (event, tensor)).map_err(|err| {
             anyhow!(
                 "failed sending last use event for borrow {:?}: {:?}",
                 borrow,
@@ -1694,7 +1694,7 @@ impl StreamMessageHandler for StreamActor {
 
         // Actually send the value.
         if let Some(pipe) = pipe {
-            pipe.send(PipeMessage::SendValue(value))?;
+            pipe.send(cx, PipeMessage::SendValue(value))?;
         } else {
             let result = match value {
                 Ok(value) => Ok(Serialized::serialize(&value).map_err(anyhow::Error::from)?),
@@ -1762,7 +1762,7 @@ impl StreamMessageHandler for StreamActor {
 
         self.try_define(cx, seq, results, &vec![], async |self| {
             let (tx, rx) = cx.open_once_port();
-            pipe.send(PipeMessage::RecvValue(tx))
+            pipe.send(cx, PipeMessage::RecvValue(tx))
                 .map_err(anyhow::Error::from)
                 .map_err(CallFunctionError::from)?;
             let value = rx.recv().await.map_err(anyhow::Error::from)?;
