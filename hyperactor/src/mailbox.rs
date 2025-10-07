@@ -121,6 +121,8 @@ use crate::context;
 use crate::data::Serialized;
 use crate::id;
 use crate::metrics;
+use crate::proc::SEQ_INFO;
+use crate::proc::SeqInfo;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
@@ -1575,7 +1577,7 @@ impl<M: Message> PortHandle<M> {
         }
     }
 
-    fn location(&self) -> PortLocation {
+    pub(crate) fn location(&self) -> PortLocation {
         match self.bound.get() {
             Some(port_id) => PortLocation::Bound(port_id.clone()),
             None => PortLocation::new_unbound::<M>(self.mailbox.actor_id().clone()),
@@ -1583,12 +1585,27 @@ impl<M: Message> PortHandle<M> {
     }
 
     /// Send a message to this port.
-    pub fn send(&self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+    pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        // TODO(pzhang) Use cx to add SEQ_INFO header.
-
+        // Message sent from handle is delivered immediately. It could race with
+        // messages from refs. So we need to assign seq if the handle is bound.
+        if let Some(bound_port) = self.bound.get()
+            && bound_port.is_actor_port()
+        {
+            let sequencer = cx.instance().sequencer();
+            let seq = sequencer.assign_seq(self.mailbox.actor_id());
+            let seq_info = SeqInfo {
+                session_id: sequencer.session_id(),
+                seq,
+            };
+            headers.set(SEQ_INFO, seq_info);
+        }
+        // Encountering error means the port is closed. So we do not need to
+        // rollback the seq, because no message can be delivered to it, and
+        // subsequently do not need to worry about out-of-sequence for messages
+        // after this seq.
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
@@ -1602,7 +1619,6 @@ impl<M: Message> PortHandle<M> {
     pub fn anon_send(&self, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),

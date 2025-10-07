@@ -54,6 +54,7 @@ use crate::attrs::Attrs;
 use crate::channel::ChannelAddr;
 use crate::context;
 use crate::context::MailboxExt;
+use crate::data::ACTOR_PORT_BIT;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
 use crate::mailbox::MailboxSenderError;
@@ -62,6 +63,8 @@ use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
+use crate::proc::SEQ_INFO;
+use crate::proc::SeqInfo;
 
 pub mod lex;
 pub mod name;
@@ -877,13 +880,15 @@ impl PortId {
         self.1
     }
 
+    pub(crate) fn is_actor_port(&self) -> bool {
+        self.1 & ACTOR_PORT_BIT != 0
+    }
+
     /// Send a serialized message to this port, provided a sending capability,
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
     pub fn send(&self, cx: &impl context::Actor, serialized: Serialized) {
-        let mut headers = Attrs::new();
-        crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized);
+        self.send_with_headers(cx, serialized, Attrs::new());
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -896,6 +901,17 @@ impl PortId {
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
+        if self.is_actor_port() {
+            // This method is infallible so is okay to assign the sequence number
+            // without worrying about rollback.
+            let sequencer = cx.instance().sequencer();
+            let seq = sequencer.assign_seq(self.actor_id());
+            let seq_info = SeqInfo {
+                session_id: sequencer.session_id(),
+                seq,
+            };
+            headers.set(SEQ_INFO, seq_info);
+        }
         cx.post(self.clone(), headers, serialized);
     }
 
@@ -925,8 +941,8 @@ impl FromStr for PortId {
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let PortId(actor_id, port) = self;
-        if port & (1 << 63) != 0 {
-            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !(1 << 63)));
+        if port & ACTOR_PORT_BIT != 0 {
+            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !ACTOR_PORT_BIT));
             let typename = type_info.map_or("unknown", TypeInfo::typename);
             write!(f, "{}[{}<{}>]", actor_id, port, typename)
         } else {
@@ -1036,14 +1052,8 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// Send a serialized message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    pub fn send_serialized(
-        &self,
-        cx: &impl context::Actor,
-        mut headers: Attrs,
-        message: Serialized,
-    ) {
-        crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.port_id.clone(), headers, message);
+    pub fn send_serialized(&self, cx: &impl context::Actor, headers: Attrs, message: Serialized) {
+        self.port_id.send_with_headers(cx, message, headers);
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
@@ -1350,8 +1360,13 @@ impl<'a, A: Referable> From<&'a GangRef<A>> for &'a GangId {
 mod tests {
     use rand::seq::SliceRandom;
     use rand::thread_rng;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
 
     use super::*;
+    use crate::Proc;
+    use crate::context::Mailbox as _;
+    use crate::mailbox::PortLocation;
 
     #[test]
     fn test_reference_parse() {
@@ -1511,5 +1526,106 @@ mod tests {
             port_id.to_string(),
             "test[234].testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
         );
+    }
+
+    #[tokio::test]
+    async fn test_sequencing_from_port_handle_ref_and_id() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO);
+            tx.send(seq_info.cloned()).unwrap();
+            Ok(())
+        });
+        port_handle.send(&client, ()).unwrap();
+        // No seq will be assigned for unbound port handle.
+        assert!(rx.try_recv().unwrap().is_none());
+
+        port_handle.bind_actor_port();
+        let port_id = match port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        assert!(port_id.is_actor_port());
+        let port_ref = PortRef::attest(port_id.clone());
+
+        port_handle.send(&client, ()).unwrap();
+        let SeqInfo {
+            session_id,
+            mut seq,
+        } = rx.try_recv().unwrap().unwrap();
+        assert_eq!(session_id, client.sequencer().session_id());
+        assert_eq!(seq, 1);
+
+        fn assert_seq_info(
+            rx: &mut mpsc::UnboundedReceiver<Option<SeqInfo>>,
+            session_id: Uuid,
+            seq: &mut u64,
+        ) {
+            *seq += 1;
+            let SeqInfo {
+                session_id: rcved_session_id,
+                seq: rcved_seq,
+            } = rx.try_recv().unwrap().unwrap();
+            assert_eq!(rcved_session_id, session_id);
+            assert_eq!(rcved_seq, *seq);
+        }
+
+        // Interleave sends from port_handle, port_ref, and port_id
+        for _ in 0..10 {
+            // From port_handle
+            port_handle.send(&client, ()).unwrap();
+            assert_seq_info(&mut rx, session_id, &mut seq);
+
+            // From port_ref
+            for _ in 0..2 {
+                port_ref.send(&client, ()).unwrap();
+                assert_seq_info(&mut rx, session_id, &mut seq);
+            }
+
+            // From port_id
+            for _ in 0..3 {
+                port_id.send(&client, Serialized::serialize(&()).unwrap());
+                assert_seq_info(&mut rx, session_id, &mut seq);
+            }
+        }
+
+        assert_eq!(rx.try_recv().unwrap_err(), mpsc::error::TryRecvError::Empty);
+    }
+
+    #[tokio::test]
+    async fn test_sequencing_from_port_handle_bound_to_allocated_port() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO);
+            tx.send(seq_info.cloned()).unwrap();
+            Ok(())
+        });
+        port_handle.send(&client, ()).unwrap();
+        // No seq will be assigned for unbound port handle.
+        assert!(rx.try_recv().unwrap().is_none());
+
+        // Bind to the allocated port.
+        port_handle.bind();
+        let port_id = match port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        // Since the port is not an actor port, no seq will be assigned no
+        // matter whether the message is sent from handle, ref or port id.
+        assert!(!port_id.is_actor_port());
+
+        port_handle.send(&client, ()).unwrap();
+        assert!(rx.try_recv().unwrap().is_none());
+
+        let port_ref = PortRef::attest(port_id.clone());
+        port_ref.send(&client, ()).unwrap();
+        assert!(rx.try_recv().unwrap().is_none());
+
+        port_id.send(&client, Serialized::serialize(&()).unwrap());
+        assert!(rx.try_recv().unwrap().is_none());
     }
 }

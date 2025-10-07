@@ -1846,7 +1846,7 @@ pub struct Ports<A: Actor> {
 }
 
 /// A message's sequencer number infomation.
-#[derive(Serialize, Deserialize, Clone, Named, AttrValue)]
+#[derive(Debug, Serialize, Deserialize, Clone, Named, AttrValue, PartialEq)]
 pub struct SeqInfo {
     /// Message's session ID
     pub session_id: Uuid,

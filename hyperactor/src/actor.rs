@@ -716,9 +716,12 @@ pub trait RemoteHandles<M: RemoteMessage>: Referable {}
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use timed_test::async_timed_test;
+    use tokio::sync::mpsc;
     use tokio::time::timeout;
 
     use super::*;
@@ -728,6 +731,13 @@ mod tests {
     use crate::PortRef;
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
+    use crate::config;
+    use crate::id;
+    use crate::mailbox::BoxedMailboxSender;
+    use crate::mailbox::MailboxSender;
+    use crate::mailbox::monitored_return_handle;
+    use crate::proc::SEQ_INFO;
+    use crate::proc::SeqInfo;
     use crate::test_utils::pingpong::PingPongActor;
     use crate::test_utils::pingpong::PingPongActorParams;
     use crate::test_utils::pingpong::PingPongMessage;
@@ -1071,5 +1081,211 @@ mod tests {
         let handle = cell.downcast_handle::<NothingActor>().unwrap();
         handle.drain_and_stop().unwrap();
         handle.await;
+    }
+
+    // Returning the sequence number assigned to the message.
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [String])]
+    struct GetSeqActor(PortRef<(String, SeqInfo)>);
+
+    #[async_trait]
+    impl Actor for GetSeqActor {
+        type Params = PortRef<(String, SeqInfo)>;
+
+        async fn new(params: PortRef<(String, SeqInfo)>) -> Result<Self, anyhow::Error> {
+            Ok(Self(params))
+        }
+    }
+
+    #[async_trait]
+    impl Handler<String> for GetSeqActor {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            message: String,
+        ) -> Result<(), anyhow::Error> {
+            let Self(port) = self;
+            let seq_info = cx.headers().get(SEQ_INFO).unwrap();
+            port.send(cx, (message, seq_info.clone()))?;
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_handle_basic() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let actor_handle = proc
+            .spawn::<GetSeqActor>("get_seq", tx.bind())
+            .await
+            .unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        let session_id = client.sequencer().session_id();
+        let mut expected_seq = 0;
+        // Interleave messages sent through the handle and the reference.
+        for _ in 0..10 {
+            actor_handle.send(&client, "".to_string()).unwrap();
+            expected_seq += 1;
+            assert_eq!(
+                rx.recv().await.unwrap().1,
+                SeqInfo {
+                    session_id,
+                    seq: expected_seq,
+                }
+            );
+
+            for _ in 0..2 {
+                actor_ref.port().send(&client, "".to_string()).unwrap();
+                expected_seq += 1;
+                assert_eq!(
+                    rx.recv().await.unwrap().1,
+                    SeqInfo {
+                        session_id,
+                        seq: expected_seq,
+                    }
+                );
+            }
+        }
+    }
+
+    // Adding a delay before sending the destination proc. Useful for tests
+    // requiring latency injection.
+    #[derive(Debug)]
+    struct DelayedMailboxSender {
+        relay_tx: mpsc::UnboundedSender<MessageEnvelope>,
+    }
+
+    impl DelayedMailboxSender {
+        // Use a random latency between 0 and 1 second if the plan is empty.
+        fn boxed(dest_proc: Proc, latency_plan: HashMap<u64, Duration>) -> BoxedMailboxSender {
+            let (relay_tx, mut relay_rx) = mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                let mut count = 0;
+                while let Some(envelope) = relay_rx.recv().await {
+                    count += 1;
+
+                    let latency = if latency_plan.is_empty() {
+                        Duration::from_millis(1000)
+                    } else {
+                        latency_plan.get(&count).unwrap().clone()
+                    };
+
+                    let dest_proc_clone = dest_proc.clone();
+                    tokio::spawn(async move {
+                        // Need Clock::sleep is an async function.
+                        #[allow(clippy::disallowed_methods)]
+                        tokio::time::sleep(latency).await;
+                        dest_proc_clone.post(envelope, monitored_return_handle());
+                    });
+                }
+            });
+
+            BoxedMailboxSender::new(Self { relay_tx })
+        }
+    }
+
+    impl MailboxSender for DelayedMailboxSender {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.relay_tx.send(envelope).unwrap();
+        }
+    }
+
+    async fn assert_out_of_order_delivery(
+        expected: Vec<(String, u64)>,
+        latency_plan: HashMap<u64, Duration>,
+    ) {
+        let local_proc: Proc = Proc::local();
+        let (client, _) = local_proc.instance("local").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let handle = local_proc
+            .spawn::<GetSeqActor>("get_seq", tx.bind())
+            .await
+            .unwrap();
+
+        let actor_ref: ActorRef<GetSeqActor> = handle.bind();
+
+        let remote_proc = Proc::new(
+            id!(remote[0]),
+            DelayedMailboxSender::boxed(local_proc.clone(), latency_plan),
+        );
+        let (remote_client, _) = remote_proc.instance("remote").unwrap();
+        // Send the messages out in the order of their expected sequence numbers.
+        let mut messages = expected.clone();
+        messages.sort_by_key(|v| v.1);
+        for (message, _seq) in messages {
+            actor_ref.send(&remote_client, message).unwrap();
+        }
+        let session_id = remote_client.sequencer().session_id();
+        for expect in expected {
+            let expected = (
+                expect.0,
+                SeqInfo {
+                    session_id,
+                    seq: expect.1,
+                },
+            );
+            assert_eq!(rx.recv().await.unwrap(), expected);
+        }
+
+        handle.drain_and_stop().unwrap();
+        handle.await;
+    }
+
+    // Send several messages, use DelayedMailboxSender and the latency plan to
+    // ensure these messages will arrive at handler's workq in a determinstic
+    // out-of-order way. Then verify the actor handler will still process these
+    // messages based on their sending order if reordering buffer is enabled.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_ref_out_of_order_deterministic() {
+        let config = config::global::lock();
+
+        let latency_plan = maplit::hashmap! {
+            1 => Duration::from_millis(1000),
+            2 => Duration::from_millis(0),
+        };
+
+        // By disabling the actor side re-ordering buffer, the mssages will
+        // be processed in the same order as they sent out.
+        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, false);
+        assert_out_of_order_delivery(
+            vec![("second".to_string(), 2), ("first".to_string(), 1)],
+            latency_plan.clone(),
+        )
+        .await;
+
+        // By enabling the actor side re-ordering buffer, the mssages will
+        // be re-ordered before being processed.
+        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        assert_out_of_order_delivery(
+            vec![("first".to_string(), 1), ("second".to_string(), 2)],
+            latency_plan.clone(),
+        )
+        .await;
+    }
+
+    // Send a large nubmer of messages, use DelayedMailboxSender to ensure these
+    // messages will arrive at handler's workq in a random order. Then verify the
+    // actor handler will still process these messages based on their sending
+    // order with reordering buffer enabled.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_ref_out_of_order_random() {
+        let config = config::global::lock();
+
+        // By enabling the actor side re-ordering buffer, the mssages will
+        // be re-ordered before being processed.
+        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        let expected = (1..10000)
+            .map(|i| (format!("msg{i}"), i))
+            .collect::<Vec<_>>();
+
+        assert_out_of_order_delivery(expected, HashMap::new()).await;
     }
 }
