@@ -20,17 +20,22 @@ use hyperactor::declare_attrs;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
+use hyperactor::proc::SEQ_INFO;
+use hyperactor::proc::SeqInfo;
 use hyperactor::reference::ActorId;
 use ndslice::Extent;
 use ndslice::Point;
+use ndslice::Region;
 use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::selection::Selection;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::reference::ActorMeshId;
+use crate::v1;
 
 /// A union of slices that can be used to represent arbitrary subset of
 /// ranks in a gang. It is represented by a Slice together with a Selection.
@@ -230,6 +235,72 @@ pub(crate) struct ForwardMessage {
     pub(crate) message: CastMessageEnvelope,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(super) struct CastMessageHeaders {
+    /// The client who sent this message.
+    pub(super) sender: ActorId,
+    /// The client-assigned session id of this message.
+    pub(super) session_id: Uuid,
+    /// The client-assigned sequence numbers of this message.
+    pub(super) seqs: v1::ValueMesh<u64>,
+}
+
+/// The is used to start casting a message to a group of actors.
+#[derive(Serialize, Deserialize, Debug, Clone, Named)]
+pub(crate) struct CastMessageV1 {
+    /// The information used to set the headers of the messages sent to the
+    /// destination actors. These information are not used by the comm actors
+    /// for routing.
+    pub(super) cast_headers: CastMessageHeaders,
+    /// The destination mesh's region.
+    pub(super) dest_region: Region,
+    /// The destination port of the message. It could match multiple actors with
+    /// rank wildcard.
+    pub(super) dest_port: DestinationPort,
+    /// The serialized message.
+    pub(super) data: ErasedUnbound,
+}
+
+impl CastMessageV1 {
+    /// Create a new CastMessageEnvelope.
+    pub(crate) fn new<A, M>(
+        sender: ActorId,
+        dest_mesh: &v1::Name,
+        dest_region: Region,
+        message: M,
+        session_id: Uuid,
+        seqs: v1::ValueMesh<u64>,
+    ) -> Result<Self, anyhow::Error>
+    where
+        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
+    {
+        let data = ErasedUnbound::try_from_message(message)?;
+        let cast_headers = CastMessageHeaders {
+            sender,
+            session_id,
+            seqs,
+        };
+        Ok(Self {
+            cast_headers,
+            dest_region,
+            dest_port: DestinationPort::new::<A, M>(dest_mesh.to_string()),
+            data,
+        })
+    }
+}
+
+/// Forward a message to procs of next hops. This is used by comm actor to
+/// forward a message to other comm actors following the selection topology.
+/// This message is not visible to the clients.
+#[derive(Serialize, Deserialize, Debug, Clone, Named)]
+pub(super) struct ForwardMessageV1 {
+    /// The destination of the message.
+    pub(super) dests: Vec<RoutingFrame>,
+    /// The message to distribute.
+    pub(super) message: CastMessageV1,
+}
+
 declare_attrs! {
     /// Used inside headers to store the originating sender of a cast.
     pub attr CAST_ORIGINATING_SENDER: ActorId;
@@ -238,9 +309,22 @@ declare_attrs! {
     pub attr CAST_POINT: Point;
 }
 
-pub fn set_cast_info_on_headers(headers: &mut Attrs, cast_point: Point, sender: ActorId) {
+pub(crate) fn set_cast_info_on_headers(
+    headers: &mut Attrs,
+    cast_point: Point,
+    sender: ActorId,
+    seq_info: Option<SeqInfo>,
+) {
     headers.set(CAST_POINT, cast_point);
     headers.set(CAST_ORIGINATING_SENDER, sender);
+    match seq_info {
+        Some(i) => {
+            headers.set(SEQ_INFO, i);
+        }
+        None => {
+            headers.remove(SEQ_INFO);
+        }
+    }
 }
 
 pub trait CastInfo {

@@ -1515,7 +1515,7 @@ pub trait MapIntoExt: Ranked {
         M::build_dense_unchecked(region, values)
     }
 
-    fn try_map_into<M, U, E>(self, f: impl Fn(&Self::Item) -> Result<U, E>) -> Result<M, E>
+    fn try_map_into<M, U, E>(&self, f: impl Fn(&Self::Item) -> Result<U, E>) -> Result<M, E>
     where
         Self: Sized,
         M: BuildFromRegion<U>,

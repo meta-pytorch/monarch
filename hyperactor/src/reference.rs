@@ -900,8 +900,20 @@ impl PortId {
         serialized: Serialized,
         mut headers: Attrs,
     ) {
+        self.send_with_headers_with_option(cx, serialized, headers, true);
+    }
+
+    /// Similar to [`PortId::send_with_headers`], but allows the caller to
+    /// decide whether to set the sequence info header with this method.
+    pub fn send_with_headers_with_option(
+        &self,
+        cx: &impl context::Actor,
+        serialized: Serialized,
+        mut headers: Attrs,
+        set_seq_info: bool,
+    ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        if self.is_actor_port() {
+        if set_seq_info && self.is_actor_port() {
             // This method is infallible so is okay to assign the sequence number
             // without worrying about rollback.
             let sequencer = cx.instance().sequencer();

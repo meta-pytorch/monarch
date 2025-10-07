@@ -81,9 +81,11 @@ tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+uuid = { version = "1.2", features = ["serde", "v4", "v5", "v6", "v7", "v8"] }
 
 [dev-dependencies]
 bytes = { version = "1.10", features = ["serde"] }
+fastrand = "2.1.1"
 itertools = "0.14.0"
 maplit = "1.0"
 proptest = "1.5"

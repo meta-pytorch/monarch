@@ -1085,7 +1085,7 @@ mod tests {
 
     // Returning the sequence number assigned to the message.
     #[derive(Debug)]
-    #[hyperactor::export(handlers = [String])]
+    #[hyperactor::export(handlers = [String, Callback])]
     struct GetSeqActor(PortRef<(String, SeqInfo)>);
 
     #[async_trait]
@@ -1108,6 +1108,28 @@ mod tests {
             let seq_info = cx.headers().get(SEQ_INFO).unwrap();
             port.send(cx, (message, seq_info.clone()))?;
             Ok(())
+        }
+    }
+
+    // Unlike Handler<String>, where the sender provides the string message
+    // directly, in Hanlder<Callback>, sender needs to provide a port, and
+    // handler will reply that port with its own callback port. Then sender can
+    // send the string message through thsi callback port.
+    #[derive(Clone, Debug, Serialize, Deserialize, Named)]
+    struct Callback(PortRef<PortRef<String>>);
+
+    #[async_trait]
+    impl Handler<Callback> for GetSeqActor {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            message: Callback,
+        ) -> Result<(), anyhow::Error> {
+            let (handle, mut receiver) = cx.open_port::<String>();
+            let callback_ref = handle.bind();
+            message.0.send(cx, callback_ref).unwrap();
+            let msg = receiver.recv().await.unwrap();
+            self.handle(cx, msg).await
         }
     }
 
@@ -1149,6 +1171,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Verify that we can pass port refs between sender and destination actors
+    // back and forward, and send messages through them without being deadlocked.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_handle_callback() {
+        let config = config::global::lock();
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let actor_handle = proc
+            .spawn::<GetSeqActor>("get_seq", tx.bind())
+            .await
+            .unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        let (callback_tx, mut callback_rx) = client.open_port();
+        actor_ref
+            .send(&client, Callback(callback_tx.bind()))
+            .unwrap();
+        let msg_port_ref = callback_rx.recv().await.unwrap();
+        msg_port_ref.send(&client, "finally".to_string()).unwrap();
+
+        let session_id = client.sequencer().session_id();
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("finally".to_string(), SeqInfo { session_id, seq: 1 })
+        );
     }
 
     // Adding a delay before sending the destination proc. Useful for tests
@@ -1254,7 +1307,7 @@ mod tests {
 
         // By disabling the actor side re-ordering buffer, the mssages will
         // be processed in the same order as they sent out.
-        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, false);
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, false);
         assert_out_of_order_delivery(
             vec![("second".to_string(), 2), ("first".to_string(), 1)],
             latency_plan.clone(),
@@ -1263,7 +1316,7 @@ mod tests {
 
         // By enabling the actor side re-ordering buffer, the mssages will
         // be re-ordered before being processed.
-        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         assert_out_of_order_delivery(
             vec![("first".to_string(), 1), ("second".to_string(), 2)],
             latency_plan.clone(),
@@ -1281,7 +1334,7 @@ mod tests {
 
         // By enabling the actor side re-ordering buffer, the mssages will
         // be re-ordered before being processed.
-        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         let expected = (1..10000)
             .map(|i| (format!("msg{i}"), i))
             .collect::<Vec<_>>();

@@ -946,7 +946,7 @@ impl<A: Actor> Instance<A> {
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
         let (work_tx, work_rx) = ordered_channel(
             actor_id.to_string(),
-            config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
+            config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
         );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
