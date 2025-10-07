@@ -215,7 +215,8 @@ impl Alloc for LocalAlloc {
                         create_key,
                         proc_id,
                         mesh_agent: mesh_agent.bind(),
-                        addr,
+                        addr: addr.clone(),
+                        local_addr: addr,
                     });
                     break Some(created);
                 }

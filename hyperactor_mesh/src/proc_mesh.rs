@@ -365,7 +365,7 @@ impl ProcMesh {
 
         // 6. Configure the mesh agents. This transmits the address book to all agents,
         //    so that they can resolve and route traffic to all nodes in the mesh.
-        let address_book: HashMap<_, _> = running
+        let base_book: HashMap<_, _> = running
             .iter()
             .map(
                 |AllocatedProc {
@@ -374,15 +374,46 @@ impl ProcMesh {
             )
             .collect();
 
+        // Here addr != local_addr when the proc is behind a forwarding proxy
+        let local_addrs_by_proxy = running.iter().fold(
+            HashMap::<ChannelAddr, Vec<(ProcId, ChannelAddr)>>::new(),
+            |mut acc,
+             AllocatedProc {
+                 addr,
+                 local_addr,
+                 mesh_agent,
+                 ..
+             }| {
+                if addr != local_addr {
+                    acc.entry(addr.clone())
+                        .or_default()
+                        .push((mesh_agent.actor_id().proc_id().clone(), local_addr.clone()));
+                }
+                acc
+            },
+        );
+
         let (config_handle, mut config_receiver) = client.open_port();
-        for (rank, AllocatedProc { mesh_agent, .. }) in running.iter().enumerate() {
+        for (
+            rank,
+            AllocatedProc {
+                mesh_agent, addr, ..
+            },
+        ) in running.iter().enumerate()
+        {
+            let mut address_book = base_book.clone();
+            // Overwrite addrs with local_addrs for procs that share a forwarding proxy
+            if let Some(local_addrs) = local_addrs_by_proxy.get(addr) {
+                address_book.extend(local_addrs.iter().cloned());
+            }
+
             mesh_agent
                 .configure(
                     &client,
                     rank,
                     router_channel_addr.clone(),
                     Some(supervision_port.bind()),
-                    address_book.clone(),
+                    address_book,
                     config_handle.bind(),
                     false,
                 )
@@ -458,6 +489,7 @@ impl ProcMesh {
                          proc_id,
                          addr,
                          mesh_agent,
+                         ..
                      }| (create_key, proc_id, addr, mesh_agent),
                 )
                 .collect(),

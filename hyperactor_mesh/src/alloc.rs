@@ -134,9 +134,12 @@ pub enum ProcState {
         /// Reference to this proc's mesh agent. In the future, we'll reserve a
         /// 'well known' PID (0) for this purpose.
         mesh_agent: ActorRef<ProcMeshAgent>,
-        /// The address of this proc. The endpoint of this address is
+        /// The address of this proc which may be the true address or the address of a
+        /// forwarding proxy. The endpoint of this address is
         /// the proc's mailbox, which accepts [`hyperactor::mailbox::MessageEnvelope`]s.
         addr: ChannelAddr,
+        /// The true address of this proc to be used for direct peer communication
+        local_addr: ChannelAddr,
     },
     /// A proc was stopped.
     Stopped {
@@ -283,6 +286,7 @@ pub(crate) struct AllocatedProc {
     pub create_key: ShortUuid,
     pub proc_id: ProcId,
     pub addr: ChannelAddr,
+    pub local_addr: ChannelAddr,
     pub mesh_agent: ActorRef<ProcMeshAgent>,
 }
 
@@ -290,8 +294,8 @@ impl fmt::Display for AllocatedProc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "AllocatedProc {{ create_key: {}, proc_id: {}, addr: {}, mesh_agent: {} }}",
-            self.create_key, self.proc_id, self.addr, self.mesh_agent
+            "AllocatedProc {{ create_key: {}, proc_id: {}, addr: {}, local_addr: {}, mesh_agent: {} }}",
+            self.create_key, self.proc_id, self.addr, self.local_addr, self.mesh_agent
         )
     }
 }
@@ -344,6 +348,7 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                     proc_id,
                     mesh_agent,
                     addr,
+                    local_addr,
                 } => {
                     let Some(rank) = created.rank(&create_key) else {
                         tracing::warn!(
@@ -358,6 +363,7 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                         create_key,
                         proc_id: proc_id.clone(),
                         addr: addr.clone(),
+                        local_addr,
                         mesh_agent: mesh_agent.clone(),
                     };
                     if let Some(old_allocated_proc) = running.insert(*rank, allocated_proc.clone())
@@ -744,6 +750,7 @@ pub(crate) mod testing {
                     proc_id,
                     mesh_agent,
                     addr,
+                    ..
                 } => {
                     router.bind(Reference::Proc(proc_id.clone()), addr.clone());
 

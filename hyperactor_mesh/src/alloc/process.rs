@@ -521,7 +521,8 @@ impl Alloc for ProcessAlloc {
                                 create_key: self.created[index].clone(),
                                 proc_id,
                                 mesh_agent,
-                                addr,
+                                addr: addr.clone(),
+                                local_addr: addr,
                             });
                         }
                         Process2AllocatorMessage::Heartbeat => {
