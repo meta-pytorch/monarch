@@ -431,12 +431,12 @@ impl RemoteProcessAllocator {
                             tracing::debug!(name = event.as_ref(), "got event: {:?}", event);
                             let event = match event {
                                 ProcState::Created { .. } => event,
-                                ProcState::Running { create_key, proc_id, mesh_agent, addr } => {
+                                ProcState::Running { create_key, proc_id, mesh_agent, addr, local_addr  } => {
                                     // TODO(meriksen, direct addressing): disable remapping in direct addressing mode
                                     tracing::debug!("remapping mesh_agent {}: addr {} -> {}", mesh_agent, addr, forward_addr);
                                     mesh_agents_by_create_key.insert(create_key.clone(), mesh_agent.clone());
                                     router.bind(mesh_agent.actor_id().proc_id().clone().into(), addr);
-                                    ProcState::Running { create_key, proc_id, mesh_agent, addr: forward_addr.clone() }
+                                    ProcState::Running { create_key, proc_id, mesh_agent, addr: forward_addr.clone(), local_addr }
                                 },
                                 ProcState::Stopped { create_key, reason } => {
                                     match mesh_agents_by_create_key.remove(&create_key) {
@@ -1272,6 +1272,7 @@ mod test {
                     create_key,
                     proc_id,
                     addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
+                    local_addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
                     mesh_agent,
                 })
             });
