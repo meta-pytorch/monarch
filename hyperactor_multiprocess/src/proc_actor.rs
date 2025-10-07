@@ -1414,7 +1414,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let proc_0_client = proc_0.attach("client").unwrap();
+        let (proc_0_client, _) = proc_0.instance("client").unwrap();
         let (proc_0_undeliverable_tx, mut proc_0_undeliverable_rx) = proc_0_client.open_port();
 
         // Bootstrap a second proc 'world[1]', join the system.
@@ -1459,7 +1459,10 @@ mod tests {
             let ttl = 66 + i as u64; // Avoid ttl = 66!
             let (once_handle, _) = proc_0_client.open_once_port::<bool>();
             ping_handle
-                .send(PingPongMessage(ttl, pong_handle.bind(), once_handle.bind()))
+                .send(
+                    &proc_0_client,
+                    PingPongMessage(ttl, pong_handle.bind(), once_handle.bind()),
+                )
                 .unwrap();
         }
 
@@ -1575,7 +1578,10 @@ mod tests {
         let ttl = 10u64; // Avoid ttl = 66!
         let (once_tx, once_rx) = system_client.open_once_port::<bool>();
         ping_handle
-            .send(PingPongMessage(ttl, pong_handle.bind(), once_tx.bind()))
+            .send(
+                &system_client,
+                PingPongMessage(ttl, pong_handle.bind(), once_tx.bind()),
+            )
             .unwrap();
 
         assert!(once_rx.recv().await.unwrap());

@@ -52,6 +52,7 @@ use tracing::Instrument;
 use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
+use crate::instance_dispatch;
 use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
@@ -287,7 +288,7 @@ impl PythonMessage {
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).unwrap();
                 let (send, recv) = cx.open_once_port();
-                broker.send(LocalStateBrokerMessage::Get(id, send))?;
+                broker.send(cx, LocalStateBrokerMessage::Get(id, send))?;
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
                 Python::with_gil(|py| {
@@ -434,11 +435,12 @@ pub(super) struct PythonActorHandle {
 #[pymethods]
 impl PythonActorHandle {
     // TODO: do the pickling in rust
-    // TODO(pzhang) Use instance after its required by PortHandle.
-    fn send(&self, _instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(message.clone())
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    fn send(&self, instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
+        instance_dispatch!(instance, |cx_instance| {
+            self.inner
+                .send(cx_instance, message.clone())
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        });
         Ok(())
     }
 
@@ -676,7 +678,7 @@ impl Actor for PythonActorPanicWatcher {
     }
 
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        this.handle().send(HandlePanic {})?;
+        this.handle().send(this, HandlePanic {})?;
         Ok(())
     }
 }
@@ -692,7 +694,7 @@ impl Handler<HandlePanic> for PythonActorPanicWatcher {
                 // async endpoint executed successfully.
                 // run again
                 let h = cx.deref().handle();
-                h.send(HandlePanic {})?;
+                h.send(cx, HandlePanic {})?;
             }
             Some(Err(err)) => {
                 tracing::error!("caught error in async endpoint {}", err);
