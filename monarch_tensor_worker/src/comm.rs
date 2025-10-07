@@ -574,12 +574,15 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::AllReduce(
-            cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllReduce(
+                cell.clone(),
+                convert_reduce_op(opts.reduce_op)?,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -609,12 +612,15 @@ impl Backend for CommBackend {
         let (tx, rx) = self.instance.open_once_port();
         // This is not implemented in this function because the broadcasts we need
         // to create will change their behavior based on rank.
-        self.comm.send(CommMessage::AllGather(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllGather(
+                output_cell.clone(),
+                input_cell.clone(),
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         let mut input_cells = vec![];
         input_cells.extend(output_cell);
         input_cells.push(input_cell);
@@ -635,12 +641,15 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::AllGatherIntoTensor(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllGatherIntoTensor(
+                output_cell.clone(),
+                input_cell.clone(),
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(
             CommWork::from(vec![output_cell, input_cell], rx).await?,
         ))
@@ -651,7 +660,10 @@ impl Backend for CommBackend {
         let (tx, rx) = self.instance.open_once_port();
         self.comm
             // There's no native barrier op in nccl, so impl via all-reduce.
-            .send(CommMessage::Barrier(Stream::get_current_stream(), tx))?;
+            .send(
+                &self.instance,
+                CommMessage::Barrier(Stream::get_current_stream(), tx),
+            )?;
         Ok(Box::new(CommWork::from(vec![], rx).await?))
     }
 
@@ -667,13 +679,16 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Reduce(
-            input_cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            opts.root_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Reduce(
+                input_cell.clone(),
+                convert_reduce_op(opts.reduce_op)?,
+                opts.root_rank,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(CommWork::from(vec![input_cell], rx).await?))
     }
 
@@ -701,13 +716,16 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::ReduceScatterTensor(
-            output_cell.clone(),
-            input_cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::ReduceScatterTensor(
+                output_cell.clone(),
+                input_cell.clone(),
+                convert_reduce_op(opts.reduce_op)?,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(
             CommWork::from(vec![output_cell, input_cell], rx).await?,
         ))
@@ -730,12 +748,10 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Send(
-            cell.clone(),
-            dst_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Send(cell.clone(), dst_rank, Stream::get_current_stream(), tx),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -756,12 +772,10 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Recv(
-            cell.clone(),
-            src_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Recv(cell.clone(), src_rank, Stream::get_current_stream(), tx),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -825,11 +839,10 @@ impl Backend for CommBackend {
                 tx_send,
             ));
         }
-        self.comm.send(CommMessage::Group(
-            messages,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Group(messages, Stream::get_current_stream(), tx),
+        )?;
         let mut inputs = vec![];
         inputs.extend(output_cells);
         inputs.push(input_cell);
@@ -897,11 +910,10 @@ impl Backend for CommBackend {
                 tx_recv,
             ));
         }
-        self.comm.send(CommMessage::Group(
-            messages,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Group(messages, Stream::get_current_stream(), tx),
+        )?;
         let mut inputs = vec![];
         inputs.push(output_cell);
         inputs.extend(input_cells);
@@ -920,12 +932,15 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Broadcast(
-            cell.clone(),
-            opts.root_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Broadcast(
+                cell.clone(),
+                opts.root_rank,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -944,12 +959,15 @@ impl Backend for CommBackend {
 
         // Call into `NcclCommActor`.
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::AllToAllSingle(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllToAllSingle(
+                output_cell.clone(),
+                input_cell.clone(),
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(
             CommWork::from(vec![output_cell, input_cell], rx).await?,
         ))
@@ -1014,7 +1032,8 @@ impl Backend for CommBackend {
             ));
         }
         let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Group(messages, stream, tx))?;
+        self.comm
+            .send(&self.instance, CommMessage::Group(messages, stream, tx))?;
         let mut all_cells = vec![];
         all_cells.extend(output_cells);
         all_cells.extend(input_cells);
@@ -1755,21 +1774,27 @@ mod tests {
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
         let port0 = client.open_once_port();
-        handle0.send(CommMessage::Send(
-            cell0.clone(),
-            1,
-            Stream::get_current_stream_on_device(device0),
-            port0.0,
-        ))?;
+        handle0.send(
+            &client,
+            CommMessage::Send(
+                cell0.clone(),
+                1,
+                Stream::get_current_stream_on_device(device0),
+                port0.0,
+            ),
+        )?;
 
         let cell1 = TensorCell::new(factory_float_tensor(&[1.0], device1.into()));
         let port1 = client.open_once_port();
-        handle1.send(CommMessage::Recv(
-            cell1.clone(),
-            0,
-            Stream::get_current_stream_on_device(device1),
-            port1.0,
-        ))?;
+        handle1.send(
+            &client,
+            CommMessage::Recv(
+                cell1.clone(),
+                0,
+                Stream::get_current_stream_on_device(device1),
+                port1.0,
+            ),
+        )?;
         let (work0, work1) = tokio::join!(
             CommWork::from(vec![cell0.clone()], port0.1),
             CommWork::from(vec![cell1.clone()], port1.1)
