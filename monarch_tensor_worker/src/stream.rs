@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::future::Future;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -32,7 +33,6 @@ use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::data::Serialized;
 use hyperactor::forward;
-use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
@@ -829,9 +829,10 @@ impl StreamActor {
                         // it to create a new torch group.
                         let ranks = mesh.get_ranks_for_dim_slice(&dims)?;
                         let group_size = ranks.len();
+                        let (child_instance, _) = cx.child()?;
                         let backend = CommBackend::new(
+                            child_instance,
                             comm,
-                            Mailbox::new_detached(cx.self_id().clone()),
                             self.rank,
                             group_size,
                             self.world_size,
