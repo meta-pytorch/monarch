@@ -521,7 +521,7 @@ impl Handler<ForwardMessageV1> for CommActor {
                 &mut headers,
                 cast_point,
                 message.cast_headers.sender.clone(),
-                Some(SeqInfo {
+                Some(SeqInfo::Session {
                     session_id: message.cast_headers.session_id,
                     seq,
                 }),

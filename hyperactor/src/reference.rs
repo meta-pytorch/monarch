@@ -918,7 +918,7 @@ impl PortId {
             // without worrying about rollback.
             let sequencer = cx.instance().sequencer();
             let seq = sequencer.assign_seq(self.actor_id());
-            let seq_info = SeqInfo {
+            let seq_info = SeqInfo::Session {
                 session_id: sequencer.session_id(),
                 seq,
             };
@@ -1563,10 +1563,13 @@ mod tests {
         let port_ref = PortRef::attest(port_id.clone());
 
         port_handle.send(&client, ()).unwrap();
-        let SeqInfo {
+        let SeqInfo::Session {
             session_id,
             mut seq,
-        } = rx.try_recv().unwrap().unwrap();
+        } = rx.try_recv().unwrap().unwrap()
+        else {
+            panic!("expected session info");
+        };
         assert_eq!(session_id, client.sequencer().session_id());
         assert_eq!(seq, 1);
 
@@ -1576,10 +1579,13 @@ mod tests {
             seq: &mut u64,
         ) {
             *seq += 1;
-            let SeqInfo {
+            let SeqInfo::Session {
                 session_id: rcved_session_id,
                 seq: rcved_seq,
-            } = rx.try_recv().unwrap().unwrap();
+            } = rx.try_recv().unwrap().unwrap()
+            else {
+                panic!("expected session info");
+            };
             assert_eq!(rcved_session_id, session_id);
             assert_eq!(rcved_seq, *seq);
         }
@@ -1617,8 +1623,9 @@ mod tests {
             Ok(())
         });
         port_handle.send(&client, ()).unwrap();
-        // No seq will be assigned for unbound port handle.
-        assert!(rx.try_recv().unwrap().is_none());
+        // Unordered be set for unbound port handle since handler's ordered
+        // channel is expecting the SEQ_INFO header to be set.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), SeqInfo::Unordered);
 
         // Bind to the allocated port.
         port_handle.bind();

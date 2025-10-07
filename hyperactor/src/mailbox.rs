@@ -66,8 +66,6 @@
 //! implementation to avoid a serialization roundtrip when passing
 //! messages locally.
 
-#![allow(dead_code)] // Allow until this is used outside of tests.
-
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -946,43 +944,6 @@ impl Future for MailboxServerHandle {
     }
 }
 
-// A `MailboxServer` (such as a router) can receive a message
-// that couldn't reach its destination. We can use the fact that
-// servers are `MailboxSender`s to attempt to forward them back to
-// their senders.
-fn server_return_handle<T: MailboxServer>(server: T) -> PortHandle<Undeliverable<MessageEnvelope>> {
-    let (return_handle, mut rx) = undeliverable::new_undeliverable_port();
-
-    tokio::task::spawn(async move {
-        while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-            if let Ok(Undeliverable(e)) = envelope.deserialized::<Undeliverable<MessageEnvelope>>()
-            {
-                // A non-returnable undeliverable.
-                UndeliverableMailboxSender.post(e, monitored_return_handle());
-                continue;
-            }
-            envelope.set_error(DeliveryError::BrokenLink(
-                "message was undeliverable".to_owned(),
-            ));
-            server.post(
-                MessageEnvelope::new(
-                    envelope.sender().clone(),
-                    PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
-                        envelope.sender(),
-                    )
-                    .port_id()
-                    .clone(),
-                    Serialized::serialize(&Undeliverable(envelope)).unwrap(),
-                    Attrs::new(),
-                ),
-                monitored_return_handle(),
-            );
-        }
-    });
-
-    return_handle
-}
-
 /// Serve a port on the provided [`channel::Rx`]. This dispatches all
 /// channel messages directly to the port.
 pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
@@ -1011,6 +972,9 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 envelope.set_error(DeliveryError::BrokenLink(
                     "message was undeliverable".to_owned(),
                 ));
+                let mut headers = Attrs::new();
+                // Ordering is not required when returning Undeliverable.
+                headers.set(SEQ_INFO, SeqInfo::Unordered);
                 server.post(
                     MessageEnvelope::new(
                         envelope.sender().clone(),
@@ -1020,7 +984,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                         .port_id()
                         .clone(),
                         Serialized::serialize(&Undeliverable(envelope)).unwrap(),
-                        Attrs::new(),
+                        headers,
                     ),
                     monitored_return_handle(),
                 );
@@ -1589,19 +1553,30 @@ impl<M: Message> PortHandle<M> {
         let mut headers = Attrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        // Message sent from handle is delivered immediately. It could race with
-        // messages from refs. So we need to assign seq if the handle is bound.
-        if let Some(bound_port) = self.bound.get()
-            && bound_port.is_actor_port()
-        {
-            let sequencer = cx.instance().sequencer();
-            let seq = sequencer.assign_seq(self.mailbox.actor_id());
-            let seq_info = SeqInfo {
-                session_id: sequencer.session_id(),
-                seq,
-            };
-            headers.set(SEQ_INFO, seq_info);
+
+        match self.bound.get() {
+            Some(bound_port) => {
+                // Message sent from handle is delivered immediately. It could
+                // race with messages from refs. So we need to assign seq to
+                // preserve the ordering.
+                if bound_port.is_actor_port() {
+                    let sequencer = cx.instance().sequencer();
+                    let seq = sequencer.assign_seq(self.mailbox.actor_id());
+                    let seq_info = SeqInfo::Session {
+                        session_id: sequencer.session_id(),
+                        seq,
+                    };
+                    headers.set(SEQ_INFO, seq_info);
+                }
+            }
+            None => {
+                // we do not have info to know whether this handle is used for
+                // enqueue port or not. Since enqueue port requires the SEQ_INFO
+                // header, we set it in for all messages sent from unbound handles.
+                headers.set(SEQ_INFO, SeqInfo::Unordered);
+            }
         }
+
         // Encountering error means the port is closed. So we do not need to
         // rollback the seq, because no message can be delivered to it, and
         // subsequently do not need to worry about out-of-sequence for messages
@@ -1619,6 +1594,7 @@ impl<M: Message> PortHandle<M> {
     pub fn anon_send(&self, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
+        headers.set(SEQ_INFO, SeqInfo::Unordered);
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),

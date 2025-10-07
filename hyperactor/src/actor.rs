@@ -1143,31 +1143,45 @@ mod tests {
             .spawn::<GetSeqActor>("get_seq", tx.bind())
             .await
             .unwrap();
+
+        // Verify that unbound handle can send message.
+        actor_handle.send(&client, "unbound".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("unbound".to_string(), SeqInfo::Unordered)
+        );
+
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         let session_id = client.sequencer().session_id();
         let mut expected_seq = 0;
         // Interleave messages sent through the handle and the reference.
-        for _ in 0..10 {
-            actor_handle.send(&client, "".to_string()).unwrap();
+        for m in 0..10 {
+            actor_handle.send(&client, format!("{m}")).unwrap();
             expected_seq += 1;
             assert_eq!(
-                rx.recv().await.unwrap().1,
-                SeqInfo {
-                    session_id,
-                    seq: expected_seq,
-                }
-            );
-
-            for _ in 0..2 {
-                actor_ref.port().send(&client, "".to_string()).unwrap();
-                expected_seq += 1;
-                assert_eq!(
-                    rx.recv().await.unwrap().1,
-                    SeqInfo {
+                rx.recv().await.unwrap(),
+                (
+                    format!("{m}"),
+                    SeqInfo::Session {
                         session_id,
                         seq: expected_seq,
                     }
+                )
+            );
+
+            for n in 0..2 {
+                actor_ref.port().send(&client, format!("{m}-{n}")).unwrap();
+                expected_seq += 1;
+                assert_eq!(
+                    rx.recv().await.unwrap(),
+                    (
+                        format!("{m}-{n}"),
+                        SeqInfo::Session {
+                            session_id,
+                            seq: expected_seq,
+                        }
+                    )
                 );
             }
         }
@@ -1200,7 +1214,10 @@ mod tests {
         let session_id = client.sequencer().session_id();
         assert_eq!(
             rx.recv().await.unwrap(),
-            ("finally".to_string(), SeqInfo { session_id, seq: 1 })
+            (
+                "finally".to_string(),
+                SeqInfo::Session { session_id, seq: 1 }
+            )
         );
     }
 
@@ -1280,7 +1297,7 @@ mod tests {
         for expect in expected {
             let expected = (
                 expect.0,
-                SeqInfo {
+                SeqInfo::Session {
                     session_id,
                     seq: expect.1,
                 },

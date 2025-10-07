@@ -13,6 +13,7 @@
 
 use std::any::Any;
 use std::any::TypeId;
+use std::any::type_name;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
@@ -1847,16 +1848,24 @@ pub struct Ports<A: Actor> {
 
 /// A message's sequencer number infomation.
 #[derive(Debug, Serialize, Deserialize, Clone, Named, AttrValue, PartialEq)]
-pub struct SeqInfo {
-    /// Message's session ID
-    pub session_id: Uuid,
-    /// Message's sequence number in the given session.
-    pub seq: u64,
+pub enum SeqInfo {
+    /// Messages with the same session ID should be delivered in order.
+    Session {
+        /// Message's session ID
+        session_id: Uuid,
+        /// Message's sequence number in the given session.
+        seq: u64,
+    },
+    /// This message does not require ordering and thus have no sequence number.
+    Unordered,
 }
 
 impl fmt::Display for SeqInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.session_id, self.seq)
+        match self {
+            Self::Unordered => write!(f, "unordered"),
+            Self::Session { session_id, seq } => write!(f, "{}:{}", session_id, seq),
+        }
     }
 }
 
@@ -1864,13 +1873,17 @@ impl std::str::FromStr for SeqInfo {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "unordered" {
+            return Ok(SeqInfo::Unordered);
+        }
+
         let parts: Vec<_> = s.split(':').collect();
         if parts.len() != 2 {
             return Err(anyhow::anyhow!("invalid SeqInfo: {}", s));
         }
         let session_id: Uuid = parts[0].parse()?;
         let seq: u64 = parts[1].parse()?;
-        Ok(SeqInfo { session_id, seq })
+        Ok(SeqInfo::Session { session_id, seq })
     }
 }
 
@@ -1926,18 +1939,37 @@ impl<A: Actor> Ports<A> {
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
                     if workq.enable_buffering {
-                        let SeqInfo { session_id, seq } =
-                            seq_info.expect("SEQ_INFO must be set when buffering is enabled");
-
-                        // TODO: return the message contained in the error instead of dropping them when converting
-                        // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                        workq.send(session_id, seq, work).map_err(|e| match e {
-                            OrderedSenderError::InvalidZeroSeq(_) => {
-                                anyhow::anyhow!("seq must be greater than 0")
+                        match seq_info {
+                            Some(SeqInfo::Session { session_id, seq }) => {
+                                // TODO: return the message contained in the error instead of dropping them when converting
+                                // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
+                                workq.send(session_id, seq, work).map_err(|e| match e {
+                                    OrderedSenderError::InvalidZeroSeq(_) => {
+                                        let error_msg = format!(
+                                             "in enqueue func for {}, got seq 0 for message type {}",
+                                            actor_id,
+                                            std::any::type_name::<M>(),
+                                        );
+                                        tracing::error!(error_msg);
+                                        anyhow::anyhow!(error_msg)
+                                    }
+                                    OrderedSenderError::SendError(e) => anyhow::Error::from(e),
+                                    OrderedSenderError::FlushError(e) => e,
+                                })
                             }
-                            OrderedSenderError::SendError(e) => anyhow::Error::from(e),
-                            OrderedSenderError::FlushError(e) => e,
-                        })
+                            Some(SeqInfo::Unordered) => {
+                                workq.direct_send(work).map_err(anyhow::Error::from)
+                            }
+                            None => {
+                                let error_msg = format!(
+                                    "in enqueue func for {}, buffering is enabled, but SEQ_INFO is not set for message type {}",
+                                    actor_id,
+                                    std::any::type_name::<M>(),
+                                    );
+                                tracing::error!(error_msg);
+                                anyhow::bail!(error_msg);
+                            }
+                        }
                     } else {
                         workq.direct_send(work).map_err(anyhow::Error::from)
                     }
