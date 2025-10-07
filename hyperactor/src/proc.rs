@@ -477,8 +477,7 @@ impl Proc {
         R: Referable + RemoteHandles<M>,
     {
         let (instance, _handle) = self.instance(name)?;
-        let (handle, rx) = instance.open_port::<M>();
-        handle.bind_to(M::port());
+        let (_handle, rx) = instance.bind_actor_port::<M>();
         let actor_ref = ActorRef::attest(instance.self_id().clone());
         Ok((instance, actor_ref, rx))
     }
@@ -1509,6 +1508,17 @@ impl<A: Actor> context::Actor for &Context<'_, A> {
     }
 }
 
+impl Instance<()> {
+    /// See [Mailbox::bind_actor_port] for details.
+    pub fn bind_actor_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
+        assert!(
+            self.actor_task_handle().is_none(),
+            "can only bind actor port on instance with no running actor task"
+        );
+        self.mailbox.bind_actor_port()
+    }
+}
+
 #[derive(Debug)]
 enum ActorType {
     Named(&'static TypeInfo),
@@ -1947,24 +1957,15 @@ impl<A: Actor> Ports<A> {
         }
     }
 
-    /// Bind the given message type to its default port.
+    /// Bind the given message type to its actor port.
     pub fn bind<M: RemoteMessage>(&self)
     where
         A: Handler<M>,
     {
-        self.bind_to::<M>(M::port());
-    }
-
-    /// Bind the given message type to the provided port.
-    /// Ports cannot be rebound to different message types;
-    /// and attempting to do so will result in a panic.
-    pub fn bind_to<M: RemoteMessage>(&self, port_index: u64)
-    where
-        A: Handler<M>,
-    {
+        let port_index = M::port();
         match self.bound.entry(port_index) {
             Entry::Vacant(entry) => {
-                self.get::<M>().bind_to(port_index);
+                self.get::<M>().bind_actor_port();
                 entry.insert(M::typename());
             }
             Entry::Occupied(entry) => {
@@ -2051,9 +2052,12 @@ mod tests {
     }
 
     impl TestActor {
-        async fn spawn_child(parent: &ActorHandle<TestActor>) -> ActorHandle<TestActor> {
+        async fn spawn_child(
+            cx: &impl context::Actor,
+            parent: &ActorHandle<TestActor>,
+        ) -> ActorHandle<TestActor> {
             let (tx, rx) = oneshot::channel();
-            parent.send(TestActorMessage::Spawn(tx)).unwrap();
+            parent.send(cx, TestActorMessage::Spawn(tx)).unwrap();
             rx.await.unwrap()
         }
     }
@@ -2083,12 +2087,12 @@ mod tests {
 
         async fn forward(
             &mut self,
-            _cx: &crate::Context<Self>,
+            cx: &crate::Context<Self>,
             destination: ActorHandle<TestActor>,
             message: Box<TestActorMessage>,
         ) -> Result<(), anyhow::Error> {
             // TODO: this needn't be async
-            destination.send(*message)?;
+            destination.send(cx, *message)?;
             Ok(())
         }
 
@@ -2127,6 +2131,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_actor() {
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
         let handle = proc.spawn::<TestActor>("test", ()).await.unwrap();
 
         // Check on the join handle.
@@ -2144,7 +2149,7 @@ mod tests {
         // Send a ping-pong to the actor. Wait for the actor to become idle.
 
         let (tx, rx) = oneshot::channel::<()>();
-        handle.send(TestActorMessage::Reply(tx)).unwrap();
+        handle.send(&client, TestActorMessage::Reply(tx)).unwrap();
         rx.await.unwrap();
 
         state
@@ -2157,7 +2162,7 @@ mod tests {
         let (exit_tx, exit_rx) = oneshot::channel::<()>();
 
         handle
-            .send(TestActorMessage::Wait(enter_tx, exit_rx))
+            .send(&client, TestActorMessage::Wait(enter_tx, exit_rx))
             .unwrap();
         enter_rx.await.unwrap();
         assert_matches!(*state.borrow(), ActorStatus::Processing(instant, _) if instant <= RealClock.system_time_now());
@@ -2176,12 +2181,16 @@ mod tests {
     #[tokio::test]
     async fn test_proc_actors_messaging() {
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
         let first = proc.spawn::<TestActor>("first", ()).await.unwrap();
         let second = proc.spawn::<TestActor>("second", ()).await.unwrap();
         let (tx, rx) = oneshot::channel::<()>();
         let reply_message = TestActorMessage::Reply(tx);
         first
-            .send(TestActorMessage::Forward(second, Box::new(reply_message)))
+            .send(
+                &client,
+                TestActorMessage::Forward(second, Box::new(reply_message)),
+            )
             .unwrap();
         rx.await.unwrap();
     }
@@ -2270,10 +2279,11 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_child() {
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
 
         let first = proc.spawn::<TestActor>("first", ()).await.unwrap();
-        let second = TestActor::spawn_child(&first).await;
-        let third = TestActor::spawn_child(&second).await;
+        let second = TestActor::spawn_child(&client, &first).await;
+        let third = TestActor::spawn_child(&client, &second).await;
 
         // Check we've got the join handles.
         assert!(logs_with_scope_contain(
@@ -2328,17 +2338,18 @@ mod tests {
     #[tokio::test]
     async fn test_child_lifecycle() {
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
 
         let root = proc.spawn::<TestActor>("root", ()).await.unwrap();
-        let root_1 = TestActor::spawn_child(&root).await;
-        let root_2 = TestActor::spawn_child(&root).await;
-        let root_2_1 = TestActor::spawn_child(&root_2).await;
+        let root_1 = TestActor::spawn_child(&client, &root).await;
+        let root_2 = TestActor::spawn_child(&client, &root).await;
+        let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
 
         root.drain_and_stop().unwrap();
         root.await;
 
         for actor in [root_1, root_2, root_2_1] {
-            assert!(actor.send(TestActorMessage::Noop()).is_err());
+            assert!(actor.send(&client, TestActorMessage::Noop()).is_err());
             assert_matches!(actor.await, ActorStatus::Stopped);
         }
     }
@@ -2346,19 +2357,21 @@ mod tests {
     #[tokio::test]
     async fn test_parent_failure() {
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root = proc.spawn::<TestActor>("root", ()).await.unwrap();
-        let root_1 = TestActor::spawn_child(&root).await;
-        let root_2 = TestActor::spawn_child(&root).await;
-        let root_2_1 = TestActor::spawn_child(&root_2).await;
+        let root_1 = TestActor::spawn_child(&client, &root).await;
+        let root_2 = TestActor::spawn_child(&client, &root).await;
+        let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
 
         root_2
-            .send(TestActorMessage::Fail(anyhow::anyhow!(
-                "some random failure"
-            )))
+            .send(
+                &client,
+                TestActorMessage::Fail(anyhow::anyhow!("some random failure")),
+            )
             .unwrap();
         let root_2_actor_id = root_2.actor_id().clone();
         assert_matches!(
@@ -2387,6 +2400,7 @@ mod tests {
         }
 
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
 
         // Add the 1st root. This root will remain active until the end of the test.
         let root: ActorHandle<TestActor> = proc.spawn::<TestActor>("root", ()).await.unwrap();
@@ -2438,7 +2452,7 @@ mod tests {
         //     root -> root_1 -> root_1_1
         //         |-> root_2
 
-        let root_1 = TestActor::spawn_child(&root).await;
+        let root_1 = TestActor::spawn_child(&client, &root).await;
         wait_until_idle(&root_1).await;
         {
             let snapshot = proc.state().ledger.snapshot();
@@ -2465,7 +2479,7 @@ mod tests {
             );
         }
 
-        let root_1_1 = TestActor::spawn_child(&root_1).await;
+        let root_1_1 = TestActor::spawn_child(&client, &root_1).await;
         wait_until_idle(&root_1_1).await;
         {
             let snapshot = proc.state().ledger.snapshot();
@@ -2504,7 +2518,7 @@ mod tests {
             );
         }
 
-        let root_2 = TestActor::spawn_child(&root).await;
+        let root_2 = TestActor::spawn_child(&client, &root).await;
         wait_until_idle(&root_2).await;
         {
             let snapshot = proc.state().ledger.snapshot();
@@ -2644,9 +2658,9 @@ mod tests {
             .spawn::<TestActor>("test", state.clone())
             .await
             .unwrap();
-        let client = proc.attach("client").unwrap();
+        let (client, _) = proc.instance("client").unwrap();
         let (tx, rx) = client.open_once_port();
-        handle.send(tx).unwrap();
+        handle.send(&client, tx).unwrap();
         let usize_handle = rx.recv().await.unwrap();
         usize_handle.send(123).unwrap();
 
@@ -2734,6 +2748,7 @@ mod tests {
         }
 
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
         let reported_event = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root_state = Arc::new(AtomicBool::new(false));
@@ -2777,13 +2792,13 @@ mod tests {
         // fail `root_1_1_1`, the supervision msg should be propagated to
         // `root_1` because `root_1` has set `true` to `handle_supervision_event`.
         root_1_1_1
-            .send::<String>("some random failure".into())
+            .send::<String>(&client, "some random failure".into())
             .unwrap();
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
         root_2_1
-            .send::<String>("some random failure".into())
+            .send::<String>(&client, "some random failure".into())
             .unwrap();
 
         RealClock.sleep(Duration::from_secs(1)).await;
@@ -2857,6 +2872,7 @@ mod tests {
         }
 
         let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -2875,7 +2891,9 @@ mod tests {
 
         // Grandchild fails, triggering failure up the tree, finally receiving
         // the event at the root.
-        grandchild.send("trigger failure".to_string()).unwrap();
+        grandchild
+            .send(&client, "trigger failure".to_string())
+            .unwrap();
 
         assert!(grandchild.await.is_failed());
         assert!(child.await.is_failed());
@@ -2929,7 +2947,7 @@ mod tests {
 
         let (port, mut receiver) = instance.open_port();
         child_actor
-            .send(("hello".to_string(), port.bind()))
+            .send(&instance, ("hello".to_string(), port.bind()))
             .unwrap();
 
         let message = receiver.recv().await.unwrap();
@@ -2990,9 +3008,9 @@ mod tests {
         struct LoggingActor;
 
         impl LoggingActor {
-            async fn wait(handle: &ActorHandle<Self>) {
+            async fn wait(cx: &impl context::Actor, handle: &ActorHandle<Self>) {
                 let barrier = Arc::new(Barrier::new(2));
-                handle.send(barrier.clone()).unwrap();
+                handle.send(cx, barrier.clone()).unwrap();
                 barrier.wait().await;
             }
         }
@@ -3049,12 +3067,16 @@ mod tests {
         }
 
         trace_and_block(async {
-            let handle = LoggingActor::spawn_detached(()).await.unwrap();
-            handle.send("hello world".to_string()).unwrap();
-            handle.send("hello world again".to_string()).unwrap();
-            handle.send(123u64).unwrap();
+            let proc = Proc::local();
+            let (client, _) = proc.instance("client").unwrap();
+            let handle: ActorHandle<LoggingActor> = proc.spawn("logging", ()).await.unwrap();
+            handle.send(&client, "hello world".to_string()).unwrap();
+            handle
+                .send(&client, "hello world again".to_string())
+                .unwrap();
+            handle.send(&client, 123u64).unwrap();
 
-            LoggingActor::wait(&handle).await;
+            LoggingActor::wait(&client, &handle).await;
 
             let events = handle.cell().inner.recording.tail();
             assert_eq!(events.len(), 3);
@@ -3067,7 +3089,7 @@ mod tests {
 
             let stacks = {
                 let barriers = Arc::new((Barrier::new(2), Barrier::new(2)));
-                handle.send(Arc::clone(&barriers)).unwrap();
+                handle.send(&client, Arc::clone(&barriers)).unwrap();
                 barriers.0.wait().await;
                 let stacks = handle.cell().inner.recording.stacks();
                 barriers.1.wait().await;
