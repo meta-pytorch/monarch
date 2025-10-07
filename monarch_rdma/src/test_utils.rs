@@ -93,7 +93,6 @@ pub mod test_utils {
     use crate::IbverbsConfig;
     use crate::RdmaBuffer;
     use crate::cu_check;
-    use crate::ibverbs_primitives::get_all_devices;
     use crate::rdma_components::PollTarget;
     use crate::rdma_components::RdmaQueuePair;
     use crate::rdma_manager_actor::RdmaManagerActor;
@@ -280,6 +279,18 @@ pub mod test_utils {
         #[allow(dead_code)]
         cpu_ref: Option<Box<[u8]>>,
     }
+    /// Helper function to parse accelerator strings
+    async fn parse_accel(accel: &str, config: &mut IbverbsConfig) -> (String, usize) {
+        let (backend, idx) = accel.split_once(':').unwrap();
+        let parsed_idx = idx.parse::<usize>().unwrap();
+
+        if backend == "cuda" {
+            config.use_gpu_direct = validate_execution_context().await.is_ok();
+        }
+
+        (backend.to_string(), parsed_idx)
+    }
+
     impl RdmaManagerTestEnv<'_> {
         /// Sets up the RDMA test environment.
         ///
@@ -290,52 +301,19 @@ pub mod test_utils {
         /// # Arguments
         ///
         /// * `buffer_size` - The size of the buffers to be used in the test.
-        /// * `nics` - Tuple specifying the indices of RDMA devices to use
-        /// * `accels` - Tuple specifying the indices of accelerators to use (or cpu)
-        ///   both RDMAManagerActors will default to the first indexed RDMA device.
+        /// * `accel1` - Accelerator for first actor (e.g., "cpu:0", "cuda:0")
+        /// * `accel2` - Accelerator for second actor (e.g., "cpu:0", "cuda:1")
         pub async fn setup(
             buffer_size: usize,
-            nics: (&str, &str),
-            accels: (&str, &str),
+            accel1: &str,
+            accel2: &str,
         ) -> Result<Self, anyhow::Error> {
-            let all_nic_devices = get_all_devices();
-            let mut config1 = IbverbsConfig::default();
-            let mut config2 = IbverbsConfig::default();
+            // Use device selection logic to find optimal RDMA devices
+            let mut config1 = IbverbsConfig::targeting(accel1);
+            let mut config2 = IbverbsConfig::targeting(accel2);
 
-            for nic_device in all_nic_devices.iter() {
-                if nic_device.name == nics.0 {
-                    config1.device = nic_device.clone();
-                }
-                if nic_device.name == nics.1 {
-                    config2.device = nic_device.clone();
-                }
-            }
-            let accel1;
-            let accel2;
-
-            if let Some((backend, idx)) = accels.0.split_once(':') {
-                assert!(backend == "cuda");
-                let parsed_idx = idx
-                    .parse::<usize>()
-                    .expect("Device index is not a valid integer");
-                accel1 = (backend.to_string(), parsed_idx);
-                config1.use_gpu_direct = validate_execution_context().await.is_ok();
-            } else {
-                assert!(accels.0 == "cpu");
-                accel1 = ("cpu".to_string(), 0);
-            }
-
-            if let Some((backend, idx)) = accels.1.split_once(':') {
-                assert!(backend == "cuda");
-                let parsed_idx = idx
-                    .parse::<usize>()
-                    .expect("Device index is not a valid integer");
-                accel2 = (backend.to_string(), parsed_idx);
-                config2.use_gpu_direct = validate_execution_context().await.is_ok();
-            } else {
-                assert!(accels.1 == "cpu");
-                accel2 = ("cpu".to_string(), 0);
-            }
+            let parsed_accel1 = parse_accel(accel1, &mut config1).await;
+            let parsed_accel2 = parse_accel(accel2, &mut config2).await;
 
             let alloc_1 = LocalAllocator
                 .allocate(AllocSpec {
@@ -372,7 +350,7 @@ pub mod test_utils {
             let mut buf_vec = Vec::new();
             let mut cuda_contexts = Vec::new();
 
-            for accel in [accel1.clone(), accel2.clone()] {
+            for accel in [parsed_accel1.clone(), parsed_accel2.clone()] {
                 if accel.0 == "cpu" {
                     let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
                     buf_vec.push(Buffer {
@@ -463,7 +441,7 @@ pub mod test_utils {
             }
 
             // Fill buffer1 with test data
-            if accel1.0 == "cuda" {
+            if parsed_accel1.0 == "cuda" {
                 let mut temp_buffer = vec![0u8; buffer_size].into_boxed_slice();
                 for (i, val) in temp_buffer.iter_mut().enumerate() {
                     *val = (i % 256) as u8;
