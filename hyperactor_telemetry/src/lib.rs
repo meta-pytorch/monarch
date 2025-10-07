@@ -29,9 +29,13 @@ pub const DISABLE_RECORDER_TRACING: &str = "DISABLE_RECORDER_TRACING";
 /// Environment variable to disable the sqlite logging layer.
 /// Set to "1" to disable the sqlite tracing.
 pub const DISABLE_SQLITE_TRACING: &str = "DISABLE_SQLITE_TRACING";
-// Environment variable constants
+
+/// Environment variable constants
+// Log level (debug, info, warn, error, critical) to capture for Monarch traces on dedicated log file (changes based on environment, see `log_file_path`).
 const MONARCH_FILE_LOG_ENV: &str = "MONARCH_FILE_LOG";
+// Log level (debug, info, warn, error, critical) to capture for Monarch traces on stderr.
 const MONARCH_STDERR_LOG_ENV: &str = "MONARCH_STDERR_LOG";
+
 pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
 
 // Log level constants
