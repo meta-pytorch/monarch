@@ -342,7 +342,11 @@ impl Actor for RdmaManagerActor {
             }
         }
 
-        let domain = RdmaDomain::new(config.device.clone())
+        // Auto-detect device if needed
+        let device = crate::device_selection::resolve_rdma_device(&config.device)
+            .unwrap_or_else(|| config.device.clone());
+
+        let domain = RdmaDomain::new(device)
             .map_err(|e| anyhow::anyhow!("rdmaManagerActor could not create domain: {}", e))?;
 
         Ok(Self {
