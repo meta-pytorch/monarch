@@ -477,8 +477,7 @@ impl Proc {
         R: Referable + RemoteHandles<M>,
     {
         let (instance, _handle) = self.instance(name)?;
-        let (handle, rx) = instance.open_port::<M>();
-        handle.bind_to(M::port());
+        let (_handle, rx) = instance.bind_actor_port::<M>();
         let actor_ref = ActorRef::attest(instance.self_id().clone());
         Ok((instance, actor_ref, rx))
     }
@@ -1509,6 +1508,17 @@ impl<A: Actor> context::Actor for &Context<'_, A> {
     }
 }
 
+impl Instance<()> {
+    /// See [Mailbox::bind_actor_port] for details.
+    pub fn bind_actor_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
+        assert!(
+            self.actor_task_handle().is_none(),
+            "can only bind actor port on instance with no running actor task"
+        );
+        self.mailbox.bind_actor_port()
+    }
+}
+
 #[derive(Debug)]
 enum ActorType {
     Named(&'static TypeInfo),
@@ -1947,24 +1957,15 @@ impl<A: Actor> Ports<A> {
         }
     }
 
-    /// Bind the given message type to its default port.
+    /// Bind the given message type to its actor port.
     pub fn bind<M: RemoteMessage>(&self)
     where
         A: Handler<M>,
     {
-        self.bind_to::<M>(M::port());
-    }
-
-    /// Bind the given message type to the provided port.
-    /// Ports cannot be rebound to different message types;
-    /// and attempting to do so will result in a panic.
-    pub fn bind_to<M: RemoteMessage>(&self, port_index: u64)
-    where
-        A: Handler<M>,
-    {
+        let port_index = M::port();
         match self.bound.entry(port_index) {
             Entry::Vacant(entry) => {
-                self.get::<M>().bind_to(port_index);
+                self.get::<M>().bind_actor_port();
                 entry.insert(M::typename());
             }
             Entry::Occupied(entry) => {

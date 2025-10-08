@@ -249,7 +249,7 @@ impl<M: Bind> IndexedErasedUnbound<M> {
                 Ok(())
             }
         });
-        port_handle.bind_to(IndexedErasedUnbound::<M>::port());
+        port_handle.bind_actor_port();
         Ok(())
     }
 }

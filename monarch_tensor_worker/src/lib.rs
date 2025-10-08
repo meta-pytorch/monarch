@@ -1174,7 +1174,6 @@ mod tests {
 
     use anyhow::Result;
     use hyperactor::Instance;
-    use hyperactor::Named;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
@@ -2348,8 +2347,7 @@ mod tests {
 
         // Create a fake controller for the workers to talk to.
         let client = System::new(system_addr.clone()).attach().await?;
-        let (handle, mut controller_rx) = client.open_port::<ControllerMessage>();
-        handle.bind_to(ControllerMessage::port());
+        let (_handle, mut controller_rx) = client.bind_actor_port::<ControllerMessage>();
         let controller_ref: ActorRef<ControllerActor> = ActorRef::attest(client.self_id().clone());
 
         // Create the worker world
