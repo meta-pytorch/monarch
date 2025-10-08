@@ -1244,6 +1244,18 @@ impl Mailbox {
         )
     }
 
+    /// Bind this message's actor port to this actor's mailbox. This method is
+    /// normally used:
+    ///   1. when we need to intercept a message sent to a handler, and re-route
+    ///      that message to the returned receiver;
+    ///   2. mock this message's handler when it is not implemented for this actor
+    ///      type, with the returned receiver.
+    pub(crate) fn bind_actor_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
+        let (handle, receiver) = self.open_port();
+        handle.bind_actor_port();
+        (handle, receiver)
+    }
+
     /// Open a new port with an accumulator with default reduce options.
     /// See [`open_accum_port_opts`] for more details.
     pub fn open_accum_port<A>(&self, accum: A) -> (PortHandle<A::Update>, PortReceiver<A::State>)
@@ -1389,13 +1401,14 @@ impl Mailbox {
         PortRef::attest(port_id)
     }
 
-    fn bind_to<M: RemoteMessage>(&self, handle: &PortHandle<M>, port_index: u64) {
+    fn bind_to_actor_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
         assert_eq!(
             handle.mailbox.actor_id(),
             self.actor_id(),
             "port does not belong to mailbox"
         );
 
+        let port_index = M::port();
         let port_id = self.actor_id().port_id(port_index);
         match self.inner.ports.entry(port_index) {
             Entry::Vacant(entry) => {
@@ -1625,10 +1638,13 @@ impl<M: RemoteMessage> PortHandle<M> {
         )
     }
 
-    /// Bind to a specific port index. This is used by [`actor::Binder`] implementations to
-    /// bind actor refs. This is not intended for general use.
-    pub fn bind_to(&self, port_index: u64) {
-        self.mailbox.bind_to(self, port_index);
+    /// Bind to this message's actor port. This method will panic if the handle
+    /// is already bound.
+    ///
+    /// This is used by [`actor::Binder`] implementations to bind actor refs.
+    /// This is not intended for general use.
+    pub(crate) fn bind_actor_port(&self) {
+        self.mailbox.bind_to_actor_port(self);
     }
 }
 
@@ -3648,8 +3664,7 @@ mod tests {
             actor_id.clone(),
             BoxedMailboxSender::new(AsyncLoopForwarder),
         );
-        let (ret_port, mut ret_rx) = mailbox.open_port::<Undeliverable<MessageEnvelope>>();
-        ret_port.bind_to(Undeliverable::<MessageEnvelope>::port());
+        let (ret_port, mut ret_rx) = mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
 
         // Create a destination not owned by this mailbox to force
         // forwarding.
@@ -3696,9 +3711,8 @@ mod tests {
             actor_id.clone(),
             BoxedMailboxSender::new(PanickingMailboxSender),
         );
-        let (undeliverable_tx, mut undeliverable_rx) =
-            mailbox.open_port::<Undeliverable<MessageEnvelope>>();
-        undeliverable_tx.bind_to(Undeliverable::<MessageEnvelope>::port());
+        let (_undeliverable_tx, mut undeliverable_rx) =
+            mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
 
         // Open a local user u64 port.
         let (user_port, mut user_rx) = mailbox.open_port::<u64>();
