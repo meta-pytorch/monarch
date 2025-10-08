@@ -704,7 +704,7 @@ async fn start_monitoring(
     let mut reader = BufReader::new(file);
     let mut position = reader.seek(SeekFrom::End(0)).await?;
 
-    tracing::debug!("Monitoring {:?} for new lines...", path);
+    tracing::info!("Monitoring {:?} for new lines...", path);
 
     let _watcher_guard = watcher;
 
