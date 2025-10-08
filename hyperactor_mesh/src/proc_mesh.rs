@@ -59,7 +59,6 @@ use tracing::span;
 
 use crate::CommActor;
 use crate::Mesh;
-use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::actor_mesh::RootActorMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocExt;
@@ -73,7 +72,7 @@ use crate::proc_mesh::mesh_agent::GspawnResult;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::proc_mesh::mesh_agent::StopActorResult;
-use crate::reference::ActorMeshId;
+use crate::proc_mesh::mesh_agent::update_event_actor_id;
 use crate::reference::ProcMeshId;
 use crate::router;
 use crate::shortuuid::ShortUuid;
@@ -770,7 +769,7 @@ impl ProcEvents {
                 // rewriting `actor_id` to a synthetic mesh-level id
                 // so that routing reaches the correct `ActorMesh`
                 // subscribers.
-                Ok(mut event) = self.event_state.supervision_events.recv() => {
+                Ok(event) = self.event_state.supervision_events.recv() => {
                     let had_headers = event.message_headers.is_some();
                     tracing::info!(
                         name = SupervisionEventState::SupervisionEventReceived.as_ref(),
@@ -782,33 +781,7 @@ impl ProcEvents {
                     tracing::debug!(?event, "proc supervision: full event");
 
                     // Normalize events that came via the comm tree.
-                    if let Some(headers) = &event.message_headers {
-                        if let Some(actor_mesh_id) = headers.get(CAST_ACTOR_MESH_ID) {
-                            match actor_mesh_id {
-                                ActorMeshId::V0(proc_mesh_id, actor_name) => {
-                                    let old_actor = event.actor_id.clone();
-                                    event.actor_id = ActorId(
-                                        ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
-                                        actor_name.clone(),
-                                        0,
-                                    );
-                                    tracing::debug!(
-                                        actor_id = %old_actor,
-                                        "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", event.actor_id
-                                    );
-                                }
-                                ActorMeshId::V1(_) => {
-                                    tracing::debug!("proc supervision: headers present but V1 ActorMeshId; leaving actor_id unchanged");
-                                }
-                            }
-                        } else {
-                            tracing::debug!(
-                                "proc supervision: headers present but no CAST_ACTOR_MESH_ID; leaving actor_id unchanged"
-                            );
-                        }
-                    } else {
-                        tracing::debug!("proc supervision: no headers attached; leaving actor_id unchanged");
-                    }
+                    let event = update_event_actor_id(event);
 
                     // Forward the supervision event to the ActorMesh (keyed by its mesh name)
                     // that registered for events in this ProcMesh. The routing table

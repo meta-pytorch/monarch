@@ -307,7 +307,7 @@ class _SingletonActorAdapator:
     def new_with_region(self, region: Region) -> "ActorMeshProtocol":
         return _SingletonActorAdapator(self._inner, self._region)
 
-    def supervision_event(self) -> "Optional[Shared[Exception]]":
+    def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
         return None
 
     def stop(self) -> "PythonTask[None]":
@@ -379,7 +379,10 @@ class ActorEndpoint(Endpoint[P, R]):
 
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event()
+        instance = context().actor_instance._as_rust()
+        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
+            instance
+        )
         r._set_monitor(monitor)
         return (p, r)
 

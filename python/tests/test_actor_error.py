@@ -37,7 +37,7 @@ class ExceptionActor(Actor):
 
 
 class ExceptionActorSync(Actor):
-    @endpoint  # pyre-ignore
+    @endpoint
     def raise_exception(self) -> None:
         raise Exception("This is a test exception")
 
@@ -473,7 +473,7 @@ class ErrorActor(Actor):
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-# TODO: add v1=True once monitor is supported
+# TODO: monitor not supported on v1 yet
 @pytest.mark.parametrize("v1", [False])
 async def test_proc_mesh_redundant_monitoring(mesh, v1: bool) -> None:
     proc = mesh(v1, {"gpus": 1})
@@ -510,9 +510,11 @@ class Manager(Actor):
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-# TODO: This isn't passing for v1 yet
-@pytest.mark.parametrize("v1", [False])
+@pytest.mark.parametrize("v1", [True, False])
 async def test_errors_propagated(mesh, v1: bool) -> None:
+    if v1 and mesh is spawn_procs_on_fake_host:
+        # pyre-fixme[29]: This is a function.
+        pytest.skip("local_proc_mesh not supported for nested actors")
     p_mesh = mesh(v1, {"gpus": 1})
     mesh = p_mesh.spawn("manager", Manager)
 
@@ -528,7 +530,7 @@ async def test_errors_propagated(mesh, v1: bool) -> None:
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-# TODO: This isn't passing for v1 yet
+# TODO: monitor not supported on v1 yet
 @pytest.mark.parametrize("v1", [False])
 async def test_proc_mesh_monitoring(mesh, v1):
     proc = mesh(v1, {"gpus": 1})
@@ -552,13 +554,13 @@ async def test_proc_mesh_monitoring(mesh, v1):
         await proc.spawn("ex", ExceptionActorSync).initialized
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-# TODO: This isn't passing for v1 yet
-@pytest.mark.parametrize("v1", [False])
+@pytest.mark.parametrize("v1", [True, False])
 async def test_actor_mesh_supervision_handling(mesh, v1: bool) -> None:
     proc = mesh(v1, {"gpus": 1})
 
@@ -586,8 +588,14 @@ async def test_actor_mesh_supervision_handling(mesh, v1: bool) -> None:
         await e.check.call()
 
     # should not be able to spawn actors anymore as proc mesh is unhealthy
-    with pytest.raises(SupervisionError, match="proc mesh is stopped with reason"):
-        await proc.spawn("ex", ExceptionActorSync).initialized
+    if not v1:
+        with pytest.raises(SupervisionError, match="proc mesh is stopped with reason"):
+            await proc.spawn("ex", ExceptionActorSync).initialized
+    else:
+        # In v1, spawning on a proc mesh with previously dead actors becomes a
+        # runtime error.
+        with pytest.raises(RuntimeError, match="error spawning actor mesh"):
+            await proc.spawn("ex", ExceptionActorSync).initialized
 
 
 class HealthyActor(Actor):
@@ -603,6 +611,7 @@ class HealthyActor(Actor):
 class Intermediate(Actor):
     @endpoint
     async def init_local_mesh(self, v1):
+        assert not v1, "cannot use v1 with local_proc_mesh in nested actors"
         mesh = spawn_procs_on_fake_host(v1, {"gpus": 1})
         self._error_actor = mesh.spawn("error", ErrorActor)
         self._healthy_actor = mesh.spawn("healthy", HealthyActor)
@@ -629,13 +638,13 @@ class Intermediate(Actor):
         return await self._healthy_actor.check.call()
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "proc_mesh"],
 )
-# TODO: This isn't passing for v1 yet
-@pytest.mark.parametrize("v1", [False])
+@pytest.mark.parametrize("v1", [True, False])
 async def test_actor_mesh_supervision_handling_chained_error(mesh, v1: bool) -> None:
     proc = mesh(v1, {"gpus": 1})
 
@@ -643,7 +652,11 @@ async def test_actor_mesh_supervision_handling_chained_error(mesh, v1: bool) -> 
     if mesh is spawn_procs_on_this_host:
         await intermediate_actor.init_proc_mesh.call(v1)
     elif mesh is spawn_procs_on_fake_host:
-        await intermediate_actor.init_local_mesh.call(v1)
+        if v1:
+            # pyre-fixme[29]: This is a function.
+            pytest.skip("local_proc_mesh not supported in nested actors")
+        else:
+            await intermediate_actor.init_local_mesh.call(v1)
     else:
         raise ValueError(f"Unknown mesh type: {mesh}")
 
@@ -677,8 +690,7 @@ async def test_actor_mesh_supervision_handling_chained_error(mesh, v1: bool) -> 
     "method_name",
     ["fail_with_supervision_error", "fail_with_supervision_error_async"],
 )
-# TODO: This isn't passing for v1 yet
-@pytest.mark.parametrize("v1", [False])
+@pytest.mark.parametrize("v1", [True, False])
 async def test_base_exception_handling(mesh, method_name, v1: bool) -> None:
     """Test that BaseException subclasses trigger supervision errors.
 
@@ -710,8 +722,9 @@ async def test_base_exception_handling(mesh, method_name, v1: bool) -> None:
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "proc_mesh"],
 )
-# TODO: This isn't passing for v1 yet
+# TODO: proc_mesh.stop() not supported on v1 yet
 @pytest.mark.parametrize("v1", [False])
+@pytest.mark.timeout(30)
 async def test_supervision_with_proc_mesh_stopped(mesh, v1: bool) -> None:
     proc = mesh(v1, {"gpus": 1})
     actor_mesh = proc.spawn("healthy", HealthyActor)
@@ -733,8 +746,8 @@ async def test_supervision_with_proc_mesh_stopped(mesh, v1: bool) -> None:
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
-# TODO: This isn't passing for v1 yet
-@pytest.mark.parametrize("v1", [False])
+@pytest.mark.parametrize("v1", [True, False])
+@pytest.mark.timeout(30)
 async def test_supervision_with_sending_error(v1: bool) -> None:
     # Messages of length > this will cause a send error and a returned
     # undeliverable.
@@ -764,8 +777,7 @@ async def test_supervision_with_sending_error(v1: bool) -> None:
         await actor_mesh.check_with_payload.call(payload="a")
 
 
-# TODO: This isn't passing for v1 yet
-@pytest.mark.parametrize("v1", [False])
+@pytest.mark.parametrize("v1", [True, False])
 async def test_slice_supervision(v1: bool) -> None:
     pm = spawn_procs_on_this_host(v1, {"gpus": 4})
     healthy_mesh = pm.spawn("healthy", HealthyActor)
@@ -778,16 +790,19 @@ async def test_slice_supervision(v1: bool) -> None:
     with pytest.raises(SupervisionError, match="did not handle supervision event"):
         await slice_3.fail_with_supervision_error.call()
 
+    match = (
+        "Actor .* (is unhealthy with reason:|exited because of the following reason:)"
+    )
     # Mesh containing all gpus is unhealthy
-    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason:"):
+    with pytest.raises(SupervisionError, match=match):
         await error_mesh.check.call()
 
     # Slice containing only gpus=3 is unhealthy
-    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason:"):
+    with pytest.raises(SupervisionError, match=match):
         await slice_3.check.call()
 
     # Slice containing gpus=3 is unhealthy
-    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason:"):
+    with pytest.raises(SupervisionError, match=match):
         await slice_1.check.call()
 
     # Slice not containing gpus=3 is healthy
@@ -801,8 +816,8 @@ async def test_slice_supervision(v1: bool) -> None:
         assert item == "this is a healthy check"
 
 
-# TODO: This isn't passing for v1 yet
-@pytest.mark.parametrize("v1", [False])
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("v1", [True, False])
 async def test_mesh_slices_inherit_parent_errors(v1: bool) -> None:
     pm = spawn_procs_on_this_host(v1, {"gpus": 4})
     error_mesh = pm.spawn("error", ErrorActor)

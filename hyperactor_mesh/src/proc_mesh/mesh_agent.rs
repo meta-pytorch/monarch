@@ -34,6 +34,7 @@ use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
+use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
@@ -52,7 +53,9 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::proc_mesh::SupervisionEventState;
+use crate::reference::ActorMeshId;
 use crate::resource;
 use crate::v1::Name;
 
@@ -169,6 +172,41 @@ impl State {
 struct ActorInstanceState {
     create_rank: usize,
     spawn: Result<ActorId, anyhow::Error>,
+}
+
+/// Normalize events that came via the comm tree. Updates their actor id based on
+/// the message headers for the event.
+pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSupervisionEvent {
+    if let Some(headers) = &event.message_headers {
+        if let Some(actor_mesh_id) = headers.get(CAST_ACTOR_MESH_ID) {
+            match actor_mesh_id {
+                ActorMeshId::V0(proc_mesh_id, actor_name) => {
+                    let old_actor = event.actor_id.clone();
+                    event.actor_id = ActorId(
+                        ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
+                        actor_name.clone(),
+                        0,
+                    );
+                    tracing::debug!(
+                        actor_id = %old_actor,
+                        "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", event.actor_id
+                    );
+                }
+                ActorMeshId::V1(_) => {
+                    tracing::debug!(
+                        "proc supervision: headers present but V1 ActorMeshId; leaving actor_id unchanged"
+                    );
+                }
+            }
+        } else {
+            tracing::debug!(
+                "proc supervision: headers present but no CAST_ACTOR_MESH_ID; leaving actor_id unchanged"
+            );
+        }
+    } else {
+        tracing::debug!("proc supervision: no headers attached; leaving actor_id unchanged");
+    }
+    event
 }
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
@@ -397,8 +435,13 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
         cx: &Context<Self>,
         event: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
+        let event = update_event_actor_id(event);
         if self.record_supervision_events {
-            tracing::info!("Received supervision event: {:?}, recording", event);
+            tracing::info!(
+                "Received supervision event on proc {}: {:?}, recording",
+                self.proc.proc_id(),
+                event
+            );
             self.supervision_events
                 .entry(event.actor_id.clone())
                 .or_default()
@@ -457,6 +500,22 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
             // There is no update.
             return Ok(());
         }
+        let create_rank = create_or_update.rank.unwrap();
+        // If there have been supervision events for any actors on this proc,
+        // we disallow spawning new actors on it, as this proc may be in an
+        // invalid state.
+        if !self.supervision_events.is_empty() {
+            self.actor_states.insert(
+                create_or_update.name.clone(),
+                ActorInstanceState {
+                    spawn: Err(anyhow::anyhow!(
+                        "Cannot spawn new actors on mesh with supervision events"
+                    )),
+                    create_rank,
+                },
+            );
+            return Ok(());
+        }
 
         let ActorSpec {
             actor_type,
@@ -465,7 +524,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
         self.actor_states.insert(
             create_or_update.name.clone(),
             ActorInstanceState {
-                create_rank: create_or_update.rank.unwrap(),
+                create_rank,
                 spawn: self
                     .remote
                     .gspawn(

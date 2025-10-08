@@ -70,6 +70,10 @@ impl<A: Referable> ActorMesh<A> {
             current_ref,
         }
     }
+
+    pub fn name(&self) -> &Name {
+        &self.name
+    }
 }
 
 impl<A: Referable> Deref for ActorMesh<A> {
@@ -491,7 +495,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_actor_states() {
+    async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance().await;
@@ -526,22 +530,20 @@ mod tests {
         // status such that when a process switches to unhealthy it sets a
         // supervision event.
         let supervision_task = tokio::spawn(async move {
-            match actor_mesh.actor_states(&instance).await {
-                Ok(events) => {
-                    for state in events.values() {
-                        supervisor.send(instance, state.clone()).unwrap();
-                    }
-                }
-                Err(e) => {
-                    println!("error: {:?}", e);
-                }
-            };
+            let events = actor_mesh.actor_states(&instance).await.unwrap();
+            for state in events.values() {
+                supervisor.send(instance, state.clone()).unwrap();
+            }
         });
         // Make sure the task completes first without a panic.
         supervision_task.await.unwrap();
 
         for _ in 0..num_replicas {
-            let state = supervision_receiver.recv().await.unwrap();
+            let state = RealClock
+                .timeout(Duration::from_secs(10), supervision_receiver.recv())
+                .await
+                .expect("timeout")
+                .unwrap();
             if let resource::Status::Failed(s) = state.status {
                 assert!(s.contains("supervision events"));
             } else {
@@ -551,6 +553,143 @@ mod tests {
                 assert!(!inner.supervision_events.is_empty());
                 for event in &inner.supervision_events {
                     println!("receiving event: {:?}", event);
+                    assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
+                    assert_matches!(event.actor_status, ActorStatus::Failed(_));
+                }
+            }
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_actor_states_with_process_exit() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let instance = testing::instance().await;
+        // Listen for supervision events sent to the parent instance.
+        let (supervision_port, mut supervision_receiver) =
+            instance.open_port::<resource::State<ActorState>>();
+        let supervisor = supervision_port.bind();
+        let num_replicas = 4;
+        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
+        let proc_mesh = &meshes[1];
+        let child_name = Name::new("child");
+
+        let actor_mesh = proc_mesh
+            .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
+            .await
+            .unwrap();
+
+        actor_mesh
+            .cast(
+                instance,
+                testactor::CauseSupervisionEvent(testactor::SupervisionEventType::ProcessExit(1)),
+            )
+            .unwrap();
+
+        // Wait for the casted message to cause a process exit on all actors.
+        // We can't use a reply port because the handler for the message will
+        // by definition not complete and send a reply.
+        #[allow(clippy::disallowed_methods)]
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        // Now that all ranks have completed, set up a continuous poll of the
+        // status such that when a process switches to unhealthy it sets a
+        // supervision event.
+        let supervision_task = tokio::spawn(async move {
+            let events = actor_mesh.actor_states(&instance).await.unwrap();
+            for state in events.values() {
+                supervisor.send(instance, state.clone()).unwrap();
+            }
+        });
+        // Make sure the task completes first without a panic.
+        RealClock
+            .timeout(Duration::from_secs(10), supervision_task)
+            .await
+            .expect("timeout")
+            .unwrap();
+
+        for _ in 0..num_replicas {
+            let state = RealClock
+                .timeout(Duration::from_secs(10), supervision_receiver.recv())
+                .await
+                .expect("timeout")
+                .unwrap();
+            assert_matches!(state.status, resource::Status::Stopped);
+            let events = state
+                .state
+                .expect("state should be present")
+                .supervision_events;
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].actor_status, ActorStatus::Stopped);
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_actor_states_on_sliced_mesh() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let instance = testing::instance().await;
+        // Listen for supervision events sent to the parent instance.
+        let (supervision_port, mut supervision_receiver) =
+            instance.open_port::<resource::State<ActorState>>();
+        let supervisor = supervision_port.bind();
+        let num_replicas = 4;
+        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
+        let proc_mesh = &meshes[1];
+        let child_name = Name::new("child");
+
+        let actor_mesh = proc_mesh
+            .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
+            .await
+            .unwrap();
+        let sliced = actor_mesh
+            .range("replicas", 1..3)
+            .expect("slice should be valid");
+        let sliced_replicas = sliced.len();
+
+        sliced
+            .cast(
+                instance,
+                testactor::CauseSupervisionEvent(testactor::SupervisionEventType::Panic),
+            )
+            .unwrap();
+
+        // Wait for the casted message to cause a process exit on all actors.
+        // We can't use a reply port because the handler for the message will
+        // by definition not complete and send a reply.
+        #[allow(clippy::disallowed_methods)]
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        // Now that all ranks have completed, set up a continuous poll of the
+        // status such that when a process switches to unhealthy it sets a
+        // supervision event.
+        let supervision_task = tokio::spawn(async move {
+            let events = sliced.actor_states(&instance).await.unwrap();
+            for state in events.values() {
+                supervisor.send(instance, state.clone()).unwrap();
+            }
+        });
+        // Make sure the task completes first without a panic.
+        RealClock
+            .timeout(Duration::from_secs(10), supervision_task)
+            .await
+            .expect("timeout")
+            .unwrap();
+
+        for _ in 0..sliced_replicas {
+            let state = RealClock
+                .timeout(Duration::from_secs(10), supervision_receiver.recv())
+                .await
+                .expect("timeout")
+                .unwrap();
+            if let resource::Status::Failed(s) = state.status {
+                assert!(s.contains("supervision events"));
+            } else {
+                panic!("Not failed: {:?}", state.status);
+            }
+            if let Some(ref inner) = state.state {
+                assert!(!inner.supervision_events.is_empty());
+                for event in &inner.supervision_events {
                     assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
                     assert_matches!(event.actor_status, ActorStatus::Failed(_));
                 }

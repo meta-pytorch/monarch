@@ -103,6 +103,10 @@ impl PyInstance {
     pub fn context_instance(&self) -> &ContextInstance {
         &self.inner
     }
+
+    pub(crate) fn into_context_instance(self) -> ContextInstance {
+        self.inner
+    }
 }
 
 impl From<&hyperactor::Instance<PythonActor>> for ContextInstance {

@@ -70,7 +70,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
 
     /// Get supervision events for this actor mesh.
     /// Returns None by default for implementations that don't support supervision events.
-    fn supervision_event(&self) -> PyResult<Option<PyShared>> {
+    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
         Ok(None)
     }
 
@@ -143,8 +143,8 @@ impl PythonActorMesh {
         Ok(PythonActorMesh { inner })
     }
 
-    fn supervision_event(&self) -> PyResult<Option<PyShared>> {
-        self.inner.supervision_event()
+    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
+        self.inner.supervision_event(instance)
     }
 
     fn stop(&self) -> PyResult<PyPythonTask> {
@@ -292,7 +292,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         Ok(())
     }
 
-    fn supervision_event(&self) -> PyResult<Option<PyShared>> {
+    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
         let mut receiver = self.health_state.user_monitor_sender.subscribe();
         PyPythonTask::new(async move {
             let event = receiver.recv().await;
@@ -367,8 +367,8 @@ impl PythonActorMeshImpl {
         }
     }
 
-    fn supervision_event(&self) -> PyResult<Option<PyShared>> {
-        ActorMeshProtocol::supervision_event(self)
+    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
+        ActorMeshProtocol::supervision_event(self, instance)
     }
     fn stop(&self) -> PyResult<PyPythonTask> {
         ActorMeshProtocol::stop(self)
@@ -470,7 +470,7 @@ impl ActorMeshProtocol for PythonActorMeshRef {
         }))
     }
 
-    fn supervision_event(&self) -> PyResult<Option<PyShared>> {
+    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
         match self.root_health_state.as_ref().and_then(|x| x.upgrade()) {
             Some(root_health_state) => {
                 let mut receiver = root_health_state.user_monitor_sender.subscribe();
@@ -644,13 +644,14 @@ impl ActorMeshProtocol for AsyncActorMesh {
         mesh?.__reduce__(py)
     }
 
-    fn supervision_event(&self) -> PyResult<Option<PyShared>> {
+    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
         if !self.supervised {
             return Ok(None);
         }
         let mesh = self.mesh.clone();
-        PyPythonTask::new(async {
-            let mut event = mesh.await?.supervision_event()?.unwrap();
+        let instance = Python::with_gil(|_py| instance.clone());
+        PyPythonTask::new(async move {
+            let mut event = mesh.await?.supervision_event(&instance)?.unwrap();
             event.task()?.take_task()?.await
         })
         .map(|mut x| x.spawn().map(Some))?
@@ -684,17 +685,17 @@ pub struct PyActorSupervisionEvent {
 
 #[pymethods]
 impl PyActorSupervisionEvent {
-    fn __repr__(&self) -> PyResult<String> {
+    pub(crate) fn __repr__(&self) -> PyResult<String> {
         Ok(format!("<PyActorSupervisionEvent: {}>", self.inner))
     }
 
     #[getter]
-    fn actor_id(&self) -> PyResult<PyActorId> {
+    pub(crate) fn actor_id(&self) -> PyResult<PyActorId> {
         Ok(PyActorId::from(self.inner.actor_id.clone()))
     }
 
     #[getter]
-    fn actor_status(&self) -> PyResult<String> {
+    pub(crate) fn actor_status(&self) -> PyResult<String> {
         Ok(self.inner.actor_status.to_string())
     }
 }

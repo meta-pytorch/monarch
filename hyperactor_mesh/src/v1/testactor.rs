@@ -103,10 +103,12 @@ impl Handler<CauseSupervisionEvent> for TestActor {
                 panic!("for testing");
             }
             SupervisionEventType::SigSEGV => {
+                tracing::error!("exiting with SIGSEGV");
                 // SAFETY: This is for testing code that explicitly causes a SIGSEGV.
                 unsafe { std::ptr::null_mut::<i32>().write(42) };
             }
             SupervisionEventType::ProcessExit(code) => {
+                tracing::error!("exiting process {} with code {}", std::process::id(), code);
                 std::process::exit(code);
             }
         }
@@ -221,7 +223,7 @@ pub struct FailingCreateTestActor;
 impl Actor for FailingCreateTestActor {
     type Params = ();
 
-    async fn new(params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
+    async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
         Err(anyhow::anyhow!("test failure"))
     }
 }
