@@ -1644,6 +1644,16 @@ impl<M: RemoteMessage> PortHandle<M> {
     /// This is used by [`actor::Binder`] implementations to bind actor refs.
     /// This is not intended for general use.
     pub(crate) fn bind_actor_port(&self) {
+        let port_id = self.mailbox.actor_id().port_id(M::port());
+        self.bound
+            .set(port_id)
+            .map_err(|p| {
+                format!(
+                    "could not bind port handle {} as {p}: already bound",
+                    self.port_index
+                )
+            })
+            .unwrap();
         self.mailbox.bind_to_actor_port(self);
     }
 }
@@ -3762,5 +3772,42 @@ mod tests {
             .send("hello".to_string())
             .unwrap();
         assert_eq!(rx.recv().await.unwrap(), (1, "hello".to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "already bound")]
+    fn test_bind_port_handle_to_actor_port_twice() {
+        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let (handle, _rx) = mbox.open_port::<String>();
+        handle.bind_actor_port();
+        handle.bind_actor_port();
+    }
+
+    #[test]
+    fn test_bind_port_handle_to_actor_port() {
+        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let default_port = mbox.actor_id().port_id(String::port());
+        let (handle, _rx) = mbox.open_port::<String>();
+        // Handle's port index is allocated by mailbox, not the actor port.
+        assert_ne!(default_port.index(), handle.port_index);
+        // Bind the handle to the actor port.
+        handle.bind_actor_port();
+        assert_matches!(handle.location(), PortLocation::Bound(port) if port == default_port);
+        // bind() can still be used, just it will not change handle's state.
+        handle.bind();
+        handle.bind();
+        assert_matches!(handle.location(), PortLocation::Bound(port) if port == default_port);
+    }
+
+    #[test]
+    #[should_panic(expected = "already bound")]
+    fn test_bind_port_handle_to_actor_port_when_already_bound() {
+        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let (handle, _rx) = mbox.open_port::<String>();
+        // Bound handle to the port allocated by mailbox.
+        handle.bind();
+        assert_matches!(handle.location(), PortLocation::Bound(port) if port.index() == handle.port_index);
+        // Since handle is already bound, call bind_to() on it will cause panic.
+        handle.bind_actor_port();
     }
 }
