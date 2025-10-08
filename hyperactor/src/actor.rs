@@ -310,8 +310,8 @@ where
 /// with the ID of the actor being served.
 #[derive(Debug)]
 pub struct ActorError {
-    pub(crate) actor_id: ActorId,
-    pub(crate) kind: ActorErrorKind,
+    pub(crate) actor_id: Box<ActorId>,
+    pub(crate) kind: Box<ActorErrorKind>,
 }
 
 /// The kinds of actor serving errors.
@@ -362,14 +362,17 @@ pub enum ActorErrorKind {
 
 impl ActorError {
     /// Create a new actor server error with the provided id and kind.
-    pub(crate) fn new(actor_id: ActorId, kind: ActorErrorKind) -> Self {
-        Self { actor_id, kind }
+    pub(crate) fn new(actor_id: &ActorId, kind: ActorErrorKind) -> Self {
+        Self {
+            actor_id: Box::new(actor_id.clone()),
+            kind: Box::new(kind),
+        }
     }
 
     /// Passthrough this error.
     fn passthrough(&self) -> Self {
         ActorError::new(
-            self.actor_id.clone(),
+            &self.actor_id,
             ActorErrorKind::Passthrough(anyhow::anyhow!("{}", self.kind)),
         )
     }
@@ -390,25 +393,28 @@ impl std::error::Error for ActorError {
 
 impl From<MailboxError> for ActorError {
     fn from(inner: MailboxError) -> Self {
-        Self::new(inner.actor_id().clone(), ActorErrorKind::from(inner))
+        Self {
+            actor_id: Box::new(inner.actor_id().clone()),
+            kind: Box::new(ActorErrorKind::from(inner)),
+        }
     }
 }
 
 impl From<MailboxSenderError> for ActorError {
     fn from(inner: MailboxSenderError) -> Self {
-        Self::new(
-            inner.location().actor_id().clone(),
-            ActorErrorKind::from(inner),
-        )
+        Self {
+            actor_id: Box::new(inner.location().actor_id().clone()),
+            kind: Box::new(ActorErrorKind::from(inner)),
+        }
     }
 }
 
 impl From<ActorSupervisionEvent> for ActorError {
     fn from(inner: ActorSupervisionEvent) -> Self {
-        Self::new(
-            inner.actor_id.clone(),
-            ActorErrorKind::UnhandledSupervisionEvent(inner),
-        )
+        Self {
+            actor_id: Box::new(inner.actor_id.clone()),
+            kind: Box::new(ActorErrorKind::UnhandledSupervisionEvent(inner)),
+        }
     }
 }
 
@@ -609,7 +615,6 @@ impl<A: Actor> ActorHandle<A> {
     }
 
     /// Signal the actor to drain its current messages and then stop.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn drain_and_stop(&self) -> Result<(), ActorError> {
         tracing::info!("ActorHandle::drain_and_stop called: {}", self.actor_id());
         self.cell.signal(Signal::DrainAndStop)

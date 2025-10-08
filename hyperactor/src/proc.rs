@@ -1006,7 +1006,6 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Signal the actor to stop.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn stop(&self) -> Result<(), ActorError> {
         tracing::info!("Instance::stop called, {}", self.cell.actor_id());
         self.cell.signal(Signal::DrainAndStop)
@@ -1033,7 +1032,6 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
     where
         M: Message,
@@ -1096,7 +1094,7 @@ impl<A: Actor> Instance<A> {
         let (actor_status, event) = match result {
             Ok(_) => (ActorStatus::Stopped, None),
             Err(ActorError {
-                kind: ActorErrorKind::UnhandledSupervisionEvent(event),
+                kind: box ActorErrorKind::UnhandledSupervisionEvent(event),
                 ..
             }) => (event.actor_status.clone(), Some(event)),
             Err(err) => (
@@ -1167,7 +1165,7 @@ impl<A: Actor> Instance<A> {
                 let backtrace = panic_handler::take_panic_backtrace()
                     .unwrap_or_else(|e| format!("Cannot take backtrace due to: {:?}", e));
                 Err(ActorError::new(
-                    self.self_id().clone(),
+                    self.self_id(),
                     ActorErrorKind::Panic(anyhow::anyhow!("{}\n{}", err_msg, backtrace)),
                 ))
             }
@@ -1221,7 +1219,7 @@ impl<A: Actor> Instance<A> {
         actor
             .init(self)
             .await
-            .map_err(|err| ActorError::new(self.self_id().clone(), ActorErrorKind::Init(err)))?;
+            .map_err(|err| ActorError::new(self.self_id(), ActorErrorKind::Init(err)))?;
         let need_drain;
         'messages: loop {
             self.change_status(ActorStatus::Idle);
@@ -1237,7 +1235,7 @@ impl<A: Actor> Instance<A> {
                         for supervision_event in supervision_event_receiver.drain() {
                             self.handle_supervision_event(actor, supervision_event).await?;
                         }
-                        return Err(ActorError::new(self.self_id().clone(), ActorErrorKind::Processing(err)));
+                        return Err(ActorError::new(self.self_id(), ActorErrorKind::Processing(err)));
                     }
                 }
                 signal = signal_receiver.recv() => {
@@ -1269,7 +1267,7 @@ impl<A: Actor> Instance<A> {
             while let Ok(work) = work_rx.try_recv() {
                 if let Err(err) = work.handle(actor, self).await {
                     return Err(ActorError::new(
-                        self.self_id().clone(),
+                        self.self_id(),
                         ActorErrorKind::Processing(err),
                     ));
                 }
@@ -1664,7 +1662,6 @@ impl InstanceCell {
     }
 
     /// Send a signal to the actor.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ActorError`.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
         if let Some((signal_port, _)) = &self.inner.actor_loop {
             signal_port.send(signal).map_err(ActorError::from)
