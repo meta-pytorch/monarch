@@ -7,6 +7,7 @@
  */
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Local;
+use hostname;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
@@ -45,18 +47,33 @@ use hyperactor::clock::RealClock;
 use hyperactor::data::Serialized;
 use hyperactor_telemetry::env;
 use hyperactor_telemetry::log_file_path;
+use notify::Event;
+use notify::EventKind;
+use notify::RecommendedWatcher;
+use notify::Watcher;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::fs;
+use tokio::fs::File;
 use tokio::io;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncSeekExt;
+use tokio::io::BufReader;
+use tokio::io::SeekFrom;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 use tokio::sync::watch::Receiver;
+use tokio::task::JoinHandle;
 
 use crate::bootstrap::BOOTSTRAP_LOG_CHANNEL;
+use crate::shortuuid::ShortUuid;
 
 mod line_prefixing_writer;
 use line_prefixing_writer::LinePrefixingWriter;
 
 pub(crate) const DEFAULT_AGGREGATE_WINDOW_SEC: u64 = 5;
+const MAX_LINE_SIZE: usize = 256 * 1024;
 
 /// Calculate the Levenshtein distance between two strings
 fn levenshtein_distance(left: &str, right: &str) -> usize {
@@ -396,7 +413,7 @@ fn create_file_writer(
         OutputTarget::Stderr => "stderr",
         OutputTarget::Stdout => "stdout",
     };
-    let (path, filename) = log_file_path(env)?;
+    let (path, filename) = log_file_path(env, None)?;
     let path = Path::new(&path);
     let mut full_path = PathBuf::from(path);
 
@@ -563,6 +580,197 @@ impl<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + Unpin + 'static>
         let this = self.get_mut();
         Pin::new(&mut this.std_writer).poll_shutdown(cx)
     }
+}
+
+/// File monitor which watches a log file for changes
+pub struct LogFileMonitor {
+    monitor: JoinHandle<()>,
+    // Shared buffer for peek functionality
+    recent_lines: Arc<RwLock<VecDeque<String>>>,
+    max_buffer_size: usize,
+    // Shutdown signal to stop the monitoring loop
+    shutdown_tx: Option<mpsc::UnboundedSender<()>>,
+}
+
+impl LogFileMonitor {
+    /// Create a new LogFileMonitor instance, and start monitoring the provided path.
+    /// Once started
+    /// - Monitor will foward logs to the provided address
+    /// - And capture last `max_buffer_size` which can be used to inspect file contents via `peek`.
+    pub fn start(
+        path: PathBuf,
+        target: OutputTarget,
+        max_buffer_size: usize,
+        log_channel: ChannelAddr,
+        pid: u32,
+    ) -> Result<Self> {
+        let log_sender = Box::new(LocalLogSender::new(log_channel, pid)?);
+
+        // Create shared buffer for recent lines
+        let recent_lines = Arc::new(RwLock::new(VecDeque::with_capacity(max_buffer_size)));
+        let recent_lines_clone = recent_lines.clone();
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::unbounded_channel();
+
+        let event_handler = {
+            let tx = tx.clone();
+            move |res| match res {
+                Ok(event) => {
+                    tracing::info!("got notification");
+                    if let Err(e) = tx.send(event) {
+                        tracing::warn!("notify log file change dropped: {:?}", e);
+                    }
+                }
+                Err(e) => tracing::warn!("log file watcher error: {:?}", e),
+            }
+        };
+        let mut watcher = notify::recommended_watcher(event_handler)?;
+
+        // Watch the path
+        watcher.watch(&path, notify::RecursiveMode::NonRecursive)?;
+
+        // Clone path for the async task since it moves ownership
+        let path_clone = path.clone();
+        let monitor = tokio::spawn(async move {
+            if let Err(e) = start_monitoring(
+                watcher,
+                rx,
+                shutdown_rx,
+                path_clone.clone(),
+                log_sender,
+                target,
+                Some(recent_lines_clone),
+            )
+            .await
+            {
+                tracing::error!(
+                    "file {} monitor failed: {}",
+                    path_clone.to_string_lossy().into_owned(),
+                    e
+                );
+            }
+        });
+
+        Ok(LogFileMonitor {
+            monitor,
+            recent_lines,
+            max_buffer_size,
+            shutdown_tx: Some(shutdown_tx),
+        })
+    }
+
+    pub async fn abort(mut self) -> (Vec<String>, Result<(), anyhow::Error>) {
+        // Send shutdown signal to stop the monitoring loop
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(()); // Ignore error if receiver is already dropped
+        }
+
+        let lines = self.peek().await;
+        let result = match self.monitor.await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.into()),
+        };
+
+        (lines, result)
+    }
+
+    /// Inspect the latest `max_buffer` lines read from the file being monitored
+    /// Returns lines in chronological order (oldest first)
+    pub async fn peek(&self) -> Vec<String> {
+        let lines = self.recent_lines.read().await;
+        let start_idx = if lines.len() > self.max_buffer_size {
+            lines.len() - self.max_buffer_size
+        } else {
+            0
+        };
+
+        lines.range(start_idx..).cloned().collect()
+    }
+}
+
+/// Start monitoring the log file and forwarding content to the logging client
+async fn start_monitoring(
+    watcher: RecommendedWatcher,
+    mut rx: mpsc::UnboundedReceiver<Event>,
+    mut shutdown_rx: mpsc::UnboundedReceiver<()>,
+    path: PathBuf,
+    mut log_sender: Box<dyn LogSender + Send>,
+    target: OutputTarget,
+    recent_lines: Option<Arc<RwLock<VecDeque<String>>>>,
+) -> Result<()> {
+    let file = fs::OpenOptions::new().read(true).open(&path).await?;
+
+    let mut reader = BufReader::new(file);
+    let mut position = reader.seek(SeekFrom::End(0)).await?;
+
+    tracing::info!("Monitoring {:?} for new lines...", path);
+
+    let _watcher_guard = watcher;
+
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Some(event) => {
+                        if let EventKind::Modify(_) = &event.kind {
+                            // seek to last known position
+                            reader.seek(SeekFrom::Start(position)).await?;
+                            let mut buf = String::new();
+
+                            // read all new lines
+                            while reader.read_line(&mut buf).await? > 0 {
+                                // Truncate the line if it's too long
+                                if buf.len() > MAX_LINE_SIZE {
+                                    buf.truncate(MAX_LINE_SIZE);
+                                    buf.push_str("... [TRUNCATED]");
+                                }
+
+                                let line = buf.trim_end().to_string();
+
+                                // Store line in buffer if provided
+                                if let Some(ref recent_lines_ref) = recent_lines {
+                                    let mut recent_lines = recent_lines_ref.write().await;
+                                    recent_lines.push_back(line.clone());
+                                }
+
+                                if let Err(e) = log_sender.send(target, line.into_bytes()) {
+                                    tracing::error!("Failed to send log line: {}", e);
+                                }
+
+                                buf.clear();
+                            }
+
+                            position = reader.seek(SeekFrom::Current(0)).await?;
+                        }
+                    }
+                    None => {
+                        tracing::debug!("File event channel closed, stopping monitoring");
+                        break;
+                    }
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                tracing::debug!("Shutdown signal received, stopping monitoring");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn create_temp_log() -> Result<PathBuf> {
+    let key = &ShortUuid::generate().to_string();
+    let (parent, filename) = log_file_path(env::Env::current(), Some(key))?;
+    let path = PathBuf::from(parent).join(filename);
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let _ = File::create(&path).await?;
+
+    Ok(path)
 }
 
 /// Messages that can be sent to the LogWriterActor
@@ -1447,5 +1655,202 @@ mod tests {
 
         // Check that the count is 3
         assert_eq!(aggregator.lines[0].count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_log_file_monitor_creation_and_forwarding() {
+        hyperactor_telemetry::initialize_logging_for_test();
+        use std::io::Write as StdWrite;
+        // Create a temporary directory and file
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let log_file_path = temp_dir.path().join("test.log");
+
+        // Create the file and write initial content
+        let mut file = std::fs::File::create(&log_file_path).unwrap();
+        writeln!(file, "Initial log line").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        // Set up log channel for monitoring
+        let (log_channel, mut rx) =
+            channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+
+        // Create LogFileMonitor
+        let monitor = LogFileMonitor::start(
+            log_file_path.clone(),
+            OutputTarget::Stdout,
+            3, // max_buffer_size
+            log_channel,
+            12345, // pid
+        )
+        .unwrap();
+
+        RealClock
+            .sleep(std::time::Duration::from_millis(2000))
+            .await;
+
+        // Append new content to the file
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_file_path)
+            .unwrap();
+        for i in 1..=50 {
+            writeln!(file, "New log line {}", i).unwrap();
+        }
+        file.sync_all().unwrap();
+        drop(file);
+
+        // Wait until log sender gets message
+        let timeout = Duration::from_secs(5);
+        let _ = RealClock
+            .timeout(timeout, rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("Did not get log message within {:?}", timeout));
+
+        let recent_lines = monitor.peek().await;
+
+        assert!(
+            recent_lines.len() == 3,
+            "Expected buffer with size 3, got {}",
+            recent_lines.len()
+        );
+
+        let (_lines, _result) = monitor.abort().await;
+    }
+
+    #[test]
+    fn test_aggregator_custom_threshold() {
+        // Test with very strict threshold (0.05)
+        let mut strict_aggregator = Aggregator::new_with_threshold(0.05);
+        strict_aggregator.add_line("ERROR 404").unwrap();
+        strict_aggregator.add_line("ERROR 500").unwrap(); // Should not merge due to strict threshold
+        assert_eq!(strict_aggregator.lines.len(), 2);
+
+        // Test with very lenient threshold (0.8)
+        let mut lenient_aggregator = Aggregator::new_with_threshold(0.8);
+        lenient_aggregator.add_line("ERROR 404").unwrap();
+        lenient_aggregator.add_line("WARNING 200").unwrap(); // Should merge due to lenient threshold
+        assert_eq!(lenient_aggregator.lines.len(), 1);
+        assert_eq!(lenient_aggregator.lines[0].count, 2);
+    }
+
+    #[test]
+    fn test_format_system_time() {
+        let test_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1609459200); // 2021-01-01 00:00:00 UTC
+        let formatted = format_system_time(test_time);
+
+        // Just verify it's a reasonable format (contains date and time components)
+        assert!(formatted.contains("-"));
+        assert!(formatted.contains(":"));
+        assert!(formatted.len() > 10); // Should be reasonable length
+    }
+
+    #[test]
+    fn test_aggregator_display_formatting() {
+        let mut aggregator = Aggregator::new();
+        aggregator.add_line("Test error message").unwrap();
+        aggregator.add_line("Test error message").unwrap(); // Should merge
+
+        let display_string = format!("{}", aggregator);
+
+        // Verify the output contains expected elements
+        assert!(display_string.contains("Aggregated Logs"));
+        assert!(display_string.contains("[2 similar log lines]"));
+        assert!(display_string.contains("Test error message"));
+        assert!(display_string.contains(">>>") && display_string.contains("<<<"));
+    }
+
+    #[tokio::test]
+    async fn test_local_log_sender_inactive_status() {
+        let (log_channel, _) =
+            channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let mut sender = LocalLogSender::new(log_channel, 12345).unwrap();
+
+        // This test verifies that the sender handles inactive status gracefully
+        // In a real scenario, the channel would be closed, but for testing we just
+        // verify the send/flush methods don't panic
+        let result = sender.send(OutputTarget::Stdout, b"test".to_vec());
+        assert!(result.is_ok());
+
+        let result = sender.flush();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_levenshtein_distance_edge_cases() {
+        // Test with empty strings
+        assert_eq!(levenshtein_distance("", ""), 0);
+        assert_eq!(levenshtein_distance("", "hello"), 5);
+        assert_eq!(levenshtein_distance("hello", ""), 5);
+
+        // Test with identical strings
+        assert_eq!(levenshtein_distance("hello", "hello"), 0);
+
+        // Test with single character differences
+        assert_eq!(levenshtein_distance("hello", "helo"), 1); // deletion
+        assert_eq!(levenshtein_distance("helo", "hello"), 1); // insertion
+        assert_eq!(levenshtein_distance("hello", "hallo"), 1); // substitution
+
+        // Test with unicode characters
+        assert_eq!(levenshtein_distance("café", "cafe"), 1);
+    }
+
+    #[test]
+    fn test_normalized_edit_distance_edge_cases() {
+        // Test with empty strings
+        assert_eq!(normalized_edit_distance("", ""), 0.0);
+
+        // Test normalization
+        assert_eq!(normalized_edit_distance("hello", ""), 1.0);
+        assert_eq!(normalized_edit_distance("", "hello"), 1.0);
+
+        // Test that result is always between 0.0 and 1.0
+        let distance = normalized_edit_distance("completely", "different");
+        assert!(distance >= 0.0 && distance <= 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_message_lines_edge_cases() {
+        // Test with empty string
+        let empty_message = "".to_string();
+        let serialized = Serialized::serialize(&empty_message).unwrap();
+        let result = deserialize_message_lines(&serialized).unwrap();
+        assert_eq!(result, Vec::<String>::new());
+
+        // Test with trailing newline
+        let trailing_newline = "line1\nline2\n".to_string();
+        let serialized = Serialized::serialize(&trailing_newline).unwrap();
+        let result = deserialize_message_lines(&serialized).unwrap();
+        assert_eq!(result, vec!["line1", "line2"]);
+    }
+
+    #[test]
+    fn test_output_target_serialization() {
+        // Test that OutputTarget can be serialized and deserialized
+        let stdout_serialized = serde_json::to_string(&OutputTarget::Stdout).unwrap();
+        let stderr_serialized = serde_json::to_string(&OutputTarget::Stderr).unwrap();
+
+        let stdout_deserialized: OutputTarget = serde_json::from_str(&stdout_serialized).unwrap();
+        let stderr_deserialized: OutputTarget = serde_json::from_str(&stderr_serialized).unwrap();
+
+        assert_eq!(stdout_deserialized, OutputTarget::Stdout);
+        assert_eq!(stderr_deserialized, OutputTarget::Stderr);
+    }
+
+    #[test]
+    fn test_log_line_display_formatting() {
+        let log_line = LogLine::new("Test message".to_string());
+        let display_string = format!("{}", log_line);
+
+        assert!(display_string.contains("[1 similar log lines]"));
+        assert!(display_string.contains("Test message"));
+
+        // Test with higher count
+        let mut log_line_multi = LogLine::new("Test message".to_string());
+        log_line_multi.count = 5;
+        let display_string_multi = format!("{}", log_line_multi);
+
+        assert!(display_string_multi.contains("[5 similar log lines]"));
+        assert!(display_string_multi.contains("Test message"));
     }
 }
