@@ -18,6 +18,12 @@
 // TODO: explicitly obtain from ibverbs config, for now assume 32
 const int SGE_MAX = 32;
 
+// Maximum size for a single MR: 2GB
+const size_t MAX_MR_SIZE = 2ULL * 1024 * 1024 * 1024;
+
+// MR size must be a multiple of 2MB
+const size_t MR_ALIGNMENT = 2ULL * 1024 * 1024;
+
 // Structure to hold segment information
 struct SegmentInfo {
   size_t phys_address;
@@ -190,10 +196,7 @@ int bind_mrs(
 
   qpx->wr_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
   ibv_wr_start(qpx);
-  struct mlx5dv_mkey_conf_attr mkey_cattr = {};
-  mlx5dv_wr_mkey_configure(mqpx, seg.mkey, 2, &mkey_cattr);
-  mlx5dv_wr_set_mkey_access_flags(mqpx, access_flags);
-  mlx5dv_wr_set_mkey_layout_list(mqpx, mrs_cnt, sgl.data());
+  mlx5dv_wr_mr_list(mqpx, seg.mkey, access_flags, mrs_cnt, sgl.data());
   int ret = ibv_wr_complete(qpx);
 
   if (ret != 0) {
@@ -276,44 +279,55 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
     if (seg.mr_size != seg.phys_size) {
       auto mr_start = seg.phys_address + seg.mr_size;
       auto mr_end = seg.phys_address + seg.phys_size;
-      auto mr_size = mr_end - mr_start;
+      auto remaining_size = mr_end - mr_start;
 
-      // TODO: resolve 4GiB limit
-      if (seg.phys_size > (1ULL << 32)) {
-        return RDMAXCEL_MKEY_REG_LIMIT;
+      // Register in chunks of MAX_MR_SIZE
+      size_t current_offset = 0;
+      while (current_offset < remaining_size) {
+        size_t chunk_size =
+            std::min(remaining_size - current_offset, MAX_MR_SIZE);
+        auto chunk_start = mr_start + current_offset;
+
+        // Validate that chunk_size is a multiple of 2MB
+        if (chunk_size % MR_ALIGNMENT != 0) {
+          return RDMAXCEL_MR_REGISTRATION_FAILED;
+        }
+
+        int fd = -1;
+        CUresult cu_result = cuMemGetHandleForAddressRange(
+            &fd,
+            static_cast<CUdeviceptr>(chunk_start),
+            chunk_size,
+            CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+            0);
+
+        if (cu_result != CUDA_SUCCESS || fd < 0) {
+          return RDMAXCEL_DMABUF_HANDLE_FAILED; // Failed to get dmabuf handle
+        }
+
+        // Register the dmabuf with fd, address is always 0.
+        auto mr = ibv_reg_dmabuf_mr(pd, 0, chunk_size, 0, fd, access_flags);
+        close(fd);
+
+        if (!mr) {
+          return RDMAXCEL_MR_REG_FAILED; // MR registration failed
+        }
+
+        seg.mrs.push_back(mr);
+        current_offset += chunk_size;
+
+        // If we have too many MRs, compact them into a single MR
+        if (seg.mrs.size() > SGE_MAX) {
+          // TODO: find a safe way to compact with low performance cost.
+          // return MAX_SGE error auto err = compact_mrs(pd, seg, access_flags);
+          // if (err != 0) {
+          //   return err;
+          // }
+          return RDMAXCEL_MKEY_REG_LIMIT;
+        }
       }
-      int fd = -1;
-      CUresult cu_result = cuMemGetHandleForAddressRange(
-          &fd,
-          static_cast<CUdeviceptr>(mr_start),
-          mr_size,
-          CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-          0);
 
-      if (cu_result != CUDA_SUCCESS || fd < 0) {
-        return RDMAXCEL_DMABUF_HANDLE_FAILED; // Failed to get dmabuf handle
-      }
-
-      // Register the dmabuf with fd, address is always 0.
-      auto mr = ibv_reg_dmabuf_mr(pd, 0, mr_size, 0, fd, access_flags);
-      close(fd);
-
-      if (!mr) {
-        return RDMAXCEL_MR_REG_FAILED; // MR registration failed
-      }
-
-      seg.mrs.push_back(mr);
       seg.mr_size = seg.phys_size;
-
-      // If we have too many MRs, compact them into a single MR
-      if (seg.mrs.size() > SGE_MAX) {
-        // TODO: find a safe way to compact with low performance cost.
-        // return MAX_SGE error auto err = compact_mrs(pd, seg, access_flags);
-        // if (err != 0) {
-        //   return err;
-        // }
-        return RDMAXCEL_MKEY_REG_LIMIT;
-      }
 
       // Create vector of GPU addresses for bind_mrs
       auto err = bind_mrs(pd, qp, access_flags, seg);
