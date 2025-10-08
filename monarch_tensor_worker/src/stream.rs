@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::future::Future;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -32,7 +33,6 @@ use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::data::Serialized;
 use hyperactor::forward;
-use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
@@ -829,9 +829,10 @@ impl StreamActor {
                         // it to create a new torch group.
                         let ranks = mesh.get_ranks_for_dim_slice(&dims)?;
                         let group_size = ranks.len();
+                        let (child_instance, _) = cx.child()?;
                         let backend = CommBackend::new(
+                            child_instance,
                             comm,
-                            Mailbox::new_detached(cx.self_id().clone()),
                             self.rank,
                             group_size,
                             self.world_size,
@@ -1095,7 +1096,7 @@ impl StreamActor {
 
         let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
         broker
-            .send(message)
+            .send(cx, message)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
         let result = recv
             .recv()
@@ -1159,7 +1160,7 @@ impl StreamMessageHandler for StreamActor {
 
     async fn borrow_create(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         borrow: u64,
         tensor: Ref,
         first_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
@@ -1188,7 +1189,7 @@ impl StreamMessageHandler for StreamActor {
         };
 
         let event = self.cuda_stream().map(|stream| stream.record_event(None));
-        first_use_sender.send((event, result)).map_err(|err| {
+        first_use_sender.send(cx, (event, result)).map_err(|err| {
             anyhow!(
                 "failed sending first use event for borrow {:?}: {:?}",
                 borrow,
@@ -1245,7 +1246,7 @@ impl StreamMessageHandler for StreamActor {
 
     async fn borrow_last_use(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         borrow: u64,
         result: Ref,
         last_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
@@ -1269,7 +1270,7 @@ impl StreamMessageHandler for StreamActor {
             _ => bail!("invalid rvalue type for borrow_last_use"),
         };
 
-        last_use_sender.send((event, tensor)).map_err(|err| {
+        last_use_sender.send(cx, (event, tensor)).map_err(|err| {
             anyhow!(
                 "failed sending last use event for borrow {:?}: {:?}",
                 borrow,
@@ -1693,7 +1694,7 @@ impl StreamMessageHandler for StreamActor {
 
         // Actually send the value.
         if let Some(pipe) = pipe {
-            pipe.send(PipeMessage::SendValue(value))?;
+            pipe.send(cx, PipeMessage::SendValue(value))?;
         } else {
             let result = match value {
                 Ok(value) => Ok(Serialized::serialize(&value).map_err(anyhow::Error::from)?),
@@ -1761,7 +1762,7 @@ impl StreamMessageHandler for StreamActor {
 
         self.try_define(cx, seq, results, &vec![], async |self| {
             let (tx, rx) = cx.open_once_port();
-            pipe.send(PipeMessage::RecvValue(tx))
+            pipe.send(cx, PipeMessage::RecvValue(tx))
                 .map_err(anyhow::Error::from)
                 .map_err(CallFunctionError::from)?;
             let value = rx.recv().await.map_err(anyhow::Error::from)?;

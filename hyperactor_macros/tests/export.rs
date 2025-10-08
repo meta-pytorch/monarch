@@ -199,8 +199,10 @@ mod tests {
         };
         let actor_handle = proc.spawn::<TestActor>("actor", params).await.unwrap();
 
-        actor_handle.send(123u64).unwrap();
-        actor_handle.send(TestMessage("foo".to_string())).unwrap();
+        actor_handle.send(&client, 123u64).unwrap();
+        actor_handle
+            .send(&client, TestMessage("foo".to_string()))
+            .unwrap();
 
         let myref: ActorRef<TestActorAlias> = actor_handle.bind();
         myref.port().send(&client, MyGeneric(())).unwrap();
