@@ -3322,7 +3322,7 @@ mod tests {
         actor_mesh
             .cast(&instance, testactor::GetActorId(port.bind()))
             .unwrap();
-        let got_id = rx.recv().await.unwrap();
+        let (got_id, _seq) = rx.recv().await.unwrap();
         assert_eq!(
             got_id,
             actor_mesh.values().next().unwrap().actor_id().clone()

@@ -43,6 +43,7 @@ use crate::assign::Ranks;
 use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent;
 use crate::proc_mesh::mesh_agent::ActorState;
+use crate::proc_mesh::mesh_agent::MeshAgentMessage;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::proc_mesh::mesh_agent::ReconfigurableMailboxSender;
@@ -310,18 +311,17 @@ impl ProcMesh {
 
         let (config_handle, mut config_receiver) = cx.mailbox().open_port();
         for (rank, AllocatedProc { mesh_agent, .. }) in running.iter().enumerate() {
+            let message = MeshAgentMessage::Configure {
+                rank,
+                forwarder: proc_channel_addr.clone(),
+                supervisor: None, // no supervisor; we just crash
+                address_book: address_book.clone(),
+                configured: config_handle.bind(),
+                record_supervision_events: true,
+            };
             mesh_agent
-                .configure(
-                    cx,
-                    rank,
-                    proc_channel_addr.clone(),
-                    None, // no supervisor; we just crash
-                    address_book.clone(),
-                    config_handle.bind(),
-                    true,
-                )
-                .await
-                .map_err(Error::ConfigurationError)?;
+                .send(cx, message)
+                .map_err(|e| Error::ConfigurationError(e.into()))?;
         }
         let mut completed = Ranks::new(running.len());
         while !completed.is_full() {
@@ -671,11 +671,21 @@ impl view::RankedSliceable for ProcMeshRef {
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
+    use std::ops::Deref;
 
+    use hyperactor::Proc;
+    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+    use hyperactor::config::ENABLE_NATIVE_V1_CASTING;
+    use hyperactor::context;
+    use hyperactor::id;
+    use hyperactor::mailbox::BoxableMailboxSender;
+    use hyperactor::mailbox::DialMailboxRouter;
     use ndslice::ViewExt;
     use ndslice::extent;
     use timed_test::async_timed_test;
+    use uuid::Uuid;
 
+    use super::*;
     use crate::v1;
     use crate::v1::testactor;
     use crate::v1::testing;
@@ -702,8 +712,7 @@ mod tests {
         );
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_spawn_actor() {
+    async fn execute_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
         let instance = testing::instance().await;
@@ -711,6 +720,163 @@ mod tests {
         for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             testactor::assert_mesh_shape(proc_mesh.spawn(instance, "test", &()).await.unwrap())
                 .await;
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_actor_v1_casting() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_spawn_actor().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_actor_v0_casting() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        execute_spawn_actor().await;
+    }
+
+    // * Spawn an actor mesh, and then
+    // * do a random numbers of cast to it to bump the seq numbers for all
+    //   actors participating in the cast.
+    //     * This is to avoid the test mistakenly passing.
+    async fn spawm_for_seq_test(
+        cx: &impl context::Actor,
+        proc_mesh: &ProcMeshRef,
+    ) -> ActorMesh<testactor::TestActor> {
+        let actor_mesh = proc_mesh
+            .spawn::<testactor::TestActor>(cx, "test", &())
+            .await
+            .unwrap();
+
+        let (instance, _) = cx
+            .instance()
+            .proc()
+            .instance(&format!("random_casts_{}", Uuid::now_v7()))
+            .unwrap();
+        let n = fastrand::u64(3..10);
+        for _ in 0..n {
+            actor_mesh.cast(&instance, ()).unwrap();
+        }
+        actor_mesh
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_seq_from_same_sender_to_different_meshes() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        let instance = testing::instance().await;
+        let session_id = instance.sequencer().session_id();
+
+        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
+            let proc_mesh_ref = proc_mesh.deref();
+
+            // Sequence numbers are scoped based on the (client, dest) pair.
+            // So casts to different meshes from the same client instance would
+            // result in seq 1 for all casts.
+            let handles = (0..3)
+                .map(|_| {
+                    let proc_mesh_ref_clone = proc_mesh_ref.clone();
+                    tokio::spawn(async move {
+                        let actor_mesh = spawm_for_seq_test(instance, &proc_mesh_ref_clone).await;
+                        let expected_seqs = vec![1; 8];
+                        testactor::assert_casting_correctness(
+                            &actor_mesh,
+                            instance,
+                            Some((session_id, expected_seqs)),
+                        )
+                        .await;
+                    })
+                })
+                .collect::<Vec<_>>();
+            futures::future::join_all(handles).await;
+        }
+    }
+
+    // Verify that the seq numbers are assigned correctly when we cast to
+    // different views of the same root mesh.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_seq_from_same_sender_to_difference_views() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+
+        let instance = testing::instance().await;
+        let session_id = instance.sequencer().session_id();
+
+        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
+            let actor_mesh = spawm_for_seq_test(instance, &proc_mesh).await;
+
+            // First cast. The seq should be 1 for all actors.
+            let expected_seqs = vec![1; 8];
+            testactor::assert_casting_correctness(
+                &actor_mesh,
+                instance,
+                Some((session_id, expected_seqs)),
+            )
+            .await;
+
+            // Verify casting to the sliced actor mesh
+            let sliced_actor_mesh = actor_mesh.range("replicas", 1..3).unwrap();
+            // Second cast. The seq should be 2 for actors in the sliced mesh.
+            let expected_seqs = vec![2; 4];
+            testactor::assert_casting_correctness(
+                &sliced_actor_mesh,
+                instance,
+                Some((session_id, expected_seqs)),
+            )
+            .await;
+
+            // Verify casting to a different sliced actor mesh
+            let sliced_actor_mesh = actor_mesh.range("replicas", 0..2).unwrap();
+            // For actors in the previous sliced mesh, the seq should be 3 since
+            // this is the third cast for them. For other actors, the seq should
+            // be 2.
+            let expected_seqs = vec![2, 2, 3, 3];
+            testactor::assert_casting_correctness(
+                &sliced_actor_mesh,
+                instance,
+                Some((session_id, expected_seqs)),
+            )
+            .await;
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_seq_from_different_senders() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        let proc = Proc::new(id!(test[0]), DialMailboxRouter::new().boxed());
+        let (instance, _) = proc.instance("test_client").unwrap();
+        let (first_instance, _) = proc.instance("first_client").unwrap();
+        let (second_instance, _) = proc.instance("second_client").unwrap();
+        let (third_instance, _) = proc.instance("third_client").unwrap();
+
+        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
+            let actor_mesh = spawm_for_seq_test(&instance, &proc_mesh).await;
+
+            // Sequence numbers are calculated based on the sequencer, i.e. the
+            // client name. So three casts would result in seq 1 for all actors.
+            for inst in [&first_instance, &second_instance, &third_instance] {
+                let expected_seqs = vec![1; 8];
+                let session_id = inst.sequencer().session_id();
+                testactor::assert_casting_correctness(
+                    &actor_mesh,
+                    inst,
+                    Some((session_id, expected_seqs)),
+                )
+                .await;
+            }
         }
     }
 

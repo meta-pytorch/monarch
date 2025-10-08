@@ -1652,11 +1652,14 @@ impl Handler<MaintainWorldHealth> for SystemActor {
 
                 // The proc has expired heartbeating and it manages the lifecycle of system, schedule system stop
                 let (tx, _) = cx.open_once_port::<()>();
-                cx.port().send(SystemMessage::Stop {
-                    worlds: None,
-                    proc_timeout: Duration::from_secs(5),
-                    reply_port: tx.bind(),
-                })?;
+                cx.port().send(
+                    &cx,
+                    SystemMessage::Stop {
+                        worlds: None,
+                        proc_timeout: Duration::from_secs(5),
+                        reply_port: tx.bind(),
+                    },
+                )?;
             }
 
             if world.state.status == WorldStatus::Live {
@@ -1993,7 +1996,8 @@ mod tests {
     async fn test_host_join_before_world() {
         // Spins up a new world with 2 hosts, with 3 procs each.
         let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
-        let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
+        let (system_actor_handle, system_proc) = SystemActor::bootstrap(params).await.unwrap();
+        let (client, _) = system_proc.instance("client").unwrap();
 
         // Use a local proc actor to join the system.
         let mut host_actors: Vec<MockHostActor> = Vec::new();
@@ -2006,14 +2010,17 @@ mod tests {
         for host_actor in host_actors.iter_mut() {
             // Join the world.
             system_actor_handle
-                .send(SystemMessage::Join {
-                    proc_id: host_actor.local_proc_id.clone(),
-                    world_id: world_id.clone(),
-                    proc_message_port: host_actor.local_proc_message_port.bind(),
-                    proc_addr: host_actor.local_proc_addr.clone(),
-                    labels: HashMap::new(),
-                    lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
-                })
+                .send(
+                    &client,
+                    SystemMessage::Join {
+                        proc_id: host_actor.local_proc_id.clone(),
+                        world_id: world_id.clone(),
+                        proc_message_port: host_actor.local_proc_message_port.bind(),
+                        proc_addr: host_actor.local_proc_addr.clone(),
+                        labels: HashMap::new(),
+                        lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
+                    },
+                )
                 .unwrap();
 
             // We should get a joined message.
@@ -2028,13 +2035,16 @@ mod tests {
         let num_procs = 6;
         let shape = Shape::Definite(vec![2, 3]);
         system_actor_handle
-            .send(SystemMessage::UpsertWorld {
-                world_id: world_id.clone(),
-                shape,
-                num_procs_per_host: 3,
-                env: Environment::Local,
-                labels: HashMap::new(),
-            })
+            .send(
+                &client,
+                SystemMessage::UpsertWorld {
+                    world_id: world_id.clone(),
+                    shape,
+                    num_procs_per_host: 3,
+                    env: Environment::Local,
+                    labels: HashMap::new(),
+                },
+            )
             .unwrap();
 
         let mut all_procs: Vec<ProcId> = Vec::new();
@@ -2067,7 +2077,8 @@ mod tests {
     async fn test_host_join_after_world() {
         // Spins up a new world with 2 hosts, with 3 procs each.
         let params = SystemActorParams::new(Duration::from_secs(10), Duration::from_secs(10));
-        let (system_actor_handle, _system_proc) = SystemActor::bootstrap(params).await.unwrap();
+        let (system_actor_handle, system_proc) = SystemActor::bootstrap(params).await.unwrap();
+        let (client, _) = system_proc.instance("client").unwrap();
 
         // Create a new world message and send to system actor
         let world_name = "test".to_string();
@@ -2075,13 +2086,16 @@ mod tests {
         let num_procs = 6;
         let shape = Shape::Definite(vec![2, 3]);
         system_actor_handle
-            .send(SystemMessage::UpsertWorld {
-                world_id: world_id.clone(),
-                shape,
-                num_procs_per_host: 3,
-                env: Environment::Local,
-                labels: HashMap::new(),
-            })
+            .send(
+                &client,
+                SystemMessage::UpsertWorld {
+                    world_id: world_id.clone(),
+                    shape,
+                    num_procs_per_host: 3,
+                    env: Environment::Local,
+                    labels: HashMap::new(),
+                },
+            )
             .unwrap();
 
         // Use a local proc actor to join the system.
@@ -2093,14 +2107,17 @@ mod tests {
         for host_actor in host_actors.iter_mut() {
             // Join the world.
             system_actor_handle
-                .send(SystemMessage::Join {
-                    proc_id: host_actor.local_proc_id.clone(),
-                    world_id: world_id.clone(),
-                    proc_message_port: host_actor.local_proc_message_port.bind(),
-                    proc_addr: host_actor.local_proc_addr.clone(),
-                    labels: HashMap::new(),
-                    lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
-                })
+                .send(
+                    &client,
+                    SystemMessage::Join {
+                        proc_id: host_actor.local_proc_id.clone(),
+                        world_id: world_id.clone(),
+                        proc_message_port: host_actor.local_proc_message_port.bind(),
+                        proc_addr: host_actor.local_proc_addr.clone(),
+                        labels: HashMap::new(),
+                        lifecycle_mode: ProcLifecycleMode::ManagedBySystem,
+                    },
+                )
                 .unwrap();
 
             // We should get a joined message.
@@ -2217,13 +2234,16 @@ mod tests {
         // Create one.
         let world_id = id!(world);
         system_actor_handle
-            .send(SystemMessage::UpsertWorld {
-                world_id: world_id.clone(),
-                shape: Shape::Definite(vec![1]),
-                num_procs_per_host: 1,
-                env: Environment::Local,
-                labels: HashMap::new(),
-            })
+            .send(
+                &client,
+                SystemMessage::UpsertWorld {
+                    world_id: world_id.clone(),
+                    shape: Shape::Definite(vec![1]),
+                    num_procs_per_host: 1,
+                    env: Environment::Local,
+                    labels: HashMap::new(),
+                },
+            )
             .unwrap();
 
         // Now we should know a world.
@@ -2242,8 +2262,7 @@ mod tests {
 
         // Build a supervisor.
         let supervisor = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = supervisor.open_port::<ProcSupervisionMessage>();
-        sup_tx.bind_to(ProcSupervisionMessage::port());
+        let (_sup_tx, _sup_rx) = supervisor.bind_actor_port::<ProcSupervisionMessage>();
         let sup_ref = ActorRef::<ProcSupervisor>::attest(supervisor.self_id().clone());
 
         // Construct a system sender.
@@ -2268,7 +2287,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let proc_0_client = proc_0.attach("client").unwrap();
+        let (proc_0_client, _) = proc_0.instance("client").unwrap();
         let (proc_0_undeliverable_tx, _proc_0_undeliverable_rx) = proc_0_client.open_port();
 
         // Bootstrap a second proc 'world[1]', join the system.
@@ -2324,7 +2343,10 @@ mod tests {
         let ttl = 1_u64;
         let (game_over, on_game_over) = proc_0_client.open_once_port::<bool>();
         ping_handle
-            .send(PingPongMessage(ttl, pong_handle.bind(), game_over.bind()))
+            .send(
+                &proc_0_client,
+                PingPongMessage(ttl, pong_handle.bind(), game_over.bind()),
+            )
             .unwrap();
 
         // We expect message delivery failure prevents the game from
@@ -2363,11 +2385,14 @@ mod tests {
 
         // Create a new world message and send to system actor
         let (client_tx, client_rx) = client.open_once_port::<()>();
-        system_actor_handle.send(SystemMessage::Stop {
-            worlds: None,
-            proc_timeout: Duration::from_secs(5),
-            reply_port: client_tx.bind(),
-        })?;
+        system_actor_handle.send(
+            &client,
+            SystemMessage::Stop {
+                worlds: None,
+                proc_timeout: Duration::from_secs(5),
+                reply_port: client_tx.bind(),
+            },
+        )?;
         client_rx.recv().await?;
 
         // Check that it has stopped.

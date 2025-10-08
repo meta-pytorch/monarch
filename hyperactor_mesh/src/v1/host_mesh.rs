@@ -662,10 +662,14 @@ mod tests {
     use std::collections::HashSet;
     use std::collections::VecDeque;
 
+    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+    use hyperactor::config::ENABLE_NATIVE_V1_CASTING;
+    use hyperactor::config::global::ConfigLock;
     use hyperactor::context::Mailbox as _;
     use itertools::Itertools;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::async_timed_test;
     use tokio::process::Command;
 
     use super::*;
@@ -704,9 +708,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_allocate() {
-        let config = hyperactor::config::global::lock();
+    async fn execute_allocate(config: &ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance().await;
@@ -763,7 +765,7 @@ mod tests {
                     .collect();
 
                 while !expected_actor_ids.is_empty() {
-                    let actor_id = rx.recv().await.unwrap();
+                    let (actor_id, _seq) = rx.recv().await.unwrap();
                     assert!(
                         expected_actor_ids.remove(&actor_id),
                         "got {actor_id}, expect {expected_actor_ids:?}"
@@ -804,6 +806,21 @@ mod tests {
         }
     }
 
+    #[async_timed_test(timeout_secs = 180)]
+    async fn test_allocate() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        execute_allocate(&config).await;
+    }
+
+    #[async_timed_test(timeout_secs = 180)]
+    async fn test_allocate_v1() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_allocate(&config).await;
+    }
+
     /// Allocate a new port on localhost. This drops the listener, releasing the socket,
     /// before returning. Hyperactor's channel::net applies SO_REUSEADDR, so we do not hav
     /// to wait out the socket's TIMED_WAIT state.
@@ -814,9 +831,7 @@ mod tests {
         ChannelAddr::Tcp(listener.local_addr().unwrap())
     }
 
-    #[tokio::test]
-    async fn test_extrinsic_allocation() {
-        let config = hyperactor::config::global::lock();
+    async fn execute_extrinsic_allocation(config: &ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -855,6 +870,20 @@ mod tests {
             .shutdown(&instance)
             .await
             .expect("hosts shutdown");
+    }
+
+    async fn test_extrinsic_allocation() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        execute_extrinsic_allocation(&config).await;
+    }
+
+    #[tokio::test]
+    async fn test_extrinsic_allocation_v1() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_extrinsic_allocation(&config).await;
     }
 
     #[tokio::test]

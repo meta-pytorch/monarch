@@ -110,7 +110,12 @@ declare_attrs! {
     pub attr MESSAGE_LATENCY_SAMPLING_RATE: f32 = 0.01;
 
     /// Whether to enable client sequence assignment.
-    pub attr ENABLE_CLIENT_SEQ_ASSIGNMENT: bool = false;
+    @meta(CONFIG_ENV_VAR = "HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER".to_string())
+    pub attr ENABLE_DEST_ACTOR_REORDERING_BUFFER: bool = false;
+
+    /// Whether to use native v1 casting in v1 ActorMesh.
+    @meta(CONFIG_ENV_VAR = "HYPERACTOR_ENABLE_NATIVE_V1_CASTING".to_string())
+    pub attr ENABLE_NATIVE_V1_CASTING: bool = false;
 
     /// Timeout for [`Host::spawn`] to await proc readiness.
     ///

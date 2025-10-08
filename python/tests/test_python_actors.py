@@ -8,7 +8,6 @@
 
 import asyncio
 import ctypes
-import enum
 import importlib.resources
 import logging
 import operator
@@ -21,6 +20,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+from enum import auto, Enum
 from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import cast, Dict, Tuple
@@ -79,9 +79,10 @@ from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
 
-class ApiVersion(enum.Enum):
-    V0 = "v0"
-    V1 = "v1"
+class ApiVersion(Enum):
+    V0 = auto()
+    V1 = auto()
+    V1Native = auto()
 
 
 needs_cuda = pytest.mark.skipif(
@@ -122,11 +123,22 @@ def spawn_procs_on_host(
         return host.spawn_procs(per_host)
 
 
+def setup_env_vars(api_ver: ApiVersion):
+    match api_ver:
+        case ApiVersion.V1Native:
+            os.environ["HYPERACTOR_ENABLE_NATIVE_V1_CASTING"] = "true"
+            os.environ["HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER"] = "true"
+        case _:
+            pass
+
+
 def spawn_procs_on_fake_host(
     api_ver: ApiVersion, per_host: Dict[str, int]
 ) -> ProcMesh | ProcMeshV1:
+    setup_env_vars(api_ver)
+
     match api_ver:
-        case ApiVersion.V1:
+        case ApiVersion.V1 | ApiVersion.V1Native:
             return spawn_procs_on_host(fake_in_process_host_v1("fake_host"), per_host)
         case ApiVersion.V0:
             return spawn_procs_on_host(fake_in_process_host(), per_host)
@@ -137,8 +149,10 @@ def spawn_procs_on_fake_host(
 def spawn_procs_on_this_host(
     api_ver: ApiVersion, per_host: Dict[str, int]
 ) -> ProcMesh | ProcMeshV1:
+    setup_env_vars(api_ver)
+
     match api_ver:
-        case ApiVersion.V1:
+        case ApiVersion.V1 | ApiVersion.V1Native:
             return spawn_procs_on_host(this_host_v1(), per_host)
         case ApiVersion.V0:
             return spawn_procs_on_host(this_host(), per_host)
@@ -148,7 +162,7 @@ def spawn_procs_on_this_host(
 
 def get_this_proc(api_ver: ApiVersion):
     match api_ver:
-        case ApiVersion.V1:
+        case ApiVersion.V1 | ApiVersion.V1Native:
             return this_proc_v1()
         case ApiVersion.V0:
             return this_proc()
@@ -156,7 +170,7 @@ def get_this_proc(api_ver: ApiVersion):
             raise ValueError(f"Unknown API version: {api_ver}")
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_choose(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -176,7 +190,7 @@ async def test_choose(api_ver: ApiVersion):
     assert result2 == result3
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_stream(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -198,7 +212,7 @@ class From(Actor):
         return [await x for x in to.whoami.stream()]
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_mesh_passed_to_mesh(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -209,7 +223,7 @@ async def test_mesh_passed_to_mesh(api_ver: ApiVersion):
     assert all[0] != all[1]
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_mesh_passed_to_mesh_on_different_proc_mesh(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -221,7 +235,7 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh(api_ver: ApiVersion):
     assert all[0] != all[1]
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_actor_slicing(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -238,7 +252,7 @@ def test_actor_slicing(api_ver: ApiVersion):
     assert result[0] == result[1]
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_aggregate(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -259,7 +273,7 @@ class RunIt(Actor):
         return str(current_rank())
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_rank_size(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -271,11 +285,11 @@ async def test_rank_size(api_ver: ApiVersion):
     assert 4 == await acc.accumulate(lambda: current_size()["gpus"])
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_rank_string(api_ver: ApiVersion):
     match api_ver:
-        case ApiVersion.V1:
+        case ApiVersion.V1 | ApiVersion.V1Native:
             per_host = {"gpus": 2}
         case ApiVersion.V0:
             per_host = {"hosts": 1, "gpus": 2}
@@ -296,7 +310,7 @@ class SyncActor(Actor):
         return a_counter.value.choose().get()
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_sync_actor(api_ver: ApiVersion):
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -306,7 +320,7 @@ async def test_sync_actor(api_ver: ApiVersion):
     assert r == 5
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_sync_actor_sync_client(api_ver: ApiVersion) -> None:
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -316,14 +330,14 @@ def test_sync_actor_sync_client(api_ver: ApiVersion) -> None:
     assert r == 5
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_proc_mesh_size(api_ver: ApiVersion) -> None:
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
     assert 2 == proc.size("gpus")
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_rank_size_sync(api_ver: ApiVersion) -> None:
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -334,7 +348,7 @@ def test_rank_size_sync(api_ver: ApiVersion) -> None:
     assert 4 == acc.accumulate(lambda: current_size()["gpus"]).get()
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_accumulate_sync(api_ver: ApiVersion) -> None:
     proc = spawn_procs_on_fake_host(api_ver, {"gpus": 2})
@@ -351,11 +365,11 @@ class CastToCounter(Actor):
         return list(c.value.call().get())
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_value_mesh(api_ver: ApiVersion) -> None:
     match api_ver:
-        case ApiVersion.V1:
+        case ApiVersion.V1 | ApiVersion.V1Native:
             per_host = {"gpus": 2}
         case ApiVersion.V0:
             per_host = {"hosts": 1, "gpus": 2}
@@ -400,7 +414,7 @@ def test_rust_binding_modules_correct() -> None:
     check(bindings, "monarch._rust_bindings")
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_proc_mesh_liveness(api_ver: ApiVersion) -> None:
     mesh = spawn_procs_on_this_host(api_ver, {"gpus": 2})
@@ -436,7 +450,7 @@ class TLSActor(Actor):
         return self.local.value
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_actor_tls(api_ver: ApiVersion) -> None:
     """Test that thread-local state is respected."""
@@ -467,7 +481,7 @@ class TLSActorFullSync(Actor):
         return self.local.value
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_actor_tls_full_sync(api_ver: ApiVersion) -> None:
     """Test that thread-local state is respected."""
@@ -495,7 +509,7 @@ class AsyncActor(Actor):
         self.should_exit = True
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_async_concurrency(api_ver: ApiVersion):
     """Test that async endpoints will be processed concurrently."""
@@ -633,7 +647,7 @@ class Printer(Actor):
         return True
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_actor_log_streaming(api_ver: ApiVersion) -> None:
     # Save original file descriptors
@@ -703,10 +717,12 @@ async def test_actor_log_streaming(api_ver: ApiVersion) -> None:
                     await am.log.call("has log streaming as level matched")
 
                 match api_ver:
-                    case ApiVersion.V1:
+                    case ApiVersion.V1 | ApiVersion.V1Native:
                         await asyncio.sleep(1)
                     case ApiVersion.V0:
                         await pm.stop()
+                    case _:
+                        raise ValueError(f"Unknown API version: {api_ver}")
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -787,7 +803,7 @@ async def test_actor_log_streaming(api_ver: ApiVersion) -> None:
             pass
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(120)
 async def test_alloc_based_log_streaming(api_ver: ApiVersion) -> None:
     """Test both AllocHandle.stream_logs = False and True cases."""
@@ -899,7 +915,7 @@ async def test_alloc_based_log_streaming(api_ver: ApiVersion) -> None:
     await test_stream_logs_case(True, "stream_logs_true")
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_logging_option_defaults(api_ver: ApiVersion) -> None:
     # Save original file descriptors
@@ -936,11 +952,13 @@ async def test_logging_option_defaults(api_ver: ApiVersion) -> None:
                     await am.log.call("log streaming")
 
                 match api_ver:
-                    case ApiVersion.V1:
+                    case ApiVersion.V1 | ApiVersion.V1Native:
                         # Wait for > default aggregation window (3 seconds)
                         await asyncio.sleep(5)
                     case ApiVersion.V0:
                         await pm.stop()
+                    case _:
+                        raise ValueError(f"Unknown API version: {api_ver}")
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -1018,7 +1036,7 @@ class MockIPython:
 
 # oss_skip: pytest keeps complaining about mocking get_ipython module
 @pytest.mark.oss_skip
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 async def test_flush_called_only_once(api_ver: ApiVersion) -> None:
     """Test that flush is called only once when ending an ipython cell"""
     mock_ipython = MockIPython()
@@ -1046,7 +1064,7 @@ async def test_flush_called_only_once(api_ver: ApiVersion) -> None:
 
 # oss_skip: pytest keeps complaining about mocking get_ipython module
 @pytest.mark.oss_skip
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(180)
 async def test_flush_logs_ipython(api_ver: ApiVersion) -> None:
     """Test that logs are flushed when get_ipython is available and post_run_cell event is triggered."""
@@ -1179,7 +1197,7 @@ async def test_flush_logs_fast_exit() -> None:
     ), process.stdout
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_flush_on_disable_aggregation(api_ver: ApiVersion) -> None:
     """Test that logs are flushed when disabling aggregation.
@@ -1224,11 +1242,13 @@ async def test_flush_on_disable_aggregation(api_ver: ApiVersion) -> None:
                     await am.print.call("single log line")
 
                 match api_ver:
-                    case ApiVersion.V1:
+                    case ApiVersion.V1 | ApiVersion.V1Native:
                         # Wait for > default aggregation window (3 secs)
                         await asyncio.sleep(5)
                     case ApiVersion.V0:
                         await pm.stop()
+                    case _:
+                        raise ValueError(f"Unknown API version: {api_ver}")
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -1274,7 +1294,7 @@ async def test_flush_on_disable_aggregation(api_ver: ApiVersion) -> None:
             pass
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(120)
 async def test_multiple_ongoing_flushes_no_deadlock(api_ver: ApiVersion) -> None:
     """
@@ -1305,7 +1325,7 @@ async def test_multiple_ongoing_flushes_no_deadlock(api_ver: ApiVersion) -> None
     futures[-1].get()
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_adjust_aggregation_window(api_ver: ApiVersion) -> None:
     """Test that the flush deadline is updated when the aggregation window is adjusted.
@@ -1347,11 +1367,13 @@ async def test_adjust_aggregation_window(api_ver: ApiVersion) -> None:
                     await am.print.call("second batch of logs")
 
                 match api_ver:
-                    case ApiVersion.V1:
+                    case ApiVersion.V1 | ApiVersion.V1Native:
                         # Wait for > aggregation window (2 secs)
                         await asyncio.sleep(4)
                     case ApiVersion.V0:
                         await pm.stop()
+                    case _:
+                        raise ValueError(f"Unknown API version: {api_ver}")
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -1397,7 +1419,7 @@ class SendAlot(Actor):
             port.send(i)
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_port_as_argument(api_ver: ApiVersion) -> None:
     proc_mesh = spawn_procs_on_fake_host(api_ver, {"gpus": 1})
@@ -1509,7 +1531,7 @@ class PortedActor(Actor):
         port.send(3 + b)
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 def test_ported_actor(api_ver: ApiVersion):
     proc_mesh = spawn_procs_on_fake_host(api_ver, {"gpus": 1})
@@ -1551,7 +1573,7 @@ class SleepActor(Actor):
         await asyncio.sleep(t)
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 def test_mesh_len(api_ver: ApiVersion):
     proc_mesh = spawn_procs_on_fake_host(api_ver, {"gpus": 12})
     s = proc_mesh.spawn("sleep_actor", SleepActor)
@@ -1608,7 +1630,7 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
         return True
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_undeliverable_message_with_override(api_ver: ApiVersion) -> None:
     pm = spawn_procs_on_this_host(api_ver, {"gpus": 1})
@@ -1624,7 +1646,7 @@ async def test_undeliverable_message_with_override(api_ver: ApiVersion) -> None:
     pm.stop().get()
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 @pytest.mark.timeout(60)
 async def test_undeliverable_message_without_override(api_ver: ApiVersion) -> None:
     pm = spawn_procs_on_this_host(api_ver, {"gpus": 1})
@@ -1636,7 +1658,7 @@ async def test_undeliverable_message_without_override(api_ver: ApiVersion) -> No
     pm.stop().get()
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 def test_this_and_that(api_ver: ApiVersion):
     proc = get_this_proc(api_ver)
     counter = proc.spawn("counter", Counter, 7)
@@ -1649,7 +1671,7 @@ class ReceptorActor(Actor):
         return 1
 
 
-@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1, ApiVersion.V1Native])
 async def test_things_survive_losing_python_reference(api_ver: ApiVersion) -> None:
     """Test the slice_receptor_mesh function in LOCAL mode, verifying that setup methods are called."""
 

@@ -54,11 +54,14 @@ impl LoggingMeshClient {
         let (version_tx, version_rx) = cx.instance().open_once_port::<u64>();
 
         // First initialize a sync flush.
-        client_actor.send(LogClientMessage::StartSyncFlush {
-            expected_procs: forwarder_mesh.region().num_ranks(),
-            reply: reply_tx.bind(),
-            version: version_tx.bind(),
-        })?;
+        client_actor.send(
+            cx,
+            LogClientMessage::StartSyncFlush {
+                expected_procs: forwarder_mesh.region().num_ranks(),
+                reply: reply_tx.bind(),
+                version: version_tx.bind(),
+            },
+        )?;
 
         let version = version_rx.recv().await?;
 
@@ -133,12 +136,15 @@ impl LoggingMeshClient {
         })
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
-        self.client_actor
-            .send(LogClientMessage::SetAggregate {
-                aggregate_window_sec,
-            })
-            .map_err(anyhow::Error::msg)?;
-
+        instance_dispatch!(instance, |cx_instance| {
+            self.client_actor.send(
+                cx_instance,
+                LogClientMessage::SetAggregate {
+                    aggregate_window_sec,
+                },
+            )
+        })
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         Ok(())
     }
 

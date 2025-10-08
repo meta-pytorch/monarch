@@ -878,7 +878,6 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::data::Named;
     use hyperactor::forward;
     use hyperactor::id;
     use hyperactor::reference::ActorRef;
@@ -1205,9 +1204,8 @@ mod tests {
         // A test supervisor.
         let mut system = System::new(server_handle.local_addr().clone());
         let supervisor = system.attach().await.unwrap();
-        let (supervisor_supervision_tx, mut supervisor_supervision_receiver) =
-            supervisor.open_port::<ProcSupervisionMessage>();
-        supervisor_supervision_tx.bind_to(ProcSupervisionMessage::port());
+        let (_supervisor_supervision_tx, mut supervisor_supervision_receiver) =
+            supervisor.bind_actor_port::<ProcSupervisionMessage>();
         let supervisor_actor_ref: ActorRef<ProcSupervisor> =
             ActorRef::attest(supervisor.self_id().clone());
 
@@ -1388,8 +1386,7 @@ mod tests {
 
         // Build a supervisor.
         let supervisor = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = supervisor.open_port::<ProcSupervisionMessage>();
-        sup_tx.bind_to(ProcSupervisionMessage::port());
+        let (_sup_tx, _sup_rx) = supervisor.bind_actor_port::<ProcSupervisionMessage>();
         let sup_ref = ActorRef::<ProcSupervisor>::attest(supervisor.self_id().clone());
 
         // Construct a system sender.
@@ -1417,7 +1414,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let proc_0_client = proc_0.attach("client").unwrap();
+        let (proc_0_client, _) = proc_0.instance("client").unwrap();
         let (proc_0_undeliverable_tx, mut proc_0_undeliverable_rx) = proc_0_client.open_port();
 
         // Bootstrap a second proc 'world[1]', join the system.
@@ -1462,7 +1459,10 @@ mod tests {
             let ttl = 66 + i as u64; // Avoid ttl = 66!
             let (once_handle, _) = proc_0_client.open_once_port::<bool>();
             ping_handle
-                .send(PingPongMessage(ttl, pong_handle.bind(), once_handle.bind()))
+                .send(
+                    &proc_0_client,
+                    PingPongMessage(ttl, pong_handle.bind(), once_handle.bind()),
+                )
                 .unwrap();
         }
 
@@ -1512,8 +1512,7 @@ mod tests {
 
         // Build a supervisor.
         let supervisor = system.attach().await.unwrap();
-        let (sup_tx, _sup_rx) = supervisor.open_port::<ProcSupervisionMessage>();
-        sup_tx.bind_to(ProcSupervisionMessage::port());
+        let (_sup_tx, _sup_rx) = supervisor.bind_actor_port::<ProcSupervisionMessage>();
         let sup_ref = ActorRef::<ProcSupervisor>::attest(supervisor.self_id().clone());
 
         // Construct a system sender.
@@ -1579,7 +1578,10 @@ mod tests {
         let ttl = 10u64; // Avoid ttl = 66!
         let (once_tx, once_rx) = system_client.open_once_port::<bool>();
         ping_handle
-            .send(PingPongMessage(ttl, pong_handle.bind(), once_tx.bind()))
+            .send(
+                &system_client,
+                PingPongMessage(ttl, pong_handle.bind(), once_tx.bind()),
+            )
             .unwrap();
 
         assert!(once_rx.recv().await.unwrap());

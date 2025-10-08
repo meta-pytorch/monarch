@@ -15,13 +15,14 @@ use anyhow::bail;
 use anyhow::ensure;
 use async_trait::async_trait;
 use cxx::CxxVector;
+use derivative::Derivative;
 use hyperactor::Actor;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
-use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::OncePortReceiver;
 use parking_lot::Mutex;
@@ -463,10 +464,12 @@ impl Work for CommWork {
     }
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct CommBackend {
+    #[derivative(Debug = "ignore")]
+    instance: Instance<()>, // The actor that represents this object.
     comm: Arc<ActorHandle<NcclCommActor>>,
-    mailbox: Mailbox,
     rank: usize,
     // Size of group. This is less than or equal to world_size.
     group_size: usize,
@@ -477,8 +480,8 @@ pub struct CommBackend {
 
 impl CommBackend {
     pub fn new(
+        instance: Instance<()>,
         comm: Arc<ActorHandle<NcclCommActor>>,
-        mailbox: Mailbox,
         rank: usize,
         group_size: usize,
         world_size: usize,
@@ -488,8 +491,8 @@ impl CommBackend {
             "Group must be smaller or equal to the world size"
         );
         Self {
+            instance,
             comm,
-            mailbox,
             rank,
             group_size,
             world_size,
@@ -570,13 +573,16 @@ impl Backend for CommBackend {
         let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::AllReduce(
-            cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllReduce(
+                cell.clone(),
+                convert_reduce_op(opts.reduce_op)?,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -603,15 +609,18 @@ impl Backend for CommBackend {
         }
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
+        let (tx, rx) = self.instance.open_once_port();
         // This is not implemented in this function because the broadcasts we need
         // to create will change their behavior based on rank.
-        self.comm.send(CommMessage::AllGather(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllGather(
+                output_cell.clone(),
+                input_cell.clone(),
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         let mut input_cells = vec![];
         input_cells.extend(output_cell);
         input_cells.push(input_cell);
@@ -631,13 +640,16 @@ impl Backend for CommBackend {
         let input_cell = TensorCell::new(unsafe { input.clone_unsafe() });
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::AllGatherIntoTensor(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllGatherIntoTensor(
+                output_cell.clone(),
+                input_cell.clone(),
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(
             CommWork::from(vec![output_cell, input_cell], rx).await?,
         ))
@@ -645,10 +657,13 @@ impl Backend for CommBackend {
 
     async fn barrier(&self, _opts: BarrierOptions) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
+        let (tx, rx) = self.instance.open_once_port();
         self.comm
             // There's no native barrier op in nccl, so impl via all-reduce.
-            .send(CommMessage::Barrier(Stream::get_current_stream(), tx))?;
+            .send(
+                &self.instance,
+                CommMessage::Barrier(Stream::get_current_stream(), tx),
+            )?;
         Ok(Box::new(CommWork::from(vec![], rx).await?))
     }
 
@@ -663,14 +678,17 @@ impl Backend for CommBackend {
         let input_cell = TensorCell::new(unsafe { input.clone_unsafe() });
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::Reduce(
-            input_cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            opts.root_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::Reduce(
+                input_cell.clone(),
+                convert_reduce_op(opts.reduce_op)?,
+                opts.root_rank,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(CommWork::from(vec![input_cell], rx).await?))
     }
 
@@ -697,14 +715,17 @@ impl Backend for CommBackend {
         }
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::ReduceScatterTensor(
-            output_cell.clone(),
-            input_cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::ReduceScatterTensor(
+                output_cell.clone(),
+                input_cell.clone(),
+                convert_reduce_op(opts.reduce_op)?,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(
             CommWork::from(vec![output_cell, input_cell], rx).await?,
         ))
@@ -726,13 +747,11 @@ impl Backend for CommBackend {
         let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::Send(
-            cell.clone(),
-            dst_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::Send(cell.clone(), dst_rank, Stream::get_current_stream(), tx),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -752,13 +771,11 @@ impl Backend for CommBackend {
         let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::Recv(
-            cell.clone(),
-            src_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::Recv(cell.clone(), src_rank, Stream::get_current_stream(), tx),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -782,7 +799,7 @@ impl Backend for CommBackend {
         assert_type_and_sizes_match(outputs.as_slice(), input.scalar_type(), &input.sizes())?;
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
+        let (tx, rx) = self.instance.open_once_port();
         let mut messages = vec![];
         // All ranks other than the root Recv, and the root rank calls Send.
         if self.rank == root {
@@ -795,7 +812,7 @@ impl Backend for CommBackend {
             }
             for (r, output) in output_cells.clone().into_iter().enumerate() {
                 if r != root {
-                    let (tx_recv, _rx_recv) = self.mailbox.open_once_port();
+                    let (tx_recv, _rx_recv) = self.instance.open_once_port();
                     messages.push(CommMessage::Recv(
                         output,
                         r as i32,
@@ -814,7 +831,7 @@ impl Backend for CommBackend {
                     output_cells.len()
                 ));
             }
-            let (tx_send, _rx_send) = self.mailbox.open_once_port();
+            let (tx_send, _rx_send) = self.instance.open_once_port();
             messages.push(CommMessage::Send(
                 input_cell.clone(),
                 root as i32,
@@ -822,11 +839,10 @@ impl Backend for CommBackend {
                 tx_send,
             ));
         }
-        self.comm.send(CommMessage::Group(
-            messages,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Group(messages, Stream::get_current_stream(), tx),
+        )?;
         let mut inputs = vec![];
         inputs.extend(output_cells);
         inputs.push(input_cell);
@@ -853,7 +869,7 @@ impl Backend for CommBackend {
         assert_type_and_sizes_match(inputs.as_slice(), output.scalar_type(), &output.sizes())?;
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
+        let (tx, rx) = self.instance.open_once_port();
         let mut messages = vec![];
         // Implementation is the inverse set of messages from gather, where all ranks
         // other than the root Send, and the root rank calls Recv.
@@ -867,7 +883,7 @@ impl Backend for CommBackend {
             }
             for (r, input) in input_cells.clone().into_iter().enumerate() {
                 if r != root {
-                    let (tx_send, _rx_send) = self.mailbox.open_once_port();
+                    let (tx_send, _rx_send) = self.instance.open_once_port();
                     messages.push(CommMessage::Send(
                         input,
                         r as i32,
@@ -886,7 +902,7 @@ impl Backend for CommBackend {
                     input_cells.len()
                 ));
             }
-            let (tx_recv, _rx_recv) = self.mailbox.open_once_port();
+            let (tx_recv, _rx_recv) = self.instance.open_once_port();
             messages.push(CommMessage::Recv(
                 output_cell.clone(),
                 root as i32,
@@ -894,11 +910,10 @@ impl Backend for CommBackend {
                 tx_recv,
             ));
         }
-        self.comm.send(CommMessage::Group(
-            messages,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        self.comm.send(
+            &self.instance,
+            CommMessage::Group(messages, Stream::get_current_stream(), tx),
+        )?;
         let mut inputs = vec![];
         inputs.push(output_cell);
         inputs.extend(input_cells);
@@ -916,13 +931,16 @@ impl Backend for CommBackend {
         let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::Broadcast(
-            cell.clone(),
-            opts.root_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::Broadcast(
+                cell.clone(),
+                opts.root_rank,
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(CommWork::from(vec![cell], rx).await?))
     }
 
@@ -940,13 +958,16 @@ impl Backend for CommBackend {
         let input_cell = TensorCell::new(unsafe { input_buffer.clone_unsafe() });
 
         // Call into `NcclCommActor`.
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::AllToAllSingle(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm.send(
+            &self.instance,
+            CommMessage::AllToAllSingle(
+                output_cell.clone(),
+                input_cell.clone(),
+                Stream::get_current_stream(),
+                tx,
+            ),
+        )?;
         Ok(Box::new(
             CommWork::from(vec![output_cell, input_cell], rx).await?,
         ))
@@ -995,8 +1016,8 @@ impl Backend for CommBackend {
         for r in 0..output_tensors.len() {
             let output_cell = &output_cells[r];
             let input_cell = &input_cells[r];
-            let (tx_send, _rx_send) = self.mailbox.open_once_port();
-            let (tx_recv, _rx_recv) = self.mailbox.open_once_port();
+            let (tx_send, _rx_send) = self.instance.open_once_port();
+            let (tx_recv, _rx_recv) = self.instance.open_once_port();
             messages.push(CommMessage::Send(
                 input_cell.clone(),
                 r as i32,
@@ -1010,8 +1031,9 @@ impl Backend for CommBackend {
                 tx_recv,
             ));
         }
-        let (tx, rx) = self.mailbox.open_once_port();
-        self.comm.send(CommMessage::Group(messages, stream, tx))?;
+        let (tx, rx) = self.instance.open_once_port();
+        self.comm
+            .send(&self.instance, CommMessage::Group(messages, stream, tx))?;
         let mut all_cells = vec![];
         all_cells.extend(output_cells);
         all_cells.extend(input_cells);
@@ -1752,21 +1774,27 @@ mod tests {
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
         let port0 = client.open_once_port();
-        handle0.send(CommMessage::Send(
-            cell0.clone(),
-            1,
-            Stream::get_current_stream_on_device(device0),
-            port0.0,
-        ))?;
+        handle0.send(
+            &client,
+            CommMessage::Send(
+                cell0.clone(),
+                1,
+                Stream::get_current_stream_on_device(device0),
+                port0.0,
+            ),
+        )?;
 
         let cell1 = TensorCell::new(factory_float_tensor(&[1.0], device1.into()));
         let port1 = client.open_once_port();
-        handle1.send(CommMessage::Recv(
-            cell1.clone(),
-            0,
-            Stream::get_current_stream_on_device(device1),
-            port1.0,
-        ))?;
+        handle1.send(
+            &client,
+            CommMessage::Recv(
+                cell1.clone(),
+                0,
+                Stream::get_current_stream_on_device(device1),
+                port1.0,
+            ),
+        )?;
         let (work0, work1) = tokio::join!(
             CommWork::from(vec![cell0.clone()], port0.1),
             CommWork::from(vec![cell1.clone()], port1.1)

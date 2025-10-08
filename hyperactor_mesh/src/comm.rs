@@ -7,6 +7,8 @@
  */
 
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
+use crate::comm::multicast::CastMessageV1;
+use crate::comm::multicast::ForwardMessageV1;
 use crate::reference::ActorMeshId;
 use crate::resource;
 pub mod multicast;
@@ -33,7 +35,13 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::message::ErasedUnbound;
+use hyperactor::proc::SeqInfo;
 use hyperactor::reference::UnboundPort;
+use hyperactor_mesh_macros::sel;
+use ndslice::Point;
+use ndslice::Selection;
+use ndslice::View;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
@@ -82,6 +90,8 @@ struct ReceiveState {
         CommActorMode,
         CastMessage,
         ForwardMessage,
+        CastMessageV1,
+        ForwardMessageV1,
     ],
 )]
 pub struct CommActor {
@@ -261,47 +271,29 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
-        // Split ports, if any, and update message with new ports. In this
-        // way, children actors will reply to this comm actor's ports, instead
-        // of to the original ports provided by parent.
-        message.data_mut().visit_mut::<UnboundPort>(
-            |UnboundPort(port_id, reducer_spec, reducer_opts)| {
-                let split = port_id.split(cx, reducer_spec.clone(), reducer_opts.clone())?;
-
-                #[cfg(test)]
-                tests::collect_split_port(port_id, &split, deliver_here);
-
-                *port_id = split;
-                Ok(())
-            },
-        )?;
+        split_ports(cx, message.data_mut(), deliver_here)?;
 
         // Deliver message here, if necessary.
         if deliver_here {
             let rank_on_root_mesh = mode.self_rank(cx.self_id())?;
             let cast_rank = message.relative_rank(rank_on_root_mesh)?;
-            // Replace ranks with self ranks.
-            message
-                .data_mut()
-                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                    *rank = Some(cast_rank);
-                    Ok(())
-                })?;
             let cast_shape = message.shape();
-            let point = cast_shape
+            let cast_point = cast_shape
                 .extent()
                 .point_of_rank(cast_rank)
                 .expect("rank out of bounds");
+
+            // Replace ranks with self ranks.
+            replace_with_self_ranks(&cast_point, message.data_mut())?;
+
             let mut headers = cx.headers().clone();
-            set_cast_info_on_headers(&mut headers, point, message.sender().clone());
-            cx.post(
-                cx.self_id()
-                    .proc_id()
-                    .actor_id(message.dest_port().actor_name(), 0)
-                    .port_id(message.dest_port().port()),
-                headers,
-                Serialized::serialize(message.data())?,
-            );
+            set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone(), None);
+            let dest_port_id = cx
+                .self_id()
+                .proc_id()
+                .actor_id(message.dest_port().actor_name(), 0)
+                .port_id(message.dest_port().port());
+            dest_port_id.send_with_headers(cx, Serialized::serialize(message.data())?, headers);
         }
 
         // Forward to peers.
@@ -456,6 +448,113 @@ impl Handler<ForwardMessage> for CommActor {
     }
 }
 
+// Split ports, if any, and update message with new ports. In this
+// way, child actors will reply to this comm actor's ports, instead
+// of to the original ports provided by parent.
+fn split_ports(
+    cx: &Context<CommActor>,
+    data: &mut ErasedUnbound,
+    _deliver_here: bool,
+) -> anyhow::Result<()> {
+    data.visit_mut::<UnboundPort>(|UnboundPort(port_id, reducer_spec, reducer_opts)| {
+        let split = port_id.split(cx, reducer_spec.clone(), reducer_opts.clone())?;
+
+        #[cfg(test)]
+        tests::collect_split_port(port_id, &split, _deliver_here);
+
+        *port_id = split;
+        Ok(())
+    })
+}
+
+fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
+    data.visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+        *rank = Some(cast_point.rank());
+        Ok(())
+    })
+}
+
+#[async_trait]
+impl Handler<CastMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessageV1) -> Result<()> {
+        let slice = cast_message.dest_region.slice().clone();
+        let frame = RoutingFrame::root(sel!(*), slice);
+        let forward_message = ForwardMessageV1 {
+            dests: vec![frame],
+            message: cast_message,
+        };
+        Handler::<ForwardMessageV1>::handle(self, cx, forward_message).await
+    }
+}
+
+#[async_trait]
+impl Handler<ForwardMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessageV1) -> Result<()> {
+        let ForwardMessageV1 { dests, mut message } = fwd_message;
+        // Resolve/dedup routing frames.
+        let rank_on_root_mesh = self.mode.self_rank(cx.self_id())?;
+        let (deliver_here, next_steps) =
+            ndslice::selection::routing::resolve_routing(rank_on_root_mesh, dests, &mut |_| {
+                panic!("Choice encountered in CommActor routing")
+            })?;
+
+        split_ports(cx, &mut message.data, deliver_here)?;
+
+        // Deliver message here, if necessary.
+        if deliver_here {
+            let cast_point = message.dest_region.point_of_base_rank(rank_on_root_mesh)?;
+            // Replace ranks with self ranks.
+            replace_with_self_ranks(&cast_point, &mut message.data)?;
+
+            let seq = message
+                .cast_headers
+                .seqs
+                .get(cast_point.rank())
+                .expect("mismatched seqs and dest_region");
+            // headers should already contain a SEQ_INFO, which was set by the
+            // last comm actor for forwarding the message. We overwrite it here
+            // with the SEQ_INFO from original sender put in the CastMessageV1.
+            // In this way, the destination actor only sees the SEQ_INFO from
+            // the original sender.
+            let mut headers = cx.headers().clone();
+            set_cast_info_on_headers(
+                &mut headers,
+                cast_point,
+                message.cast_headers.sender.clone(),
+                Some(SeqInfo::Session {
+                    session_id: message.cast_headers.session_id,
+                    seq,
+                }),
+            );
+            let dest_port_id = cx
+                .self_id()
+                .proc_id()
+                .actor_id(message.dest_port.actor_name(), 0)
+                .port_id(message.dest_port.port());
+            dest_port_id.send_with_headers_with_option(
+                cx,
+                Serialized::serialize(&message.data)?,
+                headers,
+                /*set_seq_info=*/ false,
+            );
+        }
+
+        // Forward to peers.
+        for (peer_rank_on_root_mesh, dests) in next_steps {
+            let forward_message = ForwardMessageV1 {
+                dests,
+                message: message.clone(),
+            };
+            let child = self
+                .mode
+                .peer_for_rank(cx.self_id(), peer_rank_on_root_mesh)?;
+            child.send(cx, forward_message)?;
+        }
+
+        Ok(())
+    }
+}
+
 pub mod test_utils {
     use anyhow::Result;
     use async_trait::async_trait;
@@ -552,6 +651,9 @@ mod tests {
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::config;
+    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+    use hyperactor::config::ENABLE_NATIVE_V1_CASTING;
+    use hyperactor::config::global::ConfigLock;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
@@ -1131,8 +1233,7 @@ mod tests {
         }
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_reply_v1() {
+    async fn execute_cast_and_reply_v1() {
         let MeshSetupV1 {
             instance,
             actor_mesh_ref,
@@ -1147,8 +1248,22 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_accum_v1() {
-        let config = config::global::lock();
+    async fn test_cast_and_reply_v1_retrofit() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, false);
+        execute_cast_and_reply_v1().await
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_reply_v1_native() {
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_cast_and_reply_v1().await
+    }
+
+    async fn execute_cast_and_accum_v1(config: &ConfigLock) {
         // Use temporary config for this test
         let _guard1 = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 1);
 
@@ -1162,5 +1277,21 @@ mod tests {
 
         let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
         execute_cast_and_accum(ranks, instance, reply1_rx, reply_tos).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_accum_v1_retrofit() {
+        let config = config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, false);
+        execute_cast_and_accum_v1(&config).await
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_accum_v1_native() {
+        let config = config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_cast_and_accum_v1(&config).await
     }
 }

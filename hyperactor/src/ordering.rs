@@ -164,7 +164,6 @@ impl<T> OrderedSender<T> {
     }
 
     pub(crate) fn direct_send(&self, msg: T) -> Result<(), SendError<T>> {
-        assert!(!self.enable_buffering);
         self.tx.send(msg)
     }
 }
