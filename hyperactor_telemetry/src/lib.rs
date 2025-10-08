@@ -125,7 +125,12 @@ pub fn username() -> String {
 }
 
 // Given an environment, determine the log file path to write to.
-pub fn log_file_path(env: env::Env) -> Result<(String, String), anyhow::Error> {
+// If a suffix is provided, it will be prepended with "_" and then appended to file name
+pub fn log_file_path(
+    env: env::Env,
+    suffix: Option<&str>,
+) -> Result<(String, String), anyhow::Error> {
+    let suffix = suffix.map(|s| format!("_{}", s)).unwrap_or_default();
     match env {
         env::Env::Local | env::Env::MastEmulator => {
             let username = if whoami::username().is_empty() {
@@ -133,9 +138,15 @@ pub fn log_file_path(env: env::Env) -> Result<(String, String), anyhow::Error> {
             } else {
                 whoami::username()
             };
-            Ok((format!("/tmp/{}", username), "monarch_log".to_string()))
+            Ok((
+                format!("/tmp/{}", username),
+                format!("monarch_log{}", suffix),
+            ))
         }
-        env::Env::Mast => Ok(("/logs/".to_string(), "dedicated_log_monarch".to_string())),
+        env::Env::Mast => Ok((
+            "/logs/".to_string(),
+            format!("dedicated_log_monarch{}", suffix),
+        )),
         _ => Err(anyhow::anyhow!(
             "file writer unsupported for environment {}",
             env
@@ -161,7 +172,7 @@ fn writer() -> Box<dyn Write + Send> {
     match env::Env::current() {
         env::Env::Test => Box::new(std::io::stderr()),
         env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
-            let (path, filename) = log_file_path(env::Env::current()).unwrap();
+            let (path, filename) = log_file_path(env::Env::current(), None).unwrap();
             match try_create_appender(&path, &filename, true) {
                 Ok(file_appender) => Box::new(file_appender),
                 Err(e) => {
