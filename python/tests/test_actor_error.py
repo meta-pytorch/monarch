@@ -9,6 +9,7 @@
 import importlib.resources
 import os
 import subprocess
+from enum import auto, Enum
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcEvent
@@ -22,6 +23,11 @@ from monarch._src.actor.v1.host_mesh import (
 )
 from monarch._src.actor.v1.proc_mesh import ProcMesh as ProcMeshV1
 from monarch.actor import Actor, ActorError, endpoint, proc_mesh, this_host
+
+
+class ApiVersion(Enum):
+    V0 = auto()
+    V1 = auto()
 
 
 class ExceptionActor(Actor):
@@ -104,21 +110,27 @@ def spawn_procs_on_host(
 
 
 def spawn_procs_on_fake_host(
-    v1: bool, per_host: dict[str, int]
+    api_ver: ApiVersion, per_host: dict[str, int]
 ) -> ProcMesh | ProcMeshV1:
-    if v1:
-        return spawn_procs_on_host(fake_in_process_host_v1("fake_host"), per_host)
-    else:
-        return spawn_procs_on_host(fake_in_process_host(), per_host)
+    match api_ver:
+        case ApiVersion.V1:
+            return spawn_procs_on_host(fake_in_process_host_v1("fake_host"), per_host)
+        case ApiVersion.V0:
+            return spawn_procs_on_host(fake_in_process_host(), per_host)
+        case _:
+            raise ValueError(f"Unsupported ApiVersion: {api_ver}")
 
 
 def spawn_procs_on_this_host(
-    v1: bool, per_host: dict[str, int]
+    api_ver: ApiVersion, per_host: dict[str, int]
 ) -> ProcMesh | ProcMeshV1:
-    if v1:
-        return spawn_procs_on_host(this_host_v1(), per_host)
-    else:
-        return spawn_procs_on_host(this_host(), per_host)
+    match api_ver:
+        case ApiVersion.V1:
+            return spawn_procs_on_host(this_host_v1(), per_host)
+        case ApiVersion.V0:
+            return spawn_procs_on_host(this_host(), per_host)
+        case _:
+            raise ValueError(f"Unsupported ApiVersion: {api_ver}")
 
 
 @pytest.mark.parametrize(
@@ -131,12 +143,14 @@ def spawn_procs_on_this_host(
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
-@pytest.mark.parametrize("v1", [True, False])
-async def test_actor_exception(mesh, actor_class, num_procs, v1: bool) -> None:
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_actor_exception(
+    mesh, actor_class, num_procs, api_ver: ApiVersion
+) -> None:
     """
     Test that exceptions raised in actor endpoints are propagated to the client.
     """
-    proc = mesh(v1, {"gpus": num_procs})
+    proc = mesh(api_ver, {"gpus": num_procs})
     exception_actor = proc.spawn("exception_actor", actor_class)
 
     with pytest.raises(ActorError, match="This is a test exception"):
@@ -156,12 +170,14 @@ async def test_actor_exception(mesh, actor_class, num_procs, v1: bool) -> None:
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
-@pytest.mark.parametrize("v1", [True, False])
-def test_actor_exception_sync(mesh, actor_class, num_procs, v1: bool) -> None:
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+def test_actor_exception_sync(
+    mesh, actor_class, num_procs, api_ver: ApiVersion
+) -> None:
     """
     Test that exceptions raised in actor endpoints are propagated to the client.
     """
-    proc = mesh(v1, {"gpus": num_procs})
+    proc = mesh(api_ver, {"gpus": num_procs})
     exception_actor = proc.spawn("exception_actor", actor_class)
 
     with pytest.raises(ActorError, match="This is a test exception"):
@@ -176,12 +192,12 @@ def test_actor_exception_sync(mesh, actor_class, num_procs, v1: bool) -> None:
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-@pytest.mark.parametrize("v1", [True, False])
-async def test_actor_error_message(mesh, v1: bool) -> None:
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_actor_error_message(mesh, api_ver: ApiVersion) -> None:
     """
     Test that exceptions raised in actor endpoints capture nested exceptions.
     """
-    proc = mesh(v1, {"gpus": 2})
+    proc = mesh(api_ver, {"gpus": 2})
     exception_actor = proc.spawn("exception_actor", NestedExceptionActor)
 
     with pytest.raises(ActorError) as exc_info:
@@ -214,8 +230,8 @@ async def test_actor_error_message(mesh, v1: bool) -> None:
 @pytest.mark.parametrize("sync_endpoint", [False, True])
 @pytest.mark.parametrize("sync_test_impl", [False, True])
 @pytest.mark.parametrize("endpoint_name", ["cause_segfault", "cause_panic"])
-@pytest.mark.parametrize("v1", [False, True])
-def test_actor_supervision(num_procs, sync_endpoint, sync_test_impl, endpoint_name):
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+def test_actor_supervision(num_procs, sync_endpoint, sync_test_impl, endpoint_name, api_ver):
     """
     Test that an endpoint causing spontaenous process exit is handled by the supervisor.
 
@@ -232,7 +248,7 @@ def test_actor_supervision(num_procs, sync_endpoint, sync_test_impl, endpoint_na
         f"--sync-endpoint={sync_endpoint}",
         f"--sync-test-impl={sync_test_impl}",
         f"--endpoint-name={endpoint_name}",
-        f"--v1={v1}",
+        f"--v1={api_ver == ApiVersion.V1}",
     ]
     try:
         print("running cmd", " ".join(cmd))
@@ -255,14 +271,14 @@ def test_actor_supervision(num_procs, sync_endpoint, sync_test_impl, endpoint_na
 
 # oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
 @pytest.mark.oss_skip
-@pytest.mark.parametrize("v1", [True, False])
-def test_proc_mesh_bootstrap_error(v1):
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+def test_proc_mesh_bootstrap_error(api_ver):
     """
     Test that attempts to spawn a ProcMesh with a failure during bootstrap.
     """
     # Run the segfault test in a subprocess
     test_bin = importlib.resources.files("monarch.python.tests").joinpath("test_bin")
-    cmd = [str(test_bin), "error-bootstrap", f"--v1={v1}"]
+    cmd = [str(test_bin), "error-bootstrap", f"--v1={api_ver == ApiVersion.V1}"]
     try:
         print("running cmd", " ".join(cmd))
         process = subprocess.run(cmd, capture_output=True, timeout=180)
@@ -284,9 +300,9 @@ def test_proc_mesh_bootstrap_error(v1):
 @pytest.mark.parametrize("raise_on_getstate", [True, False])
 @pytest.mark.parametrize("raise_on_setstate", [True, False])
 @pytest.mark.parametrize("num_procs", [1, 2])
-@pytest.mark.parametrize("v1", [True, False])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
 async def test_broken_pickle_class(
-    raise_on_getstate, raise_on_setstate, num_procs, v1: bool
+    raise_on_getstate, raise_on_setstate, num_procs, api_ver: ApiVersion
 ) -> None:
     """
     Test that exceptions during pickling/unpickling are properly handled.
@@ -299,7 +315,7 @@ async def test_broken_pickle_class(
         # Pass this test trivially
         return
 
-    proc = spawn_procs_on_this_host(v1, {"gpus": num_procs})
+    proc = spawn_procs_on_this_host(api_ver, {"gpus": num_procs})
     exception_actor = proc.spawn("exception_actor", ExceptionActor)
 
     # Create a BrokenPickleClass instance configured to raise exceptions
@@ -353,8 +369,8 @@ async def test_exception_after_wait_unmonitored():
 
 # oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
 @pytest.mark.oss_skip
-@pytest.mark.parametrize("v1", [True, False])
-def test_python_actor_process_cleanup(v1):
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+def test_python_actor_process_cleanup(api_ver):
     """
     Test that PythonActor processes are cleaned up when the parent process dies.
 
@@ -370,7 +386,7 @@ def test_python_actor_process_cleanup(v1):
     cmd = [
         str(test_bin),
         "error-cleanup",
-        f"--v1={v1}",
+        f"--v1={api_ver == ApiVersion.V1}",
     ]
 
     try:
@@ -474,9 +490,9 @@ class ErrorActor(Actor):
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
 # TODO: monitor not supported on v1 yet
-@pytest.mark.parametrize("v1", [False])
-async def test_proc_mesh_redundant_monitoring(mesh, v1: bool) -> None:
-    proc = mesh(v1, {"gpus": 1})
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0])
+async def test_proc_mesh_redundant_monitoring(mesh, api_ver: ApiVersion) -> None:
+    proc = mesh(api_ver, {"gpus": 1})
     await proc.monitor()
 
     with pytest.raises(
@@ -493,11 +509,14 @@ class Worker(Actor):
 
 class Manager(Actor):
     @endpoint
-    async def init(self, v1):
-        if not v1:
-            mesh = proc_mesh(gpus=1)
-        else:
-            mesh = spawn_procs_on_this_host(v1, {"gpus": 1})
+    async def init(self, api_ver):
+        match api_ver:
+            case ApiVersion.V0:
+                mesh = proc_mesh(gpus=1)
+            case ApiVersion.V1:
+                mesh = spawn_procs_on_this_host(api_ver, {"gpus": 1})
+            case _:
+                raise ValueError(f"Unsupported ApiVersion: {api_ver}")
         self.workers = mesh.spawn("Worker", Worker)
 
     @endpoint
@@ -510,15 +529,15 @@ class Manager(Actor):
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-@pytest.mark.parametrize("v1", [True, False])
-async def test_errors_propagated(mesh, v1: bool) -> None:
-    if v1 and mesh is spawn_procs_on_fake_host:
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_errors_propagated(mesh, api_ver: ApiVersion) -> None:
+    if api_ver == ApiVersion.V1 and mesh is spawn_procs_on_fake_host:
         # pyre-fixme[29]: This is a function.
         pytest.skip("local_proc_mesh not supported for nested actors")
-    p_mesh = mesh(v1, {"gpus": 1})
+    p_mesh = mesh(api_ver, {"gpus": 1})
     mesh = p_mesh.spawn("manager", Manager)
 
-    await mesh.init.call_one(v1)
+    await mesh.init.call_one(api_ver)
 
     with pytest.raises(ActorError) as err_info:
         await mesh.route.call_one()
@@ -530,10 +549,10 @@ async def test_errors_propagated(mesh, v1: bool) -> None:
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-# TODO: monitor not supported on v1 yet
-@pytest.mark.parametrize("v1", [False])
-async def test_proc_mesh_monitoring(mesh, v1):
-    proc = mesh(v1, {"gpus": 1})
+# TODO: monitor not supported on api_ver=V1 yet
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0])
+async def test_proc_mesh_monitoring(mesh, api_ver):
+    proc = mesh(api_ver, {"gpus": 1})
     monitor = await proc.monitor()
 
     e = proc.spawn("error", ErrorActor)
@@ -560,9 +579,9 @@ async def test_proc_mesh_monitoring(mesh, v1):
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "distributed_proc_mesh"],
 )
-@pytest.mark.parametrize("v1", [True, False])
-async def test_actor_mesh_supervision_handling(mesh, v1: bool) -> None:
-    proc = mesh(v1, {"gpus": 1})
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_actor_mesh_supervision_handling(mesh, api_ver: ApiVersion) -> None:
+    proc = mesh(api_ver, {"gpus": 1})
 
     e = proc.spawn("error", ErrorActor)
 
@@ -588,14 +607,19 @@ async def test_actor_mesh_supervision_handling(mesh, v1: bool) -> None:
         await e.check.call()
 
     # should not be able to spawn actors anymore as proc mesh is unhealthy
-    if not v1:
-        with pytest.raises(SupervisionError, match="proc mesh is stopped with reason"):
-            await proc.spawn("ex", ExceptionActorSync).initialized
-    else:
-        # In v1, spawning on a proc mesh with previously dead actors becomes a
-        # runtime error.
-        with pytest.raises(RuntimeError, match="error spawning actor mesh"):
-            await proc.spawn("ex", ExceptionActorSync).initialized
+    match api_ver:
+        case ApiVersion.V0:
+            with pytest.raises(
+                SupervisionError, match="proc mesh is stopped with reason"
+            ):
+                await proc.spawn("ex", ExceptionActorSync).initialized
+        case ApiVersion.V1:
+            # In v1, spawning on a proc mesh with previously dead actors becomes a
+            # runtime error.
+            with pytest.raises(RuntimeError, match="error spawning actor mesh"):
+                await proc.spawn("ex", ExceptionActorSync).initialized
+        case _:
+            raise ValueError(f"Unsupported ApiVersion: {api_ver}")
 
 
 class HealthyActor(Actor):
@@ -610,18 +634,23 @@ class HealthyActor(Actor):
 
 class Intermediate(Actor):
     @endpoint
-    async def init_local_mesh(self, v1):
-        assert not v1, "cannot use v1 with local_proc_mesh in nested actors"
-        mesh = spawn_procs_on_fake_host(v1, {"gpus": 1})
+    async def init_local_mesh(self, api_ver):
+        assert (
+            api_ver == ApiVersion.V0
+        ), "cannot use v1 with local_proc_mesh in nested actors"
+        mesh = spawn_procs_on_fake_host(api_ver, {"gpus": 1})
         self._error_actor = mesh.spawn("error", ErrorActor)
         self._healthy_actor = mesh.spawn("healthy", HealthyActor)
 
     @endpoint
-    async def init_proc_mesh(self, v1):
-        if not v1:
-            mesh = proc_mesh(gpus=1)
-        else:
-            mesh = spawn_procs_on_this_host(v1, {"gpus": 1})
+    async def init_proc_mesh(self, api_ver):
+        match api_ver:
+            case ApiVersion.V0:
+                mesh = proc_mesh(gpus=1)
+            case ApiVersion.V1:
+                mesh = spawn_procs_on_this_host(api_ver, {"gpus": 1})
+            case _:
+                raise ValueError(f"Unsupported ApiVersion: {api_ver}")
         self._error_actor = mesh.spawn("error", ErrorActor)
         self._healthy_actor = mesh.spawn("healthy", HealthyActor)
 
@@ -644,19 +673,21 @@ class Intermediate(Actor):
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "proc_mesh"],
 )
-@pytest.mark.parametrize("v1", [True, False])
-async def test_actor_mesh_supervision_handling_chained_error(mesh, v1: bool) -> None:
-    proc = mesh(v1, {"gpus": 1})
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_actor_mesh_supervision_handling_chained_error(
+    mesh, api_ver: ApiVersion
+) -> None:
+    proc = mesh(api_ver, {"gpus": 1})
 
     intermediate_actor = proc.spawn("intermediate", Intermediate)
     if mesh is spawn_procs_on_this_host:
-        await intermediate_actor.init_proc_mesh.call(v1)
+        await intermediate_actor.init_proc_mesh.call(api_ver)
     elif mesh is spawn_procs_on_fake_host:
-        if v1:
+        if api_ver == ApiVersion.V1:
             # pyre-fixme[29]: This is a function.
             pytest.skip("local_proc_mesh not supported in nested actors")
         else:
-            await intermediate_actor.init_local_mesh.call(v1)
+            await intermediate_actor.init_local_mesh.call(api_ver)
     else:
         raise ValueError(f"Unknown mesh type: {mesh}")
 
@@ -690,8 +721,8 @@ async def test_actor_mesh_supervision_handling_chained_error(mesh, v1: bool) -> 
     "method_name",
     ["fail_with_supervision_error", "fail_with_supervision_error_async"],
 )
-@pytest.mark.parametrize("v1", [True, False])
-async def test_base_exception_handling(mesh, method_name, v1: bool) -> None:
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_base_exception_handling(mesh, method_name, api_ver: ApiVersion) -> None:
     """Test that BaseException subclasses trigger supervision errors.
 
     This test verifies that both synchronous and asynchronous methods
@@ -699,7 +730,7 @@ async def test_base_exception_handling(mesh, method_name, v1: bool) -> None:
     supervision errors properly.
 
     """
-    proc = mesh(v1, {"gpus": 1})
+    proc = mesh(api_ver, {"gpus": 1})
     error_actor = proc.spawn("error", ErrorActor)
 
     # Get the method to call based on the parameter
@@ -722,11 +753,11 @@ async def test_base_exception_handling(mesh, method_name, v1: bool) -> None:
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "proc_mesh"],
 )
-# TODO: proc_mesh.stop() not supported on v1 yet
-@pytest.mark.parametrize("v1", [False])
+# TODO: proc_mesh.stop() not supported on api_ver=V1 yet
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0])
 @pytest.mark.timeout(30)
-async def test_supervision_with_proc_mesh_stopped(mesh, v1: bool) -> None:
-    proc = mesh(v1, {"gpus": 1})
+async def test_supervision_with_proc_mesh_stopped(mesh, api_ver: ApiVersion) -> None:
+    proc = mesh(api_ver, {"gpus": 1})
     actor_mesh = proc.spawn("healthy", HealthyActor)
 
     await actor_mesh.check.call()
@@ -746,16 +777,16 @@ async def test_supervision_with_proc_mesh_stopped(mesh, v1: bool) -> None:
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
-@pytest.mark.parametrize("v1", [True, False])
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
 @pytest.mark.timeout(30)
-async def test_supervision_with_sending_error(v1: bool) -> None:
+async def test_supervision_with_sending_error(api_ver: ApiVersion) -> None:
     # Messages of length > this will cause a send error and a returned
     # undeliverable.
     os.environ["HYPERACTOR_CODEC_MAX_FRAME_LENGTH"] = "50000000"
     # Limit retries for sending before giving up.
     os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS"] = "5"
 
-    proc = spawn_procs_on_this_host(v1, {"gpus": 1})
+    proc = spawn_procs_on_this_host(api_ver, {"gpus": 1})
     actor_mesh = proc.spawn("healthy", HealthyActor)
 
     await actor_mesh.check.call()
@@ -777,9 +808,9 @@ async def test_supervision_with_sending_error(v1: bool) -> None:
         await actor_mesh.check_with_payload.call(payload="a")
 
 
-@pytest.mark.parametrize("v1", [True, False])
-async def test_slice_supervision(v1: bool) -> None:
-    pm = spawn_procs_on_this_host(v1, {"gpus": 4})
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_slice_supervision(api_ver: ApiVersion) -> None:
+    pm = spawn_procs_on_this_host(api_ver, {"gpus": 4})
     healthy_mesh = pm.spawn("healthy", HealthyActor)
     error_mesh = pm.spawn("error", ErrorActor)
     slice_1 = error_mesh.slice(gpus=slice(2, 4))
@@ -817,9 +848,9 @@ async def test_slice_supervision(v1: bool) -> None:
 
 
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("v1", [True, False])
-async def test_mesh_slices_inherit_parent_errors(v1: bool) -> None:
-    pm = spawn_procs_on_this_host(v1, {"gpus": 4})
+@pytest.mark.parametrize("api_ver", [ApiVersion.V0, ApiVersion.V1])
+async def test_mesh_slices_inherit_parent_errors(api_ver: ApiVersion) -> None:
+    pm = spawn_procs_on_this_host(api_ver, {"gpus": 4})
     error_mesh = pm.spawn("error", ErrorActor)
     slice_1 = error_mesh.slice(gpus=slice(2, 4))
 
