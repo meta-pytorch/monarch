@@ -1,0 +1,12 @@
+<svg width="400" height="200" viewBox="0 0 400 200">
+  <rect x="50" y="50" width="100" height="50" fill="lightblue" stroke="black"/>
+  <text x="100" y="80" text-anchor="middle">Actor A</text>
+  <rect x="250" y="50" width="100" height="50" fill="lightgreen" stroke="black"/>
+  <text x="300" y="80" text-anchor="middle">Actor B</text>
+  <line x1="150" y1="75" x2="250" y2="75" stroke="red" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="red"/>
+    </marker>
+  </defs>
+</svg>

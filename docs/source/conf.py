@@ -63,6 +63,7 @@ exclude_patterns = []
 sys.path.insert(0, os.path.abspath("."))
 sys.path.insert(0, os.path.abspath("../.."))
 sys.path.insert(0, os.path.abspath("_ext"))  # Add our custom extensions
+sys.path.insert(0, os.path.abspath("generated/examples"))  # assets for examples
 
 html_theme = "pytorch_sphinx_theme2"
 html_theme_path = [pytorch_sphinx_theme2.get_html_theme_path()]
@@ -158,6 +159,16 @@ source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
 }
+
+
+ONE_GALLERY_EXAMPLE = os.environ.get("ONE_GALLERY_EXAMPLE", None)
+if ONE_GALLERY_EXAMPLE is not None:
+    import re
+
+    exclude_patterns = ["**"]  # Reset exclude_patterns to ensure books are included
+    sphinx_gallery_conf["filename_pattern"] = re.escape(ONE_GALLERY_EXAMPLE)
+    sphinx_gallery_conf["plot_gallery"] = "True"
+    sphinx_gallery_conf["only_warn_on_example_error"] = "False"
 
 # Configure MyST-Parser to properly handle relative links in the books directory
 myst_url_schemes = ["http", "https", "mailto"]
