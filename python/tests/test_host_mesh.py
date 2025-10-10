@@ -8,17 +8,21 @@
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
-from monarch._src.actor.pickle import flatten, unflatten
-from monarch._src.actor.v1.host_mesh import (
+from monarch._src.actor.host_mesh import (
     create_local_host_mesh,
     fake_in_process_host,
     HostMesh,
 )
+from monarch._src.actor.pickle import flatten, unflatten
+from monarch._src.actor.v1 import enabled as v1_enabled
+
+
+pytestmark = pytest.mark.skipif(not v1_enabled, reason="v1 not enabled")
 
 
 @pytest.mark.timeout(60)
 def test_fake_in_process_host() -> None:
-    host = fake_in_process_host("fake")
+    host = fake_in_process_host()
     assert host.extent.labels == ["hosts"]
     assert host.extent.sizes == [1]
     assert not host.stream_logs
@@ -29,7 +33,7 @@ def test_fake_in_process_host() -> None:
 
 @pytest.mark.timeout(60)
 def test_create_local_host_mesh() -> None:
-    host = create_local_host_mesh("fake")
+    host = create_local_host_mesh()
     assert host.extent.labels == ["hosts"]
     assert host.extent.sizes == [1]
     assert not host.stream_logs
@@ -41,7 +45,6 @@ def test_create_local_host_mesh() -> None:
 @pytest.mark.timeout(60)
 def test_multi_dim_host_mesh() -> None:
     host = create_local_host_mesh(
-        "host",
         Extent(["replicas", "hosts"], [2, 4]),
     )
     assert host.extent.labels == ["replicas", "hosts"]
@@ -70,7 +73,6 @@ def test_multi_dim_host_mesh() -> None:
 @pytest.mark.timeout(120)
 def test_spawn_proc_mesh() -> None:
     host = create_local_host_mesh(
-        "host",
         Extent(["replicas", "hosts"], [2, 4]),
     )
     proc_mesh = host.spawn_procs(name="proc")
@@ -99,7 +101,6 @@ def test_spawn_proc_mesh() -> None:
 @pytest.mark.timeout(60)
 def test_pickle() -> None:
     host = create_local_host_mesh(
-        "host",
         Extent(["replicas", "hosts"], [2, 4]),
     )
     _unused, pickled = flatten(host, lambda _: False)

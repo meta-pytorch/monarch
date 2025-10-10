@@ -8,11 +8,18 @@
 
 from unittest import TestCase
 
+import pytest
+
 import torch
 from monarch._rust_bindings.monarch_extension import client
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._src.actor.v1 import enabled as v1_enabled
 from pyre_extensions import none_throws
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    not v1_enabled, reason="no dep on v0/v1, so only run on v1"
+)
 
 
 class TestClient(TestCase):

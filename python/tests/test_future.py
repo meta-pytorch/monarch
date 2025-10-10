@@ -13,8 +13,14 @@ from monarch import Future, RemoteException
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.common import future
 from monarch.common.client import Client
+
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    not v1_enabled, reason="no v0/v1 dependency, so only run with v1"
+)
 
 
 class TestFuture:

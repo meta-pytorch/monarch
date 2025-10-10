@@ -9,6 +9,8 @@
 Monarch Actor API - Public interface for actor functionality.
 """
 
+from typing import TYPE_CHECKING
+
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import (
     Accumulator,
@@ -34,16 +36,29 @@ from monarch._src.actor.debugger.debug_controller import debug_controller
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 
-from monarch._src.actor.host_mesh import hosts_from_config
 from monarch._src.actor.proc_mesh import local_proc_mesh, proc_mesh, sim_proc_mesh
 
-from monarch._src.actor.v1 import (
-    get_or_spawn_controller,
-    HostMesh,
-    ProcMesh,
-    this_host,
-    this_proc,
-)
+from monarch._src.actor.v1 import enabled as v1_enabled
+
+if not v1_enabled or TYPE_CHECKING:
+    from monarch._src.actor.host_mesh import (
+        HostMeshV0 as HostMesh,
+        hosts_from_config_v0 as hosts_from_config,
+        this_host_v0 as this_host,
+        this_proc_v0 as this_proc,
+    )
+    from monarch._src.actor.proc_mesh import (
+        get_or_spawn_controller_v0 as get_or_spawn_controller,
+        ProcMeshV0 as ProcMesh,
+    )
+else:
+    from monarch._src.actor.v1.host_mesh import (
+        HostMesh,
+        hosts_from_config,
+        this_host,
+        this_proc,
+    )
+    from monarch._src.actor.v1.proc_mesh import get_or_spawn_controller, ProcMesh
 
 
 __all__ = [
@@ -79,4 +94,5 @@ __all__ = [
     "attach_to_workers",
     "enable_transport",
     "Context",
+    "ChannelTransport",
 ]

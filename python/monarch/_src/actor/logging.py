@@ -43,11 +43,7 @@ _global_flush_lock = threading.Lock()
 
 def flush_all_proc_mesh_logs(v1: bool = False) -> None:
     """Flush logs from all active ProcMesh instances."""
-    if not v1:
-        # import `get_active_proc_meshes` here to avoid circular import dependency
-        from monarch._src.actor.proc_mesh import get_active_proc_meshes
-    else:
-        from monarch._src.actor.v1.proc_mesh import get_active_proc_meshes
+    from monarch._src.actor.proc_mesh import get_active_proc_meshes
 
     for pm in get_active_proc_meshes():
         if pm._logging_manager._logging_mesh_client is not None:
