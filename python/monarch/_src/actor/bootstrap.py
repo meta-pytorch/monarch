@@ -21,7 +21,7 @@ from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
 )
 
 from monarch._src.actor.future import _Unawaited, Future
-from monarch._src.actor.v1.host_mesh import HostMesh
+from monarch._src.actor.host_mesh import HostMesh
 
 PrivateKey = Union[bytes, Path, None]
 CA = Union[bytes, Path, Literal["trust_all_connections"]]

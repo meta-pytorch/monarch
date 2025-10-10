@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
 import tempfile
 import uuid
 from contextlib import ExitStack
@@ -21,12 +20,12 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.allocator import AllocateMixin
+from monarch._src.actor.host_mesh import host_mesh_from_alloc
 from monarch._src.actor.meta.allocator import (
     MastAllocator,
     MastAllocatorBase,
     MastAllocatorConfig,
 )
-from monarch._src.actor.v1 import host_mesh_from_alloc
 
 from monarch._src.job.job import BatchJob, JobState, JobTrait
 

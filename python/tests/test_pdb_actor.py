@@ -25,8 +25,14 @@ from monarch._rust_bindings.monarch_extension.debugger import (
     get_bytes_from_write_action,
 )
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.rust_local_mesh import LoggingLocation, SocketType
 from monarch_supervisor.logging import fix_exception_lines
+
+
+pytestmark = pytest.mark.skipif(
+    not v1_enabled, reason="uses deprecated system actor, might as well only run on v1"
+)
 
 
 def custom_excepthook(exc_type, exc_value, exc_traceback):

@@ -8,8 +8,14 @@
 import pytest
 
 from monarch import DeviceMesh, NDSlice
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.common.client import Client
 from monarch.simulator.mock_controller import MockController
+
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    not v1_enabled, reason="no v0/v1 dependency, so only run with v1"
+)
 
 
 class TestDeviceMesh:

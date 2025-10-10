@@ -42,6 +42,10 @@ from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as ProcMeshV1,
 )
 from monarch._src.actor.actor_mesh import Context, context, Instance
+from monarch._src.actor.v1 import enabled as v1_enabled
+
+
+pytestmark = pytest.mark.skipif(not v1_enabled, reason="v0 tested even when v1 enabled")
 
 
 def run_on_tokio(

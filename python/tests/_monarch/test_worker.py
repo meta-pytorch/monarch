@@ -11,10 +11,16 @@ from typing import cast
 from unittest import TestCase
 
 import cloudpickle
+import pytest
 
 from monarch._rust_bindings.monarch_extension import tensor_worker
 from monarch._rust_bindings.monarch_hyperactor import shape
+from monarch._src.actor.v1 import enabled as v1_enabled
 from pyre_extensions import none_throws
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    not v1_enabled, reason="no dep on v0/v1, so only run on v1"
+)
 
 
 def is_nan(val: int) -> bool:

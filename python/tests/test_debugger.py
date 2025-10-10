@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 import asyncio
-import enum
 import functools
 import importlib.resources
 import os
@@ -15,13 +14,12 @@ import shutil
 import signal
 import subprocess
 import sys
-from typing import cast, List, Optional, Tuple, Type, TypeVar
+from typing import cast, List, Optional, Tuple, TypeVar
 from unittest.mock import AsyncMock, patch
 
 import cloudpickle
 
 import monarch
-import monarch.actor as actor
 
 import pytest
 
@@ -50,20 +48,14 @@ from monarch._src.actor.debugger.debug_session import (
     DebugSessions,
 )
 from monarch._src.actor.endpoint import endpoint, Extent
-from monarch._src.actor.future import Future
+from monarch._src.actor.host_mesh import create_local_host_mesh, this_host
 from monarch._src.actor.proc_mesh import (
+    get_or_spawn_controller,
     proc_mesh as proc_mesh_v0,
-    ProcMesh as ProcMeshV0,
+    ProcMesh,
 )
 from monarch._src.actor.source_loader import SourceLoaderController
-from monarch._src.actor.v1.host_mesh import (
-    create_local_host_mesh,
-    ProcMesh as ProcMeshV1,
-    this_host as this_host_v1,
-)
-from monarch._src.actor.v1.proc_mesh import (
-    get_or_spawn_controller as get_or_spawn_controller_v1,
-)
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
@@ -72,41 +64,19 @@ from monarch.tools.debug_env import (
 from pyre_extensions import none_throws
 
 
-class ApiVersion(enum.Enum):
-    V0 = "v0"
-    V1 = "v1"
-
-
 TActor = TypeVar("TActor", bound=Actor)
 
 
-def get_or_spawn_controller(
-    api: ApiVersion, name: str, klass: Type[TActor], *args, **kwargs
-) -> Future[TActor]:
-    match api:
-        case ApiVersion.V0:
-            return actor.get_or_spawn_controller(name, klass, *args, **kwargs)
-        case ApiVersion.V1:
-            return get_or_spawn_controller_v1(name, klass, *args, **kwargs)
-        case _:
-            raise ValueError(f"Unknown API version: {api}")
-
-
 def proc_mesh(
-    api: ApiVersion,
-    *,
     gpus: int = 1,
     hosts: int = 1,
-) -> ProcMeshV0 | ProcMeshV1:
-    match api:
-        case ApiVersion.V0:
-            return proc_mesh_v0(gpus=gpus, hosts=hosts)
-        case ApiVersion.V1:
-            return create_local_host_mesh(
-                "hosts", extent=Extent(["hosts"], [hosts])
-            ).spawn_procs(per_host={"gpus": gpus})
-        case _:
-            raise ValueError(f"Unknown API version: {api}")
+) -> ProcMesh:
+    if v1_enabled:
+        return create_local_host_mesh(extent=Extent(["hosts"], [hosts])).spawn_procs(
+            per_host={"gpus": gpus}
+        )
+    else:
+        return proc_mesh_v0(gpus=gpus, hosts=hosts)  # type: ignore
 
 
 needs_cuda = pytest.mark.skipif(
@@ -219,7 +189,7 @@ class DebugeeActor(Actor):
     @endpoint
     async def nested(self) -> "DebugeeActor":
         return (
-            this_host_v1()
+            this_host()
             .spawn_procs(per_host={"hosts": 2, "gpus": 2})
             .spawn("debugee_nested", DebugeeActor)
         )
@@ -255,14 +225,15 @@ async def _wait_for_breakpoints(
     raise RuntimeError("timed out waiting for breakpoints")
 
 
-async def _test_debug(api: ApiVersion, nested: bool) -> None:
+async def _test_debug(nested: bool) -> None:
     if not nested:
-        proc = proc_mesh(api, hosts=2, gpus=2)
+        proc = proc_mesh(hosts=2, gpus=2)
         debugee = proc.spawn("debugee", DebugeeActor)
+    elif not v1_enabled:
+        # Nested debugging is not supported in v0
+        return
     else:
-        proc = create_local_host_mesh(
-            "host", extent=Extent(["hosts"], [1])
-        ).spawn_procs()
+        proc = create_local_host_mesh(extent=Extent(["hosts"], [1])).spawn_procs()
         debugee = proc.spawn("debugee", DebugeeActor).nested.choose().get()
     name = debugee.name.choose().get()
 
@@ -312,7 +283,7 @@ async def _test_debug(api: ApiVersion, nested: bool) -> None:
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock
     ), patch("monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock):
         debug_controller = await get_or_spawn_controller(
-            api, "debug_controller", DebugControllerForTesting
+            "debug_controller", DebugControllerForTesting
         )
 
         fut = debugee.to_debug.call()
@@ -434,8 +405,8 @@ async def _test_debug(api: ApiVersion, nested: bool) -> None:
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
 @pytest.mark.timeout(60)
-async def test_debug_v0():
-    await _test_debug(ApiVersion.V0, nested=False)
+async def test_debug():
+    await _test_debug(nested=False)
 
 
 # See earlier comment.
@@ -445,23 +416,19 @@ async def test_debug_v0():
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
 @pytest.mark.timeout(60)
-async def test_debug_v1():
-    await _test_debug(ApiVersion.V1, nested=False)
+async def test_debug_nested():
+    await _test_debug(nested=True)
 
 
-# See earlier comment.
+# See earlier comment
 @isolate_in_subprocess(env=debug_env)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
 @pytest.mark.timeout(60)
-async def test_debug_v1_nested():
-    await _test_debug(ApiVersion.V1, nested=True)
-
-
-async def _test_debug_multi_actor(api: ApiVersion) -> None:
-    proc = proc_mesh(api, hosts=2, gpus=2)
+async def test_debug_multi_actor() -> None:
+    proc = proc_mesh(hosts=2, gpus=2)
     debugee_1 = proc.spawn("debugee_1", DebugeeActor)
     debugee_2 = proc.spawn("debugee_2", DebugeeActor)
     name_1 = debugee_1.name.choose().get()
@@ -489,7 +456,7 @@ async def _test_debug_multi_actor(api: ApiVersion) -> None:
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", side_effect=input_mock
     ):
         debug_controller = await get_or_spawn_controller(
-            api, "debug_controller", DebugControllerForTesting
+            "debug_controller", DebugControllerForTesting
         )
 
         fut_1 = debugee_1.to_debug.call()
@@ -539,28 +506,6 @@ async def _test_debug_multi_actor(api: ApiVersion) -> None:
         breakpoints = await _wait_for_breakpoints(debug_controller, 0)
         with pytest.raises(ActorError, match="ValueError: bad rank"):
             await fut_1
-
-
-# See earlier comment
-@isolate_in_subprocess(env=debug_env)
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
-@pytest.mark.timeout(60)
-async def test_debug_multi_actor_v0():
-    await _test_debug_multi_actor(ApiVersion.V0)
-
-
-# See earlier comment
-@isolate_in_subprocess(env=debug_env)
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
-@pytest.mark.timeout(60)
-async def test_debug_multi_actor_v1():
-    await _test_debug_multi_actor(ApiVersion.V1)
 
 
 async def test_debug_sessions_insert_get_remove() -> None:
@@ -897,12 +842,19 @@ async def test_debug_command_parser_invalid_inputs(invalid_input):
     assert await DebugCommand.parse(DebugStdIO(), invalid_input) is None
 
 
-async def _test_debug_cli(api: ApiVersion):
-    proc = proc_mesh(api, hosts=2, gpus=2)
+# See earlier comment
+@isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
+@pytest.mark.timeout(60)
+async def test_debug_cli():
+    proc = proc_mesh(hosts=2, gpus=2)
     debugee = proc.spawn("debugee", DebugeeActor)
     name = debugee.name.choose().get()
     debug_controller = get_or_spawn_controller(
-        api, "debug_controller", DebugControllerForTesting
+        "debug_controller", DebugControllerForTesting
     ).get()
 
     fut = debugee.to_debug.call()
@@ -1146,28 +1098,6 @@ async def _test_debug_cli(api: ApiVersion):
         await fut
 
 
-# See earlier comment
-@isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
-@pytest.mark.timeout(60)
-async def test_debug_cli_v0():
-    await _test_debug_cli(ApiVersion.V0)
-
-
-# See earlier comment
-@isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
-@pytest.mark.timeout(60)
-async def test_debug_cli_v1():
-    await _test_debug_cli(ApiVersion.V1)
-
-
 class_closure_source = """class ClassClosure:
     def __init__(self, arg):
         self.arg = arg
@@ -1232,7 +1162,11 @@ class ClosureDebugeeActor(Actor):
         return context().actor_instance.actor_id.actor_name
 
 
-async def _test_debug_with_pickle_by_value(api: ApiVersion):
+# We have to run this test in a subprocess because it requires a special
+# instantiation of the debug controller singleton.
+@isolate_in_subprocess(env=debug_env)
+@pytest.mark.timeout(60)
+async def test_debug_with_pickle_by_value():
     """
     This test tests debugger functionality when there are breakpoints in
     code that has been pickled by value (as opposed to pickling by reference,
@@ -1257,7 +1191,7 @@ async def _test_debug_with_pickle_by_value(api: ApiVersion):
     The test unpickles these and sends them to an actor endpoint, in which
     breakpoints will be hit and we can test the special pdb handling logic.
     """
-    pm = proc_mesh(api, gpus=1, hosts=1)
+    pm = proc_mesh(gpus=1, hosts=1)
     debugee = pm.spawn("debugee", ClosureDebugeeActor)
     name = debugee.name.choose().get()
 
@@ -1296,14 +1230,14 @@ async def _test_debug_with_pickle_by_value(api: ApiVersion):
         "monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock
     ), patch("monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock):
         debug_controller = get_or_spawn_controller(
-            api, "debug_controller", DebugControllerForTesting
+            "debug_controller", DebugControllerForTesting
         ).get()
 
         # Spawn a special source loader that knows how to retrieve the source code
         # for /tmp/monarch_test/class_closure.py and
         # /tmp/monarch_test/function_closure.py
         get_or_spawn_controller(
-            api, "source_loader", SourceLoaderControllerWithMockedSource
+            "source_loader", SourceLoaderControllerWithMockedSource
         ).get()
 
         class_closure = load_class_closure()
@@ -1378,19 +1312,3 @@ async def _test_debug_with_pickle_by_value(api: ApiVersion):
 
         await fut
         await pm.stop()
-
-
-# We have to run this test in a subprocess because it requires a special
-# instantiation of the debug controller singleton.
-@isolate_in_subprocess(env=debug_env)
-@pytest.mark.timeout(60)
-async def test_debug_with_pickle_by_value_v0():
-    await _test_debug_with_pickle_by_value(ApiVersion.V0)
-
-
-# We have to run this test in a subprocess because it requires a special
-# instantiation of the debug controller singleton.
-@isolate_in_subprocess(env=debug_env)
-@pytest.mark.timeout(60)
-async def test_debug_with_pickle_by_value_v1():
-    await _test_debug_with_pickle_by_value(ApiVersion.V1)

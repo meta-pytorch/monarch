@@ -34,17 +34,19 @@ from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
 )
 from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMesh, context
+from monarch._src.actor.allocator import AllocHandle
 
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
-from monarch._src.actor.proc_mesh import _has_tensor_engine, SetupActor
 from monarch._src.actor.shape import MeshTrait
+from monarch.tools.config.workspace import Workspace
 
 
 if TYPE_CHECKING:
     Tensor = Any
     DeviceMesh = Any
+    from monarch._src.actor.proc_mesh import SetupActor  # noqa
     from monarch._src.actor.v1.host_mesh import HostMesh
 
 
@@ -127,7 +129,7 @@ class ProcMesh(MeshTrait):
         elif self._host_mesh.is_fake_in_process:
             from monarch._src.actor.v1.host_mesh import create_local_host_mesh
 
-            return create_local_host_mesh("root_host")
+            return create_local_host_mesh()
         else:
             return self._host(0)
 
@@ -229,7 +231,7 @@ class ProcMesh(MeshTrait):
         async def task(
             pm: "ProcMesh",
             hy_proc_mesh_task: "Shared[HyProcMesh]",
-            setup_actor: Optional[SetupActor],
+            setup_actor: Optional["SetupActor"],
             stream_log_to_client: bool,
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
@@ -243,6 +245,8 @@ class ProcMesh(MeshTrait):
 
         setup_actor = None
         if setup is not None:
+            from monarch._src.actor.proc_mesh import SetupActor  # noqa
+
             # If the user has passed the setup lambda, we need to call
             # it here before any of the other actors are spawned so that
             # the environment variables are set up before cuda init.
@@ -301,6 +305,8 @@ class ProcMesh(MeshTrait):
 
     @property
     def _device_mesh(self) -> "DeviceMesh":
+        from monarch._src.actor.proc_mesh import _has_tensor_engine
+
         if not _has_tensor_engine():
             raise RuntimeError(
                 "DeviceMesh is not available because tensor_engine was not compiled (USE_TENSOR_ENGINE=0)"
@@ -412,6 +418,35 @@ class ProcMesh(MeshTrait):
             **self._host_mesh.region.point_of_base_rank(base_host_rank)
         )
 
+    async def sync_workspace(
+        self,
+        workspace: Workspace,
+        conda: bool = False,
+        auto_reload: bool = False,
+    ) -> None:
+        """
+        Sync local code changes to the remote processes.
+
+        Args:
+            workspace: The workspace to sync.
+            conda: If True, also sync the currently activated conda env.
+            auto_reload: If True, automatically reload the workspace on changes.
+        """
+        raise NotImplementedError(
+            "sync_workspace is not implemented yet for v1 ProcMesh"
+        )
+
+    @classmethod
+    def from_alloc(
+        self,
+        alloc: AllocHandle,
+        setup: Callable[[], None] | None = None,
+        _attach_controller_controller: bool = True,
+    ) -> "ProcMesh":
+        raise NotImplementedError(
+            "from_alloc is not (and will not be) implemented for v1 ProcMesh"
+        )
+
 
 class _ControllerController(Actor):
     def __init__(self) -> None:
@@ -420,7 +455,11 @@ class _ControllerController(Actor):
     # pyre-ignore
     @endpoint
     def get_or_spawn(
-        self, name: str, Class: Type[TActor], *args: Any, **kwargs: Any
+        self,
+        name: str,
+        Class: Type[TActor],
+        *args: Any,
+        **kwargs: Any,
     ) -> TActor:
         if name not in self._controllers:
             from monarch._src.actor.v1.host_mesh import this_proc
@@ -447,9 +486,7 @@ def _get_controller_controller() -> "Tuple[ProcMesh, _ControllerController]":
         if _controller_controller is None:
             from monarch._src.actor.v1.host_mesh import fake_in_process_host
 
-            _cc_proc_mesh = fake_in_process_host(
-                "controller_controller_host"
-            )._spawn_nonblocking(
+            _cc_proc_mesh = fake_in_process_host()._spawn_nonblocking(
                 name="controller_controller_proc",
                 per_host=Extent([], []),
                 setup=None,
@@ -479,11 +516,4 @@ def get_or_spawn_controller(
         A Future that resolves to a reference to the actor.
     """
     cc = context().actor_instance._controller_controller
-    if (
-        cc is not None
-        and cast(ActorMesh[_ControllerController], cc)._class
-        is not _ControllerController
-    ):
-        # This can happen in the client process
-        cc = _get_controller_controller()[1]
     return cc.get_or_spawn.call_one(name, Class, *args, **kwargs)
