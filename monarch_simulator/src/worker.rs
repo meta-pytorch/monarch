@@ -18,11 +18,9 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Mailbox;
 use hyperactor::Named;
 use hyperactor::data::Serialized;
 use hyperactor::forward;
-use hyperactor::id;
 use hyperactor::reference::ActorId;
 use hyperactor::simnet::TorchOpEvent;
 use hyperactor::simnet::simnet_handle;
@@ -39,6 +37,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use torch_sys::Device;
 use torch_sys::DeviceType;
 use torch_sys::Layout;
@@ -732,21 +731,19 @@ impl WorkerActor {
             .collect::<Vec<String>>()
             .join(", ");
 
-        let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
-        let (tx, rx) = mailbox.open_once_port::<()>();
+        let (tx, rx) = oneshot::channel();
 
         simnet_handle()?
             .send_event(TorchOpEvent::new(
                 op.to_string(),
-                tx.bind(),
-                mailbox,
+                tx,
                 args_string,
                 kwargs_string,
                 actor_id,
             ))
             .unwrap();
 
-        rx.recv().await.unwrap();
+        rx.await.unwrap();
 
         Ok(())
     }

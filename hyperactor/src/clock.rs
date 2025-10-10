@@ -12,23 +12,15 @@ use std::error::Error;
 use std::fmt;
 use std::sync::LazyLock;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use futures::pin_mut;
 use hyperactor_telemetry::TelemetryClock;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::oneshot;
 
-use crate::Mailbox;
 use crate::channel::ChannelAddr;
-use crate::id;
-use crate::mailbox::DeliveryError;
-use crate::mailbox::MailboxSender;
-use crate::mailbox::MessageEnvelope;
-use crate::mailbox::Undeliverable;
-use crate::mailbox::UndeliverableMailboxSender;
-use crate::mailbox::monitored_return_handle;
 use crate::simnet::SleepEvent;
 use crate::simnet::simnet_handle;
 
@@ -191,25 +183,23 @@ pub struct SimClock;
 impl Clock for SimClock {
     /// Tell the simnet to wake up this green thread after the specified duration has pass on the simnet
     async fn sleep(&self, duration: tokio::time::Duration) {
-        let mailbox = SimClock::mailbox().clone();
-        let (tx, rx) = mailbox.open_once_port::<()>();
+        let (tx, rx) = oneshot::channel();
 
         simnet_handle()
             .unwrap()
-            .send_event(SleepEvent::new(tx.bind(), mailbox, duration))
+            .send_event(SleepEvent::new(tx, duration))
             .unwrap();
-        rx.recv().await.unwrap();
+        rx.await.unwrap();
     }
 
     async fn non_advancing_sleep(&self, duration: tokio::time::Duration) {
-        let mailbox = SimClock::mailbox().clone();
-        let (tx, rx) = mailbox.open_once_port::<()>();
+        let (tx, rx) = oneshot::channel();
 
         simnet_handle()
             .unwrap()
-            .send_nonadvanceable_event(SleepEvent::new(tx.bind(), mailbox, duration))
+            .send_nonadvanceable_event(SleepEvent::new(tx, duration))
             .unwrap();
-        rx.recv().await.unwrap();
+        rx.await.unwrap();
     }
 
     async fn sleep_until(&self, deadline: tokio::time::Instant) {
@@ -233,19 +223,18 @@ impl Clock for SimClock {
     where
         F: std::future::Future<Output = T>,
     {
-        let mailbox = SimClock::mailbox().clone();
-        let (tx, deadline_rx) = mailbox.open_once_port::<()>();
+        let (tx, deadline_rx) = oneshot::channel();
 
         simnet_handle()
             .unwrap()
-            .send_event(SleepEvent::new(tx.bind(), mailbox, duration))
+            .send_event(SleepEvent::new(tx, duration))
             .unwrap();
 
         let fut = f;
         pin_mut!(fut);
 
         tokio::select! {
-            _ = deadline_rx.recv() => {
+            _ = deadline_rx => {
                 Err(TimeoutError)
             }
             res = &mut fut => Ok(res)
@@ -254,27 +243,6 @@ impl Clock for SimClock {
 }
 
 impl SimClock {
-    // TODO (SF, 2025-07-11): Remove this global, thread through a mailbox
-    // from upstack and handle undeliverable messages properly.
-    fn mailbox() -> &'static Mailbox {
-        static SIMCLOCK_MAILBOX: OnceLock<Mailbox> = OnceLock::new();
-        SIMCLOCK_MAILBOX.get_or_init(|| {
-            let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
-            let (_undeliverable_messages, mut rx) =
-                mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
-            tokio::spawn(async move {
-                while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-                    envelope.set_error(DeliveryError::BrokenLink(
-                        "message returned to undeliverable port".to_string(),
-                    ));
-                    UndeliverableMailboxSender
-                        .post(envelope, /*unused */ monitored_return_handle())
-                }
-            });
-            mailbox
-        })
-    }
-
     /// Advance the sumulator's time to the specified instant
     pub fn advance_to(&self, time: tokio::time::Instant) {
         let mut guard = SIM_TIME.now.lock().unwrap();
