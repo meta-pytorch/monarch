@@ -79,7 +79,7 @@ pub(crate) trait MailboxExt: Mailbox {
 static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
 
 /// Only actors CanSend because they need a return port.
-impl<T: Mailbox + Send + Sync> MailboxExt for T {
+impl<T: Actor + Send + Sync> MailboxExt for T {
     fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
         let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
             let actor_id = self.mailbox().actor_id();
