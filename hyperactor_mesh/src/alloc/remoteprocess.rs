@@ -26,6 +26,7 @@ use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
+use hyperactor::channel::TcpMode;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock;
@@ -768,7 +769,10 @@ impl RemoteProcessAlloc {
                 ChannelTransport::MetaTls(_) => {
                     format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
                 }
-                ChannelTransport::Tcp => {
+                ChannelTransport::Tcp(TcpMode::Localhost) => {
+                    format!("tcp![::1]:{}", self.remote_allocator_port)
+                }
+                ChannelTransport::Tcp(TcpMode::Hostname) => {
                     format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
                 }
                 // Used only for testing.

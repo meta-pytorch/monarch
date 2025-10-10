@@ -14,6 +14,8 @@
 use core::net::SocketAddr;
 use std::fmt;
 use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
 use std::str::FromStr;
@@ -249,6 +251,26 @@ impl<M: RemoteMessage> Rx<M> for MpscRx<M> {
     strum::Display,
     strum::EnumString
 )]
+pub enum TcpMode {
+    /// Use localhost/loopback for the connection.
+    Localhost,
+    /// Use host domain name for the connection.
+    Hostname,
+}
+
+/// The hostname to use for TLS connections.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::EnumIter,
+    strum::Display,
+    strum::EnumString
+)]
 pub enum TlsMode {
     /// Use IpV6 address for TLS connections.
     IpV6,
@@ -315,7 +337,7 @@ impl fmt::Display for MetaTlsAddr {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
 pub enum ChannelTransport {
     /// Transport over a TCP connection.
-    Tcp,
+    Tcp(TcpMode),
 
     /// Transport over a TCP connection with TLS support within Meta
     MetaTls(TlsMode),
@@ -333,7 +355,7 @@ pub enum ChannelTransport {
 impl fmt::Display for ChannelTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Tcp => write!(f, "tcp"),
+            Self::Tcp(mode) => write!(f, "tcp({:?})", mode),
             Self::MetaTls(mode) => write!(f, "metatls({:?})", mode),
             Self::Local => write!(f, "local"),
             Self::Sim(transport) => write!(f, "sim({})", transport),
@@ -358,7 +380,13 @@ impl FromStr for ChannelTransport {
         }
 
         match s {
-            "tcp" => Ok(ChannelTransport::Tcp),
+            // Default to TcpMode::Hostname, if the mode isn't set
+            "tcp" => Ok(ChannelTransport::Tcp(TcpMode::Hostname)),
+            s if s.starts_with("tcp(") => {
+                let inner = &s["tcp(".len()..s.len() - 1];
+                let mode = inner.parse()?;
+                Ok(ChannelTransport::Tcp(mode))
+            }
             "local" => Ok(ChannelTransport::Local),
             "unix" => Ok(ChannelTransport::Unix),
             s if s.starts_with("metatls(") && s.ends_with(")") => {
@@ -373,9 +401,10 @@ impl FromStr for ChannelTransport {
 
 impl ChannelTransport {
     /// All known channel transports.
-    pub fn all() -> [ChannelTransport; 3] {
+    pub fn all() -> [ChannelTransport; 4] {
         [
-            ChannelTransport::Tcp,
+            ChannelTransport::Tcp(TcpMode::Localhost),
+            ChannelTransport::Tcp(TcpMode::Hostname),
             ChannelTransport::Local,
             ChannelTransport::Unix,
             // TODO add MetaTls (T208303369)
@@ -392,7 +421,7 @@ impl ChannelTransport {
     /// Returns true if this transport type represents a remote channel.
     pub fn is_remote(&self) -> bool {
         match self {
-            ChannelTransport::Tcp => true,
+            ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Local => false,
             ChannelTransport::Sim(_) => false,
@@ -502,18 +531,28 @@ impl ChannelAddr {
     /// servers to "any" address.
     pub fn any(transport: ChannelTransport) -> Self {
         match transport {
-            ChannelTransport::Tcp => {
-                let ip = hostname::get()
-                    .ok()
-                    .and_then(|hostname| {
-                        // TODO: Avoid using DNS directly once we figure out a good extensibility story here
-                        hostname.to_str().and_then(|hostname_str| {
-                            dns_lookup::lookup_host(hostname_str)
-                                .ok()
-                                .and_then(|addresses| addresses.first().cloned())
+            ChannelTransport::Tcp(mode) => {
+                let ip = match mode {
+                    TcpMode::Localhost => {
+                        // Fall back to 0.0.0.0 if localhost is not available, primarily for Docker
+                        // TODO: @rusch for figuring out a better way to choose a bindable IP and port
+                        match std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) {
+                            Ok(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+                            Err(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                        }
+                    }
+                    TcpMode::Hostname => hostname::get()
+                        .ok()
+                        .and_then(|hostname| {
+                            // TODO: Avoid using DNS directly once we figure out a good extensibility story here
+                            hostname.to_str().and_then(|hostname_str| {
+                                dns_lookup::lookup_host(hostname_str)
+                                    .ok()
+                                    .and_then(|addresses| addresses.first().cloned())
+                            })
                         })
-                    })
-                    .unwrap_or_else(|| IpAddr::from_str("::1").unwrap());
+                        .expect("Failed to resolve hostname to IP address"),
+                };
                 Self::Tcp(SocketAddr::new(ip, 0))
             }
             ChannelTransport::MetaTls(mode) => {
@@ -542,7 +581,13 @@ impl ChannelAddr {
     /// The transport used by this address.
     pub fn transport(&self) -> ChannelTransport {
         match self {
-            Self::Tcp(_) => ChannelTransport::Tcp,
+            Self::Tcp(addr) => {
+                if addr.ip().is_loopback() {
+                    ChannelTransport::Tcp(TcpMode::Localhost)
+                } else {
+                    ChannelTransport::Tcp(TcpMode::Hostname)
+                }
+            }
             Self::MetaTls(addr) => match addr {
                 MetaTlsAddr::Host { hostname, .. } => match hostname.parse::<IpAddr>() {
                     Ok(IpAddr::V6(_)) => ChannelTransport::MetaTls(TlsMode::IpV6),
