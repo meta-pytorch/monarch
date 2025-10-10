@@ -28,7 +28,7 @@ from monarch import (
     Stream,
 )
 
-from monarch._testing import BackendType, TestingContext
+from monarch._testing import TestingContext
 from monarch.builtins.log import log_remote
 from monarch.builtins.random import set_manual_seed_remote
 from monarch.cached_remote_function import remote_autograd_function
@@ -164,7 +164,6 @@ class RemoteFunctionsTestBase:
         cls,
         num_hosts: int,
         gpu_per_host: int,
-        backend_type: BackendType,
         activate: bool = True,
     ) -> ContextManager[DeviceMesh]:
         # pyre-fixme[10]: pytest defines this fixture.
@@ -172,7 +171,6 @@ class RemoteFunctionsTestBase:
             num_hosts,
             gpu_per_host,
             activate,
-            backend=str(backend_type),
         )
 
 
@@ -184,14 +182,11 @@ class RemoteFunctionsTestBase:
 # out is not counted as a failure, so we set a more restrictive timeout to
 # ensure we see a hard failure in CI.
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize(
-    "backend_type", [BackendType.PY, BackendType.RS, BackendType.MESH]
-)
 class TestRemoteFunctions(RemoteFunctionsTestBase):
     @classmethod
-    def do_test_reduce_scatter_tensor(cls, backend_type, reduce_op, expected_tensor):
+    def do_test_reduce_scatter_tensor(cls, reduce_op, expected_tensor):
         n_gpus = 2
-        with cls.local_device_mesh(2, n_gpus, backend_type) as device_mesh:
+        with cls.local_device_mesh(2, n_gpus) as device_mesh:
             rank = device_mesh.rank("host") * n_gpus + device_mesh.rank("gpu")
             tensor_in = rank * torch.arange(0, 8, device="cuda", dtype=float).reshape(
                 4, 2
@@ -214,13 +209,12 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
     @classmethod
     def do_test_reduce_scatter_tensor_subgroup(
         cls,
-        backend_type: BackendType,
         reduce_op,
         expected_tensor_host_group: torch.Tensor,
         expected_tensor_gpu_group: torch.Tensor,
     ) -> None:
         n_gpus = 2
-        with cls.local_device_mesh(2, n_gpus, backend_type) as device_mesh:
+        with cls.local_device_mesh(2, n_gpus) as device_mesh:
             # Use a group smaller than the world size.
             host_pg = device_mesh.process_group("host")
             gpu_pg = device_mesh.process_group("gpu")
@@ -265,12 +259,11 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
     @classmethod
     def do_test_reduce_scatter(
         cls,
-        backend_type: BackendType,
         reduce_op: ReduceOp,
         expected_tensor: torch.Tensor,
     ) -> None:
         n_gpus = 2
-        with cls.local_device_mesh(2, n_gpus, backend_type) as device_mesh:
+        with cls.local_device_mesh(2, n_gpus) as device_mesh:
             rank = device_mesh.rank("host") * n_gpus + device_mesh.rank("gpu")
             tensor_in = rank * torch.arange(0, 8, device="cuda", dtype=torch.float32)
             tensor_out = torch.arange(2, device="cuda", dtype=torch.float32)
@@ -294,9 +287,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                         )
 
     @classmethod
-    def do_test_all_reduce(cls, backend_type, reduce_op, expected_tensor):
+    def do_test_all_reduce(cls, reduce_op, expected_tensor):
         n_gpus = 2
-        with cls.local_device_mesh(2, n_gpus, backend_type) as device_mesh:
+        with cls.local_device_mesh(2, n_gpus) as device_mesh:
             rank = device_mesh.rank(("host", "gpu"))
             tensor_in = rank * torch.arange(0, 8, device="cuda", dtype=float).reshape(
                 4, 2
@@ -314,14 +307,12 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                             expected_tensor,
                         )
 
-    def test_hello(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_hello(self):
+        with self.local_device_mesh(2, 2):
             log_remote("hello, world")
 
-    def test_eager_remote_function_failed(self, backend_type):
-        if backend_type == BackendType.PY:
-            pytest.skip("Python support not planned for this test")
-        with self.local_device_mesh(1, 2, backend_type) as _:
+    def test_eager_remote_function_failed(self):
+        with self.local_device_mesh(1, 2) as _:
             x = torch.rand(3, 4)
             y = torch.rand(3, 4)
             z = do_bogus_tensor_work(x, y, fail_rank=1)
@@ -330,10 +321,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 # NCCL init is slow, and fails on internal RE!
                 _ = fetch_shard(a).result(timeout=40)
 
-    def test_set_device_inside_udf_fails_with_explanation(self, backend_type):
-        if backend_type != BackendType.RS:
-            pytest.skip("Python support not planned for this test")
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_set_device_inside_udf_fails_with_explanation(self):
+        with self.local_device_mesh(2, 2):
             t = set_device_udf(2)
             try:
                 inspect(t)
@@ -341,16 +330,16 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 backtrace = "\n".join([frame.name for frame in e.worker_frames])
                 assert "are available to monarch worker" in backtrace
 
-    def test_simple_tensors(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_simple_tensors(self):
+        with self.local_device_mesh(2, 2):
             x = torch.rand(3, 4)
             y = x + x
             log_remote("%s %s", x, y)
             z = torch.std_mean(x)
             log_remote("%s", z)
 
-    def test_user_call(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as _:
+    def test_user_call(self):
+        with self.local_device_mesh(2, 2) as _:
             x = torch.rand(3, 4)
             y = rlist((x + 1, x))
             log_remote("%s", y)
@@ -362,9 +351,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             # 4. implement comms APIs
             # 5. transfer tensor back, and simple future to wait for result.
 
-    def test_remote_function_with_comms_full_mesh(self, backend_type):
+    def test_remote_function_with_comms_full_mesh(self):
         nGPUs = 2
-        with self.local_device_mesh(2, nGPUs, backend_type) as device_mesh:
+        with self.local_device_mesh(2, nGPUs) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             myrank = (
                 (device_mesh.rank("host") + 1) * nGPUs + device_mesh.rank("gpu") + 1
@@ -375,9 +364,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             local_reduce = fetch_shard(reduce).result()
         assert torch.equal(local_reduce, torch.ones(3, 4) * 18)
 
-    def test_remote_function_with_comms_by_dimension(self, backend_type):
+    def test_remote_function_with_comms_by_dimension(self):
         nGPUs = 2
-        with self.local_device_mesh(2, nGPUs, backend_type) as device_mesh:
+        with self.local_device_mesh(2, nGPUs) as device_mesh:
             pg = device_mesh.process_group(("gpu",))
             myrank = (
                 (device_mesh.rank("host") + 1) * nGPUs + device_mesh.rank("gpu") + 1
@@ -389,7 +378,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         assert torch.equal(local_reduce_host_0, torch.ones(3, 4) * 7)
         assert torch.equal(local_reduce_host_1, torch.ones(3, 4) * 11)
 
-        with self.local_device_mesh(2, nGPUs, backend_type) as device_mesh:
+        with self.local_device_mesh(2, nGPUs) as device_mesh:
             pg = device_mesh.process_group(("host",))
             myrank = (
                 (device_mesh.rank("host") + 1) * nGPUs + device_mesh.rank("gpu") + 1
@@ -402,11 +391,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
 
         assert torch.equal(local_reduce_gpu_2, torch.ones(3, 4) * 10)
 
-    def test_remote_function_with_comms_sub_mesh(self, backend_type):
+    def test_remote_function_with_comms_sub_mesh(self):
         nGPUs = 2
-        with self.local_device_mesh(
-            2, nGPUs, backend_type, activate=False
-        ) as device_mesh:
+        with self.local_device_mesh(2, nGPUs, activate=False) as device_mesh:
             host1 = device_mesh(host=1)
             with host1.activate():
                 pg = device_mesh.process_group(("gpu",))
@@ -431,8 +418,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
 
             assert torch.equal(local_reduce, torch.ones(3, 4) * 7)
 
-    def test_remote_exception(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as _:
+    def test_remote_exception(self):
+        with self.local_device_mesh(2, 2) as _:
             x = torch.rand(3, 4)
             y = torch.rand(3, 4)
             z = do_bogus_tensor_work(x, y)
@@ -444,19 +431,17 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             # but values not dependent on z are fine
             fetch_shard(b).result(timeout=10)
 
-    def test_remote_function_barrier(self, backend_type):
-        if backend_type == BackendType.PY:
-            pytest.skip("FIXME: Python support for this function")
+    def test_remote_function_barrier(self):
         nGPUs = 2
-        with self.local_device_mesh(2, nGPUs, backend_type) as device_mesh:
+        with self.local_device_mesh(2, nGPUs) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             finished = barrier(group=pg)
             local = fetch_shard(finished).result()
         assert local.item() == 1.0
 
-    def test_remote_function_all_gather(self, backend_type: BackendType) -> None:
+    def test_remote_function_all_gather(self) -> None:
         nGPUs = 2
-        with self.local_device_mesh(2, nGPUs, backend_type) as device_mesh:
+        with self.local_device_mesh(2, nGPUs) as device_mesh:
             myrank = (
                 (device_mesh.rank("host") + 1) * nGPUs + device_mesh.rank("gpu") + 1
             )
@@ -479,9 +464,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         assert torch.equal(t2, torch.tensor([5, 10]))
         assert torch.equal(t3, torch.tensor([6, 12]))
 
-    def test_remote_function_all_gather_into_tensor(self, backend_type):
+    def test_remote_function_all_gather_into_tensor(self):
         nGPUs = 2
-        with self.local_device_mesh(2, nGPUs, backend_type) as device_mesh:
+        with self.local_device_mesh(2, nGPUs) as device_mesh:
             myrank = (
                 (device_mesh.rank("host") + 1) * nGPUs + device_mesh.rank("gpu") + 1
             )
@@ -497,9 +482,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         assert local_finished.item() == 1.0
         assert torch.equal(local_tensor_out, torch.tensor([3, 6, 4, 8, 5, 10, 6, 12]))
 
-    def test_remote_function_isend(self, backend_type):
+    def test_remote_function_isend(self):
         nGPUs = 2
-        with self.local_device_mesh(2, nGPUs, backend_type) as device_mesh:
+        with self.local_device_mesh(2, nGPUs) as device_mesh:
             pg = device_mesh.process_group(("host",))
             host_0_mesh = device_mesh(host=0)
             host_1_mesh = device_mesh(host=1)
@@ -523,8 +508,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         assert local_finished_0.item() == 1.0
         assert local_finished_1.item() == 1.0
 
-    def test_distributed_error(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as _:
+    def test_distributed_error(self):
+        with self.local_device_mesh(2, 2) as _:
             x = torch.rand(3, 4).cuda()
             y = torch.rand(3, 4).cuda()
             # z is broken on rank 1 but not others
@@ -548,8 +533,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             # from host 1, signaling that the reduction didn't get cuda compute stuck.
             fetch_shard(2 * x, gpu=1, host=0).result()
 
-    def test_pipe(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_pipe(self):
+        with self.local_device_mesh(2, 2):
             p = example_echo_add()
             for _i in range(10):
                 x = torch.rand(3, 4)
@@ -559,16 +544,16 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 with no_mesh.activate():
                     assert torch.allclose(x + 1, y)
 
-    def test_loader(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_loader(self):
+        with self.local_device_mesh(2, 2):
             p = example_data_loader(3, 7)
             for i in range(3, 7):
                 x = fetch_shard(p.recv()).result()
                 with no_mesh.activate():
                     assert x.item() == i
 
-    def test_loader_blocks_with_small_pipe(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_loader_blocks_with_small_pipe(self):
+        with self.local_device_mesh(2, 2):
             iters = 10
             p = example_data_loader_small_pipe(iters, (1000, 1000))
             # timeout should proc on pipe process
@@ -580,8 +565,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             t = fetch_shard(p.recv()).result()
         assert t[0][0].item() == -1.0
 
-    def test_streams_run_parallel(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_streams_run_parallel(self):
+        with self.local_device_mesh(2, 2):
             # test that these two streams do in fact run in parallel
             # on the worker by having each stream wait on a barrier.
             # The Tensor t is just used as a data-dependency so that
@@ -596,12 +581,12 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 wait_barrier_hackery(t)
             fetch_shard(t).result()
 
-    def test_debug(self, backend_type):
+    def test_debug(self):
         gonna_pdb = remote(
             "monarch.worker._testing_function.gonna_pdb", propagate="inspect"
         )
 
-        with self.local_device_mesh(2, 2, backend_type):
+        with self.local_device_mesh(2, 2):
             writes = []
 
             def dw(s):
@@ -612,16 +597,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 assert len(buffer) <= n
                 return buffer
 
-            if backend_type == BackendType.RS:
-                patch_read = patch(
-                    "monarch.controller.rust_backend.controller.debugger_read", new=dr
-                )
-                patch_write = patch(
-                    "monarch.controller.rust_backend.controller.debugger_write", new=dw
-                )
-            else:
-                patch_read = patch("monarch.controller.debugger.read", new=dr)
-                patch_write = patch("monarch.controller.debugger.write", new=dw)
+            patch_read = patch("monarch.controller.debugger.read", new=dr)
+            patch_write = patch("monarch.controller.debugger.write", new=dw)
             with patch_read, patch_write:
                 gonna_pdb()
                 # xxx: we do not process messages from workers
@@ -629,8 +606,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 fetch_shard(None).result()
                 assert "".join(writes).count("7\n") == 4
 
-    def test_fetch_preprocess(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_fetch_preprocess(self):
+        with self.local_device_mesh(2, 2):
             assert (
                 "an argument processed"
                 == call_on_shard_and_fetch(
@@ -639,10 +616,10 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 ).result()
             )
 
-    def test_cached_remote_function(self, backend_type):
+    def test_cached_remote_function(self):
         fn = remote("monarch.worker._testing_function.how_many_of_these_do_you_want")
         start_hits = remote_module._hit
-        with self.local_device_mesh(2, 2, backend_type):
+        with self.local_device_mesh(2, 2):
             x = torch.ones(3, 4)
             y = torch.rand(3, 4)
 
@@ -660,14 +637,14 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             end_hits = remote_module._hit
             assert end_hits - start_hits == 2
 
-    def test_remote_autograd_function(self, backend_type):
+    def test_remote_autograd_function(self):
         from monarch.worker import _testing_function
 
         remote_fn = remote_autograd_function(
             _testing_function.TestRemoteAutogradFunction
         )
 
-        with self.local_device_mesh(1, 1, backend_type):
+        with self.local_device_mesh(1, 1):
             x = torch.ones(1, requires_grad=True)
             y = torch.ones_like(x).requires_grad_(True)
             outs = remote_fn.apply(x, y)
@@ -697,9 +674,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         assert torch.equal(grad_local_1, torch.ones_like(local_0))
         assert torch.equal(grad_local_1_f, torch.ones_like(local_0))
 
-    def test_cached_remote_aliases(self, backend_type):
+    def test_cached_remote_aliases(self):
         fn = remote("monarch.worker._testing_function.remote_chunk")
-        with self.local_device_mesh(1, 1, backend_type):
+        with self.local_device_mesh(1, 1):
             x = torch.randn(16, 5, device="cuda")
             outs = fn(x)
             aliases = outs[0]._aliases.aliases
@@ -707,7 +684,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             assert len(aliases) == 5
             assert outs[2]._fake.storage_offset() == 40
 
-    def test_live_function(self, backend_type):
+    def test_live_function(self):
         def bar(x, y):
             return (
                 a_function_called_by_a_live_function(x)
@@ -729,7 +706,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
         def cuda_works(x):
             return x.cuda()
 
-        with self.local_device_mesh(2, 2, backend_type):
+        with self.local_device_mesh(2, 2):
             a = torch.ones(())
             assert call_on_shard_and_fetch(check, bar(a, a)).result()
             # ensure we do not attempt to pickle closures
@@ -746,8 +723,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             with pytest.raises(Exception, match=r"this line appears"):
                 something_else()
 
-    def test_setting_random_seed(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_setting_random_seed(self):
+        with self.local_device_mesh(2, 2):
             set_manual_seed_remote(12345)
             t = torch.randn(3, 4)
             t_d = torch.randn(3, 4, device="cuda")
@@ -767,17 +744,17 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             assert torch.equal(v, ref)
             assert torch.equal(v_d, ref_d)
 
-    def test_return_exception(self, backend_type):
+    def test_return_exception(self):
         @monarch.remote
         def simple():
             return Exception("is a valid value to return")
 
-        with self.local_device_mesh(1, 1, backend_type):
+        with self.local_device_mesh(1, 1):
             # This should be a valid return than an exception to raise
             call_on_shard_and_fetch(simple).result()
 
-    def test_opaque_object(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_opaque_object(self):
+        with self.local_device_mesh(2, 2):
 
             class Foo(OpaqueObject):
                 @opaque_method
@@ -793,8 +770,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             f.hi = 4
             assert f.hi == 4
 
-    def test_opaqueRef_setup_state_and_iteration(self, backend_type):
-        with self.local_device_mesh(1, 2, backend_type) as mesh:
+    def test_opaqueRef_setup_state_and_iteration(self):
+        with self.local_device_mesh(1, 2) as mesh:
             pg = mesh.process_group(("gpu",))
             model, dataloader, criterion, optimizer = setup_state()
             num_epochs = 5
@@ -802,15 +779,15 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 loss = iteration(model, dataloader, criterion, optimizer, pg)
                 assert inspect(loss).item() > 0
 
-    def test_opaqueRef_key_deleted(self, backend_type):
-        with self.local_device_mesh(1, 1, backend_type):
+    def test_opaqueRef_key_deleted(self):
+        with self.local_device_mesh(1, 1):
             ref = create_opaque_ref()
             assert inspect(opaque_ref_key_table_length()).item() == 1
             del ref
             assert inspect(opaque_ref_key_table_length()).item() == 0
 
-    def test_opaque_module(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_opaque_module(self):
+        with self.local_device_mesh(2, 2):
             linear = OpaqueModule("torch.nn.Linear", 3, 3, device="cuda")
             with torch.no_grad():
                 for p in linear.parameters():
@@ -821,8 +798,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             output = linear.call_method("forward", lambda self, x: x.clone(), input_)
             assert monarch.inspect(output.sum()).item() == 0
 
-    def test_opaque_module_autograd(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_opaque_module_autograd(self):
+        with self.local_device_mesh(2, 2):
             input_ = torch.rand(3, 3, device="cuda", requires_grad=True)
 
             linear = OpaqueModule("torch.nn.Linear", 3, 3, device="cuda")
@@ -847,9 +824,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 assert torch.allclose(wg0, wg1)
                 assert torch.allclose(bg0, bg1)
 
-    def test_remote_function_reduce_scatter_tensor_sum(self, backend_type):
+    def test_remote_function_reduce_scatter_tensor_sum(self):
         self.do_test_reduce_scatter_tensor(
-            backend_type,
+            "mesh",
             torch.distributed.ReduceOp.SUM,
             (
                 torch.arange(0, 8, dtype=float).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -857,11 +834,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).sum(0),
         )
 
-    def test_remote_function_reduce_scatter_tensor_subgroup_sum(
-        self, backend_type: BackendType
-    ) -> None:
+    def test_remote_function_reduce_scatter_tensor_subgroup_sum(self) -> None:
         self.do_test_reduce_scatter_tensor_subgroup(
-            backend_type,
             torch.distributed.ReduceOp.SUM,
             expected_tensor_host_group=torch.tensor(
                 [[0, 2, 4, 6], [0, 4, 8, 12], [8, 10, 12, 14], [16, 20, 24, 28]],
@@ -873,9 +847,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ),
         )
 
-    def test_remote_function_reduce_scatter_tensor_avg(self, backend_type):
+    def test_remote_function_reduce_scatter_tensor_avg(self):
         self.do_test_reduce_scatter_tensor(
-            backend_type,
+            "mesh",
             torch.distributed.ReduceOp.AVG,
             (
                 torch.arange(0, 8, dtype=float).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -883,11 +857,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).mean(0),
         )
 
-    def test_remote_function_reduce_scatter_sum(
-        self, backend_type: BackendType
-    ) -> None:
+    def test_remote_function_reduce_scatter_sum(self) -> None:
         self.do_test_reduce_scatter(
-            backend_type,
             torch.distributed.ReduceOp.SUM,
             (
                 torch.arange(0, 8, dtype=torch.float32).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -895,11 +866,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).sum(0),
         )
 
-    def test_remote_function_reduce_scatter_avg(
-        self, backend_type: BackendType
-    ) -> None:
+    def test_remote_function_reduce_scatter_avg(self) -> None:
         self.do_test_reduce_scatter(
-            backend_type,
             torch.distributed.ReduceOp.AVG,
             (
                 torch.arange(0, 8, dtype=torch.float32).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -907,9 +875,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).mean(0),
         )
 
-    def test_remote_function_all_reduce_sum(self, backend_type):
+    def test_remote_function_all_reduce_sum(self):
         self.do_test_all_reduce(
-            backend_type,
+            "mesh",
             torch.distributed.ReduceOp.SUM,
             (
                 torch.arange(0, 8, dtype=float).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -917,9 +885,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).sum(0),
         )
 
-    def test_remote_function_all_reduce_avg(self, backend_type):
+    def test_remote_function_all_reduce_avg(self):
         self.do_test_all_reduce(
-            backend_type,
             torch.distributed.ReduceOp.AVG,
             (
                 torch.arange(0, 8, dtype=float).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -927,9 +894,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).mean(0),
         )
 
-    def test_remote_function_all_reduce_max(self, backend_type):
+    def test_remote_function_all_reduce_max(self):
         self.do_test_all_reduce(
-            backend_type,
             torch.distributed.ReduceOp.MAX,
             (
                 torch.arange(0, 8, dtype=float).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -937,9 +903,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).max(0)[0],
         )
 
-    def test_remote_function_all_reduce_min(self, backend_type):
+    def test_remote_function_all_reduce_min(self):
         self.do_test_all_reduce(
-            backend_type,
             torch.distributed.ReduceOp.MIN,
             (
                 torch.arange(0, 8, dtype=float).reshape(1, 4, 2).repeat(4, 1, 1)
@@ -947,8 +912,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ).min(0)[0],
         )
 
-    def test_remote_function_failure_message_contains_traceback(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_remote_function_failure_message_contains_traceback(self):
+        with self.local_device_mesh(2, 2):
             x = outer_remote_function_that_calls_inner()
             try:
                 inspect(x)
@@ -960,8 +925,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                 assert "outer_remote_function" in e.worker_error_string
                 assert "inner_remote_function" in e.worker_error_string
 
-    def test_remote_function_broadcast(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_remote_function_broadcast(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             for i in range(4):
                 rank = 2 * device_mesh.rank("host") + device_mesh.rank("gpu")
@@ -972,8 +937,8 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                         with no_mesh.activate():
                             assert inspect(rank, {"host": host, "gpu": gpu}).item() == i
 
-    def test_remote_function_all_to_all_single(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_remote_function_all_to_all_single(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             tensor_in = torch.arange(4, device="cuda", dtype=float)
             tensor_out = torch.empty(4, device="cuda", dtype=float)
@@ -987,7 +952,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
                             rank * torch.ones(4),
                         )
 
-    def test_remote_function_all_to_all(self, backend_type: BackendType) -> None:
+    def test_remote_function_all_to_all(self) -> None:
         world_size = 2
         n_gpus = 2
         size = world_size * n_gpus
@@ -998,7 +963,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             torch.tensor([3, 7, 11, 15], dtype=torch.float32),
         ]
 
-        with self.local_device_mesh(world_size, n_gpus, backend_type) as device_mesh:
+        with self.local_device_mesh(world_size, n_gpus) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             rank = n_gpus * device_mesh.rank("host") + device_mesh.rank("gpu")
             in_tensors = list(
@@ -1032,7 +997,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
 # out is not counted as a failure, so we set a more restrictive timeout to
 # ensure we see a hard failure in CI.
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS])
 class TestComm(RemoteFunctionsTestBase):
     N_GPUS: int = 2
     N_HOSTS: int = 2
@@ -1045,10 +1009,8 @@ class TestComm(RemoteFunctionsTestBase):
     def device(self):
         self.fail("test subclass didn't override device")
 
-    def _test_tensor_dtype_complex(self, backend_type: BackendType) -> None:
-        with self.local_device_mesh(
-            self.N_HOSTS, self.N_GPUS, backend_type
-        ) as device_mesh:
+    def _test_tensor_dtype_complex(self) -> None:
+        with self.local_device_mesh(self.N_HOSTS, self.N_GPUS) as device_mesh:
             group = device_mesh.process_group(("host", "gpu"))
             tensor = torch.rand(2, device="cuda")
             tensor_c = torch.view_as_complex(tensor)
@@ -1063,10 +1025,8 @@ class TestComm(RemoteFunctionsTestBase):
             inspect(all_gather(tensor_list_c, tensor, group=group))
             inspect(all_gather(tensor_list_c, tensor_c, group=group))
 
-    def test_nccl_barrier(self, backend_type: BackendType) -> None:
-        with self.local_device_mesh(
-            self.N_HOSTS, self.N_GPUS, backend_type
-        ) as device_mesh:
+    def test_nccl_barrier(self) -> None:
+        with self.local_device_mesh(self.N_HOSTS, self.N_GPUS) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             rank = device_mesh.rank(("host", "gpu"))
             t = torch.tensor([1] * 10, device="cuda") + rank
@@ -1085,18 +1045,16 @@ class TestComm(RemoteFunctionsTestBase):
                             inspect(t, {"host": host, "gpu": gpu}),
                         )
 
-    def test_tensor_dtype_complex(self, backend_type: BackendType) -> None:
-        self._test_tensor_dtype_complex(backend_type)
+    def test_tensor_dtype_complex(self) -> None:
+        self._test_tensor_dtype_complex()
 
-    def test_reduce_scatter_base_k(self, backend_type: BackendType) -> None:
+    def test_reduce_scatter_base_k(self) -> None:
         expected_tensor = (
             torch.arange(self.N_HOSTS * self.N_GPUS * 2, dtype=torch.float32)
             .reshape(1, self.N_HOSTS * self.N_GPUS, 2)
             .repeat(self.N_HOSTS * self.N_GPUS, 1, 1)
         ).sum(0)
-        with self.local_device_mesh(
-            self.N_HOSTS, self.N_GPUS, backend_type
-        ) as device_mesh:
+        with self.local_device_mesh(self.N_HOSTS, self.N_GPUS) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             output_tensor = torch.zeros(2, dtype=torch.int64, device="cuda")
             input_tensors = torch.arange(
@@ -1128,7 +1086,6 @@ class TestComm(RemoteFunctionsTestBase):
 # out is not counted as a failure, so we set a more restrictive timeout to
 # ensure we see a hard failure in CI.
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS])
 class TestNcclProcessGroupWithDispatchedCollectives(RemoteFunctionsTestBase):
     """This test is copied from test_c10d_nccl.py::NcclProcessGroupWithDispatchedCollectivesTests
     in torch, but modified to setup a Monarch device mesh and use remote functions"""
@@ -1139,7 +1096,6 @@ class TestNcclProcessGroupWithDispatchedCollectives(RemoteFunctionsTestBase):
     def _call_collective_with_varying_tensors(
         self,
         world_size: int,
-        # pyre-fixme[24]: Incorrect ParamsSpec annotation.
         collective: Remote[..., torch.Tensor],
         *args,
         **kwargs,
@@ -1208,13 +1164,9 @@ class TestNcclProcessGroupWithDispatchedCollectives(RemoteFunctionsTestBase):
             "scatter",
         ],
     )
-    def test_collectives(
-        self, backend_type: BackendType, collective: Callable[..., torch.Tensor]
-    ) -> None:
+    def test_collectives(self, collective: Callable[..., torch.Tensor]) -> None:
         world_size = self.N_HOSTS * self.N_GPUS
-        with self.local_device_mesh(
-            self.N_HOSTS, self.N_GPUS, backend_type
-        ) as device_mesh:
+        with self.local_device_mesh(self.N_HOSTS, self.N_GPUS) as device_mesh:
             rank = device_mesh.rank(("host", "gpu"))
             pg = device_mesh.process_group(("host", "gpu"))
 
@@ -1229,10 +1181,8 @@ class TestNcclProcessGroupWithDispatchedCollectives(RemoteFunctionsTestBase):
                 kwargs["group_src"] = 0
             self._call_collective_with_varying_tensors(world_size, collective, **kwargs)
 
-    def test_all_to_all_single(self, backend_type: BackendType) -> None:
-        with self.local_device_mesh(
-            self.N_HOSTS, self.N_GPUS, backend_type
-        ) as device_mesh:
+    def test_all_to_all_single(self) -> None:
+        with self.local_device_mesh(self.N_HOSTS, self.N_GPUS) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             # test alltoall_base
             tensor_in = torch.arange(4, device="cuda", dtype=torch.float32)
@@ -1248,10 +1198,8 @@ class TestNcclProcessGroupWithDispatchedCollectives(RemoteFunctionsTestBase):
                             rank * torch.ones(4),
                         )
 
-    def test_allgather_base(self, backend_type: BackendType) -> None:
-        with self.local_device_mesh(
-            self.N_HOSTS, self.N_GPUS, backend_type
-        ) as device_mesh:
+    def test_allgather_base(self) -> None:
+        with self.local_device_mesh(self.N_HOSTS, self.N_GPUS) as device_mesh:
             pg = device_mesh.process_group(("host", "gpu"))
             rank = (
                 (device_mesh.rank("host") + 1) * self.N_GPUS
