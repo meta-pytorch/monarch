@@ -78,7 +78,10 @@ declare_attrs! {
     })
     pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
-    @meta(CONFIG_ENV_VAR = "HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string())
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
+        py_name: None,
+    })
     pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(30);
 }
 
@@ -671,7 +674,7 @@ impl ProcMeshRef {
     /// - `A: Actor` - the actor actually runs inside each proc.
     /// - `A: Referable` - so we can return typed `ActorRef<A>`s
     ///   inside the `ActorMesh`.
-    /// - `A::Params: RemoteMessage` — spawn parameters must be
+    /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
     pub(crate) async fn spawn_with_name<A: Actor + Referable>(
         &self,
@@ -704,13 +707,27 @@ impl ProcMeshRef {
             },
         )?;
 
+        let region = self.region().clone();
+        // Open an accum port that *receives overlays* and *emits full
+        // meshes*.
+        //
+        // NOTE: Mailbox initializes the accumulator state via
+        // `Default`, which is an *empty* ValueMesh (0 ranks). Our
+        // Accumulator<ValueMesh<T>> implementation detects this on
+        // the first update and replaces it with the caller-supplied
+        // template (the `self` passed into open_accum_port), which we
+        // seed here as "full NotExist over the target region".
         let (port, rx) = cx.mailbox().open_accum_port_opts(
-            RankedValues::default(),
+            // Initial state for the accumulator: full mesh seeded to
+            // NotExist.
+            crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
             }),
         );
 
+        // Send a message to all ranks. They reply with overlays to
+        // `port`.
         self.agent_mesh().cast(
             cx,
             resource::GetRankStatus {
@@ -719,33 +736,69 @@ impl ProcMeshRef {
             },
         )?;
 
+        // Helper: legacy shim for error types that still require
+        // RankedValues<Status>. TODO(shayne-fletcher): Delete this
+        // shim once Error::ActorSpawnError carries a StatusMesh
+        // (ValueMesh<Status>) directly. At that point, use the mesh
+        // as-is and remove `mesh_to_rankedvalues_*` calls below.
+        fn mesh_to_rankedvalues_with_default(
+            mesh: &crate::v1::StatusMesh,
+            default: Status,
+            len: usize,
+        ) -> RankedValues<Status> {
+            let mut rv = RankedValues::from((0..len, default));
+            for (i, s) in mesh.values().enumerate() {
+                if !matches!(s, Status::NotExist) {
+                    rv.merge_from(RankedValues::from((i..i + 1, s.clone())));
+                }
+            }
+            rv
+        }
+
         let start_time = RealClock.now();
 
-        // These will fail if there are any supervision events that occurred
-        // on the proc.
+        // Wait for all ranks to report a terminal or running status.
+        // If any proc reports a failure (via supervision) or the mesh
+        // times out, `wait()` returns Err with the final snapshot.
+        //
+        // `rx` is the accumulator output stream: each time reduced
+        // overlays are applied, it emits a new StatusMesh snapshot.
+        // `wait()` loops on it, deciding when the stream is
+        // "complete" (no more NotExist) or times out.
         match GetRankStatus::wait(
             rx,
             self.ranks.len(),
             config::global::get(ACTOR_SPAWN_MAX_IDLE),
+            region.clone(), // fallback
         )
         .await
         {
             Ok(statuses) => {
-                if statuses.first_terminating().is_none() {
+                // Spawn succeeds only if no rank has reported a
+                // supervision/terminal state. This preserves the old
+                // `first_terminating().is_none()` semantics.
+                let has_terminating = statuses.values().any(|s| s.is_terminating());
+                if !has_terminating {
                     Ok(ActorMesh::new(self.clone(), name))
                 } else {
-                    Err(Error::ActorSpawnError { statuses })
+                    let legacy = mesh_to_rankedvalues_with_default(
+                        &statuses,
+                        Status::NotExist,
+                        self.ranks.len(),
+                    );
+                    Err(Error::ActorSpawnError { statuses: legacy })
                 }
             }
             Err(complete) => {
-                // Fill the remaining statuses with a timeout error.
-                let mut statuses = RankedValues::from((
-                    0..self.ranks.len(),
-                    Status::Timeout(start_time.elapsed()),
-                ));
-                statuses.merge_from(complete);
-
-                Err(Error::ActorSpawnError { statuses })
+                // Fill remaining ranks with a timeout status, now
+                // handled via the legacy shim.
+                let elapsed = start_time.elapsed();
+                let legacy = mesh_to_rankedvalues_with_default(
+                    &complete,
+                    Status::Timeout(elapsed),
+                    self.ranks.len(),
+                );
+                Err(Error::ActorSpawnError { statuses: legacy })
             }
         }
     }

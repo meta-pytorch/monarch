@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::marker::PhantomData;
 use std::mem::replace;
 use std::mem::take;
 use std::ops::Deref;
@@ -31,19 +30,17 @@ use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
-use hyperactor::accum::Accumulator;
-use hyperactor::accum::CommReducer;
-use hyperactor::accum::ReducerFactory;
-use hyperactor::accum::ReducerSpec;
-use hyperactor::mailbox::MailboxError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
+use ndslice::Region;
+use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::v1::Name;
+use crate::v1::StatusOverlay;
 
 /// The current lifecycle status of a resource.
 #[derive(
@@ -119,8 +116,12 @@ impl Bind for Rank {
     }
 }
 
-/// Get the status of a resource at a rank. This message is designed to be
-/// cast and efficiently accumulated.
+/// Get the status of a resource across the mesh.
+///
+/// This message is cast to all ranks; each rank replies with a sparse
+/// status **overlay**. The comm reducer merges overlays (right-wins)
+/// and the accumulator applies them to produce **full StatusMesh
+/// snapshots** on the receiver side.
 #[derive(
     Clone,
     Debug,
@@ -136,34 +137,50 @@ impl Bind for Rank {
 pub struct GetRankStatus {
     /// The name of the resource.
     pub name: Name,
-    /// The status of the rank.
+    /// Sparse status updates (overlays) from a rank.
     #[binding(include)]
-    pub reply: PortRef<RankedValues<Status>>,
+    pub reply: PortRef<StatusOverlay>,
 }
 
 impl GetRankStatus {
     pub async fn wait(
-        mut rx: PortReceiver<RankedValues<Status>>,
+        mut rx: PortReceiver<crate::v1::StatusMesh>,
         num_ranks: usize,
         max_idle_time: Duration,
-    ) -> Result<RankedValues<Status>, RankedValues<Status>> {
+        region: Region, // used only for fallback
+    ) -> Result<crate::v1::StatusMesh, crate::v1::StatusMesh> {
+        debug_assert_eq!(region.num_ranks(), num_ranks, "region/num_ranks mismatch");
+
         let mut alarm = hyperactor::time::Alarm::new();
         alarm.arm(max_idle_time);
-        let mut statuses = RankedValues::default();
+
+        // Fallback snapshot if we time out before receiving anything.
+        let mut snapshot =
+            crate::v1::StatusMesh::from_single(region, crate::resource::Status::NotExist);
+
         loop {
             let mut sleeper = alarm.sleeper();
             tokio::select! {
-                _ = sleeper.sleep() => return Err(statuses),
-                new_statuses = rx.recv() => {
-                    match new_statuses {
-                        Ok(new_statuses) => statuses = new_statuses,
-                        Err(_) => return Err(statuses),
+                _ = sleeper.sleep() => return Err(snapshot),
+                next = rx.recv() => {
+                    match next {
+                        Ok(mesh) => { snapshot = mesh; }   // latest-wins snapshot
+                        Err(_)   => return Err(snapshot),
                     }
                 }
             }
+
             alarm.arm(max_idle_time);
-            if statuses.rank(num_ranks) == num_ranks {
-                break Ok(statuses);
+
+            // Completion: once every rank (among the first
+            // `num_ranks`) has reported at least something (i.e.
+            // moved off NotExist).
+            if snapshot
+                .values()
+                .take(num_ranks)
+                .all(|s| !matches!(s, crate::resource::Status::NotExist))
+            {
+                break Ok(snapshot);
             }
         }
     }
@@ -291,7 +308,7 @@ impl<T: Clone> RankedValues<T> {
     pub fn materialized_iter(&self, until: usize) -> impl Iterator<Item = &T> + '_ {
         assert_eq!(self.rank(until), until, "insufficient rank");
         self.iter()
-            .flat_map(|(range, value)| std::iter::repeat(value).take(range.end - range.start))
+            .flat_map(|(range, value)| std::iter::repeat_n(value, range.end - range.start))
     }
 }
 
@@ -472,44 +489,6 @@ impl<T> FromIterator<(Range<usize>, T)> for RankedValues<T> {
         Self {
             intervals: iter.into_iter().collect(),
         }
-    }
-}
-
-impl<T: Eq + Clone + Named> Accumulator for RankedValues<T> {
-    type State = Self;
-    type Update = Self;
-
-    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
-        state.merge_from(update);
-        Ok(())
-    }
-
-    fn reducer_spec(&self) -> Option<ReducerSpec> {
-        Some(ReducerSpec {
-            typehash: <RankedValuesReducer<T> as Named>::typehash(),
-            builder_params: None,
-        })
-    }
-}
-
-#[derive(Named)]
-struct RankedValuesReducer<T>(std::marker::PhantomData<T>);
-
-impl<T: Hash + Eq + Ord + Clone> CommReducer for RankedValuesReducer<T> {
-    type Update = RankedValues<T>;
-
-    fn reduce(&self, mut left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        left.merge_from(right);
-        Ok(left)
-    }
-}
-
-// register for concrete types:
-
-hyperactor::submit! {
-    ReducerFactory {
-        typehash_f: <RankedValuesReducer<Status> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(RankedValuesReducer::<Status>(PhantomData))),
     }
 }
 

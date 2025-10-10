@@ -14,6 +14,8 @@ use hyperactor::config;
 use hyperactor::config::CONFIG;
 use hyperactor::config::ConfigAttr;
 use hyperactor::declare_attrs;
+
+use crate::resource::RankedValues;
 pub mod mesh_agent;
 
 use std::collections::HashSet;
@@ -43,7 +45,6 @@ use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
-use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::v1;
 use crate::v1::Name;
@@ -537,21 +538,45 @@ impl HostMeshRef {
             .concat(&per_host)
             .map_err(|err| v1::Error::ConfigurationError(err.into()))?;
 
+        let region: Region = extent.clone().into();
         let mesh_name = Name::new(name);
+
+        // Helper: legacy shim for error types that still require
+        // RankedValues<Status>. TODO(shayne-fletcher): Delete this
+        // shim once Error::ActorSpawnError carries a StatusMesh
+        // (ValueMesh<Status>) directly. At that point, use the mesh
+        // as-is and remove `mesh_to_rankedvalues_*` calls below.
+        fn mesh_to_rankedvalues_with_default(
+            mesh: &crate::v1::StatusMesh,
+            default_fill: Status,
+            len: usize,
+        ) -> RankedValues<Status> {
+            let mut out = RankedValues::from((0..len, default_fill));
+            for (i, s) in mesh.values().enumerate() {
+                if !matches!(s, Status::NotExist) {
+                    out.merge_from(RankedValues::from((i..i + 1, s.clone())));
+                }
+            }
+            out
+        }
+
         let mut procs = Vec::new();
-        let num_ranks = self.region().num_ranks() * per_host.num_ranks();
+        let num_ranks = region.num_ranks();
+        // Accumulator outputs full StatusMesh snapshots; seed with
+        // NotExist.
         let (port, rx) = cx.mailbox().open_accum_port_opts(
-            RankedValues::default(),
+            crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
             }),
         );
 
-        // We CreateOrUpdate each proc, and then fence on getting statuses back.
-        // This is currently necessary because otherwise there is a race between
-        // the procs being created, and subsequent messages becoming unroutable
-        // (the agent actor manages the local muxer). We can solve this by allowing
-        // buffering in the host-level muxer.
+        // Create or update each proc, then fence on receiving status
+        // overlays. This prevents a race where procs become
+        // addressable before their local muxers are ready, which
+        // could make early messages unroutable. A future improvement
+        // would allow buffering in the host-level muxer to eliminate
+        // the need for this synchronization step.
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
@@ -585,25 +610,42 @@ impl HostMeshRef {
 
         let start_time = RealClock.now();
 
-        match GetRankStatus::wait(rx, num_ranks, config::global::get(PROC_SPAWN_MAX_IDLE)).await {
+        // Wait on accumulated StatusMesh snapshots until complete or
+        // timeout.
+        match GetRankStatus::wait(
+            rx,
+            num_ranks,
+            config::global::get(PROC_SPAWN_MAX_IDLE),
+            region.clone(), // fallback mesh if nothing arrives
+        )
+        .await
+        {
             Ok(statuses) => {
-                if let Some((rank, status)) = statuses.first_terminating() {
+                // If any rank is terminating, surface a
+                // ProcCreationError pointing at that rank.
+                if let Some((rank, status)) = statuses
+                    .values()
+                    .enumerate()
+                    .find(|(_, s)| s.is_terminating())
+                {
                     let proc_name = Name::new(format!("{}-{}", name, rank % per_host.num_ranks()));
                     return Err(v1::Error::ProcCreationError {
                         proc_name,
-                        mesh_agent: self.ranks[rank].mesh_agent(),
+                        mesh_agent: self.ranks[rank / per_host.num_ranks()].mesh_agent(),
                         host_rank: rank / per_host.num_ranks(),
-                        status: status.clone(),
+                        status,
                     });
                 }
             }
             Err(complete) => {
-                // Fill the remaining statuses with a timeout error.
-                let mut statuses =
-                    RankedValues::from((0..num_ranks, Status::Timeout(start_time.elapsed())));
-                statuses.merge_from(complete);
-
-                return Err(v1::Error::ProcSpawnError { statuses });
+                // Fill remaining ranks with a timeout status via the
+                // legacy shim.
+                let legacy = mesh_to_rankedvalues_with_default(
+                    &complete,
+                    Status::Timeout(start_time.elapsed()),
+                    num_ranks,
+                );
+                return Err(v1::Error::ProcSpawnError { statuses: legacy });
             }
         }
 
