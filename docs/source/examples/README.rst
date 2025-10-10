@@ -19,6 +19,7 @@ These examples are formatted for sphinx-gallery and will be automatically conver
    :hidden:
 
    ping_pong
+   crawler
    spmd_ddp
    grpo_actor
    distributed_tensors
