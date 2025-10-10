@@ -14,6 +14,7 @@ from typing import Any, cast, List, Optional, Tuple
 
 import torch
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._src.actor.proc_mesh import ProcMesh
 from typing_extensions import Self
 
 try:
@@ -27,14 +28,7 @@ from typing import Dict
 from monarch._src.actor.actor_mesh import Actor, context
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
-from monarch._src.actor.v1 import (
-    get_or_spawn_controller as get_or_spawn_controller_v0,
-    ProcMesh as ProcMeshV0,
-)
-from monarch._src.actor.v1.proc_mesh import (
-    get_or_spawn_controller as get_or_spawn_controller_v1,
-    ProcMesh as ProcMeshV1,
-)
+from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from pyre_extensions import none_throws
 
 
@@ -61,17 +55,9 @@ def is_rdma_available():
 @functools.cache
 def _ensure_init_rdma_manager() -> Shared[None]:
     async def task() -> None:
-        proc_mesh = context().actor_instance.proc_mesh
-        if isinstance(proc_mesh, ProcMeshV1):
-            controller = await get_or_spawn_controller_v1(
-                "rdma_controller", RdmaController
-            )
-        else:
-            controller = await get_or_spawn_controller_v0(
-                "rdma_controller", RdmaController
-            )
-
-        await controller.init_rdma_on_mesh.call_one(proc_mesh)
+        await (
+            await get_or_spawn_controller("rdma_controller", RdmaController)
+        ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh))
 
     return PythonTask.from_coroutine(task()).spawn()
 
@@ -131,10 +117,10 @@ def _get_addr_and_size(buf: torch.Tensor | memoryview) -> tuple[int, int]:
 
 class RdmaController(Actor):
     def __init__(self) -> None:
-        self._manager_futures: Dict[ProcMeshV0 | ProcMeshV1, Future[_RdmaManager]] = {}
+        self._manager_futures: Dict[ProcMesh, Future[_RdmaManager]] = {}
 
     @endpoint
-    async def init_rdma_on_mesh(self, proc_mesh: ProcMeshV0 | ProcMeshV1) -> None:
+    async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -> None:
         # Note: RdmaController acts as coordinator and can run on any node
         # The RDMA support check should happen on the target proc_mesh nodes, not on RdmaController's node
 

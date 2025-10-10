@@ -86,8 +86,13 @@ import numpy as np
 import pytest
 
 import torch
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.actor import Actor, endpoint, this_host
 from monarch.rdma import is_rdma_available, RDMABuffer
+
+
+pytestmark = pytest.mark.skipif(v1_enabled, reason="ENABLE ASAP ONCE V1 RDMA LANDS")
+
 
 TIMEOUT = 60  # 60 seconds
 

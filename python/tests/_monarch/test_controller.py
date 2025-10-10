@@ -8,11 +8,18 @@
 
 from unittest import TestCase
 
+import pytest
+
 from monarch._rust_bindings.monarch_extension import (  # @manual=//monarch/monarch_extension:monarch_extension
     controller,
     tensor_worker,
 )
 from monarch._rust_bindings.monarch_hyperactor import shape
+from monarch._src.actor.v1 import enabled as v1_enabled
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    not v1_enabled, reason="no dep on v0/v1, so only run on v1"
+)
 
 
 class TestController(TestCase):
