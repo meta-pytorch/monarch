@@ -8,7 +8,7 @@
 
 import logging
 import threading
-from typing import Optional, Union
+from typing import Optional, TextIO, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
 
@@ -39,6 +39,8 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 _global_flush_registered = False
 _global_flush_lock = threading.Lock()
+
+FD_READ_CHUNK_SIZE = 4096
 
 
 def flush_all_proc_mesh_logs(v1: bool = False) -> None:
@@ -101,6 +103,52 @@ class LoggingManager:
                     )
                     _global_flush_registered = True
 
+    def enable_fd_capture_if_in_ipython(self) -> Optional[Tuple[int, int]]:
+        """
+        On notebooks, the UI shows logs from Python streams (sys.stdout/sys.stderr), but
+        Monarch actors write directly to the OS file descriptors 1/2 (stdout/stderr). Those
+        low-level writes bypass Python’s streams and therefore don’t appear in the
+        notebook output.
+
+        What this does:
+        - Creates two OS pipes and uses dup2 to redirect the current process's
+          stdout/stderr FDs (1/2) into those pipes.
+        - Spawns tiny background threads that read bytes from the pipes and forward
+          them into the notebook’s visible Python streams (sys.stdout/sys.stderr).
+
+        If in IPython, returns backups of the original FDs so they can be restored.
+        """
+        if IN_IPYTHON:
+            import os, sys
+
+            r1, w1 = os.pipe()
+            r2, w2 = os.pipe()
+            b1 = os.dup(1)
+            b2 = os.dup(2)
+            os.dup2(w1, 1)
+            os.dup2(w2, 2)
+            os.close(w1)
+            os.close(w2)
+
+            def pump(fd: int, stream: TextIO) -> None:
+                while True:
+                    chunk = os.read(fd, FD_READ_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    (
+                        stream.buffer.write(chunk)
+                        if hasattr(stream, "buffer")
+                        else stream.write(chunk.decode("utf-8", "replace"))
+                    )
+                    stream.flush()
+
+            threading.Thread(target=pump, args=(r1, sys.stdout), daemon=True).start()
+            threading.Thread(target=pump, args=(r2, sys.stderr), daemon=True).start()
+
+            return b1, b2
+
+        return None
+
     async def logging_option(
         self,
         stream_to_client: bool = True,
@@ -118,6 +166,7 @@ class LoggingManager:
             level=level,
         )
         self.register_flusher_if_in_ipython()
+        self.enable_fd_capture_if_in_ipython()
 
     def flush(self) -> None:
         assert self._logging_mesh_client is not None
