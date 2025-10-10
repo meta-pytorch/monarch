@@ -11,7 +11,7 @@ import logging
 
 import click
 
-from monarch.actor import Actor, endpoint, proc_mesh
+from monarch.actor import Actor, endpoint, this_host
 
 
 @click.group()
@@ -30,7 +30,7 @@ class Printer(Actor):
 
 async def _flush_logs() -> None:
     # Create a lot of processes to stress test the logging
-    pm = proc_mesh(gpus=32)
+    pm = this_host().spawn_procs(per_host={"gpus": 32})
 
     # never flush
     await pm.logging_option(aggregate_window_sec=1000)

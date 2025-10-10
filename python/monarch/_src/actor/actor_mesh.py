@@ -96,10 +96,6 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
     from monarch._src.actor.proc_mesh import _ControllerController, ProcMesh
-    from monarch._src.actor.v1.proc_mesh import (
-        _ControllerController as _ControllerControllerV1,
-        ProcMesh as ProcMeshV1,
-    )
 from monarch._src.actor.telemetry import get_monarch_tracer
 
 CallMethod = PythonMessageKind.CallMethod
@@ -149,7 +145,7 @@ class Instance(abc.ABC):
         ...
 
     @property
-    def proc(self) -> "ProcMesh | ProcMeshV1":
+    def proc(self) -> "ProcMesh":
         """
         The singleton proc mesh that corresponds to just this actor.
         """
@@ -162,14 +158,14 @@ class Instance(abc.ABC):
     The actors __init__ message.
     """
     rank: Point
-    proc_mesh: "ProcMesh | ProcMeshV1"
-    _controller_controller: "_ControllerController | _ControllerControllerV1"
+    proc_mesh: "ProcMesh"
+    _controller_controller: "_ControllerController"
 
     # this property is used to hold the handles to actors and processes launched by this actor
     # in order to keep them alive until this actor exits.
-    _children: "Optional[List[ActorMesh | ProcMesh | ProcMeshV1]]"
+    _children: "Optional[List[ActorMesh | ProcMesh]]"
 
-    def _add_child(self, child: "ActorMesh | ProcMesh | ProcMeshV1") -> None:
+    def _add_child(self, child: "ActorMesh | ProcMesh") -> None:
         if self._children is None:
             self._children = [child]
         else:
@@ -220,15 +216,19 @@ def context() -> Context:
         c = Context._root_client_context()
         _context.set(c)
 
-        # FIXME: Switch to the v1 APIs when it becomes the default.
         from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
+        from monarch._src.actor.v1 import enabled as v1_enabled
 
-        c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
-            _get_controller_controller()
-        )
+        if not v1_enabled:
+            c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
+                _get_controller_controller()
+            )
 
-        c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
+            c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
+        else:
+            c.actor_instance._controller_controller = _get_controller_controller()[1]
+            c.actor_instance.proc_mesh = create_local_host_mesh().spawn_procs()
     return c
 
 
@@ -333,7 +333,7 @@ class ActorEndpoint(Endpoint[P, R]):
         self,
         actor_mesh: "ActorMeshProtocol",
         shape: Shape,
-        proc_mesh: "Optional[ProcMesh] | Optional[ProcMeshV1]",
+        proc_mesh: "Optional[ProcMesh]",
         name: MethodSpecifier,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
@@ -1016,7 +1016,7 @@ class ActorMesh(MeshTrait, Generic[T]):
         Class: Type[T],
         inner: "ActorMeshProtocol",
         shape: Shape,
-        proc_mesh: "Optional[ProcMesh] | Optional[ProcMeshV1]",
+        proc_mesh: "Optional[ProcMesh]",
     ) -> None:
         self.__name__: str = Class.__name__
         self._class: Type[T] = Class
@@ -1071,9 +1071,8 @@ class ActorMesh(MeshTrait, Generic[T]):
         Class: Type[T],
         actor_mesh: "PythonActorMesh",
         shape: Shape,
-        proc_mesh: "ProcMesh | ProcMeshV1",
-        controller_controller: Optional["_ControllerController"]
-        | Optional["_ControllerControllerV1"],
+        proc_mesh: "ProcMesh",
+        controller_controller: Optional["_ControllerController"],
         # args and kwargs are passed to the __init__ method of the user defined
         # python actor object.
         *args: Any,

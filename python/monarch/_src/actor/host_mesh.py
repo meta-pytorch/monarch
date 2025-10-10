@@ -9,38 +9,53 @@
 import warnings
 from math import prod
 
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Slice
 
 from monarch._src.actor.actor_mesh import context
 from monarch._src.actor.allocator import AllocateMixin, AllocHandle, LocalAllocator
-from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcessAllocator, ProcMesh
+from monarch._src.actor.proc_mesh import (
+    _get_bootstrap_args,
+    ProcessAllocator,
+    ProcMeshV0,
+)
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
+from monarch._src.actor.v1 import enabled as v1_enabled
+from monarch._src.actor.v1.host_mesh import (
+    create_local_host_mesh as create_local_host_mesh_v1,
+    fake_in_process_host as fake_in_process_host_v1,
+    host_mesh_from_alloc as host_mesh_from_alloc_v1,
+    HostMesh as HostMeshV1,
+    hosts_from_config as hosts_from_config_v1,
+    this_host as this_host_v1,
+    this_proc as this_proc_v1,
+)
 
 
-def this_host() -> "HostMesh":
+def this_host_v0() -> "HostMeshV0":
     """
     The current machine.
 
     This is just shorthand for looking it up via the context
     """
     host_mesh = context().actor_instance.proc.host_mesh
-    assert isinstance(host_mesh, HostMesh), "expected v0 HostMesh, got v1 HostMesh"
+    assert isinstance(host_mesh, HostMeshV0), "expected v0 HostMesh, got v1 HostMesh"
     return host_mesh
 
 
-def this_proc() -> "ProcMesh":
+def this_proc_v0() -> "ProcMeshV0":
     """
     The current singleton process that this specific actor is
     running on
     """
     proc = context().actor_instance.proc
-    assert isinstance(proc, ProcMesh), "expected v1 ProcMesh, got v0 ProcMesh"
+    assert isinstance(proc, ProcMeshV0), "expected v1 ProcMesh, got v0 ProcMesh"
     return proc
 
 
-def create_local_host_mesh() -> "HostMesh":
+def create_local_host_mesh_v0() -> "HostMeshV0":
     """
     Create a local host mesh for the current machine.
 
@@ -48,10 +63,10 @@ def create_local_host_mesh() -> "HostMesh":
         HostMesh: A single-host mesh configured for local process allocation.
     """
     cmd, args, env = _get_bootstrap_args()
-    return HostMesh(Shape.unity(), ProcessAllocator(cmd, args, env))
+    return HostMeshV0(Shape.unity(), ProcessAllocator(cmd, args, env))
 
 
-class HostMesh(MeshTrait):
+class HostMeshV0(MeshTrait):
     """
     HostMesh represents a collection of compute hosts that can be used to spawn
     processes and actors. The class requires you to provide your AllocateMixin that
@@ -79,7 +94,7 @@ class HostMesh(MeshTrait):
         self,
         per_host: Optional[Dict[str, int]] = None,
         bootstrap: Optional[Callable[[], None]] = None,
-    ) -> "ProcMesh":
+    ) -> "ProcMeshV0":
         """
         Start new processes on this host mesh. By default this starts one proc
         on each host in the mesh. Additional procs can be started using `per_host` to
@@ -113,7 +128,7 @@ class HostMesh(MeshTrait):
             )
 
         new_extent.update(per_host)
-        return ProcMesh.from_alloc(alloc_handle.reshape(new_extent), bootstrap)
+        return ProcMeshV0.from_alloc(alloc_handle.reshape(new_extent), bootstrap)
 
     @property
     def _ndslice(self) -> NDSlice:
@@ -123,28 +138,28 @@ class HostMesh(MeshTrait):
     def _labels(self) -> Tuple[str, ...]:
         return tuple(self._shape.labels)
 
-    def _new_with_shape(self, shape: Shape) -> "HostMesh":
+    def _new_with_shape(self, shape: Shape) -> "HostMeshV0":
         warnings.warn(
             "Slicing a host mesh is kinda fake at the moment, there is no guarentee that procs in the slice will end up on the corresponding hosts",
             stacklevel=2,
         )
-        return HostMesh(
+        return HostMeshV0(
             Shape(self._labels, NDSlice.new_row_major(self._ndslice.sizes)),
             self._allocator,
         )
 
 
-def fake_in_process_host() -> "HostMesh":
+def fake_in_process_host_v0() -> "HostMeshV0":
     """
     Create a host mesh for testing and development using a local allocator.
 
     Returns:
         HostMesh: A host mesh configured with local allocation for in-process use.
     """
-    return HostMesh(Shape.unity(), LocalAllocator())
+    return HostMeshV0(Shape.unity(), LocalAllocator())
 
 
-def hosts_from_config(name: str):
+def hosts_from_config_v0(name: str):
     """
     Get the host mesh 'name' from the monarch configuration for the project.
 
@@ -156,4 +171,32 @@ def hosts_from_config(name: str):
     """
 
     shape = Shape(["hosts"], NDSlice.new_row_major([2]))
-    return HostMesh(shape, ProcessAllocator(*_get_bootstrap_args()))
+    return HostMeshV0(shape, ProcessAllocator(*_get_bootstrap_args()))
+
+
+def host_mesh_from_alloc_v0(
+    name: str, extent: Extent, allocator: AllocateMixin, constraints: AllocConstraints
+) -> HostMeshV0:
+    return HostMeshV0(
+        Shape(extent.labels, Slice.new_row_major(extent.sizes)),
+        allocator,
+        constraints,
+    )
+
+
+if v1_enabled or TYPE_CHECKING:
+    this_host = this_host_v1
+    this_proc = this_proc_v1
+    create_local_host_mesh = create_local_host_mesh_v1
+    fake_in_process_host = fake_in_process_host_v1
+    HostMesh = HostMeshV1
+    hosts_from_config = hosts_from_config_v1
+    host_mesh_from_alloc = host_mesh_from_alloc_v1
+else:
+    this_host = this_host_v0
+    this_proc = this_proc_v0
+    create_local_host_mesh = create_local_host_mesh_v0
+    fake_in_process_host = fake_in_process_host_v0
+    HostMesh = HostMeshV0
+    hosts_from_config = hosts_from_config_v0
+    host_mesh_from_alloc = host_mesh_from_alloc_v0

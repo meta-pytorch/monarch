@@ -15,8 +15,13 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, context, ValueMesh
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.v1.host_mesh import create_local_host_mesh, this_host
-from monarch._src.actor.v1.proc_mesh import ProcMesh
+from monarch._src.actor.host_mesh import create_local_host_mesh, this_host
+from monarch._src.actor.proc_mesh import ProcMesh
+from monarch._src.actor.v1 import enabled as v1_enabled
+
+
+pytestmark = pytest.mark.skipif(not v1_enabled, reason="v1 not enabled")
+
 
 _proc_rank = -1
 
@@ -65,7 +70,7 @@ class TestActor(Actor):
 
 @pytest.mark.timeout(60)
 async def test_proc_mesh_initialization() -> None:
-    host = create_local_host_mesh("test_host")
+    host = create_local_host_mesh()
     proc_mesh = host.spawn_procs(name="test_proc")
     # Test that initialization completes successfully
     assert await proc_mesh.initialized
@@ -73,7 +78,7 @@ async def test_proc_mesh_initialization() -> None:
 
 @pytest.mark.timeout(60)
 def test_proc_mesh_spawn_single_actor() -> None:
-    host = create_local_host_mesh("test_host")
+    host = create_local_host_mesh()
     proc_mesh = host.spawn_procs(name="test_proc")
     actor = proc_mesh.spawn("test_actor", TestActor, 42)
     assert actor.get_value.call_one().get() == 42
@@ -83,7 +88,7 @@ def test_proc_mesh_spawn_single_actor() -> None:
 
 @pytest.mark.timeout(60)
 def test_proc_mesh_multi_actor() -> None:
-    host = create_local_host_mesh("multi_host", Extent(["replicas", "hosts"], [2, 2]))
+    host = create_local_host_mesh(Extent(["replicas", "hosts"], [2, 2]))
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
     actor = proc_mesh.spawn("test_actor", TestActor, 42)
 
@@ -97,7 +102,7 @@ def test_proc_mesh_multi_actor() -> None:
 
 @pytest.mark.timeout(60)
 def test_proc_mesh_sliced() -> None:
-    host = create_local_host_mesh("multi_host", Extent(["replicas", "hosts"], [2, 2]))
+    host = create_local_host_mesh(Extent(["replicas", "hosts"], [2, 2]))
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
     # Initialize _proc_rank on each actor process
     actor = proc_mesh.spawn("test_actor", TestActor, 42)
@@ -122,7 +127,7 @@ def test_proc_mesh_sliced() -> None:
 
 @pytest.mark.timeout(120)
 def test_nested_meshes() -> None:
-    host = create_local_host_mesh("host", Extent(["hosts"], [2]))
+    host = create_local_host_mesh(Extent(["hosts"], [2]))
     proc = host.spawn_procs(name="proc")
     actor = proc.spawn("actor", TestActor)
     nested = actor.spawn_on_this_host.call().get()
@@ -144,7 +149,7 @@ def test_nested_meshes() -> None:
 
 @pytest.mark.timeout(60)
 async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
-    host = create_local_host_mesh("host", Extent(["hosts"], [2]))
+    host = create_local_host_mesh(Extent(["hosts"], [2]))
     proc = host.spawn_procs(per_host={"gpus": 2})
 
     async def task():
