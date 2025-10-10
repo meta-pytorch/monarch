@@ -66,6 +66,7 @@ libc = "0.2.139"
 mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
+notify = "5"
 opentelemetry = "0.29"
 pin-project = "1.1.10"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
@@ -87,6 +88,7 @@ bytes = { version = "1.10", features = ["serde"] }
 itertools = "0.14.0"
 maplit = "1.0"
 proptest = "1.5"
+tempfile = "3.22"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 
