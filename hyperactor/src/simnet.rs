@@ -38,21 +38,17 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
-// for macros
 use crate::ActorId;
-use crate::Mailbox;
-use crate::OncePortRef;
 use crate::ProcId;
-use crate::attrs::Attrs;
 use crate::channel::ChannelAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
-use crate::context::MailboxExt;
 use crate::data::Serialized;
 
 static HANDLE: OnceLock<SimNetHandle> = OnceLock::new();
@@ -142,8 +138,7 @@ impl Event for NodeJoinEvent {
 /// A pytorch operation
 pub struct TorchOpEvent {
     op: String,
-    done_tx: OncePortRef<()>,
-    mailbox: Mailbox,
+    done_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     args_string: String,
     kwargs_string: String,
     worker_actor_id: ActorId,
@@ -156,12 +151,17 @@ impl Event for TorchOpEvent {
     }
 
     async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
-        let mut headers = Attrs::new();
-        crate::mailbox::headers::set_send_timestamp(&mut headers);
-        let serialized =
-            Serialized::serialize(&()).map_err(|err| SimNetError::Closed(err.to_string()))?;
-        self.mailbox
-            .post(self.done_tx.port_id().clone(), headers, serialized);
+        let mut guard = self.done_tx.lock().await;
+        match guard.take() {
+            Some(done_tx) => {
+                let _ = done_tx
+                    .send(())
+                    .map_err(|_| SimNetError::Closed("done channel is closed".to_string()));
+            }
+            None => {
+                return Err(SimNetError::Closed("already sent once".to_string()));
+            }
+        }
         Ok(())
     }
 
@@ -186,16 +186,14 @@ impl TorchOpEvent {
     /// Creates a new TorchOpEvent.
     pub fn new(
         op: String,
-        done_tx: OncePortRef<()>,
-        mailbox: Mailbox,
+        done_tx: oneshot::Sender<()>,
         args_string: String,
         kwargs_string: String,
         worker_actor_id: ActorId,
     ) -> Box<Self> {
         Box::new(Self {
             op,
-            done_tx,
-            mailbox,
+            done_tx: Arc::new(Mutex::new(Some(done_tx))),
             args_string,
             kwargs_string,
             worker_actor_id,
@@ -205,20 +203,14 @@ impl TorchOpEvent {
 
 #[derive(Debug)]
 pub(crate) struct SleepEvent {
-    done_tx: OncePortRef<()>,
-    mailbox: Mailbox,
+    done_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     duration: tokio::time::Duration,
 }
 
 impl SleepEvent {
-    pub(crate) fn new(
-        done_tx: OncePortRef<()>,
-        mailbox: Mailbox,
-        duration: tokio::time::Duration,
-    ) -> Box<Self> {
+    pub(crate) fn new(done_tx: oneshot::Sender<()>, duration: tokio::time::Duration) -> Box<Self> {
         Box::new(Self {
-            done_tx,
-            mailbox,
+            done_tx: Arc::new(Mutex::new(Some(done_tx))),
             duration,
         })
     }
@@ -231,12 +223,17 @@ impl Event for SleepEvent {
     }
 
     async fn handle_network(&self, _simnet: &SimNet) -> Result<(), SimNetError> {
-        let mut headers = Attrs::new();
-        crate::mailbox::headers::set_send_timestamp(&mut headers);
-        let serialized =
-            Serialized::serialize(&()).map_err(|err| SimNetError::Closed(err.to_string()))?;
-        self.mailbox
-            .post(self.done_tx.port_id().clone(), headers, serialized);
+        let mut guard = self.done_tx.lock().await;
+        match guard.take() {
+            Some(done_tx) => {
+                let _ = done_tx
+                    .send(())
+                    .map_err(|_| SimNetError::Closed("done channel is closed".to_string()));
+            }
+            None => {
+                return Err(SimNetError::Closed("already sent once".to_string()));
+            }
+        }
         Ok(())
     }
 
@@ -1168,22 +1165,20 @@ mod tests {
         let args_string = "1, 2".to_string();
         let kwargs_string = "a=2".to_string();
 
-        let mailbox = Mailbox::new_detached(id!(proc[0].proc).clone());
-        let (tx, rx) = mailbox.open_once_port::<()>();
+        let (tx, rx) = oneshot::channel();
 
         simnet_handle()
             .unwrap()
             .send_event(TorchOpEvent::new(
                 "torch.ops.aten.ones.default".to_string(),
-                tx.bind(),
-                mailbox,
+                tx,
                 args_string,
                 kwargs_string,
                 id!(mesh_0_worker[0].worker_0),
             ))
             .unwrap();
 
-        rx.recv().await.unwrap();
+        rx.await.unwrap();
 
         simnet_handle()
             .unwrap()
