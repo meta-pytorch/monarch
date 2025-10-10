@@ -78,7 +78,10 @@ declare_attrs! {
     })
     pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
-    @meta(CONFIG_ENV_VAR = "HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string())
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
+        py_name: None,
+    })
     pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(30);
 }
 
