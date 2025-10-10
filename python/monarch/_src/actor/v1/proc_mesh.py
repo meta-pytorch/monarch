@@ -7,9 +7,13 @@
 # pyre-strict
 
 import asyncio
+import importlib
+import json
 import logging
+import os
 import threading
 from contextlib import AbstractContextManager
+from pathlib import Path
 
 from typing import (
     Any,
@@ -25,6 +29,7 @@ from typing import (
     TYPE_CHECKING,
     TypeVar,
 )
+from urllib.parse import urlparse
 from weakref import WeakSet
 
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -35,12 +40,22 @@ from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
 )
 from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMesh, context
 from monarch._src.actor.allocator import AllocHandle
+from monarch._src.actor.code_sync import (
+    CodeSyncMeshClient,
+    CodeSyncMethod,
+    RemoteWorkspace,
+    WorkspaceConfig,
+    WorkspaceLocation,
+    WorkspaceShape,
+)
 
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
 from monarch._src.actor.shape import MeshTrait
+from monarch.tools.config.environment import CondaEnvironment
 from monarch.tools.config.workspace import Workspace
+from monarch.tools.utils import conda as conda_utils
 
 
 if TYPE_CHECKING:
@@ -104,6 +119,7 @@ class ProcMesh(MeshTrait):
         self._maybe_device_mesh = _device_mesh
         self._logging_manager = LoggingManager()
         self._controller_controller: Optional["_ControllerController"] = None
+        self._code_sync_client: Optional[CodeSyncMeshClient] = None
 
     @property
     def initialized(self) -> Future[Literal[True]]:
@@ -432,8 +448,130 @@ class ProcMesh(MeshTrait):
             conda: If True, also sync the currently activated conda env.
             auto_reload: If True, automatically reload the workspace on changes.
         """
-        raise NotImplementedError(
-            "sync_workspace is not implemented yet for v1 ProcMesh"
+        """
+        Sync local code changes to the remote processes.
+
+        Args:
+            workspace: The workspace to sync.
+            conda: If True, also sync the currently activated conda env.
+            auto_reload: If True, automatically reload the workspace on changes.
+        """
+        if self._code_sync_client is None:
+            self._code_sync_client = CodeSyncMeshClient.spawn_blocking(
+                client=context().actor_instance,
+                proc_mesh=await self._proc_mesh_for_asyncio_fixme,
+            )
+
+        # TODO(agallagher): We need some way to configure and pass this
+        # in -- right now we're assuming the `gpu` dimension, which isn't
+        # correct.
+        # The workspace shape (i.e. only perform one rsync per host).
+        assert set(self._region.labels).issubset({"gpus", "hosts"})
+
+        workspaces = {}
+        for src_dir, dst_dir in workspace.dirs.items():
+            local = Path(src_dir)
+            workspaces[local] = WorkspaceConfig(
+                local=local,
+                remote=RemoteWorkspace(
+                    location=WorkspaceLocation.FromEnvVar(
+                        env="WORKSPACE_DIR",
+                        relpath=dst_dir,
+                    ),
+                    shape=WorkspaceShape.shared("gpus"),
+                ),
+                method=CodeSyncMethod.Rsync(),
+            )
+
+        # If `conda` is set, also sync the currently activated conda env.
+        conda_prefix = conda_utils.active_env_dir()
+        if isinstance(workspace.env, CondaEnvironment):
+            conda_prefix = workspace.env._conda_prefix
+
+        if conda and conda_prefix is not None:
+            conda_prefix = Path(conda_prefix)
+
+            # Resolve top-level symlinks for rsync/conda-sync.
+            while conda_prefix.is_symlink():
+                conda_prefix = conda_prefix.parent / conda_prefix.readlink()
+
+            # Build a list of additional paths prefixes to fixup when syncing
+            # the conda env.
+            conda_prefix_replacements = {}
+
+            # Auto-detect editable installs and implicitly add workspaces for
+            # them.
+            # NOTE(agallagher): There's sometimes a `python3.1` symlink to
+            # `python3.10`, so avoid it.
+            (lib_python,) = [
+                dirpath
+                for dirpath in conda_prefix.glob("lib/python*")
+                if not os.path.islink(dirpath)
+            ]
+            for direct_url in lib_python.glob(
+                "site-packages/*.dist-info/direct_url.json"
+            ):
+                # Parse the direct_url.json to see if it's an editable install
+                # (https://packaging.python.org/en/latest/specifications/direct-url/#example-pip-commands-and-their-effect-on-direct-url-json).
+                with open(direct_url) as f:
+                    info = json.load(f)
+                if not info.get("dir_info", {}).get("editable", False):
+                    continue
+
+                # Extract the workspace path from the URL (e.g. `file///my/workspace/`).
+                url = urlparse(info["url"])
+                assert url.scheme == "file", f"expected file:// URL, got {url.scheme}"
+
+                # Get the project name, so we can use it below to create a unique-ish
+                # remote directory.
+                dist = importlib.metadata.PathDistribution(direct_url.parent)
+                name = dist.metadata["Name"]
+
+                local = Path(url.path)
+
+                # Check if we've already defined a workspace for this local path.
+                existing = workspaces.get(local)
+                if existing is not None:
+                    assert existing.method == CodeSyncMethod.Rsync()
+                    remote = existing.remote
+                else:
+                    # Otherwise, add the workspace to the list.
+                    remote = RemoteWorkspace(
+                        location=WorkspaceLocation.FromEnvVar(
+                            env="WORKSPACE_DIR",
+                            relpath=f"__editable__.{name}",
+                        ),
+                        shape=WorkspaceShape.shared("gpus"),
+                    )
+                    workspaces[local] = WorkspaceConfig(
+                        local=local,
+                        remote=remote,
+                        method=CodeSyncMethod.Rsync(),
+                    )
+
+                logging.info(
+                    f"Syncing editable install of {name} from {local} (to {remote.location})"
+                )
+
+                # Make sure we fixup path prefixes to the editable install.
+                conda_prefix_replacements[local] = remote.location
+
+            workspaces[conda_prefix] = WorkspaceConfig(
+                local=conda_prefix,
+                remote=RemoteWorkspace(
+                    location=WorkspaceLocation.FromEnvVar(
+                        env="CONDA_PREFIX",
+                        relpath="",
+                    ),
+                    shape=WorkspaceShape.shared("gpus"),
+                ),
+                method=CodeSyncMethod.CondaSync(conda_prefix_replacements),
+            )
+
+        assert self._code_sync_client is not None
+        await self._code_sync_client.sync_workspaces(
+            workspaces=list(workspaces.values()),
+            auto_reload=auto_reload,
         )
 
     @classmethod

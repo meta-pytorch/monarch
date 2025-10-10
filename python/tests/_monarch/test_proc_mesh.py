@@ -13,25 +13,41 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
-from typing import Generator
-
-import pytest
+from typing import Generator, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
-from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
-from monarch._src.actor.v1 import enabled as v1_enabled
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent
+from monarch._src.actor.allocator import (
+    AllocateMixin,
+    RemoteAllocator,
+    StaticRemoteAllocInitializer,
+)
+from monarch._src.actor.host_mesh import HostMesh
 
-from monarch.actor import ProcMesh
+from monarch._src.actor.proc_mesh import ProcMesh
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.tools.config.workspace import Workspace
 
-pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
-    v1_enabled, reason="ENABLE ASAP ONCE V1 CODE SYNC LANDS"
-)
+
+def proc_mesh_from_alloc(
+    allocator: AllocateMixin,
+    spec: AllocSpec,
+    setup: Optional[Callable[[], None]] = None,
+    constraints: Optional[AllocConstraints] = None,
+) -> ProcMesh:
+    if not v1_enabled:
+        alloc = allocator.allocate(spec)
+        return ProcMesh.from_alloc(alloc, setup)
+    else:
+        return HostMesh.allocate_nonblocking(
+            "hosts", Extent(*zip(*list(spec.extent.items()))), allocator, constraints
+        ).spawn_procs(bootstrap=setup)
 
 
 @contextlib.contextmanager
@@ -95,7 +111,7 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
                 initializer=StaticRemoteAllocInitializer(host),
             )
             spec = AllocSpec(AllocConstraints(), hosts=1, gpus=1)
-            proc_mesh = ProcMesh.from_alloc(allocator.allocate(spec))
+            proc_mesh = proc_mesh_from_alloc(allocator, spec)
 
             # local workspace dir is empty & remote workspace dir hasn't been primed yet
             self.assertFalse(remote_workspace_dir.is_dir())

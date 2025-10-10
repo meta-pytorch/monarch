@@ -9,6 +9,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -20,6 +21,7 @@ use monarch_hyperactor::code_sync::WorkspaceLocation;
 use monarch_hyperactor::code_sync::manager::CodeSyncManager;
 use monarch_hyperactor::code_sync::manager::CodeSyncManagerParams;
 use monarch_hyperactor::code_sync::manager::CodeSyncMethod;
+use monarch_hyperactor::code_sync::manager::SetActorMeshMessage;
 use monarch_hyperactor::code_sync::manager::WorkspaceConfig;
 use monarch_hyperactor::code_sync::manager::WorkspaceShape;
 use monarch_hyperactor::code_sync::manager::code_sync_mesh;
@@ -288,6 +290,16 @@ impl CodeSyncMeshClient {
                     proc_mesh
                         .spawn_service(cx, "code_sync_manager", &CodeSyncManagerParams {})
                         .await
+                        .map_err(|err| PyException::new_err(err.to_string()))?
+                });
+                instance_dispatch!(client, |cx| {
+                    actor_mesh
+                        .cast(
+                            cx,
+                            SetActorMeshMessage {
+                                actor_mesh: actor_mesh.deref().clone(),
+                            },
+                        )
                         .map_err(|err| PyException::new_err(err.to_string()))?
                 });
                 Ok(Self {

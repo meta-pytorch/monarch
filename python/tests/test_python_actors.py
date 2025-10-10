@@ -1353,7 +1353,6 @@ class LsActor(Actor):
         return os.listdir(self.workspace)
 
 
-@v0_only
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
     with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst:

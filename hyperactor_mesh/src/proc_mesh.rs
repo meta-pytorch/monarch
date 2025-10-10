@@ -648,14 +648,14 @@ impl ProcMesh {
     pub fn client(&self) -> &Instance<()> {
         match &self.inner {
             ProcMeshKind::V0 { client, .. } => client,
-            ProcMeshKind::V1(_proc_mesh) => unimplemented!("no client for v1::ProcMesh"),
+            ProcMeshKind::V1(_proc_mesh) => global_root_client(),
         }
     }
 
     pub fn client_proc(&self) -> &Proc {
         match &self.inner {
             ProcMeshKind::V0 { client_proc, .. } => client_proc,
-            ProcMeshKind::V1(_proc_mesh) => unimplemented!("no client proc for v1::ProcMesh"),
+            ProcMeshKind::V1(_proc_mesh) => global_root_client().proc(),
         }
     }
 
