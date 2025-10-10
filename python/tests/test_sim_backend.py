@@ -7,15 +7,22 @@
 # pyre-unsafe
 
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator
 from unittest import TestCase
 
 import pytest
 
 import torch
 from monarch import fetch_shard
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.common.device_mesh import DeviceMesh
 from monarch.sim_mesh import sim_mesh
+
+
+pytestmark = pytest.mark.skipif(
+    not v1_enabled,
+    reason="uses deprecated system actor, so might as well only run on v1",
+)
 
 
 @contextmanager

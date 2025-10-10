@@ -11,6 +11,8 @@ import random
 import statistics
 import time
 
+import pytest
+
 # parse up front to extract env variables.
 args = None
 if __name__ == "__main__":
@@ -61,8 +63,14 @@ else:
 
 # pyre-ignore
 import torch
+from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.actor import Actor, endpoint, this_host
 from monarch.rdma import RDMABuffer
+
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    v1_enabled, reason="ENABLE ME ASAP ONCE V1 RDMA LANDS"
+)
 
 
 class RDMATest(Actor):

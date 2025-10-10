@@ -26,9 +26,9 @@ from monarch._src.actor.allocator import (
     LocalAllocator,
     ProcessAllocator,
 )
-from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh as ProcMeshV0
+from monarch._src.actor.proc_mesh import _get_bootstrap_args
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
-from monarch._src.actor.v1.proc_mesh import _get_controller_controller, ProcMesh
+from monarch._src.actor.v1.proc_mesh import ProcMesh
 
 
 def _bootstrap_cmd() -> BootstrapCommand:
@@ -47,7 +47,9 @@ def this_host() -> "HostMesh":
 
     This is just shorthand for looking it up via the context
     """
-    return this_proc().host_mesh
+    hm = this_proc().host_mesh
+    assert isinstance(hm, HostMesh), f"expected v1 HostMesh, got v0 {hm}"
+    return hm
 
 
 def this_proc() -> "ProcMesh":
@@ -55,14 +57,14 @@ def this_proc() -> "ProcMesh":
     The current singleton process that this specific actor is
     running on
     """
-    proc = context().actor_instance.proc
-    if isinstance(proc, ProcMeshV0):
-        # This case can happen in the client process.
-        return _get_controller_controller()[0]
-    return proc
+    pm = context().actor_instance.proc
+    assert isinstance(pm, ProcMesh), f"expected v1 ProcMesh, got {pm}"
+    return pm
 
 
-def create_local_host_mesh(name: str, extent: Extent | None = None) -> "HostMesh":
+def create_local_host_mesh(
+    extent: Optional[Extent] = None, env: Optional[Dict[str, str]] = None
+) -> "HostMesh":
     """
     Create a local host mesh for the current machine.
 
@@ -76,10 +78,15 @@ def create_local_host_mesh(name: str, extent: Extent | None = None) -> "HostMesh
     Returns:
         HostMesh: A single-host mesh configured for local process allocation.
     """
+
+    cmd, args, bootstrap_env = _get_bootstrap_args()
+    if env is not None:
+        bootstrap_env.update(env)
+
     return HostMesh.allocate_nonblocking(
-        name,
+        "local_host",
         extent if extent is not None else Extent(labels=["hosts"], sizes=[1]),
-        ProcessAllocator(*_get_bootstrap_args()),
+        ProcessAllocator(cmd, args, bootstrap_env),
         bootstrap_cmd=_bootstrap_cmd(),
     )
 
@@ -129,7 +136,7 @@ class HostMesh(MeshTrait):
                 context().actor_instance._as_rust(),
                 await alloc._hy_alloc,
                 name,
-                bootstrap_cmd,
+                bootstrap_cmd if bootstrap_cmd else _bootstrap_cmd(),
             )
 
         return cls(
@@ -143,7 +150,7 @@ class HostMesh(MeshTrait):
     def spawn_procs(
         self,
         per_host: Dict[str, int] | None = None,
-        setup: Callable[[], None] | None = None,
+        bootstrap: Callable[[], None] | None = None,
         name: str | None = None,
     ) -> "ProcMesh":
         if not per_host:
@@ -153,7 +160,10 @@ class HostMesh(MeshTrait):
             name = "anon"
 
         return self._spawn_nonblocking(
-            name, Extent(list(per_host.keys()), list(per_host.values())), setup, True
+            name,
+            Extent(list(per_host.keys()), list(per_host.values())),
+            bootstrap,
+            True,
         )
 
     def _spawn_nonblocking(
@@ -273,19 +283,41 @@ class HostMesh(MeshTrait):
         return self._initialized_host_mesh
 
 
-def fake_in_process_host(name: str) -> "HostMesh":
+def fake_in_process_host() -> "HostMesh":
     """
     Create a host mesh for testing and development using a local allocator.
-
-    Args:
-        name: The name of the host mesh.
 
     Returns:
         HostMesh: A host mesh configured with local allocation for in-process use.
     """
     return HostMesh.allocate_nonblocking(
-        name,
+        "fake_host",
         Extent(labels=["hosts"], sizes=[1]),
         LocalAllocator(),
         bootstrap_cmd=_bootstrap_cmd(),
     )
+
+
+def hosts_from_config(name: str) -> HostMesh:
+    """
+    Get the host mesh 'name' from the monarch configuration for the project.
+
+    This config can be modified so that the same code can create meshes from scheduler sources,
+    and different sizes etc.
+
+    WARNING: This function is a standin so that our getting_started example code works. The real implementation
+    needs an RFC design.
+    """
+
+    return HostMesh.allocate_nonblocking(
+        name,
+        Extent(["hosts"], [2]),
+        ProcessAllocator(*_get_bootstrap_args()),
+        bootstrap_cmd=_bootstrap_cmd(),
+    )
+
+
+def host_mesh_from_alloc(
+    name: str, extent: Extent, allocator: AllocateMixin, constraints: AllocConstraints
+) -> HostMesh:
+    return HostMesh.allocate_nonblocking(name, extent, allocator, constraints)

@@ -16,15 +16,22 @@ import unittest
 from pathlib import Path
 from typing import Generator
 
+import pytest
+
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
 from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
+from monarch._src.actor.v1 import enabled as v1_enabled
 
 from monarch.actor import ProcMesh
 from monarch.tools.config.workspace import Workspace
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    v1_enabled, reason="ENABLE ASAP ONCE V1 CODE SYNC LANDS"
+)
 
 
 @contextlib.contextmanager

@@ -18,6 +18,15 @@ if TYPE_CHECKING:
     # import the Rust type at runtime.
     from monarch._rust_bindings.monarch_hyperactor.shape import Shape as HyShape
 
+
+from monarch._src.actor.v1 import enabled as v1_enabled
+
+
+pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
+    not v1_enabled, reason="no v0/v1 dependency, so only run with v1"
+)
+
+
 # These tests target ValueMesh._new_with_shape. The goal is to verify the
 # remapping logic:
 #
