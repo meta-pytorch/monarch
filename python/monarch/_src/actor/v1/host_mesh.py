@@ -26,6 +26,7 @@ from monarch._src.actor.allocator import (
     LocalAllocator,
     ProcessAllocator,
 )
+from monarch._src.actor.future import Future
 from monarch._src.actor.proc_mesh import _get_bootstrap_args
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch._src.actor.v1.proc_mesh import ProcMesh
@@ -281,6 +282,23 @@ class HostMesh(MeshTrait):
             self._hy_host_mesh.block_on()
             assert self._initialized_host_mesh is not None
         return self._initialized_host_mesh
+
+    def shutdown(self) -> Future[None]:
+        """
+        Shutdown the host mesh and all of its processes. It will throw an exception
+        if this host mesh is a *reference* rather than *owned*, which can happen
+        if this `HostMesh` object was received from a remote actor or if it was
+        produced by slicing.
+
+        Returns:
+            Future[None]: A future that completes when the host mesh has been shut down.
+        """
+
+        async def task() -> None:
+            hy_mesh = await self._hy_host_mesh
+            await hy_mesh.shutdown(context().actor_instance._as_rust())
+
+        return Future(coro=task())
 
 
 def fake_in_process_host() -> "HostMesh":
