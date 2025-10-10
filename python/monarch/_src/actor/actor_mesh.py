@@ -87,7 +87,7 @@ from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
-from monarch._src.actor.telemetry import METER, TracingForwarder
+from monarch._src.actor.telemetry import METER
 from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
 from typing_extensions import Self
 
@@ -105,7 +105,6 @@ from monarch._src.actor.telemetry import get_monarch_tracer
 CallMethod = PythonMessageKind.CallMethod
 
 logger: logging.Logger = logging.getLogger(__name__)
-logging.root.addHandler(TracingForwarder(level=logging.DEBUG))
 
 TRACER = get_monarch_tracer()
 
