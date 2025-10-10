@@ -39,8 +39,17 @@ impl PyValueMesh {
         let vals: Vec<Py<PyAny>> = values.extract()?;
 
         // Build & validate cardinality against region.
-        let inner = <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(region, vals)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mut inner =
+            <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(region, vals)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        // Coalesce adjacent identical Python objects (same pointer
+        // identity). For Py<PyAny>, we treat equality as object
+        // identity: consecutive references to the *same* object
+        // pointer are merged into RLE runs. This tends to compress
+        // sentinel/categorical/boolean data, but not freshly
+        // allocated numerics/strings.
+        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
 
         Ok(Self { inner })
     }
@@ -71,6 +80,7 @@ impl PyValueMesh {
         // Py<PyAny>. `unwrap` is safe because the bounds have been
         // checked.
         let v: Py<PyAny> = self.inner.get(rank).unwrap().clone();
+
         Ok(v)
     }
 
@@ -84,9 +94,19 @@ impl PyValueMesh {
         // Preserve the shape's original Slice (offset/strides).
         let s = shape.get_inner();
         let region = Region::new(s.labels().to_vec(), s.slice().clone());
-        let inner = <ValueMesh<Py<PyAny>> as ndslice::view::BuildFromRegionIndexed<Py<PyAny>>>
-            ::build_indexed(region, pairs)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mut inner = <ValueMesh<Py<PyAny>> as ndslice::view::BuildFromRegionIndexed<
+            Py<PyAny>,
+        >>::build_indexed(region, pairs)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        // Coalesce adjacent identical Python objects (same pointer
+        // identity). For Py<PyAny>, we treat equality as object
+        // identity: consecutive references to the *same* object
+        // pointer are merged into RLE runs. This tends to compress
+        // sentinel/categorical/boolean data, but not freshly
+        // allocated numerics/strings.
+        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+
         Ok(Self { inner })
     }
 }
