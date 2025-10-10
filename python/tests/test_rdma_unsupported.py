@@ -14,11 +14,7 @@ behavior when RDMA support is missing.
 """
 
 import pytest
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.rdma import is_rdma_available
-
-
-pytestmark = pytest.mark.skipif(v1_enabled, reason="ENABLE ASAP ONCE V1 RDMA LANDS")
 
 
 needs_no_rdma = pytest.mark.skipif(

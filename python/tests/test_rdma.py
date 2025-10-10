@@ -12,12 +12,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import pytest
 import torch
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.actor import Actor, current_rank, endpoint, this_host
 from monarch.rdma import is_rdma_available, RDMAAction, RDMABuffer
-
-
-pytestmark = pytest.mark.skipif(v1_enabled, reason="ENABLE ASAP ONCE V1 RDMA LANDS")
 
 
 needs_cuda = pytest.mark.skipif(
