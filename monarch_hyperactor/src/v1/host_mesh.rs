@@ -17,6 +17,7 @@ use ndslice::View;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -185,6 +186,25 @@ impl PyHostMesh {
 
     fn __eq__(&self, other: &PyHostMesh) -> PyResult<bool> {
         Ok(self.mesh_ref()? == other.mesh_ref()?)
+    }
+
+    fn shutdown(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        match self {
+            PyHostMesh::Owned(inner) => {
+                let instance = instance.clone();
+                let mesh_borrow = inner.0.borrow().map_err(anyhow::Error::from)?;
+                let fut = async move {
+                    instance_dispatch!(instance, |cx_instance| {
+                        mesh_borrow.shutdown(cx_instance).await
+                    })?;
+                    Ok(())
+                };
+                PyPythonTask::new(fut)
+            }
+            PyHostMesh::Ref(_) => Err(PyRuntimeError::new_err(
+                "cannot shut down `HostMesh` that is a reference instead of owned",
+            )),
+        }
     }
 }
 

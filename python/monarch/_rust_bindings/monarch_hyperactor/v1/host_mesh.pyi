@@ -70,6 +70,15 @@ class HostMesh:
 
     def __reduce__(self) -> Any: ...
     def __eq__(self, other: "HostMesh") -> bool: ...
+    def shutdown(self, instance: Instance) -> PythonTask[None]:
+        """
+        Shutdown the hosts in this mesh. This will throw an exception if this object
+        is backed by a reference to a mesh rather than an owned mesh.
+
+        Arguments:
+        - `instance`: The instance to use to shutdown the mesh.
+        """
+        ...
 
 @final
 class BootstrapCommand:
