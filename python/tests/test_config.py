@@ -17,7 +17,8 @@ from monarch._rust_bindings.monarch_hyperactor.config import (
 def test_get_set_transport() -> None:
     for transport in (
         ChannelTransport.Unix,
-        ChannelTransport.Tcp,
+        ChannelTransport.TcpWithLocalhost,
+        ChannelTransport.TcpWithHostname,
         ChannelTransport.MetaTlsWithHostname,
     ):
         configure(default_transport=transport)

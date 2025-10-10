@@ -176,6 +176,7 @@ mod tests {
     use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
+    use hyperactor::channel::TcpMode;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor_telemetry::env::execution_id;
@@ -825,7 +826,7 @@ mod tests {
     #[tokio::test]
     async fn test_channel_dial_count() {
         let system_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp),
+            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
             Duration::from_secs(10),
             Duration::from_secs(10),
         )

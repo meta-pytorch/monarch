@@ -1799,7 +1799,12 @@ async fn join_nonempty<T: 'static>(set: &mut JoinSet<T>) -> Result<T, JoinError>
 /// Tells whether the address is a 'net' address. These currently have different semantics
 /// from local transports.
 pub fn is_net_addr(addr: &ChannelAddr) -> bool {
-    [ChannelTransport::Tcp, ChannelTransport::Unix].contains(&addr.transport())
+    match addr.transport() {
+        // TODO Metatls?
+        ChannelTransport::Tcp(_) => true,
+        ChannelTransport::Unix => true,
+        _ => false,
+    }
 }
 
 pub(crate) mod unix {
