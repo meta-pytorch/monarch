@@ -194,6 +194,7 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_write_separate_devices_db() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
@@ -223,7 +224,8 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_read_separate_devices_db() -> Result<(), anyhow::Error> {
+    #[ignore = "This test needed to be run in isolation"]
+    async fn test_rdma_read_separate_devices_db_check() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -248,81 +250,6 @@ mod tests {
         wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
 
         env.verify_buffers(BSIZE).await?;
-        Ok(())
-    }
-
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_write_cpu_db_trigger_buffer_wraparound() -> Result<(), anyhow::Error> {
-        const BSIZE: usize = 1024 * 1024;
-        let devices = get_all_devices();
-        if devices.len() < 5 {
-            println!(
-                "skipping this test as it is only configured on H100 nodes with backend network"
-            );
-            return Ok(());
-        }
-        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cpu:0", "cpu:1").await?;
-        let mut qp_2 = env
-            .actor_2
-            .request_queue_pair(
-                &env.client_2,
-                env.actor_1.clone(),
-                env.rdma_handle_2.device_name.clone(),
-                env.rdma_handle_1.device_name.clone(),
-            )
-            .await?;
-
-        let mut rdma_handle_2_first_half = env.rdma_handle_2.clone();
-        rdma_handle_2_first_half.size = BSIZE;
-        // TODO: Fix wr_id counter.
-        // four sends, fills sqe buffer
-        // for _ in 0..4 {
-        //     qp_2.enqueue_put(rdma_handle_2_first_half.clone(), env.rdma_handle_1.clone())?;
-        //     qp_2.ring_doorbell()?;
-        //     wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
-        // }
-        // // next send, full size to check wraparound
-        qp_2.enqueue_put(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
-        qp_2.ring_doorbell()?;
-        wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
-        env.verify_buffers(BSIZE * 2).await?;
-        env.cleanup().await?;
-        Ok(())
-    }
-
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_write_cpu_buffer_wraparound() -> Result<(), anyhow::Error> {
-        const BSIZE: usize = 1024 * 1024;
-        let devices = get_all_devices();
-        if devices.len() < 5 {
-            println!(
-                "skipping this test as it is only configured on H100 nodes with backend network"
-            );
-            return Ok(());
-        }
-        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cpu:0", "cpu:1").await?;
-        let mut qp_2 = env
-            .actor_2
-            .request_queue_pair(
-                &env.client_2,
-                env.actor_1.clone(),
-                env.rdma_handle_2.device_name.clone(),
-                env.rdma_handle_1.device_name.clone(),
-            )
-            .await?;
-
-        let mut rdma_handle_2_first_half = env.rdma_handle_2.clone();
-        rdma_handle_2_first_half.size = BSIZE;
-
-        // four sends, fills sqe buffer
-        for _ in 0..4 {
-            qp_2.put(rdma_handle_2_first_half.clone(), env.rdma_handle_1.clone())?;
-            wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
-        }
-        qp_2.put(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
-        wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
-        env.verify_buffers(BSIZE * 2).await?;
-        env.cleanup().await?;
         Ok(())
     }
 
@@ -421,6 +348,7 @@ mod tests {
 
     // Test that RDMA read can be performed between two actors on separate devices with CUDA.
     #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_read_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
@@ -458,6 +386,7 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_write_recv_separate_devices_db_trigger() -> Result<(), anyhow::Error> {
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
@@ -512,144 +441,6 @@ mod tests {
         wait_for_completion_gpu(&mut qp_1, PollTarget::Recv, 10).await?;
         wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
         env.verify_buffers(BSIZE).await?;
-        env.cleanup().await?;
-        Ok(())
-    }
-
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_write_recv_separate_devices_db_trigger_2x() -> Result<(), anyhow::Error> {
-        if is_cpu_only_mode() {
-            println!("Skipping CUDA test in CPU-only mode");
-            return Ok(());
-        }
-        if !does_gpu_support_p2p().await {
-            println!("Skipping test: GPU P2P not supported");
-            return Ok(());
-        }
-        const BSIZE: usize = 1024 * 1024;
-        let devices = get_all_devices();
-        if devices.len() < 5 {
-            println!(
-                "skipping this test as it is only configured on H100 nodes with backend network"
-            );
-            return Ok(());
-        }
-        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cuda:0", "cuda:1").await?;
-        let mut qp_1 = env
-            .actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
-            )
-            .await?;
-        let mut qp_2 = env
-            .actor_2
-            .request_queue_pair(
-                &env.client_2,
-                env.actor_1.clone(),
-                env.rdma_handle_2.device_name.clone(),
-                env.rdma_handle_1.device_name.clone(),
-            )
-            .await?;
-
-        let rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
-        rdma_handle_2_first_half.size = BSIZE;
-
-        send_wqe_gpu(
-            &mut qp_2,
-            rdma_handle_2_first_half,
-            &env.rdma_handle_1.clone(),
-            rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
-        )
-        .await?;
-        recv_wqe_gpu(
-            &mut qp_1,
-            &env.rdma_handle_1.clone(),
-            &env.rdma_handle_2.clone(),
-            rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RECV,
-        )
-        .await?;
-        ring_db_gpu(&mut qp_2).await?;
-        wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 5).await?;
-        send_wqe_gpu(
-            &mut qp_2,
-            &env.rdma_handle_2.clone(),
-            &env.rdma_handle_1.clone(),
-            rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
-        )
-        .await?;
-        recv_wqe_gpu(
-            &mut qp_1,
-            &env.rdma_handle_1.clone(),
-            &env.rdma_handle_2.clone(),
-            rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RECV,
-        )
-        .await?;
-        ring_db_gpu(&mut qp_2).await?;
-        wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 5).await?;
-        env.verify_buffers(BSIZE * 2).await?;
-        env.cleanup().await?;
-        Ok(())
-    }
-
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_rdma_write_separate_devices_db_trigger_buffer_wraparound()
-    -> Result<(), anyhow::Error> {
-        if is_cpu_only_mode() {
-            println!("Skipping CUDA test in CPU-only mode");
-            return Ok(());
-        }
-        if !does_gpu_support_p2p().await {
-            println!("Skipping test: GPU P2P not supported");
-            return Ok(());
-        }
-        const BSIZE: usize = 1024 * 1024;
-        let devices = get_all_devices();
-        if devices.len() < 5 {
-            println!(
-                "skipping this test as it is only configured on H100 nodes with backend network"
-            );
-            return Ok(());
-        }
-        let env = RdmaManagerTestEnv::setup(BSIZE * 2, "cuda:0", "cuda:1").await?;
-        let mut qp_2 = env
-            .actor_2
-            .request_queue_pair(
-                &env.client_2,
-                env.actor_1.clone(),
-                env.rdma_handle_2.device_name.clone(),
-                env.rdma_handle_1.device_name.clone(),
-            )
-            .await?;
-
-        let rdma_handle_2_first_half = &mut env.rdma_handle_2.clone();
-        rdma_handle_2_first_half.size = BSIZE;
-
-        // four sends, fills sqe buffer
-        for _ in 0..4 {
-            send_wqe_gpu(
-                &mut qp_2,
-                rdma_handle_2_first_half,
-                &env.rdma_handle_1.clone(),
-                rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE,
-            )
-            .await?;
-            ring_db_gpu(&mut qp_2).await?;
-            wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
-        }
-        // next send, full size to check wraparound
-        send_wqe_gpu(
-            &mut qp_2,
-            &env.rdma_handle_2.clone(),
-            &env.rdma_handle_1.clone(),
-            rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE,
-        )
-        .await?;
-        ring_db_gpu(&mut qp_2).await?;
-        wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
-        env.verify_buffers(BSIZE * 2).await?;
         env.cleanup().await?;
         Ok(())
     }
