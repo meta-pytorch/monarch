@@ -6,6 +6,7 @@
 
 # Re-export the job module directly
 from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
+from monarch._src.job.slurm import SlurmJob
 
 # Define exports
-__all__ = ["JobTrait", "job_load", "job_loads", "JobState", "LocalJob"]
+__all__ = ["JobTrait", "job_load", "job_loads", "JobState", "LocalJob", "SlurmJob"]
