@@ -55,6 +55,10 @@ def is_rdma_available():
 @functools.cache
 def _ensure_init_rdma_manager() -> Shared[None]:
     async def task() -> None:
+        # Ensure the proc mesh is initialized before we can send it over the wire,
+        # since pickling the proc mesh before it is initiliazed would block the
+        # tokio runtime and cause a panic.
+        await context().actor_instance.proc_mesh.initialized
         await (
             await get_or_spawn_controller("rdma_controller", RdmaController)
         ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh))
