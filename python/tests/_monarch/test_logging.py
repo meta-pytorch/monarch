@@ -11,6 +11,8 @@ from typing import Any
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import Mock, patch
 
+import pytest
+
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMeshV1,
 )
@@ -29,6 +31,7 @@ class LoggingManagerTest(TestCase):
         # Assert: confirm that _logging_mesh_client is initialized to None
         self.assertIsNone(manager._logging_mesh_client)
 
+    @pytest.mark.oss_skip  # monarch._src.actor.logging.get_ipython doesn't exist in OSS CI
     @patch("monarch._src.actor.logging.IN_IPYTHON", True)
     @patch("monarch._src.actor.logging.get_ipython")
     @patch("monarch._src.actor.logging._global_flush_registered", False)
