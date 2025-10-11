@@ -86,12 +86,8 @@ import numpy as np
 import pytest
 
 import torch
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.actor import Actor, endpoint, this_host
 from monarch.rdma import is_rdma_available, RDMABuffer
-
-
-pytestmark = pytest.mark.skipif(v1_enabled, reason="ENABLE ASAP ONCE V1 RDMA LANDS")
 
 
 TIMEOUT = 60  # 60 seconds
@@ -546,8 +542,8 @@ def _test_with_all_data(func):
     @pytest.mark.parametrize("controller_device", CONTROLLER_DEVICES)
     @pytest.mark.parametrize("receiver_device", RECEIVER_DEVICES)
     @pytest.mark.asyncio
-    def marked(dtype, data_getter, controller_device, receiver_device):
-        return func(dtype, data_getter, controller_device, receiver_device)
+    async def marked(dtype, data_getter, controller_device, receiver_device):
+        return await func(dtype, data_getter, controller_device, receiver_device)
 
     return marked
 
@@ -560,8 +556,8 @@ def _test_with_no_data(func):
     @pytest.mark.parametrize("controller_device", CONTROLLER_DEVICES)
     @pytest.mark.parametrize("receiver_device", RECEIVER_DEVICES)
     @pytest.mark.asyncio
-    def marked(dtype, data_getter, controller_device, receiver_device):
-        return func(dtype, data_getter, controller_device, receiver_device)
+    async def marked(dtype, data_getter, controller_device, receiver_device):
+        return await func(dtype, data_getter, controller_device, receiver_device)
 
     return marked
 
