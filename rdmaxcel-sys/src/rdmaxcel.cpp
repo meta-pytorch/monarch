@@ -18,11 +18,11 @@
 // TODO: explicitly obtain from ibverbs config, for now assume 32
 const int SGE_MAX = 32;
 
-// Maximum size for a single MR: 2GB
-const size_t MAX_MR_SIZE = 2ULL * 1024 * 1024 * 1024;
-
 // MR size must be a multiple of 2MB
 const size_t MR_ALIGNMENT = 2ULL * 1024 * 1024;
+
+// Maximum size for a single MR: 4GB max,  need to be one page under.
+const size_t MAX_MR_SIZE = 4ULL * 1024 * 1024 * 1024 - MR_ALIGNMENT;
 
 // Structure to hold segment information
 struct SegmentInfo {
