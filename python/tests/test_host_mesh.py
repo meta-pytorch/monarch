@@ -6,8 +6,11 @@
 
 # pyre-unsafe
 
+import cloudpickle
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
+from monarch._src.actor.actor_mesh import Actor, context
+from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import (
     create_local_host_mesh,
     fake_in_process_host,
@@ -114,3 +117,35 @@ def test_pickle() -> None:
     hy_host = host._hy_host_mesh.block_on()
     assert hy_host.region.labels == host.region.labels
     assert hy_host.region.slice() == host.region.slice()
+
+
+class RankActor(Actor):
+    @endpoint
+    async def get_rank(self) -> int:
+        return context().actor_instance.rank.rank
+
+
+@pytest.mark.timeout(60)
+def test_shutdown_host_mesh() -> None:
+    hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    pm = hm.spawn_procs(per_host={"gpus": 2})
+    am = pm.spawn("actor", RankActor)
+    am.get_rank.choose().get()
+    hm.shutdown().get()
+
+
+@pytest.mark.timeout(60)
+def test_shutdown_sliced_host_mesh_throws_exception() -> None:
+    hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    hm_sliced = hm.slice(hosts=1)
+    with pytest.raises(RuntimeError):
+        hm_sliced.shutdown().get()
+
+
+@pytest.mark.timeout(60)
+def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
+    hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
+    with pytest.raises(RuntimeError):
+        hm_unpickled.shutdown().get()
+    hm.shutdown().get()
