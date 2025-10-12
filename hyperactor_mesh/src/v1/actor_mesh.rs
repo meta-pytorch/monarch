@@ -155,7 +155,7 @@ impl<A: Referable> ActorMeshRef<A> {
             self.cast_v0(cx, message, root_comm_actor)
         } else {
             for (point, actor) in self.iter() {
-                let create_rank = point.rank();
+                let rank = point.rank();
                 let mut headers = Attrs::new();
                 headers.set(
                     multicast::CAST_ORIGINATING_SENDER,
@@ -168,8 +168,8 @@ impl<A: Referable> ActorMeshRef<A> {
                 let mut unbound = Unbound::try_from_message(message.clone())
                     .map_err(|e| Error::CastingError(self.name.clone(), e))?;
                 unbound
-                    .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                        *rank = Some(create_rank);
+                    .visit_mut::<resource::Rank>(|resource::Rank(r)| {
+                        *r = Some(rank);
                         Ok(())
                     })
                     .map_err(|e| Error::CastingError(self.name.clone(), e))?;
@@ -195,7 +195,7 @@ impl<A: Referable> ActorMeshRef<A> {
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         let cast_mesh_shape = view::Ranked::region(self).into();
-        let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+        let actor_mesh_id: ActorMeshId = ActorMeshId::V1(self.name.clone());
         match &self.proc_mesh.root_region {
             Some(root_region) => {
                 let root_mesh_shape = root_region.into();

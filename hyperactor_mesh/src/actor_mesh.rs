@@ -207,16 +207,38 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
         M: Castable + RemoteMessage + Clone,
     {
         if let Some(v1) = self.v1() {
-            if !selection::structurally_equal(&selection, &sel!(*)) {
-                return Err(CastError::SelectionNotSupported(format!(
-                    "ActorMesh::cast: selection {} not supported; for v1 meshes supports only universal selection",
-                    selection
-                )));
-            }
-            return v1
-                .cast(cx, message)
-                .map_err(anyhow::Error::from)
-                .map_err(CastError::from);
+            return if selection::structurally_equal(&selection, &sel!(*))
+                || selection::structurally_equal(&selection, &Selection::True)
+            {
+                // Casting to the whole region is supported directly.
+                v1.cast(cx, message)
+                    .map_err(anyhow::Error::from)
+                    .map_err(CastError::from)
+            } else {
+                // Otherwise, we have to evaluate the selection and send individually.
+                // This is not scalable. Currently the only user of this is the
+                // tensor engine.
+
+                // TODO: reconstruct slices; the real fix is to push this up to the API,
+                // which is done naturally by v1 casts.
+
+                // The selection evaluates over the ranks in the region:
+                let region = v1.region();
+                let ranks = selection.eval(&selection::EvalOpts::strict(), region.slice())?;
+
+                // We then cast to these individually:
+                for rank in ranks {
+                    let point = region.extent().point_of_rank(rank).unwrap();
+
+                    v1.singleton(&point)
+                        .unwrap()
+                        .cast(cx, message.clone())
+                        .map_err(anyhow::Error::from)
+                        .map_err(CastError::from)?
+                }
+
+                Ok(())
+            };
         }
         actor_mesh_cast::<Self::Actor, M>(
             cx,                            // actor context

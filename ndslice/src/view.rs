@@ -29,6 +29,7 @@
 //! - [`View`]: a collection of items indexed by [`Region`]. Views provide standard
 //!             manipulation operations and use ranks as an efficient indexing scheme.
 
+use std::ops::Index;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -660,13 +661,13 @@ pub trait InExtent {
     fn in_(self, extent: &Extent) -> Result<Point, PointError>;
 }
 
-impl InExtent for Vec<usize> {
+impl<I: IntoIterator<Item = usize>> InExtent for I {
     /// Creates a `Point` with the provided coordinates in the given
     /// extent.
     ///
     /// Delegates to `Extent::point`.
     fn in_(self, extent: &Extent) -> Result<Point, PointError> {
-        extent.point(self)
+        extent.point(self.into_iter().collect())
     }
 }
 
@@ -1020,11 +1021,17 @@ pub enum ViewError {
     #[error(transparent)]
     ExtentError(#[from] ExtentError),
 
+    #[error(transparent)]
+    RegionError(#[from] RegionError),
+
     #[error("invalid range: selected ranks {selected} not a subset of base {base} ")]
     InvalidRange {
         base: Box<Region>,
         selected: Box<Region>,
     },
+
+    #[error("invalid point: {point} not in expected extent {extent}")]
+    InvalidPoint { point: Point, extent: Extent },
 }
 
 /// Errors that occur while operating on Region.
@@ -1754,6 +1761,10 @@ pub trait ViewExt: View {
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ViewError`.
     fn group_by(&self, dim: &str) -> Result<impl Iterator<Item = Self::View>, ViewError>;
 
+    /// Create a singleton view at the given point. The returned view
+    /// has a single point, with all dimensions having coordinate 0.
+    fn singleton(&self, point: &Point) -> Result<Self::View, ViewError>;
+
     /// The extent of this view. Every point in this space is defined.
     fn extent(&self) -> Extent;
 
@@ -1819,6 +1830,28 @@ impl<T: View> ViewExt for T {
                 .unwrap(),
             )
         }))
+    }
+
+    fn singleton(&self, point: &Point) -> Result<Self::View, ViewError> {
+        if point.extent() != &self.extent() {
+            return Err(ViewError::InvalidPoint {
+                point: point.clone(),
+                extent: self.extent(),
+            });
+        }
+
+        let (labels, slice) = self.region().into_inner();
+        let (mut offset, mut sizes, mut strides) = slice.into_inner();
+
+        for dim in 0..labels.len() {
+            offset += strides[dim] * point.coord(dim);
+        }
+        sizes.fill(1);
+        strides.fill(1); // ok because the total cardinality of the slice is 1
+
+        let slice = Slice::new(offset, sizes, strides).unwrap();
+        let region = Region::new(labels, slice);
+        self.subset(region)
     }
 
     fn extent(&self) -> Extent {
@@ -2362,6 +2395,19 @@ mod test {
         );
         let region = extent.range("y", 1).unwrap();
         assert_eq!(region.values().collect::<Vec<_>>(), vec![1, 5, 9, 13]);
+    }
+
+    #[test]
+    fn test_view_singleton() {
+        let extent = extent!(x = 4, y = 4);
+
+        let point = [1, 2].in_(&extent).unwrap();
+        let singleton = extent.singleton(&point).unwrap();
+        assert_eq!(
+            singleton.iter().collect::<Vec<_>>(),
+            vec![([0, 0].in_(&extent! {x = 1, y = 1}).unwrap(), 6)]
+        );
+        assert_eq!(singleton.extent(), extent!(x = 1, y = 1));
     }
 
     #[test]

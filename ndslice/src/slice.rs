@@ -138,6 +138,14 @@ impl Slice {
         })
     }
 
+    pub(crate) fn new_singleton(rank: usize) -> Self {
+        Self {
+            offset: rank,
+            sizes: vec![1],
+            strides: vec![1],
+        }
+    }
+
     /// Deconstruct the slice into its offset, sizes, and strides.
     pub fn into_inner(self) -> (usize, Vec<usize>, Vec<usize>) {
         let Slice {

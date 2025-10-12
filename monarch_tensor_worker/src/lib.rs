@@ -835,7 +835,7 @@ impl WorkerMessageHandler for WorkerActor {
             .send_value(
                 cx,
                 seq,
-                cx.self_id().clone(),
+                self.rank,
                 mutates,
                 function,
                 args,
@@ -852,8 +852,9 @@ impl WorkerMessageHandler for WorkerActor {
         params: ActorCallParams,
     ) -> Result<()> {
         let stream = self.try_get_stream(params.stream)?;
+        // MARIUS: wrong!
         stream
-            .send_result_of_actor_call(cx, cx.self_id().clone(), params)
+            .send_result_of_actor_call(cx, self.rank, params)
             .await?;
         Ok(())
     }

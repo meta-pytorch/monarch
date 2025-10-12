@@ -7,7 +7,7 @@
 # pyre-unsafe
 
 from traceback import FrameSummary
-from typing import List, NamedTuple, Sequence, Tuple, Union
+from typing import Any, List, NamedTuple, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension import client
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId

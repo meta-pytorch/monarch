@@ -63,6 +63,9 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
         ProcMesh as HyProcMesh,
     )
+    from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
+        ProcMesh as HyProcMeshV1,
+    )
     from monarch.actor import ProcMesh
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Point
@@ -80,9 +83,13 @@ logger: Logger = logging.getLogger(__name__)
 
 
 class Controller(_Controller):
-    def __init__(self, workers: "HyProcMesh") -> None:
+    def __init__(
+        self, instance: Instance, workers: "HyProcMesh | HyProcMeshV1"
+    ) -> None:
         super().__init__()
-        self._mailbox: Mailbox = Instance._as_py(workers.client)._mailbox
+        self._mailbox: Mailbox = (
+            instance._mailbox
+        )  # Instance._as_py(workers.client)._mailbox
         # Buffer for messages unrelated to debugging that are received while a
         # debugger session is active.
         self._non_debugger_pending_messages: deque[
@@ -259,7 +266,7 @@ def spawn_tensor_engine(proc_mesh: "ProcMesh") -> DeviceMesh:
     gpus = proc_mesh.sizes.get("gpus", 1)
 
     # we currently block on the creation of the proc mesh, but conceivably we could init concurrently here.
-    backend_ctrl = Controller(proc_mesh._proc_mesh.block_on())
+    backend_ctrl = Controller(context().actor_instance, proc_mesh._proc_mesh.block_on())
     client = MeshClient(cast("TController", backend_ctrl), proc_mesh.size(), gpus)
     dm = DeviceMesh(
         client,

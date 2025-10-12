@@ -1361,11 +1361,10 @@ impl<A: Actor> Instance<A> {
         actor.handle(&context, message).instrument(span).await
     }
 
-    // Spawn on child on this instance. Currently used only by cap::CanSpawn.
-    pub(crate) async fn spawn<C: Actor>(
-        &self,
-        params: C::Params,
-    ) -> anyhow::Result<ActorHandle<C>> {
+    /// Spawn on child on this instance. This method should only be used
+    /// when the holder has a concrete Instance. Generally, prefer to use
+    /// the context-passing methods on [`Actor`].
+    pub async fn spawn<C: Actor>(&self, params: C::Params) -> anyhow::Result<ActorHandle<C>> {
         self.proc.spawn_child(self.cell.clone(), params).await
     }
 

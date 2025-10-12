@@ -96,7 +96,7 @@ thread_local! {
 fn pickle_python_result(
     py: Python<'_>,
     result: Bound<'_, PyAny>,
-    worker_actor_id: ActorId,
+    rank: usize,
 ) -> Result<PythonMessage, anyhow::Error> {
     let pickle = py
         .import("monarch._src.actor.actor_mesh")
@@ -109,9 +109,7 @@ fn pickle_python_result(
         .extract()
         .unwrap();
     Ok(PythonMessage::new_from_buf(
-        PythonMessageKind::Result {
-            rank: Some(worker_actor_id.rank()),
-        },
+        PythonMessageKind::Result { rank: Some(rank) },
         data.inner,
     ))
 }
@@ -215,7 +213,7 @@ pub enum StreamMessage {
 
     SendValue {
         seq: Seq,
-        worker_actor_id: ActorId,
+        rank: usize,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args: Vec<WireValue>,
@@ -266,7 +264,7 @@ pub enum StreamMessage {
 
     GetTensorRefUnitTestsOnly(Ref, #[reply] OncePortHandle<Option<TensorCellResult>>),
 
-    SendResultOfActorCall(ActorId, ActorCallParams),
+    SendResultOfActorCall(usize, ActorCallParams),
     CallActorMethod(ActorMethodParams),
 }
 
@@ -1024,7 +1022,7 @@ impl StreamActor {
         &mut self,
         cx: &hyperactor::Context<'_, Self>,
         seq: Seq,
-        worker_actor_id: ActorId,
+        rank: usize,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args: Vec<WireValue>,
@@ -1046,8 +1044,7 @@ impl StreamActor {
                             HashMap::new(),
                         )
                     })?;
-                    pickle_python_result(py, python_result, worker_actor_id)
-                        .map_err(CallFunctionError::Error)
+                    pickle_python_result(py, python_result, rank).map_err(CallFunctionError::Error)
                 })?;
             let ser = Serialized::serialize(&python_message).unwrap();
             self_
@@ -1565,7 +1562,7 @@ impl StreamMessageHandler for StreamActor {
         &mut self,
         cx: &Context<Self>,
         seq: Seq,
-        worker_actor_id: ActorId,
+        rank: usize,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args: Vec<WireValue>,
@@ -1578,7 +1575,7 @@ impl StreamMessageHandler for StreamActor {
                 .send_value_python_message(
                     cx,
                     seq,
-                    worker_actor_id,
+                    rank,
                     mutates,
                     function,
                     args,
@@ -1686,7 +1683,7 @@ impl StreamMessageHandler for StreamActor {
                 }
                 Err(WorkerError {
                     backtrace: format!("{:?}", err),
-                    worker_actor_id,
+                    worker_actor_id: cx.self_id().clone(),
                 })
             }
         };
@@ -1708,16 +1705,15 @@ impl StreamMessageHandler for StreamActor {
     async fn send_result_of_actor_call(
         &mut self,
         cx: &Context<Self>,
-        worker_actor_id: ActorId,
+        rank: usize,
         params: ActorCallParams,
     ) -> anyhow::Result<()> {
         let seq = params.seq;
         let mutates = params.mutates.clone();
         self.try_define(cx, seq, vec![], &mutates, async |self| {
             let value = self.call_actor(cx, params).await?;
-            let result = Python::with_gil(|py| {
-                pickle_python_result(py, value.into_bound(py), worker_actor_id)
-            })?;
+            let result =
+                Python::with_gil(|py| pickle_python_result(py, value.into_bound(py), rank))?;
             let result = Serialized::serialize(&result).unwrap();
             self.controller_actor
                 .fetch_result(cx, seq, Ok(result))
@@ -2269,7 +2265,7 @@ mod tests {
             .send_value(
                 cx,
                 seq,
-                stream_actor.actor_id().clone(),
+                stream_actor.actor_id().rank(), // Tests only uses ranked procs
                 Vec::new(),
                 None,
                 vec![WireValue::PyObject(ref_to_send)],
