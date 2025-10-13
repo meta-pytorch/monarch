@@ -17,10 +17,7 @@ pub mod testactor;
 pub mod testing;
 pub mod value_mesh;
 
-use std::collections::HashMap;
-use std::ops::Range;
 use std::str::FromStr;
-use std::time::Duration;
 
 pub use actor_mesh::ActorMesh;
 pub use actor_mesh::ActorMeshRef;
@@ -39,7 +36,6 @@ pub use value_mesh::ValueMesh;
 use crate::resource;
 use crate::resource::RankedValues;
 use crate::resource::Status;
-use crate::resource::ValuesByRank;
 use crate::shortuuid::ShortUuid;
 use crate::v1::host_mesh::HostMeshAgent;
 use crate::v1::host_mesh::HostMeshRefParseError;

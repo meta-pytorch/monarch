@@ -13,7 +13,6 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::OnceLock as OnceCell;
 
-use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;

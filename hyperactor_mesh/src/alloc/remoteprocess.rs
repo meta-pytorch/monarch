@@ -1293,7 +1293,7 @@ mod test {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
@@ -1448,7 +1448,7 @@ mod test {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
@@ -1528,7 +1528,7 @@ mod test {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
@@ -1665,7 +1665,7 @@ mod test {
             Duration::from_millis(100),
         );
 
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
@@ -1754,7 +1754,7 @@ mod test {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_secs(60),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
@@ -2282,12 +2282,13 @@ mod test_alloc {
         unsafe {
             std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
         }
+
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
 
         let spec = AllocSpec {
             extent: extent!(host = 2, gpu = 2),
