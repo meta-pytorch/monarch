@@ -329,8 +329,6 @@ impl PyRdmaManager {
                         .map_err(|err| PyException::new_err(err.to_string()))?
                 });
 
-                eprintln!("spawned rdma_manager: {:?}", actor_mesh);
-
                 let actor_mesh = RootActorMesh::from(actor_mesh);
                 let actor_mesh = SharedCell::from(actor_mesh);
 
