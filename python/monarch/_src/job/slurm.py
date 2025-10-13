@@ -50,10 +50,11 @@ class SlurmJob(JobTrait):
         monarch_port: int = 22222,
         job_name: str = "monarch_job",
         ntasks_per_node: int = 1,
-        time_limit: Optional[str] = "12:00:00",
+        time_limit: Optional[str] = None,
         partition: Optional[str] = None,
         log_dir: Optional[str] = None,
         exclusive: bool = True,
+        gpus_per_node: Optional[int] = None,
     ) -> None:
         """
         Args:
@@ -69,6 +70,7 @@ class SlurmJob(JobTrait):
             exclusive: Whether to request exclusive node access (no other jobs can run on the nodes).
                       Defaults to True for predictable performance and resource isolation,
                       but may increase queue times and waste resources if nodes are underutilized.
+            gpus_per_node: Number of GPUs to request per node. If None, no GPU resources are requested.
         """
         configure(default_transport=ChannelTransport.Tcp)
         self._meshes = meshes
@@ -81,6 +83,7 @@ class SlurmJob(JobTrait):
         self._partition = partition
         self._log_dir: str = log_dir if log_dir is not None else os.getcwd()
         self._exclusive = exclusive
+        self._gpus_per_node = gpus_per_node
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
@@ -121,6 +124,9 @@ class SlurmJob(JobTrait):
 
         if self._time_limit is not None:
             sbatch_directives.append(f"#SBATCH --time={self._time_limit}")
+
+        if self._gpus_per_node is not None:
+            sbatch_directives.append(f"#SBATCH --gpus-per-node={self._gpus_per_node}")
 
         if self._exclusive:
             sbatch_directives.append("#SBATCH --exclusive")
@@ -290,6 +296,7 @@ class SlurmJob(JobTrait):
             and spec._ntasks_per_node == self._ntasks_per_node
             and spec._time_limit == self._time_limit
             and spec._partition == self._partition
+            and spec._gpus_per_node == self._gpus_per_node
             and self._jobs_active()
         )
 
