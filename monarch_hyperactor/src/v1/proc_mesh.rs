@@ -143,7 +143,8 @@ impl PyProcMesh {
                     let mesh_impl: Box<dyn ActorMeshProtocol> = mesh_impl.await?;
                     Ok(mesh_impl)
                 },
-                true,
+                // Not supervised, supervision_event not implemented yet.
+                false,
             );
             Python::with_gil(|py| r.into_py_any(py))
         }

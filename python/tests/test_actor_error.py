@@ -9,7 +9,6 @@
 import importlib.resources
 import os
 import subprocess
-from enum import auto, Enum
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcEvent
@@ -18,11 +17,6 @@ from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import proc_mesh, ProcMesh
 from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.actor import Actor, ActorError, endpoint
-
-
-class ApiVersion(Enum):
-    V0 = auto()
-    V1 = auto()
 
 
 class ExceptionActor(Actor):
