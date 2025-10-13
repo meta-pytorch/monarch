@@ -903,7 +903,7 @@ impl PortId {
     /// through a local proxy, which may coalesce messages.
     pub fn split(
         &self,
-        cx: &impl context::Mailbox,
+        cx: &impl context::Actor,
         reducer_spec: Option<ReducerSpec>,
         reducer_opts: Option<ReducerOpts>,
     ) -> anyhow::Result<PortId> {
