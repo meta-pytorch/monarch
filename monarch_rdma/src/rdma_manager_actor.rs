@@ -161,6 +161,109 @@ pub struct RdmaManagerActor {
     pci_to_device: HashMap<String, crate::ibverbs_primitives::RdmaDevice>,
 }
 
+impl Drop for RdmaManagerActor {
+    fn drop(&mut self) {
+        // Helper function to manually destroy QP and CQs
+        // We can't use Drop on RdmaQueuePair because it derives Clone
+        fn destroy_queue_pair(qp: &RdmaQueuePair, context: &str) {
+            unsafe {
+                if qp.qp != 0 {
+                    let result = rdmaxcel_sys::ibv_destroy_qp(qp.qp as *mut rdmaxcel_sys::ibv_qp);
+                    if result != 0 {
+                        tracing::debug!(
+                            "ibv_destroy_qp returned {} for {} (may be busy during shutdown)",
+                            result,
+                            context
+                        );
+                    }
+                }
+                if qp.send_cq != 0 {
+                    let result =
+                        rdmaxcel_sys::ibv_destroy_cq(qp.send_cq as *mut rdmaxcel_sys::ibv_cq);
+                    if result != 0 {
+                        tracing::debug!(
+                            "ibv_destroy_cq (send) returned {} for {} (may be busy during shutdown)",
+                            result,
+                            context
+                        );
+                    }
+                }
+                if qp.recv_cq != 0 {
+                    let result =
+                        rdmaxcel_sys::ibv_destroy_cq(qp.recv_cq as *mut rdmaxcel_sys::ibv_cq);
+                    if result != 0 {
+                        tracing::debug!(
+                            "ibv_destroy_cq (recv) returned {} for {} (may be busy during shutdown)",
+                            result,
+                            context
+                        );
+                    }
+                }
+            }
+        }
+
+        // 1. Clean up all queue pairs (both regular and loopback)
+        for (device_name, device_map) in self.device_qps.drain() {
+            for ((actor_id, remote_device), qp_state) in device_map {
+                match qp_state {
+                    QueuePairState::Available(qp) => {
+                        destroy_queue_pair(&qp, &format!("actor {:?}", actor_id));
+                    }
+                    QueuePairState::CheckedOut => {
+                        tracing::warn!(
+                            "QP for actor {:?} (device {} -> {}) was checked out during cleanup",
+                            actor_id,
+                            device_name,
+                            remote_device
+                        );
+                    }
+                }
+            }
+        }
+
+        // 2. Clean up device domains (which contain PDs and loopback QPs)
+        for (device_name, (domain, loopback_qp)) in self.device_domains.drain() {
+            destroy_queue_pair(
+                &loopback_qp,
+                &format!("loopback QP on device {}", device_name),
+            );
+            drop(domain);
+        }
+
+        // 3. Clean up memory regions
+        let mr_count = self.mr_map.len();
+        for (id, mr_ptr) in self.mr_map.drain() {
+            if mr_ptr != 0 {
+                unsafe {
+                    let result = rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
+                    if result != 0 {
+                        tracing::error!(
+                            "Failed to deregister MR with id {}: error code {}",
+                            id,
+                            result
+                        );
+                    }
+                }
+            }
+        }
+
+        // 4. Deregister all CUDA segments (if using PyTorch CUDA allocator)
+        if self.pt_cuda_alloc {
+            unsafe {
+                let result = rdmaxcel_sys::deregister_segments();
+                if result != 0 {
+                    let error_msg = get_rdmaxcel_error_message(result);
+                    tracing::error!(
+                        "Failed to deregister CUDA segments: {} (error code: {})",
+                        error_msg,
+                        result
+                    );
+                }
+            }
+        }
+    }
+}
+
 impl RdmaManagerActor {
     /// Get or create a domain and loopback QP for the specified RDMA device
     fn get_or_create_device_domain(

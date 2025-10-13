@@ -138,6 +138,7 @@ int rdma_get_active_segment_count();
 int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count);
 bool pt_cuda_allocator_compatibility();
 int register_segments(struct ibv_pd* pd, struct ibv_qp* qp);
+int deregister_segments();
 
 // CUDA utility functions
 int get_cuda_pci_address_from_ptr(

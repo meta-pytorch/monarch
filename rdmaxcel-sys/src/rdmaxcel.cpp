@@ -403,6 +403,36 @@ int get_cuda_pci_address_from_ptr(
   return 0; // Success
 }
 
+// Deregister all segments and clean up
+int deregister_segments() {
+  std::lock_guard<std::mutex> lock(segmentsMutex);
+
+  for (auto& pair : activeSegments) {
+    SegmentInfo& seg = pair.second;
+
+    // Deregister all MRs for this segment
+    for (auto* mr : seg.mrs) {
+      if (mr) {
+        ibv_dereg_mr(mr);
+      }
+    }
+    seg.mrs.clear();
+
+    // Destroy mkey if it exists
+    if (seg.mkey) {
+      mlx5dv_destroy_mkey(seg.mkey);
+      seg.mkey = nullptr;
+    }
+
+    seg.mr_size = 0;
+  }
+
+  // Clear all segments
+  activeSegments.clear();
+
+  return 0; // Success
+}
+
 const char* rdmaxcel_error_string(int error_code) {
   switch (error_code) {
     case RDMAXCEL_SUCCESS:

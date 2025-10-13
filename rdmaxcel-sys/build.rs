@@ -86,6 +86,7 @@ fn main() {
         .allowlist_function("rdma_get_all_segment_info")
         .allowlist_function("pt_cuda_allocator_compatibility")
         .allowlist_function("register_segments")
+        .allowlist_function("deregister_segments")
         .allowlist_type("ibv_.*")
         .allowlist_type("mlx5dv_.*")
         .allowlist_type("mlx5_wqe_.*")
