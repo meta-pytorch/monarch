@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Union
@@ -33,6 +34,8 @@ from torchx.specs.builders import parse_args
 from torchx.util.types import decode, decode_optional
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+TIMEOUT_AFTER_KILL = 300  # 5 minutes
 
 
 def torchx_runner() -> Runner:
@@ -357,6 +360,41 @@ async def get_or_create(
 def kill(server_handle: str) -> None:
     with torchx_runner() as runner:
         runner.cancel(server_handle)
+
+
+def kill_and_confirm(
+    server_handle: str, timeout_after_kill: int = TIMEOUT_AFTER_KILL
+) -> None:
+    """Kill the server and wait for it to be killed.
+    This is needed because torchx cancel is asynchronous. We confirm the server
+    is actually terminated before returning to avoid the job still being around
+    after cancel() completes.
+    """
+    with torchx_runner() as runner:
+        runner.cancel(server_handle)
+        start_time = time.time()
+        while time.time() - start_time < timeout_after_kill:
+            server_info = runner.status(server_handle)
+            if server_info and server_info.state in [
+                AppState.SUCCEEDED,
+                AppState.FAILED,
+            ]:
+                logger.info(
+                    f"Server {server_handle} reached {server_info.state} state!"
+                )
+                return
+            elif server_info:
+                logger.info(
+                    f"Server {server_handle} is in {server_info.state} state. Lets wait for it to be killed. Waiting ..."
+                )
+            else:
+                logger.info(
+                    f"Something went wrong. Unable to get server {server_handle} info. Waiting..."
+                )
+            time.sleep(5)
+    raise Exception(
+        f"Server {server_handle} did not reach a terminal state within {timeout_after_kill} seconds after kill",
+    )
 
 
 def bounce(server_handle: str) -> None:
