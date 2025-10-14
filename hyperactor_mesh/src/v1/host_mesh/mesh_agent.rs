@@ -121,10 +121,18 @@ impl Handler<resource::CreateOrUpdate<()>> for HostMeshAgent {
         let host = self.host.as_mut().expect("host present");
         let created = match host {
             HostAgentMode::Process(host) => {
-                host.spawn(create_or_update.name.clone().to_string()).await
+                host.spawn(
+                    create_or_update.name.clone().to_string(),
+                    create_or_update.rank.0,
+                )
+                .await
             }
             HostAgentMode::Local(host) => {
-                host.spawn(create_or_update.name.clone().to_string()).await
+                host.spawn(
+                    create_or_update.name.clone().to_string(),
+                    create_or_update.rank.0,
+                )
+                .await
             }
         };
 

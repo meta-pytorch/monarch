@@ -1631,6 +1631,7 @@ impl ProcManager for BootstrapProcManager {
         &self,
         proc_id: ProcId,
         backend_addr: ChannelAddr,
+        rank: Option<usize>,
     ) -> Result<Self::Handle, HostError> {
         let (callback_addr, mut callback_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
@@ -1680,8 +1681,10 @@ impl ProcManager for BootstrapProcManager {
 
         // Writers: tee to local (stdout/stderr or file) + send over
         // channel
-        let (out_writer, err_writer) = create_log_writers(0, log_channel.clone(), pid)
-            .unwrap_or_else(|_| (Box::new(tokio::io::stdout()), Box::new(tokio::io::stderr())));
+        // TODO(pablorfb) replace with new API
+        let (out_writer, err_writer) =
+            create_log_writers(rank.unwrap_or(0), log_channel.clone(), pid)
+                .unwrap_or_else(|_| (Box::new(tokio::io::stdout()), Box::new(tokio::io::stderr())));
 
         let mut stdout_tailer: Option<LogTailer> = None;
         let mut stderr_tailer: Option<LogTailer> = None;
@@ -3143,7 +3146,7 @@ mod tests {
         let mgr = BootstrapProcManager::new(BootstrapCommand::test());
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
         let handle = mgr
-            .spawn(proc_id.clone(), backend_addr.clone())
+            .spawn(proc_id.clone(), backend_addr.clone(), None)
             .await
             .expect("spawn bootstrap child");
 
@@ -3203,7 +3206,7 @@ mod tests {
 
         // Launch the child bootstrap process.
         let handle = mgr
-            .spawn(proc_id.clone(), backend_addr.clone())
+            .spawn(proc_id.clone(), backend_addr.clone(), None)
             .await
             .expect("spawn bootstrap child");
 
