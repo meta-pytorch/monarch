@@ -63,6 +63,7 @@ use crate::Proc;
 use crate::ProcId;
 use crate::actor::Binds;
 use crate::actor::Referable;
+use crate::attrs::Attrs;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -179,6 +180,11 @@ impl<M: ProcManager> Host<M> {
     /// The underlying proc manager.
     pub fn manager(&self) -> &M {
         &self.manager
+    }
+
+    /// The mutable underlying proc manager.
+    pub fn manager_mut(&mut self) -> &mut M {
+        &mut self.manager
     }
 
     /// The address which accepts messages destined for this host.
@@ -559,6 +565,12 @@ pub trait ProcManager {
         proc_id: ProcId,
         forwarder_addr: ChannelAddr,
     ) -> Result<Self::Handle, HostError>;
+
+    /// Set the config that this manager should use for
+    /// bootstrapping new procs. The attributes will be applied
+    /// at the ClientOverride layer of each new proc's global
+    /// config.
+    fn set_config(&mut self, config: Attrs);
 }
 
 /// Type alias for the agent actor managed by a given [`ProcManager`].
@@ -811,6 +823,11 @@ where
             procs: Arc::clone(&self.procs),
         })
     }
+
+    fn set_config(&mut self, _config: Attrs) {
+        // No-op: the local proc already shares a config with the
+        // process in which it runs.
+    }
 }
 
 /// A ProcManager that manages each proc as a **separate OS process**
@@ -1011,6 +1028,12 @@ where
             addr: proc_addr,
             agent_ref,
         })
+    }
+
+    fn set_config(&mut self, _config: Attrs) {
+        // No-op for now. This proc manager is only used in testing
+        // and there isn't currently a way to set the config for
+        // spawned processes.
     }
 }
 
@@ -1401,6 +1424,7 @@ mod tests {
         fn transport(&self) -> ChannelTransport {
             self.transport.clone()
         }
+
         async fn spawn(
             &self,
             proc_id: ProcId,
@@ -1416,6 +1440,8 @@ mod tests {
                 omit_agent: self.omit_agent,
             })
         }
+
+        fn set_config(&mut self, _config: Attrs) {}
     }
 
     #[tokio::test]

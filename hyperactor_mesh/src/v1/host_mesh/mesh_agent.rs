@@ -29,6 +29,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
+use hyperactor::host::ProcManager;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -76,6 +77,7 @@ impl HostAgentMode {
         resource::CreateOrUpdate<()>,
         resource::GetState<ProcState>,
         resource::GetRankStatus,
+        resource::ApplyConfigSnapshot,
         ShutdownHost
     ]
 )]
@@ -254,6 +256,29 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
         };
 
         get_state.reply.send(cx, state)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::ApplyConfigSnapshot> for HostMeshAgent {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        apply_config_snapshot: resource::ApplyConfigSnapshot,
+    ) -> anyhow::Result<()> {
+        let manager = self
+            .host
+            .as_mut()
+            .expect("host")
+            .as_process_mut()
+            .map(Host::manager_mut);
+
+        match manager {
+            Some(manager) => manager.set_config(apply_config_snapshot.config()),
+            None => (),
+        }
+
         Ok(())
     }
 }

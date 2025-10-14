@@ -56,16 +56,18 @@ use crate::config::CONFIG;
 /// Configuration source layers in priority order.
 ///
 /// Resolution order is always: **TestOverride -> Runtime -> Env
-/// -> File -> Default**.
+/// -> File -> ClientOverride -> Default**.
 ///
 /// Smaller `priority()` number = higher precedence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
-    /// Values loaded from configuration files (e.g., YAML). This
-    /// is the lowest-priority explicit source.
+    /// Values set by the config snapshot sent from the client
+    /// during proc bootstrap.
+    ClientOverride,
+    /// Values loaded from configuration files (e.g., YAML).
     File,
     /// Values read from environment variables at process startup.
-    /// Higher priority than File, but lower than
+    /// Higher priority than File and ClientOverride, but lower than
     /// Runtime/TestOverride.
     Env,
     /// Values set programmatically at runtime. Highest stable
@@ -80,13 +82,14 @@ pub enum Source {
 /// Return the numeric priority for a source.
 ///
 /// Smaller number = higher precedence. Matches the documented
-/// order: TestOverride (0) -> Runtime (1) -> Env (2) -> File (3).
+/// order: TestOverride (0) -> Runtime (1) -> Env (2) -> File (3) -> ClientOverride (4).
 fn priority(s: Source) -> u8 {
     match s {
         Source::TestOverride => 0,
         Source::Runtime => 1,
         Source::Env => 2,
         Source::File => 3,
+        Source::ClientOverride => 4,
     }
 }
 
@@ -116,8 +119,9 @@ struct Layers {
 /// only the `attrs` field is used.
 ///
 /// Variants:
-/// - [`Layer::File`] — Values loaded from configuration files (lowest
-///   explicit priority).
+/// - [`Layer::ClientOverride`] - Values set by the config snapshot sent from the client
+///   during proc bootstrap.
+/// - [`Layer::File`] — Values loaded from configuration files.
 /// - [`Layer::Env`] — Values sourced from process environment
 ///   variables.
 /// - [`Layer::Runtime`] — Programmatically set runtime overrides.
@@ -125,10 +129,13 @@ struct Layers {
 ///   under [`ConfigLock`].
 ///
 /// Layers are stored in [`Layers::ordered`], kept sorted by their
-/// effective [`Source`] priority (`TestOverride` first, `File` last).
+/// effective [`Source`] priority (`TestOverride` first, `Default` last).
 enum Layer {
-    /// Values loaded from configuration files. Lowest explicit
-    /// priority; only overridden by Env, Runtime, or TestOverride.
+    /// Values set by the config snapshot sent from the client
+    /// during proc bootstrap.
+    ClientOverride(Attrs),
+
+    /// Values loaded from configuration files.
     File(Attrs),
 
     /// Values read from process environment variables. Typically
@@ -239,6 +246,7 @@ fn layer_source(l: &Layer) -> Source {
         Layer::Env(_) => Source::Env,
         Layer::Runtime(_) => Source::Runtime,
         Layer::TestOverride { .. } => Source::TestOverride,
+        Layer::ClientOverride(_) => Source::ClientOverride,
     }
 }
 
@@ -251,7 +259,7 @@ fn layer_source(l: &Layer) -> Source {
 /// top-level attributes reflecting the active overrides.
 fn layer_attrs(l: &Layer) -> &Attrs {
     match l {
-        Layer::File(a) | Layer::Env(a) | Layer::Runtime(a) => a,
+        Layer::File(a) | Layer::Env(a) | Layer::Runtime(a) | Layer::ClientOverride(a) => a,
         Layer::TestOverride { attrs, .. } => attrs,
     }
 }
@@ -265,7 +273,7 @@ fn layer_attrs(l: &Layer) -> &Attrs {
 /// top-of-stack overrides for each key.
 fn layer_attrs_mut(l: &mut Layer) -> &mut Attrs {
     match l {
-        Layer::File(a) | Layer::Env(a) | Layer::Runtime(a) => a,
+        Layer::File(a) | Layer::Env(a) | Layer::Runtime(a) | Layer::ClientOverride(a) => a,
         Layer::TestOverride { attrs, .. } => attrs,
     }
 }
@@ -450,6 +458,7 @@ pub fn set(source: Source, attrs: Attrs) {
                 attrs,
                 stacks: HashMap::new(),
             },
+            Source::ClientOverride => Layer::ClientOverride(attrs),
         });
     }
     g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Runtime < Env < File

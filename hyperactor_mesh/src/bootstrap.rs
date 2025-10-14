@@ -340,8 +340,8 @@ impl Bootstrap {
                 config,
             } => {
                 if let Some(attrs) = config {
-                    config::set(config::Source::Runtime, attrs);
-                    tracing::debug!("bootstrap: installed Runtime config snapshot (Proc)");
+                    config::set(config::Source::ClientOverride, attrs);
+                    tracing::debug!("bootstrap: installed ClientOverride config snapshot (Proc)");
                 } else {
                     tracing::debug!("bootstrap: no config snapshot provided (Proc)");
                 }
@@ -1415,6 +1415,9 @@ pub struct BootstrapProcManager {
     /// exclusively in the [`Drop`] impl to send `SIGKILL` without
     /// needing async context.
     pid_table: Arc<std::sync::Mutex<HashMap<ProcId, u32>>>,
+    /// Config snapshot that will be used to set the global config
+    /// of processes spawned by this manager.
+    config: Option<Attrs>,
 }
 
 impl Drop for BootstrapProcManager {
@@ -1469,6 +1472,7 @@ impl BootstrapProcManager {
             command,
             children: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             pid_table: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            config: None,
         }
     }
 
@@ -1635,13 +1639,11 @@ impl ProcManager for BootstrapProcManager {
         let (callback_addr, mut callback_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
 
-        let cfg = hyperactor::config::global::attrs();
-
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
             backend_addr,
             callback_addr,
-            config: Some(cfg),
+            config: self.config.clone(),
         };
         let mut cmd = Command::new(&self.command.program);
         if let Some(arg0) = &self.command.arg0 {
@@ -1744,6 +1746,10 @@ impl ProcManager for BootstrapProcManager {
 
         // Callers do `handle.read().await` for mesh readiness.
         Ok(handle)
+    }
+
+    fn set_config(&mut self, config: Attrs) {
+        self.config = Some(config);
     }
 }
 
