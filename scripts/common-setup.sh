@@ -164,8 +164,8 @@ run_test_groups() {
     return 2
   fi
   local FAILED_GROUPS=()
-  for GROUP in $(seq 1 10); do
-    echo "Running test group $GROUP of 10..."
+  for GROUP in $(seq 1 20); do
+    echo "Running test group $GROUP of 20..."
     # Kill any existing Python processes to ensure clean state
     echo "Cleaning up Python processes before group $GROUP..."
     pkill -9 python || true
@@ -178,13 +178,13 @@ run_test_groups() {
         --ignore-glob="**/meta/**" \
         --dist=no \
         --group=$GROUP \
-        --splits=10
+        --splits=20
     else
       LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
         --ignore-glob="**/meta/**" \
         --dist=no \
         --group=$GROUP \
-        --splits=10
+        --splits=20
     fi
     # Check result and record failures
     if [[ $? -eq 0 ]]; then
@@ -203,7 +203,7 @@ run_test_groups() {
     echo "✓ All test groups completed successfully!"
   else
     echo "✗ The following test groups failed: ${FAILED_GROUPS[*]}"
-    echo "Failed groups count: ${#FAILED_GROUPS[@]}/10"
+    echo "Failed groups count: ${#FAILED_GROUPS[@]}/20"
     return 1
   fi
   set -e
