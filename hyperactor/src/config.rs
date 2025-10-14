@@ -196,13 +196,13 @@ declare_attrs! {
 
     /// Timeout for [`Host::spawn`] to await proc readiness.
     ///
-    /// Default: 10 seconds. If set to zero, disables the timeout and
+    /// Default: 30 seconds. If set to zero, disables the timeout and
     /// waits indefinitely.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT".to_string()),
         py_name: None,
     })
-    pub attr HOST_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
+    pub attr HOST_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
 }
 
 /// Load configuration from environment variables

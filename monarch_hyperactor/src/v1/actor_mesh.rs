@@ -220,7 +220,9 @@ where
         let pyerr = PyErr::new::<SupervisionError, _>(format!(
             "Actor {} exited because of the following reason: {}",
             event_actor_id,
-            py_event.__repr__().expect("foo")
+            py_event
+                .__repr__()
+                .expect("repr failed on PyActorSupervisionEvent")
         ));
         Some(pyerr)
     };

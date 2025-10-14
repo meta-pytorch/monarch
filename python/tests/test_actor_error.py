@@ -643,7 +643,10 @@ async def test_actor_mesh_supervision_handling_chained_error(mesh) -> None:
         await intermediate_actor.forward_error.call()
 
     # calling success endpoint should fail with ActorError, but with supervision msg.
-    with pytest.raises(ActorError, match="Actor .* is unhealthy with reason"):
+    with pytest.raises(
+        ActorError,
+        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+    ):
         await intermediate_actor.forward_success.call()
 
     # healthy actor should still be working
@@ -741,9 +744,15 @@ async def test_supervision_with_sending_error() -> None:
         await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason"):
+    with pytest.raises(
+        SupervisionError,
+        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+    ):
         await actor_mesh.check.call()
-    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason"):
+    with pytest.raises(
+        SupervisionError,
+        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+    ):
         await actor_mesh.check_with_payload.call(payload="a")
 
 
