@@ -17,15 +17,29 @@ pub mod sim;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::net::SocketAddr;
+use std::net::TcpListener;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
+use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
+use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::MetaTlsAddr;
+use hyperactor::config;
 pub use local::LocalAlloc;
 pub use local::LocalAllocator;
 use mockall::predicate::*;
@@ -276,6 +290,10 @@ pub trait Alloc {
     fn is_local(&self) -> bool {
         false
     }
+
+    fn router_addr(&self) -> AllocChannelAddr {
+        AllocChannelAddr(ChannelAddr::any(self.transport()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -407,6 +425,170 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
         // avoid holding Rcs across awaits.
         Ok(running.into_iter().map(Option::unwrap).collect())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllocChannelAddr(ChannelAddr);
+
+impl AllocChannelAddr {
+    pub(crate) fn new(addr: ChannelAddr) -> Self {
+        AllocChannelAddr(addr)
+    }
+
+    pub(crate) fn from_serve(serve_addr: &ChannelAddr) -> Self {
+        let new_addr = match serve_addr {
+            ChannelAddr::Tcp(socket) => {
+                let mut new_socket = socket.clone();
+                new_socket.set_port(0);
+                ChannelAddr::Tcp(new_socket)
+            }
+            ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port: _ }) => {
+                ChannelAddr::MetaTls(MetaTlsAddr::Host {
+                    hostname: hostname.clone(),
+                    port: 0,
+                })
+            }
+            ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+                let mut new_socket = socket.clone();
+                new_socket.set_port(0);
+                ChannelAddr::MetaTls(MetaTlsAddr::Socket(new_socket))
+            }
+            _ => ChannelAddr::any(serve_addr.transport()),
+        };
+        AllocChannelAddr(new_addr)
+    }
+
+    pub(crate) fn serve_with_config<M: RemoteMessage>(
+        self,
+    ) -> anyhow::Result<(ChannelAddr, ChannelRx<M>)> {
+        fn set_as_inaddr_any(original: &mut SocketAddr) {
+            let inaddr_any: IpAddr = match &original {
+                SocketAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
+                SocketAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
+            };
+            original.set_ip(inaddr_any);
+        }
+
+        let use_inaddr_any = config::global::get(config::REMOTE_ALLOC_BIND_TO_INADDR_ANY);
+        let mut bind_to = self.0;
+        let mut original_ip: Option<IpAddr> = None;
+        match &mut bind_to {
+            ChannelAddr::Tcp(socket) => {
+                original_ip = Some(socket.ip().clone());
+                if use_inaddr_any {
+                    set_as_inaddr_any(socket);
+                    tracing::debug!("binding {} to INADDR_ANY", original_ip.as_ref().unwrap(),);
+                }
+                if socket.port() == 0 {
+                    socket.set_port(next_allowed_port(socket.ip().clone())?);
+                }
+            }
+            ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+                original_ip = Some(socket.ip().clone());
+                if use_inaddr_any {
+                    set_as_inaddr_any(socket);
+                }
+                if socket.port() == 0 {
+                    socket.set_port(next_allowed_port(socket.ip().clone())?);
+                }
+            }
+            ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname: _, port }) => {
+                if use_inaddr_any {
+                    anyhow::bail!(
+                        "cannot bind to INADDR_ANY for MetaTlsAddr::Host; addr: {}",
+                        bind_to,
+                    );
+                }
+                if *port == 0 {
+                    *port = next_allowed_port(Ipv6Addr::UNSPECIFIED.into())?;
+                }
+            }
+            _ => {
+                if use_inaddr_any {
+                    tracing::debug!(
+                        "can only bind to INADDR_ANY for TCP and MetaTlsAddr::Socket; got transport {}, addr {}",
+                        bind_to.transport(),
+                        bind_to
+                    );
+                }
+            }
+        };
+
+        let (mut bound, rx) = channel::serve(bind_to)?;
+
+        // Restore the original IP address if we used INADDR_ANY.
+        match &mut bound {
+            ChannelAddr::Tcp(socket) => {
+                if use_inaddr_any {
+                    socket.set_ip(original_ip.unwrap());
+                }
+            }
+            ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+                if use_inaddr_any {
+                    socket.set_ip(original_ip.unwrap());
+                }
+            }
+            _ => (),
+        }
+
+        Ok((bound, rx))
+    }
+}
+
+enum AllowedPorts {
+    Config { range: Vec<u16>, next: AtomicUsize },
+    Any,
+}
+
+impl AllowedPorts {
+    fn next(&self, ip: IpAddr) -> anyhow::Result<u16> {
+        match self {
+            Self::Config { range, next } => {
+                let mut count = 0;
+                loop {
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    count += 1;
+                    // Since we do not have a good way to put release ports back to the list,
+                    // we opportunistically hope ports previously took already released. If
+                    // not, we'll just see error when binding to it later. This
+                    // is not much different from raising error here.
+                    let port = range.get(i % range.len()).cloned().unwrap();
+                    let socket = SocketAddr::new(ip, port);
+                    if TcpListener::bind(socket).is_ok() {
+                        tracing::debug!("taking port {port} from the allowed list",);
+                        return Ok(port);
+                    }
+                    if count == range.len() {
+                        anyhow::bail!(
+                            "fail to find a port because all ports in the allowed list are already bound"
+                        );
+                    }
+                }
+            }
+            Self::Any => Ok(0),
+        }
+    }
+}
+
+static ALLOWED_PORTS: OnceLock<Mutex<AllowedPorts>> = OnceLock::new();
+fn next_allowed_port(ip: IpAddr) -> anyhow::Result<u16> {
+    let mutex = ALLOWED_PORTS.get_or_init(|| {
+        let ports = match config::global::try_get_cloned(config::REMOTE_ALLOC_ALLOWED_PORT_RANGE) {
+            Some(input) => {
+                let (start, end) = input.split_once("-").unwrap();
+                let start = start.parse::<u16>().unwrap();
+                let end = end.parse::<u16>().unwrap();
+                assert!(start <= end);
+                AllowedPorts::Config {
+                    range: (start..=end).collect(),
+                    next: AtomicUsize::new(0),
+                }
+            }
+            None => AllowedPorts::Any,
+        };
+        Mutex::new(ports)
+    });
+    mutex.lock().unwrap().next(ip)
 }
 
 pub mod test_utils {

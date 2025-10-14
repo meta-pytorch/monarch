@@ -377,8 +377,10 @@ impl ProcMesh {
         );
 
         // Ensure that the router is served so that agents may reach us.
-        let (router_channel_addr, router_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
-            .map_err(|err| AllocatorError::Other(err.into()))?;
+        let (router_channel_addr, router_rx) = alloc
+            .router_addr()
+            .serve_with_config()
+            .map_err(AllocatorError::Other)?;
         router.serve(router_rx);
         tracing::info!("router channel started listening on addr: {router_channel_addr}");
 
