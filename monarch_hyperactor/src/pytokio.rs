@@ -23,6 +23,7 @@ use pyo3::types::PyNone;
 use pyo3::types::PyType;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::signal_safe_block_on;
@@ -129,6 +130,27 @@ impl PyPythonTask {
             .map(|task| task.take())
             .ok_or_else(|| PyValueError::new_err("PythonTask already consumed"))
     }
+
+    /// Prefer spawn_abortable over spawn if the future can be safely cancelled
+    /// when it is dropped.
+    /// This way any resources it is using will be freed up. This is especially
+    /// important for potentially infinite tasks that will never complete on their
+    /// own.
+    /// An example of this could be a timer task that periodically wakes up.
+    /// Without spawn_abortable, that task would run forever even if the returned
+    /// PyShared is dropped.
+    pub(crate) fn spawn_abortable(&mut self) -> PyResult<PyShared> {
+        let (tx, rx) = watch::channel(None);
+        let task = self.take_task()?;
+        let handle = get_tokio_runtime().spawn(async move {
+            send_result(tx, task.await);
+        });
+        Ok(PyShared {
+            rx,
+            handle,
+            abort: true,
+        })
+    }
 }
 
 fn send_result(
@@ -163,10 +185,14 @@ impl PyPythonTask {
     pub(crate) fn spawn(&mut self) -> PyResult<PyShared> {
         let (tx, rx) = watch::channel(None);
         let task = self.take_task()?;
-        get_tokio_runtime().spawn(async move {
+        let handle = get_tokio_runtime().spawn(async move {
             send_result(tx, task.await);
         });
-        Ok(PyShared { rx })
+        Ok(PyShared {
+            rx,
+            handle,
+            abort: false,
+        })
     }
 
     fn __await__(slf: PyRef<'_, Self>) -> PyResult<PythonTaskAwaitIterator> {
@@ -264,11 +290,15 @@ impl PyPythonTask {
     #[staticmethod]
     fn spawn_blocking(f: PyObject) -> PyResult<PyShared> {
         let (tx, rx) = watch::channel(None);
-        get_tokio_runtime().spawn_blocking(move || {
+        let handle = get_tokio_runtime().spawn_blocking(move || {
             let result = Python::with_gil(|py| f.call0(py));
             send_result(tx, result);
         });
-        Ok(PyShared { rx })
+        Ok(PyShared {
+            rx,
+            handle,
+            abort: false,
+        })
     }
 
     #[staticmethod]
@@ -310,7 +340,20 @@ impl PyPythonTask {
 )]
 pub struct PyShared {
     rx: watch::Receiver<Option<PyResult<PyObject>>>,
+    handle: JoinHandle<()>,
+    abort: bool,
 }
+
+impl Drop for PyShared {
+    fn drop(&mut self) {
+        if self.abort {
+            // When the PyShared is dropped, we don't want the background task to go
+            // forever, because nothing will wait on the rx.
+            self.handle.abort();
+        }
+    }
+}
+
 #[pymethods]
 impl PyShared {
     pub(crate) fn task(&mut self) -> PyResult<PyPythonTask> {

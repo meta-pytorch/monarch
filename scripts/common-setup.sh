@@ -176,7 +176,6 @@ run_test_groups() {
       MONARCH_HOST_MESH_V1_REMOVE_ME_BEFORE_RELEASE=1 \
       LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
         --ignore-glob="**/meta/**" \
-        --ignore=python/tests/test_actor_error.py \
         --dist=no \
         --group=$GROUP \
         --splits=10

@@ -76,6 +76,8 @@ macro_rules! instance_dispatch {
     };
 }
 
+/// Similar to `instance_dispatch!`, but moves the PyInstance into an Instance<T>
+/// instead of a borrow.
 #[macro_export]
 macro_rules! instance_into_dispatch {
     ($ins:expr, |$cx:ident| $code:block) => {

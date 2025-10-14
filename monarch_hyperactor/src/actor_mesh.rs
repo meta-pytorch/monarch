@@ -313,7 +313,8 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                 event.__repr__()?
             )))
         })
-        .map(|mut x| x.spawn().map(Some))?
+        // If the monitor is deleted, there's no need to keep awaiting this result.
+        .map(|mut x| x.spawn_abortable().map(Some))?
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
@@ -654,7 +655,9 @@ impl ActorMeshProtocol for AsyncActorMesh {
             let mut event = mesh.await?.supervision_event(&instance)?.unwrap();
             event.task()?.take_task()?.await
         })
-        .map(|mut x| x.spawn().map(Some))?
+        // This task must be aborted to run the Drop for the inner PyShared, in
+        // case that one is also abortable.
+        .map(|mut x| x.spawn_abortable().map(Some))?
     }
 
     fn stop(&self) -> PyResult<PyPythonTask> {

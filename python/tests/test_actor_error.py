@@ -551,7 +551,10 @@ async def test_actor_mesh_supervision_handling(mesh) -> None:
         await e.fail_with_supervision_error.call_one()
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(SupervisionError, match="Actor .* is unhealthy with reason"):
+    with pytest.raises(
+        SupervisionError,
+        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+    ):
         await e.check.call()
 
     # should not be able to spawn actors anymore as proc mesh is unhealthy
@@ -678,7 +681,10 @@ async def test_base_exception_handling(mesh, method_name) -> None:
         await method.call_one()
 
     # Subsequent calls should fail with a health state error
-    with pytest.raises(RuntimeError, match="Actor .* is unhealthy with reason"):
+    with pytest.raises(
+        RuntimeError,
+        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+    ):
         await error_actor.check.call()
 
 
