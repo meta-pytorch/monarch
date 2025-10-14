@@ -35,6 +35,7 @@ use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
+use hyperactor::attrs::Attrs;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
@@ -511,6 +512,23 @@ hyperactor::submit! {
     ReducerFactory {
         typehash_f: <RankedValuesReducer<Status> as Named>::typehash,
         builder_f: |_| Ok(Box::new(RankedValuesReducer::<Status>(PhantomData))),
+    }
+}
+
+/// A message sent from the client to a host, providing a config
+/// snapshot to apply to any procs the host spawns.
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub struct ApplyConfigSnapshot {
+    config: Attrs,
+}
+
+impl ApplyConfigSnapshot {
+    pub fn new(config: Attrs) -> Self {
+        Self { config }
+    }
+
+    pub(crate) fn config(self) -> Attrs {
+        self.config
     }
 }
 
