@@ -172,15 +172,16 @@ run_test_groups() {
     pkill -9 pytest || true
     sleep 2
     # Conditionally set environment variable for pytest
+    # Isolate runs each test in a separate forked process which enhances reliability.
     if [[ "$enable_v1" == "1" ]]; then
       MONARCH_HOST_MESH_V1_REMOVE_ME_BEFORE_RELEASE=1 \
-      LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+      LC_ALL=C pytest --isolate -n auto python/tests/ -s -v -m "not oss_skip" \
         --ignore-glob="**/meta/**" \
         --dist=no \
         --group=$GROUP \
         --splits=10
     else
-      LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+      LC_ALL=C pytest --isolate -n auto python/tests/ -s -v -m "not oss_skip" \
         --ignore-glob="**/meta/**" \
         --dist=no \
         --group=$GROUP \

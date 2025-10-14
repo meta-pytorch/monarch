@@ -1,5 +1,5 @@
 pytest
-pytest-timeout
 pytest-asyncio
+pytest-isolate
 pytest-xdist
 pyright
