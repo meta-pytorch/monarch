@@ -203,6 +203,28 @@ declare_attrs! {
         py_name: None,
     })
     pub attr HOST_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// todo
+    /// start-end(inclusive)
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE".to_string()),
+        py_name: None,
+    })
+    pub attr REMOTE_ALLOC_ALLOWED_PORT_RANGE: String;
+
+    /// todo
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY".to_string()),
+        py_name: None,
+    })
+    pub attr REMOTE_ALLOC_BIND_TO_INADDR_ANY: bool = false;
+
+    /// todo
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_REMOTE_ALLOC_BOOTSTRAP_ADDR".to_string()),
+        py_name: None,
+    })
+    pub attr REMOTE_ALLOC_BOOTSTRAP_ADDR: String;
 }
 
 /// Load configuration from environment variables
