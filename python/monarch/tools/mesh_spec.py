@@ -129,6 +129,7 @@ class ServerSpec:
     scheduler: str
     namespace: str = ""
     ui_url: Optional[str] = None
+    metadata: dict[str, str] = field(default_factory=dict)
 
     @property
     def server_handle(self) -> str:

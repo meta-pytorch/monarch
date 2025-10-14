@@ -181,6 +181,7 @@ class ServerSpecTest(unittest.TestCase):
                 MeshSpec(name="trainer", num_hosts=4, host_type="gpu.medium", gpus=2),
                 MeshSpec(name="generator", num_hosts=8, host_type="gpu.small", gpus=1),
             ],
+            metadata={"job_version": "1", "owner_unixname": "johndoe"},
         )
 
     def test_server_handle(self) -> None:
@@ -210,6 +211,12 @@ class ServerSpecTest(unittest.TestCase):
             r"Mesh: 'worker' not found in job: monarch-foo-1a2b3c. Try one of: \['trainer', 'generator'\]",
         ):
             server_spec.get_mesh_spec("worker")
+
+    def test_get_metadata(self) -> None:
+        server_spec = self.get_test_server_spec()
+        self.assertDictEqual(
+            {"job_version": "1", "owner_unixname": "johndoe"}, server_spec.metadata
+        )
 
     def _1_mesh_2_host_server_spec(self, state: specs.AppState) -> ServerSpec:
         return ServerSpec(
