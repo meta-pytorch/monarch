@@ -20,9 +20,9 @@ jobs:
         include:
           - name: 4xlarge
             runs-on: linux.g5.4xlarge.nvidia.gpu
-            install-args: '--pre --extra-index-url https://download.pytorch.org/whl/cu126'
+            install-args: '--pre --extra-index-url https://download.pytorch.org/whl/test/cu129'
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.6"
+            gpu-arch-version: "12.9"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 60
