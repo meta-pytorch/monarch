@@ -1096,10 +1096,12 @@ impl MailboxClient {
             // Send the message for transmission.
             let return_handle_1 = return_handle.clone();
             async move {
-                if let Err(SendError(_, envelope)) = tx.try_post(envelope, return_channel) {
+                if let Err(SendError(e, envelope)) = tx.try_post(envelope, return_channel) {
                     // Failed to enqueue.
                     envelope.undeliverable(
-                        DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
+                        DeliveryError::BrokenLink(format!(
+                            "failed to enqueue in MailboxClient when processing buffer: {e}"
+                        )),
                         return_handle_1.clone(),
                     );
                 }
@@ -1155,7 +1157,9 @@ impl MailboxSender for MailboxClient {
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
             self.buffer.send((envelope, return_handle))
         {
-            let err = DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string());
+            let err = DeliveryError::BrokenLink(
+                "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
+            );
 
             // Failed to enqueue.
             envelope.undeliverable(err, return_handle);
