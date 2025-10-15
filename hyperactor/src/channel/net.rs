@@ -1743,7 +1743,7 @@ where
 
                                 // we don't want the health probe TCP connections to be counted as an error.
                                 match source {
-                                    ChannelAddr::Tcp(source_addr) if source_addr.ip().is_loopback() => {},
+                                    ChannelAddr::Tcp { addr, .. } if addr.ip().is_loopback() => {},
                                     _ => {
                                         tracing::info!(
                                             "serve: error processing peer connection {} <- {}: {:?}",
@@ -1799,7 +1799,10 @@ async fn join_nonempty<T: 'static>(set: &mut JoinSet<T>) -> Result<T, JoinError>
 /// Tells whether the address is a 'net' address. These currently have different semantics
 /// from local transports.
 pub fn is_net_addr(addr: &ChannelAddr) -> bool {
-    [ChannelTransport::Tcp, ChannelTransport::Unix].contains(&addr.transport())
+    matches!(
+        addr.transport(),
+        ChannelTransport::Tcp { .. } | ChannelTransport::Unix { .. }
+    )
 }
 
 pub(crate) mod unix {
@@ -1826,7 +1829,10 @@ pub(crate) mod unix {
         type Stream = UnixStream;
 
         fn dest(&self) -> ChannelAddr {
-            ChannelAddr::Unix(self.0.clone())
+            ChannelAddr::Unix {
+                addr: self.0.clone(),
+                label: None,
+            }
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
@@ -1860,15 +1866,18 @@ pub(crate) mod unix {
     pub fn serve<M: RemoteMessage>(
         addr: SocketAddr,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        let caddr = ChannelAddr::Unix(addr.clone());
+        let caddr = ChannelAddr::Unix {
+            addr: addr.clone(),
+            label: None,
+        };
         let maybe_listener = match &addr {
             SocketAddr::Bound(sock_addr) => StdUnixListener::bind_addr(sock_addr),
             SocketAddr::Unbound => StdUnixDatagram::unbound()
                 .and_then(|u| u.local_addr())
                 .and_then(|uaddr| StdUnixListener::bind_addr(&uaddr)),
         };
-        let std_listener =
-            maybe_listener.map_err(|err| ServerError::Listen(ChannelAddr::Unix(addr), err))?;
+        let std_listener = maybe_listener
+            .map_err(|err| ServerError::Listen(ChannelAddr::Unix { addr, label: None }, err))?;
 
         std_listener
             .set_nonblocking(true)
@@ -2095,7 +2104,10 @@ pub(crate) mod tcp {
         type Stream = TcpStream;
 
         fn dest(&self) -> ChannelAddr {
-            ChannelAddr::Tcp(self.0)
+            ChannelAddr::Tcp {
+                addr: self.0,
+                label: None,
+            }
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
@@ -2126,16 +2138,23 @@ pub(crate) mod tcp {
         // Construct our own std TcpListener to avoid having to await, making this function
         // non-async.
         let std_listener = std::net::TcpListener::bind(addr)
-            .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(addr), err))?;
+            .map_err(|err| ServerError::Listen(ChannelAddr::Tcp { addr, label: None }, err))?;
         std_listener
             .set_nonblocking(true)
-            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
+            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp { addr, label: None }, e))?;
         let listener = TcpListener::from_std(std_listener)
-            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
+            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp { addr, label: None }, e))?;
         let local_addr = listener
             .local_addr()
-            .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp(addr), err))?;
-        super::serve(listener, ChannelAddr::Tcp(local_addr), false)
+            .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp { addr, label: None }, err))?;
+        super::serve(
+            listener,
+            ChannelAddr::Tcp {
+                addr: local_addr,
+                label: None,
+            },
+            false,
+        )
     }
 }
 
@@ -2170,7 +2189,10 @@ pub(crate) mod meta {
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
         // Try to parse as a socket address first
         if let Ok(socket_addr) = addr_string.parse::<SocketAddr>() {
-            return Ok(ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket_addr)));
+            return Ok(ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Socket(socket_addr),
+                label: None,
+            });
         }
 
         // Otherwise, parse as hostname:port
@@ -2181,10 +2203,13 @@ pub(crate) mod meta {
                 let Ok(port) = port_str.parse() else {
                     return Err(ChannelError::InvalidAddress(addr_string.to_string()));
                 };
-                Ok(ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                    hostname: hostname.to_string(),
-                    port,
-                }))
+                Ok(ChannelAddr::MetaTls {
+                    addr: MetaTlsAddr::Host {
+                        hostname: hostname.to_string(),
+                        port,
+                    },
+                    label: None,
+                })
             }
             _ => Err(ChannelError::InvalidAddress(addr_string.to_string())),
         }
@@ -2316,10 +2341,13 @@ pub(crate) mod meta {
         type Stream = TlsStream<TcpStream>;
 
         fn dest(&self) -> ChannelAddr {
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                hostname: self.hostname.clone(),
-                port: self.port,
-            })
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
+                    hostname: self.hostname.clone(),
+                    port: self.port,
+                },
+                label: None,
+            }
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
@@ -2381,10 +2409,13 @@ pub(crate) mod meta {
                     .to_socket_addrs()
                     .map_err(|err| {
                         ServerError::Resolve(
-                            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                                hostname: hostname.clone(),
-                                port,
-                            }),
+                            ChannelAddr::MetaTls {
+                                addr: MetaTlsAddr::Host {
+                                    hostname: hostname.clone(),
+                                    port,
+                                },
+                                label: None,
+                            },
                             err,
                         )
                     })?
@@ -2392,15 +2423,21 @@ pub(crate) mod meta {
 
                 if addrs.is_empty() {
                     return Err(ServerError::Resolve(
-                        ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port }),
+                        ChannelAddr::MetaTls {
+                            addr: MetaTlsAddr::Host { hostname, port },
+                            label: None,
+                        },
                         io::Error::other("no available socket addr"),
                     ));
                 }
 
-                let channel_addr = ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                    hostname: hostname.clone(),
-                    port,
-                });
+                let channel_addr = ChannelAddr::MetaTls {
+                    addr: MetaTlsAddr::Host {
+                        hostname: hostname.clone(),
+                        port,
+                    },
+                    label: None,
+                };
 
                 // Bind to all resolved addresses
                 let std_listener = std::net::TcpListener::bind(&addrs[..])
@@ -2416,15 +2453,21 @@ pub(crate) mod meta {
                     .map_err(|err| ServerError::Resolve(channel_addr, err))?;
                 super::serve(
                     listener,
-                    ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                        hostname,
-                        port: local_addr.port(),
-                    }),
+                    ChannelAddr::MetaTls {
+                        addr: MetaTlsAddr::Host {
+                            hostname,
+                            port: local_addr.port(),
+                        },
+                        label: None,
+                    },
                     true,
                 )
             }
             MetaTlsAddr::Socket(socket_addr) => {
-                let channel_addr = ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket_addr));
+                let channel_addr = ChannelAddr::MetaTls {
+                    addr: MetaTlsAddr::Socket(socket_addr),
+                    label: None,
+                };
 
                 // Bind directly to the socket address
                 let std_listener = std::net::TcpListener::bind(socket_addr)
@@ -2440,7 +2483,10 @@ pub(crate) mod meta {
                     .map_err(|err| ServerError::Resolve(channel_addr, err))?;
                 super::serve(
                     listener,
-                    ChannelAddr::MetaTls(MetaTlsAddr::Socket(local_addr)),
+                    ChannelAddr::MetaTls {
+                        addr: MetaTlsAddr::Socket(local_addr),
+                        label: None,
+                    },
                     true,
                 )
             }
@@ -2530,7 +2576,10 @@ mod tests {
                 .unwrap();
 
         // Dial the channel before we actually serve it.
-        let addr = ChannelAddr::Unix(socket_addr.clone());
+        let addr = ChannelAddr::Unix {
+            addr: socket_addr.clone(),
+            label: None,
+        };
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
         tx.try_post(123, unused_return_channel()).unwrap();
 
@@ -2632,9 +2681,12 @@ mod tests {
     // TODO: OSS: failed to retrieve ipv6 address
     #[cfg_attr(not(feature = "fb"), ignore)]
     async fn test_meta_tls_basic() {
-        let addr = ChannelAddr::any(ChannelTransport::MetaTls(TlsMode::IpV6));
+        let addr = ChannelAddr::any(ChannelTransport::MetaTls {
+            mode: TlsMode::IpV6,
+            label: None,
+        });
         let meta_addr = match addr {
-            ChannelAddr::MetaTls(meta_addr) => meta_addr,
+            ChannelAddr::MetaTls { addr, .. } => addr,
             _ => panic!("expected MetaTls address"),
         };
         let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr).unwrap();
@@ -2768,7 +2820,10 @@ mod tests {
 
         fn source(&self) -> ChannelAddr {
             // Use a dummy address as a placeholder.
-            ChannelAddr::Local(u64::MAX)
+            ChannelAddr::Local {
+                id: u64::MAX,
+                label: None,
+            }
         }
 
         fn disconnected_count(&self) -> Arc<AtomicU64> {
@@ -2798,7 +2853,10 @@ mod tests {
 
         fn dest(&self) -> ChannelAddr {
             // Use a dummy address as a placeholder.
-            ChannelAddr::Local(u64::MAX)
+            ChannelAddr::Local {
+                id: u64::MAX,
+                label: None,
+            }
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
@@ -3018,8 +3076,14 @@ mod tests {
         // only a duplex stream. Therefore, we create them directly so
         // the test will not have dependence on Link.
         let (sender, receiver) = tokio::io::duplex(5000);
-        let source = ChannelAddr::Local(u64::MAX);
-        let dest = ChannelAddr::Local(u64::MAX);
+        let source = ChannelAddr::Local {
+            id: u64::MAX,
+            label: None,
+        };
+        let dest = ChannelAddr::Local {
+            id: u64::MAX,
+            label: None,
+        };
         let conn = ServerConn::new(receiver, source, dest);
         let manager1 = manager.clone();
         let cancel_token_1 = cancel_token.child_token();
@@ -3808,16 +3872,22 @@ mod tests {
         let channel: ChannelAddr = "metatls!localhost:1234".parse().unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                hostname: "localhost".to_string(),
-                port: 1234
-            })
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
+                    hostname: "localhost".to_string(),
+                    port: 1234,
+                },
+                label: None,
+            }
         );
         // ipv4:port - can be parsed as hostname or socket address
         let channel: ChannelAddr = "metatls!1.2.3.4:1234".parse().unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Socket("1.2.3.4:1234".parse().unwrap()))
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Socket("1.2.3.4:1234".parse().unwrap()),
+                label: None,
+            }
         );
         // ipv6:port
         let channel: ChannelAddr = "metatls!2401:db00:33c:6902:face:0:2a2:0:1234"
@@ -3825,16 +3895,22 @@ mod tests {
             .unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                hostname: "2401:db00:33c:6902:face:0:2a2:0".to_string(),
-                port: 1234
-            })
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
+                    hostname: "2401:db00:33c:6902:face:0:2a2:0".to_string(),
+                    port: 1234,
+                },
+                label: None,
+            }
         );
 
         let channel: ChannelAddr = "metatls![::]:1234".parse().unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Socket("[::]:1234".parse().unwrap()))
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Socket("[::]:1234".parse().unwrap()),
+                label: None,
+            }
         );
     }
 

@@ -433,7 +433,10 @@ pub type Port = u16;
 /// ```
 /// # use hyperactor::channel::ChannelAddr;
 /// let addr: ChannelAddr = "tcp:127.0.0.1:1234".parse().unwrap();
-/// let ChannelAddr::Tcp(socket_addr) = addr else {
+/// let ChannelAddr::Tcp {
+///     addr: socket_addr, ..
+/// } = addr
+/// else {
 ///     panic!()
 /// };
 /// assert_eq!(socket_addr.port(), 1234);
@@ -454,40 +457,74 @@ pub type Port = u16;
 pub enum ChannelAddr {
     /// A socket address used to establish TCP channels. Supports
     /// both  IPv4 and IPv6 address / port pairs.
-    Tcp(SocketAddr),
+    Tcp {
+        /// The socket address.
+        addr: SocketAddr,
+        /// An optional label for this channel address.
+        label: Option<String>,
+    },
 
     /// An address to establish TCP channels with TLS support within Meta.
     /// Supports both hostname/port pairs (required for clients) and
     /// socket addresses (allowed for servers).
-    MetaTls(MetaTlsAddr),
+    MetaTls {
+        /// The MetaTLS address.
+        addr: MetaTlsAddr,
+        /// An optional label for this channel address.
+        label: Option<String>,
+    },
 
     /// Local addresses are registered in-process and given an integral
     /// index.
-    Local(u64),
+    Local {
+        /// The local port ID.
+        id: u64,
+        /// An optional label for this channel address.
+        label: Option<String>,
+    },
 
     /// Sim is a simulated channel for testing.
-    Sim(SimAddr),
+    Sim {
+        /// The simulated address.
+        addr: SimAddr,
+        /// An optional label for this channel address.
+        label: Option<String>,
+    },
 
     /// A unix domain socket address. Supports both absolute path names as
     ///  well as "abstract" names per https://manpages.debian.org/unstable/manpages/unix.7.en.html#Abstract_sockets
-    Unix(net::unix::SocketAddr),
+    Unix {
+        /// The Unix socket address.
+        addr: net::unix::SocketAddr,
+        /// An optional label for this channel address.
+        label: Option<String>,
+    },
 }
 
 impl From<SocketAddr> for ChannelAddr {
     fn from(value: SocketAddr) -> Self {
-        Self::Tcp(value)
+        Self::Tcp {
+            addr: value,
+            label: None,
+        }
     }
 }
 
 impl From<net::unix::SocketAddr> for ChannelAddr {
     fn from(value: net::unix::SocketAddr) -> Self {
-        Self::Unix(value)
+        Self::Unix {
+            addr: value,
+            label: None,
+        }
     }
 }
 
 impl From<std::os::unix::net::SocketAddr> for ChannelAddr {
     fn from(value: std::os::unix::net::SocketAddr) -> Self {
-        Self::Unix(net::unix::SocketAddr::new(value))
+        Self::Unix {
+            addr: net::unix::SocketAddr::new(value),
+            label: None,
+        }
     }
 }
 
@@ -498,9 +535,29 @@ impl From<tokio::net::unix::SocketAddr> for ChannelAddr {
 }
 
 impl ChannelAddr {
+    /// Returns the label associated with this address, if any.
+    pub fn label(&self) -> Option<&str> {
+        match self {
+            Self::Tcp { label, .. }
+            | Self::MetaTls { label, .. }
+            | Self::Local { label, .. }
+            | Self::Sim { label, .. }
+            | Self::Unix { label, .. } => label.as_deref(),
+        }
+    }
+
     /// The "any" address for the given transport type. This is used to
     /// servers to "any" address.
     pub fn any(transport: ChannelTransport) -> Self {
+        Self::any_internal(transport, None)
+    }
+
+    /// The "any" address for the given transport type with the given label.
+    pub fn any_with_label(transport: ChannelTransport, label: String) -> Self {
+        Self::any_internal(transport, Some(label))
+    }
+
+    fn any_internal(transport: ChannelTransport, label: Option<String>) -> Self {
         match transport {
             ChannelTransport::Tcp => {
                 let ip = hostname::get()
@@ -514,7 +571,10 @@ impl ChannelAddr {
                         })
                     })
                     .unwrap_or_else(|| IpAddr::from_str("::1").unwrap());
-                Self::Tcp(SocketAddr::new(ip, 0))
+                Self::Tcp {
+                    addr: SocketAddr::new(ip, 0),
+                    label,
+                }
             }
             ChannelTransport::MetaTls(mode) => {
                 let host_address = match mode {
@@ -527,23 +587,29 @@ impl ChannelAddr {
                         .and_then(|addr| addr.to_string().parse().ok())
                         .expect("failed to retrieve ipv6 address"),
                 };
-                Self::MetaTls(MetaTlsAddr::Host {
-                    hostname: host_address,
-                    port: 0,
-                })
+                Self::MetaTls {
+                    addr: MetaTlsAddr::Host {
+                        hostname: host_address,
+                        port: 0,
+                    },
+                    label,
+                }
             }
-            ChannelTransport::Local => Self::Local(0),
+            ChannelTransport::Local => Self::Local { id: 0, label: None },
             ChannelTransport::Sim(transport) => sim::any(*transport),
             // This works because the file will be deleted but we know we have a unique file by this point.
-            ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
+            ChannelTransport::Unix => Self::Unix {
+                addr: net::unix::SocketAddr::from_str("").unwrap(),
+                label,
+            },
         }
     }
 
     /// The transport used by this address.
     pub fn transport(&self) -> ChannelTransport {
         match self {
-            Self::Tcp(_) => ChannelTransport::Tcp,
-            Self::MetaTls(addr) => match addr {
+            Self::Tcp { .. } => ChannelTransport::Tcp,
+            Self::MetaTls { addr, .. } => match addr {
                 MetaTlsAddr::Host { hostname, .. } => match hostname.parse::<IpAddr>() {
                     Ok(IpAddr::V6(_)) => ChannelTransport::MetaTls(TlsMode::IpV6),
                     Ok(IpAddr::V4(_)) => ChannelTransport::MetaTls(TlsMode::Hostname),
@@ -554,9 +620,9 @@ impl ChannelAddr {
                     IpAddr::V4(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
                 },
             },
-            Self::Local(_) => ChannelTransport::Local,
-            Self::Sim(addr) => ChannelTransport::Sim(Box::new(addr.transport())),
-            Self::Unix(_) => ChannelTransport::Unix,
+            Self::Local { .. } => ChannelTransport::Local,
+            Self::Sim { addr, .. } => ChannelTransport::Sim(Box::new(addr.transport())),
+            Self::Unix { .. } => ChannelTransport::Unix,
         }
     }
 }
@@ -564,11 +630,41 @@ impl ChannelAddr {
 impl fmt::Display for ChannelAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Tcp(addr) => write!(f, "tcp:{}", addr),
-            Self::MetaTls(addr) => write!(f, "metatls:{}", addr),
-            Self::Local(index) => write!(f, "local:{}", index),
-            Self::Sim(sim_addr) => write!(f, "sim:{}", sim_addr),
-            Self::Unix(addr) => write!(f, "unix:{}", addr),
+            Self::Tcp { addr, label } => {
+                if let Some(label) = label {
+                    write!(f, "tcp:{}[{}]", addr, label)
+                } else {
+                    write!(f, "tcp:{}", addr)
+                }
+            }
+            Self::MetaTls { addr, label } => {
+                if let Some(label) = label {
+                    write!(f, "metatls:{}[{}]", addr, label)
+                } else {
+                    write!(f, "metatls:{}", addr)
+                }
+            }
+            Self::Local { id, label } => {
+                if let Some(label) = label {
+                    write!(f, "local:{}[{}]", id, label)
+                } else {
+                    write!(f, "local:{}", id)
+                }
+            }
+            Self::Sim { addr, label } => {
+                if let Some(label) = label {
+                    write!(f, "sim:{}[{}]", addr, label)
+                } else {
+                    write!(f, "sim:{}", addr)
+                }
+            }
+            Self::Unix { addr, label } => {
+                if let Some(label) = label {
+                    write!(f, "unix:{}[{}]", addr, label)
+                } else {
+                    write!(f, "unix:{}", addr)
+                }
+            }
         }
     }
 }
@@ -578,17 +674,26 @@ impl FromStr for ChannelAddr {
 
     fn from_str(addr: &str) -> Result<Self, Self::Err> {
         match addr.split_once('!').or_else(|| addr.split_once(':')) {
-            Some(("local", rest)) => rest
-                .parse::<u64>()
-                .map(Self::Local)
-                .map_err(anyhow::Error::from),
-            Some(("tcp", rest)) => rest
-                .parse::<SocketAddr>()
-                .map(Self::Tcp)
-                .map_err(anyhow::Error::from),
-            Some(("metatls", rest)) => net::meta::parse(rest).map_err(|e| e.into()),
-            Some(("sim", rest)) => sim::parse(rest).map_err(|e| e.into()),
-            Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
+            Some(("local", rest)) => {
+                let id = rest.parse::<u64>().map_err(anyhow::Error::from)?;
+                Ok(Self::Local { id, label: None })
+            }
+            Some(("tcp", rest)) => {
+                let addr = rest.parse::<SocketAddr>().map_err(anyhow::Error::from)?;
+                Ok(Self::Tcp { addr, label: None })
+            }
+            Some(("metatls", rest)) => {
+                let addr = net::meta::parse(rest)?;
+                Ok(addr)
+            }
+            Some(("sim", rest)) => {
+                let addr = sim::parse(rest)?;
+                Ok(addr)
+            }
+            Some(("unix", rest)) => Ok(Self::Unix {
+                addr: net::unix::SocketAddr::from_str(rest)?,
+                label: None,
+            }),
             Some((r#type, _)) => Err(anyhow::anyhow!("no such channel type: {type}")),
             None => Err(anyhow::anyhow!("no channel type specified")),
         }
@@ -614,11 +719,17 @@ impl ChannelAddr {
 
                 if host == "*" {
                     // Wildcard binding - use IPv6 unspecified address
-                    Ok(Self::Tcp(SocketAddr::new("::".parse().unwrap(), port)))
+                    Ok(Self::Tcp {
+                        addr: SocketAddr::new("::".parse().unwrap(), port),
+                        label: None,
+                    })
                 } else {
                     // Resolve hostname to IP address for proper SocketAddr creation
                     let socket_addr = Self::resolve_hostname_to_socket_addr(host, port)?;
-                    Ok(Self::Tcp(socket_addr))
+                    Ok(Self::Tcp {
+                        addr: socket_addr,
+                        label: None,
+                    })
                 }
             }
             "inproc" => {
@@ -627,26 +738,38 @@ impl ChannelAddr {
                 let port = address.parse::<u64>().map_err(|_| {
                     anyhow::anyhow!("inproc endpoint must be a valid port number: {}", address)
                 })?;
-                Ok(Self::Local(port))
+                Ok(Self::Local {
+                    id: port,
+                    label: None,
+                })
             }
             "ipc" => {
                 // ipc://path -> unix:path
-                Ok(Self::Unix(net::unix::SocketAddr::from_str(address)?))
+                Ok(Self::Unix {
+                    addr: net::unix::SocketAddr::from_str(address)?,
+                    label: None,
+                })
             }
             "metatls" => {
                 let (host, port) = Self::split_host_port(address)?;
 
                 if host == "*" {
                     // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::MetaTls(MetaTlsAddr::Host {
-                        hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
-                        port,
-                    }))
+                    Ok(Self::MetaTls {
+                        addr: MetaTlsAddr::Host {
+                            hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
+                            port,
+                        },
+                        label: None,
+                    })
                 } else {
-                    Ok(Self::MetaTls(MetaTlsAddr::Host {
-                        hostname: host.to_string(),
-                        port,
-                    }))
+                    Ok(Self::MetaTls {
+                        addr: MetaTlsAddr::Host {
+                            hostname: host.to_string(),
+                            port,
+                        },
+                        label: None,
+                    })
                 }
             }
             scheme => Err(anyhow::anyhow!("unsupported ZMQ scheme: {}", scheme)),
@@ -786,11 +909,11 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
     tracing::debug!(name = "dial", "dialing channel {}", addr);
     let inner = match addr {
-        ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
-        ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
-        ChannelAddr::MetaTls(meta_addr) => ChannelTxKind::MetaTls(net::meta::dial(meta_addr)?),
-        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
-        ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
+        ChannelAddr::Local { id, .. } => ChannelTxKind::Local(local::dial(id)?),
+        ChannelAddr::Tcp { addr, .. } => ChannelTxKind::Tcp(net::tcp::dial(addr)),
+        ChannelAddr::MetaTls { addr, .. } => ChannelTxKind::MetaTls(net::meta::dial(addr)?),
+        ChannelAddr::Sim { addr, .. } => ChannelTxKind::Sim(sim::dial::<M>(addr)?),
+        ChannelAddr::Unix { addr, .. } => ChannelTxKind::Unix(net::unix::dial(addr)),
     };
     Ok(ChannelTx { inner })
 }
@@ -803,27 +926,36 @@ pub fn serve<M: RemoteMessage>(
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     tracing::debug!(name = "serve", "serving channel address {}", addr);
     match addr {
-        ChannelAddr::Tcp(addr) => {
+        ChannelAddr::Tcp { addr, label } => {
             let (addr, rx) = net::tcp::serve::<M>(addr)?;
             Ok((addr, ChannelRxKind::Tcp(rx)))
         }
-        ChannelAddr::MetaTls(meta_addr) => {
+        ChannelAddr::MetaTls {
+            addr: meta_addr,
+            label,
+        } => {
             let (addr, rx) = net::meta::serve::<M>(meta_addr)?;
             Ok((addr, ChannelRxKind::MetaTls(rx)))
         }
-        ChannelAddr::Unix(path) => {
+        ChannelAddr::Unix { addr: path, label } => {
             let (addr, rx) = net::unix::serve::<M>(path)?;
             Ok((addr, ChannelRxKind::Unix(rx)))
         }
-        ChannelAddr::Local(0) => {
+        ChannelAddr::Local { id: 0, label } => {
             let (port, rx) = local::serve::<M>();
-            Ok((ChannelAddr::Local(port), ChannelRxKind::Local(rx)))
+            Ok((
+                ChannelAddr::Local { id: port, label },
+                ChannelRxKind::Local(rx),
+            ))
         }
-        ChannelAddr::Sim(sim_addr) => {
+        ChannelAddr::Sim {
+            addr: sim_addr,
+            label,
+        } => {
             let (addr, rx) = sim::serve::<M>(sim_addr)?;
             Ok((addr, ChannelRxKind::Sim(rx)))
         }
-        ChannelAddr::Local(a) => Err(ChannelError::InvalidAddress(format!(
+        ChannelAddr::Local { id: a, .. } => Err(ChannelError::InvalidAddress(format!(
             "invalid local addr: {}",
             a
         ))),
@@ -836,7 +968,10 @@ pub fn serve<M: RemoteMessage>(
 pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
     let (port, rx) = local::serve::<M>();
     (
-        ChannelAddr::Local(port),
+        ChannelAddr::Local {
+            id: port,
+            label: None,
+        },
         ChannelRx {
             inner: ChannelRxKind::Local(rx),
         },
@@ -864,33 +999,41 @@ mod tests {
         let cases_ok = vec![
             (
                 "tcp<DELIM>[::1]:1234",
-                ChannelAddr::Tcp(SocketAddr::new(
-                    IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
-                    1234,
-                )),
+                ChannelAddr::Tcp {
+                    addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), 1234),
+                    label: None,
+                },
             ),
             (
                 "tcp<DELIM>127.0.0.1:8080",
-                ChannelAddr::Tcp(SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-                    8080,
-                )),
+                ChannelAddr::Tcp {
+                    addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+                    label: None,
+                },
             ),
             #[cfg(target_os = "linux")]
-            ("local<DELIM>123", ChannelAddr::Local(123)),
+            (
+                "local<DELIM>123",
+                ChannelAddr::Local {
+                    id: 123,
+                    label: None,
+                },
+            ),
             (
                 "unix<DELIM>@yolo",
-                ChannelAddr::Unix(
-                    unix::SocketAddr::from_abstract_name("yolo")
+                ChannelAddr::Unix {
+                    addr: unix::SocketAddr::from_abstract_name("yolo")
                         .expect("can't make socket from abstract name"),
-                ),
+                    label: None,
+                },
             ),
             (
                 "unix<DELIM>/cool/socket-path",
-                ChannelAddr::Unix(
-                    unix::SocketAddr::from_pathname("/cool/socket-path")
+                ChannelAddr::Unix {
+                    addr: unix::SocketAddr::from_pathname("/cool/socket-path")
                         .expect("can't make socket from path"),
-                ),
+                    label: None,
+                },
             ),
         ];
 
@@ -907,7 +1050,10 @@ mod tests {
                 let raw = format!("sim{}{}", delim, raw.replace("<DELIM>", delim));
                 assert_eq!(
                     raw.parse::<ChannelAddr>().unwrap(),
-                    ChannelAddr::Sim(SimAddr::new(parsed.clone()).unwrap())
+                    ChannelAddr::Sim {
+                        addr: SimAddr::new(parsed.clone()).unwrap(),
+                        label: None,
+                    }
                 );
             }
         }
@@ -932,52 +1078,73 @@ mod tests {
         // Test TCP addresses
         assert_eq!(
             ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080").unwrap(),
-            ChannelAddr::Tcp("127.0.0.1:8080".parse().unwrap())
+            ChannelAddr::Tcp {
+                addr: "127.0.0.1:8080".parse().unwrap(),
+                label: None,
+            }
         );
 
         // Test TCP wildcard binding
         assert_eq!(
             ChannelAddr::from_zmq_url("tcp://*:5555").unwrap(),
-            ChannelAddr::Tcp("[::]:5555".parse().unwrap())
+            ChannelAddr::Tcp {
+                addr: "[::]:5555".parse().unwrap(),
+                label: None,
+            }
         );
 
         // Test inproc (maps to local with numeric endpoint)
         assert_eq!(
             ChannelAddr::from_zmq_url("inproc://12345").unwrap(),
-            ChannelAddr::Local(12345)
+            ChannelAddr::Local {
+                id: 12345,
+                label: None,
+            }
         );
 
         // Test ipc (maps to unix)
         assert_eq!(
             ChannelAddr::from_zmq_url("ipc:///tmp/my-socket").unwrap(),
-            ChannelAddr::Unix(unix::SocketAddr::from_pathname("/tmp/my-socket").unwrap())
+            ChannelAddr::Unix {
+                addr: unix::SocketAddr::from_pathname("/tmp/my-socket").unwrap(),
+                label: None,
+            }
         );
 
         // Test metatls with hostname
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://example.com:443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                hostname: "example.com".to_string(),
-                port: 443
-            })
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
+                    hostname: "example.com".to_string(),
+                    port: 443,
+                },
+                label: None,
+            }
         );
 
         // Test metatls with IP address (should be normalized)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://192.168.1.1:443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                hostname: "192.168.1.1".to_string(),
-                port: 443
-            })
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
+                    hostname: "192.168.1.1".to_string(),
+                    port: 443,
+                },
+                label: None,
+            }
         );
 
         // Test metatls with wildcard (should use IPv6 unspecified address)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://*:8443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                hostname: "::".to_string(),
-                port: 8443
-            })
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
+                    hostname: "::".to_string(),
+                    port: 8443,
+                },
+                label: None,
+            }
         );
 
         // Test TCP hostname resolution (should resolve hostname to IP)
@@ -989,7 +1156,10 @@ mod tests {
         // Test IPv6 address
         assert_eq!(
             ChannelAddr::from_zmq_url("tcp://[::1]:1234").unwrap(),
-            ChannelAddr::Tcp("[::1]:1234".parse().unwrap())
+            ChannelAddr::Tcp {
+                addr: "[::1]:1234".parse().unwrap(),
+                label: None,
+            }
         );
 
         // Test error cases
