@@ -40,6 +40,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.allocator import AllocHandle, ProcessAllocator
@@ -1399,34 +1400,41 @@ async def test_sync_workspace() -> None:
     assert "WORKSPACE_DIR" not in os.environ, "test leaves env var side-effects!"
 
 
-class TestActorMeshStop(unittest.IsolatedAsyncioTestCase):
-    @v0_only
-    async def test_actor_mesh_stop(self) -> None:
-        pm = this_host().spawn_procs(per_host={"gpus": 2})
-        am_1 = pm.spawn("printer", Printer)
-        am_2 = pm.spawn("printer2", Printer)
-        await am_1.print.call("hello 1")
-        await am_1.log.call("hello 2")
-        await cast(ActorMesh, am_1).stop()
+@pytest.mark.timeout(120)
+async def test_actor_mesh_stop() -> None:
+    pm = this_host().spawn_procs(per_host={"gpus": 2})
+    am_1 = pm.spawn("printer", Printer)
+    am_2 = pm.spawn("printer2", Printer)
+    await am_1.print.call("hello 1")
+    await am_1.log.call("hello 2")
+    await cast(ActorMesh, am_1).stop()
 
-        with self.assertRaisesRegex(
+    if v1_enabled:
+        with pytest.raises(
+            SupervisionError,
+            match="Actor .*printer_.* (exited because of the following reason|is unhealthy with reason).*stopped",
+        ):
+            await am_1.print.call("hello 1")
+    else:
+        with pytest.raises(
             RuntimeError,
-            r"(?:`PythonActorMesh` has already been stopped|delivery error: broken link)",
+            match=r"(?:`PythonActorMesh` has already been stopped|delivery error: broken link)",
         ):
             await am_1.print.call("hello 1")
 
-        await am_2.print.call("hello 3")
-        await am_2.log.call("hello 4")
+    await am_2.print.call("hello 3")
+    await am_2.log.call("hello 4")
 
-        await pm.stop()
+    await pm.stop()
 
-    @v0_only
-    async def test_proc_mesh_stop_after_actor_mesh_stop(self) -> None:
-        pm = this_host().spawn_procs(per_host={"gpus": 2})
-        am = pm.spawn("printer", Printer)
 
-        await cast(ActorMesh, am).stop()
-        await pm.stop()
+@pytest.mark.timeout(60)
+async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
+    pm = this_host().spawn_procs(per_host={"gpus": 2})
+    am = pm.spawn("printer", Printer)
+
+    await cast(ActorMesh, am).stop()
+    await pm.stop()
 
 
 class PortedActor(Actor):

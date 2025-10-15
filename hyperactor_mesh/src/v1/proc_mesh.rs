@@ -752,6 +752,49 @@ impl ProcMeshRef {
             }
         }
     }
+
+    /// Send stop actors message to all mesh agents for a specific mesh name
+    pub(crate) async fn stop_actor_by_name(
+        &self,
+        cx: &impl context::Actor,
+        mesh_name: Name,
+    ) -> v1::Result<()> {
+        let (port, rx) = cx.mailbox().open_accum_port_opts(
+            RankedValues::default(),
+            Some(ReducerOpts {
+                max_update_interval: Some(Duration::from_millis(50)),
+            }),
+        );
+        self.agent_mesh().cast(
+            cx,
+            resource::Stop {
+                name: mesh_name,
+                reply: port.bind(),
+            },
+        )?;
+        let start_time = RealClock.now();
+
+        // Reuse actor spawn idle time.
+        let max_idle_time = config::global::get(ACTOR_SPAWN_MAX_IDLE);
+        match GetRankStatus::wait(rx, self.ranks.len(), max_idle_time).await {
+            Ok(statuses) => {
+                if statuses.first_failed().is_none() {
+                    Ok(())
+                } else {
+                    Err(Error::ActorStopError { statuses })
+                }
+            }
+            Err(complete) => {
+                // Fill the remaining statuses with a timeout error.
+                let mut statuses = RankedValues::from((
+                    0..self.ranks.len(),
+                    Status::Timeout(start_time.elapsed()),
+                ));
+                statuses.merge_from(complete);
+                Err(Error::ActorStopError { statuses })
+            }
+        }
+    }
 }
 
 impl view::Ranked for ProcMeshRef {

@@ -78,6 +78,13 @@ impl<A: Referable> ActorMesh<A> {
     pub(crate) fn detach(self) -> ActorMeshRef<A> {
         self.current_ref
     }
+
+    /// Stop actors on this mesh across all procs.
+    pub async fn stop(&self, cx: &impl context::Actor) -> v1::Result<()> {
+        self.proc_mesh()
+            .stop_actor_by_name(cx, self.name.clone())
+            .await
+    }
 }
 
 impl<A: Referable> Deref for ActorMesh<A> {

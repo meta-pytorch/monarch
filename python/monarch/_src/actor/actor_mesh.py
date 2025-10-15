@@ -318,7 +318,7 @@ class _SingletonActorAdapator:
     def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
         return None
 
-    def stop(self) -> "PythonTask[None]":
+    def stop(self, instance: HyInstance) -> "PythonTask[None]":
         raise NotImplementedError("stop()")
 
     def initialized(self) -> "PythonTask[None]":
@@ -1157,7 +1157,8 @@ class ActorMesh(MeshTrait, Generic[T]):
         return f"ActorMesh(class={self._class}, shape={self._shape}), inner={type(self._inner)})"
 
     def stop(self) -> "Future[None]":
-        return Future(coro=self._inner.stop())
+        instance = context().actor_instance._as_rust()
+        return Future(coro=self._inner.stop(instance))
 
     @property
     def initialized(self) -> Future[None]:

@@ -153,7 +153,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_STOP_ACTOR_TIMEOUT".to_string()),
         py_name: None,
     })
-    pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(1);
+    pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Heartbeat interval for remote allocator
     @meta(CONFIG = ConfigAttr {
@@ -337,7 +337,7 @@ mod tests {
             # export HYPERACTOR_CHANNEL_MULTIPART=true
             # export HYPERACTOR_DEFAULT_ENCODING=serde_multipart
             # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=5s
-            # export HYPERACTOR_STOP_ACTOR_TIMEOUT=1s
+            # export HYPERACTOR_STOP_ACTOR_TIMEOUT=10s
             # export HYPERACTOR_SPLIT_MAX_BUFFER_SIZE=5
             # export HYPERACTOR_MESSAGE_TTL_DEFAULT=64
             # export HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES=1000

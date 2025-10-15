@@ -387,10 +387,22 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         )))
     }
 
-    fn stop<'py>(&self) -> PyResult<PyPythonTask> {
-        Err(PyErr::new::<PyNotImplementedError, _>(
-            "stop is not implemented yet for v1::PythonActorMeshImpl",
-        ))
+    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        let (slf, instance) = Python::with_gil(|_py| (self.clone(), instance.clone()));
+        match slf {
+            PythonActorMeshImpl::Owned(mesh) => PyPythonTask::new(async move {
+                instance_dispatch!(instance, |cx_instance| {
+                    mesh.0
+                        .stop(cx_instance)
+                        .await
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?
+                });
+                Ok(())
+            }),
+            PythonActorMeshImpl::Ref(_) => Err(PyErr::new::<PyNotImplementedError, _>(
+                "Cannot call stop on an ActorMeshRef, requires an owned ActorMesh",
+            )),
+        }
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -439,6 +451,13 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
         Err(PyErr::new::<PyNotImplementedError, _>(
             "This should never be called on ActorMeshRef directly",
+        ))
+    }
+
+    /// Stop the actor mesh asynchronously.
+    fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
+        Err(PyErr::new::<PyNotImplementedError, _>(
+            "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))
     }
 

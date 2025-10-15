@@ -65,7 +65,6 @@ use crate::metrics;
 use crate::proc_mesh::ProcMesh;
 use crate::reference::ActorMeshId;
 use crate::reference::ActorMeshRef;
-use crate::sel;
 use crate::v1;
 
 declare_attrs! {
@@ -250,8 +249,8 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
         Box::new(self.shape().slice().iter().map(move |rank| gang.rank(rank)))
     }
 
-    async fn stop(&self) -> Result<(), anyhow::Error> {
-        self.proc_mesh().stop_actor_by_name(self.name()).await
+    async fn stop(&self, cx: &impl context::Actor) -> Result<(), anyhow::Error> {
+        self.proc_mesh().stop_actor_by_name(cx, self.name()).await
     }
 
     /// Get a serializeable reference to this mesh similar to ActorHandle::bind
@@ -1440,7 +1439,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            mesh_two.stop().await.unwrap();
+            mesh_two.stop(&instance).await.unwrap();
 
             let ping_two: ActorRef<PingPongActor> = mesh_two.get(0).unwrap();
             let pong_two: ActorRef<PingPongActor> = mesh_two.get(1).unwrap();

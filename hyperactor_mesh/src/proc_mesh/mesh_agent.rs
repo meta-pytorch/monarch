@@ -172,6 +172,9 @@ impl State {
 struct ActorInstanceState {
     create_rank: usize,
     spawn: Result<ActorId, anyhow::Error>,
+    /// If true, the actor has been stopped. There is no way to restart it, a new
+    /// actor must be spawned.
+    stopped: bool,
 }
 
 /// Normalize events that came via the comm tree. Updates their actor id based on
@@ -215,6 +218,7 @@ pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSu
     handlers=[
         MeshAgentMessage,
         resource::CreateOrUpdate<ActorSpec> { cast = true },
+        resource::Stop { cast = true },
         resource::GetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
     ]
@@ -512,6 +516,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
                         "Cannot spawn new actors on mesh with supervision events"
                     )),
                     create_rank,
+                    stopped: false,
                 },
             );
             return Ok(());
@@ -534,9 +539,67 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
                         params_data,
                     )
                     .await,
+                stopped: false,
             },
         );
 
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::Stop> for ProcMeshAgent {
+    async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
+        // We don't remove the actor from the state map, instead we just store
+        // its state as Stopped.
+        let actor = self.actor_states.get_mut(&message.name);
+        enum StatusOrActorId {
+            Status(resource::Status),
+            ActorId(ActorId),
+        }
+        // Have to separate stop_actor from setting "stopped" because it borrows
+        // as mutable and cannot have self borrowed mutably twice.
+        let (rank, actor_id) = match actor {
+            Some(actor_state) => {
+                let rank = actor_state.create_rank;
+                match &actor_state.spawn {
+                    Ok(actor_id) => {
+                        if actor_state.stopped {
+                            (rank, StatusOrActorId::Status(resource::Status::Stopped))
+                        } else {
+                            actor_state.stopped = true;
+                            (rank, StatusOrActorId::ActorId(actor_id.clone()))
+                        }
+                    }
+                    // If the original spawn had failed, the actor is still considered
+                    // successfully stopped.
+                    Err(_) => (rank, StatusOrActorId::Status(resource::Status::Stopped)),
+                }
+            }
+            // TODO: represent unknown rank
+            None => (
+                usize::MAX,
+                StatusOrActorId::Status(resource::Status::NotExist),
+            ),
+        };
+        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        let status = match actor_id {
+            StatusOrActorId::Status(s) => s,
+            StatusOrActorId::ActorId(actor_id) => {
+                // If this fails, we will still leave the actor_state as stopped,
+                // because it shouldn't be attempted again.
+                let stop_result = self
+                    .stop_actor(cx, actor_id, timeout.as_millis() as u64)
+                    .await?;
+                match stop_result {
+                    // use Stopped as a successful result.
+                    StopActorResult::Success => resource::Status::Stopped,
+                    StopActorResult::Timeout => resource::Status::Timeout(timeout),
+                    StopActorResult::NotFound => resource::Status::NotExist,
+                }
+            }
+        };
+        message.reply.send(cx, (rank, status).into())?;
         Ok(())
     }
 }
@@ -552,26 +615,32 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
             Some(ActorInstanceState {
                 spawn: Ok(actor_id),
                 create_rank,
+                stopped,
             }) => {
-                let supervision_events = self
-                    .supervision_events
-                    .get(actor_id)
-                    .map_or_else(Vec::new, |a| a.clone());
-                (
-                    *create_rank,
-                    if supervision_events.is_empty() {
-                        resource::Status::Running
-                    } else {
-                        resource::Status::Failed(format!(
-                            "because of supervision events: {:?}",
-                            supervision_events
-                        ))
-                    },
-                )
+                if *stopped {
+                    (*create_rank, resource::Status::Stopped)
+                } else {
+                    let supervision_events = self
+                        .supervision_events
+                        .get(actor_id)
+                        .map_or_else(Vec::new, |a| a.clone());
+                    (
+                        *create_rank,
+                        if supervision_events.is_empty() {
+                            resource::Status::Running
+                        } else {
+                            resource::Status::Failed(format!(
+                                "because of supervision events: {:?}",
+                                supervision_events
+                            ))
+                        },
+                    )
+                }
             }
             Some(ActorInstanceState {
                 spawn: Err(e),
                 create_rank,
+                ..
             }) => (*create_rank, resource::Status::Failed(e.to_string())),
             // TODO: represent unknown rank
             None => (usize::MAX, resource::Status::NotExist),
@@ -593,12 +662,15 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
             Some(ActorInstanceState {
                 create_rank,
                 spawn: Ok(actor_id),
+                stopped,
             }) => {
                 let supervision_events = self
                     .supervision_events
                     .get(actor_id)
                     .map_or_else(Vec::new, |a| a.clone());
-                let status = if supervision_events.is_empty() {
+                let status = if *stopped {
+                    resource::Status::Stopped
+                } else if supervision_events.is_empty() {
                     resource::Status::Running
                 } else {
                     resource::Status::Failed(format!(

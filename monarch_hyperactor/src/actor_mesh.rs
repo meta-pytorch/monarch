@@ -76,7 +76,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
 
     /// Stop the actor mesh asynchronously.
     /// Default implementation raises NotImplementedError for types that don't support stopping.
-    fn stop(&self) -> PyResult<PyPythonTask> {
+    fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(format!(
             "stop() is not supported for {}",
             std::any::type_name::<Self>()
@@ -147,8 +147,8 @@ impl PythonActorMesh {
         self.inner.supervision_event(instance)
     }
 
-    fn stop(&self) -> PyResult<PyPythonTask> {
-        self.inner.stop()
+    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        self.inner.stop(instance)
     }
 
     fn initialized(&self) -> PyResult<PyPythonTask> {
@@ -321,15 +321,18 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         self.bind()?.new_with_region(region)
     }
 
-    fn stop<'py>(&self) -> PyResult<PyPythonTask> {
+    fn stop<'py>(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
         let actor_mesh = self.inner.clone();
+        let instance = Python::with_gil(|_| instance.clone());
         PyPythonTask::new(async move {
             let actor_mesh = actor_mesh
                 .take()
                 .await
                 .map_err(|_| PyRuntimeError::new_err("`ActorMesh` has already been stopped"))?;
-            actor_mesh.stop().await.map_err(|err| {
-                PyException::new_err(format!("Failed to stop actor mesh: {}", err))
+            instance_dispatch!(instance, |cx_instance| {
+                actor_mesh.stop(cx_instance).await.map_err(|err| {
+                    PyException::new_err(format!("Failed to stop actor mesh: {}", err))
+                })
             })?;
             Ok(())
         })
@@ -371,8 +374,8 @@ impl PythonActorMeshImpl {
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
         ActorMeshProtocol::supervision_event(self, instance)
     }
-    fn stop(&self) -> PyResult<PyPythonTask> {
-        ActorMeshProtocol::stop(self)
+    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        ActorMeshProtocol::stop(self, instance)
     }
     // Consider defining a "PythonActorRef", which carries specifically
     // a reference to python message actors.
@@ -660,10 +663,11 @@ impl ActorMeshProtocol for AsyncActorMesh {
         .map(|mut x| x.spawn_abortable().map(Some))?
     }
 
-    fn stop(&self) -> PyResult<PyPythonTask> {
+    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
         let mesh = self.mesh.clone();
-        PyPythonTask::new(async {
-            let task = mesh.await?.stop()?.take_task()?;
+        let instance = Python::with_gil(|_py| instance.clone());
+        PyPythonTask::new(async move {
+            let task = mesh.await?.stop(&instance)?.take_task()?;
             task.await
         })
     }

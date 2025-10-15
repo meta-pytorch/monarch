@@ -204,6 +204,27 @@ pub struct CreateOrUpdate<S> {
     pub spec: S,
 }
 
+/// Stop a resource according to a spec.
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    Named,
+    Handler,
+    HandleClient,
+    RefClient,
+    Bind,
+    Unbind
+)]
+pub struct Stop {
+    /// The name of the resource to stop.
+    pub name: Name,
+    /// The status of the rank.
+    #[binding(include)]
+    pub reply: PortRef<RankedValues<Status>>,
+}
+
 /// Retrieve the current state of the resource.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
 pub struct GetState<S> {
@@ -392,6 +413,13 @@ impl RankedValues<Status> {
         self.intervals
             .iter()
             .find(|(_, status)| status.is_terminating())
+            .map(|(range, status)| (range.start, status.clone()))
+    }
+
+    pub fn first_failed(&self) -> Option<(usize, Status)> {
+        self.intervals
+            .iter()
+            .find(|(_, status)| matches!(status, Status::Failed(_) | Status::Timeout(_)))
             .map(|(range, status)| (range.start, status.clone()))
     }
 }
