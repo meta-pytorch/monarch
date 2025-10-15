@@ -1271,7 +1271,10 @@ mod test {
                 Some(ProcState::Running {
                     create_key,
                     proc_id,
-                    addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
+                    addr: ChannelAddr::Unix {
+                        addr: "/proc0".parse().unwrap(),
+                        label: None,
+                    },
                     mesh_agent,
                 })
             });

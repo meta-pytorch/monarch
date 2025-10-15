@@ -1461,7 +1461,7 @@ mod tests {
     async fn host_spawn_maps_channel_closed_ready_error_to_config_failure() {
         let (mut host, _h) = Host::serve(
             TestManager::local(ReadyMode::ErrChannelClosed),
-            ChannelAddr::any(ChannelTransport::Local),
+            ChannelAddr::any(ChannelTransport::Local { label: None }),
         )
         .await
         .unwrap();
@@ -1474,7 +1474,7 @@ mod tests {
     async fn host_spawn_maps_terminal_ready_error_to_config_failure() {
         let (mut host, _h) = Host::serve(
             TestManager::local(ReadyMode::ErrTerminal),
-            ChannelAddr::any(ChannelTransport::Local),
+            ChannelAddr::any(ChannelTransport::Local { label: None }),
         )
         .await
         .unwrap();
@@ -1487,7 +1487,7 @@ mod tests {
     async fn host_spawn_fails_if_ready_but_missing_addr() {
         let (mut host, _h) = Host::serve(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(true, false),
-            ChannelAddr::any(ChannelTransport::Local),
+            ChannelAddr::any(ChannelTransport::Local { label: None }),
         )
         .await
         .unwrap();
@@ -1500,7 +1500,7 @@ mod tests {
     async fn host_spawn_fails_if_ready_but_missing_agent() {
         let (mut host, _h) = Host::serve(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(false, true),
-            ChannelAddr::any(ChannelTransport::Local),
+            ChannelAddr::any(ChannelTransport::Local { label: None }),
         )
         .await
         .unwrap();

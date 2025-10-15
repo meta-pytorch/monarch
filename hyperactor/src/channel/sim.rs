@@ -81,7 +81,7 @@ impl SimAddr {
         addr: ChannelAddr,
         client: bool,
     ) -> Result<Self, SimNetError> {
-        if let ChannelAddr::Sim(_) = &addr {
+        if let ChannelAddr::Sim { .. } = &addr {
             return Err(SimNetError::InvalidArg(format!(
                 "addr cannot be a sim address, found {}",
                 addr
@@ -165,11 +165,14 @@ pub async fn bind(addr: ChannelAddr) -> anyhow::Result<(), SimNetError> {
 
 /// Returns a simulated channel address that is bound to "any" channel address.
 pub(crate) fn any(transport: ChannelTransport) -> ChannelAddr {
-    ChannelAddr::Sim(SimAddr {
-        src: None,
-        addr: Box::new(ChannelAddr::any(transport)),
-        client: false,
-    })
+    ChannelAddr::Sim {
+        addr: SimAddr {
+            src: None,
+            addr: Box::new(ChannelAddr::any(transport)),
+            client: false,
+        },
+        label: None,
+    }
 }
 
 /// Parse the sim channel address. It should have two non-sim channel addresses separated by a comma.
@@ -196,16 +199,22 @@ pub fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
             1 => {
                 let addr = parts[0].parse::<ChannelAddr>()?;
 
-                Ok(ChannelAddr::Sim(SimAddr::new(addr)?))
+                Ok(ChannelAddr::Sim {
+                    addr: SimAddr::new(addr)?,
+                    label: None,
+                })
             }
             3 => {
                 let src_addr = parts[0].parse::<ChannelAddr>()?;
                 let addr = parts[2].parse::<ChannelAddr>()?;
-                Ok(ChannelAddr::Sim(if parts[0] == "client" {
-                    SimAddr::new_with_client_src(src_addr, addr)
-                } else {
-                    SimAddr::new_with_src(src_addr, addr)
-                }?))
+                Ok(ChannelAddr::Sim {
+                    addr: if parts[0] == "client" {
+                        SimAddr::new_with_client_src(src_addr, addr)
+                    } else {
+                        SimAddr::new_with_src(src_addr, addr)
+                    }?,
+                    label: None,
+                })
             }
             _ => Err(ChannelError::InvalidAddress(addr_string.to_string())),
         }
@@ -350,7 +359,10 @@ pub(crate) fn serve<M: RemoteMessage>(
     SENDER.dispatchers.insert(*sim_addr.addr.clone(), tx);
     // Return the sender.
     Ok((
-        ChannelAddr::Sim(sim_addr.clone()),
+        ChannelAddr::Sim {
+            addr: sim_addr.clone(),
+            label: None,
+        },
         SimRx {
             addr: *sim_addr.addr.clone(),
             rx,
@@ -452,7 +464,7 @@ mod tests {
         let sim_addr = "sim!unix:@dst";
         let result = sim_addr.parse();
         assert!(result.is_ok());
-        let ChannelAddr::Sim(sim_addr) = result.unwrap() else {
+        let ChannelAddr::Sim { addr: sim_addr, .. } = result.unwrap() else {
             panic!("Expected a sim address");
         };
         assert!(sim_addr.src().is_none());
@@ -461,7 +473,7 @@ mod tests {
         let sim_addr = "sim!unix:@src,unix:@dst";
         let result = sim_addr.parse();
         assert!(result.is_ok());
-        let ChannelAddr::Sim(sim_addr) = result.unwrap() else {
+        let ChannelAddr::Sim { addr: sim_addr, .. } = result.unwrap() else {
             panic!("Expected a sim address");
         };
         assert!(sim_addr.src().is_some());
