@@ -63,6 +63,8 @@ use crate::proc::PyProc;
 use crate::proc::PySerialized;
 use crate::pytokio::PythonTask;
 use crate::runtime::signal_safe_block_on;
+use crate::supervision::MeshFailure;
+use crate::supervision::SupervisionFailureMessage;
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Serialize, Deserialize, Named)]
@@ -460,6 +462,7 @@ enum UnhandledErrorObserver {
     spawn = true,
     handlers = [
         PythonMessage { cast = true },
+        SupervisionFailureMessage { cast = true },
     ],
 )]
 pub struct PythonActor {
@@ -761,6 +764,58 @@ impl Handler<PythonMessage> for PythonActor {
             ),
         );
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<SupervisionFailureMessage> for PythonActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: SupervisionFailureMessage,
+    ) -> anyhow::Result<()> {
+        Python::with_gil(|py| {
+            let instance = self.instance.get_or_insert_with(|| {
+                let instance: crate::context::PyInstance = cx.into();
+                instance.into_pyobject(py).unwrap().into()
+            });
+            let actor = self.actor.bind(py);
+            // The _Actor class always has a __supervise__ method, so this should
+            // never happen.
+            if !actor.hasattr("__supervise__")? {
+                return Err(anyhow::anyhow!("no __supervise__ method on {:?}", actor));
+            }
+            let result = actor.call_method(
+                "__supervise__",
+                (
+                    crate::context::PyContext::new(cx, instance.clone_ref(py)),
+                    MeshFailure::from(message),
+                ),
+                None,
+            );
+            match result {
+                Ok(s) => {
+                    if s.is_truthy()? {
+                        // If the return value is truthy, then the exception was handled
+                        // and doesn't need to be propagated.
+                        // TODO: We also don't want to deliver multiple supervision
+                        // events from the same mesh if an earlier one is handled.
+                        Ok(())
+                    } else {
+                        // TODO: propagate.
+                        Ok(())
+                    }
+                }
+                Err(err) => {
+                    // Any other exception will be returned, and will become its
+                    // own supervision failure.
+                    // TODO: we still need to propagate the original supervision
+                    // error.
+                    tracing::error!("caught error in __supervise__ {}", err);
+                    Err(err.into())
+                }
+            }
+        })
     }
 }
 

@@ -12,7 +12,10 @@ import subprocess
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcEvent
-from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch._rust_bindings.monarch_hyperactor.supervision import (
+    MeshFailure,
+    SupervisionError,
+)
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import proc_mesh, ProcMesh
 from monarch._src.actor.v1 import enabled as v1_enabled
@@ -814,5 +817,62 @@ async def test_mesh_slices_inherit_parent_errors() -> None:
     check = await slice_3.check.call()
     for _, item in check.items():
         assert item == "this is a healthy check"
+
+    await pm.stop()
+
+
+class ErrorActorWithSupervise(ErrorActor):
+    def __init__(self, proc_mesh: ProcMesh, should_handle: bool = True) -> None:
+        super().__init__()
+        self.mesh = proc_mesh.spawn("error_actor", ErrorActor)
+        self.failures = []
+        self.should_handle = should_handle
+
+    @endpoint
+    async def subworker_fail(self) -> None:
+        await self.mesh.check.call()
+        try:
+            # This should cause a SupervisionError to get raised.
+            return await self.mesh.fail_with_supervision_error.call()
+        except SupervisionError:
+            # We suppress this because __supervise__ will get called as well.
+            return
+        raise AssertionError(
+            "Should never get here, SupervisionError should be raised by the above call"
+        )
+
+    @endpoint
+    def get_failures(self) -> list[str]:
+        # MeshFailure is not picklable, so we convert it to a string.
+        return [str(f) for f in self.failures]
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        self.failures.append(failure)
+        # Returning true suppresses the error.
+        return self.should_handle
+
+
+@pytest.mark.timeout(30)
+# This test only works for v1.
+@pytest.mark.skipif(not v1_enabled, reason="only works on v1")
+async def test_supervise_callback_handled():
+    pm = spawn_procs_on_this_host({"gpus": 4})
+    # TODO: When using the same proc mesh for both, it occasionally fails with:
+    # RuntimeError: error while spawning actor error_actor_1v4bMhugCu1q: failed ranks: [0, 2, 3]
+    second_mesh = spawn_procs_on_this_host({"gpus": 4})
+    supervisor = pm.spawn("supervisor", ErrorActorWithSupervise, second_mesh)
+
+    await supervisor.subworker_fail.call()
+    result = await supervisor.get_failures.call()
+    result = [f for _, f in result]
+    assert len(result) == 4
+    # We only need to check one of the 4 supervisor actors.
+    r = result[0]
+    # Each return is a list, and it should have one element.
+    assert len(r) == 1
+    # Ensure that the error message has the actor id and the rank.
+    assert "MeshFailure" in r[0]
+    assert "rank: 0" in r[0]
+    assert "error_actor" in r[0]
 
     await pm.stop()

@@ -946,6 +946,41 @@ class _Actor:
         else:
             return False
 
+    def __supervise__(self, cx: Context, *args, **kwargs) -> object:
+        _context.set(cx)
+        instance = self.instance
+        if instance is None:
+            # This could happen because of the following reasons. Both
+            # indicates a possible bug in the framework:
+            # 1. the execution of the previous message for "__init__" failed,
+            #    but that error is not surfaced to the caller.
+            #      - TODO(T229200522): there is a known bug. fix it.
+            # 2. this message is delivered to this actor before the previous
+            #    message of "__init__" is delivered. Out-of-order delivery
+            #    should never happen. It indicates either a bug in the
+            #    message delivery mechanism, or the framework accidentally
+            #    mixed the usage of cast and direct send.
+
+            error_message = f"Actor object is missing when executing method __supervise__ on actor {cx.actor_instance.actor_id}."
+            if self._saved_error is not None:
+                error_message += (
+                    f" This is likely due to an earlier error: {self._saved_error}"
+                )
+            raise AssertionError(error_message)
+
+        # Forward a call to supervise on this actor to the user-provided instance.
+        if hasattr(instance, "__supervise__"):
+            # pyre-fixme[16]: Caller needs to handle the case where instance is None.
+            return instance.__supervise__(*args, **kwargs)
+        else:
+            # If there is no __supervise__ method, the default would be to return
+            # None. That means the supervision error is not handled and will be
+            # propagated to the next owner.
+            return None
+
+    def __repr__(self) -> str:
+        return f"_Actor(instance={self.instance!r})"
+
 
 def _is_mailbox(x: object) -> bool:
     if hasattr(x, "__monarch_ref__"):

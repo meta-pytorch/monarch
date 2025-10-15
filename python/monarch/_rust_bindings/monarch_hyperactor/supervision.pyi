@@ -15,3 +15,13 @@ class SupervisionError(RuntimeError):
     """
 
     ...
+
+# TODO: Make this an exception subclass
+@final
+class MeshFailure:
+    """
+    Raise this if you cannot handle the supervision event and you want
+    to propagate it to the parent actor.
+    """
+    @property
+    def mesh(self) -> object: ...
