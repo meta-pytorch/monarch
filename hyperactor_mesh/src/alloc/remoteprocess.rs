@@ -65,8 +65,11 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::alloc::ProcessAllocator;
+use crate::alloc::REMOTE_ALLOC_BOOTSTRAP_ADDR;
 use crate::alloc::process::CLIENT_TRACE_ID_LABEL;
 use crate::alloc::process::ClientContext;
+use crate::alloc::serve_with_config;
+use crate::alloc::with_unspecified_port_or_any;
 use crate::shortuuid::ShortUuid;
 
 /// Control messages sent from remote process allocator to local allocator.
@@ -87,6 +90,8 @@ pub enum RemoteProcessAllocatorMessage {
         /// Todo: Once RemoteProcessAllocator moves to mailbox,
         /// the client_context will go to the message header instead
         client_context: Option<ClientContext>,
+        /// The address allocator should use for its forwarder.
+        forwarder_addr: ChannelAddr,
     },
     /// Stop allocation.
     Stop,
@@ -216,6 +221,7 @@ impl RemoteProcessAllocator {
                             bootstrap_addr,
                             hosts,
                             client_context,
+                            forwarder_addr,
                         }) => {
                             tracing::info!("received allocation request for {} with extent {}", alloc_key, extent);
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
@@ -251,10 +257,10 @@ impl RemoteProcessAllocator {
                                         handle: tokio::spawn(Self::handle_allocation_request(
                                             Box::new(alloc) as Box<dyn Alloc + Send + Sync>,
                                             alloc_key,
-                                            serve_addr.transport(),
                                             bootstrap_addr,
                                             hosts,
                                             cancel_token,
+                                            forwarder_addr,
                                         )),
                                     })
                                 }
@@ -306,18 +312,14 @@ impl RemoteProcessAllocator {
     async fn handle_allocation_request(
         alloc: Box<dyn Alloc + Send + Sync>,
         alloc_key: ShortUuid,
-        serve_transport: ChannelTransport,
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
         cancel_token: CancellationToken,
+        forwarder_addr: ChannelAddr,
     ) {
         tracing::info!("handle allocation request, bootstrap_addr: {bootstrap_addr}");
         // start proc message forwarder
-        // Use serve_transport instead of bootstrap_addr's transport so the transports are
-        // consistent between the remote process allocator and the processes.
-        // The bootstrap_addr could be a different transport that the process might not be compatible with.
-        let (forwarder_addr, forwarder_rx) = match channel::serve(ChannelAddr::any(serve_transport))
-        {
+        let (forwarder_addr, forwarder_rx) = match serve_with_config(forwarder_addr) {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("failed to to bootstrap forwarder actor: {}", e);
@@ -620,8 +622,12 @@ impl RemoteProcessAlloc {
         remote_allocator_port: u16,
         initializer: impl RemoteProcessAllocInitializer + Send + Sync + 'static,
     ) -> Result<Self, anyhow::Error> {
-        let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(spec.transport.clone()))
-            .map_err(anyhow::Error::from)?;
+        let alloc_serve_addr = match config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
+            Some(addr_str) => addr_str.parse()?,
+            None => ChannelAddr::any(spec.transport.clone()),
+        };
+
+        let (bootstrap_addr, rx) = serve_with_config(alloc_serve_addr)?;
 
         tracing::info!(
             "starting alloc for {} on: {}",
@@ -807,6 +813,12 @@ impl RemoteProcessAlloc {
                 bootstrap_addr: self.bootstrap_addr.clone(),
                 hosts: hostnames.clone(),
                 client_context,
+                // Make sure allocator's forwarder uses the same IP address
+                // which is known to alloc. This is to avoid allocator picks
+                // its host's private IP address, while its known addres to
+                // alloc is a public IP address. In some environment, that
+                // could lead to port unreachable error.
+                forwarder_addr: with_unspecified_port_or_any(&remote_addr),
             };
             tracing::info!(
                 name = message.as_ref(),
@@ -1180,6 +1192,18 @@ impl Alloc for RemoteProcessAlloc {
 
         Ok(())
     }
+
+    /// For Tcp and Metatls, return a router address which has the same IP address
+    /// as the alloc's bootstrap address, but with port set as 0. We do this
+    /// instead of using `ChannelAddr::any` is because we want alloc uses the
+    /// same IP address for all its frontend ports. In some environment, the
+    /// host can have public IP address and private IP address, and use the wrong
+    /// one could lead to port unreachable error.
+    ///
+    /// For other channel types, this method still uses ChannelAddr::any.
+    fn client_router_addr(&self) -> ChannelAddr {
+        with_unspecified_port_or_any(&self.bootstrap_addr)
+    }
 }
 
 impl Drop for RemoteProcessAlloc {
@@ -1205,6 +1229,7 @@ mod test {
     use crate::alloc::MockAllocWrapper;
     use crate::alloc::MockAllocator;
     use crate::alloc::ProcStopReason;
+    use crate::alloc::with_unspecified_port_or_any;
     use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 
     async fn read_all_created(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
@@ -1341,6 +1366,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1494,6 +1520,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1598,6 +1625,7 @@ mod test {
             bootstrap_addr: bootstrap_addr.clone(),
             hosts: vec![],
             client_context: None,
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1622,6 +1650,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1719,6 +1748,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1810,6 +1840,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1904,6 +1935,7 @@ mod test {
             client_context: Some(ClientContext {
                 trace_id: test_trace_id.to_string(),
             }),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1978,6 +2010,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
