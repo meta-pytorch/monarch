@@ -741,7 +741,7 @@ impl RemoteProcessAlloc {
     /// request to all o fthem. Once done, start_comm_watcher() is called to start
     /// the channel watcher.
     /// Function is idempotent.
-    async fn ensure_started(&mut self) -> Result<(), anyhow::Error> {
+    async fn ensure_started(&mut self) -> anyhow::Result<()> {
         if self.started || self.failed {
             return Ok(());
         }
@@ -760,18 +760,29 @@ impl RemoteProcessAlloc {
         let hostnames: Vec<_> = hosts.iter().map(|e| e.hostname.clone()).collect();
         tracing::info!("obtained {} hosts for this allocation", hostnames.len());
 
-        // We require at least a dimension for hosts, and one for sub-host (e.g., GPUs)
+        let num_dims = self.spec.extent.len();
         anyhow::ensure!(
-            self.spec.extent.len() >= 2,
-            "invalid extent: {}, expected at least 2 dimensions",
+            num_dims >= 1,
+            "invalid extent: {}, expected at least 1 dimension",
             self.spec.extent
         );
 
-        // We group by the innermost dimension of the extent.
-        let split_dim = &self.spec.extent.labels()[self.spec.extent.len() - 1];
-        for (i, region) in self.spec.extent.group_by(split_dim)?.enumerate() {
-            let host = &hosts[i];
-            tracing::debug!("allocating: {} for host: {}", region, host.id);
+        // Determine split dimension
+        let split_dim = &self.spec.extent.labels()[num_dims - 1];
+
+        let regions: Vec<_> = self.spec.extent.group_by(split_dim)?.collect();
+        if regions.is_empty() {
+            anyhow::bail!("no regions found for extent");
+        }
+
+        // Assign regions to hosts
+        for (i, host) in hosts.iter().enumerate() {
+            let region = regions
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| regions[0].clone());
+
+            tracing::debug!("allocating {} for host: {}", region, host.id);
 
             let remote_addr = match self.spec.transport {
                 ChannelTransport::MetaTls(_) => {
@@ -807,11 +818,8 @@ impl RemoteProcessAlloc {
 
             // Possibly we could use the HostId directly here.
             let alloc_key = ShortUuid::generate();
-            assert!(
-                self.alloc_to_host
-                    .insert(alloc_key.clone(), host.id.clone())
-                    .is_none()
-            );
+            self.alloc_to_host
+                .insert(alloc_key.clone(), host.id.clone());
 
             let trace_id = hyperactor_telemetry::trace::get_or_create_trace_id();
             let client_context = Some(ClientContext { trace_id });
