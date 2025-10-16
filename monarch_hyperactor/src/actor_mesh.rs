@@ -595,6 +595,23 @@ impl AsyncActorMesh {
     {
         self.queue.send(f.boxed()).unwrap();
     }
+
+    fn notify_port_exception(port: EitherPortRef, instance: PyInstance, pyerr: PyErr) {
+        Python::with_gil(|py| {
+            let port_ref = match port {
+                EitherPortRef::Once(p) => p.into_bound_py_any(py),
+                EitherPortRef::Unbounded(p) => p.into_bound_py_any(py),
+            }
+            .unwrap();
+            let port_obj = py
+                .import("monarch._src.actor.actor_mesh")
+                .unwrap()
+                .call_method1("Port", (port_ref, instance, 0))
+                .unwrap();
+            let value = pyerr.value(py);
+            port_obj.call_method1("exception", (value,)).unwrap();
+        });
+    }
 }
 
 impl ActorMeshProtocol for AsyncActorMesh {
@@ -605,28 +622,41 @@ impl ActorMeshProtocol for AsyncActorMesh {
         instance: &PyInstance,
     ) -> PyResult<()> {
         let mesh = self.mesh.clone();
-        let instance = instance.clone();
+        let cast_instance = instance.clone();
+        let port_instance = instance.clone();
+        let err_instance = instance.clone();
+
         self.push(async move {
-            let port = match &message.kind {
+            let response_port = match &message.kind {
                 PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
                 _ => None,
             };
-            let result = async { mesh.await?.cast(message, selection, &instance) }.await;
-            match (port, result) {
-                (Some(p), Err(pyerr)) => Python::with_gil(|py: Python<'_>| {
-                    let port_ref = match p {
-                        EitherPortRef::Once(p) => p.into_bound_py_any(py),
-                        EitherPortRef::Unbounded(p) => p.into_bound_py_any(py),
+
+            let error_port = response_port.clone();
+
+            match mesh.await {
+                Ok(mesh) => {
+                    let runtime = get_tokio_runtime();
+                    let port = response_port;
+                    let selection = selection;
+                    let cast_instance = cast_instance;
+                    let port_instance = port_instance;
+                    let message = message;
+
+                    runtime.spawn_blocking(move || {
+                        let result = mesh.cast(message, selection, &cast_instance);
+                        if let Some(port) = port {
+                            if let Err(pyerr) = result {
+                                AsyncActorMesh::notify_port_exception(port, port_instance, pyerr);
+                            }
+                        }
+                    });
+                }
+                Err(err) => {
+                    if let Some(port) = error_port {
+                        AsyncActorMesh::notify_port_exception(port, err_instance, err.into());
                     }
-                    .unwrap();
-                    let port = py
-                        .import("monarch._src.actor.actor_mesh")
-                        .unwrap()
-                        .call_method1("Port", (port_ref, instance, 0))
-                        .unwrap();
-                    port.call_method1("exception", (pyerr.value(py),)).unwrap();
-                }),
-                _ => (),
+                }
             }
         });
         Ok(())
