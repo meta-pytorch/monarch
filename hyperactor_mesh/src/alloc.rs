@@ -21,6 +21,12 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
+use std::net::TcpListener;
+use std::ops::Range;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
@@ -89,6 +95,20 @@ declare_attrs! {
     })
     pub attr REMOTE_ALLOC_BOOTSTRAP_ADDR: String;
 
+    /// For Tcp channel types, if set, only uses ports in this range for the
+    /// frontend ports. The input should be in the format "<start>..<end>",
+    /// where <end> is exclusive. e.g.:
+    ///
+    /// * "26601..26611" means only use the 10 ports in the range [26601, 26610],
+    ///   including 26601 and 26610.
+    ///
+    /// This config is useful in environments where only a certain range of
+    /// ports are allowed to be used.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE".to_string()),
+        py_name: None,
+    })
+    pub attr REMOTE_ALLOC_ALLOWED_PORT_RANGE: Range<u16>;
 }
 
 /// Errors that occur during allocation operations.
@@ -517,6 +537,9 @@ impl AllocAssignedAddr {
                     set_as_inaddr_any(socket);
                     tracing::debug!("binding {} to INADDR_ANY", original_ip.as_ref().unwrap(),);
                 }
+                if socket.port() == 0 {
+                    socket.set_port(next_allowed_port(socket.ip().clone())?);
+                }
             }
             _ => {
                 if use_inaddr_any {
@@ -543,6 +566,56 @@ impl AllocAssignedAddr {
 
         Ok((bound, rx))
     }
+}
+
+enum AllowedPorts {
+    Config { range: Vec<u16>, next: AtomicUsize },
+    Any,
+}
+
+impl AllowedPorts {
+    fn next(&self, ip: IpAddr) -> anyhow::Result<u16> {
+        match self {
+            Self::Config { range, next } => {
+                let mut count = 0;
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    count += 1;
+                    // Since we do not have a good way to put release ports back to the list,
+                    // we opportunistically hope ports previously took already released. If
+                    // not, we'll just see error when binding to it later. This
+                    // is not much different from raising error here.
+                    let port = range.get(i % range.len()).cloned().unwrap();
+                    let socket = SocketAddr::new(ip, port);
+                    if TcpListener::bind(socket).is_ok() {
+                        tracing::debug!("taking port {port} from the allowed list",);
+                        return Ok(port);
+                    }
+                    if count == range.len() {
+                        anyhow::bail!(
+                            "fail to find a port because all ports in the allowed list are already bound"
+                        );
+                    }
+                }
+            }
+            Self::Any => Ok(0),
+        }
+    }
+}
+
+static ALLOWED_PORTS: OnceLock<Mutex<AllowedPorts>> = OnceLock::new();
+fn next_allowed_port(ip: IpAddr) -> anyhow::Result<u16> {
+    let mutex = ALLOWED_PORTS.get_or_init(|| {
+        let ports = match config::global::try_get_cloned(REMOTE_ALLOC_ALLOWED_PORT_RANGE) {
+            Some(range) => AllowedPorts::Config {
+                range: range.into_iter().collect(),
+                next: AtomicUsize::new(0),
+            },
+            None => AllowedPorts::Any,
+        };
+        Mutex::new(ports)
+    });
+    mutex.lock().unwrap().next(ip)
 }
 
 pub mod test_utils {

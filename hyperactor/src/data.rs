@@ -193,6 +193,12 @@ impl<T: Named + 'static, E: Named + 'static> Named for Result<T, E> {
     }
 }
 
+impl<T: Named + 'static> Named for std::ops::Range<T> {
+    fn typename() -> &'static str {
+        intern_typename!(Self, "std::ops::Range<{}>", T)
+    }
+}
+
 static SHAPE_CACHED_TYPEHASH: LazyLock<u64> =
     LazyLock::new(|| cityhasher::hash(<ndslice::shape::Shape as Named>::typename()));
 
