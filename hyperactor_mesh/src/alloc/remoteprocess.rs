@@ -58,7 +58,6 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::alloc::Alloc;
-use crate::alloc::AllocAssignedAddr;
 use crate::alloc::AllocConstraints;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
@@ -69,6 +68,8 @@ use crate::alloc::ProcessAllocator;
 use crate::alloc::REMOTE_ALLOC_BOOTSTRAP_ADDR;
 use crate::alloc::process::CLIENT_TRACE_ID_LABEL;
 use crate::alloc::process::ClientContext;
+use crate::alloc::serve_with_config;
+use crate::alloc::with_unspecified_port_or_any;
 use crate::shortuuid::ShortUuid;
 
 /// Control messages sent from remote process allocator to local allocator.
@@ -90,7 +91,7 @@ pub enum RemoteProcessAllocatorMessage {
         /// the client_context will go to the message header instead
         client_context: Option<ClientContext>,
         /// The address allocator should use for its forwarder.
-        forwarder_addr: AllocAssignedAddr,
+        forwarder_addr: ChannelAddr,
     },
     /// Stop allocation.
     Stop,
@@ -314,11 +315,11 @@ impl RemoteProcessAllocator {
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
         cancel_token: CancellationToken,
-        forwarder_addr: AllocAssignedAddr,
+        forwarder_addr: ChannelAddr,
     ) {
         tracing::info!("handle allocation request, bootstrap_addr: {bootstrap_addr}");
         // start proc message forwarder
-        let (forwarder_addr, forwarder_rx) = match forwarder_addr.serve_with_config() {
+        let (forwarder_addr, forwarder_rx) = match serve_with_config(forwarder_addr) {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("failed to to bootstrap forwarder actor: {}", e);
@@ -622,11 +623,11 @@ impl RemoteProcessAlloc {
         initializer: impl RemoteProcessAllocInitializer + Send + Sync + 'static,
     ) -> Result<Self, anyhow::Error> {
         let alloc_serve_addr = match config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
-            Some(addr_str) => AllocAssignedAddr::new(addr_str.parse()?),
-            None => AllocAssignedAddr::new(ChannelAddr::any(spec.transport.clone())),
+            Some(addr_str) => addr_str.parse()?,
+            None => ChannelAddr::any(spec.transport.clone()),
         };
 
-        let (bootstrap_addr, rx) = alloc_serve_addr.serve_with_config()?;
+        let (bootstrap_addr, rx) = serve_with_config(alloc_serve_addr)?;
 
         tracing::info!(
             "starting alloc for {} on: {}",
@@ -817,7 +818,7 @@ impl RemoteProcessAlloc {
                 // its host's private IP address, while its known addres to
                 // alloc is a public IP address. In some environment, that
                 // could lead to port unreachable error.
-                forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&remote_addr),
+                forwarder_addr: with_unspecified_port_or_any(&remote_addr),
             };
             tracing::info!(
                 name = message.as_ref(),
@@ -1200,8 +1201,8 @@ impl Alloc for RemoteProcessAlloc {
     /// one could lead to port unreachable error.
     ///
     /// For other channel types, this method still uses ChannelAddr::any.
-    fn client_router_addr(&self) -> AllocAssignedAddr {
-        AllocAssignedAddr::with_unspecified_port_or_any(&self.bootstrap_addr)
+    fn client_router_addr(&self) -> ChannelAddr {
+        with_unspecified_port_or_any(&self.bootstrap_addr)
     }
 }
 
@@ -1228,6 +1229,7 @@ mod test {
     use crate::alloc::MockAllocWrapper;
     use crate::alloc::MockAllocator;
     use crate::alloc::ProcStopReason;
+    use crate::alloc::with_unspecified_port_or_any;
     use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 
     async fn read_all_created(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
@@ -1364,7 +1366,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1518,7 +1520,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1623,7 +1625,7 @@ mod test {
             bootstrap_addr: bootstrap_addr.clone(),
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1648,7 +1650,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1746,7 +1748,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1838,7 +1840,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1933,7 +1935,7 @@ mod test {
             client_context: Some(ClientContext {
                 trace_id: test_trace_id.to_string(),
             }),
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -2008,7 +2010,7 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
+            forwarder_addr: with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
