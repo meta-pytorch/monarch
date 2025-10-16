@@ -28,7 +28,7 @@ from monarch import (
     Tensor,
 )
 
-from monarch._testing import BackendType, TestingContext
+from monarch._testing import TestingContext
 from monarch.common.controller_api import LogMessage
 from monarch.common.invocation import DeviceException
 from monarch.common.remote import remote
@@ -96,7 +96,6 @@ remote_sleep = remote("time.sleep", propagate="inspect")
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
-@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS, "mesh"])
 # Set global timeout--sandcastle's timeout is 600s. A test that sandcastle times
 # out is not counted as a failure, so we set a more restrictive timeout to
 # ensure we see a hard failure in CI.
@@ -107,19 +106,17 @@ class TestController:
         cls,
         N,
         gpu_per_host,
-        backend_type,
         activate=True,
     ):
         return local.local_device_mesh(
             N,
             gpu_per_host,
             activate,
-            backend=str(backend_type),
         )
 
-    def test_errors(self, backend_type):
+    def test_errors(self):
         t = torch.rand(3, 4)
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+        with self.local_device_mesh(2, 2) as device_mesh:
             y = torch.rand(3, 4)
             with pytest.raises(TypeError, match="LOCAL_TENSOR"):
                 t.add(y)
@@ -135,8 +132,8 @@ class TestController:
                 with other.activate():
                     t = t.reduce("host", "sum")
 
-    def test_sub_mesh(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_sub_mesh(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             h0 = device_mesh.slice(host=0)
             h1 = device_mesh.slice(host=1)
             with h0.activate():
@@ -145,8 +142,8 @@ class TestController:
                 _ = torch.rand(3, 4)
                 # Runs on a different mesh but should still work
 
-    def test_fetch_result_device(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_fetch_result_device(self):
+        with self.local_device_mesh(2, 2):
             on_gpu = torch.ones(2, 3, device="cuda")
             on_cpu = torch.ones(2, 3, device="cpu")
 
@@ -156,8 +153,8 @@ class TestController:
         assert on_gpu_local.device == torch.device("cpu")
         assert on_cpu_local.device == torch.device("cpu")
 
-    def test_dim1_mesh(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type, activate=False) as device_mesh:
+    def test_dim1_mesh(self):
+        with self.local_device_mesh(2, 2, activate=False) as device_mesh:
             mesh3d = device_mesh.split(host=("oh", "ih"), ih=1)
             with mesh3d.activate():
                 x = torch.ones(3, 4)
@@ -165,8 +162,8 @@ class TestController:
 
         assert torch.equal(local_x, torch.ones(3, 4))
 
-    def test_sub_mesh_use_only_one(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type, activate=False) as device_mesh:
+    def test_sub_mesh_use_only_one(self):
+        with self.local_device_mesh(2, 2, activate=False) as device_mesh:
             h0 = device_mesh.slice(host=0)
 
             with h0.activate():
@@ -176,8 +173,8 @@ class TestController:
             local_x = local_x.result(timeout=20)
             assert torch.equal(local_x, torch.ones(3, 4))
 
-    def test_sub_mesh_process_grop(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type, activate=False) as device_mesh:
+    def test_sub_mesh_process_grop(self):
+        with self.local_device_mesh(2, 2, activate=False) as device_mesh:
             h0 = device_mesh.slice(host=0)
             pg0 = h0.process_group(("gpu",))
             pg1 = h0.process_group(("gpu",))
@@ -185,8 +182,8 @@ class TestController:
             # the same in the backend?
             assert pg0 != pg1
 
-    def test_reduce(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_reduce(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             x = (
                 12 * 2 * device_mesh.rank("host")
                 + 12 * device_mesh.rank("gpu")
@@ -237,7 +234,7 @@ class TestController:
         assert torch.equal(rade_local, rad_expected)
 
         # test is run on 4 GPUs, can't have mesh with 3 non-trivial dimensions
-        with self.local_device_mesh(2, 2, backend_type, activate=False) as mesh2d:
+        with self.local_device_mesh(2, 2, activate=False) as mesh2d:
             device_mesh = mesh2d.split(host=("oh", "ih"), ih=1)
             with device_mesh.activate():
                 x = (
@@ -253,8 +250,8 @@ class TestController:
         assert torch.equal(y_local, y_expected)
         assert torch.equal(z_local, rad_expected.reshape(z_local.shape))
 
-    def test_reduce_out(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_reduce_out(self):
+        with self.local_device_mesh(2, 2):
             inp = torch.rand(2, 4, device="cuda")
             out_incorrect = torch.rand(2, 4, device="cuda")
             out = torch.rand(4, device="cuda")
@@ -278,8 +275,8 @@ class TestController:
             with no_mesh.activate():
                 assert torch.equal(local_out, local_reduce_out)
 
-    def test_fetch(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_fetch(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             h = device_mesh.rank("host")
             g = device_mesh.rank("gpu")
             for hi in range(2):
@@ -288,8 +285,8 @@ class TestController:
                     with no_mesh.activate():
                         assert (hi, gi) == (x.item(), y.item())
 
-    def test_mutate(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_mutate(self):
+        with self.local_device_mesh(2, 2):
             x = torch.rand(3, 4).cuda()
             x.abs_()
             s = Stream("other")
@@ -307,8 +304,8 @@ class TestController:
             # del b
             x.abs_()
 
-    def test_movement(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_movement(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             sm0 = device_mesh.slice(host=0)
             sm1 = device_mesh.slice(host=1)
 
@@ -322,8 +319,8 @@ class TestController:
             _ = b.to_mesh(sm0)
             _ = b.to_mesh(sm1)
 
-    def test_broadcast_one(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_broadcast_one(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             for dim in ("host", "gpu"):
                 subset = device_mesh.slice(**{dim: 1})
                 with subset.activate():
@@ -337,8 +334,8 @@ class TestController:
                 with no_mesh.activate():
                     assert torch.allclose(a.expand(2, -1), b, rtol=0, atol=0)
 
-    def test_broadcast_two(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_broadcast_two(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             subset = device_mesh.slice(host=1, gpu=1)
             with subset.activate():
                 x = torch.rand(3, device="cuda")
@@ -353,8 +350,8 @@ class TestController:
             with no_mesh.activate():
                 assert torch.allclose(a.expand(2, 2, -1), b, rtol=0, atol=0)
 
-    def test_autograd(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_autograd(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             x = torch.rand(3, 4, requires_grad=True)
             y = torch.rand(4, 3, requires_grad=True)
             z = torch.rand(3, requires_grad=True)
@@ -366,8 +363,8 @@ class TestController:
                     with device_mesh.activate():
                         fetch_shard(t).result()
 
-    def test_mesh_semantics(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_mesh_semantics(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             host0 = device_mesh.slice(host=0)
             host1 = device_mesh.slice(host=1)
             with host0.activate():
@@ -380,7 +377,7 @@ class TestController:
             y.cos()
             b.cos()
 
-    def test_autograd_multi_mesh(self, backend_type):
+    def test_autograd_multi_mesh(self):
         @grad_function
         def to_mesh(x: Tensor, mesh: DeviceMesh):
             omesh = x.mesh
@@ -391,7 +388,7 @@ class TestController:
 
             return x.to_mesh(mesh), backward
 
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+        with self.local_device_mesh(2, 2) as device_mesh:
             host0 = device_mesh.slice(host=0)
             host1 = device_mesh.slice(host=1)
             with host0.activate():
@@ -407,21 +404,21 @@ class TestController:
                 with r.mesh.activate():
                     print(fetch_shard(r).result())
 
-    def test_many(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_many(self):
+        with self.local_device_mesh(2, 2):
             x = torch.rand(3, 4)
             for _ in range(2048):
                 x = x + torch.rand(3, 4)
             fetch_shard(x).result()
 
-    def test_flattener(self, backend_type):
+    def test_flattener(self):
         e = (8, 9, {"a": 10, "b": 11})
         flatten = flattener(e)
         e2 = (0, 1, {"a": 2, "b": 3})
         assert [0, 1, 2, 3] == flatten(e2)
 
-    def test_torch_tensor(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type):
+    def test_torch_tensor(self):
+        with self.local_device_mesh(2, 2):
             t = torch.tensor([1, 2, 4])
             tc = torch.tensor([1, 2, 4], device="cuda")
             t2 = fetch_shard(t).result()
@@ -429,8 +426,8 @@ class TestController:
         assert torch.allclose(t2, torch.tensor([1, 2, 4]))
         assert torch.allclose(tc2, torch.tensor([1, 2, 4], device="cpu"))
 
-    def test_to_mesh_aliasing(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as mesh:
+    def test_to_mesh_aliasing(self):
+        with self.local_device_mesh(2, 2) as mesh:
             p2p_stream = Stream("p2p_stream")
 
             ppmesh = mesh.flatten("all").split(
@@ -458,17 +455,17 @@ class TestController:
                     monarch.inspect(y_on_mesh_1_default_stream)
                     y_borrow.drop()
 
-    def test_to_mesh_cow(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as mesh:
+    def test_to_mesh_cow(self):
+        with self.local_device_mesh(2, 2) as mesh:
             t = torch.zeros((), device="cuda")
             t2 = t.to_mesh(mesh)
             t.add_(1)
             assert monarch.inspect(t2).item() == 0
             assert monarch.inspect(t).item() == 1
 
-    def test_to_mesh_stream(self, backend_type):
+    def test_to_mesh_stream(self):
         other = monarch.Stream("other")
-        with self.local_device_mesh(2, 2, backend_type) as mesh:
+        with self.local_device_mesh(2, 2) as mesh:
             m0 = mesh.slice(host=0)
             m1 = mesh.slice(host=1)
             with m0.activate():
@@ -477,8 +474,8 @@ class TestController:
                 # assert doesn't fail
                 monarch.inspect(t2 + t2)
 
-    def test_dropped_trace(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as _:
+    def test_dropped_trace(self):
+        with self.local_device_mesh(2, 2) as _:
             x = torch.rand(4, 4).cuda()
             s = Stream("other")
             b, drop = s.borrow(x)
@@ -490,8 +487,8 @@ class TestController:
                 with pytest.raises(TypeError, match=pattern):
                     _ = b.abs()
 
-    def test_sub_mesh_reduce(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_sub_mesh_reduce(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             host1 = device_mesh.slice(host=1)
             with host1.activate():
                 myrank = (
@@ -503,12 +500,12 @@ class TestController:
 
         assert torch.equal(local_reduce, torch.ones(3, 4) * 11)
 
-    def test_size(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_size(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             assert device_mesh.size(["host", "gpu"]) == 4
 
-    def test_random_state(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_random_state(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             monarch.random.make_deterministic()
             for device in ("cpu", "cuda"):
                 a = monarch.random.get_state()
@@ -538,13 +535,13 @@ class TestController:
                     assert torch.allclose(r2, r3, atol=0, rtol=0)
                     assert not torch.allclose(r2, f, atol=0, rtol=0)
 
-    def test_torch_op_with_optional_tensors(self, backend_type):
+    def test_torch_op_with_optional_tensors(self):
         """
         This test ensures that for torch ops like LayerNorm, which allow for
         optional tensor arguments, the controller serializes monarch tensors
         correctly as Refs instead of as IValues.
         """
-        with self.local_device_mesh(2, 2, backend_type):
+        with self.local_device_mesh(2, 2):
             x = torch.rand(3, 4, device="cuda")
             # When bias and elementwise_affine are true, extra tensors are passed through optional
             # fields inside LayerNorm. When they are false, None is passed to the same optional fields.
@@ -558,8 +555,8 @@ class TestController:
             monarch.inspect(layer_norm_with_vals(x))
             monarch.inspect(layer_norm_with_none(x))
 
-    def test_reduce_pytree(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_reduce_pytree(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             a = device_mesh.rank(("gpu", "host")) + torch.zeros((1,), device="cuda")
             b = device_mesh.rank(("gpu", "host")) + torch.ones((1,), device="cuda")
 
@@ -578,8 +575,8 @@ class TestController:
         assert torch.equal(reduced_a, torch.tensor([24.0]))
         assert torch.equal(reduced_b, torch.tensor([40.0]))
 
-    def test_to_mesh_pytree(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_to_mesh_pytree(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             host0 = device_mesh.slice(host=0)
             host1 = device_mesh.slice(host=1)
 
@@ -602,17 +599,15 @@ class TestController:
         assert torch.equal(moved_tensor_a, torch.tensor([1.0]))
         assert torch.equal(moved_tensor_b, torch.tensor([2.0]))
 
-    def test_hanging_error(self, backend_type):
-        if backend_type != "mesh":
-            pytest.skip("only relevant for mesh backend")
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_hanging_error(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             remote(lambda: torch.rand(3) + torch.rand(4), propagate=lambda: None)()
 
             with pytest.raises(Exception, match="The size of tensor"):
                 device_mesh.client.shutdown()
 
-    def test_slice_mesh_pytree(self, backend_type):
-        with self.local_device_mesh(2, 2, backend_type) as device_mesh:
+    def test_slice_mesh_pytree(self):
+        with self.local_device_mesh(2, 2) as device_mesh:
             a = device_mesh.rank(("host")) + torch.zeros((1,), device="cuda")
             b = device_mesh.rank(("host")) + torch.ones((1,), device="cuda")
 

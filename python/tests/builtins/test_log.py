@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from monarch._testing import BackendType, TestingContext
+from monarch._testing import TestingContext
 from monarch.builtins.log import log_remote, set_logging_level_remote
 
 
@@ -22,42 +22,40 @@ def testing_context():
 
 
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize("backend_type", [BackendType.PY, BackendType.RS])
 class TestLogFunctions:
     @classmethod
-    def local_device_mesh(cls, num_hosts, gpu_per_host, backend_type, activate=True):
+    def local_device_mesh(cls, num_hosts, gpu_per_host, activate=True):
         return local.local_device_mesh(
             num_hosts,
             gpu_per_host,
             activate,
-            backend=str(backend_type),
         )
 
     @patch("monarch.builtins.log.logger")
-    def test_log_remote_default_level(self, mock_log, backend_type):
-        with self.local_device_mesh(1, 1, backend_type):
+    def test_log_remote_default_level(self, mock_log):
+        with self.local_device_mesh(1, 1):
             log_remote("test warning message")
 
     @patch("monarch.builtins.log.logger")
-    def test_log_remote_with_args(self, mock_log, backend_type):
-        with self.local_device_mesh(1, 1, backend_type):
+    def test_log_remote_with_args(self, mock_log):
+        with self.local_device_mesh(1, 1):
             log_remote("test message with %s and %d", "str", 42)
 
     @patch("monarch.builtins.log.logger")
-    def test_set_logging_level_remote(self, mock_logger, backend_type):
-        with self.local_device_mesh(1, 1, backend_type):
+    def test_set_logging_level_remote(self, mock_logger):
+        with self.local_device_mesh(1, 1):
             set_logging_level_remote(logging.DEBUG)
 
     @patch("monarch.builtins.log.logger")
-    def test_log_remote_custom_level(self, mock_log, backend_type):
-        with self.local_device_mesh(1, 1, backend_type):
+    def test_log_remote_custom_level(self, mock_log):
+        with self.local_device_mesh(1, 1):
             set_logging_level_remote(logging.ERROR)
             log_remote("ignored info message", level=logging.INFO)
             log_remote("seen error message", level=logging.ERROR)
 
     @patch("monarch.builtins.log.logger")
-    def test_log_remote_multiple_calls(self, mock_log, backend_type):
-        with self.local_device_mesh(1, 1, backend_type):
+    def test_log_remote_multiple_calls(self, mock_log):
+        with self.local_device_mesh(1, 1):
             log_remote("First message")
             log_remote("Second message", level=logging.INFO)
             log_remote("Third message", level=logging.ERROR)

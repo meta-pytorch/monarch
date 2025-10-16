@@ -24,14 +24,8 @@ from monarch.common.invocation import DeviceException, RemoteException
 from monarch.controller.backend import ProcessBackend
 from monarch.mesh_controller import spawn_tensor_engine
 from monarch.python_local_mesh import PythonLocalContext
-from monarch.rust_local_mesh import (
-    local_mesh,
-    LoggingLocation,
-    ProcessCache,
-    SocketType,
-)
+from monarch.rust_local_mesh import LoggingLocation, ProcessCache
 from monarch.simulator.mock_controller import MockController
-from monarch.world_mesh import world_mesh
 
 
 class TestingContext:
@@ -80,55 +74,6 @@ class TestingContext:
         return self._py_process_cache[key]
 
     @contextmanager
-    def local_py_device_mesh(
-        self,
-        num_hosts,
-        gpu_per_host,
-    ) -> Generator[DeviceMesh, None, None]:
-        ctx, hosts, processes = self._processes(num_hosts, gpu_per_host)
-        dm = world_mesh(ctx, hosts, gpu_per_host, _processes=processes)
-        try:
-            yield dm
-            dm.client.shutdown(destroy_pg=False)
-        except Exception:
-            # abnormal exit, so we just make sure we do not try to communicate in destructors,
-            # but we do notn wait for workers to exit since we do not know what state they are in.
-            dm.client._shutdown = True
-            raise
-
-    @contextmanager
-    def local_rust_device_mesh(
-        self,
-        num_hosts,
-        gpu_per_host,
-        controller_params=None,
-    ) -> Generator[DeviceMesh, None, None]:
-        # Create a new system and mesh for test.
-        with local_mesh(
-            hosts=num_hosts,
-            gpus_per_host=gpu_per_host,
-            socket_type=SocketType.UNIX,
-            logging_location=LoggingLocation.DEFAULT,
-            system_factory=self._rust_process_cache.get_system_server(),
-            controller_factory=self._rust_process_cache.get_controller_server(),
-            worker_factory=self._rust_process_cache.get_worker_servers(
-                num_worker_procs=num_hosts * gpu_per_host,
-                gpus_per_host=gpu_per_host,
-            ),
-            controller_params=controller_params,
-        ) as dm:
-            try:
-                yield dm
-                dm.exit()
-            except Exception:
-                dm.client._shutdown = True
-                raise
-            finally:
-                # Shutdown the system.
-                # pyre-ignore: Undefined attribute
-                dm.client.inner._actor.stop()
-
-    @contextmanager
     def local_engine_on_proc_mesh(
         self,
         num_hosts,
@@ -149,7 +94,7 @@ class TestingContext:
         try:
             yield dm
             dm.exit()
-        except Exception as e:
+        except Exception:
             # abnormal exit, so we just make sure we do not try to communicate in destructors,
             # but we do notn wait for workers to exit since we do not know what state they are in.
             dm.client._shutdown = True
@@ -165,16 +110,7 @@ class TestingContext:
         controller_params=None,
     ) -> Generator[DeviceMesh, None, None]:
         start = time.time()
-        if backend == "rs":
-            generator = self.local_rust_device_mesh(
-                num_hosts, gpu_per_host, controller_params=controller_params
-            )
-        elif backend == "py":
-            generator = self.local_py_device_mesh(num_hosts, gpu_per_host)
-        elif backend == "mesh":
-            generator = self.local_engine_on_proc_mesh(num_hosts, gpu_per_host)
-        else:
-            raise ValueError(f"invalid backend: {backend}")
+        generator = self.local_engine_on_proc_mesh(num_hosts, gpu_per_host)
         with generator as dm:
             end = time.time()
             logging.info("initialized mesh in {:.2f}s".format(end - start))
@@ -230,9 +166,3 @@ def mock_mesh(hosts: int, gpus: int):
 
     dm.exit = create_exit(client)
     return dm
-
-
-class BackendType:
-    PY = "py"
-    RS = "rs"
-    MESH = "mesh"
