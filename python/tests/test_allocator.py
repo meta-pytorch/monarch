@@ -45,7 +45,6 @@ from monarch._src.actor.allocator import (
 from monarch._src.actor.host_mesh import HostMesh
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch._src.actor.sync_state import fake_sync_state
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.actor import Actor, current_rank, current_size, endpoint, ValueMesh
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
 from monarch.tools.network import get_sockaddr
@@ -63,13 +62,9 @@ def proc_mesh_from_alloc(
     setup: Optional[Callable[[], None]] = None,
     constraints: Optional[AllocConstraints] = None,
 ) -> ProcMesh:
-    if not v1_enabled:
-        alloc = allocator.allocate(spec)
-        return ProcMesh.from_alloc(alloc, setup)
-    else:
-        return HostMesh.allocate_nonblocking(
-            "hosts", Extent(*zip(*list(spec.extent.items()))), allocator, constraints
-        ).spawn_procs(bootstrap=setup)
+    return HostMesh.allocate_nonblocking(
+        "hosts", Extent(*zip(*list(spec.extent.items()))), allocator, constraints
+    ).spawn_procs(bootstrap=setup)
 
 
 class EnvCheckActor(Actor):
@@ -264,15 +259,12 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 )
                 alloc = allocator.allocate(spec)
                 await alloc.initialized
-                if not v1_enabled:
-                    pm = ProcMesh.from_alloc(alloc)
-                else:
-                    pm = HostMesh.allocate_nonblocking(
-                        "hosts",
-                        Extent(*zip(*list(spec.extent.items()))),
-                        allocator,
-                        AllocConstraints(),
-                    ).spawn_procs()
+                pm = HostMesh.allocate_nonblocking(
+                    "hosts",
+                    Extent(*zip(*list(spec.extent.items()))),
+                    allocator,
+                    AllocConstraints(),
+                ).spawn_procs()
                 await pm.initialized
 
     async def test_call_allocate_twice(self) -> None:
@@ -347,7 +339,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
             self.assert_computed_world_size(values, world_size)
 
-    @pytest.mark.skipif(v1_enabled, reason="stop proc mesh not supported yet in v1")
+    @pytest.mark.skip("stop proc mesh not supported yet in v1")
     async def test_stop_proc_mesh_blocking(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
@@ -413,7 +405,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             ):
                 await actor_mesh.dummy.call()
 
-    @pytest.mark.skipif(v1_enabled, reason="stop proc mesh not supported yet in v1")
+    @pytest.mark.skip("stop proc mesh not supported yet in v1")
     async def test_stop_proc_mesh(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
 
@@ -438,7 +430,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # now we doing casting without accessing the wrapped type.
             del actor
 
-    @pytest.mark.skipif(v1_enabled, reason="stop proc mesh not supported yet in v1")
+    @pytest.mark.skip("stop proc mesh not supported yet in v1")
     async def test_stop_proc_mesh_context_manager(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
 
@@ -498,7 +490,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             finally:
                 await proc_mesh.stop()
 
-    @pytest.mark.skipif(v1_enabled, reason="stop proc mesh not supported yet in v1")
+    @pytest.mark.skip("stop proc mesh not supported yet in v1")
     async def test_stop_proc_mesh_context_manager_multiple_times(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
 
@@ -615,7 +607,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
     # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
     @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
-    @pytest.mark.skipif(v1_enabled, reason="broken on v0 as well")
+    @pytest.mark.skip("broken")
     async def test_torchx_remote_alloc_initializer_no_match_label_1_mesh(self) -> None:
         server = ServerSpec(
             name=UNUSED,
@@ -648,7 +640,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
     # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
     @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
-    @pytest.mark.skipif(v1_enabled, reason="broken on v0 as well")
+    @pytest.mark.skip("broken")
     async def test_torchx_remote_alloc_initializer_with_match_label(self) -> None:
         server = ServerSpec(
             name=UNUSED,

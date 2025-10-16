@@ -30,21 +30,16 @@ from monarch._src.actor.allocator import (
 from monarch._src.actor.host_mesh import HostMesh
 
 from monarch._src.actor.proc_mesh import ProcMesh
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.tools.config.workspace import Workspace
 
 
 def code_sync_mesh(allocator: AllocateMixin, spec: AllocSpec) -> ProcMesh | HostMesh:
-    if not v1_enabled:
-        alloc = allocator.allocate(spec)
-        return ProcMesh.from_alloc(alloc, None, True)
-    else:
-        return HostMesh.allocate_nonblocking(
-            "hosts",
-            Extent(*zip(*list(spec.extent.items()))),
-            allocator,
-            AllocConstraints(),
-        )
+    return HostMesh.allocate_nonblocking(
+        "hosts",
+        Extent(*zip(*list(spec.extent.items()))),
+        allocator,
+        AllocConstraints(),
+    )
 
 
 @contextlib.contextmanager
@@ -107,8 +102,13 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
                 world_id="test_sync_workspace",
                 initializer=StaticRemoteAllocInitializer(host),
             )
-            spec = AllocSpec(AllocConstraints(), hosts=1, gpus=1)
-            mesh = code_sync_mesh(allocator, spec)
+
+            mesh = HostMesh.allocate_nonblocking(
+                "hosts",
+                Extent(["hosts", "gpus"], [1, 1]),
+                allocator,
+                AllocConstraints(),
+            )
 
             # local workspace dir is empty & remote workspace dir hasn't been primed yet
             self.assertFalse(remote_workspace_dir.is_dir())

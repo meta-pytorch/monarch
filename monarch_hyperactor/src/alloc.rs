@@ -164,6 +164,11 @@ impl PyAllocConstraints {
 
         Ok(Self { inner: constraints })
     }
+
+    #[getter]
+    fn match_labels(&self) -> PyResult<HashMap<String, String>> {
+        Ok(self.inner.match_labels.clone())
+    }
 }
 
 #[pyclass(
@@ -217,6 +222,7 @@ impl PyAllocSpec {
             transport: None,
         })
     }
+
     #[getter]
     fn extent<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
@@ -224,6 +230,13 @@ impl PyAllocSpec {
             d.set_item(name, size)?;
         }
         Ok(d)
+    }
+
+    #[getter]
+    fn constraints(&self) -> PyResult<PyAllocConstraints> {
+        Ok(PyAllocConstraints {
+            inner: self.inner.constraints.clone(),
+        })
     }
 }
 

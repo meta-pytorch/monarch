@@ -19,7 +19,6 @@ except ModuleNotFoundError:
     from unittest import TestCase
 
 from monarch import fetch_shard, no_mesh, remote
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.common.device_mesh import DeviceMesh, DeviceMeshStatus
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.rust_backend_mesh import MeshWorld, PoolDeviceMeshProvider
@@ -30,12 +29,6 @@ from monarch.rust_local_mesh import (
     LoggingLocation,
     SocketType,
     SupervisionParams,
-)
-
-
-pytestmark = pytest.mark.skipif(
-    not v1_enabled,
-    reason="uses deprecated system actor, so might as well only run on v1",
 )
 
 

@@ -8,15 +8,8 @@
 
 from unittest import TestCase
 
-import pytest
-
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import ValueMesh
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
-    not v1_enabled, reason="no dep on v0/v1, so only run on v1"
-)
 
 
 class TestValueMesh(TestCase):

@@ -8,14 +8,7 @@
 
 from typing import Iterable
 
-import pytest
-
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape, Slice
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-pytestmark = pytest.mark.skipif(
-    not v1_enabled, reason="no dep on v0/v1, so only run with v1"
-)
 
 
 class Mesh(MeshTrait):

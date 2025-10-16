@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import logging
 import os
 import pickle
@@ -13,9 +15,7 @@ import subprocess
 import sys
 import tempfile
 from abc import ABC, abstractmethod
-from typing import cast, Dict, List, Literal, NamedTuple, Optional, Sequence
-
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from typing import Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._src.actor.bootstrap import attach_to_workers
 
@@ -382,13 +382,10 @@ class LoginJob(JobTrait):
         if not self._pids_active():
             raise RuntimeError("lost connection")
         hosts = {
-            name: cast(
-                "HostMesh",
-                attach_to_workers(
-                    name=name,
-                    ca="trust_all_connections",
-                    workers=[self._host_to_pid[v].channel for v in values],
-                ),
+            name: attach_to_workers(
+                name=name,
+                ca="trust_all_connections",
+                workers=[self._host_to_pid[v].channel for v in values],
             )
             for name, values in self._meshes.items()
         }

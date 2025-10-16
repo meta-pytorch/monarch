@@ -7,4 +7,4 @@
 # pyre-unsafe
 import os
 
-enabled = os.environ.get("MONARCH_HOST_MESH_V1_REMOVE_ME_BEFORE_RELEASE", "0") != "0"
+enabled = os.environ.get("MONARCH_V0_WORKAROUND_DO_NOT_USE", "0") != "1"

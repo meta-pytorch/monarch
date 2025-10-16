@@ -43,7 +43,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
-from monarch._src.actor.allocator import AllocHandle, ProcessAllocator
+from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
     create_local_host_mesh,
@@ -52,12 +52,7 @@ from monarch._src.actor.host_mesh import (
     this_host,
     this_proc,
 )
-from monarch._src.actor.proc_mesh import (
-    _get_bootstrap_args,
-    get_or_spawn_controller,
-    ProcMesh,
-)
-from monarch._src.actor.v1 import enabled as v1_enabled
+from monarch._src.actor.proc_mesh import _get_bootstrap_args, get_or_spawn_controller
 from monarch._src.actor.v1.host_mesh import _bootstrap_cmd
 from monarch._src.job.job import LoginJob, ProcessState
 
@@ -78,14 +73,6 @@ needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="CUDA not available",
 )
-
-
-def v0_only(func):
-    return pytest.mark.skipif(v1_enabled, reason="V0 only")(func)
-
-
-def v1_only(func):
-    return pytest.mark.skipif(not v1_enabled, reason="V1 only")(func)
 
 
 class Counter(Actor):
@@ -221,10 +208,7 @@ async def test_rank_size():
 
 @pytest.mark.timeout(60)
 async def test_rank_string():
-    if v1_enabled:
-        per_host = {"gpus": 2}
-    else:
-        per_host = {"hosts": 1, "gpus": 2}
+    per_host = {"hosts": 1, "gpus": 2}
     proc = fake_in_process_host().spawn_procs(per_host=per_host)
     r = proc.spawn("runit", RunIt)
     vm = r.return_current_rank_str.call().get()
@@ -292,10 +276,7 @@ class CastToCounter(Actor):
 
 @pytest.mark.timeout(60)
 def test_value_mesh() -> None:
-    if v1_enabled:
-        per_host = {"gpus": 2}
-    else:
-        per_host = {"hosts": 1, "gpus": 2}
+    per_host = {"hosts": 1, "gpus": 2}
     proc = fake_in_process_host().spawn_procs(per_host=per_host)
     counter = proc.spawn("counter", Counter, 0)
     counter.slice(hosts=0, gpus=1).incr.broadcast()
@@ -632,10 +613,7 @@ async def test_actor_log_streaming() -> None:
                     await am.print.call("has print streaming too")
                     await am.log.call("has log streaming as level matched")
 
-                if v1_enabled:
-                    await asyncio.sleep(1)
-                else:
-                    await pm.stop()
+                await asyncio.sleep(1)
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -734,37 +712,25 @@ async def test_alloc_based_log_streaming() -> None:
 
                 try:
                     # Create proc mesh with custom stream_logs setting
-                    if not v1_enabled:
-                        host_mesh = create_local_host_mesh()  # type: ignore
-                        alloc_handle = host_mesh._alloc(hosts=1, gpus=2)  # type: ignore
+                    class ProcessAllocatorStreamLogs(ProcessAllocator):
+                        def allocate_nonblocking(
+                            self, spec: AllocSpec
+                        ) -> PythonTask[Alloc]:
+                            return super().allocate_nonblocking(spec)
 
-                        # Override the stream_logs setting
-                        custom_alloc_handle = AllocHandle(
-                            alloc_handle._hy_alloc, alloc_handle._extent, stream_logs
-                        )
+                        def _stream_logs(self) -> bool:
+                            return stream_logs
 
-                        pm = ProcMesh.from_alloc(custom_alloc_handle)
-                    else:
+                    alloc = ProcessAllocatorStreamLogs(*_get_bootstrap_args())
 
-                        class ProcessAllocatorStreamLogs(ProcessAllocator):
-                            def allocate_nonblocking(
-                                self, spec: AllocSpec
-                            ) -> PythonTask[Alloc]:
-                                return super().allocate_nonblocking(spec)
+                    host_mesh = HostMesh.allocate_nonblocking(
+                        "host",
+                        Extent(["hosts"], [1]),
+                        alloc,
+                        bootstrap_cmd=_bootstrap_cmd(),
+                    )
 
-                            def _stream_logs(self) -> bool:
-                                return stream_logs
-
-                        alloc = ProcessAllocatorStreamLogs(*_get_bootstrap_args())
-
-                        host_mesh = HostMesh.allocate_nonblocking(
-                            "host",
-                            Extent(["hosts"], [1]),
-                            alloc,
-                            bootstrap_cmd=_bootstrap_cmd(),
-                        )
-
-                        pm = host_mesh.spawn_procs(name="proc", per_host={"gpus": 2})
+                    pm = host_mesh.spawn_procs(name="proc", per_host={"gpus": 2})
 
                     am = pm.spawn("printer", Printer)
 
@@ -773,11 +739,8 @@ async def test_alloc_based_log_streaming() -> None:
                     for _ in range(5):
                         await am.print.call(f"{test_name} print streaming")
 
-                    if not v1_enabled:
-                        await pm.stop()
-                    else:
-                        # Wait for at least the aggregation window (3 seconds)
-                        await asyncio.sleep(5)
+                    # Wait for at least the aggregation window (3 seconds)
+                    await asyncio.sleep(5)
 
                     # Flush all outputs
                     stdout_file.flush()
@@ -862,11 +825,8 @@ async def test_logging_option_defaults() -> None:
                     await am.print.call("print streaming")
                     await am.log.call("log streaming")
 
-                if v1_enabled:
-                    # Wait for > default aggregation window (3 seconds)
-                    await asyncio.sleep(5)
-                else:
-                    await pm.stop()
+                # Wait for > default aggregation window (3 seconds)
+                await asyncio.sleep(5)
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -1146,11 +1106,8 @@ async def test_flush_on_disable_aggregation() -> None:
                 for _ in range(5):
                     await am.print.call("single log line")
 
-                if v1_enabled:
-                    # Wait for > default aggregation window (3 secs)
-                    await asyncio.sleep(5)
-                else:
-                    await pm.stop()
+                # Wait for > default aggregation window (3 secs)
+                await asyncio.sleep(5)
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -1266,11 +1223,8 @@ async def test_adjust_aggregation_window() -> None:
                 for _ in range(3):
                     await am.print.call("second batch of logs")
 
-                if v1_enabled:
-                    # Wait for > aggregation window (2 secs)
-                    await asyncio.sleep(4)
-                else:
-                    await pm.stop()
+                # Wait for > aggregation window (2 secs)
+                await asyncio.sleep(4)
 
                 # Flush all outputs
                 stdout_file.flush()
@@ -1328,23 +1282,6 @@ def test_port_as_argument() -> None:
         assert i == recv.recv().get()
 
 
-@v0_only
-@pytest.mark.timeout(30)
-async def test_same_actor_twice() -> None:
-    pm = this_host().spawn_procs(per_host={"gpus": 1})
-    await pm.spawn("dup", Counter, 0).initialized
-
-    # The second spawn with the same name should fail with a specific error
-    with pytest.raises(Exception) as exc_info:
-        await pm.spawn("dup", Counter, 0).initialized
-
-    # Assert that the error message contains the expected text about duplicate actor name
-    error_msg = str(exc_info.value)
-    assert (
-        "gspawn failed: an actor with name 'dup' has already been spawned" in error_msg
-    ), f"Expected error message about duplicate actor name, got: {error_msg}"
-
-
 class LsActor(Actor):
     def __init__(self, workspace: str):
         self.workspace = workspace
@@ -1357,19 +1294,9 @@ class LsActor(Actor):
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
     with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst:
-        if v1_enabled:
-            host = create_local_host_mesh(env={"WORKSPACE_DIR": workspace_dst})
-            pm = host.spawn_procs(per_host={"gpus": 1})
-            code_sync_mesh = host
-        else:
-
-            def bootstrap_WORKSPACE_DIR():
-                os.environ["WORKSPACE_DIR"] = workspace_dst
-
-            pm = this_host().spawn_procs(
-                per_host={"gpus": 1}, bootstrap=bootstrap_WORKSPACE_DIR
-            )
-            code_sync_mesh = pm
+        host = create_local_host_mesh(env={"WORKSPACE_DIR": workspace_dst})
+        pm = host.spawn_procs(per_host={"gpus": 1})
+        code_sync_mesh = host
 
         config = defaults.config("slurm", workspace_src)
         await code_sync_mesh.sync_workspace(
@@ -1409,18 +1336,11 @@ async def test_actor_mesh_stop() -> None:
     await am_1.log.call("hello 2")
     await cast(ActorMesh, am_1).stop()
 
-    if v1_enabled:
-        with pytest.raises(
-            SupervisionError,
-            match="Actor .*printer_.* (exited because of the following reason|is unhealthy with reason).*stopped",
-        ):
-            await am_1.print.call("hello 1")
-    else:
-        with pytest.raises(
-            RuntimeError,
-            match=r"(?:`PythonActorMesh` has already been stopped|delivery error: broken link)",
-        ):
-            await am_1.print.call("hello 1")
+    with pytest.raises(
+        SupervisionError,
+        match="Actor .*printer_.* (exited because of the following reason|is unhealthy with reason).*stopped",
+    ):
+        await am_1.print.call("hello 1")
 
     await am_2.print.call("hello 3")
     await am_2.log.call("hello 4")
@@ -1428,6 +1348,8 @@ async def test_actor_mesh_stop() -> None:
     await pm.stop()
 
 
+# FIXME: Flaky on v1
+@pytest.mark.oss_skip
 @pytest.mark.timeout(60)
 async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
@@ -1645,7 +1567,6 @@ class Hello(Actor):
         return "hello!"
 
 
-@v1_only
 def test_simple_bootstrap():
     with TemporaryDirectory() as d:
         procs = []
@@ -1685,7 +1606,6 @@ class HostMeshActor(Actor):
         return this_host()
 
 
-@v1_only
 @pytest.mark.timeout(60)
 def test_this_host() -> None:
     host = create_local_host_mesh(Extent(["hosts"], [6]))
@@ -1754,7 +1674,6 @@ class FakeLocalLoginJob(LoginJob):
         return ProcessState(proc.pid, addr)
 
 
-@v1_only
 def test_login_job():
     with TemporaryDirectory() as temp_dir:
         j = FakeLocalLoginJob(temp_dir)

@@ -13,7 +13,6 @@ import time
 from typing import Any, Callable, Coroutine
 
 import monarch
-import pytest
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
     AllocConstraints,
@@ -24,12 +23,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor.pickle import flatten, unflatten
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-
-pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
-    not v1_enabled, reason="v0 tested even when v1 enabled"
-)
 
 
 class MyActor:

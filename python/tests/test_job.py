@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import os
 import subprocess
 import sys
@@ -11,15 +13,11 @@ import tempfile
 from typing import cast, Dict, Optional, Sequence
 
 import pytest
-from monarch._src.actor.v1 import enabled as v1_enabled
 
 # Import directly from _src since job module isn't properly exposed
 from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
 
 from monarch.actor import HostMesh
-
-
-pytestmark = pytest.mark.skipif(not v1_enabled, reason="not relevant for v0")
 
 
 class MockJobTrait(JobTrait):

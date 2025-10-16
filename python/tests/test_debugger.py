@@ -55,7 +55,6 @@ from monarch._src.actor.proc_mesh import (
     ProcMesh,
 )
 from monarch._src.actor.source_loader import SourceLoaderController
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
@@ -71,12 +70,9 @@ def proc_mesh(
     gpus: int = 1,
     hosts: int = 1,
 ) -> ProcMesh:
-    if v1_enabled:
-        return create_local_host_mesh(extent=Extent(["hosts"], [hosts])).spawn_procs(
-            per_host={"gpus": gpus}
-        )
-    else:
-        return proc_mesh_v0(gpus=gpus, hosts=hosts)  # type: ignore
+    return create_local_host_mesh(extent=Extent(["hosts"], [hosts])).spawn_procs(
+        per_host={"gpus": gpus}
+    )
 
 
 needs_cuda = pytest.mark.skipif(
@@ -229,9 +225,6 @@ async def _test_debug(nested: bool) -> None:
     if not nested:
         proc = proc_mesh(hosts=2, gpus=2)
         debugee = proc.spawn("debugee", DebugeeActor)
-    elif not v1_enabled:
-        # Nested debugging is not supported in v0
-        return
     else:
         proc = create_local_host_mesh(extent=Extent(["hosts"], [1])).spawn_procs()
         debugee = proc.spawn("debugee", DebugeeActor).nested.choose().get()

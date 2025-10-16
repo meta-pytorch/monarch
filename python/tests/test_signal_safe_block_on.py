@@ -23,12 +23,6 @@ import time
 import unittest
 
 import pytest
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-
-pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
-    not v1_enabled, reason="no dep on v0/v1, so only run on v1"
-)
 
 
 # oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited

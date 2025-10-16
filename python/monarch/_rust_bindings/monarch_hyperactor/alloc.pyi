@@ -40,6 +40,13 @@ class AllocConstraints:
         """
         ...
 
+    @property
+    def match_labels(self) -> dict[str, str]:
+        """
+        The labels to match.
+        """
+        ...
+
 @final
 class AllocSpec:
     def __init__(self, constraints: AllocConstraints, **kwargs: int) -> None:
@@ -55,6 +62,13 @@ class AllocSpec:
     def extent(self) -> Dict[str, int]:
         """
         Size of requested alloc.
+        """
+        ...
+
+    @property
+    def constraints(self) -> AllocConstraints:
+        """
+        The AllocConstraints used to create this AllocSpec.
         """
         ...
 

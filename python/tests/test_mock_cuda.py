@@ -9,11 +9,6 @@ from unittest import main, TestCase
 
 import pytest
 import torch
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-pytestmark = pytest.mark.skipif(
-    not v1_enabled, reason="no dep on v0/v1, so only run with v1"
-)
 
 
 # Avoid importing if the test is not run.

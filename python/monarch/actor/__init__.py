@@ -11,6 +11,8 @@ Monarch Actor API - Public interface for actor functionality.
 
 from typing import TYPE_CHECKING
 
+from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import (
     Accumulator,
@@ -36,11 +38,24 @@ from monarch._src.actor.debugger.debug_controller import debug_controller
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 
-from monarch._src.actor.proc_mesh import local_proc_mesh, proc_mesh, sim_proc_mesh
-
 from monarch._src.actor.v1 import enabled as v1_enabled
 
-if not v1_enabled or TYPE_CHECKING:
+
+if v1_enabled or TYPE_CHECKING:
+    from monarch._src.actor.v1.host_mesh import (
+        HostMesh,
+        hosts_from_config,
+        this_host,
+        this_proc,
+    )
+    from monarch._src.actor.v1.proc_mesh import (
+        get_or_spawn_controller,
+        local_proc_mesh,
+        proc_mesh,
+        ProcMesh,
+        sim_proc_mesh,
+    )
+else:
     from monarch._src.actor.host_mesh import (
         HostMeshV0 as HostMesh,
         hosts_from_config_v0 as hosts_from_config,
@@ -49,16 +64,11 @@ if not v1_enabled or TYPE_CHECKING:
     )
     from monarch._src.actor.proc_mesh import (
         get_or_spawn_controller_v0 as get_or_spawn_controller,
+        local_proc_mesh_v0 as local_proc_mesh,
+        proc_mesh_v0 as proc_mesh,
         ProcMeshV0 as ProcMesh,
+        sim_proc_mesh_v0 as sim_proc_mesh,
     )
-else:
-    from monarch._src.actor.v1.host_mesh import (
-        HostMesh,
-        hosts_from_config,
-        this_host,
-        this_proc,
-    )
-    from monarch._src.actor.v1.proc_mesh import get_or_spawn_controller, ProcMesh
 
 
 __all__ = [

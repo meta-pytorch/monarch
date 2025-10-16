@@ -13,6 +13,7 @@ from typing import Dict, final, Literal, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
+    AllocConstraints,
     AllocSpec,
     LocalAllocatorBase,
     ProcessAllocatorBase,
@@ -34,6 +35,8 @@ class AllocHandle:
     _hy_alloc: "Shared[Alloc]"
     _extent: Dict[str, int]
     _stream_logs: bool
+    _allocator: "AllocateMixin"
+    _constraints: AllocConstraints
 
     def reshape(self, extent: Dict[str, int]) -> "AllocHandle":
         async def task() -> Alloc:
@@ -41,7 +44,11 @@ class AllocHandle:
             return alloc.reshape(extent)
 
         return AllocHandle(
-            PythonTask.from_coroutine(task()).spawn(), extent, self._stream_logs
+            PythonTask.from_coroutine(task()).spawn(),
+            extent,
+            self._stream_logs,
+            self._allocator,
+            self._constraints,
         )
 
     @property
@@ -85,6 +92,8 @@ class AllocateMixin(abc.ABC):
             self.allocate_nonblocking(spec).spawn(),
             spec.extent,
             self._stream_logs(),
+            self,
+            spec.constraints,
         )
 
     @abc.abstractmethod

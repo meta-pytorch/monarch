@@ -27,16 +27,10 @@ from monarch import (
     remote,
     Stream,
 )
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch._testing import TestingContext
 from monarch.common._coalescing import _record_and_define, compile
 from monarch.common.function_caching import AliasOf, Storage, TensorGroup
 from monarch.common.tensor import Tensor
-
-
-pytestmark = pytest.mark.skipif(
-    not v1_enabled, reason="no dep on tensor engine, so might as well only run on v1"
-)
 
 
 def _do_bogus_tensor_work(x, y, fail_rank=None):

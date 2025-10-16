@@ -17,17 +17,13 @@ from monarch._src.actor.host_mesh import (
     HostMesh,
 )
 from monarch._src.actor.pickle import flatten, unflatten
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-
-pytestmark = pytest.mark.skipif(not v1_enabled, reason="v1 not enabled")
 
 
 @pytest.mark.timeout(60)
 def test_fake_in_process_host() -> None:
     host = fake_in_process_host()
-    assert host.extent.labels == ["hosts"]
-    assert host.extent.sizes == [1]
+    assert host.extent.labels == []
+    assert host.extent.sizes == []
     assert not host.stream_logs
     hy_host = host._hy_host_mesh.block_on()
     assert hy_host.region.labels == host.region.labels
@@ -37,8 +33,8 @@ def test_fake_in_process_host() -> None:
 @pytest.mark.timeout(60)
 def test_create_local_host_mesh() -> None:
     host = create_local_host_mesh()
-    assert host.extent.labels == ["hosts"]
-    assert host.extent.sizes == [1]
+    assert host.extent.labels == []
+    assert host.extent.sizes == []
     assert not host.stream_logs
     hy_host = host._hy_host_mesh.block_on()
     assert hy_host.region.labels == host.region.labels

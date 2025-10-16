@@ -4,16 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import math
 from dataclasses import dataclass
 from typing import Iterator, List, Sequence
-
-import pytest
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-pytestmark = pytest.mark.skipif(
-    not v1_enabled, reason="no dep on v0/v1, so only run on v1"
-)
 
 
 @dataclass

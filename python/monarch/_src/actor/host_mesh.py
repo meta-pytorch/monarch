@@ -80,6 +80,15 @@ class HostMeshV0(MeshTrait):
         allocator: AllocateMixin,
         alloc_constraints: Optional[AllocConstraints] = None,
     ):
+        warnings.warn(
+            (
+                "DEPRECATION WARNING: using a deprecated version of HostMesh. This is going be removed imminently. "
+                "Make sure you aren't running with `MONARCH_V0_WORKAROUND_DO_NOT_USE=1` to get the new version of "
+                "HostMesh."
+            ),
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._allocator = allocator
         self._alloc_constraints = alloc_constraints
         self._shape = shape

@@ -73,7 +73,7 @@ def create_local_host_mesh(
     Args:
         name: The name of the host mesh.
         extent: Optional extent describing the shape of the host mesh.
-                If not provided, `Extent(labels=["hosts"], sizes=[1])` is used.
+                If not provided, `Extent(labels=[], sizes=[])` is used.
                 Other extents allow for local host meshes where each "host" is
                 actually just a local process.
 
@@ -87,7 +87,7 @@ def create_local_host_mesh(
 
     return HostMesh.allocate_nonblocking(
         "local_host",
-        extent if extent is not None else Extent(labels=["hosts"], sizes=[1]),
+        extent if extent is not None else Extent([], []),
         ProcessAllocator(cmd, args, bootstrap_env),
         bootstrap_cmd=_bootstrap_cmd(),
     )
@@ -350,7 +350,7 @@ def fake_in_process_host() -> "HostMesh":
     """
     return HostMesh.allocate_nonblocking(
         "fake_host",
-        Extent(labels=["hosts"], sizes=[1]),
+        Extent([], []),
         LocalAllocator(),
         bootstrap_cmd=_bootstrap_cmd(),
     )

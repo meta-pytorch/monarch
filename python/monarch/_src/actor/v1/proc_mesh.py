@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import warnings
 from contextlib import AbstractContextManager
 from pathlib import Path
 
@@ -32,14 +33,14 @@ from typing import (
 from urllib.parse import urlparse
 from weakref import WeakSet
 
+from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
-
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
 )
 from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMesh, context
-from monarch._src.actor.allocator import AllocHandle
+from monarch._src.actor.allocator import AllocHandle, SimAllocator
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
     CodeSyncMethod,
@@ -48,6 +49,7 @@ from monarch._src.actor.code_sync import (
     WorkspaceLocation,
     WorkspaceShape,
 )
+from monarch._src.actor.device_utils import _local_device_count
 
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
@@ -584,9 +586,23 @@ class ProcMesh(MeshTrait):
         setup: Callable[[], None] | None = None,
         _attach_controller_controller: bool = True,
     ) -> "ProcMesh":
-        raise NotImplementedError(
-            "from_alloc is not (and will not be) implemented for v1 ProcMesh"
+        warnings.warn(
+            (
+                "DEPRECATION WARNING: this function will soon be unsupported. "
+                "Use `HostMesh.allocate_nonblocking(...).spawn_procs(...)` instead."
+            ),
+            DeprecationWarning,
+            stacklevel=2,
         )
+
+        from monarch._src.actor.host_mesh import HostMesh
+
+        return HostMesh.allocate_nonblocking(
+            "host_mesh_from_alloc",
+            Extent(*zip(*alloc._extent.items())),
+            alloc._allocator,
+            alloc._constraints,
+        ).spawn_procs(bootstrap=setup)
 
 
 class _ControllerController(Actor):
@@ -658,3 +674,128 @@ def get_or_spawn_controller(
     """
     cc = context().actor_instance._controller_controller
     return cc.get_or_spawn.call_one(name, Class, *args, **kwargs)
+
+
+def proc_mesh(
+    *,
+    gpus: Optional[int] = None,
+    hosts: int = 1,
+    env: dict[str, str] | None = None,
+    setup: Callable[[], None] | None = None,
+) -> ProcMesh:
+    """
+    [DEPRECATED] Create a distributed process mesh across hosts.
+
+    This function creates a process mesh using distributed process allocation
+    across multiple hosts and GPUs. Used for production distributed computing.
+
+    Args:
+        gpus: Number of GPUs per host. If None, uses local device count.
+        hosts: Number of hosts to allocate. Defaults to 1.
+        env: Environment variables to set on remote processes.
+        setup: Optional setup function to run on each process at startup.
+
+    Returns:
+        ProcMesh: A distributed process mesh with the specified configuration.
+
+    Warning:
+        This function is deprecated. Use `this_host().spawn_procs()` with
+        appropriate per_host configuration instead.
+    """
+    warnings.warn(
+        (
+            "DEPRECATION WARNING: this function will soon be unsupported. "
+            "Use this_host().spawn_procs(per_host = {'hosts': 2, 'gpus': 3}) "
+            "instead of monarch.actor.proc_mesh(hosts=2, gpus=3)."
+        ),
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    if env is not None and len(env) > 0:
+        raise ValueError(
+            "`env` is not supported for `proc_mesh(...)`, and you shouldn't be using this function anyway. "
+            "Use `this_host().spawn_procs(per_host = {'hosts': ..., 'gpus': ...})` instead."
+        )
+
+    from monarch._src.actor.host_mesh import this_host
+
+    return this_host().spawn_procs(
+        per_host={"hosts": hosts, "gpus": gpus if gpus else _local_device_count()},
+        bootstrap=setup,
+    )
+
+
+def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
+    """
+    [DEPRECATED] Create a local process mesh for testing and development.
+
+    This function creates a process mesh using local allocation instead of
+    distributed process allocation. Primarily used for testing scenarios.
+
+    Args:
+        gpus: Number of GPUs to allocate per host. If None, uses local device count.
+        hosts: Number of hosts to allocate. Defaults to 1.
+
+    Returns:
+        ProcMesh: A locally allocated process mesh.
+
+    Warning:
+        This function is deprecated. Use `fake_in_process_host().spawn_procs()`
+        for testing or `this_proc().spawn_procs()` for current process actors.
+    """
+    warnings.warn(
+        (
+            "DEPRECATION WARNING: this function will soon be unsupported. "
+            "Use monarch._src.actor.host_mesh.fake_in_process_host().spawn_procs "
+            "for testing. For launching an actor in the current process use "
+            "this_proc().spawn_procs()."
+        ),
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    from monarch._src.actor.host_mesh import fake_in_process_host
+
+    return fake_in_process_host().spawn_procs(
+        per_host={"hosts": hosts, "gpus": gpus if gpus else _local_device_count()},
+    )
+
+
+def sim_proc_mesh(
+    *,
+    gpus: int = 1,
+    hosts: int = 1,
+    racks: int = 1,
+    zones: int = 1,
+    dcs: int = 1,
+    regions: int = 1,
+) -> ProcMesh:
+    """Create a simulated process mesh for testing distributed scenarios.
+
+    This function creates a process mesh using simulation allocation to test
+    distributed behavior without requiring actual remote resources.
+
+    Args:
+        gpus: Number of GPUs per host. Defaults to 1.
+        hosts: Number of hosts. Defaults to 1.
+        racks: Number of racks. Defaults to 1.
+        zones: Number of zones. Defaults to 1.
+        dcs: Number of data centers. Defaults to 1.
+        regions: Number of regions. Defaults to 1.
+
+    Returns:
+        ProcMesh: A simulated process mesh with the specified topology.
+    """
+    from monarch._src.actor.host_mesh import HostMesh
+
+    host_mesh = HostMesh.allocate_nonblocking(
+        "sim",
+        Extent(
+            ["regions", "dcs", "zones", "racks", "hosts"],
+            [regions, dcs, zones, racks, hosts],
+        ),
+        SimAllocator(),
+        AllocConstraints(),
+    )
+    return host_mesh.spawn_procs(per_host={"gpus": gpus})

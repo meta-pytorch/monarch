@@ -16,17 +16,11 @@ import pytest
 import torch
 import torch.utils._python_dispatch
 from monarch import fetch_shard, no_mesh, remote, Stream
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.remote import call_on_shard_and_fetch
 from monarch.rust_local_mesh import local_meshes, LoggingLocation, SocketType
 from torch.nn.attention import sdpa_kernel, SDPBackend
 from torch.nn.functional import scaled_dot_product_attention
-
-
-pytestmark = pytest.mark.skipif(
-    not v1_enabled, reason="uses deprecated system actor, might as well only run on v1"
-)
 
 
 def simple_all_reduce(*args, **kwargs):

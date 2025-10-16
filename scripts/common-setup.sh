@@ -156,12 +156,9 @@ setup_test_environment() {
 }
 
 # Run Python test groups for Monarch.
-# Usage: run_test_groups <enable_v1: 0|1> <enable_actor_error_test: 0|1>
+# Usage: run_test_groups <enable_actor_error_test: 0|1>
 #
 # Arguments:
-#   enable_v1:
-#       0 → run tests with the v0 API
-#       1 → run tests with the v1 API (sets MONARCH_HOST_MESH_V1_REMOVE_ME_BEFORE_RELEASE)
 #   enable_actor_error_test:
 #       0 → skip python/tests/test_actor_error.py
 #       1 → include python/tests/test_actor_error.py
@@ -170,13 +167,7 @@ setup_test_environment() {
 # between runs.
 run_test_groups() {
   set +e
-  local enable_v1="$1"
   local enable_actor_error_test="${2:-0}"
-  # Validate argument enable_v1
-  if [[ "$enable_v1" != "0" && "$enable_v1" != "1" ]]; then
-    echo "Usage: run_test_groups <enable_v1: 0|1>"
-    return 2
-  fi
   # Validate argument enable_actor_error_test
   if [[ "$enable_actor_error_test" != "0" && "$enable_actor_error_test" != "1" ]]; then
     echo "Usage: run_test_groups <enable_actor_error_test: 0|1>"
@@ -190,30 +181,19 @@ run_test_groups() {
     pkill -9 python || true
     pkill -9 pytest || true
     sleep 2
-    # Conditionally set environment variables for pytest
-    if [[ "$enable_v1" == "1" ]]; then
-        if [[ "$enable_actor_error_test" == "1" ]]; then
-            MONARCH_HOST_MESH_V1_REMOVE_ME_BEFORE_RELEASE=1 \
-                LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-                --ignore-glob="**/meta/**" \
-                --dist=no \
-                --group="$GROUP" \
-                --splits=10
-        else
-            MONARCH_HOST_MESH_V1_REMOVE_ME_BEFORE_RELEASE=1 \
-                LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-                --ignore-glob="**/meta/**" \
-                --dist=no \
-                --ignore=python/tests/test_actor_error.py \
-                --group="$GROUP" \
-                --splits=10
-        fi
+    if [[ "$enable_actor_error_test" == "1" ]]; then
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+            --ignore-glob="**/meta/**" \
+            --dist=no \
+            --group="$GROUP" \
+            --splits=10
     else
         LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-                 --ignore-glob="**/meta/**" \
-                 --dist=no \
-                 --group="$GROUP" \
-                 --splits=10
+            --ignore-glob="**/meta/**" \
+            --dist=no \
+            --ignore=python/tests/test_actor_error.py \
+            --group="$GROUP" \
+            --splits=10
     fi
     # Check result and record failures
     if [[ $? -eq 0 ]]; then

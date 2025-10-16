@@ -7,17 +7,9 @@
 # pyre-unsafe
 from unittest import main, TestCase
 
-import pytest
-
 import torch
-from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.gradient._gradient_generator import GradientGenerator
 from monarch.gradient_generator import gradient_execution_order
-
-
-pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
-    not v1_enabled, reason="no v0/v1 dependency, so only run with v1"
-)
 
 
 class TestGradIter(TestCase):

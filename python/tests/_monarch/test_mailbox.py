@@ -43,12 +43,6 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._src.actor.actor_mesh import Instance
-from monarch._src.actor.v1 import enabled as v1_enabled
-
-
-pytestmark: pytest.MarkDecorator = pytest.mark.skipif(
-    not v1_enabled, reason="v0 tested even when v1 enabled"
-)
 
 
 S = TypeVar("S")
