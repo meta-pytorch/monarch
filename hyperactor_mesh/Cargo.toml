@@ -11,10 +11,6 @@ license = "BSD-3-Clause"
 edition = "2024"
 
 [[bin]]
-name = "actor_mesh_benchmarks"
-path = "benches/main.rs"
-
-[[bin]]
 name = "hyperactor_mesh_test_bootstrap"
 path = "test/bootstrap.rs"
 edition = "2024"
@@ -43,6 +39,10 @@ edition = "2024"
 name = "process_allocator_cleanup"
 path = "test/process_allocator_cleanup/process_allocator_cleanup.rs"
 
+[[bench]]
+name = "actor_mesh_benchmarks"
+path = "benches/main.rs"
+
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.86"
@@ -52,7 +52,6 @@ bitmaps = "3.2.1"
 buck-resources = "1"
 chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.0"
 erased-serde = "0.3.27"
@@ -85,6 +84,7 @@ tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "
 
 [dev-dependencies]
 bytes = { version = "1.10", features = ["serde"] }
+criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 itertools = "0.14.0"
 maplit = "1.0"
 proptest = "1.5"

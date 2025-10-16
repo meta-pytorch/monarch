@@ -13,10 +13,6 @@ license = "BSD-3-Clause"
 edition = "2024"
 
 [[bin]]
-name = "channel_benchmarks"
-path = "benches/main.rs"
-
-[[bin]]
 name = "hyperactor_example_channel"
 path = "example/channel.rs"
 edition = "2024"
@@ -36,6 +32,10 @@ name = "hyperactor_host_test_bootstrap"
 path = "test/host_bootstrap.rs"
 edition = "2024"
 
+[[bench]]
+name = "channel_benchmarks"
+path = "benches/main.rs"
+
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.86"
@@ -46,7 +46,6 @@ chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-fea
 cityhasher = "0.1.0"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 crc32fast = "1.4"
-criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 derivative = "2.2"
 dns-lookup = "1.0"
@@ -70,7 +69,6 @@ rand_distr = "0.4"
 regex = "1.11.1"
 rustls-pemfile = "1.0.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
-serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 serde_yaml = "0.9.25"
@@ -88,9 +86,11 @@ uuid = { version = "1.2", features = ["serde", "v4", "v5", "v6", "v7", "v8"] }
 
 [dev-dependencies]
 buck-resources = "1"
+criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 indoc = "2.0.2"
 maplit = "1.0"
 proptest = "1.5"
+serde_bytes = "0.11"
 tempfile = "3.22"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio-test = "0.4.4"
