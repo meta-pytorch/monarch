@@ -23,9 +23,13 @@ use enum_as_inner::EnumAsInner;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
+use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
+use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::MetaTlsAddr;
 pub use local::LocalAlloc;
 pub use local::LocalAllocator;
 use mockall::predicate::*;
@@ -276,6 +280,11 @@ pub trait Alloc {
     fn is_local(&self) -> bool {
         false
     }
+
+    /// The address that should be used to serve the client's router.
+    fn client_router_addr(&self) -> AllocAssignedAddr {
+        AllocAssignedAddr(ChannelAddr::any(self.transport()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -406,6 +415,43 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
         // We collect all the ranks at this point of completion, so that we can
         // avoid holding Rcs across awaits.
         Ok(running.into_iter().map(Option::unwrap).collect())
+    }
+}
+
+/// A new type to indicate this addr is assigned by alloc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllocAssignedAddr(ChannelAddr);
+
+impl AllocAssignedAddr {
+    /// If addr is Tcp or Metatls, use its IP address or hostname to create
+    /// a new addr with port unspecified.
+    ///
+    /// for other types of addr, return "any" address.
+    pub(crate) fn with_unspecified_port_or_any(addr: &ChannelAddr) -> AllocAssignedAddr {
+        let new_addr = match addr {
+            ChannelAddr::Tcp(socket) => {
+                let mut new_socket = socket.clone();
+                new_socket.set_port(0);
+                ChannelAddr::Tcp(new_socket)
+            }
+            ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+                let mut new_socket = socket.clone();
+                new_socket.set_port(0);
+                ChannelAddr::MetaTls(MetaTlsAddr::Socket(new_socket))
+            }
+            ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port: _ }) => {
+                ChannelAddr::MetaTls(MetaTlsAddr::Host {
+                    hostname: hostname.clone(),
+                    port: 0,
+                })
+            }
+            _ => addr.transport().any(),
+        };
+        AllocAssignedAddr(new_addr)
+    }
+
+    pub(crate) fn serve<M: RemoteMessage>(self) -> anyhow::Result<(ChannelAddr, ChannelRx<M>)> {
+        Ok(channel::serve(self.0)?)
     }
 }
 
