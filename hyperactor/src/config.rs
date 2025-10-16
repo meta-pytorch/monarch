@@ -153,7 +153,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_STOP_ACTOR_TIMEOUT".to_string()),
         py_name: None,
     })
-    pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(10);
+    pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Heartbeat interval for remote allocator
     @meta(CONFIG = ConfigAttr {
