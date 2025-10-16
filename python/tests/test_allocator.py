@@ -317,6 +317,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 AllocSpec(AllocConstraints(), host=1, gpu=1)
             ).initialized
 
+    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_allocate_2d_mesh(self) -> None:
         hosts = 2
         gpus = 4
