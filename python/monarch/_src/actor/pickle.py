@@ -23,7 +23,18 @@ def maybe_torch():
     """
     Returns the torch module if it has been loaded, otherwise None.
     """
-    return sys.modules.get("torch")
+    if "torch" in sys.modules:
+        # we avoid eagerly loading torch because it
+        # takes a long time to import and slows down startup
+        # for programs that do not use it.
+
+        # But once it has been loaded, we know we might need it.
+        # We have to explicitly import now because torch
+        # might now be completely loaded yet.
+        import torch
+
+        return torch
+    return None
 
 
 _orig_function_getstate = cloudpickle.cloudpickle._function_getstate
