@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::TcpMode;
 use hyperactor_multiprocess::system::System;
 
 // The commands in the demo spawn temporary actors the join a system.
@@ -27,7 +28,9 @@ pub struct ServeCommand {
 
 impl ServeCommand {
     pub async fn run(self) -> anyhow::Result<()> {
-        let addr = self.addr.unwrap_or(ChannelAddr::any(ChannelTransport::Tcp));
+        let addr = self
+            .addr
+            .unwrap_or(ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)));
         let handle = System::serve(addr, LONG_DURATION, LONG_DURATION).await?;
         eprintln!("serve: {}", handle.local_addr());
         handle.await;

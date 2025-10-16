@@ -607,7 +607,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
     # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
     @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
-    @pytest.mark.skip("broken")
     async def test_torchx_remote_alloc_initializer_no_match_label_1_mesh(self) -> None:
         server = ServerSpec(
             name=UNUSED,
@@ -623,7 +622,10 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             ],
         )
         port = get_free_port()
-        with remote_process_allocator(addr=f"tcp!{get_sockaddr('localhost', port)}"):
+
+        with remote_process_allocator(
+            addr=f"tcp!{get_sockaddr('localhost', port)}",
+        ):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
                 allocator = RemoteAllocator(
@@ -640,7 +642,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
     # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
     @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
-    @pytest.mark.skip("broken")
     async def test_torchx_remote_alloc_initializer_with_match_label(self) -> None:
         server = ServerSpec(
             name=UNUSED,
@@ -656,7 +657,10 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             ],
         )
         port = get_free_port()
-        with remote_process_allocator(addr=f"tcp!{get_sockaddr('localhost', port)}"):
+
+        with remote_process_allocator(
+            addr=f"tcp!{get_sockaddr('localhost', port)}",
+        ):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
                 allocator = RemoteAllocator(

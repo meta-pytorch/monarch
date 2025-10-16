@@ -9,6 +9,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +29,7 @@ use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
+use hyperactor::channel::TcpMode;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock;
@@ -768,7 +772,12 @@ impl RemoteProcessAlloc {
                 ChannelTransport::MetaTls(_) => {
                     format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
                 }
-                ChannelTransport::Tcp => {
+                ChannelTransport::Tcp(TcpMode::Localhost) => {
+                    // TODO: @rusch see about moving over to config for this
+                    let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
+                    format!("tcp!{}:{}", ip, self.remote_allocator_port)
+                }
+                ChannelTransport::Tcp(TcpMode::Hostname) => {
                     format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
                 }
                 // Used only for testing.
