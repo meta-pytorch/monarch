@@ -236,6 +236,7 @@ class EndpointProperty(Generic[P, R]):
         method: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
         explicit_response_port: bool,
+        instrument: bool = False,
     ) -> None: ...
 
     @overload
@@ -244,14 +245,20 @@ class EndpointProperty(Generic[P, R]):
         method: Callable[Concatenate[Any, P], R],
         propagator: Propagator,
         explicit_response_port: bool,
+        instrument: bool = False,
     ) -> None: ...
 
     def __init__(
-        self, method: Any, propagator: Propagator, explicit_response_port: bool
+        self,
+        method: Any,
+        propagator: Propagator,
+        explicit_response_port: bool,
+        instrument: bool = False,
     ) -> None:
         self._method = method
         self._propagator = propagator
         self._explicit_response_port = explicit_response_port
+        self._instrument = instrument
 
     def __get__(self, instance, owner) -> Endpoint[P, R]:
         # this is a total lie, but we have to actually
@@ -315,6 +322,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[False] = False,
+    instrument: bool = False,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -324,6 +332,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[False] = False,
+    instrument: bool = False,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -332,6 +341,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[False] = False,
+    instrument: bool = False,
 ) -> EndpointIfy: ...
 
 
@@ -341,6 +351,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[True],
+    instrument: bool = False,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -350,6 +361,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[True],
+    instrument: bool = False,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -358,16 +370,27 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[True],
+    instrument: bool = False,
 ) -> PortedEndpointIfy: ...
 
 
-def endpoint(method=None, *, propagate=None, explicit_response_port: bool = False):
+def endpoint(
+    method=None,
+    *,
+    propagate=None,
+    explicit_response_port: bool = False,
+    instrument: bool = False,
+):
     if method is None:
         return functools.partial(
             endpoint,
             propagate=propagate,
             explicit_response_port=explicit_response_port,
+            instrument=instrument,
         )
     return EndpointProperty(
-        method, propagator=propagate, explicit_response_port=explicit_response_port
+        method,
+        propagator=propagate,
+        explicit_response_port=explicit_response_port,
+        instrument=instrument,
     )

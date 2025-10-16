@@ -862,34 +862,38 @@ class _Actor:
                 raise AssertionError(error_message)
 
             the_method = getattr(self.instance, method_name)
+            should_instrument = False
+
             if isinstance(the_method, EndpointProperty):
+                should_instrument = the_method._instrument
                 the_method = functools.partial(the_method._method, self.instance)
 
             if inspect.iscoroutinefunction(the_method):
-
-                async def instrumented():
-                    with TRACER.start_as_current_span(
-                        method_name,
-                        attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                    ):
-                        try:
+                try:
+                    if should_instrument:
+                        with TRACER.start_as_current_span(
+                            method_name,
+                            attributes={"actor_id": str(ctx.actor_instance.actor_id)},
+                        ):
                             result = await the_method(*args, **kwargs)
-                            self._maybe_exit_debugger()
-                        except Exception as e:
-                            logging.critical(
-                                "Unhandled exception in actor endpoint",
-                                exc_info=e,
-                            )
-                            raise e
-                    return result
-
-                result = await instrumented()
+                    else:
+                        result = await the_method(*args, **kwargs)
+                    self._maybe_exit_debugger()
+                except Exception as e:
+                    logging.critical(
+                        "Unhandled exception in actor endpoint",
+                        exc_info=e,
+                    )
+                    raise e
             else:
-                with TRACER.start_as_current_span(
-                    method_name,
-                    attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                ):
-                    with fake_sync_state():
+                with fake_sync_state():
+                    if should_instrument:
+                        with TRACER.start_as_current_span(
+                            method_name,
+                            attributes={"actor_id": str(ctx.actor_instance.actor_id)},
+                        ):
+                            result = the_method(*args, **kwargs)
+                    else:
                         result = the_method(*args, **kwargs)
                     self._maybe_exit_debugger()
 
