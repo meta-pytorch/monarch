@@ -19,8 +19,6 @@ from typing import (
     TypeVar,
 )
 
-import monarch
-
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PanicFlag,
@@ -28,6 +26,8 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+
+from monarch._src.actor.allocator import LocalAllocator
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
@@ -100,7 +100,7 @@ class Accumulator(Generic[S, U]):
 
 async def allocate() -> ProcMesh:
     spec = AllocSpec(AllocConstraints(), replica=1)
-    allocator = monarch.LocalAllocator()
+    allocator = LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
     return await ProcMesh.allocate_nonblocking(alloc)
 
