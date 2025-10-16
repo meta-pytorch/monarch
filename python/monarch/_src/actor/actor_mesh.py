@@ -251,6 +251,7 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
+            "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
         }.get(transport)
         if transport is None:
             raise ValueError(f"unknown transport: {transport}")
