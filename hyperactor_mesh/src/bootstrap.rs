@@ -1873,7 +1873,7 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
         tx.try_post(
             Process2Allocator(bootstrap_index, Process2AllocatorMessage::Hello(serve_addr)),
             rtx,
-        )?;
+        );
         tokio::spawn(exit_if_missed_heartbeat(bootstrap_index, bootstrap_addr));
 
         let mut the_msg;

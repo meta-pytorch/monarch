@@ -72,18 +72,17 @@ pub struct LocalTx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
-    fn try_post(
-        &self,
-        message: M,
-        _return_channel: oneshot::Sender<M>,
-    ) -> Result<(), SendError<M>> {
+    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
         let data: Data = match bincode::serialize(&message) {
             Ok(data) => data,
-            Err(err) => return Err(SendError(err.into(), message)),
+            Err(err) => {
+                let _ = return_channel.send(SendError(err.into(), message));
+                return;
+            }
         };
-        self.tx
-            .send(data)
-            .map_err(|_| SendError(ChannelError::Closed, message))
+        if self.tx.send(data).is_err() {
+            let _ = return_channel.send(SendError(ChannelError::Closed, message));
+        }
     }
 
     fn addr(&self) -> ChannelAddr {
@@ -167,7 +166,7 @@ mod tests {
     async fn test_local_basic() {
         let (tx, mut rx) = local::new::<u64>();
 
-        tx.try_post(123, unused_return_channel()).unwrap();
+        tx.try_post(123, unused_return_channel());
         assert_eq!(rx.recv().await.unwrap(), 123);
     }
 
@@ -178,15 +177,14 @@ mod tests {
 
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.try_post(123, unused_return_channel()).unwrap();
+        tx.try_post(123, unused_return_channel());
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);
 
-        assert_matches!(
-            tx.try_post(123, unused_return_channel()),
-            Err(SendError(ChannelError::Closed, 123))
-        );
+        let (return_tx, return_rx) = oneshot::channel();
+        tx.try_post(123, return_tx);
+        assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
     }
 
     #[tokio::test]
@@ -194,7 +192,7 @@ mod tests {
         let (port, mut rx) = local::serve::<u64>();
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.try_post(123, unused_return_channel()).unwrap();
+        tx.try_post(123, unused_return_channel());
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);
