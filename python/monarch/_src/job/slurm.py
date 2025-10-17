@@ -72,7 +72,7 @@ class SlurmJob(JobTrait):
                       but may increase queue times and waste resources if nodes are underutilized.
             gpus_per_node: Number of GPUs to request per node. If None, no GPU resources are requested.
         """
-        configure(default_transport=ChannelTransport.TcpWithHostname)
+        configure(default_transport=ChannelTransport.Tcp)
         self._meshes = meshes
         self._python_exe = python_exe
         self._slurm_args = slurm_args
