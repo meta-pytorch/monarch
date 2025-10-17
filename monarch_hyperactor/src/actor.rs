@@ -20,6 +20,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortHandle;
+use hyperactor::PortHandle;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
@@ -448,13 +449,6 @@ impl PythonActorHandle {
     }
 }
 
-#[derive(Debug)]
-enum UnhandledErrorObserver {
-    ForwardTo(UnboundedReceiver<SerializablePyErr>),
-    HandlerActor(ActorHandle<EndpointPanic2SupervisionEvent>),
-    None,
-}
-
 /// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
 #[hyperactor::export(
@@ -472,8 +466,6 @@ pub struct PythonActor {
     /// Stores a reference to the Python event loop to run Python coroutines on.
     /// This is None when using single runtime mode, Some when using per-actor mode.
     task_locals: Option<pyo3_async_runtimes::TaskLocals>,
-    panic_watcher: UnhandledErrorObserver,
-    panic_sender: UnboundedSender<SerializablePyErr>,
 
     /// instance object that we keep across handle calls
     /// so that we can store information from the Init (spawn rank, controller controller)
@@ -506,32 +498,12 @@ impl Actor for PythonActor {
             // Only create per-actor TaskLocals if not using shared runtime
             let task_locals = (!hyperactor::config::global::get(SHARED_ASYNCIO_RUNTIME))
                 .then(|| Python::allow_threads(py, create_task_locals));
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             Ok(Self {
                 actor,
                 task_locals,
-                panic_watcher: UnhandledErrorObserver::ForwardTo(rx),
-                panic_sender: tx,
                 instance: None,
             })
         })?)
-    }
-
-    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        self.panic_watcher = UnhandledErrorObserver::HandlerActor(
-            match std::mem::replace(&mut self.panic_watcher, UnhandledErrorObserver::None) {
-                UnhandledErrorObserver::ForwardTo(chan) => {
-                    EndpointPanic2SupervisionEvent::spawn(this, chan).await?
-                }
-                UnhandledErrorObserver::HandlerActor(_actor) => {
-                    panic!("init called twice");
-                }
-                UnhandledErrorObserver::None => {
-                    unreachable!("init called while in an invalid state")
-                }
-            },
-        );
-        Ok(())
     }
 
     async fn handle_undeliverable_message(
@@ -662,54 +634,6 @@ impl PanicFlag {
     }
 }
 
-/// The sole reason why this Actor exists as opposed to a background task is because returning Err in an Actor message
-/// handler is how we can surface supervision events.
-///
-/// We call this actor EndpointPanic2SupervisionEvent because it's only responsibility is to turn endpoint panics into supervision events
-#[derive(Debug)]
-struct EndpointPanic2SupervisionEvent {
-    endpoint_panic_rx: UnboundedReceiver<SerializablePyErr>,
-}
-
-#[async_trait]
-impl Actor for EndpointPanic2SupervisionEvent {
-    type Params = UnboundedReceiver<SerializablePyErr>;
-
-    async fn new(
-        endpoint_panic_rx: UnboundedReceiver<SerializablePyErr>,
-    ) -> Result<Self, anyhow::Error> {
-        Ok(Self { endpoint_panic_rx })
-    }
-
-    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        this.handle().send(WatchForEndpointPanics)?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Named, Serialize, Deserialize)]
-struct WatchForEndpointPanics;
-
-#[async_trait]
-impl Handler<WatchForEndpointPanics> for EndpointPanic2SupervisionEvent {
-    async fn handle(
-        &mut self,
-        _cx: &Context<Self>,
-        _message: WatchForEndpointPanics,
-    ) -> anyhow::Result<()> {
-        match self.endpoint_panic_rx.recv().await {
-            Some(err) => {
-                tracing::error!("caught error in async endpoint {}", err);
-                return Err(err.into());
-            }
-            None => {
-                tracing::warn!("panic forwarding channel was closed unexpectedly")
-            }
-        }
-        Ok(())
-    }
-}
-
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
     async fn handle(
@@ -754,7 +678,8 @@ impl Handler<PythonMessage> for PythonActor {
         // Spawn a child actor to await the Python handler method.
         tokio::spawn(
             handle_async_endpoint_panic(
-                self.panic_sender.clone(),
+                cx.port(),
+                // self.panic_sender.clone(),
                 PythonTask::new(future),
                 receiver,
             )
@@ -765,6 +690,21 @@ impl Handler<PythonMessage> for PythonActor {
             ),
         );
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct PanicFromPy(SerializablePyErr);
+
+#[async_trait]
+impl Handler<PanicFromPy> for PythonActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        PanicFromPy(err): PanicFromPy,
+    ) -> anyhow::Result<()> {
+        tracing::error!("caught error in async endpoint {}", err);
+        Err(err.into())
     }
 }
 
@@ -821,7 +761,7 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
 }
 
 async fn handle_async_endpoint_panic(
-    panic_sender: UnboundedSender<SerializablePyErr>,
+    panic_sender: PortHandle<PanicFromPy>,
     task: PythonTask,
     side_channel: oneshot::Receiver<PyObject>,
 ) {
@@ -857,7 +797,7 @@ async fn handle_async_endpoint_panic(
         }
     } {
         panic_sender
-            .send(panic)
+            .send(PanicFromPy(panic))
             .expect("Unable to send panic message");
     }
 }
