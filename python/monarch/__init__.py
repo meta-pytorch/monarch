@@ -36,6 +36,11 @@ except ImportError:
 
 if TYPE_CHECKING:
     from monarch import timer
+    from monarch._rust_bindings.monarch_hyperactor.alloc import (
+        AllocConstraints,
+        AllocSpec,
+    )
+    from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
     from monarch._src.actor.shape import Extent, NDSlice, Shape
     from monarch.common._coalescing import coalescing
 
@@ -61,6 +66,11 @@ if TYPE_CHECKING:
 
 
 _public_api = {
+    "AllocConstraints": (
+        "monarch._rust_bindings.monarch_hyperactor.alloc",
+        "AllocConstraints",
+    ),
+    "AllocSpec": ("monarch._rust_bindings.monarch_hyperactor.alloc", "AllocSpec"),
     "coalescing": ("monarch.common._coalescing", "coalescing"),
     "remote": ("monarch.common.remote", "remote"),
     "get_active_mesh": ("monarch.common.device_mesh", "get_active_mesh"),
@@ -91,6 +101,9 @@ _public_api = {
     "Simulator": ("monarch.simulator.interface", "Simulator"),
     "world_mesh": ("monarch.world_mesh", "world_mesh"),
     "timer": ("monarch.timer", "timer"),
+    "ProcessAllocator": ("monarch._src.actor.allocator", "ProcessAllocator"),
+    "LocalAllocator": ("monarch._src.actor.allocator", "LocalAllocator"),
+    "SimAllocator": ("monarch._src_actor.allocator", "SimAllocator"),
     "ActorFuture": ("monarch.future", "ActorFuture"),
     "builtins": ("monarch.builtins", "builtins"),
 }
@@ -116,6 +129,8 @@ except ImportError:
 # we have to explicitly list this rather than just take the keys of the _public_api
 # otherwise tools think the imports are unused
 __all__ = [
+    "AllocConstraints",
+    "AllocSpec",
     "coalescing",
     "get_active_mesh",
     "no_mesh",
@@ -146,6 +161,9 @@ __all__ = [
     "Simulator",
     "world_mesh",
     "timer",
+    "ProcessAllocator",
+    "LocalAllocator",
+    "SimAllocator",
     "ActorFuture",
     "builtins",
 ]
