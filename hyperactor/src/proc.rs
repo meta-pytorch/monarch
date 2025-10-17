@@ -1197,8 +1197,25 @@ impl<A: Actor> Instance<A> {
 
         let (mut signal_receiver, _) = actor_loop_receivers;
         while self.cell.child_count() > 0 {
-            if let Signal::ChildStopped(pid) = signal_receiver.recv().await? {
-                assert!(self.cell.get_child(pid).is_none());
+            match RealClock
+                .timeout(Duration::from_millis(500), signal_receiver.recv())
+                .await
+            {
+                Ok(signal) => {
+                    if let Signal::ChildStopped(pid) = signal? {
+                        assert!(self.cell.get_child(pid).is_none());
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "timeout waiting for ChildStopped signal from child on actor: {}, ignoring",
+                        self.self_id()
+                    );
+                    // No more waiting to receive messages. Unlink all remaining
+                    // children.
+                    self.cell.unlink_all();
+                    break;
+                }
             }
         }
 
@@ -1723,6 +1740,11 @@ impl InstanceCell {
     fn unlink(&self, child: &InstanceCell) {
         assert_eq!(self.actor_id().proc_id(), child.actor_id().proc_id());
         self.inner.children.remove(&child.pid());
+    }
+
+    /// Unlink this instance from all children.
+    fn unlink_all(&self) {
+        self.inner.children.clear();
     }
 
     /// Link this instance to its parent, if it has one.
