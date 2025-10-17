@@ -93,7 +93,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_REMOTE_ALLOC_BOOTSTRAP_ADDR".to_string()),
         py_name: None,
     })
-    pub attr REMOTE_ALLOC_BOOTSTRAP_ADDR: String;
+    pub attr REMOTE_ALLOC_BOOTSTRAP_ADDR: ChannelAddr;
 
     /// For Tcp channel types, if set, only uses ports in this range for the
     /// frontend ports. The input should be in the format "<start>..<end>",

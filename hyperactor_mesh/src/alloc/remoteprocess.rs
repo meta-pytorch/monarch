@@ -626,10 +626,8 @@ impl RemoteProcessAlloc {
         remote_allocator_port: u16,
         initializer: impl RemoteProcessAllocInitializer + Send + Sync + 'static,
     ) -> Result<Self, anyhow::Error> {
-        let alloc_serve_addr = match config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
-            Some(addr_str) => addr_str.parse()?,
-            None => ChannelAddr::any(spec.transport.clone()),
-        };
+        let alloc_serve_addr = config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR)
+            .unwrap_or_else(|| ChannelAddr::any(spec.transport.clone()));
 
         let (bootstrap_addr, rx) = serve_with_config(alloc_serve_addr)?;
 

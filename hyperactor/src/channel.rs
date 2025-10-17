@@ -528,6 +528,16 @@ impl From<tokio::net::unix::SocketAddr> for ChannelAddr {
     }
 }
 
+impl AttrValue for ChannelAddr {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(s: &str) -> Result<Self, anyhow::Error> {
+        s.parse()
+    }
+}
+
 impl ChannelAddr {
     /// The "any" address for the given transport type. This is used to
     /// servers to "any" address.
