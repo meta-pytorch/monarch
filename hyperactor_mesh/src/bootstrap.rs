@@ -54,12 +54,14 @@ use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Child;
+use tokio::process::ChildStderr;
+use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
-use crate::alloc::logtailer::LogTailer;
-use crate::logging::create_log_writers;
+use crate::logging::OutputTarget;
+use crate::logging::StreamFwder;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
@@ -79,7 +81,7 @@ declare_attrs! {
     pub attr MESH_BOOTSTRAP_ENABLE_PDEATHSIG: bool = true;
 
     /// Maximum number of log lines retained in a proc's stderr/stdout
-    /// tail buffer. Used by [`LogTailer::tee`] when wiring child
+    /// tail buffer. Used by [`StreamFwder`] when wiring child
     /// pipes. Default: 100
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_TAIL_LOG_LINES".to_string()),
@@ -615,14 +617,14 @@ pub struct BootstrapProcHandle {
     /// claims it (consumed by `wait()` there). Not relied on for
     /// teardown; manager `Drop` handles best-effort SIGKILL.
     child: Arc<std::sync::Mutex<Option<Child>>>,
-    /// Stdout tailer for this proc. Created with `LogTailer::tee`, it
-    /// forwards output to a writer and keeps a bounded ring buffer.
+    /// Stdout monitor for this proc. Created with `StreamFwder::start`, it
+    /// forwards output to a log channel and keeps a bounded ring buffer.
     /// Transferred to the exit monitor, which joins it after `wait()`
     /// to recover buffered lines.
-    stdout_tailer: Arc<std::sync::Mutex<Option<LogTailer>>>,
-    /// Stderr tailer for this proc. Same behavior as `stdout_tailer`
+    stdout_fwder: Arc<std::sync::Mutex<Option<StreamFwder>>>,
+    /// Stderr monitor for this proc. Same behavior as `stdout_fwder`
     /// but for stderr (used for exit-reason enrichment).
-    stderr_tailer: Arc<std::sync::Mutex<Option<LogTailer>>>,
+    stderr_fwder: Arc<std::sync::Mutex<Option<StreamFwder>>>,
     /// Watch sender for status transitions. Every `mark_*` goes
     /// through [`BootstrapProcHandle::transition`], which updates the
     /// snapshot under the lock and then `send`s the new
@@ -673,8 +675,8 @@ impl BootstrapProcHandle {
             proc_id,
             status: Arc::new(std::sync::Mutex::new(ProcStatus::Starting)),
             child: Arc::new(std::sync::Mutex::new(Some(child))),
-            stdout_tailer: Arc::new(std::sync::Mutex::new(None)),
-            stderr_tailer: Arc::new(std::sync::Mutex::new(None)),
+            stdout_fwder: Arc::new(std::sync::Mutex::new(None)),
+            stderr_fwder: Arc::new(std::sync::Mutex::new(None)),
             tx,
             rx,
         }
@@ -1072,25 +1074,25 @@ impl BootstrapProcHandle {
         }
     }
 
-    pub fn set_tailers(&self, out: Option<LogTailer>, err: Option<LogTailer>) {
+    pub fn set_stream_monitors(&self, out: Option<StreamFwder>, err: Option<StreamFwder>) {
         *self
-            .stdout_tailer
+            .stdout_fwder
             .lock()
             .expect("stdout_tailer mutex poisoned") = out;
         *self
-            .stderr_tailer
+            .stderr_fwder
             .lock()
             .expect("stderr_tailer mutex poisoned") = err;
     }
 
-    fn take_tailers(&self) -> (Option<LogTailer>, Option<LogTailer>) {
+    fn take_stream_monitors(&self) -> (Option<StreamFwder>, Option<StreamFwder>) {
         let out = self
-            .stdout_tailer
+            .stdout_fwder
             .lock()
             .expect("stdout_tailer mutex poisoned")
             .take();
         let err = self
-            .stderr_tailer
+            .stderr_fwder
             .lock()
             .expect("stderr_tailer mutex poisoned")
             .take();
@@ -1494,8 +1496,6 @@ impl BootstrapProcManager {
     fn spawn_exit_monitor(&self, proc_id: ProcId, handle: BootstrapProcHandle) {
         let pid_table = Arc::clone(&self.pid_table);
 
-        let (stdout_tailer, stderr_tailer) = handle.take_tailers();
-
         let maybe_child = {
             let mut guard = handle.child.lock().expect("child mutex");
             let taken = guard.take();
@@ -1512,12 +1512,14 @@ impl BootstrapProcManager {
             let wait_res = child.wait().await;
 
             let mut stderr_tail: Vec<String> = Vec::new();
-            if let Some(t) = stderr_tailer {
-                let (lines, _bytes) = t.join().await;
+            let (stdout_mon, stderr_mon) = handle.take_stream_monitors();
+
+            if let Some(t) = stderr_mon {
+                let (lines, _bytes) = t.abort().await;
                 stderr_tail = lines;
             }
-            if let Some(t) = stdout_tailer {
-                let (_lines, _bytes) = t.join().await;
+            if let Some(t) = stdout_mon {
+                let (_lines, _bytes) = t.abort().await;
             }
 
             match wait_res {
@@ -1672,11 +1674,12 @@ impl ProcManager for BootstrapProcManager {
 
         let log_channel = ChannelAddr::any(ChannelTransport::Unix);
         cmd.env(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
-
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| HostError::ProcessSpawnFailure(proc_id.clone(), e))?;
         let pid = child.id().unwrap_or_default();
+        let stdout: ChildStdout = child.stdout.take().expect("stdout piped but missing");
+        let stderr: ChildStderr = child.stderr.take().expect("stderr piped but missing");
 
         let handle = BootstrapProcHandle::new(proc_id.clone(), child);
 
@@ -1687,34 +1690,27 @@ impl ProcManager for BootstrapProcManager {
             }
         }
 
-        // Writers: tee to local (stdout/stderr or file) + send over
-        // channel
-        let (out_writer, err_writer) =
-            create_log_writers(config.create_rank, log_channel.clone(), pid)
-                .unwrap_or_else(|_| (Box::new(tokio::io::stdout()), Box::new(tokio::io::stderr())));
+        let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
 
-        let mut stdout_tailer: Option<LogTailer> = None;
-        let mut stderr_tailer: Option<LogTailer> = None;
+        // Create LogFileMonitors for both stdout and stderr
+        let stdout_monitor = StreamFwder::start(
+            stdout,
+            OutputTarget::Stdout,
+            tail_size,
+            log_channel.clone(),
+            pid,
+            config.create_rank,
+        );
 
-        // Take the pipes from the child.
-        {
-            let mut guard = handle.child.lock().expect("child mutex poisoned");
-            if let Some(child) = guard.as_mut() {
-                // LogTailer::tee forwards to our writers and keeps a
-                // tail buffer.
-                let max_tail_lines = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
-                if let Some(out) = child.stdout.take() {
-                    stdout_tailer = Some(LogTailer::tee(max_tail_lines, out, out_writer));
-                }
-                if let Some(err) = child.stderr.take() {
-                    stderr_tailer = Some(LogTailer::tee(max_tail_lines, err, err_writer));
-                }
-                // Make the tailers visible to the exit monitor.
-                handle.set_tailers(stdout_tailer.take(), stderr_tailer.take());
-            } else {
-                tracing::debug!("proc {proc_id}: child already taken before wiring IO");
-            }
-        }
+        let stderr_monitor = StreamFwder::start(
+            stderr,
+            OutputTarget::Stderr,
+            tail_size,
+            log_channel.clone(),
+            pid,
+            config.create_rank,
+        );
+        handle.set_stream_monitors(Some(stdout_monitor), Some(stderr_monitor));
 
         // Retain handle for lifecycle mgt.
         {
@@ -2061,7 +2057,7 @@ mod tests {
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
-    use tokio::io;
+    use tokio::io::AsyncReadExt;
     use tokio::process::Command;
 
     use super::*;
@@ -3368,6 +3364,7 @@ mod tests {
 
     #[tokio::test]
     async fn exit_tail_is_attached_and_logged() {
+        hyperactor_telemetry::initialize_logging_for_test();
         // Spawn a child that writes to stderr then exits 7.
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -3376,6 +3373,7 @@ mod tests {
             .stderr(Stdio::piped());
 
         let child = cmd.spawn().expect("spawn");
+        let pid = child.id().unwrap_or_default();
 
         // Build a BootstrapProcHandle around this child (like
         // manager.spawn() does).
@@ -3391,19 +3389,32 @@ mod tests {
                 let out = child.stdout.take().expect("child stdout must be piped");
                 let err = child.stderr.take().expect("child stderr must be piped");
 
-                // Use sinks as our "writers" (we don't care about
-                // forwarding in this test)
-                let out_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(io::sink());
-                let err_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(io::sink());
+                // Set up logging like ProcManager does
+                let log_channel = ChannelAddr::any(ChannelTransport::Unix);
+                let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
 
-                // Create the tailers (they spawn background drainers).
-                let max_tail_lines = 3;
-                let out_tailer = LogTailer::tee(max_tail_lines, out, out_writer);
-                let err_tailer = LogTailer::tee(max_tail_lines, err, err_writer);
+                // Set up StreamFwders if pipes are available
+                let stdout_monitor = StreamFwder::start(
+                    out,
+                    OutputTarget::Stdout,
+                    tail_size,
+                    log_channel.clone(),
+                    pid,
+                    0,
+                );
 
-                // Make them visible to the exit monitor (so it can
-                // join on exit).
-                handle.set_tailers(Some(out_tailer), Some(err_tailer));
+                let stderr_monitor = StreamFwder::start(
+                    err,
+                    OutputTarget::Stderr,
+                    tail_size,
+                    log_channel.clone(),
+                    pid,
+                    0,
+                );
+
+                // Set the stream monitors on the handle
+                handle.set_stream_monitors(Some(stdout_monitor), Some(stderr_monitor));
+                tracing::info!("set stream monitors");
             } else {
                 panic!("child already taken before wiring tailers");
             }
@@ -3415,6 +3426,11 @@ mod tests {
             program: std::path::PathBuf::from("/bin/true"), // unused in this test
             ..Default::default()
         });
+
+        // Give the monitors time to start
+        RealClock.sleep(Duration::from_millis(1000)).await;
+
+        // Now start the exit monitor which will take the child and wait for it to exit
         manager.spawn_exit_monitor(proc_id.clone(), handle.clone());
 
         // Await terminal status and assert on exit code and stderr
@@ -3423,6 +3439,7 @@ mod tests {
             .timeout(Duration::from_secs(2), handle.wait_inner())
             .await
             .expect("wait_inner() timed out (exit monitor stuck?)");
+
         match st {
             ProcStatus::Stopped {
                 exit_code,
