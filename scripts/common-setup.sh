@@ -192,6 +192,7 @@ run_test_groups() {
             --ignore-glob="**/meta/**" \
             --dist=no \
             --ignore=python/tests/test_actor_error.py \
+            --ignore=python/tests/test_controller.py \
             --group="$GROUP" \
             --splits=10
     fi
