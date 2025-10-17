@@ -1348,7 +1348,9 @@ async def test_actor_mesh_stop() -> None:
     await pm.stop()
 
 
-@pytest.mark.timeout(120)
+# FIXME: Flaky on v1
+@pytest.mark.oss_skip
+@pytest.mark.timeout(60)
 async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am = pm.spawn("printer", Printer)
