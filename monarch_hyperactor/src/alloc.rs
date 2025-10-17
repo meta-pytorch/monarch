@@ -496,11 +496,7 @@ impl Allocator for PyRemoteAllocator {
 
         let alloc =
             RemoteProcessAlloc::new(spec, WorldId(self.world_id.clone()), port, initializer)
-                .await
-                .map_err(|e| {
-                    tracing::error!("failed to allocate: {e:?}");
-                    e
-                })?;
+                .await?;
         Ok(alloc)
     }
 }

@@ -22,7 +22,6 @@ use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
-use hyperactor::channel::TcpMode;
 use hyperactor::channel::Tx;
 use hyperactor::channel::dial;
 use hyperactor::channel::serve;
@@ -67,7 +66,7 @@ impl Message {
 fn bench_message_sizes(c: &mut Criterion) {
     let transports = vec![
         ("local", ChannelTransport::Local),
-        ("tcp", ChannelTransport::Tcp(TcpMode::Hostname)),
+        ("tcp", ChannelTransport::Tcp),
         ("unix", ChannelTransport::Unix),
     ];
 
@@ -109,7 +108,7 @@ fn bench_message_rates(c: &mut Criterion) {
 
     let transports = vec![
         ("local", ChannelTransport::Local),
-        ("tcp", ChannelTransport::Tcp(TcpMode::Hostname)),
+        ("tcp", ChannelTransport::Tcp),
         ("unix", ChannelTransport::Unix),
         //TODO Add TLS once it is able to run in Sandcastle
     ];
