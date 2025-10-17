@@ -17,18 +17,10 @@ import monarch
 import pytest
 
 import torch
-from monarch import (
-    coalescing,
-    DeviceMesh,
-    fetch_shard,
-    get_active_mesh,
-    get_active_stream,
-    no_mesh,
-    remote,
-    Stream,
-)
+from monarch import coalescing, fetch_shard, get_active_stream, remote, Stream
 from monarch._testing import TestingContext
 from monarch.common._coalescing import _record_and_define, compile
+from monarch.common.device_mesh import DeviceMesh, get_active_mesh, no_mesh
 from monarch.common.function_caching import AliasOf, Storage, TensorGroup
 from monarch.common.tensor import Tensor
 

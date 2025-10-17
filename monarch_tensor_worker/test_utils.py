@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from monarch import Pipe  # @manual //monarch/python/monarch:monarch
+    from monarch.common.pipe import Pipe  # @manual //monarch/python/monarch/common:pipe
     from monarch.worker.worker import (  # @manual //monarch/python/monarch/worker:worker
         DeviceMesh,
     )

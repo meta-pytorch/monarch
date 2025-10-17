@@ -7,7 +7,7 @@
 # pyre-unsafe
 import pytest
 import torch
-from monarch import fetch_shard, no_mesh
+from monarch import fetch_shard
 
 from monarch._testing import TestingContext
 from monarch.builtins.random import (
@@ -21,6 +21,7 @@ from monarch.builtins.random import (
     set_rng_state_all_cuda_remote,
     set_rng_state_remote,
 )
+from monarch.common.device_mesh import no_mesh
 
 
 @pytest.mark.timeout(120)

@@ -20,8 +20,8 @@ import torch
 import torch.nn as nn
 
 import torch.optim as optim
-from monarch import fetch_shard, no_mesh, OpaqueRef, remote, Stream, Tensor
-from monarch.common.device_mesh import DeviceMesh
+from monarch import fetch_shard, OpaqueRef, remote, Stream, Tensor
+from monarch.common.device_mesh import DeviceMesh, no_mesh
 from monarch.opaque_module import OpaqueModule
 
 from .schedule_ir import (

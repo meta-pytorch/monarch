@@ -17,9 +17,8 @@ try:
     from later.unittest import TestCase
 except ModuleNotFoundError:
     from unittest import TestCase
-
-from monarch import fetch_shard, no_mesh, remote
-from monarch.common.device_mesh import DeviceMesh, DeviceMeshStatus
+from monarch import fetch_shard, remote
+from monarch.common.device_mesh import DeviceMesh, DeviceMeshStatus, no_mesh
 from monarch.common.invocation import DeviceException, RemoteException
 from monarch.rust_backend_mesh import MeshWorld, PoolDeviceMeshProvider
 from monarch.rust_local_mesh import (

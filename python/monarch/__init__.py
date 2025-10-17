@@ -40,7 +40,6 @@ if TYPE_CHECKING:
     from monarch.common._coalescing import coalescing
 
     from monarch.common.device_mesh import (
-        DeviceMesh,
         get_active_mesh,
         no_mesh,
         RemoteProcessGroup,
@@ -49,26 +48,13 @@ if TYPE_CHECKING:
     )
 
     from monarch.common.function import resolvers as function_resolvers
-
-    from monarch.common.future import Future
-
-    from monarch.common.invocation import RemoteException
     from monarch.common.opaque_ref import OpaqueRef
-    from monarch.common.pipe import create_pipe, Pipe, remote_generator
     from monarch.common.remote import remote
     from monarch.common.selection import Selection
     from monarch.common.stream import get_active_stream, Stream
     from monarch.common.tensor import reduce, reduce_, Tensor
     from monarch.fetch import fetch_shard, inspect, show
     from monarch.gradient_generator import grad_function, grad_generator
-    from monarch.notebook import mast_mesh, reserve_torchx as mast_reserve
-    from monarch.python_local_mesh import python_local_mesh
-    from monarch.rust_backend_mesh import (
-        rust_backend_mesh,
-        rust_backend_meshes,
-        rust_mast_mesh,
-    )
-    from monarch.rust_local_mesh import local_mesh, local_meshes, SocketType
     from monarch.simulator.config import set_meta  # noqa
     from monarch.simulator.interface import Simulator
     from monarch.world_mesh import world_mesh
@@ -77,21 +63,16 @@ if TYPE_CHECKING:
 _public_api = {
     "coalescing": ("monarch.common._coalescing", "coalescing"),
     "remote": ("monarch.common.remote", "remote"),
-    "DeviceMesh": ("monarch.common.device_mesh", "DeviceMesh"),
     "get_active_mesh": ("monarch.common.device_mesh", "get_active_mesh"),
     "no_mesh": ("monarch.common.device_mesh", "no_mesh"),
     "RemoteProcessGroup": ("monarch.common.device_mesh", "RemoteProcessGroup"),
     "function_resolvers": ("monarch.common.function", "resolvers"),
     "Extent": ("monarch._src.actor.shape", "Extent"),
     "Future": ("monarch.common.future", "Future"),
-    "RemoteException": ("monarch.common.invocation", "RemoteException"),
     "Shape": ("monarch._src.actor.shape", "Shape"),
     "NDSlice": ("monarch._src.actor.shape", "NDSlice"),
     "Selection": ("monarch.common.selection", "Selection"),
     "OpaqueRef": ("monarch.common.opaque_ref", "OpaqueRef"),
-    "create_pipe": ("monarch.common.pipe", "create_pipe"),
-    "Pipe": ("monarch.common.pipe", "Pipe"),
-    "remote_generator": ("monarch.common.pipe", "remote_generator"),
     "get_active_stream": ("monarch.common.stream", "get_active_stream"),
     "Stream": ("monarch.common.stream", "Stream"),
     "Tensor": ("monarch.common.tensor", "Tensor"),
@@ -105,15 +86,7 @@ _public_api = {
     "show": ("monarch.fetch", "show"),
     "grad_function": ("monarch.gradient_generator", "grad_function"),
     "grad_generator": ("monarch.gradient_generator", "grad_generator"),
-    "python_local_mesh": ("monarch.python_local_mesh", "python_local_mesh"),
-    "mast_mesh": ("monarch.notebook", "mast_mesh"),
     "mast_reserve": ("monarch.notebook", "reserve_torchx"),
-    "rust_backend_mesh": ("monarch.rust_backend_mesh", "rust_backend_mesh"),
-    "rust_backend_meshes": ("monarch.rust_backend_mesh", "rust_backend_meshes"),
-    "local_mesh": ("monarch.rust_local_mesh", "local_mesh"),
-    "local_meshes": ("monarch.rust_local_mesh", "local_meshes"),
-    "SocketType": ("monarch.rust_local_mesh", "SocketType"),
-    "rust_mast_mesh": ("monarch.rust_backend_mesh", "rust_mast_mesh"),
     "set_meta": ("monarch.simulator.config", "set_meta"),
     "Simulator": ("monarch.simulator.interface", "Simulator"),
     "world_mesh": ("monarch.world_mesh", "world_mesh"),
@@ -144,7 +117,6 @@ except ImportError:
 # otherwise tools think the imports are unused
 __all__ = [
     "coalescing",
-    "DeviceMesh",
     "get_active_mesh",
     "no_mesh",
     "remote",
@@ -152,14 +124,10 @@ __all__ = [
     "function_resolvers",
     "Extent",
     "Future",
-    "RemoteException",
     "Shape",
     "Selection",
     "NDSlice",
     "OpaqueRef",
-    "create_pipe",
-    "Pipe",
-    "remote_generator",
     "get_active_stream",
     "Stream",
     "Tensor",
@@ -173,15 +141,7 @@ __all__ = [
     "show",
     "grad_function",
     "grad_generator",
-    "python_local_mesh",
-    "mast_mesh",
     "mast_reserve",
-    "rust_backend_mesh",
-    "rust_backend_meshes",
-    "local_mesh",
-    "local_meshes",
-    "SocketType",
-    "rust_mast_mesh",
     "set_meta",
     "Simulator",
     "world_mesh",

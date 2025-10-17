@@ -18,18 +18,11 @@ import pytest
 
 import torch
 
-from monarch import (
-    DeviceMesh,
-    fetch_shard,
-    grad_function,
-    grad_generator,
-    no_mesh,
-    Stream,
-    Tensor,
-)
+from monarch import fetch_shard, grad_function, grad_generator, Stream, Tensor
 
 from monarch._testing import TestingContext
 from monarch.common.controller_api import LogMessage
+from monarch.common.device_mesh import DeviceMesh, no_mesh
 from monarch.common.invocation import DeviceException
 from monarch.common.remote import remote
 from monarch.common.tree import flattener

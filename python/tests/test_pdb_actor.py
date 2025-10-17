@@ -7,25 +7,21 @@
 # pyre-unsafe
 import sys
 import traceback
-from contextlib import contextmanager
-from typing import Generator
 
 import pytest
-
 import torch
 
-from monarch import DeviceMesh, fetch_shard, remote, rust_local_mesh
+from monarch import fetch_shard, remote
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
     DebuggerMessage as ClientDebuggerMessage,
 )
-
 from monarch._rust_bindings.monarch_extension.debugger import (
     DebuggerMessage as PdbDebuggerMessage,
     get_bytes_from_write_action,
 )
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
-from monarch.rust_local_mesh import LoggingLocation, SocketType
+from monarch.actor import this_host
 from monarch_supervisor.logging import fix_exception_lines
 
 
@@ -37,28 +33,6 @@ def custom_excepthook(exc_type, exc_value, exc_traceback):
 
 
 sys.excepthook = custom_excepthook
-
-
-@contextmanager
-def local_mesh(
-    hosts: int = 1, gpu_per_host: int = 2, activate: bool = True
-) -> Generator[DeviceMesh, None, None]:
-    with rust_local_mesh.local_mesh(
-        hosts=hosts,
-        gpus_per_host=gpu_per_host,
-        socket_type=SocketType.UNIX,
-        logging_location=LoggingLocation.DEFAULT,
-    ) as dm:
-        try:
-            if activate:
-                with dm.activate():
-                    yield dm
-            else:
-                yield dm
-            dm.exit()
-        except Exception:
-            dm.client._shutdown = True
-            raise
 
 
 remote_test_pdb_actor = remote(
@@ -77,34 +51,34 @@ remote_test_pdb_actor = remote(
 @pytest.mark.timeout(120)
 class TestPdbActor:
     def test_pdb_actor(self):
-        with local_mesh(1, 1) as dm:
-            with dm.activate():
-                client = dm.client.inner._actor
-                assert isinstance(client, ClientActor)
-                fut = fetch_shard(remote_test_pdb_actor())
-                msg = client.get_next_message(timeout_msec=None)
-                assert isinstance(msg, ClientDebuggerMessage)
-                assert isinstance(msg.action, DebuggerAction.Paused)
-                client.send(
-                    msg.debugger_actor_id,
-                    PdbDebuggerMessage(action=DebuggerAction.Attach()).serialize(),
-                )
-                msg = client.get_next_message(timeout_msec=None)
-                assert isinstance(msg, ClientDebuggerMessage)
-                assert isinstance(msg.action, DebuggerAction.Read)
-                assert msg.action.requested_size == 4
-                client.send(
-                    msg.debugger_actor_id,
-                    PdbDebuggerMessage(
-                        action=DebuggerAction.Write(b"1234")
-                    ).serialize(),
-                )
-                msg = client.get_next_message(timeout_msec=None)
-                assert isinstance(msg, ClientDebuggerMessage)
-                assert isinstance(msg.action, DebuggerAction.Write)
-                assert get_bytes_from_write_action(msg.action) == b"5678"
-                client.send(
-                    msg.debugger_actor_id,
-                    PdbDebuggerMessage(action=DebuggerAction.Detach()).serialize(),
-                )
-                fut.result()
+        # Use modern mesh pattern from distributed_tensors.py
+        mesh = this_host().spawn_procs({"gpu": 1})
+
+        with mesh.activate():
+            client = mesh.client.inner._actor
+            assert isinstance(client, ClientActor)
+            fut = fetch_shard(remote_test_pdb_actor())
+            msg = client.get_next_message(timeout_msec=None)
+            assert isinstance(msg, ClientDebuggerMessage)
+            assert isinstance(msg.action, DebuggerAction.Paused)
+            client.send(
+                msg.debugger_actor_id,
+                PdbDebuggerMessage(action=DebuggerAction.Attach()).serialize(),
+            )
+            msg = client.get_next_message(timeout_msec=None)
+            assert isinstance(msg, ClientDebuggerMessage)
+            assert isinstance(msg.action, DebuggerAction.Read)
+            assert msg.action.requested_size == 4
+            client.send(
+                msg.debugger_actor_id,
+                PdbDebuggerMessage(action=DebuggerAction.Write(b"1234")).serialize(),
+            )
+            msg = client.get_next_message(timeout_msec=None)
+            assert isinstance(msg, ClientDebuggerMessage)
+            assert isinstance(msg.action, DebuggerAction.Write)
+            assert get_bytes_from_write_action(msg.action) == b"5678"
+            client.send(
+                msg.debugger_actor_id,
+                PdbDebuggerMessage(action=DebuggerAction.Detach()).serialize(),
+            )
+            fut.result()

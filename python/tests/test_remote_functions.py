@@ -16,26 +16,17 @@ import monarch
 import pytest
 
 import torch
-from monarch import (
-    fetch_shard,
-    inspect,
-    no_mesh,
-    OpaqueRef,
-    Pipe,
-    remote,
-    remote_generator,
-    RemoteException as OldRemoteException,
-    Stream,
-)
+from monarch import fetch_shard, inspect, OpaqueRef, remote, Stream
 
 from monarch._testing import TestingContext
 from monarch.builtins.log import log_remote
 from monarch.builtins.random import set_manual_seed_remote
 from monarch.cached_remote_function import remote_autograd_function
 from monarch.common import remote as remote_module
-from monarch.common.device_mesh import DeviceMesh
+from monarch.common.device_mesh import DeviceMesh, no_mesh
+from monarch.common.invocation import RemoteException
+from monarch.common.pipe import Pipe, remote_generator
 from monarch.common.remote import call_on_shard_and_fetch, Remote
-from monarch.mesh_controller import RemoteException as NewRemoteException
 
 from monarch.opaque_module import OpaqueModule
 from monarch.opaque_object import opaque_method, OpaqueObject
@@ -57,9 +48,6 @@ from monarch.worker._testing_function import (
 )
 from monarch_supervisor.logging import fix_exception_lines
 from torch.distributed import ReduceOp
-
-
-RemoteException = (NewRemoteException, OldRemoteException)
 
 
 def custom_excepthook(exc_type, exc_value, exc_traceback):
@@ -328,7 +316,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             try:
                 inspect(t)
             except RemoteException as e:
-                if isinstance(e, NewRemoteException):
+                if isinstance(e, RemoteException):
                     backtrace = e.worker_error_string
                 else:
                     backtrace = "\n".join([frame.name for frame in e.worker_frames])
@@ -918,11 +906,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             x = outer_remote_function_that_calls_inner()
             try:
                 inspect(x)
-            except OldRemoteException as e:
-                backtrace = "\n".join([frame.name for frame in e.worker_frames])
-                assert "outer_remote_function" in backtrace
-                assert "inner_remote_function" in backtrace
-            except NewRemoteException as e:
+            except RemoteException as e:
                 assert "outer_remote_function" in e.worker_error_string
                 assert "inner_remote_function" in e.worker_error_string
 

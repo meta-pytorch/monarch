@@ -7,8 +7,9 @@
 # pyre-strict
 import pytest
 
-from monarch import DeviceMesh, NDSlice
+from monarch import NDSlice
 from monarch.common.client import Client
+from monarch.common.device_mesh import DeviceMesh
 from monarch.simulator.mock_controller import MockController
 
 
