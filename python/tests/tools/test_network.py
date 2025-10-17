@@ -28,10 +28,14 @@ class TestNetwork(unittest.TestCase):
                         ("123.45.67.89", 8080),
                     )
                 ],
-            ],
+            ]
+            * 2,
         ):
             self.assertEqual(
                 "123.45.67.89:8080", network.get_sockaddr("foo.bar.facebook.com", 8080)
+            )
+            self.assertEqual(
+                "123.45.67.89", network.get_ipaddr("foo.bar.facebook.com", 8080)
             )
 
     def test_network_ipv6(self) -> None:
@@ -52,6 +56,10 @@ class TestNetwork(unittest.TestCase):
             self.assertEqual(
                 "[1234:ab00:567c:89d:abcd:0:328:0]:8080",
                 network.get_sockaddr("foo.bar.facebook.com", 8080),
+            )
+            self.assertEqual(
+                "1234:ab00:567c:89d:abcd:0:328:0",
+                network.get_ipaddr("foo.bar.facebook.com", 8080),
             )
 
     def test_network(self) -> None:

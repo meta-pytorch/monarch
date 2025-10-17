@@ -10,6 +10,7 @@ import os
 import socket
 
 from monarch.actor import Actor, current_rank, endpoint, ProcMesh
+from monarch.tools.network import get_ipaddr
 
 
 def _find_free_port() -> int:
@@ -26,7 +27,7 @@ class _TorchDistributedInitActor(Actor):
 
     @endpoint
     def get_host_port(self) -> tuple[str, int]:
-        return (socket.gethostname(), _find_free_port())
+        raise NotImplementedError()
 
     @endpoint
     def setup_env(self, master_addr: str, master_port: int) -> None:
