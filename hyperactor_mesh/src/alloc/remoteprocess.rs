@@ -9,9 +9,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,7 +26,6 @@ use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
-use hyperactor::channel::TcpMode;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock;
@@ -62,7 +58,6 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::alloc::Alloc;
-use crate::alloc::AllocAssignedAddr;
 use crate::alloc::AllocConstraints;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
@@ -70,7 +65,6 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::alloc::ProcessAllocator;
-use crate::alloc::REMOTE_ALLOC_BOOTSTRAP_ADDR;
 use crate::alloc::process::CLIENT_TRACE_ID_LABEL;
 use crate::alloc::process::ClientContext;
 use crate::shortuuid::ShortUuid;
@@ -93,8 +87,6 @@ pub enum RemoteProcessAllocatorMessage {
         /// Todo: Once RemoteProcessAllocator moves to mailbox,
         /// the client_context will go to the message header instead
         client_context: Option<ClientContext>,
-        /// The address allocator should use for its forwarder.
-        forwarder_addr: AllocAssignedAddr,
     },
     /// Stop allocation.
     Stop,
@@ -224,7 +216,6 @@ impl RemoteProcessAllocator {
                             bootstrap_addr,
                             hosts,
                             client_context,
-                            forwarder_addr,
                         }) => {
                             tracing::info!("received allocation request for {} with extent {}", alloc_key, extent);
                             ensure_previous_alloc_stopped(&mut active_allocation).await;
@@ -260,10 +251,10 @@ impl RemoteProcessAllocator {
                                         handle: tokio::spawn(Self::handle_allocation_request(
                                             Box::new(alloc) as Box<dyn Alloc + Send + Sync>,
                                             alloc_key,
+                                            serve_addr.transport(),
                                             bootstrap_addr,
                                             hosts,
                                             cancel_token,
-                                            forwarder_addr,
                                         )),
                                     })
                                 }
@@ -315,14 +306,18 @@ impl RemoteProcessAllocator {
     async fn handle_allocation_request(
         alloc: Box<dyn Alloc + Send + Sync>,
         alloc_key: ShortUuid,
+        serve_transport: ChannelTransport,
         bootstrap_addr: ChannelAddr,
         hosts: Vec<String>,
         cancel_token: CancellationToken,
-        forwarder_addr: AllocAssignedAddr,
     ) {
         tracing::info!("handle allocation request, bootstrap_addr: {bootstrap_addr}");
         // start proc message forwarder
-        let (forwarder_addr, forwarder_rx) = match forwarder_addr.serve_with_config() {
+        // Use serve_transport instead of bootstrap_addr's transport so the transports are
+        // consistent between the remote process allocator and the processes.
+        // The bootstrap_addr could be a different transport that the process might not be compatible with.
+        let (forwarder_addr, forwarder_rx) = match channel::serve(ChannelAddr::any(serve_transport))
+        {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("failed to to bootstrap forwarder actor: {}", e);
@@ -625,12 +620,8 @@ impl RemoteProcessAlloc {
         remote_allocator_port: u16,
         initializer: impl RemoteProcessAllocInitializer + Send + Sync + 'static,
     ) -> Result<Self, anyhow::Error> {
-        let alloc_serve_addr = match config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
-            Some(addr_str) => AllocAssignedAddr::new(addr_str.parse()?),
-            None => AllocAssignedAddr::new(ChannelAddr::any(spec.transport.clone())),
-        };
-
-        let (bootstrap_addr, rx) = alloc_serve_addr.serve_with_config()?;
+        let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(spec.transport.clone()))
+            .map_err(anyhow::Error::from)?;
 
         tracing::info!(
             "starting alloc for {} on: {}",
@@ -777,12 +768,7 @@ impl RemoteProcessAlloc {
                 ChannelTransport::MetaTls(_) => {
                     format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
                 }
-                ChannelTransport::Tcp(TcpMode::Localhost) => {
-                    // TODO: @rusch see about moving over to config for this
-                    let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-                    format!("tcp!{}:{}", ip, self.remote_allocator_port)
-                }
-                ChannelTransport::Tcp(TcpMode::Hostname) => {
+                ChannelTransport::Tcp => {
                     format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
                 }
                 // Used only for testing.
@@ -821,12 +807,6 @@ impl RemoteProcessAlloc {
                 bootstrap_addr: self.bootstrap_addr.clone(),
                 hosts: hostnames.clone(),
                 client_context,
-                // Make sure allocator's forwarder uses the same IP address
-                // which is known to alloc. This is to avoid allocator picks
-                // its host's private IP address, while its known addres to
-                // alloc is a public IP address. In some environment, that
-                // could lead to port unreachable error.
-                forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&remote_addr),
             };
             tracing::info!(
                 name = message.as_ref(),
@@ -1200,18 +1180,6 @@ impl Alloc for RemoteProcessAlloc {
 
         Ok(())
     }
-
-    /// For Tcp and Metatls, return a router address which has the same IP address
-    /// as the alloc's bootstrap address, but with port set as 0. We do this
-    /// instead of using `ChannelAddr::any` is because we want alloc uses the
-    /// same IP address for all its frontend ports. In some environment, the
-    /// host can have public IP address and private IP address, and use the wrong
-    /// one could lead to port unreachable error.
-    ///
-    /// For other channel types, this method still uses ChannelAddr::any.
-    fn client_router_addr(&self) -> AllocAssignedAddr {
-        AllocAssignedAddr::with_unspecified_port_or_any(&self.bootstrap_addr)
-    }
 }
 
 impl Drop for RemoteProcessAlloc {
@@ -1373,7 +1341,6 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1527,7 +1494,6 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1632,7 +1598,6 @@ mod test {
             bootstrap_addr: bootstrap_addr.clone(),
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1657,7 +1622,6 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1755,7 +1719,6 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1847,7 +1810,6 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -1942,7 +1904,6 @@ mod test {
             client_context: Some(ClientContext {
                 trace_id: test_trace_id.to_string(),
             }),
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();
@@ -2017,7 +1978,6 @@ mod test {
             bootstrap_addr,
             hosts: vec![],
             client_context: None,
-            forwarder_addr: AllocAssignedAddr::with_unspecified_port_or_any(&tx.addr()),
         })
         .await
         .unwrap();

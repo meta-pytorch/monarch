@@ -11,7 +11,6 @@ use std::str::FromStr;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::MetaTlsAddr;
-use hyperactor::channel::TcpMode;
 use hyperactor::channel::TlsMode;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -25,8 +24,7 @@ use pyo3::prelude::*;
 )]
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum PyChannelTransport {
-    TcpWithLocalhost,
-    TcpWithHostname,
+    Tcp,
     MetaTlsWithHostname,
     MetaTlsWithIpV6,
     Local,
@@ -46,8 +44,7 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
 
     fn try_from(transport: ChannelTransport) -> PyResult<Self> {
         match transport {
-            ChannelTransport::Tcp(TcpMode::Localhost) => Ok(PyChannelTransport::TcpWithLocalhost),
-            ChannelTransport::Tcp(TcpMode::Hostname) => Ok(PyChannelTransport::TcpWithHostname),
+            ChannelTransport::Tcp => Ok(PyChannelTransport::Tcp),
             ChannelTransport::MetaTls(TlsMode::Hostname) => {
                 Ok(PyChannelTransport::MetaTlsWithHostname)
             }
@@ -114,10 +111,7 @@ impl PyChannelAddr {
     pub fn get_transport(&self) -> PyResult<PyChannelTransport> {
         let transport = self.inner.transport();
         match transport {
-            ChannelTransport::Tcp(mode) => match mode {
-                TcpMode::Localhost => Ok(PyChannelTransport::TcpWithLocalhost),
-                TcpMode::Hostname => Ok(PyChannelTransport::TcpWithHostname),
-            },
+            ChannelTransport::Tcp => Ok(PyChannelTransport::Tcp),
             ChannelTransport::MetaTls(mode) => match mode {
                 TlsMode::Hostname => Ok(PyChannelTransport::MetaTlsWithHostname),
                 TlsMode::IpV6 => Ok(PyChannelTransport::MetaTlsWithIpV6),
@@ -136,8 +130,7 @@ impl PyChannelAddr {
 impl From<PyChannelTransport> for ChannelTransport {
     fn from(val: PyChannelTransport) -> Self {
         match val {
-            PyChannelTransport::TcpWithLocalhost => ChannelTransport::Tcp(TcpMode::Localhost),
-            PyChannelTransport::TcpWithHostname => ChannelTransport::Tcp(TcpMode::Hostname),
+            PyChannelTransport::Tcp => ChannelTransport::Tcp,
             PyChannelTransport::MetaTlsWithHostname => ChannelTransport::MetaTls(TlsMode::Hostname),
             PyChannelTransport::MetaTlsWithIpV6 => ChannelTransport::MetaTls(TlsMode::IpV6),
             PyChannelTransport::Local => ChannelTransport::Local,
@@ -161,8 +154,7 @@ mod tests {
     fn test_channel_any_and_parse() -> PyResult<()> {
         // just make sure any() and parse() calls work for all transports
         for transport in [
-            PyChannelTransport::TcpWithLocalhost,
-            PyChannelTransport::TcpWithHostname,
+            PyChannelTransport::Tcp,
             PyChannelTransport::Unix,
             PyChannelTransport::MetaTlsWithHostname,
             PyChannelTransport::MetaTlsWithIpV6,
@@ -199,12 +191,8 @@ mod tests {
     #[test]
     fn test_channel_addr_get_transport() -> PyResult<()> {
         assert_eq!(
-            PyChannelAddr::parse("tcp![::1]:26600")?.get_transport()?,
-            PyChannelTransport::TcpWithLocalhost,
-        );
-        assert_eq!(
             PyChannelAddr::parse("tcp![::]:26600")?.get_transport()?,
-            PyChannelTransport::TcpWithHostname,
+            PyChannelTransport::Tcp
         );
         assert_eq!(
             PyChannelAddr::parse("metatls!devgpu001.pci.facebook.com:26600")?.get_transport()?,

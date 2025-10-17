@@ -2053,7 +2053,6 @@ mod tests {
     use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::channel::TcpMode;
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
@@ -2084,7 +2083,7 @@ mod tests {
             Bootstrap::default(),
             Bootstrap::Proc {
                 proc_id: id!(foo[0]),
-                backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+                backend_addr: ChannelAddr::any(ChannelTransport::Tcp),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 config: None,
             },

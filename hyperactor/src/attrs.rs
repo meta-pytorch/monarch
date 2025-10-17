@@ -96,10 +96,8 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::ops::Index;
 use std::ops::IndexMut;
-use std::str::FromStr;
 use std::sync::LazyLock;
 
 use chrono::DateTime;
@@ -354,33 +352,6 @@ impl AttrValue for std::time::SystemTime {
     fn parse(value: &str) -> Result<Self, anyhow::Error> {
         let datetime = DateTime::parse_from_rfc3339(value)?;
         Ok(datetime.into())
-    }
-}
-
-impl<T, E> AttrValue for std::ops::Range<T>
-where
-    T: Named
-        + Display
-        + FromStr<Err = E>
-        + Send
-        + Sync
-        + Serialize
-        + DeserializeOwned
-        + Clone
-        + 'static,
-    E: Into<anyhow::Error> + Send + Sync + 'static,
-{
-    fn display(&self) -> String {
-        format!("{}..{}", self.start, self.end)
-    }
-
-    fn parse(value: &str) -> Result<Self, anyhow::Error> {
-        let (start, end) = value.split_once("..").ok_or_else(|| {
-            anyhow::anyhow!("expected range in format `start..end`, got `{}`", value)
-        })?;
-        let start = start.parse().map_err(|e: E| e.into())?;
-        let end = end.parse().map_err(|e: E| e.into())?;
-        Ok(start..end)
     }
 }
 
