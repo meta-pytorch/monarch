@@ -110,7 +110,8 @@ pub trait Actor: Sized + Send + Debug + 'static {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        tokio::spawn(future)
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || handle.block_on(future))
     }
 
     /// Handle actor supervision event. Return `Ok(true)`` if the event is handled here.
