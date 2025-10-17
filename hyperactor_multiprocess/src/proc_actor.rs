@@ -34,7 +34,6 @@ use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::TcpMode;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::context;
@@ -1377,7 +1376,7 @@ mod tests {
 
         // Serve a system.
         let server_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             Duration::from_secs(120),
             Duration::from_secs(120),
         )
@@ -1396,7 +1395,7 @@ mod tests {
         ));
 
         // Construct a proc forwarder in terms of the system sender.
-        let listen_addr = ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname));
+        let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
         let proc_forwarder =
             BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
@@ -1423,7 +1422,7 @@ mod tests {
         let _proc_actor_1 = ProcActor::bootstrap_for_proc(
             proc_1.clone(),
             world_id.clone(),
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             server_handle.local_addr().clone(),
             sup_ref.clone(),
             Duration::from_secs(120),
@@ -1498,7 +1497,7 @@ mod tests {
 
         // Serve a system.
         let server_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             Duration::from_secs(120),
             Duration::from_secs(120),
         )
@@ -1519,7 +1518,7 @@ mod tests {
         ));
 
         // Construct a proc forwarder in terms of the system sender.
-        let listen_addr = ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname));
+        let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
         let proc_forwarder =
             BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
 
@@ -1546,7 +1545,7 @@ mod tests {
         let _proc_actor_1 = ProcActor::bootstrap_for_proc(
             proc_1.clone(),
             world_id.clone(),
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             server_handle.local_addr().clone(),
             sup_ref.clone(),
             Duration::from_secs(120),
@@ -1652,7 +1651,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_address_book_cache() {
         let server_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             Duration::from_secs(2), // supervision update timeout
             Duration::from_secs(2), // duration to evict an unhealthy world
         )
@@ -1706,7 +1705,7 @@ mod tests {
         actor_id: &ActorId,
         system_addr: &ChannelAddr,
     ) -> (ActorRef<PingPongActor>, ActorRef<ProcActor>) {
-        let listen_addr = ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname));
+        let listen_addr = ChannelAddr::any(ChannelTransport::Tcp);
         let bootstrap = ProcActor::bootstrap(
             actor_id.proc_id().clone(),
             actor_id

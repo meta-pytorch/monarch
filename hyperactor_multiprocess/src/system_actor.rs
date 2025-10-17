@@ -1849,7 +1849,6 @@ mod tests {
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
-    use hyperactor::channel::TcpMode;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::data::Serialized;
@@ -2195,7 +2194,7 @@ mod tests {
         // Serve a system. Undeliverable messages encountered by the
         // mailbox server are returned to the system actor.
         let server_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             Duration::from_secs(2), // supervision update timeout
             Duration::from_secs(2), // duration to evict an unhealthy world
         )
@@ -2256,7 +2255,7 @@ mod tests {
         let _proc_actor_0 = ProcActor::bootstrap_for_proc(
             proc_0.clone(),
             world_id.clone(),
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             server_handle.local_addr().clone(),
             sup_ref.clone(),
             Duration::from_millis(300), // supervision update interval
@@ -2273,7 +2272,7 @@ mod tests {
         let proc_actor_1 = ProcActor::bootstrap_for_proc(
             proc_1.clone(),
             world_id.clone(),
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             server_handle.local_addr().clone(),
             sup_ref.clone(),
             Duration::from_millis(300), // supervision update interval
@@ -2349,7 +2348,7 @@ mod tests {
     #[tokio::test]
     async fn test_stop_fast() -> Result<()> {
         let server_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any(ChannelTransport::Tcp),
             Duration::from_secs(2), // supervision update timeout
             Duration::from_secs(2), // duration to evict an unhealthy world
         )

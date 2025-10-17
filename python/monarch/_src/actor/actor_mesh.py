@@ -250,7 +250,7 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
     """
     if isinstance(transport, str):
         transport = {
-            "tcp": ChannelTransport.TcpWithHostname,
+            "tcp": ChannelTransport.Tcp,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
         }.get(transport)

@@ -9,9 +9,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,7 +26,6 @@ use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
-use hyperactor::channel::TcpMode;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock;
@@ -70,7 +66,6 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::alloc::ProcessAllocator;
-use crate::alloc::REMOTE_ALLOC_BOOTSTRAP_ADDR;
 use crate::alloc::process::CLIENT_TRACE_ID_LABEL;
 use crate::alloc::process::ClientContext;
 use crate::shortuuid::ShortUuid;
@@ -322,7 +317,7 @@ impl RemoteProcessAllocator {
     ) {
         tracing::info!("handle allocation request, bootstrap_addr: {bootstrap_addr}");
         // start proc message forwarder
-        let (forwarder_addr, forwarder_rx) = match forwarder_addr.serve_with_config() {
+        let (forwarder_addr, forwarder_rx) = match forwarder_addr.serve() {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("failed to to bootstrap forwarder actor: {}", e);
@@ -625,12 +620,8 @@ impl RemoteProcessAlloc {
         remote_allocator_port: u16,
         initializer: impl RemoteProcessAllocInitializer + Send + Sync + 'static,
     ) -> Result<Self, anyhow::Error> {
-        let alloc_serve_addr = match config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
-            Some(addr_str) => AllocAssignedAddr::new(addr_str.parse()?),
-            None => AllocAssignedAddr::new(ChannelAddr::any(spec.transport.clone())),
-        };
-
-        let (bootstrap_addr, rx) = alloc_serve_addr.serve_with_config()?;
+        let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(spec.transport.clone()))
+            .map_err(anyhow::Error::from)?;
 
         tracing::info!(
             "starting alloc for {} on: {}",
@@ -777,12 +768,7 @@ impl RemoteProcessAlloc {
                 ChannelTransport::MetaTls(_) => {
                     format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
                 }
-                ChannelTransport::Tcp(TcpMode::Localhost) => {
-                    // TODO: @rusch see about moving over to config for this
-                    let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-                    format!("tcp!{}:{}", ip, self.remote_allocator_port)
-                }
-                ChannelTransport::Tcp(TcpMode::Hostname) => {
+                ChannelTransport::Tcp => {
                     format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
                 }
                 // Used only for testing.
