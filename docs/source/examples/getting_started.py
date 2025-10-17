@@ -121,6 +121,20 @@ counters.increment.broadcast()
 # the client (about which more later).
 
 # %%
+# Logging
+# ---------------------
+# Since we're talking about having multiple actors now, it's worth briefly covering how Monarch handles distributed logging.
+# Monarch streams logs from all the distributed processes back to the Monarch client and applies
+# a log aggregator while doing so.  The log aggregator helps reduce the verbosity of the logs from the various processes by aggregating
+# similar lines and providing a summary.  This follows the larger theme of making the distributed job feel like a local one.
+#
+# If you wish to look at the raw log files rather than the streamed ones (as streaming is best-effort), you can generally find
+# them at ``/tmp/$USER/monarch*`` on the server running the client and the other Monarch processes.
+#
+# You can override the log levels by setting ``MONARCH_FILE_LOG`` (stdout), and ``MONARCH_STDERR_LOG`` (stderr).  Valid values
+# include ``["TRACE", "DEBUG", "INFO", "WARN", "ERROR"]``.
+
+# %%
 # Slicing Meshes
 # --------------
 # We can also slice up the mesh and send to only some of it (gpus 0 through 4):
