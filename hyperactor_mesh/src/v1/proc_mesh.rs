@@ -45,6 +45,7 @@ use ndslice::view::Ranked;
 use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::Notify;
 
 use crate::CommActor;
 use crate::alloc::Alloc;
@@ -375,11 +376,42 @@ impl ProcMesh {
             })
             .collect();
 
+        let stop = Arc::new(Notify::new());
+        let name = Name::new(name);
+        let extent = alloc.extent().clone();
+
+        {
+            let stop = Arc::clone(&stop);
+            let name = name.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = stop.notified() => {
+                            break;
+                        }
+                        // We are mostly just using this to drive allocation events.
+                        proc_state = alloc.next() => {
+                            match proc_state {
+                                // The alloc was stopped.
+                                None => break,
+                                Some(proc_state) => {
+                                    tracing::info!("unmonitored allocation event for {}: {}", name, proc_state);
+                                }
+                            }
+
+                        }
+                    }
+                }
+            });
+        }
+
         Self::create(
             cx,
-            Name::new(name),
+            name,
             ProcMeshAllocation::Allocated {
-                alloc,
+                stop,
+                extent,
                 ranks: Arc::new(ranks),
             },
             true, // alloc-based meshes support comm actors
@@ -389,6 +421,7 @@ impl ProcMesh {
 
     /// Detach the proc mesh from the lifetime of `self`, and return its reference.
     pub(crate) fn detach(self) -> ProcMeshRef {
+        // This also keeps the ProcMeshAllocation::Allocated alloc task alive.
         self.current_ref
     }
 }
@@ -411,9 +444,11 @@ impl Deref for ProcMesh {
 enum ProcMeshAllocation {
     /// A mesh that has been allocated from an `Alloc`.
     Allocated {
-        // We have to hold on to the alloc for the duration of the mesh lifetime.
-        // The procmesh inherits the alloc's extent.
-        alloc: Box<dyn Alloc + Send + Sync + 'static>,
+        // A cancellation token used to stop the task keeping the alloc alive.
+        #[allow(dead_code)]
+        stop: Arc<Notify>,
+
+        extent: Extent,
 
         // The allocated ranks.
         ranks: Arc<Vec<ProcRef>>,
@@ -434,7 +469,7 @@ enum ProcMeshAllocation {
 impl ProcMeshAllocation {
     fn extent(&self) -> &Extent {
         match self {
-            ProcMeshAllocation::Allocated { alloc, .. } => alloc.extent(),
+            ProcMeshAllocation::Allocated { extent, .. } => &extent,
             ProcMeshAllocation::Owned { extent, .. } => extent,
         }
     }
