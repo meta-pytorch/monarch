@@ -7,6 +7,7 @@
 # pyre-strict
 import logging
 import socket
+from enum import auto, Enum
 from typing import Optional
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -52,13 +53,30 @@ def get_sockaddr(hostname: str, port: int) -> str:
     )
 
 
-def get_ipaddr(hostname: str, port: int) -> str:
+class AddrType(Enum):
+    # Default to IPv6, and fallback to IPv4 if IPv6 is not available on the host.
+    Default = auto()
+    IPv4 = auto()
+    IPv6 = auto()
+
+
+def get_ipaddr(hostname: str, port: int, addr_type: AddrType = AddrType.Default) -> str:
     """Similar to `get_sockaddr` but returns only the ip address instead of the socket address.
     The return IP address is of the form:
       1. `{ipv4.address}` (e.g. `127.0.0.1`)
       2. `[{ipv6:address}]` (e.g. `[::1]`)
     """
-    for family in [socket.AF_INET6, socket.AF_INET]:
+    match addr_type:
+        case AddrType.IPv4:
+            families = [socket.AF_INET]
+        case AddrType.IPv6:
+            families = [socket.AF_INET6]
+        case AddrType.Default:
+            families = [socket.AF_INET6, socket.AF_INET]
+        case _:
+            raise ValueError(f"Unknown AddrType: {AddrType}")
+
+    for family in families:
         if ipaddr := _resolve_ipaddr(hostname, port, family):
             logger.info(
                 "resolved %s address `%s` for `%s:%d`",

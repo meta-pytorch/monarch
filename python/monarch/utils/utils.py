@@ -9,8 +9,10 @@
 import os
 import socket
 
+from typing import Optional
+
 from monarch.actor import Actor, current_rank, endpoint, ProcMesh
-from monarch.tools.network import get_ipaddr
+from monarch.tools.network import AddrType, get_ipaddr
 
 
 def _find_free_port() -> int:
@@ -26,9 +28,13 @@ class _TorchDistributedInitActor(Actor):
         self.rank: int = current_rank().rank
 
     @endpoint
-    def get_host_port(self) -> tuple[str, int]:
+    def get_host_port(self, use_ipaddr: Optional[AddrType]) -> tuple[str, int]:
+        hostname = socket.gethostname()
         port = _find_free_port()
-        ipaddr = get_ipaddr(socket.gethostname(), port)
+        if use_ipaddr is None:
+            return (hostname, port)
+
+        ipaddr = get_ipaddr(hostname, port, use_ipaddr)
         return (ipaddr, port)
 
     @endpoint
@@ -62,6 +68,7 @@ async def setup_env_for_distributed(
     proc_mesh: ProcMesh,
     master_addr: str | None = None,
     master_port: int | None = None,
+    use_ipaddr: Optional[AddrType] = None,
 ) -> None:
     """
     Sets up environment variables for pytorch distributed.
@@ -75,7 +82,7 @@ async def setup_env_for_distributed(
     am = proc_mesh.spawn("_TorchDistributedInitActor", _TorchDistributedInitActor)
     if master_addr is None:
         # We use call instead of call_one because call_one can't handle tuple return types.
-        vm = await am.flatten("rank").slice(rank=0).get_host_port.call()
+        vm = await am.flatten("rank").slice(rank=0).get_host_port.call(use_ipaddr)
         master_addr, master_port = vm.item()
     assert master_port is not None, "master_port should not be None here."
     await am.setup_env.call(master_addr, master_port)
