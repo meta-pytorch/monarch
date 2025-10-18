@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+# To force Monarch to use V0 for this Notebook (This will be remove in the future)
+os.environ["MONARCH_V0_WORKAROUND_DO_NOT_USE"] = "1"
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
@@ -15,7 +17,7 @@ from utils.ip_utils import check_ips_available, create_tcp_addresses, get_master
 MONARCH_DEFAULT_PORT = 26600
 
 # Client allowed port range for Monarch communication
-CLIENT_ALLOWED_PORT_RANGE = "26600-26610"
+CLIENT_ALLOWED_PORT_RANGE = "26600..26610"
 
 
 def setup_allocator(tcp_addresses, public_master_host_ip_address, num_nodes, num_gpus):
