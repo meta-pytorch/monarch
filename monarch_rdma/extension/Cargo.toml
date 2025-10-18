@@ -18,7 +18,7 @@ hyperactor = { version = "0.0.0", path = "../../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../../hyperactor_mesh" }
 monarch_hyperactor = { version = "0.0.0", path = "../../monarch_hyperactor" }
 monarch_rdma = { version = "0.0.0", path = ".." }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.24", features = ["anyhow", "extension-module", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

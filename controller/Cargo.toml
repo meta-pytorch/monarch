@@ -27,7 +27,7 @@ hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiproces
 monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
 nccl-sys = { path = "../nccl-sys" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.24", features = ["anyhow", "extension-module", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
