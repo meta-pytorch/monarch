@@ -24,7 +24,7 @@ pub enum ContextInstance {
 }
 
 impl ContextInstance {
-    fn mailbox_for_py(&self) -> &hyperactor::Mailbox {
+    pub(crate) fn mailbox_for_py(&self) -> &hyperactor::Mailbox {
         match self {
             ContextInstance::Client(ins) => ins.mailbox_for_py(),
             ContextInstance::PythonActor(ins) => ins.mailbox_for_py(),
@@ -213,6 +213,10 @@ impl PyContext {
             instance,
             rank: cx.cast_point(),
         }
+    }
+
+    pub(crate) fn from_instance_and_rank(instance: Py<PyInstance>, rank: Point) -> PyContext {
+        PyContext { instance, rank }
     }
 }
 
