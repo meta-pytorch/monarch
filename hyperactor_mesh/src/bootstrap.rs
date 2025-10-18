@@ -1418,9 +1418,6 @@ pub struct BootstrapProcManager {
     /// exclusively in the [`Drop`] impl to send `SIGKILL` without
     /// needing async context.
     pid_table: Arc<std::sync::Mutex<HashMap<ProcId, u32>>>,
-    /// FileMonitor that aggregates logs from all children.
-    /// None if file monitor creation failed.
-    file_appender: Option<Arc<crate::logging::FileAppender>>,
 }
 
 impl Drop for BootstrapProcManager {
@@ -1471,22 +1468,10 @@ impl BootstrapProcManager {
     /// backed by a specific binary path (e.g. a bootstrap
     /// trampoline).
     pub(crate) fn new(command: BootstrapCommand) -> Self {
-        let log_monitor = match crate::logging::FileAppender::new() {
-            Some(fm) => {
-                tracing::info!("log monitor created successfully");
-                Some(Arc::new(fm))
-            }
-            None => {
-                tracing::warn!("failed to create log monitor");
-                None
-            }
-        };
-
         Self {
             command,
             children: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             pid_table: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            file_appender: log_monitor,
         }
     }
 
@@ -1708,20 +1693,9 @@ impl ProcManager for BootstrapProcManager {
 
         let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
 
-        // Get FileMonitor addresses if available
-        let file_monitor_stdout_addr = self
-            .file_appender
-            .as_ref()
-            .map(|fm| fm.addr_for(OutputTarget::Stdout));
-        let file_monitor_stderr_addr = self
-            .file_appender
-            .as_ref()
-            .map(|fm| fm.addr_for(OutputTarget::Stderr));
-
-        // Create StreamFwders with FileMonitor addresses
+        // Create LogFileMonitors for both stdout and stderr
         let stdout_monitor = StreamFwder::start(
             stdout,
-            file_monitor_stdout_addr,
             OutputTarget::Stdout,
             tail_size,
             log_channel.clone(),
@@ -1731,7 +1705,6 @@ impl ProcManager for BootstrapProcManager {
 
         let stderr_monitor = StreamFwder::start(
             stderr,
-            file_monitor_stderr_addr,
             OutputTarget::Stderr,
             tail_size,
             log_channel.clone(),
@@ -3457,7 +3430,6 @@ mod tests {
                 // Set up StreamFwders if pipes are available
                 let stdout_monitor = StreamFwder::start(
                     out,
-                    None,
                     OutputTarget::Stdout,
                     tail_size,
                     log_channel.clone(),
@@ -3467,7 +3439,6 @@ mod tests {
 
                 let stderr_monitor = StreamFwder::start(
                     err,
-                    None,
                     OutputTarget::Stderr,
                     tail_size,
                     log_channel.clone(),

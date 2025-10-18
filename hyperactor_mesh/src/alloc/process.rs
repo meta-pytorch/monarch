@@ -205,7 +205,6 @@ impl Child {
             let log_channel_clone = log_channel.clone();
             *stdout_fwder.lock().expect("stdout_fwder mutex poisoned") = Some(StreamFwder::start(
                 stdout,
-                None, // TODO: Remove once V0 path is not supported anymore
                 OutputTarget::Stdout,
                 MAX_TAIL_LOG_LINES,
                 log_channel_clone,
@@ -219,7 +218,6 @@ impl Child {
             let stderr_fwder = child_stderr_fwder.clone();
             *stderr_fwder.lock().expect("stderr_fwder mutex poisoned") = Some(StreamFwder::start(
                 stderr,
-                None, // TODO: Remove once V0 path is not supported anymore
                 OutputTarget::Stderr,
                 MAX_TAIL_LOG_LINES,
                 log_channel,
