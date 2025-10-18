@@ -324,6 +324,13 @@ impl MessageEnvelope {
         self.errors.push(error)
     }
 
+    /// Change the sender on the envelope in case it was set incorrectly. This
+    /// should only be used by CommActor since it is forwarding from another
+    /// sender.
+    pub fn update_sender(&mut self, sender: ActorId) {
+        self.sender = sender;
+    }
+
     /// The message has been determined to be undeliverable with the
     /// provided error. Mark the envelope with the error and return to
     /// sender.
