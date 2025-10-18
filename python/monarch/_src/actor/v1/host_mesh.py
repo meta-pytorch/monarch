@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import Any, Callable, Dict, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -134,6 +134,11 @@ class HostMesh(MeshTrait):
     ) -> "HostMesh":
         spec = AllocSpec(alloc_constraints or AllocConstraints(), **extent)
         alloc: AllocHandle = allocator.allocate(spec)
+
+        # Local runs that use ProcessAllocator need to use the precomputed
+        # bootstrap command.
+        if bootstrap_cmd is None and isinstance(allocator, ProcessAllocator):
+            bootstrap_cmd = _bootstrap_cmd()
 
         async def task() -> HyHostMesh:
             return await HyHostMesh.allocate_nonblocking(
@@ -332,21 +337,6 @@ class HostMesh(MeshTrait):
             raise RuntimeError(
                 "cannot call sync_workspace on a sliced host mesh or one that was sent over an actor endpoint"
             )
-
-    @property
-    def initialized(self) -> Future[Literal[True]]:
-        """
-        Future completes with 'True' when the `HostMesh` has initialized.
-        Because `HostMesh` are remote objects, there is no guarentee that the `HostMesh` is
-        still usable after this completes, only that at some point in the past it was usable.
-        """
-        hm: Shared[HyHostMesh] = self._hy_host_mesh
-
-        async def task() -> Literal[True]:
-            await hm
-            return True
-
-        return Future(coro=task())
 
 
 def fake_in_process_host() -> "HostMesh":
