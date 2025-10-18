@@ -11,6 +11,7 @@ import importlib
 import json
 import logging
 import os
+import threading
 import warnings
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -38,14 +39,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shap
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
 )
-from monarch._src.actor.actor_mesh import (
-    _Actor,
-    _Lazy,
-    _this_host_for_fake_in_process_host,
-    Actor,
-    ActorMesh,
-    context,
-)
+from monarch._src.actor.actor_mesh import _Actor, Actor, ActorMesh, context
 from monarch._src.actor.allocator import AllocHandle, SimAllocator
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
@@ -151,12 +145,9 @@ class ProcMesh(MeshTrait):
                 "`ProcMesh.host_mesh` is not yet supported for non-singleton proc meshes."
             )
         elif self._host_mesh.is_fake_in_process:
-            host_mesh = _this_host_for_fake_in_process_host.try_get()
-            assert host_mesh is not None, (
-                "Attempted to get `_this_host_for_fake_in_process_host` before the root client context "
-                "initialized it. This should not be possible."
-            )
-            return host_mesh
+            from monarch._src.actor.v1.host_mesh import create_local_host_mesh
+
+            return create_local_host_mesh()
         else:
             return self._host(0)
 
@@ -243,7 +234,16 @@ class ProcMesh(MeshTrait):
 
         if _attach_controller_controller:
             instance = context().actor_instance
-            pm._controller_controller = instance._controller_controller
+            cc = instance._controller_controller
+            if (
+                cc is not None
+                and cast(ActorMesh[_ControllerController], cc)._class
+                is not _ControllerController
+            ):
+                # This can happen in the client process
+                pm._controller_controller = _get_controller_controller()[1]
+            else:
+                pm._controller_controller = instance._controller_controller  # type: ignore
             instance._add_child(pm)
 
         async def task(
@@ -613,7 +613,6 @@ class _ControllerController(Actor):
     @endpoint
     def get_or_spawn(
         self,
-        self_ref: "_ControllerController",  # This is actually an ActorMesh[_ControllerController]
         name: str,
         Class: Type[TActor],
         *args: Any,
@@ -623,25 +622,38 @@ class _ControllerController(Actor):
             from monarch._src.actor.v1.host_mesh import this_proc
 
             proc = this_proc()
-            proc._controller_controller = self_ref
+            proc._controller_controller = _get_controller_controller()[1]
             self._controllers[name] = proc.spawn(name, Class, *args, **kwargs)
         return cast(TActor, self._controllers[name])
 
 
-# Lazy init so that the controller_controller and does not produce logs when it isn't used.
+_cc_init = threading.Lock()
+_cc_proc_mesh: Optional["ProcMesh"] = None
+_controller_controller: Optional["_ControllerController"] = None
+
+
+# Lazy init so that the controller_controller and proc do not produce logs when they aren't used.
 # Checking for the controller (when it does not already exist in the MonarchContext) needs a lock,
 # otherwise two initializing procs will both try to init resulting in duplicates. The critical
 # region is not blocking: it spawns a separate task to do the init, assigns the
 # Shared[_ControllerController] from that task to the global and releases the lock.
-_controller_controller: _Lazy[_ControllerController] = _Lazy(
-    lambda: context().actor_instance.proc_mesh.spawn(
-        "controller_controller", _ControllerController
-    )
-)
-
-
 def _get_controller_controller() -> "Tuple[ProcMesh, _ControllerController]":
-    return context().actor_instance.proc_mesh, _controller_controller.get()
+    global _controller_controller, _cc_proc_mesh
+    with _cc_init:
+        if _controller_controller is None:
+            from monarch._src.actor.v1.host_mesh import fake_in_process_host
+
+            _cc_proc_mesh = fake_in_process_host()._spawn_nonblocking(
+                name="controller_controller_proc",
+                per_host=Extent([], []),
+                setup=None,
+                _attach_controller_controller=False,
+            )
+            _controller_controller = _cc_proc_mesh.spawn(
+                "controller_controller", _ControllerController
+            )
+    assert _cc_proc_mesh is not None and _controller_controller is not None
+    return _cc_proc_mesh, _controller_controller
 
 
 def get_or_spawn_controller(
@@ -661,7 +673,7 @@ def get_or_spawn_controller(
         A Future that resolves to a reference to the actor.
     """
     cc = context().actor_instance._controller_controller
-    return cc.get_or_spawn.call_one(cc, name, Class, *args, **kwargs)
+    return cc.get_or_spawn.call_one(name, Class, *args, **kwargs)
 
 
 def proc_mesh(

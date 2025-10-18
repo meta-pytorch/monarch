@@ -6,29 +6,17 @@
 
 # pyre-unsafe
 
-import os
-import threading
-import time
-from unittest.mock import patch
-
 import cloudpickle
-import monarch._src.actor.host_mesh
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
-from monarch._src.actor.actor_mesh import (
-    _this_host_for_fake_in_process_host,
-    Actor,
-    context,
-)
+from monarch._src.actor.actor_mesh import Actor, context
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import (
     create_local_host_mesh,
     fake_in_process_host,
     HostMesh,
-    this_host,
 )
 from monarch._src.actor.pickle import flatten, unflatten
-from monarch._src.actor.proc_mesh import get_or_spawn_controller
 
 
 @pytest.mark.timeout(60)
@@ -157,82 +145,3 @@ def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
     with pytest.raises(RuntimeError):
         hm_unpickled.shutdown().get()
     hm.shutdown().get()
-
-
-class PidActor(Actor):
-    @endpoint
-    def get_pid(self) -> int:
-        return os.getpid()
-
-
-@pytest.mark.timeout(60)
-def test_this_host_on_client_can_spawn_actual_os_processes() -> None:
-    hm = this_host()
-    assert not hm.is_fake_in_process
-    am = hm.spawn_procs(per_host={"gpus": 4}).spawn("actor", PidActor)
-    pids = am.get_pid.call().get()
-    for pid in pids.values():
-        assert pid != os.getpid()
-    assert len(set(pids.values())) == 4
-
-
-@pytest.mark.timeout(60)
-def test_controllers_have_same_pid_as_client() -> None:
-    pid_controller = get_or_spawn_controller(
-        "pid_test_controllers_have_same_pid_as_client", PidActor
-    ).get()
-    assert pid_controller.get_pid.call_one().get() == os.getpid()
-
-
-class PidActorController(Actor):
-    @endpoint
-    def spawn_pid_actor(self) -> PidActor:
-        return this_host().spawn_procs(per_host={"gpus": 4}).spawn("pid", PidActor)
-
-
-@pytest.mark.timeout(60)
-def test_this_host_on_controllers_can_spawn_actual_os_processes() -> None:
-    pid_controller_0 = get_or_spawn_controller(
-        "pid_test_this_host_on_controllers_0", PidActorController
-    ).get()
-    pid_controller_1 = get_or_spawn_controller(
-        "pid_test_this_host_on_controllers_1", PidActorController
-    ).get()
-    pid_0 = pid_controller_0.spawn_pid_actor.call_one().get()
-    pid_1 = pid_controller_1.spawn_pid_actor.call_one().get()
-    pid_0_values = list(pid_0.get_pid.call().get().values())
-    pid_1_values = list(pid_1.get_pid.call().get().values())
-    assert pid_0_values != pid_1_values
-    assert len(set(pid_0_values)) == 4
-    assert len(set(pid_1_values)) == 4
-
-
-@pytest.mark.timeout(60)
-def test_root_client_does_not_leak_host_meshes() -> None:
-    orig_get_in_process_host = _this_host_for_fake_in_process_host.get
-    with patch.object(
-        _this_host_for_fake_in_process_host, "get"
-    ) as mock_get_in_process_host, patch.object(
-        monarch._src.actor.host_mesh, "create_local_host_mesh"
-    ) as mock_create_local:
-        mock_get_in_process_host.side_effect = orig_get_in_process_host
-
-        def sync_sleep_then_context():
-            time.sleep(0.1)
-            context()
-
-        threads = []
-        for _ in range(100):
-            t = threading.Thread(target=sync_sleep_then_context)
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join()
-
-        assert mock_get_in_process_host.call_count == 100
-        # If this test is run in isolation, the local host mesh will
-        # be created once. But if it runs with other tests, the host mesh
-        # will have already been initialized and the function never gets
-        # called.
-        assert mock_create_local.call_count in (0, 1)

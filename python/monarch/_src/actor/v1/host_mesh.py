@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import Any, Callable, Dict, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -19,7 +19,7 @@ from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
 )
 
-from monarch._src.actor.actor_mesh import _Lazy, context
+from monarch._src.actor.actor_mesh import context
 from monarch._src.actor.allocator import (
     AllocateMixin,
     AllocHandle,
@@ -106,7 +106,7 @@ class HostMesh(MeshTrait):
         stream_logs: bool,
         is_fake_in_process: bool,
         _initialized_hy_host_mesh: Optional[HyHostMesh],
-        _code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
+        _code_sync_proc_mesh: Optional["ProcMesh"],
     ) -> None:
         self._initialized_host_mesh = _initialized_hy_host_mesh
         if not self._initialized_host_mesh:
@@ -121,7 +121,7 @@ class HostMesh(MeshTrait):
         self._region = region
         self._stream_logs = stream_logs
         self._is_fake_in_process = is_fake_in_process
-        self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = _code_sync_proc_mesh
+        self._code_sync_proc_mesh: Optional["ProcMesh"] = _code_sync_proc_mesh
 
     @classmethod
     def allocate_nonblocking(
@@ -134,6 +134,11 @@ class HostMesh(MeshTrait):
     ) -> "HostMesh":
         spec = AllocSpec(alloc_constraints or AllocConstraints(), **extent)
         alloc: AllocHandle = allocator.allocate(spec)
+
+        # Local runs that use ProcessAllocator need to use the precomputed
+        # bootstrap command.
+        if bootstrap_cmd is None and isinstance(allocator, ProcessAllocator):
+            bootstrap_cmd = _bootstrap_cmd()
 
         async def task() -> HyHostMesh:
             return await HyHostMesh.allocate_nonblocking(
@@ -152,7 +157,7 @@ class HostMesh(MeshTrait):
             None,
         )
 
-        hm._code_sync_proc_mesh = _Lazy(lambda: hm.spawn_procs(name="code_sync"))
+        hm._code_sync_proc_mesh = hm.spawn_procs(name="code_sync")
         return hm
 
     def spawn_procs(
@@ -253,6 +258,7 @@ class HostMesh(MeshTrait):
         region: Region,
         stream_logs: bool,
         is_fake_in_process: bool,
+        code_sync_proc_mesh: Optional["ProcMesh"],
     ) -> "HostMesh":
         async def task() -> HyHostMesh:
             return hy_host_mesh
@@ -263,7 +269,7 @@ class HostMesh(MeshTrait):
             stream_logs,
             is_fake_in_process,
             hy_host_mesh,
-            None,
+            code_sync_proc_mesh,
         )
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
@@ -272,6 +278,7 @@ class HostMesh(MeshTrait):
             self._region,
             self.stream_logs,
             self.is_fake_in_process,
+            None,
         )
 
     @property
@@ -325,28 +332,13 @@ class HostMesh(MeshTrait):
             auto_reload: If True, automatically reload the workspace on changes.
         """
         if self._code_sync_proc_mesh:
-            await self._code_sync_proc_mesh.get()._sync_workspace(
+            await self._code_sync_proc_mesh._sync_workspace(
                 workspace, conda, auto_reload
             )
         else:
             raise RuntimeError(
                 "cannot call sync_workspace on a sliced host mesh or one that was sent over an actor endpoint"
             )
-
-    @property
-    def initialized(self) -> Future[Literal[True]]:
-        """
-        Future completes with 'True' when the `HostMesh` has initialized.
-        Because `HostMesh` are remote objects, there is no guarentee that the `HostMesh` is
-        still usable after this completes, only that at some point in the past it was usable.
-        """
-        hm: Shared[HyHostMesh] = self._hy_host_mesh
-
-        async def task() -> Literal[True]:
-            await hm
-            return True
-
-        return Future(coro=task())
 
 
 def fake_in_process_host() -> "HostMesh":

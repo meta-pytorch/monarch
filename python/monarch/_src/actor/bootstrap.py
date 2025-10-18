@@ -19,7 +19,6 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
     HostMesh as HyHostMesh,
 )
-from monarch._src.actor.actor_mesh import _Lazy
 
 from monarch._src.actor.future import _Unawaited, Future
 from monarch._src.actor.host_mesh import HostMesh
@@ -122,5 +121,5 @@ def attach_to_workers(
         _initialized_hy_host_mesh=None,
         _code_sync_proc_mesh=None,
     )
-    hm._code_sync_proc_mesh = _Lazy(lambda: hm.spawn_procs())
+    hm._code_sync_proc_mesh = hm.spawn_procs()
     return hm

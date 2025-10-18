@@ -28,7 +28,6 @@ use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAlloc;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
 use hyperactor_mesh::alloc::sim::SimAllocator;
-use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::proc_mesh::default_transport;
 use ndslice::Extent;
 use pyo3::exceptions::PyRuntimeError;
@@ -40,7 +39,6 @@ use tokio::process::Command;
 use crate::channel::PyChannelAddr;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
-use crate::v1::host_mesh::PyBootstrapCommand;
 
 /// Convert a PyDict to an Extent
 fn pydict_to_extent(shape: &Bound<'_, PyDict>) -> PyResult<Extent> {
@@ -62,7 +60,6 @@ fn pydict_to_extent(shape: &Bound<'_, PyDict>) -> PyResult<Extent> {
 )]
 pub struct PyAlloc {
     pub inner: Option<Box<dyn Alloc + Sync + Send>>,
-    pub bootstrap_command: Option<BootstrapCommand>,
 }
 
 struct ReshapedAlloc {
@@ -104,14 +101,8 @@ impl Alloc for ReshapedAlloc {
 
 impl PyAlloc {
     /// Create a new PyAlloc with provided boxed trait.
-    pub fn new(
-        inner: Box<dyn Alloc + Sync + Send>,
-        bootstrap_command: Option<BootstrapCommand>,
-    ) -> Self {
-        Self {
-            inner: Some(inner),
-            bootstrap_command,
-        }
+    pub fn new(inner: Box<dyn Alloc + Sync + Send>) -> Self {
+        Self { inner: Some(inner) }
     }
 
     /// Take the internal Alloc object.
@@ -145,10 +136,9 @@ impl PyAlloc {
                         old_num_elements, new_elements
                     )));
                 }
-                Ok(PyAlloc::new(
-                    Box::new(ReshapedAlloc::new(new_extent, alloc)),
-                    self.bootstrap_command.clone(),
-                ))
+                Ok(PyAlloc::new(Box::new(ReshapedAlloc::new(
+                    new_extent, alloc,
+                ))))
             })
             .transpose()
     }
@@ -281,7 +271,7 @@ impl PyLocalAllocator {
             LocalAllocator
                 .allocate(spec)
                 .await
-                .map(|inner| PyAlloc::new(Box::new(inner), None))
+                .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
         })
     }
@@ -307,7 +297,7 @@ impl PySimAllocator {
             SimAllocator
                 .allocate(spec)
                 .await
-                .map(|inner| PyAlloc::new(Box::new(inner), None))
+                .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
         })
     }
@@ -339,20 +329,19 @@ impl PyProcessAllocator {
         }
     }
 
-    fn allocate_nonblocking(&self, py: Python<'_>, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
+    fn allocate_nonblocking(&self, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
         // We could use Bound here, and acquire the GIL inside of `future_into_py`, but
         // it is rather awkward with the current APIs, and we can anyway support Arc/Mutex
         // pretty easily.
         let instance = Arc::clone(&self.inner);
         let spec = spec.into();
-        let bootstrap_command = PyBootstrapCommand::default(py)?.borrow().to_rust();
         PyPythonTask::new(async move {
             instance
                 .lock()
                 .await
                 .allocate(spec)
                 .await
-                .map(|inner| PyAlloc::new(Box::new(inner), Some(bootstrap_command)))
+                .map(|inner| PyAlloc::new(Box::new(inner)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
         })
     }
@@ -538,7 +527,7 @@ impl PyRemoteAllocator {
             cloned
                 .allocate(spec)
                 .await
-                .map(|alloc| PyAlloc::new(Box::new(alloc), None))
+                .map(|alloc| PyAlloc::new(Box::new(alloc)))
                 .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
         })
     }
