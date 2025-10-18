@@ -46,13 +46,13 @@ use super::Allocator;
 use super::AllocatorError;
 use super::ProcState;
 use super::ProcStopReason;
+use super::logtailer::LogTailer;
 use crate::assign::Ranks;
 use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
 use crate::bootstrap::Process2Allocator;
 use crate::bootstrap::Process2AllocatorMessage;
-use crate::logging::OutputTarget;
-use crate::logging::StreamFwder;
+use crate::logging::create_log_writers;
 use crate::shortuuid::ShortUuid;
 
 /// The maximum number of log lines to tail keep for managed processes.
@@ -163,8 +163,8 @@ struct Child {
     channel: ChannelState,
     group: monitor::Group,
     exit_flag: Option<flag::Flag>,
-    stdout_fwder: Arc<std::sync::Mutex<Option<StreamFwder>>>,
-    stderr_fwder: Arc<std::sync::Mutex<Option<StreamFwder>>>,
+    stdout: Option<LogTailer>,
+    stderr: Option<LogTailer>,
     stop_reason: Arc<OnceLock<ProcStopReason>>,
     process_pid: Arc<std::sync::Mutex<Option<i32>>>,
 }
@@ -178,55 +178,48 @@ impl Child {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
         let stop_reason = Arc::new(OnceLock::new());
-        let process_pid = Arc::new(std::sync::Mutex::new(process.id().map(|id| id as i32)));
 
-        // Take stdout and stderr from the process
-        let stdout_pipe = process.stdout.take();
-        let stderr_pipe = process.stderr.take();
+        // Set up stdout and stderr writers
+        let mut stdout_tee: Box<dyn io::AsyncWrite + Send + Unpin + 'static> =
+            Box::new(io::stdout());
+        let mut stderr_tee: Box<dyn io::AsyncWrite + Send + Unpin + 'static> =
+            Box::new(io::stderr());
+
+        // Use the helper function to create both writers at once
+        match create_log_writers(local_rank, log_channel, process.id().unwrap_or(0)) {
+            Ok((stdout_writer, stderr_writer)) => {
+                stdout_tee = stdout_writer;
+                stderr_tee = stderr_writer;
+            }
+            Err(e) => {
+                tracing::error!("failed to create log writers: {}", e);
+            }
+        }
+
+        let stdout = LogTailer::tee(
+            MAX_TAIL_LOG_LINES,
+            process.stdout.take().unwrap(),
+            stdout_tee,
+        );
+
+        let stderr = LogTailer::tee(
+            MAX_TAIL_LOG_LINES,
+            process.stderr.take().unwrap(),
+            stderr_tee,
+        );
+
+        let process_pid = Arc::new(std::sync::Mutex::new(process.id().map(|id| id as i32)));
 
         let child = Self {
             local_rank,
             channel: ChannelState::NotConnected,
             group,
             exit_flag: Some(exit_flag),
-            stdout_fwder: Arc::new(std::sync::Mutex::new(None)),
-            stderr_fwder: Arc::new(std::sync::Mutex::new(None)),
+            stdout: Some(stdout),
+            stderr: Some(stderr),
             stop_reason: Arc::clone(&stop_reason),
             process_pid: process_pid.clone(),
         };
-
-        // Set up logging monitors asynchronously without blocking process creation
-        let child_stdout_fwder = child.stdout_fwder.clone();
-        let child_stderr_fwder = child.stderr_fwder.clone();
-
-        if let Some(stdout) = stdout_pipe {
-            let pid = process.id().unwrap_or_default();
-            let stdout_fwder = child_stdout_fwder.clone();
-            let log_channel_clone = log_channel.clone();
-            *stdout_fwder.lock().expect("stdout_fwder mutex poisoned") = Some(StreamFwder::start(
-                stdout,
-                None, // TODO: Remove once V0 path is not supported anymore
-                OutputTarget::Stdout,
-                MAX_TAIL_LOG_LINES,
-                log_channel_clone,
-                pid,
-                local_rank,
-            ));
-        }
-
-        if let Some(stderr) = stderr_pipe {
-            let pid = process.id().unwrap_or_default();
-            let stderr_fwder = child_stderr_fwder.clone();
-            *stderr_fwder.lock().expect("stderr_fwder mutex poisoned") = Some(StreamFwder::start(
-                stderr,
-                None, // TODO: Remove once V0 path is not supported anymore
-                OutputTarget::Stderr,
-                MAX_TAIL_LOG_LINES,
-                log_channel,
-                pid,
-                local_rank,
-            ));
-        }
 
         let monitor = async move {
             let reason = tokio::select! {
@@ -347,20 +340,6 @@ impl Child {
     fn fail_group(&self) {
         self.group.fail();
     }
-
-    fn take_stream_monitors(&self) -> (Option<StreamFwder>, Option<StreamFwder>) {
-        let out = self
-            .stdout_fwder
-            .lock()
-            .expect("stdout_tailer mutex poisoned")
-            .take();
-        let err = self
-            .stderr_fwder
-            .lock()
-            .expect("stderr_tailer mutex poisoned")
-            .take();
-        (out, err)
-    }
 }
 
 impl Drop for Child {
@@ -472,14 +451,8 @@ impl ProcessAlloc {
                     }
                     Ok(rank) => {
                         let (handle, monitor) = Child::monitored(rank, process, log_channel);
-
-                        // Insert into active map BEFORE spawning the monitor task
-                        // This prevents a race where the monitor completes before insertion
-                        self.active.insert(index, handle);
-
-                        // Now spawn the monitor task
                         self.children.spawn(async move { (index, monitor.await) });
-
+                        self.active.insert(index, handle);
                         // Adjust for shape slice offset for non-zero shapes (sub-shapes).
                         let point = self.spec.extent.point_of_rank(rank).unwrap();
                         Some(ProcState::Created {
@@ -558,28 +531,13 @@ impl Alloc for ProcessAlloc {
                 },
 
                 Some(Ok((index, mut reason))) = self.children.join_next() => {
-                    let stderr_content = if let Some(child) = self.remove(index) {
-                        let mut stderr_lines = Vec::new();
-
-                        let (stdout_mon, stderr_mon) = child.take_stream_monitors();
-
-                        // Clean up stdout monitor
-                        if let Some(stdout_monitor) = stdout_mon {
-                            let (_lines, _result) = stdout_monitor.abort().await;
-                            if let Err(e) = _result {
-                                tracing::warn!("stdout monitor abort error: {}", e);
-                            }
-                        }
-
-                        // Clean up stderr monitor and get stderr content for logging
-                        if let Some(stderr_monitor) = stderr_mon {
-                            let (lines, result) = stderr_monitor.abort().await;
-                            stderr_lines = lines;
-                            if let Err(e) = result {
-                                tracing::warn!("stderr monitor abort error: {}", e);
-                            }
-                        }
-
+                    let stderr_content =  if let Some(mut child) = self.remove(index) {
+                        let stdout = child.stdout.take().unwrap();
+                        let stderr = child.stderr.take().unwrap();
+                        stdout.abort();
+                        stderr.abort();
+                        let (_stdout, _) = stdout.join().await;
+                        let (stderr_lines, _) = stderr.join().await;
                         stderr_lines.join("\n")
                     } else {
                         String::new()

@@ -11,7 +11,10 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Context as TaskContext;
+use std::task::Poll;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -41,17 +44,18 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
 use hyperactor::data::Serialized;
-use hyperactor::declare_attrs;
 use hyperactor_telemetry::env;
 use hyperactor_telemetry::log_file_path;
 use notify::Event;
+use notify::EventKind;
+use notify::RecommendedWatcher;
 use notify::Watcher;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::fs;
+use tokio::fs::File;
+use tokio::fs::OpenOptions;
 use tokio::io;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
@@ -65,7 +69,6 @@ use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch::Receiver;
 use tokio::task::JoinHandle;
 
@@ -73,34 +76,10 @@ use crate::bootstrap::BOOTSTRAP_LOG_CHANNEL;
 use crate::shortuuid::ShortUuid;
 
 mod line_prefixing_writer;
+use line_prefixing_writer::LinePrefixingWriter;
 
 pub(crate) const DEFAULT_AGGREGATE_WINDOW_SEC: u64 = 5;
-const MAX_LINE_SIZE: usize = 4 * 1024;
-
-declare_attrs! {
-    /// Maximum number of lines to batch before flushing to client
-    /// This means that stdout/err reader will be paused after reading `HYPERACTOR_READ_LOG_BUFFER` lines.
-    /// After pause lines will be flushed and reading will resume.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_READ_LOG_BUFFER".to_string()),
-        py_name: None,
-    })
-    pub attr READ_LOG_BUFFER: usize = 100;
-
-    /// If enabled, local logs are also written to a file and aggregated
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_FORCE_FILE_LOG".to_string()),
-        py_name: None,
-    })
-    pub attr FORCE_FILE_LOG: bool = false;
-
-    /// Prefixes logs with rank
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_PREFIX_WITH_RANK".to_string()),
-        py_name: None,
-    })
-    pub attr PREFIX_WITH_RANK: bool = true;
-}
+const MAX_LINE_SIZE: usize = 256 * 1024;
 
 /// Calculate the Levenshtein distance between two strings
 fn levenshtein_distance(left: &str, right: &str) -> usize {
@@ -431,174 +410,65 @@ impl LogSender for LocalLogSender {
     }
 }
 
-/// Message sent to FileMonitor
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
-pub struct FileMonitorMessage {
-    lines: Vec<String>,
+/// A custom writer that tees to both stdout/stderr.
+/// It captures output lines and sends them to the child process.
+// TODO delete once FileLogMonitor is validated
+pub struct LogWriter<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + Unpin + 'static> {
+    output_target: OutputTarget,
+    std_writer: S,
+    log_sender: T,
 }
 
-/// File appender, coordinates write access to a file via a channel.
-pub struct FileAppender {
-    stdout_addr: ChannelAddr,
-    stderr_addr: ChannelAddr,
-    #[allow(dead_code)] // Tasks are self terminating
-    stdout_task: JoinHandle<()>,
-    #[allow(dead_code)]
-    stderr_task: JoinHandle<()>,
-    stop: Arc<Notify>,
+fn create_file_writer(
+    local_rank: usize,
+    output_target: OutputTarget,
+    env: env::Env,
+) -> Result<Box<dyn io::AsyncWrite + Send + Unpin + 'static>> {
+    let suffix = match output_target {
+        OutputTarget::Stderr => "stderr",
+        OutputTarget::Stdout => "stdout",
+    };
+    let (path, filename) = log_file_path(env, None)?;
+    let path = Path::new(&path);
+    let mut full_path = PathBuf::from(path);
+
+    // This is the PID of the "owner" of the proc mesh, the proc mesh
+    // this proc "belongs" to. In other words,the PID of the process
+    // that invokes `cmd.spawn()` (where `cmd: &mut
+    // tokio::process::Command`) to start the process that will host
+    // the proc that this file writer relates to.
+    let file_created_by_pid = std::process::id();
+
+    full_path.push(format!(
+        "{}_{}_{}.{}",
+        filename, file_created_by_pid, local_rank, suffix
+    ));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(full_path)?;
+    let tokio_file = tokio::fs::File::from_std(file);
+    // TODO: should we buffer this?
+    Ok(Box::new(tokio_file))
 }
 
-impl fmt::Debug for FileAppender {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileMonitor")
-            .field("stdout_addr", &self.stdout_addr)
-            .field("stderr_addr", &self.stderr_addr)
-            .finish()
-    }
-}
-
-impl FileAppender {
-    /// Create a new FileAppender with aggregated log files for stdout and stderr
-    /// Returns None if file creation fails
-    pub fn new() -> Option<Self> {
-        let stop = Arc::new(Notify::new());
-        // TODO make it configurable
-        let file_name_tag = hostname::get()
-            .unwrap_or_else(|_| "unknown_host".into())
-            .into_string()
-            .unwrap_or("unknown_host".to_string());
-
-        // Create stdout file and task
-        let (stdout_path, stdout_writer) =
-            match get_unique_local_log_destination(&file_name_tag, OutputTarget::Stdout) {
-                Some(writer) => writer,
-                None => {
-                    tracing::warn!("failed to create stdout file");
-                    return None;
-                }
-            };
-        let (stdout_addr, stdout_rx) =
-            match channel::serve(ChannelAddr::any(ChannelTransport::Unix)) {
-                Ok((addr, rx)) => (addr, rx),
-                Err(e) => {
-                    tracing::warn!("failed to serve stdout channel: {}", e);
-                    return None;
-                }
-            };
-        let stdout_stop = stop.clone();
-        let stdout_task = tokio::spawn(file_monitor_task(
-            stdout_rx,
-            stdout_writer,
-            OutputTarget::Stdout,
-            stdout_stop,
-        ));
-
-        // Create stderr file and task
-        let (stderr_path, stderr_writer) =
-            match get_unique_local_log_destination(&file_name_tag, OutputTarget::Stderr) {
-                Some(writer) => writer,
-                None => {
-                    tracing::warn!("failed to create stderr file");
-                    return None;
-                }
-            };
-        let (stderr_addr, stderr_rx) =
-            match channel::serve(ChannelAddr::any(ChannelTransport::Unix)) {
-                Ok((addr, rx)) => (addr, rx),
-                Err(e) => {
-                    tracing::warn!("failed to serve stderr channel: {}", e);
-                    return None;
-                }
-            };
-        let stderr_stop = stop.clone();
-        let stderr_task = tokio::spawn(file_monitor_task(
-            stderr_rx,
-            stderr_writer,
-            OutputTarget::Stderr,
-            stderr_stop,
-        ));
-
-        tracing::debug!(
-            "FileAppender: created for stdout {} stderr {} ",
-            stdout_path.display(),
-            stderr_path.display()
-        );
-
-        Some(Self {
-            stdout_addr,
-            stderr_addr,
-            stdout_task,
-            stderr_task,
-            stop,
-        })
-    }
-
-    /// Get a channel address for the specified output target
-    pub fn addr_for(&self, target: OutputTarget) -> ChannelAddr {
-        match target {
-            OutputTarget::Stdout => self.stdout_addr.clone(),
-            OutputTarget::Stderr => self.stderr_addr.clone(),
+fn get_local_log_destination(
+    local_rank: usize,
+    output_target: OutputTarget,
+) -> Result<Box<dyn io::AsyncWrite + Send + Unpin>> {
+    let env: env::Env = env::Env::current();
+    Ok(match env {
+        env::Env::Test | env::Env::Local => match output_target {
+            OutputTarget::Stdout => Box::new(LinePrefixingWriter::new(local_rank, io::stdout())),
+            OutputTarget::Stderr => Box::new(LinePrefixingWriter::new(local_rank, io::stderr())),
+        },
+        env::Env::MastEmulator | env::Env::Mast => {
+            create_file_writer(local_rank, output_target, env)?
         }
-    }
-}
-
-impl Drop for FileAppender {
-    fn drop(&mut self) {
-        // Trigger stop signal to notify tasks to exit
-        self.stop.notify_waiters();
-        tracing::debug!("FileMonitor: dropping, stop signal sent, tasks will flush and exit");
-    }
-}
-
-/// Task that receives lines from StreamFwds and writes them to the aggregated file
-async fn file_monitor_task(
-    mut rx: ChannelRx<FileMonitorMessage>,
-    mut writer: Box<dyn io::AsyncWrite + Send + Unpin + 'static>,
-    target: OutputTarget,
-    stop: Arc<Notify>,
-) {
-    loop {
-        tokio::select! {
-            msg = rx.recv() => {
-                match msg {
-                    Ok(msg) => {
-                        // Write lines to aggregated file
-                        for line in &msg.lines {
-                            if let Err(e) = writer.write_all(line.as_bytes()).await {
-                                tracing::warn!("FileMonitor: failed to write line to file: {}", e);
-                                continue;
-                            }
-                            if let Err(e) = writer.write_all(b"\n").await {
-                                tracing::warn!("FileMonitor: failed to write newline to file: {}", e);
-                            }
-                        }
-                        if let Err(e) = writer.flush().await {
-                            tracing::warn!("FileMonitor: failed to flush file: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        // Channel error
-                        tracing::debug!("FileMonitor task for {:?}: channel error: {}", target, e);
-                        break;
-                    }
-                }
-            }
-            _ = stop.notified() => {
-                tracing::debug!("FileMonitor task for {:?}: stop signal received", target);
-                break;
-            }
-        }
-    }
-
-    // Graceful shutdown: flush one last time
-    if let Err(e) = writer.flush().await {
-        tracing::warn!("FileMonitor: failed final flush: {}", e);
-    }
-    tracing::debug!("FileMonitor task for {:?} exiting", target);
+    })
 }
 
 fn create_unique_file_writer(
-    file_name_tag: &str,
     output_target: OutputTarget,
     env: env::Env,
 ) -> Result<(PathBuf, Box<dyn io::AsyncWrite + Send + Unpin + 'static>)> {
@@ -610,12 +480,9 @@ fn create_unique_file_writer(
     let path = Path::new(&path);
     let mut full_path = PathBuf::from(path);
 
-    let uuid = ShortUuid::generate();
+    let file_created_by_pid = ShortUuid::generate();
 
-    full_path.push(format!(
-        "{}_{}_{}.{}",
-        filename, file_name_tag, uuid, suffix
-    ));
+    full_path.push(format!("{}_{}.{}", filename, file_created_by_pid, suffix));
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -626,58 +493,23 @@ fn create_unique_file_writer(
 }
 
 fn get_unique_local_log_destination(
-    file_name_tag: &str,
     output_target: OutputTarget,
-) -> Option<(PathBuf, Box<dyn io::AsyncWrite + Send + Unpin + 'static>)> {
+) -> Result<(PathBuf, Box<dyn io::AsyncWrite + Send + Unpin + 'static>)> {
     let env: env::Env = env::Env::current();
-    if env == env::Env::Local && !hyperactor::config::global::get(FORCE_FILE_LOG) {
-        tracing::debug!("not creating log file because of env type");
-        None
-    } else {
-        match create_unique_file_writer(file_name_tag, output_target, env) {
-            Ok((a, b)) => Some((a, b)),
-            Err(e) => {
-                tracing::warn!("failed to create unique file writer: {}", e);
-                None
-            }
-        }
-    }
+    // TODO disable forwarding on local
+    create_unique_file_writer(output_target, env)
 }
 
-/// Create a writer for stdout or stderr
-fn std_writer(target: OutputTarget) -> Box<dyn io::AsyncWrite + Send + Unpin> {
-    // Return the appropriate standard output or error writer
-    match target {
-        OutputTarget::Stdout => Box::new(tokio::io::stdout()),
-        OutputTarget::Stderr => Box::new(tokio::io::stderr()),
-    }
-}
-
-/// Copy bytes from `reader` to `writer`, forward to log_sender, and forward to FileMonitor.
-/// The same formatted lines go to both log_sender and file_monitor.
+/// Copy bytes from `reader` to `writer` and to the current process's stdout/stderr.
 async fn tee(
     mut reader: impl AsyncRead + Unpin + Send + 'static,
-    mut std_writer: Box<dyn io::AsyncWrite + Send + Unpin>,
-    log_sender: Option<Box<dyn LogSender + Send>>,
-    file_monitor_addr: Option<ChannelAddr>,
+    mut tee_writer: Option<Box<dyn io::AsyncWrite + Send + Unpin>>,
     target: OutputTarget,
-    prefix: Option<String>,
     stop: Arc<Notify>,
-    recent_lines_buf: RotatingLineBuffer,
 ) -> Result<(), io::Error> {
+    let mut stderr = tokio::io::stderr();
+    let mut stdout = tokio::io::stdout();
     let mut buf = [0u8; 8192];
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_SIZE);
-    let mut log_sender = log_sender;
-
-    // Dial the file monitor channel if provided
-    let mut file_monitor_tx: Option<ChannelTx<FileMonitorMessage>> =
-        file_monitor_addr.and_then(|addr| match channel::dial(addr.clone()) {
-            Ok(tx) => Some(tx),
-            Err(e) => {
-                tracing::warn!("Failed to dial file monitor channel {}: {}", addr, e);
-                None
-            }
-        });
 
     loop {
         tokio::select! {
@@ -690,61 +522,27 @@ async fn tee(
                             break;
                         }
 
-                        // Write to console
-                        if let Err(e) = std_writer.write_all(&buf[..n]).await {
-                            tracing::warn!("error writing to std: {}", e);
-                        }
-
-                        // Process bytes into lines for log_sender and FileMonitor
-                        let mut completed_lines = Vec::new();
-
-                        for &byte in &buf[..n] {
-                            if byte == b'\n' {
-                                // Complete line found
-                                let mut line = String::from_utf8_lossy(&line_buffer).to_string();
-
-                                // Truncate if too long
-                                if line.len() > MAX_LINE_SIZE {
-                                    line.truncate(MAX_LINE_SIZE);
-                                    line.push_str("... [TRUNCATED]");
-                                }
-
-                                // Prepend with prefix if configured
-                                let final_line = if let Some(ref p) = prefix {
-                                    format!("[{}] {}", p, line)
-                                } else {
-                                    line
-                                };
-
-                                completed_lines.push(final_line);
-                                line_buffer.clear();
-                            } else {
-                                line_buffer.push(byte);
-                            }
-                        }
-
-                        // Send completed lines to both log_sender and FileAppender
-                        if !completed_lines.is_empty() {
-                            if let Some(ref mut sender) = log_sender {
-                                let bytes: Vec<Vec<u8>> = completed_lines.iter()
-                                    .map(|s| s.as_bytes().to_vec())
-                                    .collect();
-                                if let Err(e) = sender.send(target, bytes) {
-                                    tracing::warn!("error sending to log_sender: {}", e);
+                        if let Some(writer) = &mut tee_writer {
+                            match writer.write_all(&buf[..n]).await {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    tracing::debug!("error writing to file: {}", e);
                                 }
                             }
-
-                            // Send to FileMonitor via hyperactor channel
-                            if let Some(ref mut tx) = file_monitor_tx {
-                                let msg = FileMonitorMessage {
-                                    lines: completed_lines,
-                                };
-                                // Use post() to avoid blocking
-                                tx.post(msg);
-                            }
                         }
 
-                        recent_lines_buf.try_add_data(&buf, n);
+                        match target {
+                            OutputTarget::Stderr => {
+                                if let Err(e) = stderr.write_all(&buf[..n]).await {
+                                    tracing::warn!("error writing to stderr: {}", e);
+                                }
+                            }
+                            OutputTarget::Stdout => {
+                                if let Err(e) = stdout.write_all(&buf[..n]).await {
+                                    tracing::warn!("error writing to stdout: {}", e);
+                                }
+                            }
+                        }
                     },
                     Err(e) => {
                         tracing::debug!("read error in tee: {}", e);
@@ -758,87 +556,198 @@ async fn tee(
             }
         }
     }
-
-    std_writer.flush().await?;
-
-    // Send any remaining partial line
-    if !line_buffer.is_empty() {
-        let mut line = String::from_utf8_lossy(&line_buffer).to_string();
-        if line.len() > MAX_LINE_SIZE {
-            line.truncate(MAX_LINE_SIZE);
-            line.push_str("... [TRUNCATED]");
-        }
-        let final_line = if let Some(ref p) = prefix {
-            format!("[{}# {}", p, line)
-        } else {
-            line
-        };
-
-        let final_lines = vec![final_line];
-
-        // Send to log_sender
-        if let Some(ref mut sender) = log_sender {
-            let bytes: Vec<Vec<u8>> = final_lines.iter().map(|s| s.as_bytes().to_vec()).collect();
-            let _ = sender.send(target, bytes);
-        }
-
-        // Send to FileMonitor
-        if let Some(ref mut tx) = file_monitor_tx {
-            let msg = FileMonitorMessage { lines: final_lines };
-            tx.post(msg);
-        }
+    if let Some(writer) = &mut tee_writer {
+        writer.flush().await?;
     }
 
-    // Flush log_sender
-    if let Some(ref mut sender) = log_sender {
-        let _ = sender.flush();
+    match target {
+        OutputTarget::Stderr => {
+            stderr.flush().await?;
+        }
+        OutputTarget::Stdout => {
+            stdout.flush().await?;
+        }
     }
-
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct RotatingLineBuffer {
-    recent_lines: Arc<RwLock<VecDeque<String>>>,
-    max_buffer_size: usize,
+/// Helper function to create stdout and stderr LogWriter instances
+///
+/// # Arguments
+///
+/// * `log_channel` - The unix channel for the writer to stream logs to
+/// * `pid` - The process ID of the process
+///
+/// # Returns
+///
+/// A tuple of boxed writers for stdout and stderr
+pub fn create_log_writers(
+    local_rank: usize,
+    log_channel: ChannelAddr,
+    pid: u32,
+) -> Result<
+    (
+        Box<dyn io::AsyncWrite + Send + Unpin + 'static>,
+        Box<dyn io::AsyncWrite + Send + Unpin + 'static>,
+    ),
+    anyhow::Error,
+> {
+    // Create LogWriter instances for stdout and stderr using the shared log sender
+    let stdout_writer = LogWriter::with_default_writer(
+        local_rank,
+        OutputTarget::Stdout,
+        LocalLogSender::new(log_channel.clone(), pid)?,
+    )?;
+    let stderr_writer = LogWriter::with_default_writer(
+        local_rank,
+        OutputTarget::Stderr,
+        LocalLogSender::new(log_channel, pid)?,
+    )?;
+
+    Ok((Box::new(stdout_writer), Box::new(stderr_writer)))
 }
 
-impl RotatingLineBuffer {
-    fn try_add_data(&self, buf: &[u8], buf_end: usize) {
-        let data_str = String::from_utf8_lossy(&buf[..buf_end]);
-        let lines: Vec<&str> = data_str.lines().collect();
+impl<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + Unpin + 'static> LogWriter<T, S> {
+    /// Creates a new LogWriter.
+    ///
+    /// # Arguments
+    ///
+    /// * `output_target` - The target output stream (stdout or stderr)
+    /// * `std_writer` - The writer to use for stdout/stderr
+    /// * `log_sender` - The log sender to use for sending logs
+    pub fn new(output_target: OutputTarget, std_writer: S, log_sender: T) -> Self {
+        Self {
+            output_target,
+            std_writer,
+            log_sender,
+        }
+    }
+}
 
-        if let Ok(mut recent_lines_guard) = self.recent_lines.try_write() {
-            for line in lines {
-                if !line.is_empty() {
-                    recent_lines_guard.push_back(line.to_string());
-                    if recent_lines_guard.len() > self.max_buffer_size {
-                        recent_lines_guard.pop_front();
-                    }
+impl<T: LogSender + Unpin + 'static> LogWriter<T, Box<dyn io::AsyncWrite + Send + Unpin>> {
+    /// Creates a new LogWriter with the default stdout/stderr writer.
+    ///
+    /// # Arguments
+    ///
+    /// * `output_target` - The target output stream (stdout or stderr)
+    /// * `log_sender` - The log sender to use for sending logs
+    pub fn with_default_writer(
+        local_rank: usize,
+        output_target: OutputTarget,
+        log_sender: T,
+    ) -> Result<Self> {
+        // Use a default writer based on the output target
+        let std_writer = get_local_log_destination(local_rank, output_target)?;
+
+        Ok(Self {
+            output_target,
+            std_writer,
+            log_sender,
+        })
+    }
+}
+
+impl<T: LogSender + Unpin + 'static, S: io::AsyncWrite + Send + Unpin + 'static> io::AsyncWrite
+    for LogWriter<T, S>
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        // Get a mutable reference to the std_writer field
+        let this = self.get_mut();
+
+        // First, write to stdout/stderr
+        match Pin::new(&mut this.std_writer).poll_write(cx, buf) {
+            Poll::Ready(Ok(_)) => {
+                // Forward the buffer directly to the log sender without parsing
+                let output_target = this.output_target;
+                let data_to_send = buf.to_vec();
+
+                // Use the log sender directly without cloning
+                // Since LogSender::send takes &self, we don't need to clone it
+                if let Err(e) = this.log_sender.send(output_target, vec![data_to_send]) {
+                    tracing::error!("error sending log: {}", e);
                 }
+                // Return success with the full buffer size
+                Poll::Ready(Ok(buf.len()))
             }
-        } else {
-            tracing::debug!("Failed to acquire write lock on recent_lines buffer in tee");
+            other => other, // Propagate any errors or Pending state
         }
     }
 
-    async fn peek(&self) -> Vec<String> {
-        let lines = self.recent_lines.read().await;
-        let start_idx = if lines.len() > self.max_buffer_size {
-            lines.len() - self.max_buffer_size
-        } else {
-            0
-        };
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
 
-        lines.range(start_idx..).cloned().collect()
+        match Pin::new(&mut this.std_writer).poll_flush(cx) {
+            Poll::Ready(Ok(())) => {
+                if let Err(e) = this.log_sender.flush() {
+                    tracing::error!("error sending flush: {}", e);
+                }
+                Poll::Ready(Ok(()))
+            }
+            other => other, // Propagate any errors or Pending state from the std_writer flush
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.std_writer).poll_shutdown(cx)
+    }
+}
+
+struct FileWatcher {
+    rx: UnboundedReceiver<Event>,
+    watcher: RecommendedWatcher,
+    path: PathBuf,
+}
+impl FileWatcher {
+    fn new(path: PathBuf) -> Result<Self> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut watcher = notify::recommended_watcher({
+            let tx = tx.clone();
+            move |res| match res {
+                Ok(event) => {
+                    if let Err(e) = tx.send(event) {
+                        tracing::warn!("stream watcher dropped: {:?}", e);
+                    }
+                }
+                Err(e) => tracing::warn!("stream watcher error: {:?}", e),
+            }
+        })?;
+        watcher.watch(&path.clone(), notify::RecursiveMode::NonRecursive)?;
+
+        Ok(Self { rx, watcher, path })
+    }
+}
+
+struct LogFile {
+    writer: Box<dyn io::AsyncWrite + Send + Unpin + 'static>,
+    file_watcher: FileWatcher,
+}
+
+impl LogFile {
+    fn new(target: OutputTarget) -> Result<Self> {
+        let (path, writer) = get_unique_local_log_destination(target)?;
+        let file_watcher = FileWatcher::new(path.clone())?;
+        Ok(Self {
+            writer,
+            file_watcher,
+        })
     }
 }
 
 /// Given a stream forwards data to the provided channel.
 pub struct StreamFwder {
+    fwder: Option<JoinHandle<Result<()>>>,
     teer: JoinHandle<Result<(), io::Error>>,
     // Shared buffer for peek functionality
-    recent_lines_buf: RotatingLineBuffer,
+    recent_lines: Arc<RwLock<VecDeque<String>>>,
+    max_buffer_size: usize,
     // Shutdown signal to stop the monitoring loop
     stop: Arc<Notify>,
 }
@@ -846,83 +755,83 @@ pub struct StreamFwder {
 impl StreamFwder {
     /// Create a new StreamFwder instance, and start monitoring the provided path.
     /// Once started Monitor will
-    /// - forward logs to log_sender
-    /// - forward logs to file_monitor (if available)
+    /// - foward logs to the provided address
     /// - pipe reader to target
     /// - And capture last `max_buffer_size` which can be used to inspect file contents via `peek`.
     pub fn start(
         reader: impl AsyncRead + Unpin + Send + 'static,
-        file_monitor_addr: Option<ChannelAddr>,
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: ChannelAddr,
         pid: u32,
-        local_rank: usize,
     ) -> Self {
-        let prefix = match hyperactor::config::global::get(PREFIX_WITH_RANK) {
-            true => Some(local_rank.to_string()),
-            false => None,
+        let log_file = match LogFile::new(target) {
+            Ok(log_file) => Some(log_file),
+            Err(e) => {
+                tracing::error!("failed to create log file: {}", e);
+                None
+            }
         };
-        let std_writer = std_writer(target);
-
-        Self::start_with_writer(
-            reader,
-            std_writer,
-            file_monitor_addr,
-            target,
-            max_buffer_size,
-            log_channel,
-            pid,
-            prefix,
-        )
+        Self::start_with_writer(reader, log_file, target, max_buffer_size, log_channel, pid)
     }
 
     /// Create a new StreamFwder instance with a custom writer (used in tests).
     fn start_with_writer(
         reader: impl AsyncRead + Unpin + Send + 'static,
-        std_writer: Box<dyn io::AsyncWrite + Send + Unpin>,
-        file_monitor_addr: Option<ChannelAddr>,
+        log_file: Option<LogFile>,
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: ChannelAddr,
         pid: u32,
-        prefix: Option<String>,
     ) -> Self {
         let stop = Arc::new(Notify::new());
-        let recent_lines_buf = RotatingLineBuffer {
-            recent_lines: Arc::new(RwLock::new(VecDeque::<String>::with_capacity(
-                max_buffer_size,
-            ))),
-            max_buffer_size,
-        };
-
+        let recent_lines = Arc::new(RwLock::new(VecDeque::with_capacity(max_buffer_size)));
         let log_sender = match LocalLogSender::new(log_channel, pid) {
-            Ok(log_sender) => Some(Box::new(log_sender) as Box<dyn LogSender + Send>),
+            Ok(log_sender) => Some(Box::new(log_sender)),
             Err(e) => {
                 tracing::error!("failed to create log sender: {}", e);
                 None
             }
         };
 
+        let (log_writer, maybe_fwder) = match (log_file, log_sender) {
+            (Some(log_file), Some(log_sender)) => {
+                // Destructure log_file to separate its components and avoid move conflicts
+                let LogFile {
+                    writer,
+                    file_watcher,
+                    ..
+                } = log_file;
+
+                // Keep recent lines to allow peeks
+                let recent_lines_clone = recent_lines.clone();
+                let fwd_stop = stop.clone();
+                let fwder = Some(tokio::spawn(async move {
+                    fwd_on_notify(
+                        file_watcher,
+                        &fwd_stop,
+                        log_sender,
+                        target,
+                        recent_lines_clone,
+                        max_buffer_size,
+                    )
+                    .await
+                }));
+
+                (Some(writer), fwder)
+            }
+            // If one component is missing we cannot do forwarding.
+            (_, _) => (None, None),
+        };
+
         let teer_stop = stop.clone();
-        let recent_line_buf_clone = recent_lines_buf.clone();
-        let teer = tokio::spawn(async move {
-            tee(
-                reader,
-                std_writer,
-                log_sender,
-                file_monitor_addr,
-                target,
-                prefix,
-                teer_stop,
-                recent_line_buf_clone,
-            )
-            .await
-        });
+        let teer = tokio::spawn(async move { tee(reader, log_writer, target, teer_stop).await });
 
         StreamFwder {
+            fwder: maybe_fwder,
             teer,
-            recent_lines_buf,
+            recent_lines,
+            max_buffer_size,
             stop,
         }
     }
@@ -931,11 +840,20 @@ impl StreamFwder {
         self.stop.notify_waiters();
 
         let lines = self.peek().await;
+        let fwder_result: Result<(), anyhow::Error> = match self.fwder {
+            Some(f) => match f.await {
+                Ok(inner_result) => inner_result,
+                Err(join_err) => Err(join_err.into()),
+            },
+            // No errors if fwd never started.
+            None => Ok(()),
+        };
         let teer_result = self.teer.await;
 
-        let result: Result<(), anyhow::Error> = match teer_result {
-            Ok(inner) => inner.map_err(anyhow::Error::from),
-            Err(e) => Err(e.into()),
+        let result: Result<(), anyhow::Error> = match (fwder_result, teer_result) {
+            (Ok(_), Ok(inner)) => inner.map_err(anyhow::Error::from),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e.into()),
         };
 
         (lines, result)
@@ -944,7 +862,14 @@ impl StreamFwder {
     /// Inspect the latest `max_buffer` lines read from the file being monitored
     /// Returns lines in chronological order (oldest first)
     pub async fn peek(&self) -> Vec<String> {
-        self.recent_lines_buf.peek().await
+        let lines = self.recent_lines.read().await;
+        let start_idx = if lines.len() > self.max_buffer_size {
+            lines.len() - self.max_buffer_size
+        } else {
+            0
+        };
+
+        lines.range(start_idx..).cloned().collect()
     }
 }
 
@@ -966,7 +891,6 @@ async fn process_file_content<R: AsyncRead + AsyncSeek + Unpin>(
     current_position: u64,
     file_size: u64,
     existing_line_buffer: Vec<u8>,
-    max_buffer_size: usize,
 ) -> Result<FileProcessingResult> {
     // If position equals file size, we're at the end
     if current_position == file_size {
@@ -978,7 +902,7 @@ async fn process_file_content<R: AsyncRead + AsyncSeek + Unpin>(
     }
 
     // Handle potential file truncation/rotation
-    let actual_position = if current_position > file_size {
+    let _actual_position = if current_position > file_size {
         tracing::warn!(
             "File appears to have been truncated (position {} > file size {}), resetting to start",
             current_position,
@@ -994,8 +918,7 @@ async fn process_file_content<R: AsyncRead + AsyncSeek + Unpin>(
 
     let mut buf = vec![0u8; 128 * 1024];
     let mut line_buffer = existing_line_buffer;
-    let mut lines = Vec::with_capacity(max_buffer_size);
-    let mut processed_bytes = 0u64;
+    let mut lines = Vec::with_capacity(100);
 
     loop {
         let bytes_read = reader.read(&mut buf).await?;
@@ -1022,37 +945,108 @@ async fn process_file_content<R: AsyncRead + AsyncSeek + Unpin>(
             }
 
             start = absolute_pos + 1;
-
-            // Check if we've reached the max buffer size after adding each line
-            if lines.len() >= max_buffer_size {
-                // We've processed up to and including the current newline
-                // The new position is where we should start reading next time
-                let new_position = actual_position + processed_bytes + start as u64;
-
-                // Don't save remaining data - we'll re-read it from the new position
-                return Ok(FileProcessingResult {
-                    lines,
-                    new_position,
-                    incomplete_line_buffer: Vec::new(),
-                });
-            }
         }
-
-        // Only add bytes to processed_bytes if we've fully processed this chunk
-        processed_bytes += bytes_read as u64;
 
         if start < chunk.len() {
             line_buffer.extend_from_slice(&chunk[start..]);
         }
     }
 
-    let new_position = actual_position + processed_bytes;
+    let new_position = reader.stream_position().await?;
 
     Ok(FileProcessingResult {
         lines,
         new_position,
         incomplete_line_buffer: line_buffer,
     })
+}
+
+/// Start monitoring the log file and forwarding content to the logging client
+async fn fwd_on_notify(
+    mut watcher: FileWatcher,
+    stop: &Arc<Notify>,
+    mut log_sender: Box<dyn LogSender + Send>,
+    target: OutputTarget,
+    recent_lines: Arc<RwLock<VecDeque<String>>>,
+    max_buffer_size: usize,
+) -> Result<()> {
+    let _watcher_guard = watcher.watcher;
+    let path = watcher.path;
+    let file = fs::OpenOptions::new().read(true).open(&path).await?;
+    let mut reader = BufReader::new(file);
+    let mut position = reader.seek(SeekFrom::End(0)).await?;
+    let mut incomplete_line_buffer = Vec::new();
+
+    tracing::debug!("Monitoring {:?} for new lines...", path);
+
+    loop {
+        tokio::select! {
+            event = watcher.rx.recv() => {
+                match event {
+                    Some(event) => {
+                        if let EventKind::Modify(_) = &event.kind {
+                            let file_metadata = fs::metadata(&path).await?;
+                            let file_size = file_metadata.len();
+
+                            // Use the extracted function to process file content
+                            let result = match process_file_content(
+                                &mut reader,
+                                position,
+                                file_size,
+                                incomplete_line_buffer,
+                            ).await {
+                                Ok(result) => result,
+                                Err(e) => {
+                                    tracing::warn!("Failed to process file content for {:?}: {}", path, e);
+                                    incomplete_line_buffer = Vec::new();
+                                    continue;
+                                }
+                            };
+
+                            // Update state from the result
+                            position = result.new_position;
+                            incomplete_line_buffer = result.incomplete_line_buffer;
+
+                            // Process the complete lines
+                            if !result.lines.is_empty() {
+                                match recent_lines.try_write() {
+                                    Ok(mut recent_lines_guard) => {
+                                        for line_data in &result.lines {
+                                            let line_str = String::from_utf8_lossy(line_data);
+                                            recent_lines_guard.push_back(line_str.trim_end().to_string());
+                                            if recent_lines_guard.len() > max_buffer_size {
+                                                recent_lines_guard.pop_front();
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!("Failed to acquire write lock on recent_lines buffer");
+                                    }
+                                }
+
+                                // Send to log sender
+                                if let Err(e) = log_sender.send(target, result.lines) {
+                                    tracing::error!("Failed to send log lines: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::debug!("File event channel closed, stopping monitoring");
+                        break;
+                    }
+                }
+            },
+            _ = stop.notified() => {
+                tracing::debug!("Shutdown signal received, stopping monitoring");
+                if let Err(e) = log_sender.flush() {
+                    tracing::error!("Failed to flush log sender: {}", e);
+                }
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Messages that can be sent to the LogForwarder
@@ -1069,7 +1063,7 @@ async fn process_file_content<R: AsyncRead + AsyncSeek + Unpin>(
     Unbind
 )]
 pub enum LogForwardMessage {
-    /// Receive the log from the parent process and forward it to the client.
+    /// Receive the log from the parent process and forward ti to the client.
     Forward {},
 
     /// If to stream the log back to the client.
@@ -1664,6 +1658,46 @@ mod tests {
             "Expected deserialization to fail with invalid UTF-8 bytes"
         );
     }
+
+    // Mock implementation of AsyncWrite that captures written data
+    struct MockWriter {
+        data: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl MockWriter {
+        fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
+            let data = Arc::new(Mutex::new(Vec::new()));
+            (Self { data: data.clone() }, data)
+        }
+    }
+
+    impl io::AsyncWrite for MockWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+            buf: &[u8],
+        ) -> Poll<Result<usize, io::Error>> {
+            let mut data = self.data.lock().unwrap();
+            data.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), io::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), io::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    // Mock implementation of LogSender for testing
     struct MockLogSender {
         log_sender: mpsc::UnboundedSender<(OutputTarget, String)>, // (output_target, content)
         flush_called: Arc<Mutex<bool>>,                            // Track if flush was called
@@ -1708,6 +1742,144 @@ mod tests {
             // In a real implementation, this would wait for all messages to be delivered
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn test_log_writer_direct_forwarding() {
+        // Create a channel to receive logs
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+
+        // Create a mock log sender
+        let mock_log_sender = MockLogSender::new(log_sender);
+
+        // Create a mock writer for stdout
+        let (mock_writer, _) = MockWriter::new();
+        let std_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(mock_writer);
+
+        // Create a log writer with the mock sender
+        let mut writer = LogWriter::new(OutputTarget::Stdout, std_writer, mock_log_sender);
+
+        // Write some data
+        writer.write_all(b"Hello, world!").await.unwrap();
+        writer.flush().await.unwrap();
+
+        // Check that the log was sent as is
+        let (output_target, content) = log_receiver.recv().await.unwrap();
+        assert_eq!(output_target, OutputTarget::Stdout);
+        assert_eq!(content, "Hello, world!");
+
+        // Write more data
+        writer.write_all(b"\nNext line").await.unwrap();
+        writer.flush().await.unwrap();
+
+        // Check that the second chunk was sent as is
+        let (output_target, content) = log_receiver.recv().await.unwrap();
+        assert_eq!(output_target, OutputTarget::Stdout);
+        assert_eq!(content, "\nNext line");
+    }
+
+    #[tokio::test]
+    async fn test_log_writer_stdout_stderr() {
+        // Create a channel to receive logs
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+
+        // Create mock log senders for stdout and stderr
+        let stdout_sender = MockLogSender::new(log_sender.clone());
+        let stderr_sender = MockLogSender::new(log_sender);
+
+        // Create mock writers for stdout and stderr
+        let (stdout_mock_writer, _) = MockWriter::new();
+        let stdout_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(stdout_mock_writer);
+
+        let (stderr_mock_writer, _) = MockWriter::new();
+        let stderr_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(stderr_mock_writer);
+
+        // Create log writers with the mock senders
+        let mut stdout_writer = LogWriter::new(OutputTarget::Stdout, stdout_writer, stdout_sender);
+        let mut stderr_writer = LogWriter::new(OutputTarget::Stderr, stderr_writer, stderr_sender);
+
+        // Write to stdout and stderr
+        stdout_writer.write_all(b"Stdout data").await.unwrap();
+        stdout_writer.flush().await.unwrap();
+
+        stderr_writer.write_all(b"Stderr data").await.unwrap();
+        stderr_writer.flush().await.unwrap();
+
+        // Check that logs were sent with correct output targets
+        // Note: We can't guarantee the order of reception since they're sent from different tasks
+        let mut received_stdout = false;
+        let mut received_stderr = false;
+
+        for _ in 0..2 {
+            let (output_target, content) = log_receiver.recv().await.unwrap();
+            match output_target {
+                OutputTarget::Stdout => {
+                    assert_eq!(content, "Stdout data");
+                    received_stdout = true;
+                }
+                OutputTarget::Stderr => {
+                    assert_eq!(content, "Stderr data");
+                    received_stderr = true;
+                }
+            }
+        }
+
+        assert!(received_stdout);
+        assert!(received_stderr);
+    }
+
+    #[tokio::test]
+    async fn test_log_writer_binary_data() {
+        // Create a channel to receive logs
+        let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
+
+        // Create a mock log sender
+        let mock_log_sender = MockLogSender::new(log_sender);
+
+        // Create a mock writer for stdout
+        let (mock_writer, _) = MockWriter::new();
+        let std_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(mock_writer);
+
+        // Create a log writer with the mock sender
+        let mut writer = LogWriter::new(OutputTarget::Stdout, std_writer, mock_log_sender);
+
+        // Write binary data (including non-UTF8 bytes)
+        let binary_data = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F, 0xFF, 0xFE, 0x00];
+        writer.write_all(&binary_data).await.unwrap();
+        writer.flush().await.unwrap();
+
+        // Check that the log was sent and converted to string (with lossy UTF-8 conversion in MockLogSender)
+        let (output_target, content) = log_receiver.recv().await.unwrap();
+        assert_eq!(output_target, OutputTarget::Stdout);
+        // The content should be "Hello" followed by replacement characters for invalid bytes
+        assert!(content.starts_with("Hello"));
+        // The rest of the content will be replacement characters, but we don't care about the exact representation
+    }
+
+    #[tokio::test]
+    async fn test_log_writer_poll_flush() {
+        // Create a channel to receive logs
+        let (log_sender, _log_receiver) = mpsc::unbounded_channel();
+
+        // Create a mock log sender that tracks flush calls
+        let mock_log_sender = MockLogSender::new(log_sender);
+        let log_sender_flush_tracker = mock_log_sender.flush_called.clone();
+
+        // Create mock writers for stdout and stderr
+        let (stdout_mock_writer, _) = MockWriter::new();
+        let stdout_writer: Box<dyn io::AsyncWrite + Send + Unpin> = Box::new(stdout_mock_writer);
+
+        // Create a log writer with the mocks
+        let mut writer = LogWriter::new(OutputTarget::Stdout, stdout_writer, mock_log_sender);
+
+        // Call flush on the writer
+        writer.flush().await.unwrap();
+
+        // Verify that log sender's flush were called
+        assert!(
+            *log_sender_flush_tracker.lock().unwrap(),
+            "LogSender's flush was not called"
+        );
     }
 
     #[test]
@@ -1792,31 +1964,22 @@ mod tests {
         // Create a temporary file for testing the writer
         let temp_file = tempfile::NamedTempFile::new().unwrap();
         let temp_path = temp_file.path().to_path_buf();
+        let temp_file_for_async = tokio::fs::File::create(&temp_path).await.unwrap();
 
-        // Create file writer that writes to the temp file (using tokio for async compatibility)
-        let file_writer = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(true)
-            .open(&temp_path)
-            .await
-            .unwrap();
-
-        // Create FileMonitor and get address for stdout
-        let file_monitor = FileAppender::new();
-        let file_monitor_addr = file_monitor
-            .as_ref()
-            .map(|fm| fm.addr_for(OutputTarget::Stdout));
+        // Create a proper LogFile instance
+        let file_watcher = FileWatcher::new(temp_path.clone()).unwrap();
+        let log_file = LogFile {
+            writer: Box::new(temp_file_for_async),
+            file_watcher,
+        };
 
         let monitor = StreamFwder::start_with_writer(
             reader,
-            Box::new(file_writer),
-            file_monitor_addr,
+            Some(log_file),
             OutputTarget::Stdout,
             3, // max_buffer_size
             log_channel,
             12345, // pid
-            None,  // no prefix
         );
 
         // Wait a bit for set up to be done
@@ -2011,6 +2174,122 @@ mod tests {
         assert!(display_string_multi.contains("Test message"));
     }
 
+    fn create_mock_watcher() -> Result<RecommendedWatcher, anyhow::Error> {
+        let watcher = notify::recommended_watcher(|_| {})?;
+        Ok(watcher)
+    }
+
+    #[tokio::test]
+    async fn test_fwd_on_notify_shutdown_signal() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_path_buf();
+
+        tokio::fs::write(&temp_path, "Initial content\n")
+            .await
+            .unwrap();
+
+        let (_event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
+        let stop = Arc::new(Notify::new());
+        let recent_lines = Arc::new(RwLock::new(VecDeque::new()));
+
+        let (log_tx, _log_rx) = mpsc::unbounded_channel();
+        let mut mock_log_sender = MockLogSender::new(log_tx);
+        let flush_tracker = mock_log_sender.flush_called.clone();
+        let mock_log_sender = Box::new(mock_log_sender);
+
+        // Start fwd_on_notify
+        let stop_clone = stop.clone();
+        let path_clone = temp_path.clone();
+        let recent_lines_clone = recent_lines.clone();
+
+        let file_watcher = FileWatcher {
+            rx: event_rx,
+            watcher: create_mock_watcher().unwrap(),
+            path: path_clone.clone(),
+        };
+
+        let fwd_task = tokio::spawn(async move {
+            fwd_on_notify(
+                file_watcher,
+                &stop_clone,
+                mock_log_sender,
+                OutputTarget::Stdout,
+                recent_lines_clone,
+                10,
+            )
+            .await
+        });
+
+        // Wait a bit to ensure the task is running
+        RealClock.sleep(Duration::from_millis(100)).await;
+
+        // Send shutdown signal
+        stop.notify_waiters();
+
+        // Wait for the task to complete
+        let result = tokio::time::timeout(Duration::from_secs(1), fwd_task)
+            .await
+            .unwrap();
+        assert!(result.is_ok());
+
+        // Verify that flush was called during shutdown
+        assert!(*flush_tracker.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_fwd_on_notify_channel_closed() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_path_buf();
+
+        tokio::fs::write(&temp_path, "Initial content\n")
+            .await
+            .unwrap();
+
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
+        let stop = Arc::new(Notify::new());
+        let recent_lines = Arc::new(RwLock::new(VecDeque::new()));
+
+        let (log_tx, _log_rx) = mpsc::unbounded_channel();
+        let mock_log_sender = Box::new(MockLogSender::new(log_tx));
+
+        // Start fwd_on_notify
+        let stop_clone = stop.clone();
+        let path_clone = temp_path.clone();
+        let recent_lines_clone = recent_lines.clone();
+
+        let file_watcher = FileWatcher {
+            rx: event_rx,
+            watcher: create_mock_watcher().unwrap(),
+            path: path_clone.clone(),
+        };
+
+        let fwd_task = tokio::spawn(async move {
+            fwd_on_notify(
+                file_watcher,
+                &stop_clone,
+                mock_log_sender,
+                OutputTarget::Stdout,
+                recent_lines_clone,
+                10,
+            )
+            .await
+        });
+
+        // Wait a bit to ensure the task is running
+        RealClock.sleep(Duration::from_millis(100)).await;
+
+        // Close the event channel
+        drop(event_tx);
+
+        // Wait for the task to complete
+        let result = tokio::time::timeout(Duration::from_secs(1), fwd_task)
+            .await
+            .unwrap();
+        assert!(result.is_ok());
+    }
+
     // Mock reader for testing process_file_content using std::io::Cursor
     fn create_mock_reader(data: Vec<u8>) -> std::io::Cursor<Vec<u8>> {
         std::io::Cursor::new(data)
@@ -2020,12 +2299,10 @@ mod tests {
     async fn test_process_file_content_basic() {
         let data = b"line1\nline2\nline3\n".to_vec();
         let mut reader = create_mock_reader(data.clone());
-        let max_buf_size = 10;
 
-        let result =
-            process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), max_buf_size)
-                .await
-                .unwrap();
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.lines.len(), 3);
         assert_eq!(result.lines[0], b"line1");
@@ -2039,12 +2316,10 @@ mod tests {
     async fn test_process_file_content_incomplete_line() {
         let data = b"line1\nline2\npartial".to_vec();
         let mut reader = create_mock_reader(data.clone());
-        let max_buf_size = 10;
 
-        let result =
-            process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), max_buf_size)
-                .await
-                .unwrap();
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
+            .await
+            .unwrap();
 
         assert_eq!(result.lines.len(), 2);
         assert_eq!(result.lines[0], b"line1");
@@ -2058,17 +2333,10 @@ mod tests {
         let data = b"omplete\nline2\nline3\n".to_vec();
         let mut reader = create_mock_reader(data.clone());
         let existing_buffer = b"inc".to_vec();
-        let max_buf_size = 10;
 
-        let result = process_file_content(
-            &mut reader,
-            0,
-            data.len() as u64,
-            existing_buffer,
-            max_buf_size,
-        )
-        .await
-        .unwrap();
+        let result = process_file_content(&mut reader, 0, data.len() as u64, existing_buffer)
+            .await
+            .unwrap();
 
         assert_eq!(result.lines.len(), 3);
         assert_eq!(result.lines[0], b"incomplete");
@@ -2082,9 +2350,8 @@ mod tests {
     async fn test_process_file_content_empty_file() {
         let data = Vec::new();
         let mut reader = create_mock_reader(data.clone());
-        let max_buf_size = 10;
 
-        let result = process_file_content(&mut reader, 0, 0, Vec::new(), max_buf_size)
+        let result = process_file_content(&mut reader, 0, 0, Vec::new())
             .await
             .unwrap();
 
@@ -2097,12 +2364,10 @@ mod tests {
     async fn test_process_file_content_only_newlines() {
         let data = b"\n\n\n".to_vec();
         let mut reader = create_mock_reader(data.clone());
-        let max_buf_size = 10;
 
-        let result =
-            process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), max_buf_size)
-                .await
-                .unwrap();
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
+            .await
+            .unwrap();
 
         // Empty lines should not be added (the function skips empty line_buffer)
         assert!(result.lines.is_empty());
@@ -2114,12 +2379,10 @@ mod tests {
     async fn test_process_file_content_no_newlines() {
         let data = b"no newlines here".to_vec();
         let mut reader = create_mock_reader(data.clone());
-        let max_buf_size = 10;
 
-        let result =
-            process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), max_buf_size)
-                .await
-                .unwrap();
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
+            .await
+            .unwrap();
 
         assert!(result.lines.is_empty());
         assert_eq!(result.new_position, data.len() as u64);
@@ -2137,7 +2400,6 @@ mod tests {
             100, // position beyond file size
             data.len() as u64,
             Vec::new(),
-            10, // max_buf_size
         )
         .await
         .unwrap();
@@ -2156,7 +2418,7 @@ mod tests {
         let mut reader = create_mock_reader(data.clone());
 
         // Start reading from position 6 (after "line1\n")
-        let result = process_file_content(&mut reader, 6, data.len() as u64, Vec::new(), 10)
+        let result = process_file_content(&mut reader, 6, data.len() as u64, Vec::new())
             .await
             .unwrap();
 
@@ -2178,7 +2440,6 @@ mod tests {
             data.len() as u64,
             data.len() as u64,
             Vec::new(),
-            10,
         )
         .await
         .unwrap();
@@ -2200,7 +2461,7 @@ mod tests {
         let data = format!("{}\nline2\n", large_line).into_bytes();
         let mut reader = create_mock_reader(data.clone());
 
-        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), 10)
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
             .await
             .unwrap();
 
@@ -2225,7 +2486,7 @@ mod tests {
         let data = b"line1\nline2\r\nline3\n".to_vec();
         let mut reader = create_mock_reader(data.clone());
 
-        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), 10)
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
             .await
             .unwrap();
 
@@ -2249,7 +2510,6 @@ mod tests {
             0,
             data.len() as u64,
             existing_buffer.into_bytes(),
-            10,
         )
         .await
         .unwrap();
@@ -2275,7 +2535,7 @@ mod tests {
         let data = b"a\nb\nc\n".to_vec();
         let mut reader = create_mock_reader(data.clone());
 
-        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), 10)
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
             .await
             .unwrap();
 
@@ -2292,7 +2552,7 @@ mod tests {
         let data = vec![0x00, 0x01, 0x02, b'\n', 0xFF, 0xFE, b'\n'];
         let mut reader = create_mock_reader(data.clone());
 
-        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new(), 10)
+        let result = process_file_content(&mut reader, 0, data.len() as u64, Vec::new())
             .await
             .unwrap();
 
@@ -2301,52 +2561,5 @@ mod tests {
         assert_eq!(result.lines[1], vec![0xFF, 0xFE]);
         assert_eq!(result.new_position, data.len() as u64);
         assert!(result.incomplete_line_buffer.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_process_file_content_resume_after_max_buffer_size() {
-        // Test data: 3 lines as specified in the example
-        let data = b"line 1\nline 2\nline 3\n".to_vec();
-        let mut reader = create_mock_reader(data.clone());
-        let max_buffer_size = 2; // Limit to 2 lines per call
-
-        // First call: should return first 2 lines
-        let result1 = process_file_content(
-            &mut reader,
-            0, // start from beginning
-            data.len() as u64,
-            Vec::new(), // no existing buffer
-            max_buffer_size,
-        )
-        .await
-        .unwrap();
-
-        // Verify first call results
-        assert_eq!(result1.lines.len(), 2, "First call should return 2 lines");
-        assert_eq!(result1.lines[0], b"line 1");
-        assert_eq!(result1.lines[1], b"line 2");
-        assert!(result1.incomplete_line_buffer.is_empty());
-
-        // The position should be after "line 1\nline 2\n" (14 bytes)
-        let expected_position_after_first_call = b"line 1\nline 2\n".len() as u64;
-        assert_eq!(result1.new_position, expected_position_after_first_call);
-
-        // Second call: resume from where first call left off
-        let mut reader2 = create_mock_reader(data.clone());
-        let result2 = process_file_content(
-            &mut reader2,
-            result1.new_position, // resume from previous position
-            data.len() as u64,
-            result1.incomplete_line_buffer, // pass any incomplete buffer (should be empty)
-            max_buffer_size,
-        )
-        .await
-        .unwrap();
-
-        // Verify second call results
-        assert_eq!(result2.lines.len(), 1, "Second call should return 1 line");
-        assert_eq!(result2.lines[0], b"line 3");
-        assert!(result2.incomplete_line_buffer.is_empty());
-        assert_eq!(result2.new_position, data.len() as u64);
     }
 }
