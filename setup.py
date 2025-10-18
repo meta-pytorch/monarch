@@ -119,6 +119,10 @@ with open("requirements.txt") as f:
 with open("README.md", encoding="utf8") as f:
     readme = f.read()
 
+python_lib_dir = sysconfig.get_config_var("LIBDIR")  # path to libpython3.10.so.1.0
+rpath_flag = f"-C link-args=-Wl,-rpath,{python_lib_dir}"
+os.environ["RUSTFLAGS"] = (os.environ.get("RUSTFLAGS", "") + " " + rpath_flag).strip()
+
 rust_extensions = [
     RustBin(
         target="process_allocator",
