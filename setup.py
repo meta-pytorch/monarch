@@ -8,6 +8,7 @@ import os
 
 import shutil
 import subprocess
+import sys
 import sysconfig
 
 import torch
@@ -118,6 +119,15 @@ with open("requirements.txt") as f:
 
 with open("README.md", encoding="utf8") as f:
     readme = f.read()
+
+if sys.platform.startswith("linux"):
+    python_lib_dir = sysconfig.get_config_var("LIBDIR") or ""
+    if python_lib_dir:
+        rpath_flag = f"-C link-args=-Wl,-rpath,{python_lib_dir}"
+        cur = os.environ.get("RUSTFLAGS", "")
+        if rpath_flag not in cur:
+            os.environ["RUSTFLAGS"] = (cur + " " + rpath_flag).strip()
+
 
 rust_extensions = [
     RustBin(
