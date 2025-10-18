@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 
+import ctypes
 import importlib.resources
 import os
 import subprocess
@@ -599,13 +600,61 @@ async def test_base_exception_handling(mesh, method_name) -> None:
         await error_actor.check.call()
 
 
+class FaultActor(Actor):
+    # This will dereference a null pointer and crash the process
+    # This should also kill the ProcMeshAgent, rendering it unresponsive.
+    # In this case, actor mesh should still return a SupervisionError,
+    # and proc_mesh.stop() should still work, albeit it will do nothing
+    # because all the processes should be dead already.
+    @endpoint
+    def sigsegv(self) -> None:
+        ctypes.string_at(0)
+
+    # Simple endpoint that should succeed.
+    @endpoint
+    def check(self) -> None:
+        return None
+
+
+@pytest.mark.timeout(180)
+async def test_sigsegv_handling():
+    hosts = this_host()
+    procs = hosts.spawn_procs({"gpus": 2})
+    actor = procs.spawn("fault", FaultActor)
+
+    # Make sure the actor is healthy first
+    await actor.check.call()
+
+    # Depending on the timing, any of these messages could come back first.
+    error_msg = (
+        'actor mesh is stopped due to proc mesh shutdown.*Failed\\("Killed\\(sig=11.*\\)"\\)|'
+        "Actor .* exited because of the following reason|"
+        "Actor .* is unhealthy with reason"
+    )
+    with pytest.raises(SupervisionError, match=error_msg):
+        await actor.sigsegv.call()
+
+    # Check that a second call still fails and doesn't hang.
+    with pytest.raises(SupervisionError, match=error_msg):
+        await actor.check.call()
+
+    # Check that proc_mesh.stop() still works, even though the processes are dead.
+    # It should check for the procs status without trying to kill them again.
+    await procs.stop()
+
+    # Re-spawn on the same host mesh should work.
+    procs = hosts.spawn_procs({"gpus": 2})
+    actor = procs.spawn("fault", FaultActor)
+
+    # Results don't matter, just make sure there's no exception.
+    await actor.check.call()
+
+
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
     ids=["local_proc_mesh", "proc_mesh"],
 )
-# TODO: proc_mesh.stop() not supported on v1 yet
-@pytest.mark.skip("not supported on v1 yet")
 @pytest.mark.timeout(30)
 async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
     proc = mesh({"gpus": 1})
@@ -628,7 +677,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(120)
 async def test_supervision_with_sending_error() -> None:
     # Messages of length > this will cause a send error and a returned
     # undeliverable.
@@ -644,23 +693,21 @@ async def test_supervision_with_sending_error() -> None:
     # send a small payload to trigger success
     await actor_mesh.check_with_payload.call(payload="a")
 
+    # The host mesh agent sends or the proc mesh agent sends might break.
+    # Either case is an error that tells us that the send failed.
+    error_msg = (
+        ".*Actor .* (is unhealthy with reason|exited because of the following reason)|"
+        "actor mesh is stopped due to proc mesh shutdown"
+    )
+
     # send a large payload to trigger send timeout error
-    with pytest.raises(
-        SupervisionError,
-        match=".*Actor .* exited because of the following reason",
-    ):
+    with pytest.raises(SupervisionError, match=error_msg):
         await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # new call should fail with check of health state of actor mesh
-    with pytest.raises(
-        SupervisionError,
-        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
-    ):
+    with pytest.raises(SupervisionError, match=error_msg):
         await actor_mesh.check.call()
-    with pytest.raises(
-        SupervisionError,
-        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
-    ):
+    with pytest.raises(SupervisionError, match=error_msg):
         await actor_mesh.check_with_payload.call(payload="a")
 
 

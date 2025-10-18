@@ -73,7 +73,7 @@ class ProcMesh:
         """
         ...
 
-    def stop_nonblocking(self) -> PythonTask[None]:
+    def stop_nonblocking(self, instance: Instance) -> PythonTask[None]:
         """
         Stop the proc mesh.
         """

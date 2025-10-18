@@ -15,6 +15,7 @@ use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyNotImplementedError;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -50,9 +51,13 @@ impl PyProcMesh {
         Self::Ref(PyProcMeshRefImpl(inner))
     }
 
-    pub fn mesh_ref(&self) -> Result<ProcMeshRef, anyhow::Error> {
+    pub fn mesh_ref(&self) -> PyResult<ProcMeshRef> {
         match self {
-            PyProcMesh::Owned(inner) => Ok(inner.0.borrow()?.clone()),
+            PyProcMesh::Owned(inner) => Ok(inner
+                .0
+                .borrow()
+                .map_err(|_| PyRuntimeError::new_err("`ProcMesh` has already been stopped"))?
+                .clone()),
             PyProcMesh::Ref(inner) => Ok(inner.0.clone()),
         }
     }
@@ -177,10 +182,39 @@ impl PyProcMesh {
         Ok(self.mesh_ref()?.region().into())
     }
 
-    fn stop_nonblocking(&self) -> PyResult<PyPythonTask> {
-        Err(PyNotImplementedError::new_err(
-            "v1::PyProcMesh::stop not implemented",
-        ))
+    fn stop_nonblocking(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        // Clone the necessary fields from self to avoid capturing self in the async block
+        let (owned_inner, instance) = Python::with_gil(|_py| {
+            let owned_inner = match self {
+                PyProcMesh::Owned(inner) => inner.clone(),
+                PyProcMesh::Ref(_) => {
+                    return Err(PyValueError::new_err(
+                        "ProcMesh is not owned; must be stopped by an owner",
+                    ));
+                }
+            };
+
+            let instance = instance.clone();
+            Ok((owned_inner, instance))
+        })?;
+        PyPythonTask::new(async move {
+            let mesh = owned_inner.0.take().await;
+            match mesh {
+                Ok(mut mesh) => {
+                    instance_dispatch!(instance, async move |cx_instance| {
+                        mesh.stop(cx_instance).await.map_err(|e| {
+                            PyValueError::new_err(format!("error stopping mesh: {}", e))
+                        })
+                    })
+                }
+                Err(e) => {
+                    // Don't return an exception, silently ignore the stop request
+                    // because it was already done.
+                    tracing::info!("proc mesh already stopped: {}", e);
+                    Ok(())
+                }
+            }
+        })
     }
 
     fn sliced(&self, region: &PyRegion) -> PyResult<Self> {

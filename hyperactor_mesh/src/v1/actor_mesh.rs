@@ -293,7 +293,7 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
-    pub(crate) fn proc_mesh(&self) -> &ProcMeshRef {
+    pub fn proc_mesh(&self) -> &ProcMeshRef {
         &self.proc_mesh
     }
 
@@ -683,7 +683,7 @@ mod tests {
                 .await
                 .expect("timeout")
                 .unwrap();
-            assert_matches!(state.status, resource::Status::Stopped);
+            assert_matches!(state.status, resource::Status::Timeout(_));
             let events = state
                 .state
                 .expect("state should be present")

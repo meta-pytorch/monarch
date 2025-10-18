@@ -128,8 +128,12 @@ async def test_bind_and_pickling(use_v1: bool) -> None:
         obj = pickle.dumps(actor_mesh_ref)
         pickle.loads(obj)
         if not use_v1:
-            # TODO: proc mesh stop not yet supported for v1
+            assert isinstance(proc_mesh, ProcMesh)
             await proc_mesh.stop_nonblocking()
+        else:
+            assert isinstance(proc_mesh, ProcMeshV1)
+            instance = context().actor_instance._as_rust()
+            await proc_mesh.stop_nonblocking(instance)
 
     run()
 
@@ -223,7 +227,12 @@ async def test_cast_handle(use_v1: bool) -> None:
         )
 
         if not use_v1:
+            assert isinstance(proc_mesh, ProcMesh)
             await proc_mesh.stop_nonblocking()
+        else:
+            assert isinstance(proc_mesh, ProcMeshV1)
+            instance = context().actor_instance._as_rust()
+            await proc_mesh.stop_nonblocking(instance)
 
     run()
 
@@ -245,7 +254,12 @@ async def test_cast_ref(use_v1: bool) -> None:
             actor_mesh_ref, context().actor_instance, list(range(3 * 8 * 8))
         )
         if not use_v1:
+            assert isinstance(proc_mesh, ProcMesh)
             await proc_mesh.stop_nonblocking()
+        else:
+            assert isinstance(proc_mesh, ProcMeshV1)
+            instance = context().actor_instance._as_rust()
+            await proc_mesh.stop_nonblocking(instance)
 
     run()
 

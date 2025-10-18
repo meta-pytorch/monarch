@@ -57,6 +57,7 @@ use tokio::sync::Mutex;
 
 use crate::Actor;
 use crate::ActorHandle;
+use crate::ActorId;
 use crate::ActorRef;
 use crate::PortHandle;
 use crate::Proc;
@@ -378,6 +379,35 @@ impl fmt::Display for TerminateSummary {
     }
 }
 
+#[async_trait::async_trait]
+/// Trait for terminating a single proc.
+pub trait SingleTerminate: Send + Sync {
+    /// Gracefully terminate the given proc.
+    ///
+    /// Initiates a polite shutdown for each child, waits up to
+    /// `timeout` for completion, then escalates to a forceful stop
+    /// The returned [`TerminateSummary`] reports how
+    /// many children were attempted, succeeded, and failed.
+    ///
+    /// Implementation notes:
+    /// - "Polite shutdown" and "forceful stop" are intentionally
+    ///   abstract. Implementors should map these to whatever
+    ///   semantics they control (e.g., proc-level drain/abort, RPCs,
+    ///   OS signals).
+    /// - The operation must be idempotent and tolerate races with
+    ///   concurrent termination or external exits.
+    ///
+    /// # Parameters
+    /// - `timeout`: Per-child grace period before escalation to a
+    ///   forceful stop.
+    /// Returns a tuple of (polite shutdown actors vec, forceful stop actors vec)
+    async fn terminate_proc(
+        &self,
+        proc: &ProcId,
+        timeout: std::time::Duration,
+    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error>;
+}
+
 /// Trait for managers that can terminate many child **units** in
 /// bulk.
 ///
@@ -440,6 +470,17 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         max_in_flight: usize,
     ) -> TerminateSummary {
         self.manager.terminate_all(timeout, max_in_flight).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
+    async fn terminate_proc(
+        &self,
+        proc: &ProcId,
+        timeout: Duration,
+    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+        self.manager.terminate_proc(proc, timeout).await
     }
 }
 
@@ -646,6 +687,29 @@ where
             attempted,
             ok,
             failed: attempted.saturating_sub(ok),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<S> SingleTerminate for LocalProcManager<S>
+where
+    S: Send + Sync,
+{
+    async fn terminate_proc(
+        &self,
+        proc: &ProcId,
+        timeout: std::time::Duration,
+    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+        // Snapshot procs so we don't hold the lock across awaits.
+        let procs: Option<Proc> = {
+            let mut guard = self.procs.lock().await;
+            guard.remove(proc)
+        };
+        if let Some(mut p) = procs {
+            p.destroy_and_wait::<()>(timeout, None).await
+        } else {
+            Err(anyhow::anyhow!("proc {} doesn't exist", proc))
         }
     }
 }

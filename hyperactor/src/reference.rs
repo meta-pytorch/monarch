@@ -587,6 +587,14 @@ impl ProcId {
             ProcId::Direct(_, _) => None,
         }
     }
+
+    /// The proc's name, if this is a direct proc.
+    pub fn name(&self) -> Option<&String> {
+        match self {
+            ProcId::Ranked(_, _) => None,
+            ProcId::Direct(_, name) => Some(name),
+        }
+    }
 }
 
 impl fmt::Display for ProcId {

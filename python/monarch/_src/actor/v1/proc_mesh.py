@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 from weakref import WeakSet
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
+from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
@@ -125,6 +126,7 @@ class ProcMesh(MeshTrait):
         self._region = region
         self._root_region = root_region
         self._maybe_device_mesh = _device_mesh
+        self._stopped = False
         self._logging_manager = LoggingManager()
         self._controller_controller: Optional["_ControllerController"] = None
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
@@ -377,6 +379,8 @@ class ProcMesh(MeshTrait):
         )
 
     async def __aenter__(self) -> "ProcMesh":
+        if self._stopped:
+            raise RuntimeError("`ProcMesh` has already been stopped")
         return self
 
     def stop(self) -> Future[None]:
@@ -385,17 +389,21 @@ class ProcMesh(MeshTrait):
         release any resources associated with the mesh.
         """
 
-        # FIXME: Actually implement stopping for v1 proc mesh.
+        instance = context().actor_instance._as_rust()
 
-        async def _stop_nonblocking() -> None:
-            pass
+        async def _stop_nonblocking(instance: HyInstance) -> None:
+            await (await self._proc_mesh).stop_nonblocking(instance)
+            self._stopped = True
 
-        return Future(coro=_stop_nonblocking())
+        return Future(coro=_stop_nonblocking(instance))
 
     async def __aexit__(
         self, exc_type: object, exc_val: object, exc_tb: object
     ) -> None:
-        pass
+        # In case there are multiple nested "async with" statements, we only
+        # want it to close once.
+        if not self._stopped:
+            await self.stop()
 
     @classmethod
     def _from_initialized_hy_proc_mesh(

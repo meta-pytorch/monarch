@@ -28,6 +28,7 @@ use base64::prelude::*;
 use futures::StreamExt;
 use futures::stream;
 use humantime::format_duration;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
@@ -1754,6 +1755,39 @@ impl ProcManager for BootstrapProcManager {
 
         // Callers do `handle.read().await` for mesh readiness.
         Ok(handle)
+    }
+}
+
+#[async_trait]
+impl hyperactor::host::SingleTerminate for BootstrapProcManager {
+    /// Attempt to gracefully terminate one child procs managed by
+    /// this `BootstrapProcManager`.
+    ///
+    /// Each child handle is asked to `terminate(timeout)`, which
+    /// sends SIGTERM, waits up to the deadline, and escalates to
+    /// SIGKILL if necessary. Termination is attempted concurrently,
+    /// with at most `max_in_flight` tasks running at once.
+    ///
+    /// Logs a warning for each failure.
+    async fn terminate_proc(
+        &self,
+        proc: &ProcId,
+        timeout: Duration,
+    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+        // Snapshot to avoid holding the lock across awaits.
+        let proc_handle: Option<BootstrapProcHandle> = {
+            let mut guard = self.children.lock().await;
+            guard.remove(proc)
+        };
+
+        if let Some(h) = proc_handle {
+            h.terminate(timeout)
+                .await
+                .map(|_| (Vec::new(), Vec::new()))
+                .map_err(|e| e.into())
+        } else {
+            Err(anyhow::anyhow!("proc doesn't exist: {}", proc))
+        }
     }
 }
 

@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
@@ -29,8 +30,10 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
+use hyperactor::host::SingleTerminate;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::time::Duration;
 
 use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
@@ -68,6 +71,25 @@ impl HostAgentMode {
             HostAgentMode::Local(host) => host.system_proc(),
         }
     }
+
+    async fn terminate_proc(
+        &self,
+        proc: &ProcId,
+        timeout: Duration,
+    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+        #[allow(clippy::match_same_arms)]
+        match self {
+            HostAgentMode::Process(host) => host.terminate_proc(proc, timeout).await,
+            HostAgentMode::Local(host) => host.terminate_proc(proc, timeout).await,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ProcCreationState {
+    rank: usize,
+    created: Result<(ProcId, ActorRef<ProcMeshAgent>), HostError>,
+    stopped: bool,
 }
 
 /// A mesh agent is responsible for managing a host iny a [`HostMesh`],
@@ -75,6 +97,7 @@ impl HostAgentMode {
 #[hyperactor::export(
     handlers=[
         resource::CreateOrUpdate<()>,
+        resource::Stop,
         resource::GetState<ProcState>,
         resource::GetRankStatus,
         ShutdownHost
@@ -82,7 +105,7 @@ impl HostAgentMode {
 )]
 pub struct HostMeshAgent {
     host: Option<HostAgentMode>,
-    created: HashMap<Name, (usize, Result<(ProcId, ActorRef<ProcMeshAgent>), HostError>)>,
+    created: HashMap<Name, ProcCreationState>,
 }
 
 impl fmt::Debug for HostMeshAgent {
@@ -141,9 +164,71 @@ impl Handler<resource::CreateOrUpdate<()>> for HostMeshAgent {
         }
         self.created.insert(
             create_or_update.name.clone(),
-            (create_or_update.rank.unwrap(), created),
+            ProcCreationState {
+                rank: create_or_update.rank.unwrap(),
+                created,
+                stopped: false,
+            },
         );
 
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::Stop> for HostMeshAgent {
+    async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
+        use crate::resource::Status;
+        use crate::v1::StatusOverlay;
+
+        let host = self.host.as_mut().expect("host present");
+        let manager = host.as_process().map(Host::manager);
+        let timeout = hyperactor::config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+        // We don't remove the proc from the state map, instead we just store
+        // its state as Stopped.
+        let proc = self.created.get_mut(&message.name);
+        let (rank, status) = match proc {
+            Some(ProcCreationState {
+                rank,
+                created,
+                stopped,
+            }) => match created {
+                Ok((proc_id, _)) => {
+                    let proc_status = match manager {
+                        Some(manager) => manager.status(proc_id).await,
+                        None => None,
+                    };
+                    // Fetch status from the ProcStatus object if it's available
+                    // for more details.
+                    // This prevents trying to kill a process that is already dead.
+                    let should_stop = if let Some(status) = &proc_status {
+                        resource::Status::from(status.clone()).is_healthy()
+                    } else {
+                        !*stopped
+                    };
+                    if should_stop {
+                        host.terminate_proc(proc_id, timeout).await?;
+                        *stopped = true;
+                    }
+                    // use Stopped as a successful result for Stop.
+                    (*rank, Status::Stopped)
+                }
+                Err(e) => (
+                    *rank,
+                    Status::Failed(format!("Actor already failed with {}", e)),
+                ),
+            },
+            // TODO: represent unknown rank
+            None => (usize::MAX, Status::NotExist),
+        };
+
+        let overlay = if rank == usize::MAX {
+            StatusOverlay::new()
+        } else {
+            StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                .expect("valid single-run overlay")
+        };
+        message.reply.send(cx, overlay)?;
         Ok(())
     }
 }
@@ -158,9 +243,39 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
         use crate::resource::Status;
         use crate::v1::StatusOverlay;
 
+        let manager = self
+            .host
+            .as_mut()
+            .and_then(|h| h.as_process())
+            .map(Host::manager);
         let (rank, status) = match self.created.get(&get_rank_status.name) {
-            Some((rank, Ok(_))) => (*rank, Status::Running),
-            Some((rank, Err(e))) => (*rank, Status::Failed(e.to_string())),
+            Some(ProcCreationState {
+                rank,
+                created: Ok((proc_id, _mesh_agent)),
+                stopped,
+            }) => {
+                let proc_status = match manager {
+                    Some(manager) => manager.status(proc_id).await,
+                    None => None,
+                };
+                // Fetch status from the ProcStatus object if it's available
+                // for more details.
+                let status = if let Some(status) = &proc_status {
+                    status.clone().into()
+                } else if *stopped {
+                    resource::Status::Stopped
+                } else {
+                    resource::Status::Running
+                };
+                (*rank, status)
+            }
+            // If the creation failed, show as Failed instead of Stopped even if
+            // the proc was stopped.
+            Some(ProcCreationState {
+                rank,
+                created: Err(e),
+                ..
+            }) => (*rank, Status::Failed(e.to_string())),
             None => (usize::MAX, Status::NotExist),
         };
 
@@ -219,6 +334,7 @@ impl Handler<ShutdownHost> for HostMeshAgent {
 #[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
 pub struct ProcState {
     pub proc_id: ProcId,
+    pub create_rank: usize,
     pub mesh_agent: ActorRef<ProcMeshAgent>,
     pub bootstrap_command: Option<BootstrapCommand>,
     pub proc_status: Option<bootstrap::ProcStatus>,
@@ -238,20 +354,39 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
             .as_process()
             .map(Host::manager);
         let state = match self.created.get(&get_state.name) {
-            Some((_rank, Ok((proc_id, mesh_agent)))) => resource::State {
-                name: get_state.name.clone(),
-                status: resource::Status::Running,
-                state: Some(ProcState {
-                    proc_id: proc_id.clone(),
-                    mesh_agent: mesh_agent.clone(),
-                    bootstrap_command: manager.map(|m| m.command().clone()),
-                    proc_status: match manager {
-                        Some(manager) => Some(manager.status(proc_id).await.unwrap()),
-                        None => None,
-                    },
-                }),
-            },
-            Some((_rank, Err(e))) => resource::State {
+            Some(ProcCreationState {
+                rank,
+                created: Ok((proc_id, mesh_agent)),
+                stopped,
+            }) => {
+                let proc_status = match manager {
+                    Some(manager) => manager.status(proc_id).await,
+                    None => None,
+                };
+                // Fetch status from the ProcStatus object if it's available
+                // for more details.
+                let status = if let Some(status) = &proc_status {
+                    status.clone().into()
+                } else if *stopped {
+                    resource::Status::Stopped
+                } else {
+                    resource::Status::Running
+                };
+                resource::State {
+                    name: get_state.name.clone(),
+                    status,
+                    state: Some(ProcState {
+                        proc_id: proc_id.clone(),
+                        create_rank: *rank,
+                        mesh_agent: mesh_agent.clone(),
+                        bootstrap_command: manager.map(|m| m.command().clone()),
+                        proc_status,
+                    }),
+                }
+            }
+            Some(ProcCreationState {
+                created: Err(e), ..
+            }) => resource::State {
                 name: get_state.name.clone(),
                 status: resource::Status::Failed(e.to_string()),
                 state: None,
@@ -400,6 +535,7 @@ mod tests {
                     mesh_agent,
                     bootstrap_command,
                     proc_status: Some(ProcStatus::Ready { pid: _, started_at: _, addr: _, agent: proc_status_mesh_agent}),
+                    ..
                 }),
             } if name == resource_name
               && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())

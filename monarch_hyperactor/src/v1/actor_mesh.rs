@@ -160,7 +160,7 @@ fn send_state_change(
         // If the actor was killed, it might not have a Failed status
         // or supervision events, and it can't tell us which rank
         // it was.
-        resource::Status::NotExist | resource::Status::Stopped => {
+        resource::Status::NotExist | resource::Status::Stopped | resource::Status::Timeout(_) => {
             if !events.is_empty() {
                 events
             } else {
@@ -246,6 +246,26 @@ where
     loop {
         // Wait in between checking to avoid using too much network.
         RealClock.sleep(time_between_checks).await;
+        // First check if the proc mesh is dead before trying to query their agents.
+        let proc_states = mesh.proc_mesh().proc_states(cx).await.map_err(|e| {
+            PyErr::new::<SupervisionError, _>(format!("Unable to query for proc states: {:?}", e))
+        })?;
+        if let Some(proc_states) = proc_states {
+            // Check if the proc mesh is still alive.
+            if let Some((rank, state)) = proc_states
+                .iter()
+                .find(|(_rank, state)| state.status.is_terminating())
+            {
+                return Err(PyErr::new::<SupervisionError, _>(format!(
+                    "actor mesh is stopped due to proc mesh shutdown on: {}, rank {} is in state {:?}",
+                    mesh.proc_mesh().name(),
+                    rank.rank(),
+                    state.status
+                )));
+            }
+        }
+
+        // Now that we know the proc mesh is alive, check for actor state changes.
         let events = mesh.actor_states(cx).await.map_err(|e| {
             PyErr::new::<SupervisionError, _>(format!("Unable to query for actor states: {:?}", e))
         })?;

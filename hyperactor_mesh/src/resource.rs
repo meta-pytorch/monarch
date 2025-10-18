@@ -39,6 +39,7 @@ use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::bootstrap;
 use crate::v1::Name;
 use crate::v1::StatusOverlay;
 
@@ -83,6 +84,24 @@ impl Status {
             self,
             Status::Stopping | Status::Stopped | Status::Failed(_) | Status::Timeout(_)
         )
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        matches!(self, Status::Initializing | Status::Running)
+    }
+}
+
+impl From<bootstrap::ProcStatus> for Status {
+    fn from(status: bootstrap::ProcStatus) -> Self {
+        use bootstrap::ProcStatus;
+        match status {
+            ProcStatus::Starting => Status::Initializing,
+            ProcStatus::Running { .. } | ProcStatus::Ready { .. } => Status::Running,
+            ProcStatus::Stopping { .. } => Status::Stopping,
+            ProcStatus::Stopped { .. } => Status::Stopped,
+            ProcStatus::Failed { reason } => Status::Failed(reason),
+            ProcStatus::Killed { .. } => Status::Failed(format!("{}", status)),
+        }
     }
 }
 

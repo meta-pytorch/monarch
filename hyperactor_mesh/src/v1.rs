@@ -297,7 +297,8 @@ impl FromStr for Name {
     type Err = NameParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        if let Some((name, uuid)) = s.split_once(NAME_SUFFIX_DELIMITER) {
+        // Split from the last in case the name has underscores in it.
+        if let Some((name, uuid)) = s.rsplit_once(NAME_SUFFIX_DELIMITER) {
             if name.is_empty() {
                 return Err(NameParseError::MissingName);
             }
@@ -375,9 +376,9 @@ mod tests {
 
     #[test]
     fn test_name_parse() {
-        // Multiple underscores are allowed in the name, as ShortUuid will discard
-        // them.
-        let name = Name::from_str("foo__1a2b3c4_d5e6f").unwrap();
-        assert_eq!(format!("{}", name), "foo_1a2b3c4d5e6f");
+        // Multiple underscores are allowed in the name, as ShortUuid will choose
+        // the part after the last underscore.
+        let name = Name::from_str("foo_bar_1a2b3c4d5e6f").unwrap();
+        assert_eq!(format!("{}", name), "foo_bar_1a2b3c4d5e6f");
     }
 }
