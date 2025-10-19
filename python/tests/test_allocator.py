@@ -606,8 +606,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                     AllocSpec(AllocConstraints(), host=1, gpu=1)
                 ).initialized
 
-    # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
-    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_torchx_remote_alloc_initializer_no_match_label_1_mesh(self) -> None:
         server = ServerSpec(
             name=UNUSED,
@@ -623,9 +621,11 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             ],
         )
         port = get_free_port()
+        os.environ["HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY"] = "true"
 
         with remote_process_allocator(
             addr=f"tcp!{get_sockaddr('localhost', port)}",
+            envs={"HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY": "true"},
         ):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
@@ -641,8 +641,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assert_computed_world_size(results, 4)  # 1x4 mesh
 
-    # Skipping test temporarily due to blocking OSS CI TODO: @rusch T232884876
-    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_torchx_remote_alloc_initializer_with_match_label(self) -> None:
         server = ServerSpec(
             name=UNUSED,
@@ -658,9 +656,11 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             ],
         )
         port = get_free_port()
+        os.environ["HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY"] = "true"
 
         with remote_process_allocator(
             addr=f"tcp!{get_sockaddr('localhost', port)}",
+            envs={"HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY": "true"},
         ):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
