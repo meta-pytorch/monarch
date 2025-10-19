@@ -15,7 +15,6 @@ setup_conda_environment() {
     echo "Setting up conda environment with Python ${python_version}..."
     conda create -n venv python="${python_version}" -y
     conda activate venv
-    export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH"
     export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH
     python -m pip install --upgrade pip
 }
