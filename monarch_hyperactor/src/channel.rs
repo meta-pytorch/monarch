@@ -98,10 +98,18 @@ impl PyChannelAddr {
     /// `0` for transports for which unix ports do not apply (e.g. `unix`, `local`)
     pub fn get_port(&self) -> PyResult<u16> {
         match self.inner {
-            ChannelAddr::Tcp(socket_addr)
-            | ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket_addr)) => Ok(socket_addr.port()),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host { port, .. }) => Ok(port),
-            ChannelAddr::Unix(_) | ChannelAddr::Local(_) => Ok(0),
+            ChannelAddr::Tcp {
+                addr: socket_addr, ..
+            }
+            | ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Socket(socket_addr),
+                ..
+            } => Ok(socket_addr.port()),
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host { port, .. },
+                ..
+            } => Ok(port),
+            ChannelAddr::Unix { .. } | ChannelAddr::Local { .. } => Ok(0),
             _ => Err(PyRuntimeError::new_err(format!(
                 "unsupported transport: `{:?}` for channel address: `{}`",
                 self.inner.transport(),

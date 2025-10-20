@@ -1231,16 +1231,12 @@ mod tests {
         let msg = supervisor_supervision_receiver.recv().await;
         match msg.unwrap() {
             ProcSupervisionMessage::Update(state, port) => {
-                assert_eq!(
-                    state,
-                    ProcSupervisionState {
-                        world_id: local_world_id.clone(),
-                        proc_addr: ChannelAddr::Local(3),
-                        proc_id: local_proc_id.clone(),
-                        proc_health: ProcStatus::Alive,
-                        failed_actors: Vec::new(),
-                    }
-                );
+                assert_eq!(state.world_id, local_world_id.clone());
+                assert_eq!(state.proc_id, local_proc_id.clone());
+                assert_eq!(state.proc_health, ProcStatus::Alive);
+                assert_eq!(state.failed_actors, Vec::new());
+                // proc_addr is dynamic based on channel allocation, just verify it's Local
+                assert!(matches!(state.proc_addr, ChannelAddr::Local { .. }));
                 let _ = port.send(&supervisor, ());
             }
         }
@@ -1423,7 +1419,10 @@ mod tests {
         let _proc_actor_1 = ProcActor::bootstrap_for_proc(
             proc_1.clone(),
             world_id.clone(),
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            ChannelAddr::any_with_label(
+                ChannelTransport::Tcp(TcpMode::Hostname),
+                "test_mailbox_admin_listen_1".to_string(),
+            ),
             server_handle.local_addr().clone(),
             sup_ref.clone(),
             Duration::from_secs(120),
@@ -1589,7 +1588,7 @@ mod tests {
         ),
         1,
     ),
-    addr: Tcp("#;
+    addr: Tcp {"#;
 
         // Pong gets Ping's address
         let expected_2 = r#"UpdateAddress {
@@ -1599,7 +1598,7 @@ mod tests {
         ),
         0,
     ),
-    addr: Tcp("#;
+    addr: Tcp {"#;
 
         // Ping gets "user"'s address
         let expected_3 = r#"UpdateAddress {
@@ -1609,6 +1608,7 @@ mod tests {
         ),"#;
 
         logs_assert(|logs| {
+            println!("logs: {:?}", logs);
             let log_body = logs.join("\n");
 
             let pattern = Regex::new(r"(?m)^UpdateAddress \{\n(?:.*\n)*?^\}").unwrap();

@@ -57,12 +57,18 @@ pub async fn spawn_controller(
     world_size: usize,
 ) -> anyhow::Result<ActorHandle<ProcActor>> {
     let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
-    let ChannelAddr::Sim(bootstrap_addr) = bootstrap_addr else {
+    let ChannelAddr::Sim {
+        addr: bootstrap_sim_addr,
+        ..
+    } = bootstrap_addr
+    else {
         panic!("bootstrap_addr must be a SimAddr");
     };
-    let bootstrap_addr = ChannelAddr::Sim(
-        SimAddr::new_with_src(listen_addr.clone(), bootstrap_addr.addr().clone()).unwrap(),
-    );
+    let bootstrap_addr = ChannelAddr::Sim {
+        addr: SimAddr::new_with_src(listen_addr.clone(), bootstrap_sim_addr.addr().clone())
+            .unwrap(),
+        label: None,
+    };
     tracing::info!(
         "controller listen addr: {}, bootstrap addr: {}",
         &listen_addr,
@@ -108,12 +114,18 @@ pub async fn spawn_sim_worker(
     let worker_proc_id = ProcId::Ranked(worker_world_id.clone(), rank);
     let worker_actor_id = ActorId(worker_proc_id.clone(), "worker".into(), 0);
 
-    let ChannelAddr::Sim(bootstrap_addr) = bootstrap_addr else {
+    let ChannelAddr::Sim {
+        addr: bootstrap_sim_addr,
+        ..
+    } = bootstrap_addr
+    else {
         panic!("bootstrap_addr must be a SimAddr");
     };
-    let bootstrap_addr = ChannelAddr::Sim(
-        SimAddr::new_with_src(listen_addr.clone(), bootstrap_addr.addr().clone()).unwrap(),
-    );
+    let bootstrap_addr = ChannelAddr::Sim {
+        addr: SimAddr::new_with_src(listen_addr.clone(), bootstrap_sim_addr.addr().clone())
+            .unwrap(),
+        label: None,
+    };
     tracing::info!(
         "worker {} listen addr: {}, bootstrap addr: {}",
         &worker_actor_id,
