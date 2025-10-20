@@ -104,7 +104,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT".to_string()),
         py_name: None,
     })
-    pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+    pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(1000);
 
     /// Message delivery timeout
     @meta(CONFIG = ConfigAttr {

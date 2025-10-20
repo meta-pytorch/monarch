@@ -78,13 +78,13 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE".to_string()),
         py_name: None,
     })
-    pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
+    pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(1000);
 
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
         py_name: None,
     })
-    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(60);
+    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(1000);
 }
 
 /// A reference to a single [`hyperactor::Proc`].
