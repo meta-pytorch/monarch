@@ -314,8 +314,11 @@ impl ProcMesh {
         //    everything else, so now the whole mesh should be able to communicate.
         let client_proc_id =
             ProcId::Ranked(WorldId(format!("{}_client", alloc.world_id().name())), 0);
-        let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
-            .map_err(|err| AllocatorError::Other(err.into()))?;
+        let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any_with_label(
+            alloc.transport(),
+            client_proc_id.to_string(),
+        ))
+        .map_err(|err| AllocatorError::Other(err.into()))?;
         tracing::info!(
             name = "ProcMesh::Allocate::ChannelServe",
             alloc_id = alloc_id,

@@ -477,14 +477,16 @@ impl FileAppender {
                     return None;
                 }
             };
-        let (stdout_addr, stdout_rx) =
-            match channel::serve(ChannelAddr::any(ChannelTransport::Unix)) {
-                Ok((addr, rx)) => (addr, rx),
-                Err(e) => {
-                    tracing::warn!("failed to serve stdout channel: {}", e);
-                    return None;
-                }
-            };
+        let (stdout_addr, stdout_rx) = match channel::serve(ChannelAddr::any_with_label(
+            ChannelTransport::Unix,
+            "log_stdout".to_string(),
+        )) {
+            Ok((addr, rx)) => (addr, rx),
+            Err(e) => {
+                tracing::warn!("failed to serve stdout channel: {}", e);
+                return None;
+            }
+        };
         let stdout_stop = stop.clone();
         let stdout_task = tokio::spawn(file_monitor_task(
             stdout_rx,
@@ -502,14 +504,16 @@ impl FileAppender {
                     return None;
                 }
             };
-        let (stderr_addr, stderr_rx) =
-            match channel::serve(ChannelAddr::any(ChannelTransport::Unix)) {
-                Ok((addr, rx)) => (addr, rx),
-                Err(e) => {
-                    tracing::warn!("failed to serve stderr channel: {}", e);
-                    return None;
-                }
-            };
+        let (stderr_addr, stderr_rx) = match channel::serve(ChannelAddr::any_with_label(
+            ChannelTransport::Unix,
+            "log_stderr".to_string(),
+        )) {
+            Ok((addr, rx)) => (addr, rx),
+            Err(e) => {
+                tracing::warn!("failed to serve stderr channel: {}", e);
+                return None;
+            }
+        };
         let stderr_stop = stop.clone();
         let stderr_task = tokio::spawn(file_monitor_task(
             stderr_rx,
@@ -1107,7 +1111,7 @@ impl Actor for LogForwardActor {
                     err
                 );
                 // TODO: an empty channel to serve
-                ChannelAddr::any(ChannelTransport::Unix)
+                ChannelAddr::any_with_label(ChannelTransport::Unix, "log_fwd".to_string())
             }
         };
         tracing::info!(
@@ -1126,7 +1130,11 @@ impl Actor for LogForwardActor {
                     log_channel,
                     err
                 );
-                channel::serve(ChannelAddr::any(ChannelTransport::Unix))?.1
+                channel::serve(ChannelAddr::any_with_label(
+                    ChannelTransport::Unix,
+                    "log_fwd".to_string(),
+                ))?
+                .1
             }
         };
 

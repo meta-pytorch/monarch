@@ -38,7 +38,10 @@ mod tests {
 
         let system_sim_addr = SimAddr::new(system_addr.clone()).unwrap();
         let server_handle = System::serve(
-            ChannelAddr::Sim(system_sim_addr.clone()),
+            ChannelAddr::Sim {
+                addr: system_sim_addr.clone(),
+                label: None,
+            },
             Duration::from_secs(10),
             Duration::from_secs(10),
         )
@@ -87,11 +90,15 @@ mod tests {
             .unwrap();
 
         let proc_sim_addr = SimAddr::new(proc_addr.clone()).unwrap();
-        let proc_listen_addr = ChannelAddr::Sim(proc_sim_addr);
+        let proc_listen_addr = ChannelAddr::Sim {
+            addr: proc_sim_addr,
+            label: None,
+        };
         let proc_id = world_id.proc_id(actor_index);
-        let proc_to_system = ChannelAddr::Sim(
-            SimAddr::new_with_src(proc_addr.clone(), system_addr.addr().clone()).unwrap(),
-        );
+        let proc_to_system = ChannelAddr::Sim {
+            addr: SimAddr::new_with_src(proc_addr.clone(), system_addr.addr().clone()).unwrap(),
+            label: None,
+        };
         let bootstrap = ProcActor::bootstrap(
             proc_id,
             world_id.clone(),

@@ -63,10 +63,13 @@ async fn parse_system_address_or_mast_job(address: &str) -> Result<ChannelAddr, 
             let (host, port) = SMCClient::new(fbinit::expect_init(), smc_tier)?
                 .get_system_address()
                 .await?;
-            let channel_address = ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                hostname: canonicalize_hostname(&host),
-                port,
-            });
+            let channel_address = ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
+                    hostname: canonicalize_hostname(&host),
+                    port,
+                },
+                label: Some("system".to_string()),
+            };
             Ok(channel_address)
         }
     }

@@ -1135,7 +1135,10 @@ mod tests {
     /// Even so, this is racy.
     fn free_localhost_addr() -> ChannelAddr {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        ChannelAddr::Tcp(listener.local_addr().unwrap())
+        ChannelAddr::Tcp {
+            addr: listener.local_addr().unwrap(),
+            label: None,
+        }
     }
 
     #[tokio::test]

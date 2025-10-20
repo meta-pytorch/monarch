@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -627,7 +626,10 @@ impl RemoteProcessAlloc {
     ) -> Result<Self, anyhow::Error> {
         let alloc_serve_addr = match config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
             Some(addr_str) => AllocAssignedAddr::new(addr_str.parse()?),
-            None => AllocAssignedAddr::new(ChannelAddr::any(spec.transport.clone())),
+            None => AllocAssignedAddr::new(ChannelAddr::any_with_label(
+                spec.transport.clone(),
+                "remote_alloc_bootstrap".to_string(),
+            )),
         };
 
         let (bootstrap_addr, rx) = alloc_serve_addr.serve_with_config()?;
@@ -797,7 +799,8 @@ impl RemoteProcessAlloc {
             };
 
             tracing::debug!("dialing remote: {} for host {}", remote_addr, host.id);
-            let remote_addr = remote_addr.parse::<ChannelAddr>()?;
+            let mut remote_addr = remote_addr.parse::<ChannelAddr>()?;
+            remote_addr.set_label(Some(format!("remote_alloc_host_{}", host.id)));
             let tx = channel::dial(remote_addr.clone())
                 .map_err(anyhow::Error::from)
                 .context(format!(
@@ -1303,7 +1306,10 @@ mod test {
                 Some(ProcState::Running {
                     create_key,
                     proc_id,
-                    addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
+                    addr: ChannelAddr::Unix {
+                        addr: "/proc0".parse().unwrap(),
+                        label: None,
+                    },
                     mesh_agent,
                 })
             });
