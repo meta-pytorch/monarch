@@ -19,6 +19,7 @@ MONARCH_DEFAULT_PORT = 26600
 
 # Client allowed port range for Monarch communication
 CLIENT_ALLOWED_PORT_RANGE = "26600..26610"
+os.environ["MONARCH_FILE_LOG"] = "debug"
 
 
 def setup_allocator(tcp_addresses, public_master_host_ip_address, num_nodes, num_gpus):
@@ -39,7 +40,7 @@ def setup_allocator(tcp_addresses, public_master_host_ip_address, num_nodes, num
         f"tcp!{public_master_host_ip_address}:0"
     )
     os.environ["HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY"] = "true"
-    os.environ["MONARCH_FILE_LOG"] = "true"
+    os.environ["MONARCH_FILE_LOG"] = "debug"
 
     allocator = RemoteAllocator(
         world_id="foo",
@@ -68,7 +69,7 @@ def create_proc_mesh(alloc):
     return proc_mesh
 
 
-def setup_proc_mesh_from_job(job, num_nodes, num_gpus, port=MONARCH_DEFAULT_PORT):
+def setup_proc_mesh_from_job(job=None, num_nodes=2, num_gpus=8, port=MONARCH_DEFAULT_PORT, ip_addresses_set={}):
     """
     High-level function to set up ProcMesh from an MMT job.
 
@@ -84,20 +85,22 @@ def setup_proc_mesh_from_job(job, num_nodes, num_gpus, port=MONARCH_DEFAULT_PORT
         num_nodes: Number of nodes to allocate
         num_gpus: Number of GPUs per node
         port: Port number to use for TCP connections (default: 26600 - Monarch default port)
+        ip_set: Set of remote IP addresses in case that user provides them
 
     Returns:
         ProcMesh: Process mesh ready to use for distributed training
     """
+    if not ip_addresses_set:
+        # Check IP availability and get IP addresses
+        ips_available, ip_addresses_set = check_ips_available(job, num_nodes)
+
+        if not ips_available:
+            raise RuntimeError(
+                f"IPs are not available. Expected {num_nodes} nodes, got {len(ip_addresses_set)}"
+            )
+
     # Get master IPs (internal use only)
     _, public_master_host_ip_address = get_master_ips()
-
-    # Check IP availability and get IP addresses
-    ips_available, ip_addresses_set = check_ips_available(job, num_nodes)
-
-    if not ips_available:
-        raise RuntimeError(
-            f"IPs are not available. Expected {num_nodes} nodes, got {len(ip_addresses_set)}"
-        )
 
     # Create TCP addresses
     tcp_addresses = create_tcp_addresses(ip_addresses_set, port)
