@@ -857,7 +857,12 @@ class _ControllerControllerV0(Actor):
     # pyre-ignore
     @endpoint
     def get_or_spawn(
-        self, name: str, Class: Type[_ActorType], *args: Any, **kwargs: Any
+        self,
+        self_ref: "_ControllerControllerV0",
+        name: str,
+        Class: Type[_ActorType],
+        *args: Any,
+        **kwargs: Any,
     ) -> _ActorType:
         if name not in self._controllers:
             proc_mesh = _proc_mesh_from_allocator(
@@ -910,9 +915,8 @@ def get_or_spawn_controller_v0(
     Returns:
         A Future that resolves to a reference to the actor.
     """
-    return context().actor_instance._controller_controller.get_or_spawn.call_one(
-        name, Class, *args, **kwargs
-    )
+    cc = context().actor_instance._controller_controller
+    return cc.get_or_spawn.call_one(cc, name, Class, *args, **kwargs)
 
 
 if v1_enabled or TYPE_CHECKING:
