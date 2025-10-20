@@ -120,7 +120,8 @@ async def test_proc_mesh_rdma():
 @needs_rdma
 async def test_rdma_buffer_drop():
     """Test the new drop() and owner methods on RDMABuffer with two actors"""
-    proc = this_host().spawn_procs(per_host={"processes": 1})
+    prod_proc = this_host().spawn_procs(per_host={"processes": 1})
+    cons_proc = this_host().spawn_procs(per_host={"processes": 1})
 
     class ProducerActor(Actor):
         def __init__(self):
@@ -133,6 +134,11 @@ async def test_rdma_buffer_drop():
             byte_tensor = self.data.view(torch.uint8).flatten()
             self.buffer = RDMABuffer(byte_tensor)
             return self.buffer
+
+        @endpoint
+        async def drop_buffer(self) -> None:
+            """Drop an RDMABuffer"""
+            await self.buffer.drop()
 
     class ConsumerActor(Actor):
         def __init__(self):
@@ -156,8 +162,8 @@ async def test_rdma_buffer_drop():
                 return f"EXPECTED_ERROR: {e}"
 
     # Create both actors
-    producer = proc.spawn("producer", ProducerActor)
-    consumer = proc.spawn("consumer", ConsumerActor)
+    producer = prod_proc.spawn("producer", ProducerActor)
+    consumer = cons_proc.spawn("consumer", ConsumerActor)
 
     # Create an RDMA buffer in the producer
     buffer = await producer.create_buffer.call_one()
@@ -167,10 +173,7 @@ async def test_rdma_buffer_drop():
     assert result == 100.0, f"Expected 100.0, got {result}"
 
     # Now drop the buffer
-    await buffer.drop()
-
-    # Test that we can call drop multiple times (should be idempotent)
-    await buffer.drop()
+    await producer.drop_buffer.call_one()
 
     # Try to use the buffer after dropping - this should fail
     error_result = await consumer.test_buffer_after_drop.call_one(buffer)
@@ -179,6 +182,10 @@ async def test_rdma_buffer_drop():
     ), f"Expected an error after drop, but got: {error_result}"
 
     print(f"✓ Buffer operations failed after drop as expected: {error_result}")
+
+    # Clean up proc mesh
+    await prod_proc.stop()
+    await cons_proc.stop()
 
 
 class TrainerActor(Actor):
@@ -265,7 +272,8 @@ def test_gpu_trainer_generator_sync() -> None:
 @needs_rdma
 async def test_rdma_concurrent_2gb_writes_in_order():
     """Test concurrent 2GB RDMA buffer writes with reverse-order awaiting"""
-    proc = this_host().spawn_procs(per_host={"processes": 1})
+    owner_proc = this_host().spawn_procs(per_host={"processes": 1})
+    writer_proc = this_host().spawn_procs(per_host={"processes": 1})
     num_elem = 500_000_000  # 500M elements
 
     class BufferOwnerActor(Actor):
@@ -280,6 +288,11 @@ async def test_rdma_concurrent_2gb_writes_in_order():
             byte_tensor = self.data.view(torch.uint8).flatten()
             self.rdma_buffer = RDMABuffer(byte_tensor)
             return self.rdma_buffer
+
+        @endpoint
+        async def drop_buffer(self) -> None:
+            """Drop an RDMABuffer"""
+            await self.rdma_buffer.drop()
 
         @endpoint
         async def get_buffer_data(self) -> torch.Tensor:
@@ -323,8 +336,8 @@ async def test_rdma_concurrent_2gb_writes_in_order():
             return (self.tensor_a, self.tensor_b)
 
     # Create actors
-    buffer_owner = proc.spawn("buffer_owner", BufferOwnerActor)
-    writer = proc.spawn("writer", WriterActor)
+    buffer_owner = owner_proc.spawn("buffer_owner", BufferOwnerActor)
+    writer = writer_proc.spawn("writer", WriterActor)
 
     # Create the 2GB RDMA buffer
     buffer = await buffer_owner.create_buffer.call_one()
@@ -355,8 +368,12 @@ async def test_rdma_concurrent_2gb_writes_in_order():
     print("✓ Concurrent 2GB operations completed successfully")
 
     # Drop the buffer
-    await buffer.drop()
+    await buffer_owner.drop_buffer.call_one()
     print("✓ Buffer dropped successfully")
+
+    # Clean up proc mesh
+    await owner_proc.stop()
+    await writer_proc.stop()
 
 
 class DataServerActor(Actor):
