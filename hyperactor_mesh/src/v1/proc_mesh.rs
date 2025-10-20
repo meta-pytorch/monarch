@@ -286,6 +286,8 @@ impl ProcMesh {
         mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
         name: &str,
     ) -> v1::Result<Self> {
+        tracing::info!("ProcMesh::allocate: making sure we get the new build");
+
         let running = alloc.initialize().await?;
 
         // Wire the newly created mesh into the proc, so that it is routable.
