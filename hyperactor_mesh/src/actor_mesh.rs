@@ -244,8 +244,10 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
                     .into_iter(),
             );
         }
-        let gang: GangRef<Self::Actor> =
-            GangId(self.proc_mesh().world_id().clone(), self.name().to_string()).into();
+        let gang: GangRef<Self::Actor> = GangRef::attest(GangId(
+            self.proc_mesh().world_id().clone(),
+            self.name().to_string(),
+        ));
         Box::new(self.shape().slice().iter().map(move |rank| gang.rank(rank)))
     }
 

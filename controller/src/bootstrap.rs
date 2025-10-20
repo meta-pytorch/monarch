@@ -15,6 +15,7 @@ use anyhow::anyhow;
 use clap::Args;
 use clap::Subcommand;
 use const_format::concatcp;
+use hyperactor::GangRef;
 use hyperactor::actor::ActorHandle;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
@@ -517,7 +518,7 @@ pub async fn bootstrap_controller(
             comm_actor_ref: ActorRef::<CommActor>::attest(
                 controller_actor_id.proc_id().actor_id(COMM_ACTOR_NAME, 0),
             ),
-            worker_gang_ref: GangId(worker_world_id.clone(), worker_name.clone()).into(),
+            worker_gang_ref: GangRef::attest(GangId(worker_world_id.clone(), worker_name.clone())),
             supervision_query_interval,
             worker_progress_check_interval,
             operation_timeout,

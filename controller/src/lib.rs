@@ -693,7 +693,7 @@ mod tests {
                 ControllerParams {
                     world_size: 1,
                     comm_actor_ref: comm_handle.bind(),
-                    worker_gang_ref: GangId(
+                    worker_gang_ref: GangRef::attest(GangId(
                         WorldId(
                             proc.proc_id()
                                 .world_name()
@@ -701,8 +701,7 @@ mod tests {
                                 .to_string(),
                         ),
                         "worker".to_string(),
-                    )
-                    .into(),
+                    )),
                     supervision_query_interval: Duration::from_secs(1),
                     worker_progress_check_interval: Duration::from_secs(3),
                     operation_timeout: Duration::from_secs(30),
@@ -886,7 +885,7 @@ mod tests {
                 ControllerParams {
                     world_size: 1,
                     comm_actor_ref: comm_handle.bind(),
-                    worker_gang_ref: GangId(
+                    worker_gang_ref: GangRef::attest(GangId(
                         WorldId(
                             proc.proc_id()
                                 .world_name()
@@ -894,8 +893,7 @@ mod tests {
                                 .to_string(),
                         ),
                         "worker".to_string(),
-                    )
-                    .into(),
+                    )),
                     supervision_query_interval: Duration::from_secs(100000),
                     worker_progress_check_interval: Duration::from_secs(1),
                     operation_timeout: Duration::from_secs(timeout_secs),
@@ -1014,7 +1012,7 @@ mod tests {
                 ControllerParams {
                     world_size: 1,
                     comm_actor_ref: comm_handle.bind(),
-                    worker_gang_ref: GangId(world_id, "worker".to_string()).into(),
+                    worker_gang_ref: GangRef::attest(GangId(world_id, "worker".to_string())),
                     supervision_query_interval: Duration::from_secs(100000),
                     worker_progress_check_interval: Duration::from_secs(1),
                     operation_timeout: Duration::from_secs(timeout_secs),
@@ -1201,11 +1199,10 @@ mod tests {
                 ControllerParams {
                     world_size: 2,
                     comm_actor_ref: proc_actor_0.comm_actor.bind(),
-                    worker_gang_ref: GangId(
+                    worker_gang_ref: GangRef::attest(GangId(
                         WorldId(world_id.name().to_string()),
                         "worker".to_string(),
-                    )
-                    .into(),
+                    )),
                     supervision_query_interval: Duration::from_secs(1),
                     worker_progress_check_interval: Duration::from_secs(3),
                     operation_timeout: Duration::from_secs(30),
@@ -1416,11 +1413,10 @@ mod tests {
                 ControllerParams {
                     world_size: 1,
                     comm_actor_ref: proc_actor_0.comm_actor.bind(),
-                    worker_gang_ref: GangId(
+                    worker_gang_ref: GangRef::attest(GangId(
                         WorldId(world_id.name().to_string()),
                         "worker".to_string(),
-                    )
-                    .into(),
+                    )),
                     supervision_query_interval: Duration::from_secs(1),
                     worker_progress_check_interval: Duration::from_secs(3),
                     operation_timeout: Duration::from_secs(30),
@@ -1537,7 +1533,7 @@ mod tests {
             ControllerParams {
                 world_size: 1,
                 comm_actor_ref: ActorRef::attest(controller_id.proc_id().actor_id("comm", 0)),
-                worker_gang_ref: GangId(
+                worker_gang_ref: GangRef::attest(GangId(
                     WorldId(
                         proc_id
                             .world_name()
@@ -1545,8 +1541,7 @@ mod tests {
                             .to_string(),
                     ),
                     "worker".to_string(),
-                )
-                .into(),
+                )),
                 supervision_query_interval: Duration::from_secs(1),
                 worker_progress_check_interval: Duration::from_secs(3),
                 operation_timeout: Duration::from_secs(30),
@@ -1631,7 +1626,7 @@ mod tests {
             ControllerParams {
                 world_size: 1,
                 comm_actor_ref: ActorRef::attest(controller_id.proc_id().actor_id("comm", 0)),
-                worker_gang_ref: GangId(
+                worker_gang_ref: GangRef::attest(GangId(
                     WorldId(
                         proc_id
                             .world_name()
@@ -1639,8 +1634,7 @@ mod tests {
                             .to_string(),
                     ),
                     "worker".to_string(),
-                )
-                .into(),
+                )),
                 supervision_query_interval: Duration::from_secs(100),
                 worker_progress_check_interval: Duration::from_secs(100),
                 operation_timeout: Duration::from_secs(1000),
@@ -1735,7 +1729,7 @@ mod tests {
             ControllerParams {
                 world_size: 1,
                 comm_actor_ref: ActorRef::attest(controller_id.proc_id().actor_id("comm", 0)),
-                worker_gang_ref: GangId(
+                worker_gang_ref: GangRef::attest(GangId(
                     WorldId(
                         proc_id
                             .world_name()
@@ -1743,8 +1737,7 @@ mod tests {
                             .to_string(),
                     ),
                     "worker".to_string(),
-                )
-                .into(),
+                )),
                 supervision_query_interval: Duration::from_secs(1),
                 worker_progress_check_interval: Duration::from_secs(3),
                 operation_timeout: Duration::from_secs(30),
@@ -1873,7 +1866,7 @@ mod tests {
             ControllerParams {
                 world_size: 1,
                 comm_actor_ref: ActorRef::attest(controller_id.proc_id().actor_id("comm", 0)),
-                worker_gang_ref: GangId(
+                worker_gang_ref: GangRef::attest(GangId(
                     WorldId(
                         proc_id
                             .world_name()
@@ -1881,8 +1874,7 @@ mod tests {
                             .to_string(),
                     ),
                     "worker".to_string(),
-                )
-                .into(),
+                )),
                 supervision_query_interval: Duration::from_secs(1),
                 worker_progress_check_interval: Duration::from_secs(3),
                 operation_timeout: Duration::from_secs(30),

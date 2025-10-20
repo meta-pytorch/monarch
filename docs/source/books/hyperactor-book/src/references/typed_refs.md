@@ -82,7 +82,7 @@ Just like `PortRef`, this wraps a `PortId` with a phantom message type `M` for t
 
 A `GangRef<A>` is a typed reference to a gang of actors, all of which implement the same `Referable` type `A`.
 ```rust
-let gang_ref: GangRef<MyActor> = GangId::new(...).into();
+let gang_ref: GangRef<MyActor> = GangRef::attest(GangId::new(...));
 ```
 You can extract an `ActorRef<A>` for a specific rank in the gang:
 ```rust
