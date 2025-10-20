@@ -494,22 +494,35 @@ impl AllocAssignedAddr {
     /// for other types of addr, return "any" address.
     pub(crate) fn with_unspecified_port_or_any(addr: &ChannelAddr) -> AllocAssignedAddr {
         let new_addr = match addr {
-            ChannelAddr::Tcp(socket) => {
+            ChannelAddr::Tcp { addr: socket, .. } => {
                 let mut new_socket = socket.clone();
                 new_socket.set_port(0);
-                ChannelAddr::Tcp(new_socket)
+                ChannelAddr::Tcp {
+                    addr: new_socket,
+                    label: None,
+                }
             }
-            ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Socket(socket),
+                ..
+            } => {
                 let mut new_socket = socket.clone();
                 new_socket.set_port(0);
-                ChannelAddr::MetaTls(MetaTlsAddr::Socket(new_socket))
+                ChannelAddr::MetaTls {
+                    addr: MetaTlsAddr::Socket(new_socket),
+                    label: None,
+                }
             }
-            ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port: _ }) => {
-                ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host { hostname, port: _ },
+                ..
+            } => ChannelAddr::MetaTls {
+                addr: MetaTlsAddr::Host {
                     hostname: hostname.clone(),
                     port: 0,
-                })
-            }
+                },
+                label: None,
+            },
             _ => addr.transport().any(),
         };
         AllocAssignedAddr(new_addr)
@@ -530,7 +543,7 @@ impl AllocAssignedAddr {
         let mut bind_to = self.0;
         let mut original_ip: Option<IpAddr> = None;
         match &mut bind_to {
-            ChannelAddr::Tcp(socket) => {
+            ChannelAddr::Tcp { addr: socket, .. } => {
                 original_ip = Some(socket.ip().clone());
                 if use_inaddr_any {
                     set_as_inaddr_any(socket);
@@ -555,7 +568,7 @@ impl AllocAssignedAddr {
 
         // Restore the original IP address if we used INADDR_ANY.
         match &mut bound {
-            ChannelAddr::Tcp(socket) => {
+            ChannelAddr::Tcp { addr: socket, .. } => {
                 if use_inaddr_any {
                     socket.set_ip(original_ip.unwrap());
                 }

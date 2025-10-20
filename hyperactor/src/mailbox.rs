@@ -2841,15 +2841,20 @@ mod tests {
     async fn test_sim_client_server() {
         simnet::start();
         let dst_addr = SimAddr::new("local:1".parse::<ChannelAddr>().unwrap()).unwrap();
-        let src_to_dst = ChannelAddr::Sim(
-            SimAddr::new_with_src(
+        let src_to_dst = ChannelAddr::Sim {
+            addr: SimAddr::new_with_src(
                 "local:0".parse::<ChannelAddr>().unwrap(),
                 dst_addr.addr().clone(),
             )
             .unwrap(),
-        );
+            label: None,
+        };
 
-        let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone())).unwrap();
+        let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim {
+            addr: dst_addr.clone(),
+            label: None,
+        })
+        .unwrap();
         let tx = dial::<MessageEnvelope>(src_to_dst).unwrap();
         let mbox = Mailbox::new_detached(id!(test[0].actor0));
         let serve_handle = mbox.clone().serve(rx);

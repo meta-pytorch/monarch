@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1303,7 +1302,10 @@ mod test {
                 Some(ProcState::Running {
                     create_key,
                     proc_id,
-                    addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
+                    addr: ChannelAddr::Unix {
+                        addr: "/proc0".parse().unwrap(),
+                        label: None,
+                    },
                     mesh_agent,
                 })
             });
