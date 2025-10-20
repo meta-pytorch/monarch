@@ -1663,8 +1663,10 @@ impl ProcManager for BootstrapProcManager {
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
+        let (callback_addr, mut callback_rx) = channel::serve(ChannelAddr::any_with_label(
+            ChannelTransport::Unix,
+            format!("bootstrap_spawn_{}", proc_id),
+        ))?;
 
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
@@ -1690,7 +1692,7 @@ impl ProcManager for BootstrapProcManager {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-        let log_channel = ChannelAddr::any(ChannelTransport::Unix);
+        let log_channel = ChannelAddr::any_with_label(ChannelTransport::Unix, "log".to_string());
         cmd.env(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         let mut child = cmd
             .spawn()
@@ -1924,7 +1926,8 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
         let bootstrap_index: usize = std::env::var(BOOTSTRAP_INDEX_ENV)
             .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_INDEX_ENV, err))?
             .parse()?;
-        let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
+        let listen_addr =
+            ChannelAddr::any_with_label(bootstrap_addr.transport(), "bootstrap_listen".to_string());
         let (serve_addr, mut rx) = channel::serve(listen_addr)?;
         let tx = channel::dial(bootstrap_addr.clone())?;
 
@@ -1957,7 +1960,10 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             match the_msg? {
                 Allocator2Process::StartProc(proc_id, listen_transport) => {
                     let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone()).await?;
-                    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(listen_transport))?;
+                    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any_with_label(
+                        listen_transport,
+                        "bootstrap_v0_proc".to_string(),
+                    ))?;
                     let handle = proc.clone().serve(proc_rx);
                     drop(handle); // linter appeasement; it is safe to drop this future
                     tx.send(Process2Allocator(

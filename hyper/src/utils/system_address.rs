@@ -68,7 +68,7 @@ async fn parse_system_address_or_mast_job(address: &str) -> Result<ChannelAddr, 
                     hostname: canonicalize_hostname(&host),
                     port,
                 },
-                label: None,
+                label: Some("system".to_string()),
             };
             Ok(channel_address)
         }

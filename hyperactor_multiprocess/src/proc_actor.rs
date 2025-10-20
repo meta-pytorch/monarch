@@ -659,7 +659,10 @@ impl ProcMessageHandler for ProcActor {
                     ProcActor::bootstrap(
                         proc_id,
                         world_id.clone(),
-                        ChannelAddr::any(self.params.bootstrap_channel_addr.transport()),
+                        ChannelAddr::any_with_label(
+                            self.params.bootstrap_channel_addr.transport(),
+                            "proc_bootstrap_local".to_string(),
+                        ),
                         self.params.bootstrap_channel_addr.clone(),
                         self.params.supervision_update_interval,
                         HashMap::new(),

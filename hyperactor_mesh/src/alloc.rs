@@ -344,7 +344,10 @@ pub trait Alloc {
 
     /// The address that should be used to serve the client's router.
     fn client_router_addr(&self) -> AllocAssignedAddr {
-        AllocAssignedAddr(ChannelAddr::any(self.transport()))
+        AllocAssignedAddr(ChannelAddr::any_with_label(
+            self.transport(),
+            "client_router".to_string(),
+        ))
     }
 }
 
@@ -499,7 +502,7 @@ impl AllocAssignedAddr {
                 new_socket.set_port(0);
                 ChannelAddr::Tcp {
                     addr: new_socket,
-                    label: None,
+                    label: Some("alloc_unspecified".to_string()),
                 }
             }
             ChannelAddr::MetaTls {
@@ -510,7 +513,7 @@ impl AllocAssignedAddr {
                 new_socket.set_port(0);
                 ChannelAddr::MetaTls {
                     addr: MetaTlsAddr::Socket(new_socket),
-                    label: None,
+                    label: Some("alloc_unspecified".to_string()),
                 }
             }
             ChannelAddr::MetaTls {
@@ -521,7 +524,7 @@ impl AllocAssignedAddr {
                     hostname: hostname.clone(),
                     port: 0,
                 },
-                label: None,
+                label: Some("alloc_unspecified".to_string()),
             },
             _ => addr.transport().any(),
         };
