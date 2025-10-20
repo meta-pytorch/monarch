@@ -42,7 +42,7 @@ from monarch._src.actor.allocator import (
     StaticRemoteAllocInitializer,
     TorchXRemoteAllocInitializer,
 )
-from monarch._src.actor.host_mesh import HostMesh
+from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch.actor import Actor, current_rank, current_size, endpoint, ValueMesh
@@ -63,7 +63,11 @@ def proc_mesh_from_alloc(
     constraints: Optional[AllocConstraints] = None,
 ) -> ProcMesh:
     return HostMesh.allocate_nonblocking(
-        "hosts", Extent(*zip(*list(spec.extent.items()))), allocator, constraints
+        "hosts",
+        Extent(*zip(*list(spec.extent.items()))),
+        allocator,
+        constraints,
+        bootstrap_cmd=_bootstrap_cmd(),
     ).spawn_procs(bootstrap=setup)
 
 

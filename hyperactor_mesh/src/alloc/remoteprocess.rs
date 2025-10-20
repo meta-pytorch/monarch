@@ -9,9 +9,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -779,8 +776,7 @@ impl RemoteProcessAlloc {
                 }
                 ChannelTransport::Tcp(TcpMode::Localhost) => {
                     // TODO: @rusch see about moving over to config for this
-                    let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-                    format!("tcp!{}:{}", ip, self.remote_allocator_port)
+                    format!("tcp![::1]:{}", self.remote_allocator_port)
                 }
                 ChannelTransport::Tcp(TcpMode::Hostname) => {
                     format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
