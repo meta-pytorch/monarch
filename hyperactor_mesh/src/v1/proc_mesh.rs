@@ -406,7 +406,6 @@ impl ProcMesh {
                                     tracing::info!("unmonitored allocation event for {}: {}", name, proc_state);
                                 }
                             }
-
                         }
                     }
                 }

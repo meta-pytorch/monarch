@@ -160,7 +160,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
         py_name: None,
     })
-    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
     /// The default encoding to be used.
     @meta(CONFIG = ConfigAttr {

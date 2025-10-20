@@ -1141,7 +1141,7 @@ where
         ),
     );
 
-    let (tx, rx) = mpsc::channel::<M>(1024);
+    let (tx, rx) = mpsc::channel::<M>(5);
     let cancel_token = CancellationToken::new();
     let join_handle = tokio::spawn(listen(
         listener,
