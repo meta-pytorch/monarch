@@ -770,22 +770,30 @@ impl ReportingRouter {
         // Sim addresses have a concept of directionality. When we notify a proc of an address we should
         // use the proc's address as the source for the sim address.
         let sender_address = self.router.lookup_addr(envelope.sender());
-        let dst_proc_addr =
-            if let (Some(ChannelAddr::Sim(sender_sim_addr)), ChannelAddr::Sim(dest_sim_addr)) =
-                (sender_address, &dst_proc_addr)
-            {
-                ChannelAddr::Sim(
-                    SimAddr::new_with_src(
-                        // source is the sender
-                        sender_sim_addr.addr().clone(),
-                        // dest remains unchanged
-                        dest_sim_addr.addr().clone(),
-                    )
-                    .unwrap(),
+        let dst_proc_addr = if let (
+            Some(ChannelAddr::Sim {
+                addr: sender_sim_addr,
+                ..
+            }),
+            ChannelAddr::Sim {
+                addr: dest_sim_addr,
+                ..
+            },
+        ) = (sender_address, &dst_proc_addr)
+        {
+            ChannelAddr::Sim {
+                addr: SimAddr::new_with_src(
+                    // source is the sender
+                    sender_sim_addr.addr().clone(),
+                    // dest remains unchanged
+                    dest_sim_addr.addr().clone(),
                 )
-            } else {
-                dst_proc_addr
-            };
+                .unwrap(),
+                label: None,
+            }
+        } else {
+            dst_proc_addr
+        };
         self.serialize_and_send(
             &self.proc_port_ref(sender_proc_id),
             MailboxAdminMessage::UpdateAddress {
@@ -2382,8 +2390,14 @@ mod tests {
         simnet::start();
 
         let src_id = id!(proc[0].actor);
-        let src_addr = ChannelAddr::Sim(SimAddr::new("unix!@src".parse().unwrap()).unwrap());
-        let dst_addr = ChannelAddr::Sim(SimAddr::new("unix!@dst".parse().unwrap()).unwrap());
+        let src_addr = ChannelAddr::Sim {
+            addr: SimAddr::new("unix!@src".parse().unwrap()).unwrap(),
+            label: None,
+        };
+        let dst_addr = ChannelAddr::Sim {
+            addr: SimAddr::new("unix!@dst".parse().unwrap()).unwrap(),
+            label: None,
+        };
         let (_, mut rx) = channel::serve::<MessageEnvelope>(src_addr.clone()).unwrap();
 
         let router = ReportingRouter::new();
@@ -2406,7 +2420,7 @@ mod tests {
             .deserialized::<MailboxAdminMessage>()
             .unwrap();
         let MailboxAdminMessage::UpdateAddress {
-            addr: ChannelAddr::Sim(addr),
+            addr: ChannelAddr::Sim { addr, .. },
             ..
         } = admin_msg
         else {

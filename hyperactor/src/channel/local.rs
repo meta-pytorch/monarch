@@ -18,8 +18,8 @@ use crate::Data;
 /// Create a new local channel, returning its two ends.
 pub fn new<M: RemoteMessage>() -> (impl Tx<M>, impl Rx<M>) {
     let (tx, rx) = mpsc::unbounded_channel::<M>();
-    let (mpsc_tx, status_sender) = MpscTx::new(tx, ChannelAddr::Local(0));
-    let mpsc_rx = MpscRx::new(rx, ChannelAddr::Local(0), status_sender);
+    let (mpsc_tx, status_sender) = MpscTx::new(tx, ChannelAddr::Local { id: 0, label: None });
+    let mpsc_rx = MpscRx::new(rx, ChannelAddr::Local { id: 0, label: None }, status_sender);
     (mpsc_tx, mpsc_rx)
 }
 
@@ -87,7 +87,10 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
     }
 
     fn addr(&self) -> ChannelAddr {
-        ChannelAddr::Local(self.port)
+        ChannelAddr::Local {
+            id: self.port,
+            label: None,
+        }
     }
 
     fn status(&self) -> &watch::Receiver<TxStatus> {
@@ -111,7 +114,10 @@ impl<M: RemoteMessage> Rx<M> for LocalRx<M> {
     }
 
     fn addr(&self) -> ChannelAddr {
-        ChannelAddr::Local(self.port)
+        ChannelAddr::Local {
+            id: self.port,
+            label: None,
+        }
     }
 }
 

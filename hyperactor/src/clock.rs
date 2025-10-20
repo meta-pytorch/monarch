@@ -168,7 +168,7 @@ impl ClockKind {
     /// a proc is being served on
     pub fn for_channel_addr(channel_addr: &ChannelAddr) -> Self {
         match channel_addr {
-            ChannelAddr::Sim(_) => Self::Sim(SimClock),
+            ChannelAddr::Sim { .. } => Self::Sim(SimClock),
             _ => Self::Real(RealClock),
         }
     }
