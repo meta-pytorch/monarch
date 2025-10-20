@@ -95,6 +95,7 @@ use crate::clock::RealClock;
 use crate::config;
 use crate::config::CHANNEL_MULTIPART;
 use crate::metrics;
+use crate::sync::watchdog::Watchdog;
 
 mod framed;
 use framed::FrameReader;
@@ -638,6 +639,12 @@ impl<M: RemoteMessage> NetTx<M> {
         let mut state = State::init(&log_id);
         let mut conn = Conn::reconnect_with_default();
 
+        let mut watchdog = Watchdog::spawn(
+            config::global::get(config::CHANNEL_WATCHDOG_INTERVAL),
+            log_id.clone(),
+            state.to_string(),
+        );
+
         let (state, conn) = loop {
             (state, conn) = match (state, conn) {
                 // This branch is to provide lazy connection creation. It can be removed after
@@ -726,6 +733,12 @@ impl<M: RemoteMessage> NetTx<M> {
                         }
                     }
                 }
+                (state, _conn) if !watchdog.ok() => {
+                    // Reconnect on watchdog failure. Maybe the underlying session is stuck somehow.
+                    tracing::error!("{log_id}: reconnecting after watchdog failure");
+                    watchdog.send("reconnecting".to_string());
+                    (state, Conn::reconnect_with_default())
+                }
                 (
                     State::Running(Deliveries {
                         mut outbox,
@@ -737,18 +750,13 @@ impl<M: RemoteMessage> NetTx<M> {
                     },
                 ) => {
                     tokio::select! {
-                        // If acking message takes too long, consider the link broken.
-                        _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
-                            let error_msg = format!(
-                                "{log_id}: failed to receive ack within timeout {} secs; link is currently connected",
-                                config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
-                            );
-                            tracing::error!(error_msg);
-                            (State::Closing {
-                                deliveries: Deliveries{outbox, unacked},
-                                reason: error_msg,
-                            }, Conn::Connected { reader, write_state })
-                        }
+                        biased;
+
+                        // TODO: don't materialize the state into a string every time
+                        _ = watchdog.tick(format!("outbox={} unacked={} write_state={:?} ", outbox, unacked, write_state, )) => {
+                            (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
+                        },
+
                         ack_result = reader.next() => {
                             match ack_result {
                                 Ok(Some(buffer)) => {
@@ -798,6 +806,20 @@ impl<M: RemoteMessage> NetTx<M> {
                                 }
                             }
                         },
+
+                        // If acking message takes too long, consider the link broken.
+                        _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
+                            let error_msg = format!(
+                                "{log_id}: failed to receive ack within timeout {} secs; link is currently connected",
+                                config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
+                            );
+                            tracing::error!(error_msg);
+                            (State::Closing {
+                                deliveries: Deliveries{outbox, unacked},
+                                reason: error_msg,
+                            }, Conn::Connected { reader, write_state })
+                        }
+
 
                         // We have to be careful to manage outgoing write states, so that we never write
                         // partial frames in the presence cancellation.
@@ -1185,6 +1207,18 @@ enum WriteState<W, F, T> {
 
     /// Internal state to manage completions.
     Broken,
+}
+
+impl<W, F: bytes::Buf, T> fmt::Debug for WriteState<W, F, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WriteState::Idle(_) => f.debug_tuple("Idle").finish(),
+            WriteState::Writing(frame_write, _) => {
+                f.debug_tuple("Writing").field(frame_write).finish()
+            }
+            WriteState::Broken => f.debug_tuple("Broken").finish(),
+        }
+    }
 }
 
 impl<W, F, T> WriteState<W, F, T> {
