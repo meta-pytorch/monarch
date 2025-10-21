@@ -665,7 +665,8 @@ pub fn initialize_logging_with_log_prefix(
             buck_rule = build_info::BuildInfo::get_rule(),
             package_name = build_info::BuildInfo::get_package_name(),
             package_release = build_info::BuildInfo::get_package_release(),
-            upstream_revision = build_info::BuildInfo::get_revision(),
+            upstream_revision = build_info::BuildInfo::get_upstream_revision(),
+            revision = build_info::BuildInfo::get_revision(),
             "logging_initialized"
         );
 
