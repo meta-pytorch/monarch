@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             constraints: AllocConstraints::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         })
         .await?;
 

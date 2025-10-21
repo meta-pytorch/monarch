@@ -14,7 +14,6 @@
 use core::net::SocketAddr;
 use std::fmt;
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
@@ -35,7 +34,6 @@ use crate::Named;
 use crate::RemoteMessage;
 use crate::attrs::AttrValue;
 use crate::channel::sim::SimAddr;
-use crate::config;
 use crate::simnet::SimNetError;
 
 pub(crate) mod local;

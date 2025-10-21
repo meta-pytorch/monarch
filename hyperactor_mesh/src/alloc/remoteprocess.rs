@@ -41,6 +41,7 @@ use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use mockall::automock;
 use ndslice::Region;
+use ndslice::Slice;
 use ndslice::View;
 use ndslice::ViewExt;
 use ndslice::view::Extent;
@@ -247,6 +248,7 @@ impl RemoteProcessAllocator {
                                 constraints,
                                 proc_name: None, // TODO(meriksen, direct addressing): we need to pass the addressing mode here
                                 transport: ChannelTransport::Unix,
+                                proc_allocation_mode: Default::default(),
                             };
 
                             match process_allocator.allocate(spec.clone()).await {
@@ -757,16 +759,64 @@ impl RemoteProcessAlloc {
         let hostnames: Vec<_> = hosts.iter().map(|e| e.hostname.clone()).collect();
         tracing::info!("obtained {} hosts for this allocation", hostnames.len());
 
-        // We require at least a dimension for hosts, and one for sub-host (e.g., GPUs)
+        // We require at least 1 dimension
         anyhow::ensure!(
-            self.spec.extent.len() >= 2,
-            "invalid extent: {}, expected at least 2 dimensions",
+            self.spec.extent.len() >= 1,
+            "invalid extent: {}, expected at least 1 dimension",
             self.spec.extent
         );
 
-        // We group by the innermost dimension of the extent.
-        let split_dim = &self.spec.extent.labels()[self.spec.extent.len() - 1];
-        for (i, region) in self.spec.extent.group_by(split_dim)?.enumerate() {
+        // Split the extent into regions, one per host.
+        // The allocation mode explicitly determines how to interpret the extent:
+        // 1. ProcLevel: Splits extent to allocate multiple processes per host.
+        //    Requires at least 2 dimensions (e.g., [hosts: N, gpus: M]).
+        //    Splits by second-to-last dimension (hosts), creating N regions with M procs each.
+        //    Used by MastAllocator.
+        // 2. HostLevel: Each point in the extent is a host (no sub-host splitting).
+        //    Example: extent!(region = 2, host = 4) → 8 regions, each with extent {host: 1}
+        //    Used by MastHostAllocator.
+        use crate::alloc::ProcAllocationMode;
+        let regions: Vec<_> = match self.spec.proc_allocation_mode {
+            ProcAllocationMode::ProcLevel => {
+                // Proc-level: requires at least 2 dimensions for sub-host splitting
+                let num_dims = self.spec.extent.len();
+                anyhow::ensure!(
+                    num_dims >= 2,
+                    "ProcLevel allocation mode requires at least 2 dimensions, got extent: {}",
+                    self.spec.extent
+                );
+                // Split by second-to-last dimension (hosts)
+                let split_dim_index = num_dims - 2;
+                let split_dim = &self.spec.extent.labels()[split_dim_index];
+                self.spec.extent.group_by(split_dim)?.collect()
+            }
+            ProcAllocationMode::HostLevel => {
+                // Host-level: each point is a host, create a region for each point
+                let num_points = self.spec.extent.num_ranks();
+                anyhow::ensure!(
+                    hosts.len() >= num_points,
+                    "HostLevel allocation mode requires {} hosts (one per point in extent {}), but only {} hosts were provided",
+                    num_points,
+                    self.spec.extent,
+                    hosts.len()
+                );
+                self.spec
+                    .extent
+                    .points()
+                    .map(|point| {
+                        // Create a 1-element region for this single point
+                        let labels = self.spec.extent.labels().to_vec();
+                        let sizes = vec![1; labels.len()];
+                        let strides = vec![1; labels.len()];
+                        let offset = point.rank();
+                        Region::new(labels, Slice::new(offset, sizes, strides).unwrap())
+                    })
+                    .collect()
+            }
+        };
+
+        let num_regions = regions.len();
+        for (i, region) in regions.into_iter().enumerate() {
             let host = &hosts[i];
             tracing::debug!("allocating: {} for host: {}", region, host.id);
 
@@ -846,7 +896,9 @@ impl RemoteProcessAlloc {
             );
         }
 
-        self.ordered_hosts = hosts;
+        // Only store hosts that were actually used for regions
+        // If num_regions < hosts.len(), we only use the first num_regions hosts
+        self.ordered_hosts = hosts.into_iter().take(num_regions).collect();
         self.start_comm_watcher().await;
         self.started = true;
 
@@ -2071,6 +2123,7 @@ mod test_alloc {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
 
@@ -2200,6 +2253,7 @@ mod test_alloc {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
 
@@ -2331,6 +2385,7 @@ mod test_alloc {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
 

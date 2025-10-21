@@ -228,6 +228,7 @@ impl PyAllocSpec {
                 constraints: constraints.inner.clone(),
                 proc_name: None,
                 transport: default_transport(),
+                proc_allocation_mode: Default::default(),
             },
             transport: None,
         })

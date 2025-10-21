@@ -235,6 +235,7 @@ async fn main() -> Result<ExitCode> {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Local,
+            proc_allocation_mode: Default::default(),
         })
         .await?;
 
