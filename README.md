@@ -48,9 +48,17 @@ The [introduction to monarch concepts](https://meta-pytorch.org/monarch/generate
 View Monarch's hosted documentation [at this link](https://meta-pytorch.org/monarch/).
 
 ## Installation
-Note for running distributed tensors, the local torch version must match the version that monarch was built with.
+Note for running distributed tensors and RDMA, the local torch version must match the version that monarch was built with.
+Stable and nightly distributions require libmxl and libibverbs (runtime).
+
+## Fedora
+`sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel`
+
+## Ubuntu
+`sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev rdma-core-dev`
 
 ### Stable
+
 `pip install torchmonarch`
 
 torchmonarch stable is built with the latest stable torch.

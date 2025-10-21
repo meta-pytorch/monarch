@@ -10,58 +10,7 @@ Before installing Monarch, ensure you have:
 - Basic familiarity with PyTorch
 
 
-### Quick Installation
-
-The simplest way to install Monarch is via pip:
-
-```bash
-pip install torchmonarch-nightly
-```
-
-### Manual Installation
-
-For more control or development purposes, you can install Monarch manually:
-
-```bash
-# Create and activate the conda environment
-conda create -n monarchenv python=3.10 -y
-conda activate monarchenv
-
-# Install nightly rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup toolchain install nightly
-rustup default nightly
-
-# Install non-python dependencies
-conda install libunwind -y
-
-# Install the correct cuda and cuda-toolkit versions for your machine
-sudo dnf install cuda-toolkit-12-0 cuda-12-0
-
-# Install clang-dev and nccl-dev
-sudo dnf install clang-devel libnccl-devel
-# Or, in some environments, the following may be necessary instead
-conda install -c conda-forge clangdev nccl
-conda update -n monarchenv --all -c conda-forge -y
-
-# Install build dependencies
-pip install -r build-requirements.txt
-# Install test dependencies
-pip install -r python/tests/requirements.txt
-
-# Build and install Monarch
-pip install --no-build-isolation .
-# or setup for development
-pip install --no-build-isolation -e .
-```
-
-## Verifying Your Installation
-
-After installation, you can verify that Monarch is working correctly by running the unit tests:
-
-```bash
-pytest python/tests/ -v -m "not oss_skip"
-```
+See [README](https://github.com/meta-pytorch/monarch?tab=readme-ov-file#installation) for install instructions.
 
 ## Next Steps
 
