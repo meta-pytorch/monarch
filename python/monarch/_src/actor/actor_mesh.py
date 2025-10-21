@@ -13,10 +13,12 @@ import functools
 import inspect
 import itertools
 import logging
+
+import os
 import threading
 from abc import abstractproperty
-
 from dataclasses import dataclass
+from functools import cache
 from pprint import pformat
 from textwrap import indent
 from traceback import TracebackException
@@ -211,6 +213,11 @@ _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
 )
 
 T = TypeVar("T")
+
+
+@cache
+def _old_async_workaround():
+    return os.environ.get("MONARCH_OLD_ASYNC_WORKAROUND", "0") != "0"
 
 
 class _Lazy(Generic[T]):
@@ -1141,7 +1148,7 @@ class ActorMesh(MeshTrait, Generic[T]):
                 else:
                     sync_endpoints.append(attr_name)
 
-        if sync_endpoints and async_endpoints:
+        if (sync_endpoints and async_endpoints) or _old_async_workaround():
             raise ValueError(
                 f"{self._class} mixes both async and sync endpoints."
                 "Synchronous endpoints cannot be mixed with async endpoints because they can cause the asyncio loop to deadlock if they wait."

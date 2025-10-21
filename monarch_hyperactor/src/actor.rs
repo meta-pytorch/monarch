@@ -54,6 +54,7 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 
 use crate::buffers::FrozenBuffer;
+use crate::config::MONARCH_OLD_ASYNC_WORKAROUND;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
 use crate::local_state_broker::BrokerId;
@@ -484,6 +485,9 @@ pub struct PythonActor {
     /// so that we can store information from the Init (spawn rank, controller controller)
     /// and provide it to other calls
     instance: Option<Py<crate::context::PyInstance>>,
+
+    /// Cached config value for old async workaround
+    old_async_workaround: bool,
 }
 
 impl PythonActor {
@@ -559,6 +563,7 @@ impl Actor for PythonActor {
                 panic_watcher: UnhandledErrorObserver::ForwardTo(rx),
                 panic_sender: tx,
                 instance: None,
+                old_async_workaround: hyperactor::config::global::get(MONARCH_OLD_ASYNC_WORKAROUND),
             })
         })?)
     }
@@ -809,19 +814,23 @@ impl Handler<PythonMessage> for PythonActor {
             .map_err(|err| err.into())
         })?;
 
-        // Spawn a child actor to await the Python handler method.
-        tokio::spawn(
-            handle_async_endpoint_panic(
-                self.panic_sender.clone(),
-                PythonTask::new(future),
-                receiver,
-            )
-            .instrument(
-                tracing::info_span!("py_panic_handler")
-                    .follows_from(tracing::Span::current().id())
-                    .clone(),
-            ),
+        let future = handle_async_endpoint_panic(
+            self.panic_sender.clone(),
+            PythonTask::new(future),
+            receiver,
+        )
+        .instrument(
+            tracing::info_span!("py_panic_handler")
+                .follows_from(tracing::Span::current().id())
+                .clone(),
         );
+        if self.old_async_workaround {
+            // Spawn a child actor to await the Python handler method.
+            tokio::spawn(future);
+        } else {
+            // things happen in order
+            future.await;
+        }
         Ok(())
     }
 }

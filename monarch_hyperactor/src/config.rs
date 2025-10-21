@@ -35,6 +35,9 @@ use crate::channel::PyChannelTransport;
 declare_attrs! {
     /// Use a single asyncio runtime for all Python actors, rather than one per actor
     pub attr SHARED_ASYNCIO_RUNTIME: bool = false;
+
+    /// Use old async workaround that spawns Python handler methods in tokio tasks
+    pub attr MONARCH_OLD_ASYNC_WORKAROUND: bool = false;
 }
 
 /// Python API for configuration management
