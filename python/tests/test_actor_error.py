@@ -6,9 +6,11 @@
 
 # pyre-unsafe
 
+import asyncio
 import ctypes
 import importlib.resources
 import os
+import re
 import subprocess
 
 import pytest
@@ -530,6 +532,11 @@ class Intermediate(Actor):
     async def forward_healthy_check(self):
         return await self._healthy_actor.check.call()
 
+    def __supervise__(self, failure) -> bool:
+        # Suppress this error from propagating further, the purpose of this actor
+        # is to test the v0 supervision handling by creating individual exceptions.
+        return True
+
 
 @pytest.mark.timeout(30)
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
@@ -781,13 +788,16 @@ class ErrorActorWithSupervise(ErrorActor):
         self.should_handle = should_handle
 
     @endpoint
-    async def subworker_fail(self) -> None:
+    async def subworker_fail(self, sleep: float | None = None) -> None:
         await self.mesh.check.call()
         try:
             # This should cause a SupervisionError to get raised.
             return await self.mesh.fail_with_supervision_error.call()
         except SupervisionError:
-            # We suppress this because __supervise__ will get called as well.
+            # We suppress this because __supervise__ will get called, we want
+            # to make sure to test the v1 API.
+            if sleep is not None:
+                await asyncio.sleep(sleep)
             return
         raise AssertionError(
             "Should never get here, SupervisionError should be raised by the above call"
@@ -824,5 +834,35 @@ async def test_supervise_callback_handled():
     assert "MeshFailure" in r[0]
     assert "rank: 0" in r[0]
     assert "error_actor" in r[0]
+
+    await pm.stop()
+
+
+@pytest.mark.timeout(30)
+async def test_supervise_callback_unhandled():
+    # This test handles none of the supervision errors, and ensures they make their
+    # way back to the client.
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    # TODO: When using the same proc mesh for both, it occasionally fails with:
+    # RuntimeError: error while spawning actor error_actor_1v4bMhugCu1q: failed ranks: [0, 2, 3]
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn(
+        "supervisor", ErrorActorWithSupervise, second_mesh, should_handle=False
+    )
+
+    message = re.compile(
+        """\
+__supervise__ on .*supervisor.* did not handle a supervision event, propagating to next owner. \
+Original event:.*error_actor.*\
+""",
+        re.DOTALL,
+    )
+    # Note that __supervise__ will not get called until the next message
+    # can be processed. If __supervise__ isn't called before the endpoint returns,
+    # it won't be seen as a failure. Add the additional sleep so the actor can
+    # handle the supervision message to propagate it.
+    # Calling a second endpoint would also raise the same message.
+    with pytest.raises(SupervisionError, match=message):
+        await supervisor.subworker_fail.call(sleep=5)
 
     await pm.stop()

@@ -848,7 +848,7 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                 "__supervise__",
                 (
                     crate::context::PyContext::new(cx, instance.clone_ref(py)),
-                    MeshFailure::from(message),
+                    MeshFailure::from(message.clone()),
                 ),
                 None,
             );
@@ -859,19 +859,36 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                         // and doesn't need to be propagated.
                         // TODO: We also don't want to deliver multiple supervision
                         // events from the same mesh if an earlier one is handled.
+                        tracing::info!(
+                            "__supervise__ on {} handled a supervision event, not reporting any further: {}",
+                            cx.self_id(),
+                            message.event
+                        );
                         Ok(())
                     } else {
-                        // TODO: propagate.
-                        Ok(())
+                        // For a falsey return value, we propagate the supervision event
+                        // to the next owning actor. We do this by returning a new
+                        // error. This will not set the causal chain for ActorSupervisionEvent,
+                        // so make sure to include the original event in the error message
+                        // to provide context.
+                        Err(anyhow::anyhow!(
+                            "__supervise__ on {} did not handle a supervision event, \
+                            propagating to next owner. Original event:\n{}",
+                            cx.self_id(),
+                            message.event
+                        ))
                     }
                 }
                 Err(err) => {
-                    // Any other exception will be returned, and will become its
-                    // own supervision failure.
-                    // TODO: we still need to propagate the original supervision
-                    // error.
-                    tracing::error!("caught error in __supervise__ {}", err);
-                    Err(err.into())
+                    // Any other exception will supersede in the propagation chain,
+                    // and will become its own supervision failure.
+                    // Include the event it was handling in the error message.
+                    Err(anyhow::anyhow!(
+                        "__supervise__ on {} raised an exception while handling a supervision event. Original event: {}. Exception raised: {}",
+                        cx.self_id(),
+                        message.event,
+                        err
+                    ))
                 }
             }
         })
