@@ -54,6 +54,12 @@ impl From<SupervisionFailureMessage> for MeshFailure {
     }
 }
 
+impl std::fmt::Display for MeshFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MeshFailure(rank={}, event={})", self.rank, self.event)
+    }
+}
+
 #[pymethods]
 impl MeshFailure {
     // TODO: store and return the mesh object.
@@ -61,7 +67,7 @@ impl MeshFailure {
     fn mesh(&self) {}
 
     fn __repr__(&self) -> String {
-        format!("{:?}", self)
+        format!("{}", self)
     }
 }
 

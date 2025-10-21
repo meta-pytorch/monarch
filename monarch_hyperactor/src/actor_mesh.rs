@@ -74,6 +74,15 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
         Ok(None)
     }
 
+    /// Start supervision monitoring on this mesh.
+    /// This function is idempotent, and is used to start the channel that
+    /// will provide "supervision_event" with events.
+    /// The default implementation does nothing, and it is not required that
+    /// it has to be called before supervision_event.
+    fn start_supervision(&self, _instance: &PyInstance) -> PyResult<()> {
+        Ok(())
+    }
+
     /// Stop the actor mesh asynchronously.
     /// Default implementation raises NotImplementedError for types that don't support stopping.
     fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
@@ -145,6 +154,10 @@ impl PythonActorMesh {
 
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
         self.inner.supervision_event(instance)
+    }
+
+    fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
+        self.inner.start_supervision(instance)
     }
 
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
@@ -374,6 +387,10 @@ impl PythonActorMeshImpl {
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
         ActorMeshProtocol::supervision_event(self, instance)
     }
+    fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
+        ActorMeshProtocol::start_supervision(self, instance)
+    }
+
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
         ActorMeshProtocol::stop(self, instance)
     }
@@ -661,6 +678,21 @@ impl ActorMeshProtocol for AsyncActorMesh {
         // This task must be aborted to run the Drop for the inner PyShared, in
         // case that one is also abortable.
         .map(|mut x| x.spawn_abortable().map(Some))?
+    }
+
+    fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
+        if !self.supervised {
+            return Ok(());
+        }
+        let mesh = self.mesh.clone();
+        let instance = Python::with_gil(|_py| instance.clone());
+        self.push(async move {
+            let mesh = mesh.await;
+            if let Ok(mesh) = mesh {
+                mesh.start_supervision(&instance).unwrap();
+            }
+        });
+        Ok(())
     }
 
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {

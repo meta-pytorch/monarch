@@ -279,7 +279,7 @@ impl<A: Referable> ActorMeshRef<A> {
         Self::with_page_size(name, proc_mesh, DEFAULT_PAGE)
     }
 
-    pub(crate) fn name(&self) -> &Name {
+    pub fn name(&self) -> &Name {
         &self.name
     }
 
