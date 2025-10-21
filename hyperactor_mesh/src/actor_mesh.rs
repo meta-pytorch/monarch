@@ -783,6 +783,7 @@ pub(crate) mod test_util {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Local,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -888,7 +889,8 @@ mod tests {
                         extent: extent! { replica = 1 },
                         constraints: Default::default(),
                         proc_name: None,
-                        transport: default_transport()
+                        transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -913,7 +915,8 @@ mod tests {
                         extent: extent!(replica = 4),
                         constraints: Default::default(),
                         proc_name: None,
-                        transport: default_transport()
+                        transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -942,6 +945,7 @@ mod tests {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -980,11 +984,12 @@ mod tests {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
 
-                let instance = crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance().await;
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (undeliverable_tx, _undeliverable_rx) = proc_mesh.client().open_port();
                 let params = PingPongActorParams::new(Some(undeliverable_tx.bind()), None);
@@ -1026,6 +1031,7 @@ mod tests {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -1070,6 +1076,7 @@ mod tests {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -1104,6 +1111,7 @@ mod tests {
                             constraints: Default::default(),
                             proc_name: None,
                             transport: default_transport(),
+                            proc_allocation_mode: Default::default(),
                         })
                         .await
                         .unwrap();
@@ -1153,6 +1161,7 @@ mod tests {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -1185,6 +1194,7 @@ mod tests {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -1216,6 +1226,7 @@ mod tests {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: default_transport(),
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -1282,6 +1293,7 @@ mod tests {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Local,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -1352,6 +1364,7 @@ mod tests {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Local,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -1421,6 +1434,7 @@ mod tests {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Local,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -1534,6 +1548,7 @@ mod tests {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -1619,6 +1634,7 @@ mod tests {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -1782,7 +1798,8 @@ mod tests {
                         extent,
                         constraints: Default::default(),
                         proc_name: None,
-                        transport: ChannelTransport::Local
+                        transport: ChannelTransport::Local,
+                        proc_allocation_mode: Default::default(),
                     }))
                     .unwrap();
                 let instance = runtime.block_on(crate::v1::testing::instance());
@@ -1815,7 +1832,8 @@ mod tests {
                         extent: extent.clone(),
                         constraints: Default::default(),
                         proc_name: None,
-                        transport: ChannelTransport::Local
+                        transport: ChannelTransport::Local,
+                        proc_allocation_mode: Default::default(),
                     }))
                     .unwrap();
                 let instance = runtime.block_on(crate::v1::testing::instance());
@@ -1889,7 +1907,8 @@ mod tests {
                         extent,
                         constraints: Default::default(),
                         proc_name: None,
-                        transport: ChannelTransport::Local
+                        transport: ChannelTransport::Local,
+                        proc_allocation_mode: Default::default(),
                     }))
                     .unwrap();
                 let instance = runtime.block_on(crate::v1::testing::instance());

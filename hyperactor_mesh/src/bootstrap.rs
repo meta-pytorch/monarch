@@ -2120,7 +2120,6 @@ mod tests {
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
-    use tokio::io::AsyncReadExt;
     use tokio::process::Command;
 
     use super::*;
@@ -3339,6 +3338,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();

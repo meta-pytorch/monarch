@@ -48,6 +48,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                         constraints: Default::default(),
                         proc_name: None,
                         transport: ChannelTransport::Local,
+                        proc_allocation_mode: Default::default(),
                     })
                     .await
                     .unwrap();
@@ -147,6 +148,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                                 constraints: Default::default(),
                                 proc_name: None,
                                 transport: ChannelTransport::Local,
+                                proc_allocation_mode: Default::default(),
                             })
                             .await
                             .unwrap();
