@@ -342,6 +342,16 @@ class ProcMesh(MeshTrait):
 
     # pyre-ignore
     def activate(self) -> AbstractContextManager:
+        """
+        Activate the device mesh. Operations done from insided this context manager will be
+        distributed tensor operations. Each operation will be excuted on each device in the mesh.
+
+        See https://meta-pytorch.org/monarch/generated/examples/distributed_tensors.html for more information
+
+
+            with mesh.activate():
+                t = torch.rand(3, 4, device="cuda")
+        """
         return self._device_mesh.activate()
 
     def rank_tensor(self, dim: str | Sequence[str]) -> "Tensor":

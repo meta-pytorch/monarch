@@ -7,16 +7,12 @@
 # pyre-unsafe
 
 import asyncio
-import traceback
-import warnings
-from functools import partial
 from typing import (
     Any,
     cast,
     Coroutine,
     Generator,
     Generic,
-    Literal,
     NamedTuple,
     Optional,
     TypeVar,
@@ -27,8 +23,6 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import (
     PythonTask,
     Shared,
 )
-
-from typing_extensions import deprecated, Self
 
 R = TypeVar("R")
 
@@ -93,6 +87,17 @@ _Status = _Unawaited | _Complete | _Exception | _Asyncio | _Tokio
 
 
 class Future(Generic[R]):
+    """
+    The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop.
+    These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime.
+    The Future class provides both synchronous (.get()) and asynchronous APIs (await) for interacting with these tasks.
+
+    Args:
+        coro (Coroutine[Any, Any, R] | PythonTask[R]): The coroutine or PythonTask representing
+            the asynchronous computation.
+
+    """
+
     def __init__(self, *, coro: "Coroutine[Any, Any, R] | PythonTask[R]"):
         self._status: _Status = _Unawaited(
             coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro)
