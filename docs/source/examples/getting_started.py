@@ -120,19 +120,6 @@ counters.increment.broadcast()
 # Note however that all messages (including broadcasts) are delivered in the order sent by
 # the client (about which more later).
 
-# %%
-# Logging
-# ---------------------
-# Since we're talking about having multiple actors now, it's worth briefly covering how Monarch handles distributed logging.
-# Monarch streams logs from all the distributed processes back to the Monarch client and applies
-# a log aggregator while doing so.  The log aggregator helps reduce the verbosity of the logs from the various processes by aggregating
-# similar lines and providing a summary.  This follows the larger theme of making the distributed job feel like a local one.
-#
-# If you wish to look at the raw log files rather than the streamed ones (as streaming is best-effort), you can generally find
-# them at ``/tmp/$USER/monarch*`` on the server running the client and the other Monarch processes.
-#
-# You can override the log levels by setting ``MONARCH_FILE_LOG`` (stdout), and ``MONARCH_STDERR_LOG`` (stderr).  Valid values
-# include ``["TRACE", "DEBUG", "INFO", "WARN", "ERROR"]``.
 
 # %%
 # Slicing Meshes
@@ -196,6 +183,24 @@ trainers = trainer_procs.spawn("trainer", Trainer)
 # Do one training step and wait for all to finish it
 
 print(trainers.step.call().get())
+
+# %%
+# Logging
+# ---------------------
+# Since we're talking about having multiple hosts now, it's worth briefly covering how Monarch handles distributed logging.
+# User logs from a Monarch job are routed to stdout and stderr of the corresponding process.
+
+# In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity:
+
+procs.logging_option(stream_to_client=True, aggregate_window_sec=3)
+
+
+# With stream_to_client=True, Monarch forwards logs from all processes (best effort)
+# and applies a windowed aggregator that collapses similar lines and emits summaries that allow to get a holistic view of the job.
+#
+# If you wish to inspect Monarch system logs, you can find them at ``/tmp/$USER/monarch*`` on the servers running the client and the other Monarch processes.
+# You can override the log levels by setting ``MONARCH_FILE_LOG`` (stdout), and ``MONARCH_STDERR_LOG`` (stderr).  Valid values
+# include ``["TRACE", "DEBUG", "INFO", "WARN", "ERROR"]``.
 
 # %%
 # Actor and Process References
