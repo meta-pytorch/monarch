@@ -8,6 +8,7 @@
 
 //! This module implements a cancellation-safe zero-copy framer for network channels.
 
+use std::fmt;
 use std::io;
 use std::io::IoSlice;
 use std::mem::take;
@@ -151,6 +152,15 @@ pub struct FrameWrite<W, B> {
     writer: W,
     len_buf: Bytes,
     body: B,
+}
+
+impl<W, B: Buf> fmt::Debug for FrameWrite<W, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FrameWrite")
+            .field("len_buf(remaining)", &self.len_buf.remaining())
+            .field("body(remaining)", &self.body.remaining())
+            .finish()
+    }
 }
 
 impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {

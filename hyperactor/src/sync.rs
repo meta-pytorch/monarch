@@ -14,3 +14,4 @@
 
 pub mod flag;
 pub mod monitor;
+pub(crate) mod watchdog;

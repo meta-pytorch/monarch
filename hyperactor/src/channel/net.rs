@@ -86,6 +86,10 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
+use tracing::Level;
+use tracing::Span;
+use tracing::span;
 
 use super::*;
 use crate::Message;
@@ -95,6 +99,7 @@ use crate::clock::RealClock;
 use crate::config;
 use crate::config::CHANNEL_MULTIPART;
 use crate::metrics;
+use crate::sync::watchdog::Watchdog;
 
 mod framed;
 use framed::FrameReader;
@@ -173,6 +178,458 @@ fn serialize_bincode<S: ?Sized + serde::Serialize>(
     }
 }
 
+struct QueuedMessage<M: RemoteMessage> {
+    seq: u64,
+    message: serde_multipart::Message,
+    received_at: Instant,
+    // When this message was written to the stream. None means it is not
+    // written yet.
+    sent_at: Option<Instant>,
+    return_channel: oneshot::Sender<M>,
+}
+
+impl<M: RemoteMessage> fmt::Display for QueuedMessage<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rcv_secs = self.received_at.elapsed().as_secs();
+        match self.sent_at {
+            Some(s) => {
+                write!(
+                    f,
+                    "(seq={}, since_rcv={}sec, since_sent={}sec)",
+                    self.seq,
+                    rcv_secs,
+                    s.elapsed().as_secs()
+                )
+            }
+            None => {
+                write!(f, "(seq={}, since_rcv={}sec)", self.seq, rcv_secs)
+            }
+        }
+    }
+}
+
+// A new type to provide custom Debug impl.
+struct MessageDeque<M: RemoteMessage>(VecDeque<QueuedMessage<M>>);
+
+impl<M: RemoteMessage> MessageDeque<M> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn front(&self) -> Option<&QueuedMessage<M>> {
+        self.0.front()
+    }
+
+    fn back(&self) -> Option<&QueuedMessage<M>> {
+        self.0.back()
+    }
+
+    fn num_bytes_queued(&self) -> usize {
+        self.0.iter().map(|m| m.message.len()).sum()
+    }
+}
+
+impl<M: RemoteMessage> Deref for MessageDeque<M> {
+    type Target = VecDeque<QueuedMessage<M>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<M: RemoteMessage> DerefMut for MessageDeque<M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+// only show the first and last N messages, and display how many are
+// omitted in the middle.
+impl<M: RemoteMessage> fmt::Display for MessageDeque<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn write_msg<M: RemoteMessage>(
+            f: &mut fmt::Formatter<'_>,
+            i: usize,
+            msg: &QueuedMessage<M>,
+        ) -> fmt::Result {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", msg)
+        }
+
+        let len = self.0.len();
+        let n: usize = 3;
+
+        write!(f, "[")?;
+
+        if len <= n * 2 {
+            for (i, msg) in self.0.iter().enumerate() {
+                write_msg(f, i, msg)?;
+            }
+        } else {
+            // first N
+            for (i, msg) in self.0.iter().take(n).enumerate() {
+                write_msg(f, i, msg)?;
+            }
+            // middle
+            write!(f, ", ... omit {} messages ..., ", len - 2 * n)?;
+            // last N
+            for (i, msg) in self.0.iter().skip(len - n).enumerate() {
+                write_msg(f, i, msg)?;
+            }
+        }
+
+        write!(f, "]")
+    }
+}
+
+impl<M: RemoteMessage> QueuedMessage<M> {
+    /// Attempt to deserialize this queued frame as a
+    /// `Frame::Message<M>` and return it to the original
+    /// sender. Falls back to logging if the frame is not a
+    /// message or deserialization fails.
+    pub(crate) fn try_return(self) {
+        match serde_multipart::deserialize_bincode::<Frame<M>>(self.message) {
+            Ok(Frame::Message(_, msg)) => {
+                let _ = self.return_channel.send(msg);
+            }
+            Ok(_) => {
+                tracing::debug!("queued frame was not a Frame::Message; dropping without return");
+            }
+            Err(e) => {
+                tracing::warn!("failed to deserialize queued frame for return: {e}");
+            }
+        }
+    }
+}
+
+struct Outbox<'a, M: RemoteMessage> {
+    // The seq number of the next new message put into outbox. Requeued
+    // unacked messages should still use their already assigned seq
+    // numbers.
+    next_seq: u64,
+    deque: MessageDeque<M>,
+    log_id: &'a str,
+}
+
+impl<'a, M: RemoteMessage> Outbox<'a, M> {
+    fn new(log_id: &'a str) -> Self {
+        Self {
+            next_seq: 0,
+            deque: MessageDeque(VecDeque::new()),
+            log_id,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        match self.deque.front() {
+            None => false,
+            Some(msg) => {
+                msg.received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.deque.is_empty()
+    }
+
+    fn front_message(&self) -> Option<serde_multipart::Message> {
+        self.deque.front().map(|msg| msg.message.clone())
+    }
+
+    fn front_size(&self) -> Option<usize> {
+        self.deque.front().map(|msg| msg.message.frame_len())
+    }
+
+    fn pop_front(&mut self) -> Option<QueuedMessage<M>> {
+        self.deque.pop_front()
+    }
+
+    fn push_back(
+        &mut self,
+        (message, return_channel, received_at): (M, oneshot::Sender<M>, Instant),
+    ) -> Result<(), String> {
+        assert!(
+            self.deque.back().is_none_or(|msg| msg.seq < self.next_seq),
+            "{}: unexpected: seq should be in ascending order, but got {} vs {}",
+            self.log_id,
+            self.deque
+                .back()
+                .map_or("None".to_string(), |m| m.to_string()),
+            self.next_seq
+        );
+
+        let frame = Frame::Message(self.next_seq, message);
+        let message = serialize_bincode(&frame).map_err(|e| format!("serialization error: {e}"))?;
+        metrics::REMOTE_MESSAGE_SEND_SIZE.record(message.frame_len() as f64, &[]);
+
+        self.deque.push_back(QueuedMessage {
+            seq: self.next_seq,
+            message,
+            received_at,
+            sent_at: None,
+            return_channel,
+        });
+        self.next_seq += 1;
+        Ok(())
+    }
+
+    fn requeue_unacked(&mut self, unacked: MessageDeque<M>) {
+        if let (Some(last), Some(first)) = (unacked.back(), self.deque.front()) {
+            assert!(
+                last.seq < first.seq,
+                "{}: seq should be in ascending order, but got {} vs {}",
+                self.log_id,
+                last.seq,
+                first.seq,
+            );
+        }
+
+        let mut outbox = unacked;
+        outbox.append(&mut self.deque);
+        self.deque = outbox;
+    }
+}
+
+impl<'a, M: RemoteMessage> fmt::Display for Outbox<'a, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(next_seq: {}, deque: {})", self.next_seq, self.deque)
+    }
+}
+
+// A tuple of acked seq and when it was acked.
+#[derive(Debug)]
+struct AckedSeq(u64, Instant);
+
+impl fmt::Display for AckedSeq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let acked_secs = self.1.elapsed().as_secs();
+        write!(f, "(seq={}, since_acked={}sec)", self.0, acked_secs)
+    }
+}
+
+struct Unacked<'a, M: RemoteMessage> {
+    deque: MessageDeque<M>,
+    largest_acked: Option<AckedSeq>,
+    log_id: &'a str,
+}
+
+impl<'a, M: RemoteMessage> Unacked<'a, M> {
+    fn new(largest_acked: Option<AckedSeq>, log_id: &'a str) -> Self {
+        Self {
+            deque: MessageDeque(VecDeque::new()),
+            largest_acked,
+            log_id,
+        }
+    }
+
+    fn push_back(&mut self, message: QueuedMessage<M>) {
+        assert!(
+            self.deque.back().is_none_or(|msg| msg.seq < message.seq),
+            "{}: seq should be in ascending order, but got {} vs {}",
+            self.log_id,
+            self.deque
+                .back()
+                .map_or("None".to_string(), |m| m.to_string()),
+            message.seq
+        );
+
+        if let Some(AckedSeq(largest, _)) = self.largest_acked {
+            // Note: some scenarios of why this if branch could happen:
+            //
+            // message.0 <= largest could happen in the following scenario:
+            //
+            // 1. NetTx sent seq=2 and seq=3.
+            // 2. NetRx received messages and put them on its mspc channel.
+            //    But before NetRx acked, the connection was broken.
+            // 3. NetTx reconnected. In this case, NetTx will put unacked
+            //    messages, i.e. 2 and 3, back to outbox.
+            // 2. At the beginning of the new connection. NetRx acked 2
+            //    and 3 immediately.
+            // 3. Before sending messages, NetTx received the acks first
+            //    with the new connection. NetTx Stored 3 as largest_acked.
+            // 4. Now NetRx finally got the chance to resend 2 and 3.
+            //    When it resent 2, 2 < largest_acked, which is 3.
+            //    * similarly, if there was only one message, seq=3
+            //      involved, we would have 3 == largest_acked.
+            //
+            // message.0 == largest could also happen in the following
+            // scenario:
+            //
+            // The message was delivered, but the send branch did not push
+            // it into unacked queue. This chould happen when:
+            //   1. `outbox.send_message` future was canceled by tokio::select.
+            //   2. `outbox.send_message` returns an error, which makes
+            //      the deliver result unknown to Tx.
+            // When this happens, Tx will resend the same message. However,
+            // since Rx already received the message, it might ack before
+            // Tx resends. As a result, this message's ack would be
+            // recorded already by `largest_acked` before it is put into
+            // unacked queue.
+            if message.seq <= largest {
+                // since the message is already delivered and acked, it
+                // does need to be put in the queue again.
+                return;
+            }
+        }
+
+        self.deque.push_back(message);
+    }
+
+    /// Remove acked messages from the deque.
+    fn prune(&mut self, acked: u64, acked_at: Instant) {
+        assert!(
+            self.largest_acked.as_ref().map_or(0, |i| i.0) <= acked,
+            "{}: received out-of-order ack; received: {}; stored largest: {}",
+            self.log_id,
+            acked,
+            self.largest_acked
+                .as_ref()
+                .map_or("None".to_string(), |l| l.to_string()),
+        );
+
+        self.largest_acked = Some(AckedSeq(acked, acked_at));
+        let deque = &mut self.deque;
+        while let Some(msg) = deque.front() {
+            if msg.seq <= acked {
+                deque.pop_front();
+            } else {
+                // Messages in the deque are orderd by seq in ascending
+                // order. So we could return early once we encounter
+                // a message that is not acked.
+                break;
+            }
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        matches!(
+            self.deque.front(),
+            Some(msg) if msg.received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+        )
+    }
+
+    /// Return when the oldest message has not been acked within the
+    /// timeout limit. This method is used in tokio::select with other
+    /// branches.
+    async fn wait_for_timeout(&self) {
+        match self.deque.front() {
+            Some(msg) => {
+                RealClock
+                    .sleep_until(
+                        msg.received_at + config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                    )
+                    .await
+            }
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.deque.is_empty()
+    }
+}
+
+impl<'a, M: RemoteMessage> fmt::Display for Unacked<'a, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "(deque: {}, largest_acked: {})",
+            self.deque,
+            self.largest_acked
+                .as_ref()
+                .map_or("None".to_string(), |l| l.to_string())
+        )
+    }
+}
+
+struct Deliveries<'a, M: RemoteMessage> {
+    outbox: Outbox<'a, M>,
+    unacked: Unacked<'a, M>,
+}
+
+impl<'a, M: RemoteMessage> fmt::Display for Deliveries<'a, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(outbox: {}, unacked: {})", self.outbox, self.unacked)
+    }
+}
+
+#[derive(EnumAsInner)]
+enum State<'a, M: RemoteMessage> {
+    /// Channel is running.
+    Running(Deliveries<'a, M>),
+    /// Message delivery not possible.
+    Closing {
+        deliveries: Deliveries<'a, M>,
+        /// why closing
+        reason: String,
+    },
+}
+
+impl<'a, M: RemoteMessage> State<'a, M> {
+    fn init(log_id: &'a str) -> Self {
+        Self::Running(Deliveries {
+            outbox: Outbox::new(log_id),
+            unacked: Unacked::new(None, log_id),
+        })
+    }
+
+    fn deliveries(&self) -> &Deliveries<'a, M> {
+        match self {
+            Self::Running(deliveries) => deliveries,
+            Self::Closing { deliveries, .. } => deliveries,
+        }
+    }
+}
+
+impl<'a, M: RemoteMessage> fmt::Display for State<'a, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            State::Running(deliveries) => {
+                write!(f, "Running(deliveries: {})", deliveries)
+            }
+            State::Closing { deliveries, reason } => {
+                write!(f, "Running(deliveries: {}, reason: {})", deliveries, reason)
+            }
+        }
+    }
+}
+
+#[derive(EnumAsInner)]
+enum Conn<S: Stream> {
+    /// Disconnected.
+    Disconnected(Box<dyn Backoff + Send>),
+    /// Connected and ready to go.
+    Connected {
+        reader: FrameReader<ReadHalf<S>>,
+        write_state: WriteState<WriteHalf<S>, serde_multipart::Frame, ()>,
+    },
+}
+
+impl<S: Stream> Conn<S> {
+    fn reconnect_with_default() -> Self {
+        Self::Disconnected(Box::new(
+            ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(50))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.1)
+                .with_max_interval(Duration::from_millis(1000))
+                .with_max_elapsed_time(None) // Allow infinite retries
+                .build(),
+        ))
+    }
+
+    fn reconnect(backoff: impl Backoff + Send + 'static) -> Self {
+        Self::Disconnected(Box::new(backoff))
+    }
+}
+
 /// A Tx implemented on top of a Link. The Tx manages the link state,
 /// reconnections, etc.
 #[derive(Debug)]
@@ -208,766 +665,40 @@ impl<M: RemoteMessage> NetTx<M> {
         // If we can't deliver a message within this limit consider
         // `link` broken and return.
 
-        struct QueuedMessage<M: RemoteMessage> {
-            seq: u64,
-            message: serde_multipart::Message,
-            received_at: Instant,
-            // When this message was written to the stream. None means it is not
-            // written yet.
-            sent_at: Option<Instant>,
-            return_channel: oneshot::Sender<M>,
-        }
-
-        impl<M: RemoteMessage> fmt::Display for QueuedMessage<M> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                let rcv_secs = self.received_at.elapsed().as_secs();
-                match self.sent_at {
-                    Some(s) => {
-                        write!(
-                            f,
-                            "(seq={}, since_rcv={}sec, since_sent={}sec)",
-                            self.seq,
-                            rcv_secs,
-                            s.elapsed().as_secs()
-                        )
-                    }
-                    None => {
-                        write!(f, "(seq={}, since_rcv={}sec)", self.seq, rcv_secs)
-                    }
-                }
-            }
-        }
-
-        // A new type to provide custom Debug impl.
-        struct MessageDeque<M: RemoteMessage>(VecDeque<QueuedMessage<M>>);
-
-        impl<M: RemoteMessage> Deref for MessageDeque<M> {
-            type Target = VecDeque<QueuedMessage<M>>;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl<M: RemoteMessage> DerefMut for MessageDeque<M> {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
-            }
-        }
-
-        // only show the first and last N messages, and display how many are
-        // omitted in the middle.
-        impl<M: RemoteMessage> fmt::Display for MessageDeque<M> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                fn write_msg<M: RemoteMessage>(
-                    f: &mut fmt::Formatter<'_>,
-                    i: usize,
-                    msg: &QueuedMessage<M>,
-                ) -> fmt::Result {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", msg)
-                }
-
-                let len = self.0.len();
-                let n: usize = 3;
-
-                write!(f, "[")?;
-
-                if len <= n * 2 {
-                    for (i, msg) in self.0.iter().enumerate() {
-                        write_msg(f, i, msg)?;
-                    }
-                } else {
-                    // first N
-                    for (i, msg) in self.0.iter().take(n).enumerate() {
-                        write_msg(f, i, msg)?;
-                    }
-                    // middle
-                    write!(f, ", ... omit {} messages ..., ", len - 2 * n)?;
-                    // last N
-                    for (i, msg) in self.0.iter().skip(len - n).enumerate() {
-                        write_msg(f, i, msg)?;
-                    }
-                }
-
-                write!(f, "]")
-            }
-        }
-
-        impl<M: RemoteMessage> QueuedMessage<M> {
-            /// Attempt to deserialize this queued frame as a
-            /// `Frame::Message<M>` and return it to the original
-            /// sender. Falls back to logging if the frame is not a
-            /// message or deserialization fails.
-            pub(crate) fn try_return(self) {
-                match serde_multipart::deserialize_bincode::<Frame<M>>(self.message) {
-                    Ok(Frame::Message(_, msg)) => {
-                        let _ = self.return_channel.send(msg);
-                    }
-                    Ok(_) => {
-                        tracing::debug!(
-                            "queued frame was not a Frame::Message; dropping without return"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to deserialize queued frame for return: {e}");
-                    }
-                }
-            }
-        }
-
-        struct Outbox<'a, M: RemoteMessage> {
-            // The seq number of the next new message put into outbox. Requeued
-            // unacked messages should still use their already assigned seq
-            // numbers.
-            next_seq: u64,
-            deque: MessageDeque<M>,
-            log_id: &'a str,
-        }
-
-        impl<'a, M: RemoteMessage> Outbox<'a, M> {
-            fn new(log_id: &'a str) -> Self {
-                Self {
-                    next_seq: 0,
-                    deque: MessageDeque(VecDeque::new()),
-                    log_id,
-                }
-            }
-
-            fn is_expired(&self) -> bool {
-                match self.deque.front() {
-                    None => false,
-                    Some(msg) => {
-                        msg.received_at.elapsed()
-                            > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
-                    }
-                }
-            }
-
-            fn is_empty(&self) -> bool {
-                self.deque.is_empty()
-            }
-
-            fn front_message(&self) -> Option<serde_multipart::Message> {
-                self.deque.front().map(|msg| msg.message.clone())
-            }
-
-            fn front_size(&self) -> Option<usize> {
-                self.deque.front().map(|msg| msg.message.frame_len())
-            }
-
-            fn pop_front(&mut self) -> Option<QueuedMessage<M>> {
-                self.deque.pop_front()
-            }
-
-            fn push_back(
-                &mut self,
-                (message, return_channel, received_at): (M, oneshot::Sender<M>, Instant),
-            ) -> Result<(), String> {
-                assert!(
-                    self.deque.back().is_none_or(|msg| msg.seq < self.next_seq),
-                    "{}: unexpected: seq should be in ascending order, but got {} vs {}",
-                    self.log_id,
-                    self.deque
-                        .back()
-                        .map_or("None".to_string(), |m| m.to_string()),
-                    self.next_seq
-                );
-
-                let frame = Frame::Message(self.next_seq, message);
-                let message =
-                    serialize_bincode(&frame).map_err(|e| format!("serialization error: {e}"))?;
-                metrics::REMOTE_MESSAGE_SEND_SIZE.record(message.frame_len() as f64, &[]);
-
-                self.deque.push_back(QueuedMessage {
-                    seq: self.next_seq,
-                    message,
-                    received_at,
-                    sent_at: None,
-                    return_channel,
-                });
-                self.next_seq += 1;
-                Ok(())
-            }
-
-            fn requeue_unacked(&mut self, unacked: MessageDeque<M>) {
-                if let (Some(last), Some(first)) = (unacked.back(), self.deque.front()) {
-                    assert!(
-                        last.seq < first.seq,
-                        "{}: seq should be in ascending order, but got {} vs {}",
-                        self.log_id,
-                        last.seq,
-                        first.seq,
-                    );
-                }
-
-                let mut outbox = unacked;
-                outbox.append(&mut self.deque);
-                self.deque = outbox;
-            }
-        }
-
-        impl<'a, M: RemoteMessage> fmt::Display for Outbox<'a, M> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "(next_seq: {}, deque: {})", self.next_seq, self.deque)
-            }
-        }
-
-        // A tuple of acked seq and when it was acked.
-        struct AckedSeq(u64, Instant);
-
-        impl fmt::Display for AckedSeq {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                let acked_secs = self.1.elapsed().as_secs();
-                write!(f, "(seq={}, since_acked={}sec)", self.0, acked_secs)
-            }
-        }
-
-        struct Unacked<'a, M: RemoteMessage> {
-            deque: MessageDeque<M>,
-            largest_acked: Option<AckedSeq>,
-            log_id: &'a str,
-        }
-
-        impl<'a, M: RemoteMessage> Unacked<'a, M> {
-            fn new(largest_acked: Option<AckedSeq>, log_id: &'a str) -> Self {
-                Self {
-                    deque: MessageDeque(VecDeque::new()),
-                    largest_acked,
-                    log_id,
-                }
-            }
-
-            fn push_back(&mut self, message: QueuedMessage<M>) {
-                assert!(
-                    self.deque.back().is_none_or(|msg| msg.seq < message.seq),
-                    "{}: seq should be in ascending order, but got {} vs {}",
-                    self.log_id,
-                    self.deque
-                        .back()
-                        .map_or("None".to_string(), |m| m.to_string()),
-                    message.seq
-                );
-
-                if let Some(AckedSeq(largest, _)) = self.largest_acked {
-                    // Note: some scenarios of why this if branch could happen:
-                    //
-                    // message.0 <= largest could happen in the following scenario:
-                    //
-                    // 1. NetTx sent seq=2 and seq=3.
-                    // 2. NetRx received messages and put them on its mspc channel.
-                    //    But before NetRx acked, the connection was broken.
-                    // 3. NetTx reconnected. In this case, NetTx will put unacked
-                    //    messages, i.e. 2 and 3, back to outbox.
-                    // 2. At the beginning of the new connection. NetRx acked 2
-                    //    and 3 immediately.
-                    // 3. Before sending messages, NetTx received the acks first
-                    //    with the new connection. NetTx Stored 3 as largest_acked.
-                    // 4. Now NetRx finally got the chance to resend 2 and 3.
-                    //    When it resent 2, 2 < largest_acked, which is 3.
-                    //    * similarly, if there was only one message, seq=3
-                    //      involved, we would have 3 == largest_acked.
-                    //
-                    // message.0 == largest could also happen in the following
-                    // scenario:
-                    //
-                    // The message was delivered, but the send branch did not push
-                    // it into unacked queue. This chould happen when:
-                    //   1. `outbox.send_message` future was canceled by tokio::select.
-                    //   2. `outbox.send_message` returns an error, which makes
-                    //      the deliver result unknown to Tx.
-                    // When this happens, Tx will resend the same message. However,
-                    // since Rx already received the message, it might ack before
-                    // Tx resends. As a result, this message's ack would be
-                    // recorded already by `largest_acked` before it is put into
-                    // unacked queue.
-                    if message.seq <= largest {
-                        // since the message is already delivered and acked, it
-                        // does need to be put in the queue again.
-                        return;
-                    }
-                }
-
-                self.deque.push_back(message);
-            }
-
-            /// Remove acked messages from the deque.
-            fn prune(&mut self, acked: u64, acked_at: Instant) {
-                assert!(
-                    self.largest_acked.as_ref().map_or(0, |i| i.0) <= acked,
-                    "{}: received out-of-order ack; received: {}; stored largest: {}",
-                    self.log_id,
-                    acked,
-                    self.largest_acked
-                        .as_ref()
-                        .map_or("None".to_string(), |l| l.to_string()),
-                );
-
-                self.largest_acked = Some(AckedSeq(acked, acked_at));
-                let deque = &mut self.deque;
-                while let Some(msg) = deque.front() {
-                    if msg.seq <= acked {
-                        deque.pop_front();
-                    } else {
-                        // Messages in the deque are orderd by seq in ascending
-                        // order. So we could return early once we encounter
-                        // a message that is not acked.
-                        break;
-                    }
-                }
-            }
-
-            fn is_expired(&self) -> bool {
-                matches!(
-                    self.deque.front(),
-                    Some(msg) if msg.received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
-                )
-            }
-
-            /// Return when the oldest message has not been acked within the
-            /// timeout limit. This method is used in tokio::select with other
-            /// branches.
-            async fn wait_for_timeout(&self) {
-                match self.deque.front() {
-                    Some(msg) => {
-                        RealClock
-                            .sleep_until(
-                                msg.received_at
-                                    + config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
-                            )
-                            .await
-                    }
-                    None => std::future::pending::<()>().await,
-                }
-            }
-
-            fn is_empty(&self) -> bool {
-                self.deque.is_empty()
-            }
-        }
-
-        impl<'a, M: RemoteMessage> fmt::Display for Unacked<'a, M> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(
-                    f,
-                    "(deque: {}, largest_acked: {})",
-                    self.deque,
-                    self.largest_acked
-                        .as_ref()
-                        .map_or("None".to_string(), |l| l.to_string())
-                )
-            }
-        }
-
-        struct Deliveries<'a, M: RemoteMessage> {
-            outbox: Outbox<'a, M>,
-            unacked: Unacked<'a, M>,
-        }
-
-        impl<'a, M: RemoteMessage> fmt::Display for Deliveries<'a, M> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "(outbox: {}, unacked: {})", self.outbox, self.unacked)
-            }
-        }
-
-        enum State<'a, M: RemoteMessage> {
-            /// Channel is running.
-            Running(Deliveries<'a, M>),
-            /// Message delivery not possible.
-            Closing {
-                deliveries: Deliveries<'a, M>,
-                /// why closing
-                reason: String,
-            },
-        }
-
-        impl<'a, M: RemoteMessage> State<'a, M> {
-            fn init(log_id: &'a str) -> Self {
-                Self::Running(Deliveries {
-                    outbox: Outbox::new(log_id),
-                    unacked: Unacked::new(None, log_id),
-                })
-            }
-        }
-
-        impl<'a, M: RemoteMessage> fmt::Display for State<'a, M> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                match self {
-                    State::Running(deliveries) => {
-                        write!(f, "Running(deliveries: {})", deliveries)
-                    }
-                    State::Closing { deliveries, reason } => {
-                        write!(f, "Running(deliveries: {}, reason: {})", deliveries, reason)
-                    }
-                }
-            }
-        }
-
-        enum Conn<S: Stream> {
-            /// Disconnected.
-            Disconnected(Box<dyn Backoff + Send>),
-            /// Connected and ready to go.
-            Connected {
-                reader: FrameReader<ReadHalf<S>>,
-                write_state: WriteState<WriteHalf<S>, serde_multipart::Frame, ()>,
-            },
-        }
-
-        impl<S: Stream> Conn<S> {
-            fn reconnect_with_default() -> Self {
-                Self::Disconnected(Box::new(
-                    ExponentialBackoffBuilder::new()
-                        .with_initial_interval(Duration::from_millis(50))
-                        .with_multiplier(2.0)
-                        .with_randomization_factor(0.1)
-                        .with_max_interval(Duration::from_millis(1000))
-                        .with_max_elapsed_time(None) // Allow infinite retries
-                        .build(),
-                ))
-            }
-
-            fn reconnect(backoff: impl Backoff + Send + 'static) -> Self {
-                Self::Disconnected(Box::new(backoff))
-            }
-        }
-
         let session_id = rand::random();
         let log_id = format!("session {}.{}", link.dest(), session_id);
         let mut state = State::init(&log_id);
         let mut conn = Conn::reconnect_with_default();
 
+        let mut watchdog = Watchdog::spawn(config::global::get(config::CHANNEL_WATCHDOG_INTERVAL));
+
         let (state, conn) = loop {
-            (state, conn) = match (state, conn) {
-                // This branch is to provide lazy connection creation. It can be removed after
-                // we move to eager creation.
-                (
-                    State::Running(Deliveries {
-                        mut outbox,
-                        unacked,
-                    }),
-                    conn,
-                ) if outbox.is_empty() && unacked.is_empty() => match receiver.recv().await {
-                    Some(msg) => match outbox.push_back(msg) {
-                        Ok(()) => {
-                            let running = State::Running(Deliveries { outbox, unacked });
-                            (running, conn)
-                        }
-                        Err(err) => {
-                            let error_msg =
-                                format!("{log_id}: failed to push message to outbox: {err}");
-                            tracing::error!(error_msg);
-                            (
-                                State::Closing {
-                                    deliveries: Deliveries { outbox, unacked },
-                                    reason: error_msg,
-                                },
-                                conn,
-                            )
-                        }
-                    },
-                    None => (
-                        State::Closing {
-                            deliveries: Deliveries { outbox, unacked },
-                            reason: "NetTx is dropped".to_string(),
-                        },
-                        conn,
-                    ),
-                },
-                (
-                    State::Running(Deliveries {
-                        mut outbox,
-                        unacked,
-                    }),
-                    Conn::Connected {
-                        reader,
-                        write_state: WriteState::Idle(writer),
-                        ..
-                    },
-                ) if !outbox.is_empty() => {
-                    let max = config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-                    let len = outbox.front_size().expect("not empty");
-                    let message = outbox.front_message().expect("not empty");
+            let span = Self::state_span(&state, &conn, session_id, &link);
 
-                    match FrameWrite::new(writer, message.framed(), max) {
-                        Ok(fw) => (
-                            State::Running(Deliveries { outbox, unacked }),
-                            Conn::Connected {
-                                reader,
-                                write_state: WriteState::Writing(fw, ()),
-                            },
-                        ),
-                        Err((writer, e)) => {
-                            debug_assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-                            tracing::error!(
-                                "rejecting oversize frame: len={} > max={}. \
-                                 ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
-                                len,
-                                max
-                            );
-                            // Reject and return.
-                            outbox.pop_front().expect("not empty").try_return();
-                            let error_msg =
-                                format!("{log_id}: oversized frame was rejected. closing channel");
-                            tracing::error!(error_msg);
-                            // Close the channel (avoid sequence
-                            // violations).
-                            (
-                                State::Closing {
-                                    deliveries: Deliveries { outbox, unacked },
-                                    reason: error_msg,
-                                },
-                                Conn::Connected {
-                                    reader,
-                                    write_state: WriteState::Idle(writer),
-                                },
-                            )
-                        }
-                    }
-                }
-                (
-                    State::Running(Deliveries {
-                        mut outbox,
-                        mut unacked,
-                    }),
-                    Conn::Connected {
-                        mut reader,
-                        mut write_state,
-                    },
-                ) => {
-                    tokio::select! {
-                        // If acking message takes too long, consider the link broken.
-                        _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
-                            let error_msg = format!(
-                                "{log_id}: failed to receive ack within timeout {} secs; link is currently connected",
-                                config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
-                            );
-                            tracing::error!(error_msg);
-                            (State::Closing {
-                                deliveries: Deliveries{outbox, unacked},
-                                reason: error_msg,
-                            }, Conn::Connected { reader, write_state })
-                        }
-                        ack_result = reader.next() => {
-                            match ack_result {
-                                Ok(Some(buffer)) => {
-                                    match deserialize_response(buffer) {
-                                        Ok(response) => {
-                                            match response {
-                                                NetRxResponse::Ack(ack) => {
-                                                    unacked.prune(ack, RealClock.now());
-                                                    (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
-                                                }
-                                                NetRxResponse::Reject => {
-                                                    let error_msg = format!(
-                                                        "{log_id}: server rejected connection.",
-                                                    );
-                                                    tracing::error!(error_msg);
-                                                    (State::Closing {
-                                                        deliveries: Deliveries{outbox, unacked},
-                                                        reason: error_msg,
-                                                    }, Conn::reconnect_with_default())
-                                                }
-                                            }
-                                        }
-                                        Err(err) => {
-                                            let error_msg = format!(
-                                                "{log_id}: failed deserializing response: {err}",
-                                            );
-                                            tracing::error!(error_msg);
-                                            // Similar to the message flow, we always close the
-                                            // channel when encountering ser/deser errors.
-                                            (State::Closing {
-                                                deliveries: Deliveries{outbox, unacked},
-                                                reason: error_msg,
-                                            }, Conn::Connected { reader, write_state })
-                                        }
-                                    }
-                                }
-                                Ok(None) => {
-                                  // Graceful of stream: reconnect
-                                  (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
-                                }
-                                Err(err) => {
-                                        tracing::error!(
-                                            "{log_id}: failed while receiving ack: {err}",
-                                        );
-                                        // Reconnect and wish the error will go away.
-                                        (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
-                                }
-                            }
-                        },
+            (state, conn) = Self::step(
+                state,
+                conn,
+                session_id,
+                &log_id,
+                &mut watchdog,
+                &link,
+                &mut receiver,
+            )
+            .instrument(span)
+            .await;
 
-                        // We have to be careful to manage outgoing write states, so that we never write
-                        // partial frames in the presence cancellation.
-                        send_result = write_state.send() => {
-                            match send_result {
-                                Ok(()) => {
-                                    let mut message = outbox.pop_front().expect("outbox should not be empty");
-                                    // If this message was re-put into `outbox` from `unacked` due to reconnection,
-                                    // its `sent_at` field would be set in the last attempt. In that case, we simply
-                                    // overwrite the old one here.
-                                    message.sent_at = Some(RealClock.now());
-                                    unacked.push_back(message);
-                                    (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
-                                }
-                                Err(err) => {
-                                    tracing::info!(
-                                        "{log_id}: outbox send error: {err}; message size: {}",
-                                        outbox.front_size().expect("outbox should not be empty"),
-                                    );
-                                    (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
-                                }
-                            }
-                        }
-                        // UnboundedReceiver::recv() is cancel safe.
-                        // Only checking mspc channel when outbox is empty. In this way, we prioritize
-                        // sending messages already in outbox.
-                        work_result = receiver.recv(), if outbox.is_empty() => {
-                            match work_result {
-                                Some(msg) => {
-                                    match outbox.push_back(msg) {
-                                        Ok(()) => {
-                                            let running = State::Running (Deliveries{
-                                                outbox,
-                                                unacked,
-                                            });
-                                            (running, Conn::Connected { reader, write_state })
-                                        }
-                                        Err(err) => {
-                                            let error_msg = format!(
-                                                "{log_id}: failed to push message to outbox: {err}",
-                                            );
-                                            tracing::error!(error_msg);
-                                            (State::Closing {
-                                                deliveries: Deliveries {outbox, unacked},
-                                                reason: error_msg,
-                                            }, Conn::Connected { reader, write_state })
-                                        }
-                                    }
-                                }
-                                None => (State::Closing {
-                                    deliveries: Deliveries{outbox, unacked},
-                                    reason: "NetTx is dropped".to_string(),
-                                }, Conn::Connected { reader, write_state }),
-                            }
-                        },
-                    }
-                }
+            if state.is_closing() {
+                break (state, conn);
+            }
 
-                // We have a message to send, but not an active link.
-                (
-                    State::Running(Deliveries {
-                        mut outbox,
-                        unacked,
-                    }),
-                    Conn::Disconnected(mut backoff),
-                ) => {
-                    // If delivering this message is taking too long,
-                    // consider the link broken.
-                    if outbox.is_expired() {
-                        let error_msg =
-                            format!("{log_id}: failed to deliver message within timeout");
-                        tracing::error!(error_msg);
-                        (
-                            State::Closing {
-                                deliveries: Deliveries { outbox, unacked },
-                                reason: error_msg,
-                            },
-                            Conn::reconnect_with_default(),
-                        )
-                    } else if unacked.is_expired() {
-                        let error_msg = format!(
-                            "{log_id}: failed to receive ack within timeout {} secs; link is currently broken",
-                            config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
-                        );
-                        tracing::error!(error_msg);
-                        (
-                            State::Closing {
-                                deliveries: Deliveries { outbox, unacked },
-                                reason: error_msg,
-                            },
-                            Conn::reconnect_with_default(),
-                        )
-                    } else {
-                        match link.connect().await {
-                            Ok(stream) => {
-                                let message =
-                                    serialize_bincode(&Frame::<M>::Init(session_id)).unwrap();
-
-                                let mut write = FrameWrite::new(
-                                    stream,
-                                    message.framed(),
-                                    config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-                                )
-                                .expect("enough length");
-                                let initialized = write.send().await.is_ok();
-                                let stream = write.complete();
-
-                                metrics::CHANNEL_CONNECTIONS.add(
-                                    1,
-                                    hyperactor_telemetry::kv_pairs!(
-                                        "transport" => link.dest().transport().to_string(),
-                                        "reason" => "link connected",
-                                    ),
-                                );
-
-                                // Need to resend unacked after reconnecting.
-                                let largest_acked = unacked.largest_acked;
-                                outbox.requeue_unacked(unacked.deque);
-                                (
-                                    State::Running(Deliveries {
-                                        outbox,
-                                        // unacked messages are put back to outbox. So they are not
-                                        // considered as "sent yet unacked" message anymore. But
-                                        // we still want to keep `largest_acked` to known Rx's watermark.
-                                        unacked: Unacked::new(largest_acked, &log_id),
-                                    }),
-                                    if initialized {
-                                        backoff.reset();
-                                        let (reader, writer) = tokio::io::split(stream);
-                                        Conn::Connected {
-                                            reader: FrameReader::new(
-                                                reader,
-                                                config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-                                            ),
-                                            write_state: WriteState::Idle(writer),
-                                        }
-                                    } else {
-                                        Conn::reconnect(backoff)
-                                    },
-                                )
-                            }
-                            Err(err) => {
-                                tracing::debug!(
-                                    "session {}.{}: failed to connect: {}",
-                                    link.dest(),
-                                    session_id,
-                                    err
-                                );
-                                (
-                                    State::Running(Deliveries { outbox, unacked }),
-                                    Conn::reconnect(backoff),
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // The link is no longer viable.
-                (State::Closing { deliveries, reason }, stream) => {
-                    break (State::Closing { deliveries, reason }, stream);
-                }
-            };
-
-            if !matches!(state, State::Closing { .. })
-                && let Conn::Disconnected(ref mut backoff) = conn
-            {
+            if let Conn::Disconnected(ref mut backoff) = conn {
                 RealClock.sleep(backoff.next_backoff().unwrap()).await;
             }
         }; // loop
-        tracing::debug!("{log_id}: NetTx exited its loop with state: {state}");
+
+        let span = Self::state_span(&state, &conn, session_id, &link);
+
+        tracing::debug!(parent: &span, "{log_id}: NetTx exited its loop with state: {state}");
 
         match state {
             State::Closing {
@@ -995,7 +726,7 @@ impl<M: RemoteMessage> NetTx<M> {
 
         // Notify senders that this link is no longer usable
         if let Err(err) = notify.send(TxStatus::Closed) {
-            tracing::debug!("{log_id}: tx status update error: {err}");
+            tracing::debug!(parent: &span, "{log_id}: tx status update error: {err}");
         }
 
         if let Conn::Connected {
@@ -1004,13 +735,416 @@ impl<M: RemoteMessage> NetTx<M> {
         } = conn
         {
             if let Err(err) = frame_writer.send().await {
-                tracing::info!("{log_id}: write error: {err}",);
+                tracing::info!(parent: &span, "{log_id}: write error: {err}",);
             } else if let Err(err) = frame_writer.complete().flush().await {
-                tracing::info!("{log_id}: flush error: {err}",);
+                tracing::info!(parent: &span, "{log_id}: flush error: {err}",);
             }
         }
 
-        tracing::debug!("{log_id}: NetTx::run exits");
+        tracing::debug!(parent: &span, "{log_id}: NetTx::run exits");
+    }
+
+    fn state_span<'a, L, S>(state: &State<'a, M>, conn: &Conn<S>, session_id: u64, link: &L) -> Span
+    where
+        S: Stream,
+        L: Link<Stream = S>,
+    {
+        let deliveries = state.deliveries();
+
+        // This might get pretty expensive to compute each time.
+        // We should lazily materialize the state.
+        fn queue_state<M: RemoteMessage>(q: &MessageDeque<M>) -> String {
+            if q.is_empty() {
+                return "<empty>".to_string();
+            }
+
+            let front = q.front().unwrap();
+            let back = q.back().unwrap();
+
+            format!(
+                "len={},num_bytes={},front={{seq={},received_at={:?},sent_at={:?}}},back={{seq={},received_at={:?},sent_at={:?}}}",
+                q.len(),
+                q.num_bytes_queued(),
+                front.seq,
+                front.received_at.elapsed(),
+                front.sent_at.as_ref().map(Instant::elapsed),
+                back.seq,
+                back.received_at.elapsed(),
+                back.sent_at.as_ref().map(Instant::elapsed)
+            )
+        }
+
+        let largest_acked = deliveries
+            .unacked
+            .largest_acked
+            .as_ref()
+            .map_or("<none>".to_string(), |a| {
+                format!("seq={},since_acked={:?}", a.0, a.1.elapsed())
+            });
+
+        tracing::span!(
+            Level::INFO,
+            "net i/o loop",
+            session = format!("{}.{}", link.dest(), session_id),
+            connected = conn.is_connected(),
+            next_seq = deliveries.outbox.next_seq,
+            %largest_acked,
+            outbox = %queue_state(&deliveries.outbox.deque),
+            unacked = %queue_state(&deliveries.unacked.deque),
+        )
+    }
+
+    async fn step<'a, L, S>(
+        state: State<'a, M>,
+        conn: Conn<S>,
+        session_id: u64,
+        log_id: &'a str,
+        watchdog: &mut Watchdog,
+        link: &L,
+        receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<M>, Instant)>,
+    ) -> (State<'a, M>, Conn<S>)
+    where
+        S: Stream,
+        L: Link<Stream = S>,
+    {
+        match (state, conn) {
+            // This branch is to provide lazy connection creation. It can be removed after
+            // we move to eager creation.
+            (
+                State::Running(Deliveries {
+                    mut outbox,
+                    unacked,
+                }),
+                conn,
+            ) if outbox.is_empty() && unacked.is_empty() => match receiver.recv().await {
+                Some(msg) => match outbox.push_back(msg) {
+                    Ok(()) => {
+                        let running = State::Running(Deliveries { outbox, unacked });
+                        (running, conn)
+                    }
+                    Err(err) => {
+                        let error_msg =
+                            format!("{log_id}: failed to push message to outbox: {err}");
+                        tracing::error!(error_msg);
+                        (
+                            State::Closing {
+                                deliveries: Deliveries { outbox, unacked },
+                                reason: error_msg,
+                            },
+                            conn,
+                        )
+                    }
+                },
+                None => (
+                    State::Closing {
+                        deliveries: Deliveries { outbox, unacked },
+                        reason: "NetTx is dropped".to_string(),
+                    },
+                    conn,
+                ),
+            },
+            (
+                State::Running(Deliveries {
+                    mut outbox,
+                    unacked,
+                }),
+                Conn::Connected {
+                    reader,
+                    write_state: WriteState::Idle(writer),
+                    ..
+                },
+            ) if !outbox.is_empty() => {
+                let max = config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+                let len = outbox.front_size().expect("not empty");
+                let message = outbox.front_message().expect("not empty");
+
+                match FrameWrite::new(writer, message.framed(), max) {
+                    Ok(fw) => (
+                        State::Running(Deliveries { outbox, unacked }),
+                        Conn::Connected {
+                            reader,
+                            write_state: WriteState::Writing(fw, ()),
+                        },
+                    ),
+                    Err((writer, e)) => {
+                        debug_assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+                        tracing::error!(
+                            "rejecting oversize frame: len={} > max={}. \
+                                ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
+                            len,
+                            max
+                        );
+                        // Reject and return.
+                        outbox.pop_front().expect("not empty").try_return();
+                        let error_msg =
+                            format!("{log_id}: oversized frame was rejected. closing channel");
+                        tracing::error!(error_msg);
+                        // Close the channel (avoid sequence
+                        // violations).
+                        (
+                            State::Closing {
+                                deliveries: Deliveries { outbox, unacked },
+                                reason: error_msg,
+                            },
+                            Conn::Connected {
+                                reader,
+                                write_state: WriteState::Idle(writer),
+                            },
+                        )
+                    }
+                }
+            }
+            (state, _conn) if !watchdog.ok() => {
+                // Reconnect on watchdog failure. Maybe the underlying session is stuck somehow.
+                tracing::error!(
+                    "{log_id}: reconnecting after watchdog failure, last alive: {:?}",
+                    watchdog.last_alive().elapsed()
+                );
+                // This will recover the watchdog:
+                watchdog.send();
+                (state, Conn::reconnect_with_default())
+            }
+            (
+                State::Running(Deliveries {
+                    mut outbox,
+                    mut unacked,
+                }),
+                Conn::Connected {
+                    mut reader,
+                    mut write_state,
+                },
+            ) => {
+                tokio::select! {
+                    biased;
+
+                    // TODO: don't materialize the state into a string every time
+                    _ = watchdog.tick() => {
+                        (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
+                    },
+
+                    ack_result = reader.next() => {
+                        match ack_result {
+                            Ok(Some(buffer)) => {
+                                match deserialize_response(buffer) {
+                                    Ok(response) => {
+                                        match response {
+                                            NetRxResponse::Ack(ack) => {
+                                                unacked.prune(ack, RealClock.now());
+                                                (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
+                                            }
+                                            NetRxResponse::Reject => {
+                                                let error_msg = format!(
+                                                    "{log_id}: server rejected connection.",
+                                                );
+                                                tracing::error!(error_msg);
+                                                (State::Closing {
+                                                    deliveries: Deliveries{outbox, unacked},
+                                                    reason: error_msg,
+                                                }, Conn::reconnect_with_default())
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        let error_msg = format!(
+                                            "{log_id}: failed deserializing response: {err}",
+                                        );
+                                        tracing::error!(error_msg);
+                                        // Similar to the message flow, we always close the
+                                        // channel when encountering ser/deser errors.
+                                        (State::Closing {
+                                            deliveries: Deliveries{outbox, unacked},
+                                            reason: error_msg,
+                                        }, Conn::Connected { reader, write_state })
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                // Graceful of stream: reconnect
+                                (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
+                            }
+                            Err(err) => {
+                                    tracing::error!(
+                                        "{log_id}: failed while receiving ack: {err}",
+                                    );
+                                    // Reconnect and wish the error will go away.
+                                    (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
+                            }
+                        }
+                    },
+
+                    // If acking message takes too long, consider the link broken.
+                    _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
+                        let error_msg = format!(
+                            "{log_id}: failed to receive ack within timeout {} secs; link is currently connected",
+                            config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
+                        );
+                        tracing::error!(error_msg);
+                        (State::Closing {
+                            deliveries: Deliveries{outbox, unacked},
+                            reason: error_msg,
+                        }, Conn::Connected { reader, write_state })
+                    }
+
+
+                    // We have to be careful to manage outgoing write states, so that we never write
+                    // partial frames in the presence cancellation.
+                    send_result = write_state.send() => {
+                        match send_result {
+                            Ok(()) => {
+                                let mut message = outbox.pop_front().expect("outbox should not be empty");
+                                // If this message was re-put into `outbox` from `unacked` due to reconnection,
+                                // its `sent_at` field would be set in the last attempt. In that case, we simply
+                                // overwrite the old one here.
+                                message.sent_at = Some(RealClock.now());
+                                unacked.push_back(message);
+                                (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
+                            }
+                            Err(err) => {
+                                tracing::info!(
+                                    "{log_id}: outbox send error: {err}; message size: {}",
+                                    outbox.front_size().expect("outbox should not be empty"),
+                                );
+                                (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
+                            }
+                        }
+                    }
+                    // UnboundedReceiver::recv() is cancel safe.
+                    // Only checking mspc channel when outbox is empty. In this way, we prioritize
+                    // sending messages already in outbox.
+                    work_result = receiver.recv(), if outbox.is_empty() => {
+                        match work_result {
+                            Some(msg) => {
+                                match outbox.push_back(msg) {
+                                    Ok(()) => {
+                                        let running = State::Running (Deliveries{
+                                            outbox,
+                                            unacked,
+                                        });
+                                        (running, Conn::Connected { reader, write_state })
+                                    }
+                                    Err(err) => {
+                                        let error_msg = format!(
+                                            "{log_id}: failed to push message to outbox: {err}",
+                                        );
+                                        tracing::error!(error_msg);
+                                        (State::Closing {
+                                            deliveries: Deliveries {outbox, unacked},
+                                            reason: error_msg,
+                                        }, Conn::Connected { reader, write_state })
+                                    }
+                                }
+                            }
+                            None => (State::Closing {
+                                deliveries: Deliveries{outbox, unacked},
+                                reason: "NetTx is dropped".to_string(),
+                            }, Conn::Connected { reader, write_state }),
+                        }
+                    },
+                }
+            }
+
+            // We have a message to send, but not an active link.
+            (
+                State::Running(Deliveries {
+                    mut outbox,
+                    unacked,
+                }),
+                Conn::Disconnected(mut backoff),
+            ) => {
+                // If delivering this message is taking too long,
+                // consider the link broken.
+                if outbox.is_expired() {
+                    let error_msg = format!("{log_id}: failed to deliver message within timeout");
+                    tracing::error!(error_msg);
+                    (
+                        State::Closing {
+                            deliveries: Deliveries { outbox, unacked },
+                            reason: error_msg,
+                        },
+                        Conn::reconnect_with_default(),
+                    )
+                } else if unacked.is_expired() {
+                    let error_msg = format!(
+                        "{log_id}: failed to receive ack within timeout {} secs; link is currently broken",
+                        config::global::get(config::MESSAGE_DELIVERY_TIMEOUT).as_secs(),
+                    );
+                    tracing::error!(error_msg);
+                    (
+                        State::Closing {
+                            deliveries: Deliveries { outbox, unacked },
+                            reason: error_msg,
+                        },
+                        Conn::reconnect_with_default(),
+                    )
+                } else {
+                    match link.connect().await {
+                        Ok(stream) => {
+                            let message = serialize_bincode(&Frame::<M>::Init(session_id)).unwrap();
+
+                            let mut write = FrameWrite::new(
+                                stream,
+                                message.framed(),
+                                config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                            )
+                            .expect("enough length");
+                            let initialized = write.send().await.is_ok();
+                            let stream = write.complete();
+
+                            metrics::CHANNEL_CONNECTIONS.add(
+                                1,
+                                hyperactor_telemetry::kv_pairs!(
+                                    "transport" => link.dest().transport().to_string(),
+                                    "reason" => "link connected",
+                                ),
+                            );
+
+                            // Need to resend unacked after reconnecting.
+                            let largest_acked = unacked.largest_acked;
+                            outbox.requeue_unacked(unacked.deque);
+                            (
+                                State::Running(Deliveries {
+                                    outbox,
+                                    // unacked messages are put back to outbox. So they are not
+                                    // considered as "sent yet unacked" message anymore. But
+                                    // we still want to keep `largest_acked` to known Rx's watermark.
+                                    unacked: Unacked::new(largest_acked, &log_id),
+                                }),
+                                if initialized {
+                                    backoff.reset();
+                                    let (reader, writer) = tokio::io::split(stream);
+                                    Conn::Connected {
+                                        reader: FrameReader::new(
+                                            reader,
+                                            config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                                        ),
+                                        write_state: WriteState::Idle(writer),
+                                    }
+                                } else {
+                                    Conn::reconnect(backoff)
+                                },
+                            )
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                "session {}.{}: failed to connect: {}",
+                                link.dest(),
+                                session_id,
+                                err
+                            );
+                            (
+                                State::Running(Deliveries { outbox, unacked }),
+                                Conn::reconnect(backoff),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // The link is no longer viable.
+            (State::Closing { deliveries, reason }, stream) => {
+                (State::Closing { deliveries, reason }, stream)
+            }
+        }
     }
 }
 
@@ -1185,6 +1319,18 @@ enum WriteState<W, F, T> {
 
     /// Internal state to manage completions.
     Broken,
+}
+
+impl<W, F: bytes::Buf, T> fmt::Debug for WriteState<W, F, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WriteState::Idle(_) => f.debug_tuple("Idle").finish(),
+            WriteState::Writing(frame_write, _) => {
+                f.debug_tuple("Writing").field(frame_write).finish()
+            }
+            WriteState::Broken => f.debug_tuple("Broken").finish(),
+        }
+    }
 }
 
 impl<W, F, T> WriteState<W, F, T> {
@@ -3683,6 +3829,8 @@ mod tests {
     // presence of flakiness in the network, i.e. random delay and disconnection.
     #[async_timed_test(timeout_secs = 60)]
     async fn test_network_flakiness_in_channel() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
         let sampling_rate = 100;
         let mut link = MockLink::<u64>::with_network_flakiness(NetworkFlakiness {
             disconnect_params: Some((0.001, 15, Duration::from_millis(400))),
