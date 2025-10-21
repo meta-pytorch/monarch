@@ -820,7 +820,6 @@ impl<M: RemoteMessage> NetTx<M> {
                             }, Conn::Connected { reader, write_state })
                         }
 
-
                         // We have to be careful to manage outgoing write states, so that we never write
                         // partial frames in the presence cancellation.
                         send_result = write_state.send() => {
@@ -1294,11 +1293,14 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
         let ack_time_interval = config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
         let ack_msg_interval = config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
+        let is_periodic_config_enabled = config::global::get(config::ENABLE_PERIODIC_ACKS);
 
         let (mut final_next, final_result, reject_conn) = loop {
+            let ack_time_elapsed = last_ack_time.elapsed() > ack_time_interval;
             if self.write_state.is_idle()
                 && (next.ack + ack_msg_interval <= next.seq
-                    || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval))
+                    || (next.ack < next.seq && ack_time_elapsed)
+                    || (next.seq > 0 && is_periodic_config_enabled && ack_time_elapsed))
             {
                 let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle()
                 else {
@@ -1357,7 +1359,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 },
                 // Have a tick to abort select! call to make sure the ack for the last message can get the chance
                 // to be sent as a result of time interval being reached.
-                _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
+                // When periodic acks are enabled, also tick even when all messages are acked.
+                _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq || is_periodic_config_enabled => {},
                 _ = cancel_token.cancelled() => break (next, Ok(()), false),
                 bytes_result = self.reader.next() => {
                     rcv_raw_frame_count += 1;
@@ -3839,6 +3842,84 @@ mod tests {
             "MockLink disconnected {} times.",
             disconnected_count.load(Ordering::SeqCst)
         );
+    }
+
+    #[tracing_test::traced_test]
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_periodic_acks() {
+        let config = config::global::lock();
+        // Enable periodic acks and set a short time interval
+        let _guard_enable_periodic = config.override_key(config::ENABLE_PERIODIC_ACKS, true);
+        let _guard_time_interval = config.override_key(
+            config::MESSAGE_ACK_TIME_INTERVAL,
+            Duration::from_millis(150),
+        );
+        // Set a very high message interval so only time-based acks trigger
+        let _guard_message_ack =
+            config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 100000000);
+
+        let manager = SessionManager::new();
+        let session_id = 123u64;
+
+        let (handle, mut reader, writer, mut rx, cancel_token) = serve::<u64>(&manager).await;
+
+        // Send a single message
+        let _writer = write_stream(writer, session_id, &[(0u64, 100u64)], /*init*/ true).await;
+
+        // Receive the message
+        assert_eq!(rx.recv().await, Some(100));
+
+        // Wait a bit to let the first ack settle
+        RealClock.sleep(Duration::from_millis(50)).await;
+
+        // Now wait and collect multiple periodic acks. Since MESSAGE_ACK_TIME_INTERVAL
+        // is 150ms, we should see the same ack sent multiple times.
+        let mut ack_count = 0;
+        let start_time = RealClock.now();
+        let test_duration = Duration::from_millis(600); // Wait for ~4 intervals
+
+        while start_time.elapsed() < test_duration {
+            match RealClock
+                .timeout(Duration::from_millis(200), reader.next())
+                .await
+            {
+                Ok(Ok(Some(bytes))) => {
+                    if let Ok(NetRxResponse::Ack(seq)) = deserialize_response(bytes) {
+                        tracing::info!(
+                            "Received periodic ack with seq: {} at {}ms",
+                            seq,
+                            start_time.elapsed().as_millis()
+                        );
+                        // Since we only sent 1 message (seq 0), all acks should be for seq 0
+                        assert_eq!(seq, 0);
+                        ack_count += 1;
+                    }
+                }
+                Ok(Err(e)) => panic!("Failed to read frame: {:?}", e),
+                Ok(Ok(None)) => break,
+                Err(_) => {
+                    tracing::debug!(
+                        "Timeout waiting for next ack at {}ms",
+                        start_time.elapsed().as_millis()
+                    );
+                    // Timeout - continue waiting
+                }
+            }
+        }
+
+        tracing::info!("Received {} periodic acks total", ack_count);
+
+        // Verify that we received multiple periodic acks (at least 2).
+        // With MESSAGE_ACK_TIME_INTERVAL=150ms and test duration=600ms,
+        // we should see at least 2-3 periodic acks.
+        assert!(
+            ack_count >= 2,
+            "Expected at least 2 periodic acks, got {}. Periodic acks may not be working correctly.",
+            ack_count
+        );
+
+        cancel_token.cancel();
+        handle.await.unwrap().unwrap();
     }
 
     #[test]

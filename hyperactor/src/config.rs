@@ -134,6 +134,13 @@ declare_attrs! {
     })
     pub attr MESSAGE_ACK_EVERY_N_MESSAGES: u64 = 1000;
 
+    /// Enable periodic acknowledgments
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_ENABLE_PERIODIC_ACKS".to_string()),
+        py_name: None,
+    })
+    pub attr ENABLE_PERIODIC_ACKS: bool = true;
+
     /// Default hop Time-To-Live for message envelopes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESSAGE_TTL_DEFAULT".to_string()),
@@ -328,6 +335,8 @@ mod tests {
         unsafe { std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024") };
         // SAFETY: TODO: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::set_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT", "60s") };
+        // SAFETY: TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("HYPERACTOR_ENABLE_PERIODIC_ACKS", "false") };
 
         let config = from_env();
 
@@ -337,20 +346,26 @@ mod tests {
             config[MESSAGE_ACK_TIME_INTERVAL],
             Duration::from_millis(500)
         ); // Default value
+        assert!(!config[ENABLE_PERIODIC_ACKS]); // Set via environment to false
 
         let expected_lines: HashSet<&str> = indoc! {"
+            # export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=30s
             # export HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE=0.01
             # export HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL=5s
             # export HYPERACTOR_CHANNEL_MULTIPART=true
             # export HYPERACTOR_DEFAULT_ENCODING=serde_multipart
-            # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=5s
+            # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=1s
             # export HYPERACTOR_STOP_ACTOR_TIMEOUT=10s
+            # export HYPERACTOR_SPLIT_MAX_BUFFER_AGE=50ms
             # export HYPERACTOR_SPLIT_MAX_BUFFER_SIZE=5
             # export HYPERACTOR_MESSAGE_TTL_DEFAULT=64
+            # export HYPERACTOR_ENABLE_PERIODIC_ACKS=true
+            export HYPERACTOR_ENABLE_PERIODIC_ACKS=false
             # export HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES=1000
             # export HYPERACTOR_MESSAGE_ACK_TIME_INTERVAL=500ms
             # export HYPERACTOR_PROCESS_EXIT_TIMEOUT=10s
-            # export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=30s
+            # export HYPERACTOR_CHANNEL_WATCHDOG_INTERVAL=30s
+            # export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=1000s
             export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=1m
             # export HYPERACTOR_CODEC_MAX_FRAME_LENGTH=10737418240
             export HYPERACTOR_CODEC_MAX_FRAME_LENGTH=1024
@@ -380,6 +395,8 @@ mod tests {
         unsafe { std::env::remove_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH") };
         // SAFETY: TODO: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS") };
+        // SAFETY: TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("HYPERACTOR_ENABLE_PERIODIC_ACKS") };
     }
 
     #[test]
@@ -395,12 +412,13 @@ mod tests {
             config[CODEC_MAX_FRAME_LENGTH],
             CODEC_MAX_FRAME_LENGTH_DEFAULT
         );
-        assert_eq!(config[MESSAGE_DELIVERY_TIMEOUT], Duration::from_secs(30));
+        assert_eq!(config[MESSAGE_DELIVERY_TIMEOUT], Duration::from_secs(1000));
         assert_eq!(
             config[MESSAGE_ACK_TIME_INTERVAL],
             Duration::from_millis(500)
         );
         assert_eq!(config[MESSAGE_ACK_EVERY_N_MESSAGES], 1000);
+        assert!(config[ENABLE_PERIODIC_ACKS]);
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
 
         // Verify the keys have defaults
@@ -408,6 +426,7 @@ mod tests {
         assert!(MESSAGE_DELIVERY_TIMEOUT.has_default());
         assert!(MESSAGE_ACK_TIME_INTERVAL.has_default());
         assert!(MESSAGE_ACK_EVERY_N_MESSAGES.has_default());
+        assert!(ENABLE_PERIODIC_ACKS.has_default());
         assert!(SPLIT_MAX_BUFFER_SIZE.has_default());
 
         // Verify we can get defaults directly from keys
@@ -417,13 +436,14 @@ mod tests {
         );
         assert_eq!(
             MESSAGE_DELIVERY_TIMEOUT.default(),
-            Some(&Duration::from_secs(30))
+            Some(&Duration::from_secs(1000))
         );
         assert_eq!(
             MESSAGE_ACK_TIME_INTERVAL.default(),
             Some(&Duration::from_millis(500))
         );
         assert_eq!(MESSAGE_ACK_EVERY_N_MESSAGES.default(), Some(&1000));
+        assert_eq!(ENABLE_PERIODIC_ACKS.default(), Some(&true));
         assert_eq!(SPLIT_MAX_BUFFER_SIZE.default(), Some(&5));
     }
 
