@@ -15,9 +15,6 @@
 #include <set>
 #include <unordered_map>
 
-// TODO: explicitly obtain from ibverbs config, for now assume 32
-const int SGE_MAX = 32;
-
 // MR size must be a multiple of 2MB
 const size_t MR_ALIGNMENT = 2ULL * 1024 * 1024;
 
@@ -269,6 +266,12 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
   scan_existing_segments();
   std::lock_guard<std::mutex> lock(segmentsMutex);
 
+  struct ibv_device_attr dev_attr;
+  if (ibv_query_device(pd->context, &dev_attr)) {
+    return RDMAXCEL_QUERY_DEVICE_FAILED;
+  }
+  uint32_t max_sge = dev_attr.max_sge;
+
   int access_flags =
       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
 
@@ -317,7 +320,7 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
         current_offset += chunk_size;
 
         // If we have too many MRs, compact them into a single MR
-        if (seg.mrs.size() > SGE_MAX) {
+        if (seg.mrs.size() > max_sge) {
           // TODO: find a safe way to compact with low performance cost.
           // return MAX_SGE error auto err = compact_mrs(pd, seg, access_flags);
           // if (err != 0) {
@@ -465,6 +468,8 @@ const char* rdmaxcel_error_string(int error_code) {
       return "Failed to get CUDA device handle";
     case RDMAXCEL_BUFFER_TOO_SMALL:
       return "Output buffer too small";
+    case RDMAXCEL_QUERY_DEVICE_FAILED:
+      return "Failed to query device attributes";
     default:
       return "Unknown RDMAXCEL error code";
   }
