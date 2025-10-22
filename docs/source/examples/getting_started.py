@@ -189,12 +189,12 @@ print(trainers.step.call().get())
 # ---------------------
 # Since we're talking about having multiple hosts now, it's worth briefly covering how Monarch handles distributed logging.
 # User logs from a Monarch job are routed to stdout and stderr of the corresponding process.
-
 # In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity:
 
 procs.logging_option(stream_to_client=True, aggregate_window_sec=3)
 
 
+# %%
 # With stream_to_client=True, Monarch forwards logs from all processes (best effort)
 # and applies a windowed aggregator that collapses similar lines and emits summaries that allow to get a holistic view of the job.
 #
