@@ -24,8 +24,8 @@ from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import cast, Tuple
 
+import monarch.actor
 import pytest
-
 import torch
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
@@ -1332,6 +1332,8 @@ async def test_sync_workspace() -> None:
 
 @pytest.mark.timeout(120)
 async def test_actor_mesh_stop() -> None:
+    # This test doesn't want the client process to crash during testing.
+    monarch.actor.unhandled_fault_hook = lambda failure: None
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am_1 = pm.spawn("printer", Printer)
     am_2 = pm.spawn("printer2", Printer)
@@ -1480,6 +1482,9 @@ async def test_undeliverable_message_with_override() -> None:
 
 @pytest.mark.timeout(60)
 async def test_undeliverable_message_without_override() -> None:
+    # This test generates a fault that reaches the client. We don't want it to
+    # crash.
+    monarch.actor.unhandled_fault_hook = lambda failure: None
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     sender = pm.spawn("undeliverable_sender", UndeliverableMessageSender)
     sender.send_undeliverable.call().get()

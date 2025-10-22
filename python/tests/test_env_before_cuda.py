@@ -12,7 +12,7 @@ import unittest
 from typing import Dict, List
 
 import cloudpickle
-
+import monarch.actor
 import torch
 from monarch._src.actor.host_mesh import create_local_host_mesh, fake_in_process_host
 from monarch.actor import Actor, endpoint
@@ -132,6 +132,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         }
 
+        monarch.actor.unhandled_fault_hook = lambda failure: None
         proc_mesh_instance = create_local_host_mesh(env=cuda_env_vars).spawn_procs()
 
         try:

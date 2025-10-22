@@ -10,7 +10,6 @@ use std::clone::Clone;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::MutexGuard;
 
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
@@ -41,6 +40,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PySystemExit;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -60,6 +60,7 @@ use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
 use crate::shape::PyRegion;
+use crate::supervision::MeshFailure;
 use crate::supervision::SupervisionError;
 use crate::supervision::SupervisionFailureMessage;
 use crate::supervision::Unhealthy;
@@ -175,30 +176,132 @@ impl PythonActorMeshImpl {
         }
     }
 
+    fn make_monitor<F>(&self, instance: PyInstance, unhandled: F) -> SupervisionMonitor
+    where
+        F: Fn(usize, ActorSupervisionEvent) + Send + 'static,
+    {
+        match self {
+            // Owned meshes send a local message to themselves for the failures.
+            PythonActorMeshImpl::Owned(inner) => Self::create_monitor(
+                instance,
+                (*inner.mesh).clone(),
+                inner.health_state.clone(),
+                true,
+                unhandled,
+            ),
+            // Ref meshes send no message, they are only used to generate
+            // the v0 style exception.
+            PythonActorMeshImpl::Ref(inner) => Self::create_monitor(
+                instance,
+                inner.mesh.clone(),
+                inner.health_state.clone(),
+                false,
+                unhandled,
+            ),
+        }
+    }
+
     /// Get a supervision receiver for this mesh. The passed in monitor object
     /// must outlive the returned receiver, or else the sender may be dropped
     /// and the receiver will get a closed channel.
-    fn supervision_receiver(
+    fn supervision_receiver<F>(
+        &self,
         instance: &PyInstance,
         monitor: &Arc<Mutex<Option<SupervisionMonitor>>>,
-        mesh: ActorMeshRef<PythonActor>,
-        health_state: Arc<RootHealthState>,
-    ) -> watch::Receiver<Option<PyErr>> {
+        unhandled: F,
+    ) -> watch::Receiver<Option<PyErr>>
+    where
+        F: Fn(usize, ActorSupervisionEvent) + Send + 'static,
+    {
         let mut guard = monitor.lock().unwrap();
-        guard.get_or_insert_with(|| {
+        guard.get_or_insert_with(move || {
             let instance = Python::with_gil(|_py| instance.clone());
-            let (task, receiver) = Self::create_monitor(instance, mesh, health_state);
-            SupervisionMonitor { task, receiver }
+            self.make_monitor(instance, unhandled)
         });
         let monitor = guard.as_ref().unwrap();
         monitor.receiver.clone()
     }
 
-    fn create_monitor(
+    fn unhandled_fault_hook<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        py.import("monarch.actor")?.getattr("unhandled_fault_hook")
+    }
+
+    fn get_unhandled(
+        &self,
+        instance: &PyInstance,
+    ) -> Box<dyn Fn(usize, ActorSupervisionEvent) + Send + 'static> {
+        let is_client = matches!(instance.context_instance(), ContextInstance::Client(_));
+        match self {
+            PythonActorMeshImpl::Owned(_) => {
+                if is_client {
+                    Box::new(move |rank, event| {
+                        let failure = MeshFailure::new(rank, event);
+                        Python::with_gil(|py| {
+                            let unhandled = Self::unhandled_fault_hook(py)
+                                .expect("failed to fetch unhandled_fault_hook");
+                            let pyfailure = failure
+                                .clone()
+                                .into_pyobject(py)
+                                .expect("failed to turn PyErr into PyObject");
+                            let result = unhandled.call1((pyfailure,));
+                            // Handle SystemExit and actually exit the process.
+                            // It is normally just an exception.
+                            if let Err(e) = result {
+                                if e.is_instance_of::<PySystemExit>(py) {
+                                    let code = e
+                                        .into_bound_py_any(py)
+                                        .unwrap()
+                                        .getattr("code")
+                                        .unwrap()
+                                        .extract::<i32>()
+                                        .unwrap();
+                                    tracing::error!(
+                                        "unhandled event reached unhandled_fault_hook: {}, which is exiting the process with code {}",
+                                        failure,
+                                        code
+                                    );
+                                    std::process::exit(code);
+                                } else {
+                                    // The callback raised some other exception, and there's
+                                    // no way to handle it. Just exit the process anyways
+                                    tracing::error!(
+                                        "unhandled event reached unhandled_fault_hook: {}, which raised an exception: {:?}. \
+                                        Exiting the process with code 1",
+                                        failure,
+                                        e,
+                                    );
+                                    std::process::exit(1);
+                                }
+                            } else {
+                                tracing::warn!(
+                                    "unhandled event reached unhandled_fault_hook: {}, but that function produced no exception or crash. Ignoring the error",
+                                    failure
+                                );
+                            }
+                        });
+                    })
+                } else {
+                    Box::new(|_, _| {
+                        // Never called if not client.
+                    })
+                }
+            }
+            PythonActorMeshImpl::Ref(_inner) => Box::new(|_, _| {
+                // Never called if not owned.
+            }),
+        }
+    }
+
+    fn create_monitor<F>(
         instance: PyInstance,
         mesh: ActorMeshRef<PythonActor>,
         health_state: Arc<RootHealthState>,
-    ) -> (JoinHandle<()>, watch::Receiver<Option<PyErr>>) {
+        is_owned: bool,
+        unhandled: F,
+    ) -> SupervisionMonitor
+    where
+        F: Fn(usize, ActorSupervisionEvent) + Send + 'static,
+    {
         // There's a shared monitor for all whole mesh ref. Note that slices do
         // not share the health state. This is fine because requerying a slice
         // of a mesh will still return any failed state.
@@ -207,59 +310,52 @@ impl PythonActorMeshImpl {
             // 3 seconds is chosen to not penalize short-lived successful calls,
             // while still able to catch issues before they look like a hang or timeout.
             let time_between_checks = tokio::time::Duration::from_secs(3);
-            let result = match instance.context_instance() {
+            match instance.context_instance() {
                 ContextInstance::Client(cx_instance) => {
                     actor_states_monitor(
                         cx_instance,
                         mesh,
+                        // owner is always None if the owning instance is a client,
+                        // because nothing can handle the message.
                         None,
+                        is_owned,
+                        unhandled,
                         health_state,
                         time_between_checks,
                         sender.clone(),
                     )
-                    .await
+                    .await;
                 }
                 ContextInstance::PythonActor(cx_instance) => {
+                    // Only make a handle if is_owned is true, we don't want
+                    // to send messages to the ref holder.
+                    let owner = if is_owned {
+                        Some(cx_instance.handle())
+                    } else {
+                        None
+                    };
                     actor_states_monitor(
                         cx_instance,
                         mesh,
-                        // This is not always the owning actor, it is the
-                        // current actor. It may be different if this ref
-                        // is sent to another machine.
-                        Some(cx_instance.handle()),
+                        owner,
+                        is_owned,
+                        unhandled,
                         health_state,
                         time_between_checks,
                         sender.clone(),
                     )
-                    .await
+                    .await;
                 }
             };
-            if let Err(e) = result {
-                sender.send(Some(e)).expect(
-                    "error sending PyErr from supervision event monitor, receivers dropped",
-                );
-            }
         });
-        (task, receiver)
+        SupervisionMonitor { task, receiver }
     }
 }
 
-fn send_state_change(
-    point: Point,
-    old_state: Option<resource::State<ActorState>>,
-    new_state: resource::State<ActorState>,
-    mesh_name: &Name,
-    owner: &Option<ActorHandle<PythonActor>>,
-    health_state: &Arc<RootHealthState>,
-    sender: &watch::Sender<Option<PyErr>>,
-) -> Result<(), anyhow::Error> {
-    tracing::debug!(
-        "PythonActorMeshImpl: received state change event: point={:?}, old_state={:?}, new_state={:?}",
-        point,
-        old_state,
-        new_state
-    );
-    let (rank, actor_id, events) = match new_state.state {
+fn actor_state_to_supervision_events(
+    state: resource::State<ActorState>,
+) -> (usize, Vec<ActorSupervisionEvent>) {
+    let (rank, actor_id, events) = match state.state {
         Some(inner) => (
             inner.create_rank,
             Some(inner.actor_id),
@@ -267,7 +363,7 @@ fn send_state_change(
         ),
         None => (0, None, vec![]),
     };
-    let events = match new_state.status {
+    let events = match state.status {
         // If the actor was killed, it might not have a Failed status
         // or supervision events, and it can't tell us which rank
         // it was.
@@ -287,28 +383,48 @@ fn send_state_change(
         // All other states are successful.
         _ => vec![],
     };
+    (rank, events)
+}
+
+fn send_state_change<F>(
+    rank: usize,
+    events: Vec<ActorSupervisionEvent>,
+    mesh_name: &Name,
+    owner: &Option<ActorHandle<PythonActor>>,
+    is_owned: bool,
+    unhandled: &F,
+    health_state: &Arc<RootHealthState>,
+    sender: &watch::Sender<Option<PyErr>>,
+) where
+    F: Fn(usize, ActorSupervisionEvent),
+{
     // Wait for next event if the change in state produced no supervision events.
     if events.is_empty() {
-        return Ok(());
+        return;
     }
     let event = events[0].clone();
     tracing::info!(
-        "detected supervision event on monitored mesh: name={}, event={}\n\
-        Old state was: {:?}, New state is: {}",
+        "detected supervision event on monitored mesh: name={}, event={}",
         mesh_name,
         event,
-        old_state.map(|o| o.status),
-        new_state.status,
     );
     // Send a notification to the owning actor of this mesh, if there is one.
-    // FIXME: This should probably not be sent by a MeshRef, because there
-    // may be more than one MeshRef monitoring the same underlying actors.
-    // Then the owning actor could receive duplicate messages.
     if let Some(owner) = owner {
-        owner.send(SupervisionFailureMessage {
+        if let Err(e) = owner.send(SupervisionFailureMessage {
             rank,
             event: event.clone(),
-        })?;
+        }) {
+            tracing::warn!(
+                "failed to send supervision event {} to owner {}: {:?}. dropping event",
+                event,
+                owner.actor_id(),
+                e
+            );
+        }
+    } else if is_owned {
+        // The mesh has an owner, but it is not a PythonActor, so it must be the client.
+        // Call the unhandled function to let the client control what to do.
+        unhandled(rank, event.clone());
     }
     let mut inner_unhealthy_event = health_state
         .unhealthy_event
@@ -325,8 +441,7 @@ fn send_state_change(
             .__repr__()
             .expect("repr failed on PyActorSupervisionEvent")
     ));
-    sender.send(Some(pyerr))?;
-    Ok(())
+    sender.send(Some(pyerr)).expect("receiver closed");
 }
 
 /// Returns a watchable receiver for actor states.
@@ -338,18 +453,23 @@ fn send_state_change(
 /// created rank is the original rank of the actor on the mesh, not the rank after
 /// slicing.
 ///
+/// * is_owned is true if this monitor is running on the owning instance. When true,
+///   a message will be sent to "owner" if it is not None. If owner is None,
+///   then a panic will be raised instead to crash the client.
 /// * time_between_tasks controls how frequently to poll.
-async fn actor_states_monitor<A>(
+async fn actor_states_monitor<A, F>(
     cx: &impl context::Actor,
     mesh: ActorMeshRef<A>,
     owner: Option<ActorHandle<PythonActor>>,
+    is_owned: bool,
+    unhandled: F,
     health_state: Arc<RootHealthState>,
     time_between_checks: tokio::time::Duration,
     sender: watch::Sender<Option<PyErr>>,
-) -> Result<(), PyErr>
-where
+) where
     A: Actor + RemotableActor + Referable,
     A::Params: RemoteMessage,
+    F: Fn(usize, ActorSupervisionEvent),
 {
     // This implementation polls every "time_between_checks" duration, checking
     // for changes in the actor states. It can be improved in two ways:
@@ -361,56 +481,119 @@ where
         // Wait in between checking to avoid using too much network.
         RealClock.sleep(time_between_checks).await;
         // First check if the proc mesh is dead before trying to query their agents.
-        let proc_states = mesh.proc_mesh().proc_states(cx).await.map_err(|e| {
-            PyErr::new::<SupervisionError, _>(format!("Unable to query for proc states: {:?}", e))
-        })?;
-        if let Some(proc_states) = proc_states {
+        let proc_states = mesh.proc_mesh().proc_states(cx).await;
+        if let Err(e) = proc_states {
+            send_state_change(
+                0,
+                vec![ActorSupervisionEvent::new(
+                    cx.instance().self_id().clone(),
+                    ActorStatus::Failed(format!("Unable to query for proc states: {:?}", e)),
+                    None,
+                    None,
+                )],
+                mesh.name(),
+                &owner,
+                is_owned,
+                &unhandled,
+                &health_state,
+                &sender,
+            );
+            continue;
+        }
+        if let Some(proc_states) = proc_states.unwrap() {
             // Check if the proc mesh is still alive.
             if let Some((rank, state)) = proc_states
                 .iter()
                 .find(|(_rank, state)| state.status.is_terminating())
             {
-                return Err(PyErr::new::<SupervisionError, _>(format!(
-                    "actor mesh is stopped due to proc mesh shutdown on: {}, rank {} is in state {:?}",
-                    mesh.proc_mesh().name(),
+                send_state_change(
                     rank.rank(),
-                    state.status
-                )));
+                    vec![ActorSupervisionEvent::new(
+                        state
+                            .state
+                            .map(|s| s.mesh_agent.actor_id().clone())
+                            .unwrap_or(cx.instance().self_id().clone()),
+                        ActorStatus::Failed(format!(
+                            "actor mesh is stopped due to proc mesh shutdown on: {}, rank {} is in state {:?}",
+                            mesh.proc_mesh().name(),
+                            rank.rank(),
+                            state.status
+                        )),
+                        None,
+                        None,
+                    )],
+                    mesh.name(),
+                    &owner,
+                    is_owned,
+                    &unhandled,
+                    &health_state,
+                    &sender,
+                );
+                continue;
             }
         }
 
         // Now that we know the proc mesh is alive, check for actor state changes.
-        let events = mesh.actor_states(cx).await.map_err(|e| {
-            PyErr::new::<SupervisionError, _>(format!("Unable to query for actor states: {:?}", e))
-        })?;
+        let events = mesh.actor_states(cx).await;
+        if let Err(e) = events {
+            send_state_change(
+                0,
+                vec![ActorSupervisionEvent::new(
+                    cx.instance().self_id().clone(),
+                    ActorStatus::Failed(format!("Unable to query for actor states: {:?}", e)),
+                    None,
+                    None,
+                )],
+                mesh.name(),
+                &owner,
+                is_owned,
+                &unhandled,
+                &health_state,
+                &sender,
+            );
+            continue;
+        }
         // This returned point is the created rank, *not* the rank of
         // the possibly sliced input mesh.
-        for (point, state) in events.iter() {
-            let mut err = Ok(());
+        for (point, state) in events.unwrap().iter() {
             let entry = existing_states.entry(point.clone()).or_insert_with(|| {
+                tracing::debug!(
+                    "PythonActorMeshImpl: received initial state: point={:?}, state={:?}",
+                    point,
+                    state
+                );
+                let (rank, events) = actor_state_to_supervision_events(state.clone());
                 // If this actor is new, send a message to the owner.
-                err = send_state_change(
-                    point.clone(),
-                    None,
-                    state.clone(),
+                send_state_change(
+                    rank,
+                    events,
                     mesh.name(),
                     &owner,
+                    is_owned,
+                    &unhandled,
                     &health_state,
                     &sender,
                 );
                 state.clone()
             });
-            err?;
             if entry.status != state.status {
+                tracing::debug!(
+                    "PythonActorMeshImpl: received state change event: point={:?}, old_state={:?}, new_state={:?}",
+                    point,
+                    entry,
+                    state
+                );
+                let (rank, events) = actor_state_to_supervision_events(state.clone());
                 send_state_change(
-                    point.clone(),
-                    Some(entry.clone()),
-                    state.clone(),
+                    rank,
+                    events,
                     mesh.name(),
                     &owner,
+                    is_owned,
+                    &unhandled,
                     &health_state,
                     &sender,
-                )?;
+                );
                 *entry = state;
             }
         }
@@ -469,12 +652,10 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
         // Make a clone so each endpoint can get the same supervision events.
+        let unhandled = self.get_unhandled(instance);
         let monitor = self.monitor().clone();
-        let mesh = self.mesh_ref();
-        let health_state = self.health_state().clone();
-        let instance = Python::with_gil(|_py| instance.clone());
+        let mut receiver = self.supervision_receiver(instance, &monitor, unhandled);
         PyPythonTask::new(async move {
-            let mut receiver = Self::supervision_receiver(&instance, &monitor, mesh, health_state);
             receiver.changed().await.map_err(|e| {
                 PyValueError::new_err(format!("Waiting for supervision event change: {}", e))
             })?;
@@ -499,12 +680,9 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
     fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
         // Fetch the receiver once, this will initialize the monitor task.
-        Self::supervision_receiver(
-            instance,
-            self.monitor(),
-            self.mesh_ref(),
-            self.health_state().clone(),
-        );
+        let unhandled = self.get_unhandled(instance);
+        let monitor = self.monitor().clone();
+        self.supervision_receiver(instance, &monitor, unhandled);
         Ok(())
     }
 

@@ -21,8 +21,8 @@ from typing import Generator, Optional
 from unittest import mock
 
 import cloudpickle
+import monarch.actor
 import pytest
-
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -246,6 +246,9 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         self.assertDictEqual(expected_world_sizes, computed_world_sizes)
 
     async def test_allocate_failure_message(self) -> None:
+        # This will generate a supervision failure, and we don't want to crash
+        # the test process.
+        monarch.actor.unhandled_fault_hook = lambda failure: None
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
 
         with self.assertRaisesRegex(

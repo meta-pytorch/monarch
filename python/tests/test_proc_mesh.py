@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import cloudpickle
 import monarch._src.actor.host_mesh
-
+import monarch.actor
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
@@ -167,6 +167,7 @@ def test_nested_meshes() -> None:
 
 @pytest.mark.timeout(60)
 async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
+    monarch.actor.unhandled_fault_hook = lambda failure: None
     host = create_local_host_mesh(Extent(["hosts"], [2]))
     proc = host.spawn_procs(per_host={"gpus": 2})
 
