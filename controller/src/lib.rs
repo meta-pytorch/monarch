@@ -1131,7 +1131,7 @@ mod tests {
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial(server_handle.local_addr().clone()).unwrap(),
+            channel::dial(server_handle.local_addr().clone(), "test".to_string()).unwrap(),
         ));
 
         // Construct a proc forwarder in terms of the system sender.
@@ -1360,7 +1360,7 @@ mod tests {
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial(server_handle.local_addr().clone()).unwrap(),
+            channel::dial(server_handle.local_addr().clone(), "test".to_string()).unwrap(),
         ));
 
         // Construct a proc forwarder in terms of the system sender.
@@ -1572,8 +1572,11 @@ mod tests {
         let world_id = id!(world);
         // Set up a local actor.
         let local_proc_id = world_id.proc_id(rank);
-        let (local_proc_addr, local_proc_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let (local_proc_addr, local_proc_rx) = channel::serve(
+            ChannelAddr::any(ChannelTransport::Local),
+            "test".to_string(),
+        )
+        .unwrap();
         let local_proc_mbox = Mailbox::new_detached(
             local_proc_id.actor_id(format!("test_dummy_proc{}", idx).to_string(), 0),
         );

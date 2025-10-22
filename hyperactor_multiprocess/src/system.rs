@@ -55,7 +55,7 @@ impl System {
         let (actor_handle, system_proc) = SystemActor::bootstrap_with_clock(params, clock).await?;
         actor_handle.bind::<SystemActor>();
 
-        let (local_addr, rx) = channel::serve(addr)?;
+        let (local_addr, rx) = channel::serve(addr, "system-bootstrap".to_string())?;
         let mailbox_handle = system_proc.clone().serve(rx);
 
         Ok(ServerHandle {
@@ -72,7 +72,7 @@ impl System {
 
     /// A sender capable of routing all messages to actors in the system.
     async fn sender(&self) -> Result<impl MailboxSender + use<>, anyhow::Error> {
-        let tx = channel::dial(self.addr.clone())?;
+        let tx = channel::dial(self.addr.clone(), "system-sender".to_string())?;
         Ok(MailboxClient::new(tx))
     }
 
@@ -90,7 +90,11 @@ impl System {
             BoxedMailboxSender::new(self.sender().await?),
         );
 
-        let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(self.addr.transport())).unwrap();
+        let (proc_addr, proc_rx) = channel::serve(
+            ChannelAddr::any(self.addr.transport()),
+            "system-proc".to_string(),
+        )
+        .unwrap();
 
         let _proc_serve_handle: MailboxServerHandle = proc.clone().serve(proc_rx);
 

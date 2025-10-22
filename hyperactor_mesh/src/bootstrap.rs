@@ -158,7 +158,7 @@ pub(crate) enum Allocator2Process {
 }
 
 async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: ChannelAddr) {
-    let tx = match channel::dial(bootstrap_addr.clone()) {
+    let tx = match channel::dial(bootstrap_addr.clone(), "bootstrap-heartbeat".to_string()) {
         Ok(tx) => tx,
 
         Err(err) => {
@@ -1663,8 +1663,10 @@ impl ProcManager for BootstrapProcManager {
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
+        let (callback_addr, mut callback_rx) = channel::serve(
+            ChannelAddr::any(ChannelTransport::Unix),
+            "bootstrap-spawn".to_string(),
+        )?;
 
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
@@ -1925,8 +1927,8 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_INDEX_ENV, err))?
             .parse()?;
         let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
-        let (serve_addr, mut rx) = channel::serve(listen_addr)?;
-        let tx = channel::dial(bootstrap_addr.clone())?;
+        let (serve_addr, mut rx) = channel::serve(listen_addr, "v0-serve".to_string())?;
+        let tx = channel::dial(bootstrap_addr.clone(), "v0-bootstrap".to_string())?;
 
         let (rtx, mut return_channel) = oneshot::channel();
         tx.try_post(
@@ -1957,7 +1959,10 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             match the_msg? {
                 Allocator2Process::StartProc(proc_id, listen_transport) => {
                     let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone()).await?;
-                    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(listen_transport))?;
+                    let (proc_addr, proc_rx) = channel::serve(
+                        ChannelAddr::any(listen_transport),
+                        "bootstrap-proc".to_string(),
+                    )?;
                     let handle = proc.clone().serve(proc_rx);
                     drop(handle); // linter appeasement; it is safe to drop this future
                     tx.send(Process2Allocator(
@@ -2352,7 +2357,7 @@ mod tests {
 
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test".to_string()).unwrap();
         let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
         proc.clone().serve(proc_rx);
         router.bind(id!(client[0]).into(), proc_addr.clone());
@@ -2382,8 +2387,8 @@ mod tests {
             .bind();
 
         // Dial the channel but don't post until we know the forwarder
-        // is receiving.
-        let tx = channel::dial::<LogMessage>(log_channel.clone()).unwrap();
+        // Dial the file monitor channel if provided
+        let tx = channel::dial::<LogMessage>(log_channel.clone(), "test".to_string()).unwrap();
 
         // Send a fake log message as if it came from the proc
         // manager's writer.
@@ -3192,7 +3197,8 @@ mod tests {
 
         // Serve a Unix channel as the "backend_addr" and hook it into
         // this test proc.
-        let (backend_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let (backend_addr, rx) =
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test".to_string()).unwrap();
 
         // Route messages arriving on backend_addr into this test
         // proc's mailbox so the bootstrap child can reach the host

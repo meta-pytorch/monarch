@@ -72,7 +72,7 @@ async fn main() {
     );
     let mut allocs = Vec::new();
 
-    let pid_tx = channel::dial(args.pid_addr.parse().unwrap()).unwrap();
+    let pid_tx = channel::dial(args.pid_addr.parse().unwrap(), "test".to_string()).unwrap();
     for proc_num in 0..num_proc_meshes {
         let mut initializer = MockRemoteProcessAllocInitializer::new();
 
@@ -116,9 +116,12 @@ async fn main() {
         allocs.push(alloc);
     }
 
-    channel::dial(args.done_allocating_addr.parse().unwrap())
-        .unwrap()
-        .post(());
+    channel::dial(
+        args.done_allocating_addr.parse().unwrap(),
+        "test".to_string(),
+    )
+    .unwrap()
+    .post(());
 
     RealClock.sleep(Duration::from_secs(100)).await;
 }

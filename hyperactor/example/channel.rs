@@ -50,7 +50,7 @@ async fn server(mut server_rx: ChannelRx<Message>) -> Result<(), anyhow::Error> 
         .await?
         .into_hello()
         .map_err(|_| anyhow::anyhow!("expected hello message"))?;
-    let client_tx = channel::dial(client_addr)?;
+    let client_tx = channel::dial(client_addr, "client".to_string())?;
     loop {
         let message = server_rx.recv().await?;
         client_tx.post(message);
@@ -62,10 +62,13 @@ async fn client(
     message_size: usize,
     num_iter: Option<usize>,
 ) -> anyhow::Result<()> {
-    let server_tx = channel::dial(server_addr)?;
+    let server_tx = channel::dial(server_addr, "server".to_string())?;
 
-    let (client_addr, mut client_rx) =
-        channel::serve::<Message>(ChannelAddr::any(server_tx.addr().transport().clone())).unwrap();
+    let (client_addr, mut client_rx) = channel::serve::<Message>(
+        ChannelAddr::any(server_tx.addr().transport().clone()),
+        "client".to_string(),
+    )
+    .unwrap();
 
     server_tx.post(Message::Hello(client_addr));
 
@@ -163,8 +166,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
     match args.command {
         Some(Commands::Server) => {
-            let (server_addr, server_rx) =
-                channel::serve::<Message>(ChannelAddr::any(args.transport.clone())).unwrap();
+            let (server_addr, server_rx) = channel::serve::<Message>(
+                ChannelAddr::any(args.transport.clone()),
+                "server".to_string(),
+            )
+            .unwrap();
             eprintln!("server listening on {}", server_addr);
             server(server_rx).await?;
         }
@@ -175,8 +181,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
         // No command: run a self-contained benchmark.
         None => {
-            let (server_addr, server_rx) =
-                channel::serve::<Message>(ChannelAddr::any(args.transport.clone())).unwrap();
+            let (server_addr, server_rx) = channel::serve::<Message>(
+                ChannelAddr::any(args.transport.clone()),
+                "server".to_string(),
+            )
+            .unwrap();
             let _server_handle = tokio::spawn(server(server_rx));
             let client_handle = tokio::spawn(client(server_addr, args.message_size, args.num_iter));
 

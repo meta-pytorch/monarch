@@ -184,7 +184,8 @@ impl RemoteProcessAllocator {
         <A as Allocator>::Alloc: Sync,
     {
         tracing::info!("starting remote allocator on: {}", serve_addr);
-        let (_, mut rx) = channel::serve(serve_addr.clone()).map_err(anyhow::Error::from)?;
+        let (_, mut rx) = channel::serve(serve_addr.clone(), "remote_allocator".to_string())
+            .map_err(anyhow::Error::from)?;
 
         struct ActiveAllocation {
             handle: JoinHandle<()>,
@@ -384,7 +385,7 @@ impl RemoteProcessAllocator {
     ) {
         let world_id = alloc.world_id().clone();
         tracing::info!("starting handle allocation loop for {}", world_id);
-        let tx = match channel::dial(bootstrap_addr) {
+        let tx = match channel::dial(bootstrap_addr, "bootstrap-alloc".to_string()) {
             Ok(tx) => tx,
             Err(err) => {
                 tracing::error!("failed to dial bootstrap address: {}", err);
@@ -645,7 +646,7 @@ impl RemoteProcessAlloc {
             hyperactor::register_signal_cleanup_scoped(Box::pin(async move {
                 join_all(host_addresses_for_signal.iter().map(|entry| async move {
                     let addr = entry.value().clone();
-                    match channel::dial(addr.clone()) {
+                    match channel::dial(addr.clone(), "signal-cleanup".to_string()) {
                         Ok(tx) => {
                             if let Err(e) = tx.send(RemoteProcessAllocatorMessage::Stop).await {
                                 tracing::error!("Failed to send Stop to {}: {}", addr, e);
@@ -794,7 +795,7 @@ impl RemoteProcessAlloc {
 
             tracing::debug!("dialing remote: {} for host {}", remote_addr, host.id);
             let remote_addr = remote_addr.parse::<ChannelAddr>()?;
-            let tx = channel::dial(remote_addr.clone())
+            let tx = channel::dial(remote_addr.clone(), "remote-dial".to_string())
                 .map_err(anyhow::Error::from)
                 .context(format!(
                     "failed to dial remote {} for host {}",
@@ -1324,10 +1325,10 @@ mod test {
         hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone(), "test".to_string()).unwrap();
 
         let extent = extent!(host = 1, gpu = 2);
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let tx = channel::dial(serve_addr.clone(), "test".to_string()).unwrap();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc = MockAlloc::new();
@@ -1480,10 +1481,11 @@ mod test {
         hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone(), "test".to_string()).unwrap();
 
         let extent = extent!(host = 1, gpu = 2);
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+
+        let tx = channel::dial(serve_addr.clone(), "test".to_string()).unwrap();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc = MockAllocWrapper::new_block_next(
@@ -1561,11 +1563,11 @@ mod test {
         hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone(), "test".to_string()).unwrap();
 
         let extent = extent!(host = 1, gpu = 2);
 
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let tx = channel::dial(serve_addr.clone(), "test".to_string()).unwrap();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc1 = MockAllocWrapper::new_block_next(
@@ -1700,11 +1702,11 @@ mod test {
         hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone(), "test".to_string()).unwrap();
 
         let extent = extent!(host = 1, gpu = 2);
 
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let tx = channel::dial(serve_addr.clone(), "test".to_string()).unwrap();
 
         let world_id: WorldId = id!(test_world_id);
         let mut alloc = MockAllocWrapper::new_block_next(
@@ -1790,11 +1792,11 @@ mod test {
         hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone(), "test".to_string()).unwrap();
 
         let extent = extent!(host = 1, gpu = 2);
 
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let tx = channel::dial(serve_addr.clone(), "test".to_string()).unwrap();
 
         let test_world_id: WorldId = id!(test_world_id);
         let mut alloc = MockAllocWrapper::new_block_next(
@@ -1892,10 +1894,10 @@ mod test {
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone(), "test".to_string()).unwrap();
 
         let extent = extent!(host = 1, gpu = 1);
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let tx = channel::dial(serve_addr.clone(), "test".to_string()).unwrap();
         let test_world_id: WorldId = id!(test_world_id);
         let test_trace_id = "test_trace_id_12345";
 
@@ -1973,10 +1975,10 @@ mod test {
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
+        let (_, mut rx) = channel::serve(bootstrap_addr.clone(), "test".to_string()).unwrap();
 
         let extent = extent!(host = 1, gpu = 1);
-        let tx = channel::dial(serve_addr.clone()).unwrap();
+        let tx = channel::dial(serve_addr.clone(), "test".to_string()).unwrap();
         let test_world_id: WorldId = id!(test_world_id);
 
         // Create a mock alloc
@@ -2453,7 +2455,7 @@ mod test_alloc {
         let hosts_per_proc_mesh = 5;
 
         let pid_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (pid_addr, mut pid_rx) = channel::serve::<u32>(pid_addr).unwrap();
+        let (pid_addr, mut pid_rx) = channel::serve::<u32>(pid_addr, "test".to_string()).unwrap();
 
         let addresses = (0..(num_proc_meshes * hosts_per_proc_mesh))
             .map(|_| ChannelAddr::any(ChannelTransport::Unix).to_string())
@@ -2475,7 +2477,7 @@ mod test_alloc {
 
         let done_allocating_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (done_allocating_addr, mut done_allocating_rx) =
-            channel::serve::<()>(done_allocating_addr).unwrap();
+            channel::serve::<()>(done_allocating_addr, "test".to_string()).unwrap();
         let mut remote_process_alloc = Command::new(crate::testresource::get(
             "monarch/hyperactor_mesh/remote_process_alloc",
         ))

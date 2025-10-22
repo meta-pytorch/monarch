@@ -1125,7 +1125,10 @@ impl MailboxClient {
     /// Convenience constructor, to set up a mailbox client that forwards messages
     /// to the provided address.
     pub fn dial(addr: ChannelAddr) -> Result<MailboxClient, ChannelError> {
-        Ok(MailboxClient::new(channel::dial(addr)?))
+        Ok(MailboxClient::new(channel::dial(
+            addr,
+            "mailbox-dial".to_string(),
+        )?))
     }
 
     // Set up a watch for the tx's health.
@@ -2562,7 +2565,11 @@ impl DialMailboxRouter {
         match self.sender_cache.entry(addr.clone()) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
-                let tx = channel::dial(addr.clone()).map_err(|err| {
+                let tx = channel::dial(
+                    addr.clone(),
+                    format!("mailbox-router-{}", actor_id).to_string(),
+                )
+                .map_err(|err| {
                     MailboxSenderError::new_unbound_type(
                         actor_id.clone(),
                         MailboxSenderErrorKind::Channel(err),
@@ -2849,8 +2856,10 @@ mod tests {
             .unwrap(),
         );
 
-        let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone())).unwrap();
-        let tx = dial::<MessageEnvelope>(src_to_dst).unwrap();
+        let (_, rx) =
+            serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone()), "test".to_string())
+                .unwrap();
+        let tx = dial::<MessageEnvelope>(src_to_dst, "test".to_string()).unwrap();
         let mbox = Mailbox::new_detached(id!(test[0].actor0));
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
@@ -2978,7 +2987,11 @@ mod tests {
 
         let mut handles = Vec::new(); // hold on to handles, or channels get closed
         for mbox in mailboxes.iter() {
-            let (addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Local)).unwrap();
+            let (addr, rx) = channel::serve(
+                ChannelAddr::any(ChannelTransport::Local),
+                "test".to_string(),
+            )
+            .unwrap();
             let handle = (*mbox).clone().serve(rx);
             handles.push(handle);
 
