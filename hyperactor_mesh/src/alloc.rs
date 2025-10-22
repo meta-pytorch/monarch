@@ -551,7 +551,7 @@ impl AllocAssignedAddr {
             }
         };
 
-        let (mut bound, rx) = channel::serve(bind_to)?;
+        let (mut bound, rx) = channel::serve(bind_to, "alloc-assigned-addr".to_string())?;
 
         // Restore the original IP address if we used INADDR_ANY.
         match &mut bound {
@@ -836,13 +836,14 @@ pub(crate) mod testing {
         transport: ChannelTransport,
     ) -> (DialMailboxRouter, Instance<()>, Proc, ChannelAddr) {
         let (router_channel_addr, router_rx) =
-            channel::serve(ChannelAddr::any(transport.clone())).unwrap();
+            channel::serve(ChannelAddr::any(transport.clone()), "test".to_string()).unwrap();
         let router =
             DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
         router.clone().serve(router_rx);
 
         let client_proc_id = ProcId::Ranked(WorldId("test_stuck".to_string()), 0);
-        let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
+        let (client_proc_addr, client_rx) =
+            channel::serve(ChannelAddr::any(transport), "test".to_string()).unwrap();
         let client_proc = Proc::new(
             client_proc_id.clone(),
             BoxedMailboxSender::new(router.clone()),

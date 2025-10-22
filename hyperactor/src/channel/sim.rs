@@ -231,7 +231,7 @@ pub struct SimDispatcher {
 fn create_egress_sender(
     addr: ChannelAddr,
 ) -> anyhow::Result<Arc<dyn Tx<MessageEnvelope> + Send + Sync>> {
-    let tx = channel::dial(addr)?;
+    let tx = channel::dial(addr, "sim-egress".to_string())?;
     Ok(Arc::new(tx))
 }
 

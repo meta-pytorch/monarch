@@ -135,6 +135,9 @@ pub(crate) trait Link: Send + Sync + Debug {
 
     /// Connect to the destination, returning a connected stream.
     async fn connect(&self) -> Result<Self::Stream, ClientError>;
+
+    /// Label for this link that appears in logs.
+    fn label(&self) -> String;
 }
 
 /// Frames are the messages sent between clients and servers over sessions.
@@ -634,7 +637,12 @@ impl<M: RemoteMessage> NetTx<M> {
         }
 
         let session_id = rand::random();
-        let log_id = format!("session {}.{}", link.dest(), session_id);
+        let label = link.label();
+        let log_id = if !label.is_empty() {
+            format!("session [{}]{}.{}", label, link.dest(), session_id)
+        } else {
+            format!("session {}.{}", link.dest(), session_id)
+        };
         let mut state = State::init(&log_id);
         let mut conn = Conn::reconnect_with_default();
 
@@ -941,7 +949,8 @@ impl<M: RemoteMessage> NetTx<M> {
                             }
                             Err(err) => {
                                 tracing::debug!(
-                                    "session {}.{}: failed to connect: {}",
+                                    "session {}{}.{}: failed to connect: {}",
+                                    link.label(),
                                     link.dest(),
                                     session_id,
                                     err
@@ -1042,7 +1051,7 @@ fn is_closed_error(err: &std::io::Error) -> bool {
 }
 
 #[derive(Debug)]
-pub struct NetRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr, ServerHandle);
+pub struct NetRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr, ServerHandle, String);
 
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for NetRx<M> {
@@ -1075,11 +1084,14 @@ pub struct ServerHandle {
 
     /// Address of the channel that was used to create the listener. This can be used to dial the that listener.
     channel_addr: ChannelAddr,
+
+    // Label associated to the server
+    label: String,
 }
 
 impl fmt::Display for ServerHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.channel_addr)
+        write!(f, "[{}]{}", self.label, self.channel_addr)
     }
 }
 
@@ -1128,6 +1140,7 @@ pub fn serve<M: RemoteMessage, L: Listener + Send + Unpin + 'static>(
     listener: L,
     channel_addr: ChannelAddr,
     is_tls: bool,
+    label: String,
 ) -> Result<(ChannelAddr, NetRx<M>), ServerError>
 where
     L::Addr: Sync + Send + fmt::Debug + Into<ChannelAddr>,
@@ -1149,16 +1162,18 @@ where
         tx,
         cancel_token.child_token(),
         is_tls,
+        label.clone(),
     ));
     let server_handle = ServerHandle {
         join_handle,
         cancel_token,
         channel_addr: channel_addr.clone(),
+        label: label.clone(),
     };
 
     Ok((
         server_handle.local_channel_addr().clone(),
-        NetRx(rx, channel_addr, server_handle),
+        NetRx(rx, channel_addr, server_handle, label),
     ))
 }
 
@@ -1218,16 +1233,18 @@ struct ServerConn<S> {
     write_state: WriteState<WriteHalf<S>, Bytes, u64>,
     source: ChannelAddr,
     dest: ChannelAddr,
+    label: String,
 }
 
 impl<S: AsyncRead + AsyncWrite> ServerConn<S> {
-    fn new(stream: S, source: ChannelAddr, dest: ChannelAddr) -> Self {
+    fn new(stream: S, source: ChannelAddr, dest: ChannelAddr, label: String) -> Self {
         let (reader, writer) = tokio::io::split(stream);
         Self {
             reader: FrameReader::new(reader, config::global::get(config::CODEC_MAX_FRAME_LENGTH)),
             write_state: WriteState::Idle(writer),
             source,
             dest,
+            label,
         }
     }
 }
@@ -1253,7 +1270,10 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         cancel_token: CancellationToken,
         mut next: Next,
     ) -> (Next, Result<(), anyhow::Error>) {
-        let log_id = format!("session {}.{}<-{}", self.dest, session_id, self.source);
+        let log_id = format!(
+            "session {}[{}].{}<-{}",
+            self.dest, self.label, session_id, self.source
+        );
         let initial_next: Next = next.clone();
         let mut rcv_raw_frame_count = 0u64;
         let mut last_ack_time = RealClock.now();
@@ -1690,6 +1710,7 @@ async fn listen<M: RemoteMessage, L: Listener>(
     tx: mpsc::Sender<M>,
     parent_cancel_token: CancellationToken,
     is_tls: bool,
+    label: String,
 ) -> Result<(), ServerError>
 where
     L::Addr: Send + Sync + fmt::Debug + 'static + Into<ChannelAddr>,
@@ -1708,7 +1729,7 @@ where
                 match result {
                     Ok((stream, addr)) => {
                         let source : ChannelAddr = addr.into();
-                        tracing::debug!("listen {}: new connection from {}", listener_channel_addr, source);
+                        tracing::debug!("listen [{}``]{}: new connection from {}", label.clone(), listener_channel_addr, source);
                         metrics::CHANNEL_CONNECTIONS.add(
                             1,
                             hyperactor_telemetry::kv_pairs!(
@@ -1721,14 +1742,15 @@ where
                         let child_cancel_token = child_cancel_token.child_token();
                         let dest  = listener_channel_addr.clone();
                         let manager = manager.clone();
+                        let label_clone = label.clone();
                         connections.spawn(async move {
                             let res = if is_tls {
                                 let conn = ServerConn::new(meta::tls_acceptor(true)?
                                     .accept(stream)
-                                    .await?, source.clone(), dest.clone());
+                                    .await?, source.clone(), dest.clone(), label_clone);
                                 manager.serve(conn, tx, child_cancel_token).await
                             } else {
-                                let conn = ServerConn::new(stream, source.clone(), dest.clone());
+                                let conn = ServerConn::new(stream, source.clone(), dest.clone(), label_clone);
                                 manager.serve(conn, tx, child_cancel_token).await
                             };
 
@@ -1771,7 +1793,7 @@ where
             }
 
             _ = parent_cancel_token.cancelled() => {
-                tracing::info!("serve {}: received parent token cancellation", listener_channel_addr);
+                tracing::info!("serve {}-{}: received parent token cancellation", listener_channel_addr, label.clone());
                 break Ok(());
             }
 
@@ -1824,18 +1846,21 @@ pub(crate) mod unix {
     use crate::RemoteMessage;
 
     #[derive(Debug)]
-    pub(crate) struct UnixLink(SocketAddr);
+    pub(crate) struct UnixLink {
+        addr: SocketAddr,
+        label: String,
+    }
 
     #[async_trait]
     impl Link for UnixLink {
         type Stream = UnixStream;
 
         fn dest(&self) -> ChannelAddr {
-            ChannelAddr::Unix(self.0.clone())
+            ChannelAddr::Unix(self.addr.clone())
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
-            match &self.0 {
+            match &self.addr {
                 SocketAddr::Bound(sock_addr) => {
                     let std_stream: StdUnixStream = StdUnixStream::connect_addr(sock_addr)
                         .map_err(|err| {
@@ -1854,16 +1879,21 @@ pub(crate) mod unix {
                 SocketAddr::Unbound => Err(ClientError::Resolve(self.dest())),
             }
         }
+
+        fn label(&self) -> String {
+            self.label.clone()
+        }
     }
 
     /// Dial the given unix socket.
-    pub fn dial<M: RemoteMessage>(addr: SocketAddr) -> NetTx<M> {
-        NetTx::new(UnixLink(addr))
+    pub fn dial<M: RemoteMessage>(addr: SocketAddr, label: String) -> NetTx<M> {
+        NetTx::new(UnixLink { addr, label })
     }
 
     /// Listen and serve connections on this socket address.
     pub fn serve<M: RemoteMessage>(
         addr: SocketAddr,
+        label: String,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
         let caddr = ChannelAddr::Unix(addr.clone());
         let maybe_listener = match &addr {
@@ -1883,7 +1913,7 @@ pub(crate) mod unix {
             .map_err(|err| ServerError::Resolve(caddr.clone(), err))?;
         let listener: UnixListener = UnixListener::from_std(std_listener)
             .map_err(|err| ServerError::Io(caddr.clone(), err))?;
-        super::serve(listener, local_addr.into(), false)
+        super::serve(listener, local_addr.into(), false, label)
     }
 
     /// Wrapper around std-lib's unix::SocketAddr that lets us implement equality functions
@@ -2093,18 +2123,21 @@ pub(crate) mod tcp {
     use crate::RemoteMessage;
 
     #[derive(Debug)]
-    pub(crate) struct TcpLink(SocketAddr);
+    pub(crate) struct TcpLink {
+        addr: SocketAddr,
+        label: String,
+    }
 
     #[async_trait]
     impl Link for TcpLink {
         type Stream = TcpStream;
 
         fn dest(&self) -> ChannelAddr {
-            ChannelAddr::Tcp(self.0)
+            ChannelAddr::Tcp(self.addr)
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
-            let stream = TcpStream::connect(&self.0).await.map_err(|err| {
+            let stream = TcpStream::connect(&self.addr).await.map_err(|err| {
                 ClientError::Connect(self.dest(), err, "cannot connect TCP socket".to_string())
             })?;
             // Always disable Nagle algorithm, so it doesn't hurt the latency of small messages.
@@ -2117,16 +2150,21 @@ pub(crate) mod tcp {
             })?;
             Ok(stream)
         }
+
+        fn label(&self) -> String {
+            self.label.clone()
+        }
     }
 
-    pub fn dial<M: RemoteMessage>(addr: SocketAddr) -> NetTx<M> {
-        NetTx::new(TcpLink(addr))
+    pub fn dial<M: RemoteMessage>(addr: SocketAddr, label: String) -> NetTx<M> {
+        NetTx::new(TcpLink { addr, label })
     }
 
     /// Serve the given address. Supports both v4 and v6 address. If port 0 is provided as
     /// dynamic port will be resolved and is available on the returned ServerHandle.
     pub fn serve<M: RemoteMessage>(
         addr: SocketAddr,
+        label: String,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
         // Construct our own std TcpListener to avoid having to await, making this function
         // non-async.
@@ -2140,7 +2178,7 @@ pub(crate) mod tcp {
         let local_addr = listener
             .local_addr()
             .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp(addr), err))?;
-        super::serve(listener, ChannelAddr::Tcp(local_addr), false)
+        super::serve(listener, ChannelAddr::Tcp(local_addr), false, label)
     }
 }
 
@@ -2314,6 +2352,7 @@ pub(crate) mod meta {
     pub(crate) struct MetaLink {
         hostname: Hostname,
         port: Port,
+        label: String,
     }
 
     #[async_trait]
@@ -2361,11 +2400,22 @@ pub(crate) mod meta {
                     )
                 })
         }
+
+        fn label(&self) -> String {
+            self.label.clone()
+        }
     }
 
-    pub fn dial<M: RemoteMessage>(addr: MetaTlsAddr) -> Result<NetTx<M>, ClientError> {
+    pub fn dial<M: RemoteMessage>(
+        addr: MetaTlsAddr,
+        label: String,
+    ) -> Result<NetTx<M>, ClientError> {
         match addr {
-            MetaTlsAddr::Host { hostname, port } => Ok(NetTx::new(MetaLink { hostname, port })),
+            MetaTlsAddr::Host { hostname, port } => Ok(NetTx::new(MetaLink {
+                hostname,
+                port,
+                label,
+            })),
             MetaTlsAddr::Socket(_) => Err(ClientError::InvalidAddress(
                 "MetaTls clients require hostname/port for host identity, not socket addresses"
                     .to_string(),
@@ -2378,6 +2428,7 @@ pub(crate) mod meta {
     /// For Host addresses, binds to all resolved socket addresses.
     pub fn serve<M: RemoteMessage>(
         addr: MetaTlsAddr,
+        label: String,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
         match addr {
             MetaTlsAddr::Host { hostname, port } => {
@@ -2426,6 +2477,7 @@ pub(crate) mod meta {
                         port: local_addr.port(),
                     }),
                     true,
+                    label,
                 )
             }
             MetaTlsAddr::Socket(socket_addr) => {
@@ -2447,6 +2499,7 @@ pub(crate) mod meta {
                     listener,
                     ChannelAddr::MetaTls(MetaTlsAddr::Socket(local_addr)),
                     true,
+                    label,
                 )
             }
         }
@@ -2490,9 +2543,11 @@ mod tests {
             .as_nanos();
         let unique_address = format!("test_unix_basic_{}", timestamp);
 
-        let (addr, mut rx) =
-            net::unix::serve::<u64>(unix::SocketAddr::from_abstract_name(&unique_address)?)
-                .unwrap();
+        let (addr, mut rx) = net::unix::serve::<u64>(
+            unix::SocketAddr::from_abstract_name(&unique_address)?,
+            "test".to_string(),
+        )
+        .unwrap();
 
         // It is important to keep Tx alive until all expected messages are
         // received. Otherwise, the channel would be closed when Tx is dropped.
@@ -2501,13 +2556,13 @@ mod tests {
         // out of the buffer because NetRx could not ack through the closed
         // channel.
         {
-            let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
+            let tx = dial::<u64>(addr.clone(), "test".to_string()).unwrap();
             tx.try_post(123, unused_return_channel()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
-            let tx = dial::<u64>(addr).unwrap();
+            let tx = dial::<u64>(addr, "test".to_string()).unwrap();
             tx.try_post(321, unused_return_channel()).unwrap();
             tx.try_post(111, unused_return_channel()).unwrap();
             tx.try_post(444, unused_return_channel()).unwrap();
@@ -2536,10 +2591,10 @@ mod tests {
 
         // Dial the channel before we actually serve it.
         let addr = ChannelAddr::Unix(socket_addr.clone());
-        let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
+        let tx = crate::channel::dial::<u64>(addr.clone(), "test".to_string()).unwrap();
         tx.try_post(123, unused_return_channel()).unwrap();
 
-        let (_, mut rx) = net::unix::serve::<u64>(socket_addr).unwrap();
+        let (_, mut rx) = net::unix::serve::<u64>(socket_addr, "test".to_string()).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         tx.try_post(321, unused_return_channel()).unwrap();
@@ -2558,15 +2613,16 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(feature = "fb"), ignore)]
     async fn test_tcp_basic() {
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) =
+            tcp::serve::<u64>("[::1]:0".parse().unwrap(), "test".to_string()).unwrap();
         {
-            let tx = dial::<u64>(addr.clone()).unwrap();
+            let tx = dial::<u64>(addr.clone(), "test".to_string()).unwrap();
             tx.try_post(123, unused_return_channel()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
-            let tx = dial::<u64>(addr).unwrap();
+            let tx = dial::<u64>(addr, "test".to_string()).unwrap();
             tx.try_post(321, unused_return_channel()).unwrap();
             tx.try_post(111, unused_return_channel()).unwrap();
             tx.try_post(444, unused_return_channel()).unwrap();
@@ -2588,9 +2644,10 @@ mod tests {
         let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
-        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) =
+            tcp::serve::<String>("[::1]:0".parse().unwrap(), "test".to_string()).unwrap();
 
-        let tx = dial::<String>(addr.clone()).unwrap();
+        let tx = dial::<String>(addr.clone(), "test".to_string()).unwrap();
         // Default size is okay
         {
             // Leave some headroom because Tx will wrap the payload in Frame::Message.
@@ -2621,8 +2678,9 @@ mod tests {
         let _guard_delivery_timeout =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
 
-        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
-        let net_tx = dial::<u64>(addr.clone()).unwrap();
+        let (addr, mut net_rx) =
+            tcp::serve::<u64>("[::1]:0".parse().unwrap(), "test".to_string()).unwrap();
+        let net_tx = dial::<u64>(addr.clone(), "test".to_string()).unwrap();
         let (tx, rx) = oneshot::channel();
         net_tx.try_post(1, tx).unwrap();
         assert_eq!(net_rx.recv().await.unwrap(), 1);
@@ -2642,15 +2700,15 @@ mod tests {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,
             _ => panic!("expected MetaTls address"),
         };
-        let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr).unwrap();
+        let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr, "test".to_string()).unwrap();
         {
-            let tx = dial::<u64>(local_addr.clone()).unwrap();
+            let tx = dial::<u64>(local_addr.clone(), "test".to_string()).unwrap();
             tx.try_post(123, unused_return_channel()).unwrap();
         }
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         {
-            let tx = dial::<u64>(local_addr).unwrap();
+            let tx = dial::<u64>(local_addr, "test".to_string()).unwrap();
             tx.try_post(321, unused_return_channel()).unwrap();
             tx.try_post(111, unused_return_channel()).unwrap();
             tx.try_post(444, unused_return_channel()).unwrap();
@@ -2804,6 +2862,10 @@ mod tests {
         fn dest(&self) -> ChannelAddr {
             // Use a dummy address as a placeholder.
             ChannelAddr::Local(u64::MAX)
+        }
+
+        fn label(&self) -> String {
+            "".to_string()
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
@@ -3025,7 +3087,7 @@ mod tests {
         let (sender, receiver) = tokio::io::duplex(5000);
         let source = ChannelAddr::Local(u64::MAX);
         let dest = ChannelAddr::Local(u64::MAX);
-        let conn = ServerConn::new(receiver, source, dest);
+        let conn = ServerConn::new(receiver, source, dest, "test".to_string());
         let manager1 = manager.clone();
         let cancel_token_1 = cancel_token.child_token();
         let (tx, rx) = mpsc::channel(1);
@@ -3696,7 +3758,7 @@ mod tests {
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.local_addr().unwrap();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
-            super::serve(listener, local_addr, false).unwrap();
+            super::serve(listener, local_addr, false, "test".to_string()).unwrap();
         let tx = NetTx::<u64>::new(link);
         let messages: Vec<_> = (0..10001).collect();
         let messages_clone = messages.clone();
@@ -3775,7 +3837,7 @@ mod tests {
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.local_addr().unwrap();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
-            super::serve(listener, local_addr, false).unwrap();
+            super::serve(listener, local_addr, false, "test".to_string()).unwrap();
         let tx = NetTx::<u64>::new(link);
         let messages: Vec<_> = (0..20001).collect();
         let messages_clone = messages.clone();
@@ -3852,7 +3914,7 @@ mod tests {
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).unwrap();
+        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr, "test".to_string()).unwrap();
 
         // Test with 10 connections (senders), each sends 500K messages, 5M messages in total.
         let total_num_msgs = 500000;
@@ -3873,7 +3935,7 @@ mod tests {
         let mut txs = vec![];
         for _ in 0..10 {
             let server_addr = local_addr.clone();
-            let tx = Arc::new(dial::<String>(server_addr).unwrap());
+            let tx = Arc::new(dial::<String>(server_addr, "test".to_string()).unwrap());
             let tx2 = Arc::clone(&tx);
             txs.push(tx);
             tx_handles.push(tokio::spawn(async move {

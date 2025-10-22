@@ -379,7 +379,7 @@ pub struct LocalLogSender {
 
 impl LocalLogSender {
     fn new(log_channel: ChannelAddr, pid: u32) -> Result<Self, anyhow::Error> {
-        let tx = channel::dial::<LogMessage>(log_channel)?;
+        let tx = channel::dial::<LogMessage>(log_channel, "log-sender".to_string())?;
         let status = tx.status().clone();
 
         let hostname = hostname::get()
@@ -477,14 +477,16 @@ impl FileAppender {
                     return None;
                 }
             };
-        let (stdout_addr, stdout_rx) =
-            match channel::serve(ChannelAddr::any(ChannelTransport::Unix)) {
-                Ok((addr, rx)) => (addr, rx),
-                Err(e) => {
-                    tracing::warn!("failed to serve stdout channel: {}", e);
-                    return None;
-                }
-            };
+        let (stdout_addr, stdout_rx) = match channel::serve(
+            ChannelAddr::any(ChannelTransport::Unix),
+            "stdout".to_string(),
+        ) {
+            Ok((addr, rx)) => (addr, rx),
+            Err(e) => {
+                tracing::warn!("failed to serve stdout channel: {}", e);
+                return None;
+            }
+        };
         let stdout_stop = stop.clone();
         let stdout_task = tokio::spawn(file_monitor_task(
             stdout_rx,
@@ -502,14 +504,16 @@ impl FileAppender {
                     return None;
                 }
             };
-        let (stderr_addr, stderr_rx) =
-            match channel::serve(ChannelAddr::any(ChannelTransport::Unix)) {
-                Ok((addr, rx)) => (addr, rx),
-                Err(e) => {
-                    tracing::warn!("failed to serve stderr channel: {}", e);
-                    return None;
-                }
-            };
+        let (stderr_addr, stderr_rx) = match channel::serve(
+            ChannelAddr::any(ChannelTransport::Unix),
+            "stderr".to_string(),
+        ) {
+            Ok((addr, rx)) => (addr, rx),
+            Err(e) => {
+                tracing::warn!("failed to serve stderr channel: {}", e);
+                return None;
+            }
+        };
         let stderr_stop = stop.clone();
         let stderr_task = tokio::spawn(file_monitor_task(
             stderr_rx,
@@ -671,11 +675,13 @@ async fn tee(
 
     // Dial the file monitor channel if provided
     let mut file_monitor_tx: Option<ChannelTx<FileMonitorMessage>> =
-        file_monitor_addr.and_then(|addr| match channel::dial(addr.clone()) {
-            Ok(tx) => Some(tx),
-            Err(e) => {
-                tracing::warn!("Failed to dial file monitor channel {}: {}", addr, e);
-                None
+        file_monitor_addr.and_then(|addr| {
+            match channel::dial(addr.clone(), "file-monitor".to_string()) {
+                Ok(tx) => Some(tx),
+                Err(e) => {
+                    tracing::warn!("Failed to dial file monitor channel {}: {}", addr, e);
+                    None
+                }
             }
         });
 
@@ -1116,7 +1122,7 @@ impl Actor for LogForwardActor {
             log_channel
         );
 
-        let rx = match channel::serve(log_channel.clone()) {
+        let rx = match channel::serve(log_channel.clone(), "log-forwarder".to_string()) {
             Ok((_, rx)) => rx,
             Err(err) => {
                 // This can happen if we are not spanwed on a separate process like local.
@@ -1126,12 +1132,19 @@ impl Actor for LogForwardActor {
                     log_channel,
                     err
                 );
-                channel::serve(ChannelAddr::any(ChannelTransport::Unix))?.1
+                channel::serve(
+                    ChannelAddr::any(ChannelTransport::Unix),
+                    "log-forwarder".to_string(),
+                )?
+                .1
             }
         };
 
         // Dial the same channel to send flush message to drain the log queue.
-        let flush_tx = Arc::new(Mutex::new(channel::dial::<LogMessage>(log_channel)?));
+        let flush_tx = Arc::new(Mutex::new(channel::dial::<LogMessage>(
+            log_channel,
+            "log-flush".to_string(),
+        )?));
         let now = RealClock.system_time_now();
 
         Ok(Self {
@@ -1573,7 +1586,7 @@ mod tests {
         // Setup the basics
         let router = DialMailboxRouter::new();
         let (proc_addr, client_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test".to_string()).unwrap();
         let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
         proc.clone().serve(client_rx);
         router.bind(id!(client[0]).into(), proc_addr.clone());
@@ -1594,7 +1607,7 @@ mod tests {
             .bind();
 
         // Write some logs that will not be streamed
-        let tx: ChannelTx<LogMessage> = channel::dial(log_channel).unwrap();
+        let tx: ChannelTx<LogMessage> = channel::dial(log_channel, "test".to_string()).unwrap();
         tx.post(LogMessage::Log {
             hostname: "my_host".into(),
             pid: 1,
@@ -1786,8 +1799,11 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let (mut writer, reader) = tokio::io::duplex(1024);
-        let (log_channel, mut rx) =
-            channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let (log_channel, mut rx) = channel::serve::<LogMessage>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            "test".to_string(),
+        )
+        .unwrap();
 
         // Create a temporary file for testing the writer
         let temp_file = tempfile::NamedTempFile::new().unwrap();
@@ -1919,8 +1935,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_log_sender_inactive_status() {
-        let (log_channel, _) =
-            channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let (log_channel, _) = channel::serve::<LogMessage>(
+            ChannelAddr::any(ChannelTransport::Unix),
+            "test".to_string(),
+        )
+        .unwrap();
         let mut sender = LocalLogSender::new(log_channel, 12345).unwrap();
 
         // This test verifies that the sender handles inactive status gracefully

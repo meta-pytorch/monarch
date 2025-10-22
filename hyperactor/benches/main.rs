@@ -87,8 +87,8 @@ fn bench_message_sizes(c: &mut Criterion) {
                         assert!(!socket_addr.ip().is_loopback());
                     }
 
-                    let (listen_addr, mut rx) = serve::<Message>(addr).unwrap();
-                    let tx = dial::<Message>(listen_addr).unwrap();
+                    let (listen_addr, mut rx) = serve::<Message>(addr, "".to_string()).unwrap();
+                    let tx = dial::<Message>(listen_addr, "".to_string()).unwrap();
                     let msg = Message::new(0, size);
                     let start = Instant::now();
                     for _ in 0..iters {
@@ -127,7 +127,8 @@ fn bench_message_rates(c: &mut Criterion) {
                 b.iter_custom(|iters| async move {
                     let total_msgs = iters * rate;
                     let addr = ChannelAddr::any(transport.clone());
-                    let (listen_addr, mut rx) = serve::<Message>(addr).unwrap();
+                    let (listen_addr, mut rx) =
+                        serve::<Message>(addr, "bench".to_string()).unwrap();
                     tokio::spawn(async move {
                         let mut received_count = 0;
 
@@ -141,7 +142,7 @@ fn bench_message_rates(c: &mut Criterion) {
                         }
                     });
 
-                    let tx = dial::<Message>(listen_addr).unwrap();
+                    let tx = dial::<Message>(listen_addr, "".to_string()).unwrap();
                     let message = Message::new(0, payload_size);
                     let start = Instant::now();
 
@@ -212,13 +213,15 @@ async fn channel_ping_pong(
     struct Message(Part);
 
     let (client_addr, mut client_rx) =
-        channel::serve::<Message>(ChannelAddr::any(transport.clone())).unwrap();
+        channel::serve::<Message>(ChannelAddr::any(transport.clone()), "client".to_string())
+            .unwrap();
     let (server_addr, mut server_rx) =
-        channel::serve::<Message>(ChannelAddr::any(transport.clone())).unwrap();
+        channel::serve::<Message>(ChannelAddr::any(transport.clone()), "server".to_string())
+            .unwrap();
 
     let _server_handle: tokio::task::JoinHandle<Result<(), anyhow::Error>> =
         tokio::spawn(async move {
-            let client_tx = channel::dial(client_addr)?;
+            let client_tx = channel::dial(client_addr, "client".to_string())?;
             loop {
                 let message = server_rx.recv().await?;
                 client_tx.post(message);
@@ -227,7 +230,7 @@ async fn channel_ping_pong(
 
     let client_handle: tokio::task::JoinHandle<Result<(), anyhow::Error>> =
         tokio::spawn(async move {
-            let server_tx = channel::dial(server_addr)?;
+            let server_tx = channel::dial(server_addr, "server".to_string())?;
             let message = Message(Part::from(vec![0u8; message_size]));
             for _ in 0..num_iter {
                 server_tx.post(message.clone() /*cheap */);

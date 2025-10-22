@@ -384,8 +384,10 @@ impl ProcActor {
         labels: HashMap<String, String>,
         lifecycle_mode: ProcLifecycleMode,
     ) -> Result<BootstrappedProc, anyhow::Error> {
-        let system_sender =
-            BoxedMailboxSender::new(MailboxClient::new(channel::dial(bootstrap_addr.clone())?));
+        let system_sender = BoxedMailboxSender::new(MailboxClient::new(channel::dial(
+            bootstrap_addr.clone(),
+            "proc-bootstrap".to_string(),
+        )?));
         let clock = ClockKind::for_channel_addr(&listen_addr);
 
         let proc_forwarder =
@@ -418,7 +420,7 @@ impl ProcActor {
         labels: HashMap<String, String>,
         lifecycle_mode: ProcLifecycleMode,
     ) -> Result<BootstrappedProc, anyhow::Error> {
-        let (local_addr, rx) = channel::serve(listen_addr)?;
+        let (local_addr, rx) = channel::serve(listen_addr, "proc-bootstrap".to_string())?;
         let mailbox_handle = proc.clone().serve(rx);
         let (state_tx, mut state_rx) = watch::channel(ProcState::AwaitingJoin);
 
@@ -1392,7 +1394,11 @@ mod tests {
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial(server_handle.local_addr().clone()).unwrap(),
+            channel::dial(
+                server_handle.local_addr().clone(),
+                "proc-bootstrap".to_string(),
+            )
+            .unwrap(),
         ));
 
         // Construct a proc forwarder in terms of the system sender.
@@ -1515,7 +1521,7 @@ mod tests {
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial(server_handle.local_addr().clone()).unwrap(),
+            channel::dial(server_handle.local_addr().clone(), "".to_string()).unwrap(),
         ));
 
         // Construct a proc forwarder in terms of the system sender.

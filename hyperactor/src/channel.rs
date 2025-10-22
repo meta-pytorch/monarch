@@ -125,7 +125,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
         let _ignore = self.try_post(message, oneshot::channel().0);
     }
 
-    /// Send a message synchronously, returning when the messsage has
+    /// Send a message synchronously, returning when the message has
     /// been delivered to the remote end of the channel.
     async fn send(&self, message: M) -> Result<(), SendError<M>> {
         let (tx, rx) = oneshot::channel();
@@ -825,14 +825,19 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 /// if the channel cannot be established. The underlying connection is
 /// dropped whenever the returned Tx is dropped.
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
-pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
+pub fn dial<M: RemoteMessage>(
+    addr: ChannelAddr,
+    label: String,
+) -> Result<ChannelTx<M>, ChannelError> {
     tracing::debug!(name = "dial", "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
-        ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
-        ChannelAddr::MetaTls(meta_addr) => ChannelTxKind::MetaTls(net::meta::dial(meta_addr)?),
+        ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr, label)),
+        ChannelAddr::MetaTls(meta_addr) => {
+            ChannelTxKind::MetaTls(net::meta::dial(meta_addr, label)?)
+        }
         ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
-        ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
+        ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path, label)),
     };
     Ok(ChannelTx { inner })
 }
@@ -842,19 +847,20 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 #[crate::instrument]
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
+    label: String,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     tracing::debug!(name = "serve", "serving channel address {}", addr);
     match addr {
         ChannelAddr::Tcp(addr) => {
-            let (addr, rx) = net::tcp::serve::<M>(addr)?;
+            let (addr, rx) = net::tcp::serve::<M>(addr, label)?;
             Ok((addr, ChannelRxKind::Tcp(rx)))
         }
         ChannelAddr::MetaTls(meta_addr) => {
-            let (addr, rx) = net::meta::serve::<M>(meta_addr)?;
+            let (addr, rx) = net::meta::serve::<M>(meta_addr, label)?;
             Ok((addr, ChannelRxKind::MetaTls(rx)))
         }
         ChannelAddr::Unix(path) => {
-            let (addr, rx) = net::unix::serve::<M>(path)?;
+            let (addr, rx) = net::unix::serve::<M>(path, label)?;
             Ok((addr, ChannelRxKind::Unix(rx)))
         }
         ChannelAddr::Local(0) => {
@@ -1044,13 +1050,14 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_connections() {
         for addr in ChannelTransport::all().map(ChannelAddr::any) {
-            let (listen_addr, mut rx) = crate::channel::serve::<u64>(addr).unwrap();
+            let (listen_addr, mut rx) =
+                crate::channel::serve::<u64>(addr, "test".to_string()).unwrap();
 
             let mut sends: JoinSet<()> = JoinSet::new();
             for message in 0u64..100u64 {
                 let addr = listen_addr.clone();
                 sends.spawn(async move {
-                    let tx = dial::<u64>(addr).unwrap();
+                    let tx = dial::<u64>(addr, "test".to_string()).unwrap();
                     tx.try_post(message, oneshot::channel().0).unwrap();
                 });
             }
@@ -1083,9 +1090,9 @@ mod tests {
                 continue;
             }
 
-            let (listen_addr, rx) = crate::channel::serve::<u64>(addr).unwrap();
+            let (listen_addr, rx) = crate::channel::serve::<u64>(addr, "test".to_string()).unwrap();
 
-            let tx = dial::<u64>(listen_addr).unwrap();
+            let tx = dial::<u64>(listen_addr, "test".to_string()).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
             drop(rx);
 
@@ -1132,8 +1139,9 @@ mod tests {
     #[cfg_attr(not(feature = "fb"), ignore)]
     async fn test_dial_serve() {
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
-            let tx = crate::channel::dial(listen_addr).unwrap();
+            let (listen_addr, mut rx) =
+                crate::channel::serve::<i32>(addr, "test".to_string()).unwrap();
+            let tx = crate::channel::dial(listen_addr, "test".to_string()).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
@@ -1152,8 +1160,9 @@ mod tests {
         );
         let _guard2 = config.override_key(crate::config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
-            let tx = crate::channel::dial(listen_addr).unwrap();
+            let (listen_addr, mut rx) =
+                crate::channel::serve::<i32>(addr, "test".to_string()).unwrap();
+            let tx = crate::channel::dial(listen_addr, "test".to_string()).unwrap();
             tx.send(123).await.unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
 

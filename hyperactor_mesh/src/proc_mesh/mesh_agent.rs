@@ -309,7 +309,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
 
         // Wire up the local proc to the global (process) router. This ensures that child
         // meshes are reachable from any actor created by this mesh.
-        let client = MailboxClient::new(channel::dial(forwarder)?);
+        let client = MailboxClient::new(channel::dial(forwarder, "mesh-agent".to_string())?);
 
         // `HYPERACTOR_MESH_ROUTER_CONFIG_NO_GLOBAL_FALLBACK` may be
         // set as a means of failure injection in the testing of

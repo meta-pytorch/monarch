@@ -1877,8 +1877,11 @@ mod tests {
             WorldId(format!("{}{}", SHADOW_PREFIX, proc_world_id.name())),
             host_id,
         );
-        let (local_proc_addr, local_proc_rx) =
-            channel::serve::<MessageEnvelope>(ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let (local_proc_addr, local_proc_rx) = channel::serve::<MessageEnvelope>(
+            ChannelAddr::any(ChannelTransport::Local),
+            "".to_string(),
+        )
+        .unwrap();
         let local_proc_mbox = Mailbox::new_detached(local_proc_id.actor_id("test".to_string(), 0));
         let (local_proc_message_port, local_proc_message_receiver) = local_proc_mbox.open_port();
         let _local_proc_serve_handle = local_proc_mbox.clone().serve(local_proc_rx);
@@ -2245,7 +2248,7 @@ mod tests {
 
         // Construct a system sender.
         let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial(server_handle.local_addr().clone()).unwrap(),
+            channel::dial(server_handle.local_addr().clone(), "test".to_string()).unwrap(),
         ));
         // Construct a proc forwarder in terms of the system sender.
         let proc_forwarder =
@@ -2384,7 +2387,8 @@ mod tests {
         let src_id = id!(proc[0].actor);
         let src_addr = ChannelAddr::Sim(SimAddr::new("unix!@src".parse().unwrap()).unwrap());
         let dst_addr = ChannelAddr::Sim(SimAddr::new("unix!@dst".parse().unwrap()).unwrap());
-        let (_, mut rx) = channel::serve::<MessageEnvelope>(src_addr.clone()).unwrap();
+        let (_, mut rx) =
+            channel::serve::<MessageEnvelope>(src_addr.clone(), "".to_string()).unwrap();
 
         let router = ReportingRouter::new();
 

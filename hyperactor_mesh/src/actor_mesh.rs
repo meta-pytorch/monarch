@@ -1702,7 +1702,7 @@ mod tests {
             type Params = ChannelAddr;
 
             async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {
-                Ok(Self(dial::<usize>(params)?))
+                Ok(Self(dial::<usize>(params, "test".to_string())?))
             }
         }
 
@@ -1730,7 +1730,7 @@ mod tests {
             let config = hyperactor::config::global::lock();
             let _guard = config.override_key(MAX_CAST_DIMENSION_SIZE, 2);
 
-            let (_, mut rx) = serve::<usize>(addr).unwrap();
+            let (_, mut rx) = serve::<usize>(addr, "test".to_string()).unwrap();
 
             let expected_ranks = selection
                 .eval(
