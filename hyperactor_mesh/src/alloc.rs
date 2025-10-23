@@ -92,7 +92,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_REMOTE_ALLOC_BOOTSTRAP_ADDR".to_string()),
         py_name: None,
     })
-    pub attr REMOTE_ALLOC_BOOTSTRAP_ADDR: String;
+    pub attr REMOTE_ALLOC_BOOTSTRAP_ADDR: ChannelAddr;
 
     /// For Tcp channel types, if set, only uses ports in this range for the
     /// frontend ports. The input should be in the format "<start>..<end>",
@@ -343,8 +343,8 @@ pub trait Alloc {
     }
 
     /// The address that should be used to serve the client's router.
-    fn client_router_addr(&self) -> AllocAssignedAddr {
-        AllocAssignedAddr(ChannelAddr::any(self.transport()))
+    fn client_router_addr(&self) -> ChannelAddr {
+        ChannelAddr::any(self.transport())
     }
 }
 
@@ -479,92 +479,80 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
     }
 }
 
-/// A new type to indicate this addr is assigned by alloc.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AllocAssignedAddr(ChannelAddr);
-
-impl AllocAssignedAddr {
-    pub(crate) fn new(addr: ChannelAddr) -> AllocAssignedAddr {
-        AllocAssignedAddr(addr)
-    }
-
-    /// If addr is Tcp or Metatls, use its IP address or hostname to create
-    /// a new addr with port unspecified.
-    ///
-    /// for other types of addr, return "any" address.
-    pub(crate) fn with_unspecified_port_or_any(addr: &ChannelAddr) -> AllocAssignedAddr {
-        let new_addr = match addr {
-            ChannelAddr::Tcp(socket) => {
-                let mut new_socket = socket.clone();
-                new_socket.set_port(0);
-                ChannelAddr::Tcp(new_socket)
-            }
-            ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
-                let mut new_socket = socket.clone();
-                new_socket.set_port(0);
-                ChannelAddr::MetaTls(MetaTlsAddr::Socket(new_socket))
-            }
-            ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port: _ }) => {
-                ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                    hostname: hostname.clone(),
-                    port: 0,
-                })
-            }
-            _ => addr.transport().any(),
-        };
-        AllocAssignedAddr(new_addr)
-    }
-
-    pub(crate) fn serve_with_config<M: RemoteMessage>(
-        self,
-    ) -> anyhow::Result<(ChannelAddr, ChannelRx<M>)> {
-        fn set_as_inaddr_any(original: &mut SocketAddr) {
-            let inaddr_any: IpAddr = match &original {
-                SocketAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
-                SocketAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
-            };
-            original.set_ip(inaddr_any);
+/// If addr is Tcp or Metatls, use its IP address or hostname to create
+/// a new addr with port unspecified.
+///
+/// for other types of addr, return "any" address.
+pub(crate) fn with_unspecified_port_or_any(addr: &ChannelAddr) -> ChannelAddr {
+    match addr {
+        ChannelAddr::Tcp(socket) => {
+            let mut new_socket = socket.clone();
+            new_socket.set_port(0);
+            ChannelAddr::Tcp(new_socket)
         }
-
-        let use_inaddr_any = config::global::get(REMOTE_ALLOC_BIND_TO_INADDR_ANY);
-        let mut bind_to = self.0;
-        let mut original_ip: Option<IpAddr> = None;
-        match &mut bind_to {
-            ChannelAddr::Tcp(socket) => {
-                original_ip = Some(socket.ip().clone());
-                if use_inaddr_any {
-                    set_as_inaddr_any(socket);
-                    tracing::debug!("binding {} to INADDR_ANY", original_ip.as_ref().unwrap(),);
-                }
-                if socket.port() == 0 {
-                    socket.set_port(next_allowed_port(socket.ip().clone())?);
-                }
-            }
-            _ => {
-                if use_inaddr_any {
-                    tracing::debug!(
-                        "can only bind to INADDR_ANY for TCP; got transport {}, addr {}",
-                        bind_to.transport(),
-                        bind_to
-                    );
-                }
-            }
-        };
-
-        let (mut bound, rx) = channel::serve(bind_to)?;
-
-        // Restore the original IP address if we used INADDR_ANY.
-        match &mut bound {
-            ChannelAddr::Tcp(socket) => {
-                if use_inaddr_any {
-                    socket.set_ip(original_ip.unwrap());
-                }
-            }
-            _ => (),
+        ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+            let mut new_socket = socket.clone();
+            new_socket.set_port(0);
+            ChannelAddr::MetaTls(MetaTlsAddr::Socket(new_socket))
         }
-
-        Ok((bound, rx))
+        ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port: _ }) => {
+            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+                hostname: hostname.clone(),
+                port: 0,
+            })
+        }
+        _ => addr.transport().any(),
     }
+}
+
+pub(crate) fn serve_with_config<M: RemoteMessage>(
+    mut serve_addr: ChannelAddr,
+) -> anyhow::Result<(ChannelAddr, ChannelRx<M>)> {
+    fn set_as_inaddr_any(original: &mut SocketAddr) {
+        let inaddr_any: IpAddr = match &original {
+            SocketAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
+            SocketAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
+        };
+        original.set_ip(inaddr_any);
+    }
+
+    let use_inaddr_any = config::global::get(REMOTE_ALLOC_BIND_TO_INADDR_ANY);
+    let mut original_ip: Option<IpAddr> = None;
+    match &mut serve_addr {
+        ChannelAddr::Tcp(socket) => {
+            original_ip = Some(socket.ip().clone());
+            if use_inaddr_any {
+                set_as_inaddr_any(socket);
+                tracing::debug!("binding {} to INADDR_ANY", original_ip.as_ref().unwrap(),);
+            }
+            if socket.port() == 0 {
+                socket.set_port(next_allowed_port(socket.ip().clone())?);
+            }
+        }
+        _ => {
+            if use_inaddr_any {
+                tracing::debug!(
+                    "can only bind to INADDR_ANY for TCP; got transport {}, addr {}",
+                    serve_addr.transport(),
+                    serve_addr
+                );
+            }
+        }
+    };
+
+    let (mut bound, rx) = channel::serve(serve_addr)?;
+
+    // Restore the original IP address if we used INADDR_ANY.
+    match &mut bound {
+        ChannelAddr::Tcp(socket) => {
+            if use_inaddr_any {
+                socket.set_ip(original_ip.unwrap());
+            }
+        }
+        _ => (),
+    }
+
+    Ok((bound, rx))
 }
 
 enum AllowedPorts {
