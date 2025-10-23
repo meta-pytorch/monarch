@@ -146,6 +146,15 @@ books_path = os.path.abspath("../../books")
 # Configure Sphinx to include the books directory
 exclude_patterns = []  # Reset exclude_patterns to ensure books are included
 
+
+sitemap_locales = [None]
+sitemap_excludes = [
+    "search.html",
+    "genindex.html",
+]
+sitemap_url_scheme = "{link}"
+
+
 html_extra_path = ["../../target/doc"]
 html_static_path = ["_static"]
 
