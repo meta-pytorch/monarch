@@ -107,6 +107,8 @@ html_theme_options = {
     "navbar_center": "navbar-nav",
 }
 
+html_favicon = "_static/torch-monarch-icons.svg"
+
 html_sidebars = {
     "generated/examples/getting_started": [],
     "rust-api": [],
