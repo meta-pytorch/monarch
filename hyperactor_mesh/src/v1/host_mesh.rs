@@ -225,6 +225,8 @@ impl HostMesh {
     /// and to ensure that it is reached unconditionally.
     ///
     /// This is intended for testing, development, examples.
+    ///
+    /// TODO: fix up ownership
     pub async fn local() -> v1::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
             let err = boot.bootstrap().await;
@@ -248,6 +250,44 @@ impl HostMesh {
         let host = HostRef(addr);
         let host_mesh_ref =
             HostMeshRef::new(Name::new("local"), extent!(hosts = 1).into(), vec![host])?;
+        Ok(HostMesh::take(host_mesh_ref))
+    }
+
+    /// Create a new process-based host mesh. Each host is represented by a local process,
+    /// which manages its set of procs. This is not a true host mesh the sense that each host
+    /// is not independent. The intent of `process` is for testing, examples, and experimentation.
+    ///
+    /// The bootstrap command is used to bootstrap both hosts and processes, thus it should be
+    /// a command that reaches [`crate::bootstrap_or_die`]. `process` is itself a valid bootstrap
+    /// entry point; thus using `BootstrapCommand::current` works correctly as long as `process`
+    /// is called early in the lifecycle of the process and reached unconditionally.
+    ///
+    /// TODO: thread through ownership
+    pub async fn process(extent: Extent, command: BootstrapCommand) -> v1::Result<HostMesh> {
+        if let Ok(Some(boot)) = Bootstrap::get_from_env() {
+            let err = boot.bootstrap().await;
+            tracing::error!("failed to bootstrap process host mesh process: {}", err);
+            std::process::exit(1);
+        }
+
+        let transport = config::global::get_cloned(DEFAULT_TRANSPORT);
+        let mut hosts = Vec::with_capacity(extent.num_ranks());
+        for _ in 0..extent.num_ranks() {
+            // Note: this can be racy. Possibly we should have a callback channel.
+            let addr = transport.any();
+            let bootstrap = Bootstrap::Host {
+                addr: addr.clone(),
+                command: Some(command.clone()),
+                config: Some(config::global::attrs()),
+            };
+
+            let mut cmd = command.new();
+            bootstrap.to_env(&mut cmd);
+            cmd.spawn()?;
+            hosts.push(HostRef(addr));
+        }
+
+        let host_mesh_ref = HostMeshRef::new(Name::new("process"), extent.into(), hosts)?;
         Ok(HostMesh::take(host_mesh_ref))
     }
 

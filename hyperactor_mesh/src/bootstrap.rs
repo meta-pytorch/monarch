@@ -1357,6 +1357,22 @@ impl BootstrapCommand {
         })
     }
 
+    /// Create a new `Command` reflecting this bootstrap command
+    /// configuration.
+    pub fn new(&self) -> Command {
+        let mut cmd = Command::new(&self.program);
+        if let Some(arg0) = &self.arg0 {
+            cmd.arg0(arg0);
+        }
+        for arg in &self.args {
+            cmd.arg(arg);
+        }
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
+        cmd
+    }
+
     /// Bootstrap command used for testing, invoking the Buck-built
     /// `monarch/hyperactor_mesh/bootstrap` binary.
     ///
@@ -1672,16 +1688,7 @@ impl ProcManager for BootstrapProcManager {
             callback_addr,
             config: Some(config.client_config_override),
         };
-        let mut cmd = Command::new(&self.command.program);
-        if let Some(arg0) = &self.command.arg0 {
-            cmd.arg0(arg0);
-        }
-        for arg in &self.command.args {
-            cmd.arg(arg);
-        }
-        for (k, v) in &self.command.env {
-            cmd.env(k, v);
-        }
+        let mut cmd = self.command.new();
         cmd.env(
             "HYPERACTOR_MESH_BOOTSTRAP_MODE",
             mode.to_env_safe_string()

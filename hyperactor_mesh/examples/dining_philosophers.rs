@@ -23,6 +23,7 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::context;
+use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
@@ -233,6 +234,12 @@ impl Waiter {
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
     hyperactor_telemetry::initialize_logging_for_test();
+
+    // Option: run as a local process mesh
+    // let host_mesh = HostMesh::process(extent!(hosts = 1), BootstrapCommand::current().unwrap())
+    //     .await
+    //     .unwrap();
+
     let host_mesh = HostMesh::local().await?;
 
     let group_size = 5;
