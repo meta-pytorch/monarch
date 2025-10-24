@@ -366,8 +366,8 @@ fn actor_state_to_supervision_events(
     let events = match state.status {
         // If the actor was killed, it might not have a Failed status
         // or supervision events, and it can't tell us which rank
-        // it was.
         resource::Status::NotExist | resource::Status::Stopped | resource::Status::Timeout(_) => {
+        // it was.
             if !events.is_empty() {
                 events
             } else {
