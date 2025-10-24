@@ -258,6 +258,9 @@ class ProcMesh(MeshTrait):
 
             await pm._logging_manager.init(hy_proc_mesh, stream_log_to_client)
 
+            # If the user has passed the setup lambda, we need to call
+            # it here before any of the other python actors are spawned so
+            # that the environment variables are set up before cuda init.
             if setup_actor is not None:
                 await setup_actor.setup.call()
 
@@ -267,9 +270,9 @@ class ProcMesh(MeshTrait):
         if setup is not None:
             from monarch._src.actor.proc_mesh import SetupActor  # noqa
 
-            # If the user has passed the setup lambda, we need to call
-            # it here before any of the other actors are spawned so that
-            # the environment variables are set up before cuda init.
+            # The SetupActor needs to be spawned outside of `task` for now,
+            # since spawning a python actor requires a blocking call to
+            # pickle the proc mesh, and we can't do that from the tokio runtime.
             setup_actor = pm._spawn_nonblocking_on(
                 hy_proc_mesh, "setup", SetupActor, setup
             )
@@ -402,8 +405,9 @@ class ProcMesh(MeshTrait):
         instance = context().actor_instance._as_rust()
 
         async def _stop_nonblocking(instance: HyInstance) -> None:
+            pm = await self._proc_mesh
             await PythonTask.spawn_blocking(lambda: self._logging_manager.flush())
-            await (await self._proc_mesh).stop_nonblocking(instance)
+            await pm.stop_nonblocking(instance)
             self._stopped = True
 
         return Future(coro=_stop_nonblocking(instance))
