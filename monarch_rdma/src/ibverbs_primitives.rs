@@ -135,19 +135,19 @@ pub struct IbverbsConfig {
 }
 
 /// Default RDMA parameters below are based on common values from rdma-core examples
-/// (e.g. rc_pingpong). For high-performance or production use, consider tuning
-/// based on ibv_query_device() results and workload characteristics.
+/// For high-performance or production use, consider tuning
+/// based on ibv_query_device() results and workload characteristics
 impl Default for IbverbsConfig {
     fn default() -> Self {
         Self {
             device: RdmaDevice::default(),
-            cq_entries: 256,
+            cq_entries: 1024,
             port_num: 1,
             gid_index: 3,
-            max_send_wr: 128,
-            max_recv_wr: 128,
-            max_send_sge: 32,
-            max_recv_sge: 32,
+            max_send_wr: 512,
+            max_recv_wr: 512,
+            max_send_sge: 30,
+            max_recv_sge: 30,
             path_mtu: rdmaxcel_sys::IBV_MTU_4096,
             retry_cnt: 7,
             rnr_retry: 7,
