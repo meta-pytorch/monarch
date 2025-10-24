@@ -127,7 +127,8 @@ typedef enum {
   RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED =
       -12, // Failed to get CUDA device attribute
   RDMAXCEL_CUDA_GET_DEVICE_FAILED = -13, // Failed to get CUDA device handle
-  RDMAXCEL_BUFFER_TOO_SMALL = -14 // Output buffer too small
+  RDMAXCEL_BUFFER_TOO_SMALL = -14, // Output buffer too small
+  RDMAXCEL_QUERY_DEVICE_FAILED = -15 // Failed to query device attributes
 } rdmaxcel_error_code_t;
 
 // Function to get error message string
