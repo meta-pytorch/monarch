@@ -81,7 +81,7 @@ class RDMATest(Actor):
         self.size_data = []
 
     @endpoint
-    def set_other_actor(self, other_actor):
+    async def set_other_actor(self, other_actor):
         self.other_actor = other_actor
 
     @endpoint
