@@ -24,6 +24,7 @@ fn main() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
     println!("cargo:rerun-if-changed=src/rdmaxcel.c");
+    println!("cargo:rerun-if-changed=src/rdmaxcel.cpp");
 
     // Validate CUDA installation and get CUDA home path
     let cuda_home = match build_utils::validate_cuda_installation() {
