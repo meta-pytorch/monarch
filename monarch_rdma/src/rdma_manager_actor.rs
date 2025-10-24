@@ -281,6 +281,9 @@ impl RdmaManagerActor {
             anyhow::anyhow!("could not create domain for device {}: {}", device_name, e)
         })?;
 
+        // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
+        crate::print_device_info_if_debug_enabled(domain.context);
+
         // Create loopback QP for this domain
         let mut loopback_qp = RdmaQueuePair::new(domain.context, domain.pd, self.config.clone())
             .map_err(|e| {

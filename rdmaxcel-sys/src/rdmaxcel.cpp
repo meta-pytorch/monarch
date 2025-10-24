@@ -436,42 +436,106 @@ int deregister_segments() {
   return 0; // Success
 }
 
+// Debug: Print comprehensive device attributes
+void rdmaxcel_print_device_info(struct ibv_context* context) {
+  if (!context) {
+    fprintf(stderr, "[RdmaXcel] Error: NULL context provided\n");
+    return;
+  }
+
+  struct ibv_device_attr dev_attr;
+  if (ibv_query_device(context, &dev_attr) != 0) {
+    fprintf(stderr, "[RdmaXcel] Error: Failed to query device attributes\n");
+    return;
+  }
+
+  fprintf(
+      stderr,
+      "\n[RdmaXcel] ==================== Device Attributes ====================\n");
+  fprintf(
+      stderr,
+      "[RdmaXcel] Firmware: %s, Vendor: 0x%x (Part ID: %u)\n",
+      dev_attr.fw_ver,
+      dev_attr.vendor_id,
+      dev_attr.vendor_part_id);
+  fprintf(
+      stderr,
+      "[RdmaXcel] Max MR size: %.2f GB, Page size cap: 0x%llx\n",
+      (double)dev_attr.max_mr_size / (1024.0 * 1024.0 * 1024.0),
+      (unsigned long long)dev_attr.page_size_cap);
+  fprintf(
+      stderr,
+      "[RdmaXcel] Queue Pairs: Max QP=%d, Max QP WR=%d, Max SGE=%d\n",
+      dev_attr.max_qp,
+      dev_attr.max_qp_wr,
+      dev_attr.max_sge);
+  fprintf(
+      stderr,
+      "[RdmaXcel] Completion Queues: Max CQ=%d, Max CQE=%d\n",
+      dev_attr.max_cq,
+      dev_attr.max_cqe);
+  fprintf(
+      stderr,
+      "[RdmaXcel] Memory: Max MR=%d, Max PD=%d\n",
+      dev_attr.max_mr,
+      dev_attr.max_pd);
+  fprintf(
+      stderr,
+      "[RdmaXcel] RDMA Ops: Max QP RD atom=%d, Max QP init RD atom=%d\n",
+      dev_attr.max_qp_rd_atom,
+      dev_attr.max_qp_init_rd_atom);
+  fprintf(
+      stderr,
+      "[RdmaXcel] Shared Receive: Max SRQ=%d, Max SRQ WR=%d, Max SRQ SGE=%d\n",
+      dev_attr.max_srq,
+      dev_attr.max_srq_wr,
+      dev_attr.max_srq_sge);
+  fprintf(
+      stderr,
+      "[RdmaXcel] Physical ports: %u, Max pkeys: %u\n",
+      dev_attr.phys_port_cnt,
+      dev_attr.max_pkeys);
+  fprintf(
+      stderr,
+      "[RdmaXcel] ==================================================================\n\n");
+}
+
 const char* rdmaxcel_error_string(int error_code) {
   switch (error_code) {
     case RDMAXCEL_SUCCESS:
-      return "Success";
+      return "[RdmaXcel] Success";
     case RDMAXCEL_INVALID_PARAMS:
-      return "Invalid parameters provided";
+      return "[RdmaXcel] Invalid parameters provided";
     case RDMAXCEL_MR_REGISTRATION_FAILED:
-      return "Memory region registration failed during compaction";
+      return "[RdmaXcel] Memory region registration failed during compaction";
     case RDMAXCEL_DMABUF_HANDLE_FAILED:
-      return "Failed to get dmabuf handle for CUDA memory region";
+      return "[RdmaXcel] Failed to get dmabuf handle for CUDA memory region";
     case RDMAXCEL_MR_REG_FAILED:
-      return "Memory region registration failed in register_segments";
+      return "[RdmaXcel] Memory region registration failed in register_segments";
     case RDMAXCEL_MEMORY_BINDING_FAILED:
-      return "Memory binding failed - hardware limit exceeded or MLX5 constraint";
+      return "[RdmaXcel] Memory binding failed - hardware limit exceeded or MLX5 constraint";
     case RDMAXCEL_QP_EX_FAILED:
-      return "Failed to get extended queue pair (ibv_qp_to_qp_ex)";
+      return "[RdmaXcel] Failed to get extended queue pair (ibv_qp_to_qp_ex)";
     case RDMAXCEL_MLX5DV_QP_EX_FAILED:
-      return "Failed to get MLX5DV extended queue pair (mlx5dv_qp_ex_from_ibv_qp_ex)";
+      return "[RdmaXcel] Failed to get MLX5DV extended queue pair (mlx5dv_qp_ex_from_ibv_qp_ex)";
     case RDMAXCEL_MKEY_CREATE_FAILED:
-      return "Failed to create MLX5 memory key (mlx5dv_create_mkey)";
+      return "[RdmaXcel] Failed to create MLX5 memory key (mlx5dv_create_mkey)";
     case RDMAXCEL_WR_COMPLETE_FAILED:
-      return "Work request completion failed (ibv_wr_complete)";
+      return "[RdmaXcel] Work request completion failed (ibv_wr_complete)";
     case RDMAXCEL_WC_STATUS_FAILED:
-      return "Work completion status failed - memory registration unsuccessful";
+      return "[RdmaXcel] Work completion status failed - memory registration unsuccessful";
     case RDMAXCEL_MKEY_REG_LIMIT:
-      return "mkey registration failed - segment size > 4 GiB or SGL max exceeded";
+      return "[RdmaXcel] mkey registration failed - segment size > 4 GiB or SGL max exceeded";
     case RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED:
-      return "Failed to get CUDA device attribute";
+      return "[RdmaXcel] Failed to get CUDA device attribute";
     case RDMAXCEL_CUDA_GET_DEVICE_FAILED:
-      return "Failed to get CUDA device handle";
+      return "[RdmaXcel] Failed to get CUDA device handle";
     case RDMAXCEL_BUFFER_TOO_SMALL:
-      return "Output buffer too small";
+      return "[RdmaXcel] Output buffer too small";
     case RDMAXCEL_QUERY_DEVICE_FAILED:
-      return "Failed to query device attributes";
+      return "[RdmaXcel] Failed to query device attributes";
     default:
-      return "Unknown RDMAXCEL error code";
+      return "[RdmaXcel] Unknown error code";
   }
 }
 

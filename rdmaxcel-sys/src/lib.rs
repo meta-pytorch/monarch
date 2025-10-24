@@ -246,4 +246,7 @@ unsafe extern "C" {
         pci_addr_out: *mut std::os::raw::c_char,
         pci_addr_size: usize,
     ) -> std::os::raw::c_int;
+
+    /// Debug: Print comprehensive device attributes
+    pub fn rdmaxcel_print_device_info(context: *mut ibv_context);
 }

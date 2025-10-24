@@ -131,7 +131,8 @@ typedef enum {
   RDMAXCEL_QUERY_DEVICE_FAILED = -15 // Failed to query device attributes
 } rdmaxcel_error_code_t;
 
-// Function to get error message string
+// Error/Debugging functions
+void rdmaxcel_print_device_info(struct ibv_context* context);
 const char* rdmaxcel_error_string(int error_code);
 
 // Active segment tracking functions (implemented in C++)
