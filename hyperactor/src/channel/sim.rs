@@ -277,10 +277,15 @@ pub(crate) struct SimRx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
-    fn try_post(&self, message: M, _return_handle: oneshot::Sender<M>) -> Result<(), SendError<M>> {
+    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
         let data = match Serialized::serialize(&message) {
             Ok(data) => data,
-            Err(err) => return Err(SendError(err.into(), message)),
+            Err(err) => {
+                if return_channel.send(SendError(err.into(), message)).is_err() {
+                    tracing::warn!("Failed to send error to return channel");
+                }
+                return;
+            }
         };
 
         let envelope = (&message as &dyn Any)
@@ -297,16 +302,24 @@ impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
                     handle.sample_latency(sender.proc_id(), dest.proc_id()),
                 ));
 
-                match &self.src_addr {
+                let result = match &self.src_addr {
                     Some(_) if self.client => handle.send_scheduled_event(ScheduledEvent {
                         event,
                         time: RealClock.now(),
                     }),
                     _ => handle.send_event(event),
+                };
+                if let Err(err) = result {
+                    if return_channel.send(SendError(err.into(), message)).is_err() {
+                        tracing::warn!("Failed to send error to return channel");
+                    }
                 }
             }
-            .map_err(|err: SimNetError| SendError(ChannelError::from(err), message)),
-            Err(err) => Err(SendError(ChannelError::from(err), message)),
+            Err(err) => {
+                if return_channel.send(SendError(err.into(), message)).is_err() {
+                    tracing::warn!("Failed to send error to return channel");
+                }
+            }
         }
     }
 
@@ -430,7 +443,7 @@ mod tests {
             );
 
             let msg = MessageEnvelope::new(sender, PortId(dest, 0), data.clone(), Attrs::new());
-            tx.try_post(msg, oneshot::channel().0).unwrap();
+            tx.post(msg);
             assert_eq!(*rx.recv().await.unwrap().data(), data);
         }
 
@@ -509,16 +522,12 @@ mod tests {
         );
 
         // This message will be delievered at simulator time = 100 seconds
-        tx.try_post(
-            MessageEnvelope::new(
-                controller,
-                PortId(dest, 0),
-                Serialized::serialize(&456).unwrap(),
-                Attrs::new(),
-            ),
-            oneshot::channel().0,
-        )
-        .unwrap();
+        tx.post(MessageEnvelope::new(
+            controller,
+            PortId(dest, 0),
+            Serialized::serialize(&456).unwrap(),
+            Attrs::new(),
+        ));
         {
             // Allow simnet to run
             tokio::task::yield_now().await;
@@ -594,29 +603,19 @@ mod tests {
         tokio::time::advance(tokio::time::Duration::from_secs(5)).await;
         {
             // Send client message
-            client_tx
-                .try_post(
-                    MessageEnvelope::new(
-                        client.clone(),
-                        PortId(dest.clone(), 0),
-                        Serialized::serialize(&456).unwrap(),
-                        Attrs::new(),
-                    ),
-                    oneshot::channel().0,
-                )
-                .unwrap();
+            client_tx.post(MessageEnvelope::new(
+                client.clone(),
+                PortId(dest.clone(), 0),
+                Serialized::serialize(&456).unwrap(),
+                Attrs::new(),
+            ));
             // Send system message
-            controller_tx
-                .try_post(
-                    MessageEnvelope::new(
-                        controller.clone(),
-                        PortId(dest.clone(), 0),
-                        Serialized::serialize(&456).unwrap(),
-                        Attrs::new(),
-                    ),
-                    oneshot::channel().0,
-                )
-                .unwrap();
+            controller_tx.post(MessageEnvelope::new(
+                controller.clone(),
+                PortId(dest.clone(), 0),
+                Serialized::serialize(&456).unwrap(),
+                Attrs::new(),
+            ));
             // Allow some time for simnet to run
             RealClock.sleep(tokio::time::Duration::from_secs(1)).await;
         }

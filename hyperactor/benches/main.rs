@@ -150,9 +150,7 @@ fn bench_message_rates(c: &mut Criterion) {
                             Vec::with_capacity(rate as usize);
                         for _ in 0..rate {
                             let (return_sender, return_receiver) = oneshot::channel();
-                            if let Err(e) = tx.try_post(message.clone(), return_sender) {
-                                panic!("Failed to send message: {:?}", e);
-                            }
+                            tx.try_post(message.clone(), return_sender);
 
                             let handle = tokio::spawn(async move {
                                 _ = tokio::time::timeout(
