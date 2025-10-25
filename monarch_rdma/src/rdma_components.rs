@@ -66,6 +66,7 @@ use crate::ibverbs_primitives::IbvWc;
 use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaOperation;
 use crate::ibverbs_primitives::RdmaQpInfo;
+use crate::ibverbs_primitives::mlx5dv_supported;
 
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct DoorBell {
@@ -530,6 +531,7 @@ impl RdmaQueuePair {
                 config.max_recv_wr.try_into().unwrap(),
                 config.max_send_sge.try_into().unwrap(),
                 config.max_recv_sge.try_into().unwrap(),
+                mlx5dv_supported() as u8,
             );
 
             if qp.is_null() {

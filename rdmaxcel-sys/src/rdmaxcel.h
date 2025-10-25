@@ -69,7 +69,8 @@ struct ibv_qp* create_qp(
     int max_send_wr,
     int max_recv_wr,
     int max_send_sge,
-    int max_recv_sge);
+    int max_recv_sge,
+    uint8_t is_extended);
 
 struct mlx5dv_qp* create_mlx5dv_qp(struct ibv_qp* qp);
 

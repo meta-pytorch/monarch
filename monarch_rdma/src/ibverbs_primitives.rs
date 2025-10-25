@@ -650,6 +650,10 @@ pub fn mlx5dv_supported() -> bool {
 }
 
 fn mlx5dv_supported_impl() -> bool {
+    if std::env::var("MONARCH_RDMA_MLX5DV_DISABLED").is_ok() {
+        eprintln!("mlx5dv support disabled by MONARCH_RDMA_MLX5DV_DISABLED");
+        return false;
+    }
     // SAFETY: We are calling C functions from libibverbs and libmlx5.
     unsafe {
         let mut num_devices = 0;
@@ -733,7 +737,7 @@ fn ibverbs_supported_impl() -> bool {
 ///
 /// `true` if both ibverbs devices and mlx5dv extensions are available, `false` otherwise.
 pub fn rdma_supported() -> bool {
-    ibverbs_supported() && mlx5dv_supported()
+    ibverbs_supported()
 }
 
 /// Represents a view of a memory region that can be registered with an RDMA device.
@@ -1107,25 +1111,5 @@ mod tests {
         // The test just verifies the function doesn't panic
         let mlx5dv_support = mlx5dv_supported();
         println!("mlx5dv_supported: {}", mlx5dv_support);
-    }
-
-    #[test]
-    fn test_rdma_supported_combines_checks() {
-        // This test verifies that rdma_supported() properly combines both checks
-        let ibverbs_support = ibverbs_supported();
-        let mlx5dv_support = mlx5dv_supported();
-        let rdma_support = rdma_supported();
-
-        // rdma_supported should be true only if both checks pass
-        assert_eq!(
-            rdma_support,
-            ibverbs_support && mlx5dv_support,
-            "rdma_supported should equal (ibverbs_supported && mlx5dv_supported)"
-        );
-
-        println!(
-            "ibverbs_supported: {}, mlx5dv_supported: {}, rdma_supported: {}",
-            ibverbs_support, mlx5dv_support, rdma_support
-        );
     }
 }

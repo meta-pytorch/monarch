@@ -48,6 +48,7 @@ use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaQpInfo;
 use crate::ibverbs_primitives::ibverbs_supported;
+use crate::ibverbs_primitives::mlx5dv_supported;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
@@ -120,7 +121,7 @@ pub enum RdmaManagerMessage {
         reply: OncePortRef<RdmaQpInfo>,
     },
     ReleaseQueuePair {
-        /// `other` - The ActorId to release queue pair for  
+        /// `other` - The ActorId to release queue pair for
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
@@ -146,8 +147,9 @@ pub struct RdmaManagerActor {
 
     config: IbverbsConfig,
 
-    // Flag indicating PyTorch CUDA allocator compatibility
+    // Flag indicating whether we register all memory regions allocated by the PyTorch CUDA allocator
     // True if both C10 CUDA allocator is enabled AND expandable segments are enabled
+    // AND mlx5dv is supported (required for merging segments)
     pt_cuda_alloc: bool,
 
     // Map of unique RdmaMemoryRegionView to ibv_mr*.  In case of cuda w/ pytorch its -1
@@ -527,7 +529,8 @@ impl Actor for RdmaManagerActor {
         let mut config = params.unwrap_or_default();
         tracing::debug!("rdma is enabled, config device hint: {}", config.device);
 
-        let pt_cuda_alloc = crate::rdma_components::pt_cuda_allocator_compatibility();
+        let pt_cuda_alloc =
+            crate::rdma_components::pt_cuda_allocator_compatibility() && mlx5dv_supported();
 
         // check config and hardware support align
         if config.use_gpu_direct {
