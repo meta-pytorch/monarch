@@ -107,6 +107,8 @@ html_theme_options = {
     "navbar_center": "navbar-nav",
 }
 
+html_favicon = "_static/torch-monarch-icons.svg"
+
 html_sidebars = {
     "generated/examples/getting_started": [],
     "rust-api": [],
@@ -145,6 +147,16 @@ books_path = os.path.abspath("../../books")
 
 # Configure Sphinx to include the books directory
 exclude_patterns = []  # Reset exclude_patterns to ensure books are included
+
+html_baseurl = "https://meta-pytorch.org/monarch/"
+
+sitemap_locales = [None]
+sitemap_excludes = [
+    "search.html",
+    "genindex.html",
+]
+sitemap_url_scheme = "{link}"
+
 
 html_extra_path = ["../../target/doc"]
 html_static_path = ["_static"]
