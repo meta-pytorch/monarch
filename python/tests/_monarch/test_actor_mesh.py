@@ -26,9 +26,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocSpec,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
-from monarch._src.actor.allocator import LocalAllocator
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcessAllocator
-
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
@@ -58,7 +56,7 @@ def run_on_tokio(
 
 async def alloc() -> Alloc:
     spec = AllocSpec(AllocConstraints(), replicas=3, hosts=8, gpus=8)
-    allocator = LocalAllocator()
+    allocator = monarch.LocalAllocator()
     return await allocator.allocate_nonblocking(spec)
 
 

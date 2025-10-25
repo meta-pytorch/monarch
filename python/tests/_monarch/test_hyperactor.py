@@ -12,6 +12,8 @@ import signal
 import time
 from typing import Any, Callable, Coroutine
 
+import monarch
+
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
     AllocConstraints,
     AllocSpec,
@@ -20,8 +22,6 @@ from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-
-from monarch._src.actor.allocator import LocalAllocator
 from monarch._src.actor.pickle import flatten, unflatten
 
 
@@ -64,7 +64,7 @@ def test_no_hang_on_shutdown() -> None:
 
 async def test_allocator() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
-    allocator = LocalAllocator()
+    allocator = monarch.LocalAllocator()
     _ = allocator.allocate(spec)
 
 
@@ -81,7 +81,7 @@ def _python_task_test(
 @_python_task_test
 async def test_proc_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
-    allocator = LocalAllocator()
+    allocator = monarch.LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
     assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
@@ -90,7 +90,7 @@ async def test_proc_mesh() -> None:
 @_python_task_test
 async def test_actor_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
-    allocator = LocalAllocator()
+    allocator = monarch.LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
     proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
