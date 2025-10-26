@@ -24,6 +24,10 @@ fn main() {
             "-I{}/include",
             build_utils::find_cuda_home().unwrap()
         ))
+        .clang_arg(format!(
+            "-I{}/include",
+            build_utils::find_nccl_home().unwrap()
+        ))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Communicator creation and management
         .allowlist_function("ncclGetLastError")
@@ -113,6 +117,7 @@ fn main() {
         .expect("Couldn't write bindings!");
 
     println!("cargo::rustc-link-lib=nccl");
+    println!("cargo::rustc-link-search=native={}/lib", build_utils::find_nccl_home().unwrap());
     println!("cargo::rustc-cfg=cargo");
     println!("cargo::rustc-check-cfg=cfg(cargo)");
 }
