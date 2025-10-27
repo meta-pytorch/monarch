@@ -480,12 +480,12 @@ pub enum ActorStatus {
 
 impl ActorStatus {
     /// Tells whether the status is a terminal state.
-    pub(crate) fn is_terminal(&self) -> bool {
+    pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Stopped | Self::Failed(_))
     }
 
     /// Tells whether the status represents a failure.
-    pub(crate) fn is_failed(&self) -> bool {
+    pub fn is_failed(&self) -> bool {
         matches!(self, Self::Failed(_))
     }
 

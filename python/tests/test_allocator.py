@@ -173,8 +173,6 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
             "TEST_ENV_VAR_2": "value_2",
             "TEST_ENV_VAR_3": "value_3",
         }
-        # If the proc mesh is stopped, don't crash the process.
-        monarch.actor.unhandled_fault_hook = lambda failure: None
 
         def setup_multiple_env_vars() -> None:
             for name, value in env_vars.items():
@@ -184,18 +182,16 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
         allocator = LocalAllocator()
 
         proc_mesh = proc_mesh_from_alloc(allocator, spec, setup=setup_multiple_env_vars)
-        try:
-            actor = proc_mesh.spawn("env_check", EnvCheckActor)
+        actor = proc_mesh.spawn("env_check", EnvCheckActor)
 
-            for name, expected_value in env_vars.items():
-                actual_value = await actor.get_env_var.call_one(name)
-                self.assertEqual(
-                    actual_value,
-                    expected_value,
-                    f"Environment variable {name} was not set correctly",
-                )
-        finally:
-            await proc_mesh.stop()
+        for name, expected_value in env_vars.items():
+            actual_value = await actor.get_env_var.call_one(name)
+            self.assertEqual(
+                actual_value,
+                expected_value,
+                f"Environment variable {name} was not set correctly",
+            )
+        await proc_mesh.stop()
 
     async def test_setup_lambda_with_context_info(self) -> None:
         """Test that the setup lambda can access rank information"""
@@ -328,7 +324,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
     @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_allocate_2d_mesh(self) -> None:
-        monarch.actor.unhandled_fault_hook = lambda failure: None
         hosts = 2
         gpus = 4
         world_size = hosts * gpus
@@ -351,7 +346,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             self.assert_computed_world_size(values, world_size)
 
     async def test_stop_proc_mesh_blocking(self) -> None:
-        monarch.actor.unhandled_fault_hook = lambda failure: None
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
             allocator = RemoteAllocator(
@@ -546,7 +540,6 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
     @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_stacked_1d_meshes(self) -> None:
-        monarch.actor.unhandled_fault_hook = lambda failure: None
         # create two stacked actor meshes on the same host
         # each actor mesh running on separate process-allocators
 
