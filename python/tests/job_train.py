@@ -6,7 +6,7 @@
 
 # Directly import to avoid import issues in Buck
 from monarch._src.job.job import LocalJob
-from monarch.actor import this_host
+from monarch.actor import this_proc
 
 if __name__ == "__main__":
     job = LocalJob()
@@ -17,7 +17,7 @@ if __name__ == "__main__":
 
     # Wait until we know the hosts have finished initializing to avoid
     # fatal GIL release error.
-    this_host().initialized.get()
+    this_proc().initialized.get()
 
     print(
         f"batch_launched_hosts {getattr(state, 'batch_launched_hosts', None) is not None}"
