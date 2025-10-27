@@ -50,6 +50,12 @@ if __name__ == "__main__":
         default="true",
         help="Enable/disable PyTorch CUDA expandable segments (default: true)",
     )
+    parser.add_argument(
+        "--warmup-iterations",
+        type=int,
+        default=10,
+        help="Number of warmup iterations (default: 5)",
+    )
 
     args = parser.parse_args()
 
@@ -85,7 +91,7 @@ class RDMATest(Actor):
         self.other_actor = other_actor
 
     @endpoint
-    async def send(self) -> None:
+    async def send(self, is_warmup=False) -> None:
         shape = int(
             1024 * 1024 * self.size_mb / 4 * (0.5 * random.randint(1, 3))
         )  # Random size with +/- 50% variation based on user size
@@ -118,13 +124,14 @@ class RDMATest(Actor):
 
         # Store timing and size data in this actor
         size_elem = torch.numel(tensor) * tensor.element_size()
-        self.timing_data.append(elapsed)
-        self.size_data.append(size_elem)
+        if not is_warmup:
+            self.timing_data.append(elapsed)
+            self.size_data.append(size_elem)
         buffer_size = buffer.size()
         assert buffer_size == size_elem, f"{buffer_size=} != {size_elem=}"
 
         # Call recv - timing happens there
-        await self.other_actor.recv.call(buffer, tensor.shape, tensor.dtype)
+        await self.other_actor.recv.call(buffer, tensor.shape, tensor.dtype, is_warmup)
 
         # cleanup
         await buffer.drop()
@@ -132,7 +139,7 @@ class RDMATest(Actor):
         self.i += 1
 
     @endpoint
-    async def recv(self, rdma_buffer, shape, dtype):
+    async def recv(self, rdma_buffer, shape, dtype, is_warmup):
         # Create receiving tensor on the same device
         tensor = torch.rand(shape, dtype=dtype, device=self.device)
         byte_view = tensor.view(torch.uint8).flatten()
@@ -154,8 +161,9 @@ class RDMATest(Actor):
 
         # Store timing and size data in this actor
         size_elem = torch.numel(tensor) * tensor.element_size()
-        self.timing_data.append(elapsed)
-        self.size_data.append(size_elem)
+        if not is_warmup:
+            self.timing_data.append(elapsed)
+            self.size_data.append(size_elem)
 
     @endpoint
     async def print_statistics(self, calc_bwd: bool = False):
@@ -218,6 +226,7 @@ async def main(
     iterations: int = 100,
     operation: str = "write",
     size_mb: int = 64,
+    warmup_iterations: int = 10,
 ):
     # Adjust GPU allocation based on the device types
     device_0, device_1 = devices[0], devices[1]
@@ -234,6 +243,9 @@ async def main(
     actor_1 = mesh_1.spawn("rdma_test", RDMATest, device_1, operation, size_mb)
 
     await actor_0.set_other_actor.call(actor_1)
+
+    for i in range(warmup_iterations):
+        await actor_0.send.call(is_warmup=True)
 
     for i in range(iterations):
         await actor_0.send.call()
@@ -294,4 +306,12 @@ if __name__ == "__main__":
             )
             exit(1)
 
-    asyncio.run(main(validated_devices, args.iterations, args.operation, args.size))
+    asyncio.run(
+        main(
+            validated_devices,
+            args.iterations,
+            args.operation,
+            args.size,
+            args.warmup_iterations,
+        )
+    )
