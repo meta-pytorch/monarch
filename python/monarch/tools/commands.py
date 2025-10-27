@@ -211,6 +211,7 @@ def info(server_handle: str) -> Optional[ServerSpec]:
         scheduler=scheduler,
         namespace=namespace,
         ui_url=status.ui_url,
+        metadata=appdef.metadata,
     )
 
 

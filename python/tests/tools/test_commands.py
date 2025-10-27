@@ -175,6 +175,10 @@ class TestCommands(unittest.TestCase):
                         image="__unused__",
                     )
                 ],
+                metadata={
+                    "monarch/meshes/trainer/host_type": "gpu.medium",
+                    "monarch/meshes/trainer/gpus": "2",
+                },
             ),
             server_info,
         )
@@ -182,6 +186,14 @@ class TestCommands(unittest.TestCase):
         # node_d is node 0
         assert server_info
         self.assertEqual("node_d", server_info.host0("trainer"))
+
+        # verify metadata is correctly passed through
+        self.assertIn("monarch/meshes/trainer/host_type", server_info.metadata)
+        self.assertEqual(
+            server_info.metadata["monarch/meshes/trainer/host_type"], "gpu.medium"
+        )
+        self.assertIn("monarch/meshes/trainer/gpus", server_info.metadata)
+        self.assertEqual(server_info.metadata["monarch/meshes/trainer/gpus"], "2")
 
 
 UNUSED = "__UNUSED__"
