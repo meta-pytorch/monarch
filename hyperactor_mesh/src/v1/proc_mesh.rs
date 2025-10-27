@@ -646,7 +646,8 @@ impl ProcMeshRef {
                 }
             } else {
                 tracing::error!(
-                    "timeout waiting for a message from proc mesh agent in mesh: {}",
+                    "timeout waiting for a message after {:?} from proc mesh agent in mesh {}",
+                    timeout,
                     agent_mesh
                 );
                 // Timeout error, stop reading from the receiver and send back what we have so far,

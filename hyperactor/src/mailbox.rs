@@ -1509,7 +1509,14 @@ impl MailboxSender for Mailbox {
 
         match self.inner.ports.entry(envelope.dest().index()) {
             Entry::Vacant(_) => {
-                let err = DeliveryError::Unroutable("port not bound in mailbox".to_string());
+                let err = DeliveryError::Unroutable(format!(
+                    "port not bound in mailbox; port id: {}; message type: {}",
+                    envelope.dest().index(),
+                    envelope.data().typename().map_or_else(
+                        || format!("unregistered type hash {}", envelope.data().typehash()),
+                        |s| s.to_string(),
+                    )
+                ));
 
                 envelope.undeliverable(err, return_handle);
             }

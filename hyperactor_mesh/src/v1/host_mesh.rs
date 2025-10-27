@@ -854,7 +854,10 @@ impl HostMeshRef {
             } else {
                 // Timeout error, stop reading from the receiver and send back what we have so far,
                 // padding with failed states.
-                tracing::warn!("Timeout waiting for response from host mesh agent for proc_states");
+                tracing::warn!(
+                    "Timeout waiting for response from host mesh agent for proc_states after {:?}",
+                    timeout
+                );
                 let all_ranks = (0..num_ranks).collect::<HashSet<_>>();
                 let completed_ranks = states.iter().map(|(rank, _)| *rank).collect::<HashSet<_>>();
                 let mut leftover_ranks = all_ranks.difference(&completed_ranks).collect::<Vec<_>>();
