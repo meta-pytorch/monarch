@@ -1663,8 +1663,10 @@ impl ProcManager for BootstrapProcManager {
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
+        let (callback_addr, mut callback_rx) = channel::serve(
+            ChannelAddr::any(ChannelTransport::Unix),
+            &format!("BootstrapProcManager::spawn callback_addr: {}", &proc_id),
+        )?;
 
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
@@ -1925,7 +1927,8 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_INDEX_ENV, err))?
             .parse()?;
         let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
-        let (serve_addr, mut rx) = channel::serve(listen_addr)?;
+        let (serve_addr, mut rx) =
+            channel::serve(listen_addr, "bootstrap_v0_proc_mesh listen_addr")?;
         let tx = channel::dial(bootstrap_addr.clone())?;
 
         let (rtx, mut return_channel) = oneshot::channel();
@@ -1957,7 +1960,10 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             match the_msg? {
                 Allocator2Process::StartProc(proc_id, listen_transport) => {
                     let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone()).await?;
-                    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(listen_transport))?;
+                    let (proc_addr, proc_rx) = channel::serve(
+                        ChannelAddr::any(listen_transport),
+                        &format!("bootstrap_v0_proc_mesh proc_addr: {}", &proc_id,),
+                    )?;
                     let handle = proc.clone().serve(proc_rx);
                     drop(handle); // linter appeasement; it is safe to drop this future
                     tx.send(Process2Allocator(
@@ -2120,7 +2126,6 @@ mod tests {
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
-    use tokio::io::AsyncReadExt;
     use tokio::process::Command;
 
     use super::*;
@@ -2352,7 +2357,7 @@ mod tests {
 
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test").unwrap();
         let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
         proc.clone().serve(proc_rx);
         router.bind(id!(client[0]).into(), proc_addr.clone());
@@ -3192,7 +3197,8 @@ mod tests {
 
         // Serve a Unix channel as the "backend_addr" and hook it into
         // this test proc.
-        let (backend_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let (backend_addr, rx) =
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test").unwrap();
 
         // Route messages arriving on backend_addr into this test
         // proc's mailbox so the bootstrap child can reach the host

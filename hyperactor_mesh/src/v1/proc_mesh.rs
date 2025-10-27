@@ -296,7 +296,10 @@ impl ProcMesh {
         let proc = cx.instance().proc();
 
         // First make sure we can serve the proc:
-        let (proc_channel_addr, rx) = channel::serve(ChannelAddr::any(alloc.transport()))?;
+        let (proc_channel_addr, rx) = channel::serve(
+            ChannelAddr::any(alloc.transport()),
+            &format!("proc_channel_addr for {}", proc.proc_id()),
+        )?;
         proc.clone().serve(rx);
 
         let bind_allocated_procs = |router: &DialMailboxRouter| {

@@ -34,7 +34,6 @@ use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::TcpMode;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::context;
@@ -418,7 +417,7 @@ impl ProcActor {
         labels: HashMap<String, String>,
         lifecycle_mode: ProcLifecycleMode,
     ) -> Result<BootstrappedProc, anyhow::Error> {
-        let (local_addr, rx) = channel::serve(listen_addr)?;
+        let (local_addr, rx) = channel::serve(listen_addr, "bootstrap_for_proc")?;
         let mailbox_handle = proc.clone().serve(rx);
         let (state_tx, mut state_rx) = watch::channel(ProcState::AwaitingJoin);
 
@@ -877,6 +876,7 @@ mod tests {
     use hyperactor::channel;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
+    use hyperactor::channel::TcpMode;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::forward;

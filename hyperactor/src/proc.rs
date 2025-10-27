@@ -334,7 +334,7 @@ impl Proc {
 
     /// Create a new direct-addressed proc.
     pub async fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
-        let (addr, rx) = channel::serve(addr)?;
+        let (addr, rx) = channel::serve(addr, &format!("creating Proc::direct: {}", name))?;
         let proc_id = ProcId::Direct(addr, name);
         let proc = Self::new(proc_id, DialMailboxRouter::new().into_boxed());
         proc.clone().serve(rx);
@@ -347,7 +347,10 @@ impl Proc {
         name: String,
         default: BoxedMailboxSender,
     ) -> Result<Self, ChannelError> {
-        let (addr, rx) = channel::serve(addr)?;
+        let (addr, rx) = channel::serve(
+            addr,
+            &format!("creating Proc::direct_with_default: {}", name),
+        )?;
         let proc_id = ProcId::Direct(addr, name);
         let proc = Self::new(
             proc_id,

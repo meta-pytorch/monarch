@@ -63,7 +63,7 @@ impl Router {
             return Ok(addr.clone());
         }
 
-        let (addr, rx) = channel::serve(ChannelAddr::any(transport.clone()))?;
+        let (addr, rx) = channel::serve(ChannelAddr::any(transport.clone()), "Router::serve")?;
         self.router.clone().serve(rx);
         servers.insert(transport.clone(), addr.clone());
         Ok(addr)

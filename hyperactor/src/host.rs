@@ -64,7 +64,6 @@ use crate::Proc;
 use crate::ProcId;
 use crate::actor::Binds;
 use crate::actor::Referable;
-use crate::attrs::Attrs;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -135,7 +134,7 @@ impl<M: ProcManager> Host<M> {
         manager: M,
         addr: ChannelAddr,
     ) -> Result<(Self, MailboxServerHandle), HostError> {
-        let (frontend_addr, frontend_rx) = channel::serve(addr)?;
+        let (frontend_addr, frontend_rx) = channel::serve(addr, "host frontend")?;
 
         // We set up a cascade of routers: first, the outer router supports
         // sending to the the system proc, while the dial router manages dialed
@@ -144,7 +143,8 @@ impl<M: ProcManager> Host<M> {
 
         // Establish a backend channel on the preferred transport. We currently simply
         // serve the same router on both.
-        let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
+        let (backend_addr, backend_rx) =
+            channel::serve(ChannelAddr::any(manager.transport()), "host backend")?;
 
         // Set up a system proc. This is often used to manage the host itself.
         let service_proc_id = ProcId::Direct(frontend_addr.clone(), "service".to_string());
@@ -865,7 +865,10 @@ where
             proc_id.clone(),
             MailboxClient::dial(forwarder_addr)?.into_boxed(),
         );
-        let (proc_addr, rx) = channel::serve(ChannelAddr::any(transport))?;
+        let (proc_addr, rx) = channel::serve(
+            ChannelAddr::any(transport),
+            &format!("LocalProcManager spawning: {}", &proc_id),
+        )?;
         self.procs
             .lock()
             .await
@@ -1036,8 +1039,10 @@ where
         forwarder_addr: ChannelAddr,
         _config: (),
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
+        let (callback_addr, mut callback_rx) = channel::serve(
+            ChannelAddr::any(ChannelTransport::Unix),
+            &format!("ProcessProcManager spawning: {}", &proc_id),
+        )?;
 
         let mut cmd = Command::new(&self.program);
         cmd.env("HYPERACTOR_HOST_PROC_ID", proc_id.to_string());
@@ -1144,11 +1149,14 @@ where
 
     let agent_handle = spawn(proc.clone())
         .await
-        .map_err(|e| HostError::AgentSpawnFailure(proc_id, e))?;
+        .map_err(|e| HostError::AgentSpawnFailure(proc_id.clone(), e))?;
 
     // Finally serve the proc on the same transport as the backend address,
     // and call back.
-    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(backend_transport))?;
+    let (proc_addr, proc_rx) = channel::serve(
+        ChannelAddr::any(backend_transport),
+        &format!("proc addr of: {}", &proc_id),
+    )?;
     proc.clone().serve(proc_rx);
     channel::dial(callback_addr)?
         .send((proc_addr, agent_handle.bind::<A>()))

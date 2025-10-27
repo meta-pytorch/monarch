@@ -14,7 +14,6 @@
 use core::net::SocketAddr;
 use std::fmt;
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
@@ -35,7 +34,6 @@ use crate::Named;
 use crate::RemoteMessage;
 use crate::attrs::AttrValue;
 use crate::channel::sim::SimAddr;
-use crate::config;
 use crate::simnet::SimNetError;
 
 pub(crate) mod local;
@@ -842,8 +840,8 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 #[crate::instrument]
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
+    reason: &str,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
-    tracing::debug!(name = "serve", "serving channel address {}", addr);
     match addr {
         ChannelAddr::Tcp(addr) => {
             let (addr, rx) = net::tcp::serve::<M>(addr)?;
@@ -870,7 +868,15 @@ pub fn serve<M: RemoteMessage>(
             a
         ))),
     }
-    .map(|(addr, inner)| (addr, ChannelRx { inner }))
+    .map(|(addr, inner)| {
+        tracing::debug!(
+            name = "serve",
+            "serving channel address {} for {}",
+            addr,
+            reason
+        );
+        (addr, ChannelRx { inner })
+    })
 }
 
 /// Serve on the local address. The server is turned down
@@ -900,6 +906,7 @@ mod tests {
     use super::*;
     use crate::clock::Clock;
     use crate::clock::RealClock;
+    use crate::config;
 
     #[test]
     fn test_channel_addr() {
@@ -1044,7 +1051,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_connections() {
         for addr in ChannelTransport::all().map(ChannelAddr::any) {
-            let (listen_addr, mut rx) = crate::channel::serve::<u64>(addr).unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<u64>(addr, "test").unwrap();
 
             let mut sends: JoinSet<()> = JoinSet::new();
             for message in 0u64..100u64 {
@@ -1083,7 +1090,7 @@ mod tests {
                 continue;
             }
 
-            let (listen_addr, rx) = crate::channel::serve::<u64>(addr).unwrap();
+            let (listen_addr, rx) = crate::channel::serve::<u64>(addr, "test").unwrap();
 
             let tx = dial::<u64>(listen_addr).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
@@ -1132,7 +1139,7 @@ mod tests {
     #[cfg_attr(not(feature = "fb"), ignore)]
     async fn test_dial_serve() {
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr, "test").unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
@@ -1152,7 +1159,7 @@ mod tests {
         );
         let _guard2 = config.override_key(crate::config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr, "test").unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();
             tx.send(123).await.unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
