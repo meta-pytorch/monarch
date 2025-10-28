@@ -394,16 +394,17 @@ impl Proc {
 
     fn handle_supervision_event(&self, event: ActorSupervisionEvent) {
         let result = match self.state().supervision_coordinator_port.get() {
-            Some(port) => port.send(event).map_err(anyhow::Error::from),
+            Some(port) => port.send(event.clone()).map_err(anyhow::Error::from),
             None => Err(anyhow::anyhow!(
                 "coordinator port is not set for proc {}",
-                self.proc_id()
+                self.proc_id(),
             )),
         };
         if let Err(err) = result {
             tracing::error!(
-                "proc {}: could not propagate supervision event: {:?}: crashing",
+                "proc {}: could not propagate supervision event {} due to error: {:?}: crashing",
                 self.proc_id(),
+                event,
                 err
             );
 
