@@ -182,18 +182,16 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
         allocator = LocalAllocator()
 
         proc_mesh = proc_mesh_from_alloc(allocator, spec, setup=setup_multiple_env_vars)
-        try:
-            actor = proc_mesh.spawn("env_check", EnvCheckActor)
+        actor = proc_mesh.spawn("env_check", EnvCheckActor)
 
-            for name, expected_value in env_vars.items():
-                actual_value = await actor.get_env_var.call_one(name)
-                self.assertEqual(
-                    actual_value,
-                    expected_value,
-                    f"Environment variable {name} was not set correctly",
-                )
-        finally:
-            await proc_mesh.stop()
+        for name, expected_value in env_vars.items():
+            actual_value = await actor.get_env_var.call_one(name)
+            self.assertEqual(
+                actual_value,
+                expected_value,
+                f"Environment variable {name} was not set correctly",
+            )
+        await proc_mesh.stop()
 
     async def test_setup_lambda_with_context_info(self) -> None:
         """Test that the setup lambda can access rank information"""
