@@ -401,11 +401,6 @@ impl LogSender for LocalLogSender {
                 output_target: target,
                 payload: Serialized::serialize(&payload)?,
             });
-        } else {
-            tracing::debug!(
-                "log sender {} is not active, skip sending log",
-                self.tx.addr()
-            )
         }
 
         Ok(())
@@ -416,11 +411,6 @@ impl LogSender for LocalLogSender {
         if TxStatus::Active == *self.status.borrow() {
             // Do not use tx.send, it will block the allocator as the child process state is unknown.
             self.tx.post(LogMessage::Flush { sync_version: None });
-        } else {
-            tracing::debug!(
-                "log sender {} is not active, skip sending flush message",
-                self.tx.addr()
-            );
         }
         Ok(())
     }
