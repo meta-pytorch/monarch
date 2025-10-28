@@ -22,7 +22,7 @@ use monarch_hyperactor::v1::proc_mesh::PyProcMesh as PyProcMeshV1;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
-use monarch_rdma::ibverbs_supported;
+use monarch_rdma::rdma_supported;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyValueError;
@@ -82,10 +82,8 @@ impl PyRdmaBuffer {
         proc_id: String,
         client: PyInstance,
     ) -> PyResult<PyPythonTask> {
-        if !ibverbs_supported() {
-            return Err(PyException::new_err(
-                "ibverbs is not supported on this system",
-            ));
+        if !rdma_supported() {
+            return Err(PyException::new_err("RDMA is not supported on this system"));
         }
         PyPythonTask::new(create_rdma_buffer(
             addr,
@@ -104,10 +102,8 @@ impl PyRdmaBuffer {
         proc_id: String,
         client: PyInstance,
     ) -> PyResult<PyRdmaBuffer> {
-        if !ibverbs_supported() {
-            return Err(PyException::new_err(
-                "ibverbs is not supported on this system",
-            ));
+        if !rdma_supported() {
+            return Err(PyException::new_err("RDMA is not supported on this system"));
         }
         signal_safe_block_on(
             py,
@@ -117,7 +113,7 @@ impl PyRdmaBuffer {
 
     #[classmethod]
     fn rdma_supported<'py>(_cls: &Bound<'_, PyType>, _py: Python<'py>) -> bool {
-        ibverbs_supported()
+        rdma_supported()
     }
 
     #[classmethod]

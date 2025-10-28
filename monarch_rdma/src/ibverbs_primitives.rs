@@ -28,6 +28,7 @@
 //! - `IbvWc`: Wrapper around ibverbs work completion structure, used to track the status of RDMA operations.
 use std::ffi::CStr;
 use std::fmt;
+use std::sync::OnceLock;
 
 use hyperactor::Named;
 use serde::Deserialize;
@@ -168,7 +169,7 @@ impl IbverbsConfig {
     ///
     /// Device targets use a unified "type:id" format:
     /// - "cpu:N" -> finds RDMA device closest to NUMA node N
-    /// - "cuda:N" -> finds RDMA device closest to CUDA device N  
+    /// - "cuda:N" -> finds RDMA device closest to CUDA device N
     /// - "nic:mlx5_N" -> returns the specified NIC directly
     ///
     /// Shortcuts:
@@ -630,16 +631,81 @@ pub fn get_all_devices() -> Vec<RdmaDevice> {
     devices
 }
 
+/// Cached result of mlx5dv support check.
+static MLX5DV_SUPPORTED_CACHE: OnceLock<bool> = OnceLock::new();
+
+/// Checks if mlx5dv (Mellanox device-specific verbs extension) is supported.
+///
+/// This function attempts to open the first available RDMA device and check if
+/// mlx5dv extensions can be initialized. The mlx5dv extensions are required for
+/// advanced features like GPU Direct RDMA and direct queue pair manipulation.
+///
+/// The result is cached after the first call, making subsequent calls essentially free.
+///
+/// # Returns
+///
+/// `true` if mlx5dv extensions are supported, `false` otherwise.
+pub fn mlx5dv_supported() -> bool {
+    *MLX5DV_SUPPORTED_CACHE.get_or_init(mlx5dv_supported_impl)
+}
+
+fn mlx5dv_supported_impl() -> bool {
+    // SAFETY: We are calling C functions from libibverbs and libmlx5.
+    unsafe {
+        let mut num_devices = 0;
+        let device_list = rdmaxcel_sys::ibv_get_device_list(&mut num_devices);
+
+        // Compute result in a block, ensuring cleanup happens afterward
+        let result = {
+            if device_list.is_null() || num_devices == 0 {
+                false
+            } else {
+                // Try to open the first device and check mlx5dv support
+                let device = *device_list;
+                let mut mlx5dv_supported = false;
+
+                if !device.is_null() {
+                    let context = rdmaxcel_sys::ibv_open_device(device);
+                    if !context.is_null() {
+                        // Try to query device capabilities with mlx5dv
+                        let mut attrs_out = rdmaxcel_sys::mlx5dv_context::default();
+
+                        // mlx5dv_query_device returns 0 on success
+                        if rdmaxcel_sys::mlx5dv_query_device(context, &mut attrs_out) == 0 {
+                            mlx5dv_supported = true;
+                        }
+
+                        rdmaxcel_sys::ibv_close_device(context);
+                    }
+                }
+                mlx5dv_supported
+            }
+        };
+
+        rdmaxcel_sys::ibv_free_device_list(device_list);
+        result
+    }
+}
+
+/// Cached result of ibverbs support check.
+static IBVERBS_SUPPORTED_CACHE: OnceLock<bool> = OnceLock::new();
+
 /// Checks if ibverbs devices can be retrieved successfully.
 ///
 /// This function attempts to retrieve the list of RDMA devices using the
 /// `ibv_get_device_list` function from the ibverbs library. It returns `true`
 /// if devices are found, and `false` otherwise.
 ///
+/// The result is cached after the first call, making subsequent calls essentially free.
+///
 /// # Returns
 ///
 /// `true` if devices are successfully retrieved, `false` otherwise.
 pub fn ibverbs_supported() -> bool {
+    *IBVERBS_SUPPORTED_CACHE.get_or_init(ibverbs_supported_impl)
+}
+
+fn ibverbs_supported_impl() -> bool {
     // SAFETY: We are calling a C function from libibverbs.
     unsafe {
         let mut num_devices = 0;
@@ -649,6 +715,25 @@ pub fn ibverbs_supported() -> bool {
         }
         num_devices > 0
     }
+}
+
+/// Checks if RDMA is fully supported on this system.
+///
+/// This is the canonical function to check if RDMA can be used. It verifies both:
+/// 1. Basic ibverbs device availability (`ibverbs_supported()`)
+/// 2. mlx5dv device-specific extensions (`mlx5dv_supported()`)
+///
+/// mlx5dv extensions are required for this library's advanced features including
+/// GPU Direct RDMA and direct queue pair manipulation. Systems with non-Mellanox
+/// RDMA devices will have `ibverbs_supported() == true` but `rdma_supported() == false`.
+///
+/// The result is cached after the first call, making subsequent calls essentially free.
+///
+/// # Returns
+///
+/// `true` if both ibverbs devices and mlx5dv extensions are available, `false` otherwise.
+pub fn rdma_supported() -> bool {
+    ibverbs_supported() && mlx5dv_supported()
 }
 
 /// Represents a view of a memory region that can be registered with an RDMA device.
@@ -1015,5 +1100,32 @@ mod tests {
 
         let formatted = format_gid(&gid);
         assert_eq!(formatted, "1234:5678:9abc:def0:1122:3344:5566:7788");
+    }
+
+    #[test]
+    fn test_mlx5dv_supported_basic() {
+        // The test just verifies the function doesn't panic
+        let mlx5dv_support = mlx5dv_supported();
+        println!("mlx5dv_supported: {}", mlx5dv_support);
+    }
+
+    #[test]
+    fn test_rdma_supported_combines_checks() {
+        // This test verifies that rdma_supported() properly combines both checks
+        let ibverbs_support = ibverbs_supported();
+        let mlx5dv_support = mlx5dv_supported();
+        let rdma_support = rdma_supported();
+
+        // rdma_supported should be true only if both checks pass
+        assert_eq!(
+            rdma_support,
+            ibverbs_support && mlx5dv_support,
+            "rdma_supported should equal (ibverbs_supported && mlx5dv_supported)"
+        );
+
+        println!(
+            "ibverbs_supported: {}, mlx5dv_supported: {}, rdma_supported: {}",
+            ibverbs_support, mlx5dv_support, rdma_support
+        );
     }
 }
