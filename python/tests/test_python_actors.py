@@ -1333,7 +1333,6 @@ async def test_sync_workspace() -> None:
 @pytest.mark.timeout(120)
 async def test_actor_mesh_stop() -> None:
     # This test doesn't want the client process to crash during testing.
-    monarch.actor.unhandled_fault_hook = lambda failure: None
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am_1 = pm.spawn("printer", Printer)
     am_2 = pm.spawn("printer2", Printer)

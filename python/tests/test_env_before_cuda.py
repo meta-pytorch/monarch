@@ -108,7 +108,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             bootstrap=setup_cuda_env
         )
 
-        try:
+        async with proc_mesh_instance:
             actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
 
             env_vars = await actor.init_cuda_and_check_env.call_one(
@@ -121,9 +121,6 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
                     f"Environment variable {name} was not set correctly before CUDA initialization",
                 )
 
-        finally:
-            await proc_mesh_instance.stop()
-
     async def test_proc_mesh_with_dictionary_env(self) -> None:
         """Test that proc_mesh function works with dictionary for env parameter"""
         cuda_env_vars: Dict[str, str] = {
@@ -132,10 +129,9 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         }
 
-        monarch.actor.unhandled_fault_hook = lambda failure: None
         proc_mesh_instance = create_local_host_mesh(env=cuda_env_vars).spawn_procs()
 
-        try:
+        async with proc_mesh_instance:
             actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
             env_vars = await actor.init_cuda_and_check_env.call_one(
                 list(cuda_env_vars.keys())
@@ -153,6 +149,3 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
                 env_vars.get("CUDA_DEVICE_MAX_CONNECTIONS"),
                 "1",
             )
-
-        finally:
-            await proc_mesh_instance.stop()

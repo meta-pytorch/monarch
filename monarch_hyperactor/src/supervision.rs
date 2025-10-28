@@ -24,6 +24,7 @@ create_exception!(
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
 pub struct SupervisionFailureMessage {
+    pub mesh_name: String,
     pub rank: usize,
     pub event: ActorSupervisionEvent,
 }
@@ -35,19 +36,25 @@ pub struct SupervisionFailureMessage {
     module = "monarch._rust_bindings.monarch_hyperactor.supervision"
 )]
 pub struct MeshFailure {
+    pub mesh_name: String,
     pub rank: usize,
     pub event: ActorSupervisionEvent,
 }
 
 impl MeshFailure {
-    pub fn new(rank: usize, event: ActorSupervisionEvent) -> Self {
-        Self { rank, event }
+    pub fn new(mesh_name: &impl ToString, rank: usize, event: ActorSupervisionEvent) -> Self {
+        Self {
+            mesh_name: mesh_name.to_string(),
+            rank,
+            event,
+        }
     }
 }
 
 impl From<SupervisionFailureMessage> for MeshFailure {
     fn from(message: SupervisionFailureMessage) -> Self {
         Self {
+            mesh_name: message.mesh_name,
             rank: message.rank,
             event: message.event,
         }
@@ -56,7 +63,11 @@ impl From<SupervisionFailureMessage> for MeshFailure {
 
 impl std::fmt::Display for MeshFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MeshFailure(rank={}, event={})", self.rank, self.event)
+        write!(
+            f,
+            "MeshFailure(mesh_name={}, rank={}, event={})",
+            self.mesh_name, self.rank, self.event
+        )
     }
 }
 
