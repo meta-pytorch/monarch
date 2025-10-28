@@ -99,7 +99,7 @@ html_theme_options = {
         },
         {
             "name": "PyPi",
-            "url": "https://pypi.org/project/monarch/",
+            "url": "https://pypi.org/project/torchmonarch/",
             "icon": "fa-brands fa-python",
         },
     ],
