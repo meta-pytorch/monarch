@@ -652,38 +652,17 @@ pub fn mlx5dv_supported() -> bool {
 fn mlx5dv_supported_impl() -> bool {
     // SAFETY: We are calling C functions from libibverbs and libmlx5.
     unsafe {
+        let mut mlx5dv_supported = false;
         let mut num_devices = 0;
         let device_list = rdmaxcel_sys::ibv_get_device_list(&mut num_devices);
-
-        // Compute result in a block, ensuring cleanup happens afterward
-        let result = {
-            if device_list.is_null() || num_devices == 0 {
-                false
-            } else {
-                // Try to open the first device and check mlx5dv support
-                let device = *device_list;
-                let mut mlx5dv_supported = false;
-
-                if !device.is_null() {
-                    let context = rdmaxcel_sys::ibv_open_device(device);
-                    if !context.is_null() {
-                        // Try to query device capabilities with mlx5dv
-                        let mut attrs_out = rdmaxcel_sys::mlx5dv_context::default();
-
-                        // mlx5dv_query_device returns 0 on success
-                        if rdmaxcel_sys::mlx5dv_query_device(context, &mut attrs_out) == 0 {
-                            mlx5dv_supported = true;
-                        }
-
-                        rdmaxcel_sys::ibv_close_device(context);
-                    }
-                }
-                mlx5dv_supported
+        if !device_list.is_null() && num_devices > 0 {
+            let device = *device_list;
+            if !device.is_null() {
+                mlx5dv_supported = rdmaxcel_sys::mlx5dv_is_supported(device);
             }
-        };
-
-        rdmaxcel_sys::ibv_free_device_list(device_list);
-        result
+            rdmaxcel_sys::ibv_free_device_list(device_list);
+        }
+        mlx5dv_supported
     }
 }
 
