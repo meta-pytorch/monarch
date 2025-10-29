@@ -290,7 +290,18 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        get_rank_status.reply.send(cx, overlay)?;
+        let result = get_rank_status.reply.send(cx, overlay);
+        // Ignore errors, because returning Err from here would cause the HostMeshAgent
+        // to be stopped, which would take down the entire host. This only means
+        // some actor that requested the rank status failed to receive it.
+        if let Err(e) = result {
+            tracing::warn!(
+                actor = %cx.self_id(),
+                "failed to send GetRankStatus reply to {} due to error: {}",
+                get_rank_status.reply.port_id().actor_id(),
+                e
+            );
+        }
         Ok(())
     }
 }
@@ -403,7 +414,18 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
             },
         };
 
-        get_state.reply.send(cx, state)?;
+        let result = get_state.reply.send(cx, state);
+        // Ignore errors, because returning Err from here would cause the HostMeshAgent
+        // to be stopped, which would take down the entire host. This only means
+        // some actor that requested the state of a proc failed to receive it.
+        if let Err(e) = result {
+            tracing::warn!(
+                actor = %cx.self_id(),
+                "failed to send GetState reply to {} due to error: {}",
+                get_state.reply.port_id().actor_id(),
+                e
+            );
+        }
         Ok(())
     }
 }
