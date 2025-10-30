@@ -219,6 +219,7 @@ pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSu
         MeshAgentMessage,
         resource::CreateOrUpdate<ActorSpec> { cast = true },
         resource::Stop { cast = true },
+        resource::StopAll { cast = true },
         resource::GetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
     ]
@@ -271,6 +272,14 @@ impl ProcMeshAgent {
             supervision_events: HashMap::new(),
         };
         proc.spawn::<Self>("agent", agent).await
+    }
+
+    async fn destroy_and_wait<'a>(
+        &mut self,
+        cx: &Context<'a, Self>,
+        timeout: tokio::time::Duration,
+    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+        self.proc.destroy_and_wait::<Self>(timeout, Some(cx)).await
     }
 }
 
@@ -612,6 +621,25 @@ impl Handler<resource::Stop> for ProcMeshAgent {
         };
         message.reply.send(cx, overlay)?;
 
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::StopAll> for ProcMeshAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        _message: resource::StopAll,
+    ) -> anyhow::Result<()> {
+        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        // By passing in the self context, destroy_and_wait will stop this agent
+        // last, after all others are stopped.
+        let _stop_result = self.destroy_and_wait(cx, timeout).await?;
+        for (_, actor_state) in self.actor_states.iter_mut() {
+            // Mark all actors as stopped.
+            actor_state.stopped = true;
+        }
         Ok(())
     }
 }

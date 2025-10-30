@@ -43,6 +43,7 @@ use hyperactor::clock::RealClock;
 use hyperactor::config::CONFIG;
 use hyperactor::config::ConfigAttr;
 use hyperactor::config::global as config;
+use hyperactor::context;
 use hyperactor::declare_attrs;
 use hyperactor::host;
 use hyperactor::host::Host;
@@ -64,6 +65,7 @@ use tokio::sync::watch;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::resource::StopAllClient;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
@@ -1242,6 +1244,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     ///   or the channel was lost.
     async fn terminate(
         &self,
+        cx: &impl context::Actor,
         timeout: Duration,
     ) -> Result<ProcStatus, hyperactor::host::TerminateError<Self::TerminalStatus>> {
         const HARD_WAIT_AFTER_KILL: Duration = Duration::from_secs(5);
@@ -1264,6 +1267,30 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         })?;
 
         // Best-effort mark "Stopping" (ok if state races).
+
+        // Before sending SIGTERM, try to close actors normally. Only works if
+        // they are in the Ready state and have an Agent we can message.
+        let agent = self.agent_ref();
+        if let Some(agent) = agent {
+            let mailbox_result = RealClock.timeout(timeout, agent.stop_all(cx)).await;
+            if let Err(timeout_err) = mailbox_result {
+                // Agent didn't respond in time, proceed with SIGTERM.
+                tracing::warn!(
+                    "ProcMeshAgent {} didn't respond in time to stop proc: {}",
+                    agent.actor_id(),
+                    timeout_err,
+                );
+            } else if let Ok(Err(e)) = mailbox_result {
+                // Other mailbox error, proceed with SIGTERM.
+                tracing::warn!(
+                    "ProcMeshAgent {} did not successfully stop all actors: {}",
+                    agent.actor_id(),
+                    e
+                );
+            }
+        }
+        // After the stop all actors message may be successful, we still need
+        // to actually stop the process.
         let _ = self.mark_stopping();
 
         // Send SIGTERM (ESRCH is treated as "already gone").
@@ -1885,6 +1912,7 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
     /// Logs a warning for each failure.
     async fn terminate_proc(
         &self,
+        cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
@@ -1895,7 +1923,7 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
         };
 
         if let Some(h) = proc_handle {
-            h.terminate(timeout)
+            h.terminate(cx, timeout)
                 .await
                 .map(|_| (Vec::new(), Vec::new()))
                 .map_err(|e| e.into())
@@ -1920,7 +1948,12 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
     /// those that were already terminal), and how many failed.
     ///
     /// Logs a warning for each failure.
-    async fn terminate_all(&self, timeout: Duration, max_in_flight: usize) -> TerminateSummary {
+    async fn terminate_all(
+        &self,
+        cx: &impl context::Actor,
+        timeout: Duration,
+        max_in_flight: usize,
+    ) -> TerminateSummary {
         // Snapshot to avoid holding the lock across awaits.
         let handles: Vec<BootstrapProcHandle> = {
             let guard = self.children.lock().await;
@@ -1931,7 +1964,7 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
         let mut ok = 0usize;
 
         let results = stream::iter(handles.into_iter().map(|h| async move {
-            match h.terminate(timeout).await {
+            match h.terminate(cx, timeout).await {
                 Ok(_) | Err(hyperactor::host::TerminateError::AlreadyTerminated(_)) => {
                     // Treat "already terminal" as success.
                     true
@@ -3321,7 +3354,7 @@ mod tests {
 
         let deadline = Duration::from_secs(2);
         match RealClock
-            .timeout(deadline * 2, handle.terminate(deadline))
+            .timeout(deadline * 2, handle.terminate(&instance, deadline))
             .await
         {
             Err(_) => panic!("terminate() future hung"),
