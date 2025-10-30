@@ -104,9 +104,9 @@ pip install -r build-requirements.txt
 pip install -r python/tests/requirements.txt
 
 # Build and install Monarch
-pip install --no-build-isolation .
+pip install --no-build-isolation -v .
 # or setup for development
-pip install --no-build-isolation -e .
+pip install --no-build-isolation -v -e .
 
 # Verify installation
 pip list | grep monarch
