@@ -29,7 +29,6 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::attrs::Attrs;
 #[cfg(test)]
 use hyperactor::clock::Clock as _;
 #[cfg(test)]
@@ -240,7 +239,7 @@ pub struct SetConfigAttrs(pub Vec<u8>);
 impl Handler<SetConfigAttrs> for TestActor {
     async fn handle(
         &mut self,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
         SetConfigAttrs(attrs): SetConfigAttrs,
     ) -> Result<(), anyhow::Error> {
         let attrs = bincode::deserialize(&attrs)?;
