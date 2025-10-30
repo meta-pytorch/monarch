@@ -906,7 +906,6 @@ mod tests {
     use super::*;
     use crate::clock::Clock;
     use crate::clock::RealClock;
-    use crate::config;
 
     #[test]
     fn test_channel_addr() {

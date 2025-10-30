@@ -13,10 +13,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate as hyperactor; // for macros
-use crate::ActorId;
 use crate::Message;
 use crate::Named;
-use crate::PortId;
 use crate::actor::ActorStatus;
 use crate::id;
 use crate::mailbox::DeliveryError;

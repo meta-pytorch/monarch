@@ -606,6 +606,7 @@ pub struct HostMeshRef {
 impl HostMeshRef {
     /// Create a new (raw) HostMeshRef from the provided region and associated
     /// ranks, which must match in cardinality.
+    #[allow(clippy::result_large_err)]
     fn new(name: Name, region: Region, ranks: Vec<HostRef>) -> v1::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(v1::Error::InvalidRankCardinality {
@@ -635,6 +636,7 @@ impl HostMeshRef {
     ///
     /// Currently, spawn issues direct calls to each host agent. This will be fixed by
     /// maintaining a comm actor on the host service procs themselves.
+    #[allow(clippy::result_large_err)]
     pub async fn spawn(
         &self,
         cx: &impl context::Actor,
@@ -873,6 +875,7 @@ impl HostMeshRef {
 
     /// Get the state of all procs with Name in this host mesh.
     /// The procs iterator must be in rank order.
+    #[allow(clippy::result_large_err)]
     pub(crate) async fn proc_states(
         &self,
         cx: &impl context::Actor,
