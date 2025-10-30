@@ -6,6 +6,38 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+/// Pytokio allows Python coroutines to await Rust futures, in specific contexts.
+///
+/// A PythonTask is constructed in Python from `PythonTask.from_coroutine()`:
+///
+/// ```ignore
+/// async def task():
+///     # ... async work, await other python tasks
+/// task = PythonTask.from_coroutine(coro=task())
+/// ```
+///
+/// The task may only await *other* PythonTasks; it is an error to await arbitrary
+/// Python awaitables. In this way, Pytokio is a way to use Python to compose Tokio futures.
+///
+/// A task can be spawned in order to produce an awaitable that can be awaited in
+/// any async context:
+///
+/// ```ignore
+/// shared = task.spawn()
+/// result = await shared
+/// ```
+///
+/// Spawn spawns a tokio task that drives the coroutine to completion, and, using the Python
+/// awaitable protocol, allows those coroutines to await other Tokio futures in turn.
+///
+/// PythonTasks can also be awaited synchronously by `block_on`:
+///
+/// ```ignore
+/// result = task.block_on()
+/// ```
+///
+/// This allows PythonTasks to be used in either async or sync contexts -- the underlying
+/// code executes in exactly the same way, driven by an underlying tokio task.
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
