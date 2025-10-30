@@ -1,0 +1,116 @@
+name: Build monarch wheels (USE_TENSOR_ENGINE=0)
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-versions:
+        description: 'Python versions to build (comma-separated, e.g., "3.10,3.11,3.12")'
+        required: true
+        default: '3.10,3.11,3.12,3.13'
+      release-tag:
+        description: 'GitHub release tag to upload wheels to (leave empty to skip upload)'
+        required: false
+        default: ''
+      create-release:
+        description: 'Create a new release if tag does not exist'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  prepare:
+    name: Prepare build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Parse Python versions
+        id: set-matrix
+        run: |
+          versions=$(echo '${{ github.event.inputs.python-versions }}' | jq -R 'split(",") | map(gsub(" "; ""))')
+          echo "matrix={\"python-version\":$versions}" >> $GITHUB_OUTPUT
+
+  build-macos:
+    name: Build py${{ matrix.python-version }}-macos-arm64
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    runs-on: macos-14  # M1 runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --python=${{ matrix.python-version }}
+          uv pip install -r requirements.txt
+          uv pip install setuptools wheel setuptools-rust pip
+
+      - name: Build wheel
+        env:
+          USE_TENSOR_ENGINE: "0"
+        run: |
+          uv run --no-sync pip wheel --no-build-isolation -w dist .
+
+      - name: List built wheels
+        run: ls -lh dist/monarch-*.whl
+
+      - name: Upload wheel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: monarch-${{ matrix.python-version }}-macos-arm64
+          path: dist/monarch-*.whl
+          retention-days: 30
+
+  upload-to-release:
+    name: Upload wheels to GitHub Release
+    needs: build-macos
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.release-tag != '' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: List downloaded wheels
+        run: ls -lhR wheels/
+
+      - name: Create release if requested
+        if: ${{ github.event.inputs.create-release == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "${{ github.event.inputs.release-tag }}" > /dev/null 2>&1; then
+            gh release create "${{ github.event.inputs.release-tag }}" \
+              --title "Monarch ${{ github.event.inputs.release-tag }} (USE_TENSOR_ENGINE=0)" \
+              --notes "Custom build of Monarch with USE_TENSOR_ENGINE=0
+
+Built for macOS ARM64 (Apple Silicon) with multiple Python versions.
+
+Install with:
+\`\`\`bash
+pip install https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.release-tag }}/monarch-<version>-macosx_11_0_arm64.whl
+\`\`\`
+
+Replace <version> with your specific Python version (e.g., 0.0.1-cp310-cp310)."
+          fi
+
+      - name: Upload wheels to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.inputs.release-tag }}" wheels/*.whl --clobber
