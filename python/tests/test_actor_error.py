@@ -750,7 +750,9 @@ async def test_slice_supervision() -> None:
     slice_3 = error_mesh.slice(gpus=3)
 
     # Trigger supervision error on gpus=3
-    with pytest.raises(SupervisionError, match="did not handle supervision event"):
+    with pytest.raises(
+        SupervisionError, match="exited because of the following reason"
+    ):
         await slice_3.fail_with_supervision_error.call()
 
     match = (
