@@ -4,13 +4,13 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 import itertools
 import operator
 from abc import ABC, abstractmethod
 
-from typing import Dict, Generator, Sequence, Tuple, Union
+from typing import Any, Dict, Generator, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
 
@@ -38,7 +38,7 @@ class ShapeExt:
     functionality."""
 
     @staticmethod
-    def slice(shape: Shape, **kwargs) -> Shape:
+    def slice(shape: Shape, **kwargs: Any) -> Shape:
         """Select along named dimensions. Integer values remove
         dimensions, slice objects keep dimensions but restrict them.
 
@@ -78,7 +78,7 @@ class MeshTrait(ABC):
     @abstractmethod
     def _new_with_shape(self, shape: Shape) -> Self: ...
 
-    def slice(self, **kwargs) -> Self:
+    def slice(self, **kwargs: Any) -> Self:
         """Select along named dimensions. Integer values remove
         dimensions, slice objects keep dimensions but restrict them.
 
@@ -87,7 +87,7 @@ class MeshTrait(ABC):
         shape = Shape(list(self._labels), self._ndslice)
         return self._new_with_shape(ShapeExt.slice(shape, **kwargs))
 
-    def split(self, **kwargs) -> Self:
+    def split(self, **kwargs: Any) -> Self:
         """
         Returns a new device mesh with some dimensions of this mesh split.
         For instance, this call splits the host dimension into dp and pp dimensions,
@@ -195,7 +195,7 @@ class MeshTrait(ABC):
             )
         )
 
-    def rename(self, **kwargs) -> Self:
+    def rename(self, **kwargs: Any) -> Self:
         """
         Returns a new device mesh with some of dimensions renamed.
         Dimensions not mentioned are retained:
