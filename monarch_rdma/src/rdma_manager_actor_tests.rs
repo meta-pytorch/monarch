@@ -620,4 +620,124 @@ mod tests {
         env.cleanup().await?;
         Ok(())
     }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_standard_qp() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env = RdmaManagerTestEnv::setup_with_qp_type(
+            BSIZE,
+            "cpu:0",
+            "cpu:0",
+            crate::ibverbs_primitives::RdmaQpType::Standard,
+        )
+        .await?;
+
+        let rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_standard_qp() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env = RdmaManagerTestEnv::setup_with_qp_type(
+            BSIZE,
+            "cpu:0",
+            "cpu:0",
+            crate::ibverbs_primitives::RdmaQpType::Standard,
+        )
+        .await?;
+
+        let rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_standard_qp_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 16 * 1024 * 1024;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env = RdmaManagerTestEnv::setup_with_qp_type(
+            BSIZE,
+            "cuda:0",
+            "cuda:1",
+            crate::ibverbs_primitives::RdmaQpType::Standard,
+        )
+        .await?;
+
+        let rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_standard_qp_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 16 * 1024 * 1024;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env = RdmaManagerTestEnv::setup_with_qp_type(
+            BSIZE,
+            "cuda:0",
+            "cuda:1",
+            crate::ibverbs_primitives::RdmaQpType::Standard,
+        )
+        .await?;
+
+        let rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
 }
