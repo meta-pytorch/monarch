@@ -164,7 +164,8 @@ pub type Data = Vec<u8>;
     Deserialize,
     Named,
     Clone,
-    PartialEq
+    PartialEq,
+    Eq
 )]
 pub enum DeliveryError {
     /// The destination address is not reachable.

@@ -30,6 +30,13 @@ use crate::supervision::ActorSupervisionEvent;
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
 pub struct Undeliverable<M: Message>(pub M);
 
+impl<M: Message> Undeliverable<M> {
+    /// Return the inner M-typed message.
+    pub fn into_inner(self) -> M {
+        self.0
+    }
+}
+
 // Port handle and receiver for undeliverable messages.
 pub(crate) fn new_undeliverable_port() -> (
     PortHandle<Undeliverable<MessageEnvelope>>,
