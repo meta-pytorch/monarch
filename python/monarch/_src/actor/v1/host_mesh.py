@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import Any, Callable, Dict, Literal, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -158,7 +158,7 @@ class HostMesh(MeshTrait):
     def spawn_procs(
         self,
         per_host: Dict[str, int] | None = None,
-        bootstrap: Callable[[], None] | None = None,
+        bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         name: str | None = None,
     ) -> "ProcMesh":
         if not per_host:
@@ -178,7 +178,7 @@ class HostMesh(MeshTrait):
         self,
         name: str,
         per_host: Extent,
-        setup: Callable[[], None] | None,
+        setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
         _attach_controller_controller: bool,
     ) -> "ProcMesh":
         if set(per_host.labels) & set(self._labels):
