@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 import asyncio
 import sys
 from abc import abstractmethod
@@ -34,12 +34,14 @@ class DebugStdIO(DebugIO):
 
 
 class DebugIOError(RuntimeError):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("Error encountered during debugger I/O operation.")
 
 
 class DebugCliIO(DebugIO):
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    def __init__(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         self._reader = reader
         self._writer = writer
 

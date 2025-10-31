@@ -46,6 +46,7 @@ use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Notify;
+use tracing::Level;
 
 use crate::CommActor;
 use crate::alloc::Alloc;
@@ -283,6 +284,7 @@ impl ProcMesh {
 
     /// Allocate a new ProcMesh from the provided alloc.
     /// Allocate does not require an owning actor because references are not owned.
+    #[tracing::instrument(skip_all)]
     pub async fn allocate(
         cx: &impl context::Actor,
         mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
@@ -298,11 +300,14 @@ impl ProcMesh {
         let proc = cx.instance().proc();
 
         // First make sure we can serve the proc:
-        let (proc_channel_addr, rx) = channel::serve(
-            ChannelAddr::any(alloc.transport()),
-            &format!("proc_channel_addr for {}", proc.proc_id()),
-        )?;
-        proc.clone().serve(rx);
+        let proc_channel_addr = {
+            let _guard =
+                tracing::span!(Level::INFO, "allocate_serve_proc", proc_id = %proc.proc_id())
+                    .entered();
+            let (addr, rx) = channel::serve(ChannelAddr::any(alloc.transport()))?;
+            proc.clone().serve(rx);
+            addr
+        };
 
         let bind_allocated_procs = |router: &DialMailboxRouter| {
             // Route all of the allocated procs:

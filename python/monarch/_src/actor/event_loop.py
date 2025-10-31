@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 """
 Module for managing the event loop used by Monarch Python actors.
@@ -18,7 +18,7 @@ from typing import Optional
 
 from pyre_extensions import none_throws
 
-logger = logging.getLogger(__name__)
+logger: logging.Logger = logging.getLogger(__name__)
 
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 _lock = threading.Lock()
@@ -35,7 +35,7 @@ def _initialize_event_loop() -> None:
         return
 
     # Create a new thread that will host our event loop
-    def event_loop_thread():
+    def event_loop_thread() -> None:
         """Target function for the event loop thread."""
         global _event_loop, _ready
         try:

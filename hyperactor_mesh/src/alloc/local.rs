@@ -147,10 +147,7 @@ impl Alloc for LocalAlloc {
             match self.todo_rx.recv().await? {
                 Action::Start(rank) => {
                     let (addr, proc_rx) = loop {
-                        match channel::serve(
-                            ChannelAddr::any(self.transport()),
-                            "LocalAlloc next proc addr",
-                        ) {
+                        match channel::serve(ChannelAddr::any(self.transport())) {
                             Ok(addr_and_proc_rx) => break addr_and_proc_rx,
                             Err(err) => {
                                 tracing::error!(

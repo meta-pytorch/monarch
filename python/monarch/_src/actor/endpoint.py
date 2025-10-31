@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 import functools
 from abc import ABC, abstractmethod
@@ -26,16 +26,20 @@ from typing import (
     Tuple,
     TYPE_CHECKING,
     TypeVar,
+    Union,
 )
 
+from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 
 from monarch._src.actor.future import Future
 from monarch._src.actor.telemetry import METER
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
 
+from opentelemetry.metrics import Histogram
+
 # Histogram for measuring endpoint call latency
-endpoint_call_latency_histogram = METER.create_histogram(
+endpoint_call_latency_histogram: Histogram = METER.create_histogram(
     name="endpoint_call_latency.us",
     description="Latency of endpoint call operations in microseconds",
 )
@@ -53,20 +57,20 @@ R = TypeVar("R")
 Selection = Literal["all", "choose"]
 
 
-Propagator = Any
+Propagator = Union[None, Literal["cached", "inspect", "mocked"], Callable[..., Any]]
 
 
 class Endpoint(ABC, Generic[P, R]):
     def __init__(self, propagator: Propagator) -> None:
         self._propagator_arg = propagator
-        self._cache: Optional[dict] = None
+        self._cache: Optional[Dict[Any, Any]] = None
 
     @abstractmethod
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port]" = None,
+        port: "Optional[Port[R]]" = None,
         selection: Selection = "all",
     ) -> Extent:
         """
@@ -86,13 +90,15 @@ class Endpoint(ABC, Generic[P, R]):
         return Channel[R].open(once)
 
     @abstractmethod
-    def _call_name(self) -> Any:
+    def _call_name(self) -> MethodSpecifier:
         """
         Something to use in InputChecker to represent calling this thingy.
         """
         pass
 
-    def _supervise(self, r: "HyPortReceiver | HyOncePortReceiver") -> Any:
+    def _supervise(
+        self, r: "HyPortReceiver | HyOncePortReceiver"
+    ) -> "HyPortReceiver | HyOncePortReceiver":
         return r
 
     # the following are all 'adverbs' or different ways to handle the
@@ -108,13 +114,13 @@ class Endpoint(ABC, Generic[P, R]):
         """
 
         p, r = self._port(once=True)
-        # pyre-ignore
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         self._send(args, kwargs, port=p, selection="choose")
         return r.recv()
 
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         p, r = self._port(once=True)
-        # pyre-ignore
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         extent = self._send(args, kwargs, port=p, selection="choose")
         if extent.nelements != 1:
             raise ValueError(
@@ -123,19 +129,20 @@ class Endpoint(ABC, Generic[P, R]):
         return r.recv()
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
-        from monarch._src.actor.actor_mesh import ValueMesh
+        from monarch._src.actor.actor_mesh import RankedPortReceiver, ValueMesh
 
-        start_time = datetime.now()
+        start_time: datetime = datetime.now()
         p, unranked = self._port()
-        r = unranked.ranked()
-        # pyre-ignore
-        extent = self._send(args, kwargs, port=p)
+        r: RankedPortReceiver[R] = unranked.ranked()
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        extent: Extent = self._send(args, kwargs, port=p)
 
         method_specifier = self._call_name()
         if hasattr(method_specifier, "name"):
-            method_name = method_specifier.name
+            # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
+            method_name: str = method_specifier.name
         else:
-            method_name = "unknown"
+            method_name: str = "unknown"
 
         async def process() -> "ValueMesh[R]":
             from monarch._rust_bindings.monarch_hyperactor.shape import Shape
@@ -172,11 +179,12 @@ class Endpoint(ABC, Generic[P, R]):
         This enables processing results from multiple actors incrementally as
         they become available. Returns an async generator of response values.
         """
-        p, r = self._port()
-        # type: ignore
-        extent = self._send(args, kwargs, port=p)
+        p, r_port = self._port()
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        extent: Extent = self._send(args, kwargs, port=p)
+        r: "PortReceiver[R]" = r_port
 
-        def _stream():
+        def _stream() -> Generator[Future[R], None, None]:
             for _ in range(extent.nelements):
                 yield r.recv()
 
@@ -192,16 +200,23 @@ class Endpoint(ABC, Generic[P, R]):
         """
         from monarch._src.actor.actor_mesh import send
 
-        # pyre-ignore
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         send(self, args, kwargs)
 
     @abstractmethod
-    def _rref(self, args, kwargs) -> Any: ...
+    def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R: ...
 
     def rref(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         return self._rref(args, kwargs)
 
-    def _propagate(self, args, kwargs, fake_args, fake_kwargs):
+    def _propagate(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+        fake_args: Tuple[Any, ...],
+        fake_kwargs: Dict[str, Any],
+    ) -> Any:
         if self._propagator_arg is None or self._propagator_arg == "cached":
             if self._cache is None:
                 self._cache = {}
@@ -218,12 +233,24 @@ class Endpoint(ABC, Generic[P, R]):
         else:
             return fake_call(self._propagator_arg, *fake_args, **fake_kwargs)
 
-    def _fetch_propagate(self, args, kwargs, fake_args, fake_kwargs):
+    def _fetch_propagate(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+        fake_args: Tuple[Any, ...],
+        fake_kwargs: Dict[str, Any],
+    ) -> Any:
         if self._propagator_arg is None:
             return  # no propgator provided, so we just assume no mutations
         return self._propagate(args, kwargs, fake_args, fake_kwargs)
 
-    def _pipe_propagate(self, args, kwargs, fake_args, fake_kwargs):
+    def _pipe_propagate(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+        fake_args: Tuple[Any, ...],
+        fake_kwargs: Dict[str, Any],
+    ) -> Any:
         if not callable(self._propagator_arg):
             raise ValueError("Must specify explicit callable for pipe")
         return self._propagate(args, kwargs, fake_args, fake_kwargs)
@@ -260,7 +287,7 @@ class EndpointProperty(Generic[P, R]):
         self._explicit_response_port = explicit_response_port
         self._instrument = instrument
 
-    def __get__(self, instance, owner) -> Endpoint[P, R]:
+    def __get__(self, instance: Any, owner: Any) -> Endpoint[P, R]:
         # this is a total lie, but we have to actually
         # recognize this was defined as an endpoint,
         # and also lookup the method
@@ -274,11 +301,11 @@ class NotAnEndpoint:
     and to provide the oppurtunity for someone to do endpoint(x.foo) on something that wasn't marked as an endpoint.
     """
 
-    def __init__(self, ref: "ActorMesh", name: str):
+    def __init__(self, ref: "ActorMesh[Any]", name: str) -> None:
         self._ref = ref
         self._name = name
 
-    def __call__(self, *args, **kwargs) -> None:
+    def __call__(self, *args: Any, **kwargs: Any) -> None:
         raise RuntimeError(
             f"Actor {self._ref._class}.{self._name} is not annotated as an endpoint. To call it as one, add a @endpoint decorator to it, or directly wrap it in one as_endpoint(obj.method).call(...)"
         )
@@ -291,12 +318,13 @@ class EndpointIfy:
     def __call__(
         self, function: Callable[Concatenate[Any, P], Awaitable[R]]
     ) -> Endpoint[P, R]: ...
+
     @overload
     def __call__(
         self, function: Callable[Concatenate[Any, P], R]
     ) -> Endpoint[P, R]: ...
 
-    def __call__(self, function: Any):
+    def __call__(self, function: Any) -> Any:
         pass
 
 
@@ -312,7 +340,7 @@ class PortedEndpointIfy:
         self, function: Callable[Concatenate[Any, "Port[R]", P], None]
     ) -> Endpoint[P, R]: ...
 
-    def __call__(self, function: Any):
+    def __call__(self, function: Any) -> Any:
         pass
 
 
@@ -375,12 +403,12 @@ def endpoint(
 
 
 def endpoint(
-    method=None,
+    method: Any = None,
     *,
-    propagate=None,
+    propagate: Any = None,
     explicit_response_port: bool = False,
     instrument: bool = False,
-):
+) -> Any:
     if method is None:
         return functools.partial(
             endpoint,

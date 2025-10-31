@@ -1573,7 +1573,7 @@ mod tests {
         // Set up a local actor.
         let local_proc_id = world_id.proc_id(rank);
         let (local_proc_addr, local_proc_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Local), "mock_proc_actor").unwrap();
+            channel::serve(ChannelAddr::any(ChannelTransport::Local)).unwrap();
         let local_proc_mbox = Mailbox::new_detached(
             local_proc_id.actor_id(format!("test_dummy_proc{}", idx).to_string(), 0),
         );

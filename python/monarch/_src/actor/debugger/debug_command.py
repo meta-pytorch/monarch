@@ -4,21 +4,24 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 import sys
 from dataclasses import dataclass
-from typing import cast, Dict, List, Tuple, Union
+from typing import cast, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from lark import Lark, Transformer
 
 from monarch._src.actor.debugger.debug_io import DebugIO
 
 RanksType = Union[int, List[int], range, Dict[str, Union[range, List[int], int]]]
 
-_debug_input_parser = None
+_debug_input_parser: "Optional[Lark]" = None
 
 
 # Wrap the parser in a function so that jobs don't have to import lark
 # unless they want to use the debugger.
-def _get_debug_input_parser():
+def _get_debug_input_parser() -> "Lark":
     global _debug_input_parser
     if _debug_input_parser is None:
         from lark import Lark
@@ -55,12 +58,12 @@ def _get_debug_input_parser():
     return _debug_input_parser
 
 
-_debug_input_transformer = None
+_debug_input_transformer: "Optional[Transformer]" = None
 
 
 # Wrap the transformer in a function so that jobs don't have to import lark
 # unless they want to use the debugger.
-def _get_debug_input_transformer():
+def _get_debug_input_transformer() -> "Transformer":
     global _debug_input_transformer
     if _debug_input_transformer is None:
         from lark import Transformer
