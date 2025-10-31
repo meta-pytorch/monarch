@@ -45,6 +45,7 @@ use hyperactor::clock::RealClock;
 use hyperactor::config::CONFIG;
 use hyperactor::config::ConfigAttr;
 use hyperactor::config::global as config;
+use hyperactor::context;
 use hyperactor::declare_attrs;
 use hyperactor::host;
 use hyperactor::host::Host;
@@ -69,6 +70,7 @@ use tokio::sync::watch;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::resource::StopAllClient;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
@@ -76,6 +78,61 @@ use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 mod mailbox;
 
 declare_attrs! {
+    /// Enable forwarding child stdout/stderr over the mesh log
+    /// channel.
+    ///
+    /// When `true` (default): child stdio is piped; [`StreamFwder`]
+    /// mirrors output to the parent console and forwards bytes to the
+    /// log channel so a `LogForwardActor` can receive them.
+    ///
+    /// When `false`: no channel forwarding occurs. Child stdio may
+    /// still be piped if [`MESH_ENABLE_FILE_CAPTURE`] is `true` or
+    /// [`MESH_TAIL_LOG_LINES`] > 0; otherwise the child inherits the
+    /// parent stdio (no interception).
+    ///
+    /// This flag does not affect console mirroring: child output
+    /// always reaches the parent console—either via inheritance (no
+    /// piping) or via [`StreamFwder`] when piping is active.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_ENABLE_LOG_FORWARDING".to_string()),
+        py_name: None,
+    })
+    pub attr MESH_ENABLE_LOG_FORWARDING: bool = true;
+
+    /// When `true`: if stdio is piped, each child's `StreamFwder`
+    /// also forwards lines to a host-scoped `FileAppender` managed by
+    /// the `BootstrapProcManager`. That appender creates exactly two
+    /// files per manager instance—one for stdout and one for
+    /// stderr—and **all** child processes' lines are multiplexed into
+    /// those two files. This can be combined with
+    /// [`MESH_ENABLE_LOG_FORWARDING`] ("stream+local").
+    ///
+    /// Notes:
+    /// - The on-disk files are *aggregate*, not per-process.
+    ///   Disambiguation is via the optional rank prefix (see
+    ///   `PREFIX_WITH_RANK`), which `StreamFwder` prepends to lines
+    ///   before writing.
+    /// - On local runs, file capture is suppressed unless
+    ///   `FORCE_FILE_LOG=true`. In that case `StreamFwder` still
+    ///   runs, but the `FileAppender` may be `None` and no files are
+    ///   written.
+    /// - `MESH_TAIL_LOG_LINES` only controls the in-memory rotating
+    ///   buffer used for peeking—independent of file capture.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_ENABLE_FILE_CAPTURE".to_string()),
+        py_name: None,
+    })
+    pub attr MESH_ENABLE_FILE_CAPTURE: bool = true;
+
+    /// Maximum number of log lines retained in a proc's stderr/stdout
+    /// tail buffer. Used by [`StreamFwder`] when wiring child
+    /// pipes. Default: 100
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_TAIL_LOG_LINES".to_string()),
+        py_name: None,
+    })
+    pub attr MESH_TAIL_LOG_LINES: usize = 100;
+
     /// If enabled (default), bootstrap child processes install
     /// `PR_SET_PDEATHSIG(SIGKILL)` so the kernel reaps them if the
     /// parent dies unexpectedly. This is a **production safety net**
@@ -87,15 +144,6 @@ declare_attrs! {
         py_name: None,
     })
     pub attr MESH_BOOTSTRAP_ENABLE_PDEATHSIG: bool = true;
-
-    /// Maximum number of log lines retained in a proc's stderr/stdout
-    /// tail buffer. Used by [`StreamFwder`] when wiring child
-    /// pipes. Default: 100
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_TAIL_LOG_LINES".to_string()),
-        py_name: None,
-    })
-    pub attr MESH_TAIL_LOG_LINES: usize = 100;
 
     /// Maximum number of child terminations to run concurrently
     /// during bulk shutdown. Prevents unbounded spawning of
@@ -241,8 +289,8 @@ pub enum Bootstrap {
         socket_dir_path: PathBuf,
         /// Optional config snapshot (`hyperactor::config::Attrs`)
         /// captured by the parent. If present, the child installs it
-        /// as the `Runtime` layer so the parent's effective config
-        /// takes precedence over Env/File/Defaults.
+        /// as the `ClientOverride` layer so the parent's effective config
+        /// takes precedence over Defaults.
         config: Option<Attrs>,
     },
 
@@ -256,8 +304,8 @@ pub enum Bootstrap {
         command: Option<BootstrapCommand>,
         /// Optional config snapshot (`hyperactor::config::Attrs`)
         /// captured by the parent. If present, the child installs it
-        /// as the `Runtime` layer so the parent’s effective config
-        /// takes precedence over Env/File/Defaults.
+        /// as the `ClientOverride` layer so the parent's effective config
+        /// takes precedence over Defaults.
         config: Option<Attrs>,
     },
 
@@ -268,11 +316,13 @@ pub enum Bootstrap {
 impl Bootstrap {
     /// Serialize the mode into a environment-variable-safe string by
     /// base64-encoding its JSON representation.
+    #[allow(clippy::result_large_err)]
     fn to_env_safe_string(&self) -> v1::Result<String> {
         Ok(BASE64_STANDARD.encode(serde_json::to_string(&self)?))
     }
 
     /// Deserialize the mode from the representation returned by [`to_env_safe_string`].
+    #[allow(clippy::result_large_err)]
     fn from_env_safe_string(str: &str) -> v1::Result<Self> {
         let data = BASE64_STANDARD.decode(str)?;
         let data = std::str::from_utf8(&data)?;
@@ -1231,6 +1281,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     ///   or the channel was lost.
     async fn terminate(
         &self,
+        cx: &impl context::Actor,
         timeout: Duration,
     ) -> Result<ProcStatus, hyperactor::host::TerminateError<Self::TerminalStatus>> {
         const HARD_WAIT_AFTER_KILL: Duration = Duration::from_secs(5);
@@ -1253,6 +1304,30 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         })?;
 
         // Best-effort mark "Stopping" (ok if state races).
+
+        // Before sending SIGTERM, try to close actors normally. Only works if
+        // they are in the Ready state and have an Agent we can message.
+        let agent = self.agent_ref();
+        if let Some(agent) = agent {
+            let mailbox_result = RealClock.timeout(timeout, agent.stop_all(cx)).await;
+            if let Err(timeout_err) = mailbox_result {
+                // Agent didn't respond in time, proceed with SIGTERM.
+                tracing::warn!(
+                    "ProcMeshAgent {} didn't respond in time to stop proc: {}",
+                    agent.actor_id(),
+                    timeout_err,
+                );
+            } else if let Ok(Err(e)) = mailbox_result {
+                // Other mailbox error, proceed with SIGTERM.
+                tracing::warn!(
+                    "ProcMeshAgent {} did not successfully stop all actors: {}",
+                    agent.actor_id(),
+                    e
+                );
+            }
+        }
+        // After the stop all actors message may be successful, we still need
+        // to actually stop the process.
         let _ = self.mark_stopping();
 
         // Send SIGTERM (ESRCH is treated as "already gone").
@@ -1529,22 +1604,26 @@ impl BootstrapProcManager {
     /// backed by a specific binary path (e.g. a bootstrap
     /// trampoline).
     pub(crate) fn new(command: BootstrapCommand) -> Result<Self, io::Error> {
-        let log_monitor = match crate::logging::FileAppender::new() {
-            Some(fm) => {
-                tracing::info!("log monitor created successfully");
-                Some(Arc::new(fm))
+        let file_appender = if hyperactor::config::global::get(MESH_ENABLE_FILE_CAPTURE) {
+            match crate::logging::FileAppender::new() {
+                Some(fm) => {
+                    tracing::info!("file appender created successfully");
+                    Some(Arc::new(fm))
+                }
+                None => {
+                    tracing::warn!("failed to create file appender");
+                    None
+                }
             }
-            None => {
-                tracing::warn!("failed to create log monitor");
-                None
-            }
+        } else {
+            None
         };
 
         Ok(Self {
             command,
             children: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             pid_table: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            file_appender: log_monitor,
+            file_appender,
             socket_dir: runtime_dir()?,
         })
     }
@@ -1744,18 +1823,78 @@ impl ProcManager for BootstrapProcManager {
             "HYPERACTOR_MESH_BOOTSTRAP_MODE",
             mode.to_env_safe_string()
                 .map_err(|e| HostError::ProcessConfigurationFailure(proc_id.clone(), e.into()))?,
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        );
 
-        let log_channel = ChannelAddr::any(ChannelTransport::Unix);
-        cmd.env(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
+        // Decide whether we need to capture stdio.
+        let enable_forwarding = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
+        let enable_file_capture = hyperactor::config::global::get(MESH_ENABLE_FILE_CAPTURE);
+        let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
+        let need_stdio = enable_forwarding || enable_file_capture || tail_size > 0;
+
+        if need_stdio {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        } else {
+            cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+            tracing::info!(
+                %proc_id, enable_forwarding, enable_file_capture, tail_size,
+                "child stdio NOT captured (forwarding/file_capture/tail all disabled); inheriting parent console"
+            );
+        }
+
+        let log_channel: Option<ChannelAddr> = if enable_forwarding {
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
+            cmd.env(BOOTSTRAP_LOG_CHANNEL, addr.to_string());
+            Some(addr)
+        } else {
+            None
+        };
+
         let mut child = cmd
             .spawn()
             .map_err(|e| HostError::ProcessSpawnFailure(proc_id.clone(), e))?;
         let pid = child.id().unwrap_or_default();
-        let stdout: ChildStdout = child.stdout.take().expect("stdout piped but missing");
-        let stderr: ChildStderr = child.stderr.take().expect("stderr piped but missing");
+
+        let (out_fwder, err_fwder) = if need_stdio {
+            let stdout: ChildStdout = child.stdout.take().expect("stdout piped but missing");
+            let stderr: ChildStderr = child.stderr.take().expect("stderr piped but missing");
+
+            let (file_stdout, file_stderr) = if enable_file_capture {
+                match self.file_appender.as_deref() {
+                    Some(fm) => (
+                        Some(fm.addr_for(OutputTarget::Stdout)),
+                        Some(fm.addr_for(OutputTarget::Stderr)),
+                    ),
+                    None => {
+                        tracing::warn!("enable_file_capture=true but no FileAppender");
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            };
+
+            let out = StreamFwder::start(
+                stdout,
+                file_stdout, // Option<ChannelAddr>
+                OutputTarget::Stdout,
+                tail_size,
+                log_channel.clone(), // Option<ChannelAddr>
+                pid,
+                config.create_rank,
+            );
+            let err = StreamFwder::start(
+                stderr,
+                file_stderr,
+                OutputTarget::Stderr,
+                tail_size,
+                log_channel.clone(),
+                pid,
+                config.create_rank,
+            );
+            (Some(out), Some(err))
+        } else {
+            (None, None)
+        };
 
         let handle = BootstrapProcHandle::new(proc_id.clone(), child);
 
@@ -1766,39 +1905,7 @@ impl ProcManager for BootstrapProcManager {
             }
         }
 
-        let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
-
-        // Get FileMonitor addresses if available
-        let file_monitor_stdout_addr = self
-            .file_appender
-            .as_ref()
-            .map(|fm| fm.addr_for(OutputTarget::Stdout));
-        let file_monitor_stderr_addr = self
-            .file_appender
-            .as_ref()
-            .map(|fm| fm.addr_for(OutputTarget::Stderr));
-
-        // Create StreamFwders with FileMonitor addresses
-        let stdout_monitor = StreamFwder::start(
-            stdout,
-            file_monitor_stdout_addr,
-            OutputTarget::Stdout,
-            tail_size,
-            log_channel.clone(),
-            pid,
-            config.create_rank,
-        );
-
-        let stderr_monitor = StreamFwder::start(
-            stderr,
-            file_monitor_stderr_addr,
-            OutputTarget::Stderr,
-            tail_size,
-            log_channel.clone(),
-            pid,
-            config.create_rank,
-        );
-        handle.set_stream_monitors(Some(stdout_monitor), Some(stderr_monitor));
+        handle.set_stream_monitors(out_fwder, err_fwder);
 
         // Retain handle for lifecycle mgt.
         {
@@ -1854,6 +1961,7 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
     /// Logs a warning for each failure.
     async fn terminate_proc(
         &self,
+        cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
@@ -1864,7 +1972,7 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
         };
 
         if let Some(h) = proc_handle {
-            h.terminate(timeout)
+            h.terminate(cx, timeout)
                 .await
                 .map(|_| (Vec::new(), Vec::new()))
                 .map_err(|e| e.into())
@@ -1889,7 +1997,12 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
     /// those that were already terminal), and how many failed.
     ///
     /// Logs a warning for each failure.
-    async fn terminate_all(&self, timeout: Duration, max_in_flight: usize) -> TerminateSummary {
+    async fn terminate_all(
+        &self,
+        cx: &impl context::Actor,
+        timeout: Duration,
+        max_in_flight: usize,
+    ) -> TerminateSummary {
         // Snapshot to avoid holding the lock across awaits.
         let handles: Vec<BootstrapProcHandle> = {
             let guard = self.children.lock().await;
@@ -1900,7 +2013,7 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
         let mut ok = 0usize;
 
         let results = stream::iter(handles.into_iter().map(|h| async move {
-            match h.terminate(timeout).await {
+            match h.terminate(cx, timeout).await {
                 Ok(_) | Err(hyperactor::host::TerminateError::AlreadyTerminated(_)) => {
                     // Treat "already terminal" as success.
                     true
@@ -3309,7 +3422,7 @@ mod tests {
 
         let deadline = Duration::from_secs(2);
         match RealClock
-            .timeout(deadline * 2, handle.terminate(deadline))
+            .timeout(deadline * 2, handle.terminate(&instance, deadline))
             .await
         {
             Err(_) => panic!("terminate() future hung"),
@@ -3549,7 +3662,7 @@ mod tests {
                     None,
                     OutputTarget::Stdout,
                     tail_size,
-                    log_channel.clone(),
+                    Some(log_channel.clone()),
                     pid,
                     0,
                 );
@@ -3559,7 +3672,7 @@ mod tests {
                     None,
                     OutputTarget::Stderr,
                     tail_size,
-                    log_channel.clone(),
+                    Some(log_channel.clone()),
                     pid,
                     0,
                 );

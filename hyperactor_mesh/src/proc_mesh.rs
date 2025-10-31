@@ -697,6 +697,7 @@ impl ProcMesh {
                     .collect(),
                 actor_event_router: actor_event_router.clone(),
             }),
+            #[allow(clippy::todo)]
             ProcMeshKind::V1(_proc_mesh) => todo!(),
         }
     }

@@ -1636,10 +1636,7 @@ impl syn::parse::Parse for BehaviorInput {
 /// ```
 #[proc_macro]
 pub fn behavior(input: TokenStream) -> TokenStream {
-    let BehaviorInput {
-        behavior: behavior,
-        handlers,
-    } = parse_macro_input!(input as BehaviorInput);
+    let BehaviorInput { behavior, handlers } = parse_macro_input!(input as BehaviorInput);
     let tys = HandlerSpec::add_indexed(handlers);
 
     let expanded = quote! {

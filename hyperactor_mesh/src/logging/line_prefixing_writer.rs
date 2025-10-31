@@ -27,6 +27,7 @@ where
     W: io::AsyncWrite + Unpin,
 {
     /// Creates a new LinePrefixingWriter that will prefix each line with "[<local_rank>] ".
+    #[allow(dead_code)]
     pub fn new(local_rank: usize, inner: W) -> Self {
         let prefix = format!("[{}] ", local_rank).into_bytes();
         Self {
