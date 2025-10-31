@@ -311,7 +311,6 @@ macro_rules! impl_attrvalue {
 
 // Implement AttrValue for common standard library types
 impl_attrvalue!(
-    bool,
     i8,
     i16,
     i32,
@@ -381,6 +380,24 @@ where
         let start = start.parse().map_err(|e: E| e.into())?;
         let end = end.parse().map_err(|e: E| e.into())?;
         Ok(start..end)
+    }
+}
+
+impl AttrValue for bool {
+    fn display(&self) -> String {
+        if *self { 1.to_string() } else { 0.to_string() }
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        let value = value.to_ascii_lowercase();
+        match value.as_str() {
+            "0" | "false" => Ok(false),
+            "1" | "true" => Ok(true),
+            _ => Err(anyhow::anyhow!(
+                "expected `0`, `1`, `true` or `false`, got `{}`",
+                value
+            )),
+        }
     }
 }
 
