@@ -40,3 +40,6 @@ py-spy = { git = "https://github.com/technicianted/py-spy", rev = "8f74f3e4f955f
 
 [target.'cfg(target_os = "linux")'.dependencies]
 py-spy = { git = "https://github.com/technicianted/py-spy", rev = "8f74f3e4f955fee57f0d4a8103511ee788348a2a", features = ["unwind"] }
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

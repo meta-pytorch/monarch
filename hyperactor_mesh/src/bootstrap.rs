@@ -1507,6 +1507,7 @@ impl BootstrapCommand {
     /// bootstrap processes under proc manager control. Not available
     /// outside of test builds.
     #[cfg(test)]
+    #[cfg(fbcode_build)]
     pub(crate) fn test() -> Self {
         Self {
             program: crate::testresource::get("monarch/hyperactor_mesh/bootstrap"),
@@ -3423,6 +3424,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_handle_terminate_graceful() {
         // Create a root direct-addressed proc + client instance.
         let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
@@ -3486,6 +3488,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_handle_kill_forced() {
         // Root proc + client instance (so the child can dial back).
         let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
@@ -3535,6 +3538,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_cannonical_simple() {
         // SAFETY: unit-test scoped
         unsafe {

@@ -1262,6 +1262,7 @@ mod tests {
         use crate::sel;
 
         #[tokio::test]
+        #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance().await;
             let ext = extent!(host = 4);

@@ -1037,6 +1037,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
     async fn test_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
@@ -1049,6 +1050,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_failing_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 

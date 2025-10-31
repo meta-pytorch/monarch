@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "build_utils",
     "controller",
     "cuda-sys",
     "erased_lifetime",
@@ -10,11 +11,22 @@ members = [
     "hyperactor_multiprocess",
     "hyperactor_mesh",
     "hyperactor_mesh_macros",
-    "ndslice",
+    "hyperactor_telemetry",
+    "monarch_conda",
     "monarch_extension",
-    "monarch_tensor_worker",
+    "monarch_hyperactor",
+    "monarch_messages",
+    "monarch_perfetto_trace",
     "monarch_rdma",
+    "monarch_simulator",
+    "monarch_tensor_worker",
+    "monarch_types",
     "nccl-sys",
+    "ndslice",
+    "preempt_rwlock",
     "rdmaxcel-sys",
+    "serde_multipart",
+    "timed_test",
     "torch-sys",
+    "torch-sys-cuda",
 ]
