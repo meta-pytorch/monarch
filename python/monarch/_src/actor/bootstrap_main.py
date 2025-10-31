@@ -76,7 +76,7 @@ def invoke_main() -> None:
         bootstrap_err = RuntimeError(
             f"Failed to bootstrap proc due to: {e}\nMake sure your proc bootstrap command is correct. "
             f"Provided command:\n{' '.join([sys.executable, *sys.argv])}\nTo specify your proc bootstrap command, use the "
-            f"`bootstrap_cmd` kwarg in `monarch.actor.host_mesh.HostMesh.allocate_nonblocking(...)`."
+            f"`bootstrap_cmd` kwarg in `monarch.actor.HostMesh.allocate_nonblocking(...)`."
         )
         raise bootstrap_err from e
 
