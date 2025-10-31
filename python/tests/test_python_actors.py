@@ -1412,11 +1412,6 @@ def test_mesh_len():
     proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 12})
     s = proc_mesh.spawn("sleep_actor", SleepActor)
     assert 12 == len(s)
-    # FIXME: Actually figure out what's going on here.
-    # Call an endpoint on the actor before the test
-    # exits. Otherwise we might get a fatal PyGILState_Release
-    # error.
-    s.sleep.call(1).get()
 
 
 class UndeliverableMessageReceiver(Actor):

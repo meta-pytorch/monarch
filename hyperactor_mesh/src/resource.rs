@@ -273,6 +273,22 @@ pub struct Stop {
     pub reply: PortRef<StatusOverlay>,
 }
 
+/// Stop all resources owned by the receiver of this message.
+/// No reply, this is meant to force a stop without waiting for acknowledgement.
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    Named,
+    Handler,
+    HandleClient,
+    RefClient,
+    Bind,
+    Unbind
+)]
+pub struct StopAll {}
+
 /// Retrieve the current state of the resource.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
 pub struct GetState<S> {

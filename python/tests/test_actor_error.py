@@ -749,13 +749,13 @@ async def test_slice_supervision() -> None:
     slice_2 = error_mesh.slice(gpus=2)
     slice_3 = error_mesh.slice(gpus=3)
 
-    # Trigger supervision error on gpus=3
-    with pytest.raises(SupervisionError, match="did not handle supervision event"):
-        await slice_3.fail_with_supervision_error.call()
-
     match = (
         "Actor .* (is unhealthy with reason:|exited because of the following reason:)"
     )
+    # Trigger supervision error on gpus=3
+    with pytest.raises(SupervisionError, match=match):
+        await slice_3.fail_with_supervision_error.call()
+
     # Mesh containing all gpus is unhealthy
     with pytest.raises(SupervisionError, match=match):
         await error_mesh.check.call()

@@ -10,7 +10,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
-use std::hash::Hasher;
 use std::marker::PhantomData;
 use std::mem;
 use std::mem::MaybeUninit;
@@ -111,6 +110,7 @@ impl TryFrom<Run> for (Range<usize>, u32) {
     /// exceeds the platform's addressable range. This ensures safe
     /// round-tripping between the serialized wire format and native
     /// representation.
+    #[allow(clippy::result_large_err)]
     fn try_from(r: Run) -> Result<Self, Self::Error> {
         let start = usize::try_from(r.start).map_err(|_| "run.start too large")?;
         let end = usize::try_from(r.end).map_err(|_| "run.end too large")?;
@@ -203,6 +203,7 @@ impl<T> ValueMesh<T> {
     /// Returns [`Error::InvalidRankCardinality`] if `ranks.len() !=
     /// region.num_ranks()`.
     /// ```
+    #[allow(clippy::result_large_err)]
     pub(crate) fn new(region: Region, ranks: Vec<T>) -> crate::v1::Result<Self> {
         let (actual, expected) = (ranks.len(), region.num_ranks());
         if actual != expected {
@@ -275,6 +276,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
     /// - Unspecified ranks are filled with `default`.
     /// - Result is stored in RLE form; no dense `Vec<T>` is
     ///   materialized.
+    #[allow(clippy::result_large_err)]
     pub fn from_ranges_with_default(
         region: Region,
         default: T,
@@ -410,6 +412,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
     /// let mesh = ValueMesh::from_dense(region, vec![1, 1, 2, 2, 3]).unwrap();
     /// // Internally compressed to three runs: [1, 1], [2, 2], [3]
     /// ```
+    #[allow(clippy::result_large_err)]
     pub fn from_dense(region: Region, values: Vec<T>) -> crate::v1::Result<Self> {
         let mut vm = Self::new(region, values)?;
         vm.compress_adjacent_in_place();
@@ -1280,6 +1283,7 @@ mod tests {
     }
 
     // Indexed collector naïve implementation (for reference).
+    #[allow(clippy::result_large_err)]
     fn build_value_mesh_indexed<T>(
         region: Region,
         pairs: impl IntoIterator<Item = (usize, T)>,

@@ -188,8 +188,10 @@ impl ProcRef {
 /// A mesh of processes.
 #[derive(Debug)]
 pub struct ProcMesh {
+    #[allow(dead_code)]
     name: Name,
     allocation: ProcMeshAllocation,
+    #[allow(dead_code)]
     comm_actor_name: Option<Name>,
     current_ref: ProcMeshRef,
 }
@@ -435,6 +437,7 @@ impl ProcMesh {
     }
 
     /// Detach the proc mesh from the lifetime of `self`, and return its reference.
+    #[allow(dead_code)]
     pub(crate) fn detach(self) -> ProcMeshRef {
         // This also keeps the ProcMeshAllocation::Allocated alloc task alive.
         self.current_ref
@@ -500,7 +503,7 @@ enum ProcMeshAllocation {
 impl ProcMeshAllocation {
     fn extent(&self) -> &Extent {
         match self {
-            ProcMeshAllocation::Allocated { extent, .. } => &extent,
+            ProcMeshAllocation::Allocated { extent, .. } => extent,
             ProcMeshAllocation::Owned { extent, .. } => extent,
         }
     }
@@ -567,6 +570,7 @@ pub struct ProcMeshRef {
 
 impl ProcMeshRef {
     /// Create a new ProcMeshRef from the given name, region, ranks, and so on.
+    #[allow(clippy::result_large_err)]
     fn new(
         name: Name,
         region: Region,

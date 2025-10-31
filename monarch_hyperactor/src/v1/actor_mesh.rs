@@ -45,7 +45,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::PythonActor;
@@ -305,7 +304,7 @@ impl PythonActorMeshImpl {
         let (sender, receiver) = watch::channel(None);
         let cancel = CancellationToken::new();
         let canceled = cancel.clone();
-        let task = get_tokio_runtime().spawn(async move {
+        let _task = get_tokio_runtime().spawn(async move {
             // 3 seconds is chosen to not penalize short-lived successful calls,
             // while still able to catch issues before they look like a hang or timeout.
             let time_between_checks = tokio::time::Duration::from_secs(3);

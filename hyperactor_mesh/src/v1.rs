@@ -124,13 +124,13 @@ pub enum Error {
 
     #[error(
         "error spawning proc mesh: statuses: {}",
-        RankedValues::invert(&*.statuses)
+        RankedValues::invert(statuses)
     )]
     ProcSpawnError { statuses: RankedValues<Status> },
 
     #[error(
         "error spawning actor mesh: statuses: {}",
-        RankedValues::invert(&*.statuses)
+        RankedValues::invert(statuses)
     )]
     ActorSpawnError { statuses: RankedValues<Status> },
 

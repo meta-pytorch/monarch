@@ -12,8 +12,6 @@ mod pyobject;
 mod python;
 mod pytree;
 
-use std::error::Error;
-
 use pyo3::PyErr;
 use pyo3::exceptions::PyValueError;
 pub use pyobject::PickledPyObject;

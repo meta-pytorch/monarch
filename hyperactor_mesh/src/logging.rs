@@ -47,7 +47,6 @@ use hyperactor::data::Serialized;
 use hyperactor::declare_attrs;
 use hyperactor_telemetry::env;
 use hyperactor_telemetry::log_file_path;
-use notify::Watcher;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io;
@@ -755,7 +754,7 @@ async fn tee(
             line.push_str("... [TRUNCATED]");
         }
         let final_line = if let Some(ref p) = prefix {
-            format!("[{}# {}", p, line)
+            format!("[{}] {}", p, line)
         } else {
             line
         };
@@ -841,7 +840,7 @@ impl StreamFwder {
         file_monitor_addr: Option<ChannelAddr>,
         target: OutputTarget,
         max_buffer_size: usize,
-        log_channel: ChannelAddr,
+        log_channel: Option<ChannelAddr>,
         pid: u32,
         local_rank: usize,
     ) -> Self {
@@ -870,10 +869,20 @@ impl StreamFwder {
         file_monitor_addr: Option<ChannelAddr>,
         target: OutputTarget,
         max_buffer_size: usize,
-        log_channel: ChannelAddr,
+        log_channel: Option<ChannelAddr>,
         pid: u32,
         prefix: Option<String>,
     ) -> Self {
+        // Sanity: when there is no file sink, no log forwarding, and
+        // `tail_size == 0`, the child should have **inherited** stdio
+        // and no `StreamFwder` should exist. In that case console
+        // mirroring happens via inheritance, not via `StreamFwder`.
+        // If we hit this, we piped unnecessarily.
+        debug_assert!(
+            file_monitor_addr.is_some() || max_buffer_size > 0 || log_channel.is_some(),
+            "StreamFwder started with no sinks and no tail"
+        );
+
         let stop = Arc::new(Notify::new());
         let recent_lines_buf = RotatingLineBuffer {
             recent_lines: Arc::new(RwLock::new(VecDeque::<String>::with_capacity(
@@ -882,12 +891,16 @@ impl StreamFwder {
             max_buffer_size,
         };
 
-        let log_sender = match LocalLogSender::new(log_channel, pid) {
-            Ok(log_sender) => Some(Box::new(log_sender) as Box<dyn LogSender + Send>),
-            Err(e) => {
-                tracing::error!("failed to create log sender: {}", e);
-                None
+        let log_sender: Option<Box<dyn LogSender + Send>> = if let Some(addr) = log_channel {
+            match LocalLogSender::new(addr, pid) {
+                Ok(s) => Some(Box::new(s) as Box<dyn LogSender + Send>),
+                Err(e) => {
+                    tracing::error!("failed to create log sender: {}", e);
+                    None
+                }
             }
+        } else {
+            None
         };
 
         let teer_stop = stop.clone();
@@ -1654,12 +1667,14 @@ mod tests {
             "Expected deserialization to fail with invalid UTF-8 bytes"
         );
     }
+    #[allow(dead_code)]
     struct MockLogSender {
         log_sender: mpsc::UnboundedSender<(OutputTarget, String)>, // (output_target, content)
         flush_called: Arc<Mutex<bool>>,                            // Track if flush was called
     }
 
     impl MockLogSender {
+        #[allow(dead_code)]
         fn new(log_sender: mpsc::UnboundedSender<(OutputTarget, String)>) -> Self {
             Self {
                 log_sender,
@@ -1804,7 +1819,7 @@ mod tests {
             file_monitor_addr,
             OutputTarget::Stdout,
             3, // max_buffer_size
-            log_channel,
+            Some(log_channel),
             12345, // pid
             None,  // no prefix
         );

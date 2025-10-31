@@ -118,18 +118,22 @@ mod tests {
     use hyperactor::id;
 
     use super::*;
+    use crate::v1::Name;
 
     #[tokio::test]
     async fn test_proc_dialer() {
         let dir = tempfile::tempdir().unwrap();
+        let first = Name::new("first");
+        let second = Name::new("second");
+        let third = Name::new("third");
         let (first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(
-            format!("unix:{}/first", dir.path().display())
+            format!("unix:{}/{}", dir.path().display(), first)
                 .parse()
                 .unwrap(),
         )
         .unwrap();
         let (second_addr, mut second_rx) = channel::serve::<MessageEnvelope>(
-            format!("unix:{}/second", dir.path().display())
+            format!("unix:{}/{}", dir.path().display(), second)
                 .parse()
                 .unwrap(),
         )
@@ -139,17 +143,17 @@ mod tests {
 
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let first_actor_id = ActorId(
-            ProcId::Direct(local_addr.clone(), "first".to_string()),
+            ProcId::Direct(local_addr.clone(), first.to_string()),
             "actor".to_string(),
             0,
         );
         let second_actor_id = ActorId(
-            ProcId::Direct(local_addr.clone(), "second".to_string()),
+            ProcId::Direct(local_addr.clone(), second.to_string()),
             "actor".to_string(),
             0,
         );
         let third_notexist_actor_id = ActorId(
-            ProcId::Direct(local_addr.clone(), "third".to_string()),
+            ProcId::Direct(local_addr.clone(), third.to_string()),
             "actor".to_string(),
             0,
         );
@@ -192,6 +196,21 @@ mod tests {
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(id!(external[0].actor), 0),
+            Serialized::serialize(&()).unwrap(),
+            Attrs::new(),
+        );
+        proc_dialer.post(envelope.clone(), return_handle.clone());
+        assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
+
+        // System proc on the host:
+        let system_actor_id = ActorId(
+            ProcId::Direct(local_addr.clone(), "system".to_string()),
+            "actor".to_string(),
+            0,
+        );
+        let envelope = MessageEnvelope::new(
+            second_actor_id.clone(),
+            PortId(system_actor_id, 0),
             Serialized::serialize(&()).unwrap(),
             Attrs::new(),
         );

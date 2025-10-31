@@ -72,6 +72,7 @@ use crate::channel::Rx;
 use crate::channel::Tx;
 use crate::clock::Clock;
 use crate::clock::RealClock;
+use crate::context;
 use crate::mailbox::BoxableMailboxSender;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
@@ -404,6 +405,7 @@ pub trait SingleTerminate: Send + Sync {
     /// Returns a tuple of (polite shutdown actors vec, forceful stop actors vec)
     async fn terminate_proc(
         &self,
+        cx: &impl context::Actor,
         proc: &ProcId,
         timeout: std::time::Duration,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error>;
@@ -444,6 +446,7 @@ pub trait BulkTerminate: Send + Sync {
     ///   etc.).
     async fn terminate_all(
         &self,
+        cx: &impl context::Actor,
         timeout: std::time::Duration,
         max_in_flight: usize,
     ) -> TerminateSummary;
@@ -467,10 +470,11 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
     /// terminations.
     pub async fn terminate_children(
         &self,
+        cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
     ) -> TerminateSummary {
-        self.manager.terminate_all(timeout, max_in_flight).await
+        self.manager.terminate_all(cx, timeout, max_in_flight).await
     }
 }
 
@@ -478,10 +482,11 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
 impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
     async fn terminate_proc(
         &self,
+        cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
-        self.manager.terminate_proc(proc, timeout).await
+        self.manager.terminate_proc(cx, proc, timeout).await
     }
 }
 
@@ -566,6 +571,7 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     /// termination.
     async fn terminate(
         &self,
+        cx: &impl context::Actor,
         timeout: Duration,
     ) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>>;
 
@@ -657,6 +663,7 @@ where
 {
     async fn terminate_all(
         &self,
+        _cx: &impl context::Actor,
         timeout: std::time::Duration,
         max_in_flight: usize,
     ) -> TerminateSummary {
@@ -699,6 +706,7 @@ where
 {
     async fn terminate_proc(
         &self,
+        _cx: &impl context::Actor,
         proc: &ProcId,
         timeout: std::time::Duration,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
@@ -783,6 +791,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
 
     async fn terminate(
         &self,
+        _cx: &impl context::Actor,
         timeout: Duration,
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         let mut proc = {
@@ -1008,6 +1017,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
 
     async fn terminate(
         &self,
+        _cx: &impl context::Actor,
         _deadline: Duration,
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         Err(TerminateError::Unsupported)
@@ -1436,6 +1446,7 @@ mod tests {
         }
         async fn terminate(
             &self,
+            _cx: &impl context::Actor,
             _timeout: Duration,
         ) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>> {
             Err(TerminateError::Unsupported)
