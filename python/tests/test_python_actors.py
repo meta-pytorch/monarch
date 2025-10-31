@@ -9,6 +9,7 @@
 import asyncio
 import ctypes
 import importlib.resources
+import io
 import logging
 import operator
 import os
@@ -20,6 +21,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+from contextlib import contextmanager
 from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import cast, Tuple
@@ -67,7 +69,6 @@ from monarch.actor import (
 )
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
-
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
@@ -1688,9 +1689,34 @@ def test_login_job():
         j.kill()
 
 
+class CaptureLogs:
+    def __init__(self):
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("capture")
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+        self.log_stream = log_stream
+        self.logger = logger
+
+    @property
+    def contents(self) -> str:
+        return self.log_stream.getvalue()
+
+
 class Named(Actor):
     @endpoint
     def report(self):
+        logs = CaptureLogs()
+        logs.logger.error("HUH")
+        assert (
+            "actor=<root>.<tests.test_python_actors.Named the_name{'f': 0/2}>"
+            in logs.contents
+        )
+
         return context().actor_instance.creator, str(context().actor_instance)
 
 
@@ -1706,3 +1732,7 @@ def test_instance_name():
     assert result == "<root>.<tests.test_python_actors.Named the_name{'f': 0/2}>"
     assert cr.name == "root"
     assert str(context().actor_instance) == "<root>"
+
+    logs = CaptureLogs()
+    logs.logger.error("HUH")
+    assert "actor=<root>" in logs.contents
