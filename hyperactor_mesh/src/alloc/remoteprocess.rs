@@ -998,6 +998,10 @@ impl Alloc for RemoteProcessAlloc {
             // rerun outer loop in case we pushed new items to the event queue
             let mut reloop = false;
             let update = loop {
+                tracing::info!(
+                    "{}: receiving from remote allocator rx",
+                    self.bootstrap_addr
+                );
                 tokio::select! {
                     msg = self.rx.recv() => {
                         tracing::debug!("got ProcState message from allocator: {:?}", msg);
@@ -1070,7 +1074,10 @@ impl Alloc for RemoteProcessAlloc {
                             // Hearbeat message is discarded immediately after being received, sender (remote
                             // process allocator) relies on channel ack to know if the receiver (client) is
                             // still alive. No state needs to be updated.
-                            Ok(RemoteProcessProcStateMessage::HeartBeat) => {}
+                            Ok(RemoteProcessProcStateMessage::HeartBeat) => {
+                                tracing::info!("RemoteProcessAlloc heartbeat to {}", self.bootstrap_addr);
+
+                            }
                             Err(e) => {
                                 break Some((None, ProcState::Failed {world_id: self.world_id.clone(), description: format!("error receiving events: {}", e)}));
                             }
