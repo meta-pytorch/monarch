@@ -280,12 +280,12 @@ def _init_context_log_handler() -> None:
 
     _original_addHandler: Any = logging.Logger.addHandler
 
-    def _patched_addHandler(self: logging.Logger, handler: logging.Handler) -> None:
-        _original_addHandler(self, handler)
-        if af not in handler.filters:
-            handler.addFilter(af)
+    def _patched_addHandler(self: logging.Logger, hdlr: logging.Handler) -> None:
+        _original_addHandler(self, hdlr)
+        if af not in hdlr.filters:
+            hdlr.addFilter(af)
 
-    # typing: ignore
+    # pyre-ignore[8]: Intentionally monkey-patching Logger.addHandler
     logging.Logger.addHandler = _patched_addHandler
 
 
