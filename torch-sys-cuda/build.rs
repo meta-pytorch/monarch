@@ -137,6 +137,11 @@ fn main() {
     // Add CUDA toolkit includes
     libtorch_include_dirs.push(format!("{}/include", cuda_home.display()).into());
 
+    // Add NCCL includes
+    if let Some(nccl_home) = build_utils::find_nccl_home() {
+        libtorch_include_dirs.push(format!("{}/include", nccl_home).into());
+    }
+
     // Prefix includes with `monarch` to maintain consistency with fbcode
     // folder structure
     CFG.include_prefix = "monarch/torch-sys-cuda";

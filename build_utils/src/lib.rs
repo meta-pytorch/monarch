@@ -140,6 +140,10 @@ pub fn find_cuda_home() -> Option<String> {
     cuda_home
 }
 
+pub fn find_nccl_home() -> Option<String> {
+    get_env_var_with_rerun("NCCL_HOME").ok().or_else(|| get_env_var_with_rerun("NCCL_ROOT").ok())
+}
+
 /// Discover CUDA configuration including home, include dirs, and lib dirs
 pub fn discover_cuda_config() -> Result<CudaConfig, BuildError> {
     let cuda_home = find_cuda_home().ok_or(BuildError::CudaNotFound)?;
@@ -286,6 +290,14 @@ mod tests {
         let result = find_cuda_home();
         env::remove_var("CUDA_HOME");
         assert_eq!(result, Some("/test/cuda".to_string()));
+    }
+
+    #[test]
+    fn test_find_nccl_home_env_var() {
+        env::set_var("NCCL_HOME", "/test/nccl");
+        let result = find_nccl_home();
+        env::remove_var("NCCL_HOME");
+        assert_eq!(result, Some("/test/nccl".to_string()));
     }
 
     #[test]
