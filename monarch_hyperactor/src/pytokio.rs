@@ -357,7 +357,9 @@ impl PyPythonTask {
                         .import("monarch._src.actor.actor_mesh")?
                         .getattr("_context")?;
                     let old_context = _context.call_method1("get", (PyNone::get(py),))?;
-                    _context.call_method1("set", (monarch_context.clone_ref(py),))?;
+                    _context
+                        .call_method1("set", (monarch_context.clone_ref(py),))
+                        .expect("failed to set _context");
 
                     let result = match last {
                         Ok(value) => coroutine_iterator.bind(py).call_method1("send", (value,)),
@@ -367,7 +369,9 @@ impl PyPythonTask {
                     };
 
                     // Reset context() so that when this tokio thread yields, it has its original state.
-                    _context.call_method1("set", (old_context,))?;
+                    _context
+                        .call_method1("set", (old_context,))
+                        .expect("failed to restore _context");
                     match result {
                         Ok(task) => Ok(Action::Wait(
                             task.extract::<Py<PyPythonTask>>()
@@ -413,14 +417,34 @@ impl PyPythonTask {
     }
 
     #[staticmethod]
-    fn spawn_blocking(f: PyObject) -> PyResult<PyShared> {
+    fn spawn_blocking(py: Python<'_>, f: PyObject) -> PyResult<PyShared> {
         let (tx, rx) = watch::channel(None);
         let traceback = current_traceback()?;
         let traceback1 = traceback
             .as_ref()
             .map_or_else(|| None, |t| Python::with_gil(|py| Some(t.clone_ref(py))));
+        let monarch_context = py
+            .import("monarch._src.actor.actor_mesh")?
+            .call_method0("context")?
+            .unbind();
+        // The `_context` contextvar needs to be propagated through to the thread that
+        // runs the blocking tokio task. Upon completion, the original value of `_context`
+        // is restored.
         let handle = get_tokio_runtime().spawn_blocking(move || {
-            let result = Python::with_gil(|py| f.call0(py));
+            let result = Python::with_gil(|py| {
+                let _context = py
+                    .import("monarch._src.actor.actor_mesh")?
+                    .getattr("_context")?;
+                let old_context = _context.call_method1("get", (PyNone::get(py),))?;
+                _context
+                    .call_method1("set", (monarch_context.clone_ref(py),))
+                    .expect("failed to set _context");
+                let result = f.call0(py);
+                _context
+                    .call_method1("set", (old_context,))
+                    .expect("failed to restore _context");
+                result
+            });
             send_result(tx, result, traceback1);
         });
         Ok(PyShared {
