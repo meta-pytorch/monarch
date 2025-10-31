@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 """
 This is the main function for the boostrapping a new process using a ProcessAllocator.
@@ -29,13 +29,14 @@ except ImportError:
     import monarch._rust_bindings  # @manual  # noqa: F401
 
 
-async def main():
+async def main() -> None:
     from monarch._rust_bindings.monarch_hyperactor.bootstrap import bootstrap_main
 
+    # pyre-ignore[12]: bootstrap_main is async but imported from Rust bindings
     await bootstrap_main()
 
 
-def invoke_main():
+def invoke_main() -> None:
     try:
         # if this is invoked with the stdout piped somewhere, then print
         # changes its buffering behavior. So we default to the standard

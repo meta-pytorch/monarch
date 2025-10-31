@@ -399,8 +399,15 @@ pub fn get<T: AttrValue + Copy>(key: Key<T>) -> T {
     let layers = LAYERS.read().unwrap();
     for layer in &layers.ordered {
         let a = layer_attrs(layer);
-        if let Some(value) = a.get(key) {
-            return *value;
+        if let Some(value) = a.get_value_by_name(key.name()) {
+            let t = value.as_any().downcast_ref::<T>().unwrap_or_else(|| {
+                panic!(
+                    "cannot cast to type {} for key {}",
+                    std::any::type_name::<T>(),
+                    key.name()
+                )
+            });
+            return *t;
         }
     }
     *key.default().expect("key must have a default")
@@ -863,6 +870,35 @@ mod tests {
         set(Source::Env, env2);
 
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 3333);
+    }
+
+    #[test]
+    fn test_layer_precedence_read_file_if_not_found_in_env() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Read the default value because no layers have been set.
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 10737418240);
+
+        // File sets a value.
+        let mut file = Attrs::new();
+        file[CODEC_MAX_FRAME_LENGTH] = 1111;
+        set(Source::File, file);
+
+        // Env does not have any attribute.
+        let env = Attrs::new();
+        set(Source::Env, env);
+
+        // Should read from File.
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
+
+        // Replace Env layer with a new value.
+        let mut env2 = Attrs::new();
+        env2[CODEC_MAX_FRAME_LENGTH] = 2222;
+        set(Source::Env, env2);
+
+        // Env should win over File.
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 2222);
     }
 
     #[test]

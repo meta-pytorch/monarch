@@ -74,6 +74,7 @@ serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.27.1", features = ["derive"] }
+tempfile = "3.22"
 thiserror = "2.0.12"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
@@ -87,7 +88,6 @@ criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 itertools = "0.14.0"
 maplit = "1.0"
 proptest = "1.5"
-tempfile = "3.22"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 

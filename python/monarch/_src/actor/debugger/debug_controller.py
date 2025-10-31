@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 import asyncio
 import functools
 from typing import Dict, List, Optional, Tuple
@@ -54,10 +54,10 @@ class DebugController(Actor):
     def __init__(self) -> None:
         self.sessions = DebugSessions()
         self._task_lock = asyncio.Lock()
-        self._task: asyncio.Task | None = None
+        self._task: Optional[asyncio.Task[None]] = None
         self._debug_io: DebugIO = DebugStdIO()
-        self._server = asyncio.Future()
-        self._server_task = asyncio.create_task(self._serve())
+        self._server: asyncio.Future[asyncio.Server] = asyncio.Future()
+        self._server_task: asyncio.Task[None] = asyncio.create_task(self._serve())
 
     async def _serve(self) -> None:
         try:
@@ -98,12 +98,12 @@ class DebugController(Actor):
             self._task = asyncio.create_task(self._enter())
 
     @endpoint
-    async def wait_pending_session(self):
+    async def wait_pending_session(self) -> None:
         while len(self.sessions) == 0:
             await asyncio.sleep(1)
 
     @endpoint
-    async def list(self, print_output=True) -> List[DebugSessionInfo]:
+    async def list(self, print_output: bool = True) -> List[DebugSessionInfo]:
         session_info = sorted(self.sessions.info())
         if print_output:
             await self._debug_io.output(

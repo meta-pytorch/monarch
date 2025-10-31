@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 
 from pathlib import Path
@@ -28,11 +28,12 @@ PrivateKey = Union[bytes, Path, None]
 CA = Union[bytes, Path, Literal["trust_all_connections"]]
 
 
-def _as_python_task(s: str | Future[str]) -> PythonTask:
+def _as_python_task(s: str | Future[str]) -> "PythonTask[str]":
     if isinstance(s, str):
+        s_str: str = s
 
-        async def just():
-            return s
+        async def just() -> str:
+            return s_str
 
         return PythonTask.from_coroutine(just())
     else:

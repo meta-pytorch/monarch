@@ -45,6 +45,7 @@ const LOG_LEVEL_ERROR: &str = "error";
 
 // Span field constants
 const SPAN_FIELD_RECORDING: &str = "recording";
+#[allow(dead_code)]
 const SPAN_FIELD_RECORDER: &str = "recorder";
 
 // Environment value constants
@@ -52,6 +53,7 @@ const ENV_VALUE_LOCAL: &str = "local";
 const ENV_VALUE_MAST_EMULATOR: &str = "mast_emulator";
 const ENV_VALUE_MAST: &str = "mast";
 const ENV_VALUE_TEST: &str = "test";
+#[allow(dead_code)]
 const ENV_VALUE_LOCAL_MAST_SIMULATOR: &str = "local_mast_simulator";
 
 pub mod in_memory_reader;

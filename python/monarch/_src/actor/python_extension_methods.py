@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 import importlib
 
@@ -15,7 +15,7 @@ T = TypeVar("T")
 
 
 class PatchRustClass:
-    def __init__(self, rust_class: Type):
+    def __init__(self, rust_class: Type[T]) -> None:
         self.rust_class = rust_class
 
     def __call__(self, python_class: Type[T]) -> Type[T]:
