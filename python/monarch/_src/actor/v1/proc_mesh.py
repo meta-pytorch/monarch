@@ -316,6 +316,7 @@ class ProcMesh(MeshTrait):
         )
         service = ActorMesh._create(
             Class,
+            name,
             actor_mesh,
             self._region.as_shape(),
             self,

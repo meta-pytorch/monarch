@@ -112,6 +112,13 @@ pub struct PyInstance {
     pub(crate) rank: PyPoint,
     #[pyo3(get, set, name = "_children")]
     children: Option<PyObject>,
+
+    #[pyo3(get, set, name = "name")]
+    name: String,
+    #[pyo3(get, set, name = "class_name")]
+    class_name: Option<String>,
+    #[pyo3(get, set, name = "creator")]
+    creator: Option<PyObject>,
 }
 
 #[pymethods]
@@ -171,6 +178,9 @@ impl<I: Into<ContextInstance>> From<I> for PyInstance {
             controller_controller: None,
             rank: PyPoint::new(0, Extent::unity().into()),
             children: None,
+            name: "root".to_string(),
+            class_name: None,
+            creator: None,
         }
     }
 }

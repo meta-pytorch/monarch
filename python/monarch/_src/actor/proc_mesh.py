@@ -439,6 +439,7 @@ class ProcMeshV0(MeshTrait):
         actor_mesh = HyProcMeshV0.spawn_async(pm, name, _Actor)
         service = ActorMesh._create(
             Class,
+            name,
             actor_mesh,
             self._shape,
             self,

@@ -1686,3 +1686,23 @@ def test_login_job():
             assert v == "hello!"
 
         j.kill()
+
+
+class Named(Actor):
+    @endpoint
+    def report(self):
+        return context().actor_instance.creator, str(context().actor_instance)
+
+
+def test_instance_name():
+    cr, result = (
+        this_host()
+        .spawn_procs(per_host={"f": 2})
+        .spawn("the_name", Named)
+        .slice(f=0)
+        .report.call_one()
+        .get()
+    )
+    assert result == "<root>.<tests.test_python_actors.Named the_name{'f': 0/2}>"
+    assert cr.name == "root"
+    assert str(context().actor_instance) == "<root>"
