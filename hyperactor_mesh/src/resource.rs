@@ -9,6 +9,8 @@
 //! This modules defines a set of common message types used for managing resources
 //! in hyperactor meshes.
 
+pub mod mesh;
+
 use core::slice::GetDisjointMutIndex as _;
 use std::collections::HashMap;
 use std::fmt;
