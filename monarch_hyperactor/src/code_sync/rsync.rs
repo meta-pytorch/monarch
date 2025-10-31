@@ -468,6 +468,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    // TODO: OSS: Cannot assign requested address (os error 99)
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_simple() -> Result<()> {
         let input = TempDir::new()?;
         fs::write(input.path().join("foo.txt"), "hello world").await?;
@@ -485,6 +487,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO: OSS: Cannot assign requested address (os error 99)
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_rsync_actor_and_mesh() -> Result<()> {
         // Create source workspace with test files
         let source_workspace = TempDir::new()?;

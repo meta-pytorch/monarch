@@ -1482,6 +1482,7 @@ mod tests {
 
         use crate::alloc::process::ProcessAllocator;
 
+        #[cfg(fbcode_build)]
         fn process_allocator() -> ProcessAllocator {
             ProcessAllocator::new(Command::new(crate::testresource::get(
                 "monarch/hyperactor_mesh/bootstrap",
@@ -1928,6 +1929,7 @@ mod tests {
         use crate::sel;
 
         #[tokio::test]
+        #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance().await;
             let host_mesh = v1::testing::host_mesh(extent!(host = 4)).await;

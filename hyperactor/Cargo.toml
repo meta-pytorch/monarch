@@ -100,3 +100,6 @@ tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 [features]
 default = []
 stdio-write-probe = []
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

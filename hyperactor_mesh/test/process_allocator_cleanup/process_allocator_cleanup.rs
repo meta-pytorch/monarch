@@ -27,6 +27,7 @@ use tokio::time::timeout;
 
 /// Test that ProcessAllocator children are cleaned up when parent is killed
 #[tokio::test]
+#[cfg_attr(not(fbcode_build), ignore)]
 async fn test_process_allocator_child_cleanup() {
     let test_binary_path = buck_resources::get("monarch/hyperactor_mesh/test_bin").unwrap();
     eprintln!("Starting test process allocator at: {:?}", test_binary_path);

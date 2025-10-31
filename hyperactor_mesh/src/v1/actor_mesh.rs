@@ -467,6 +467,7 @@ mod tests {
     use crate::v1::testing;
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_actor_mesh_ref_lazy_materialization() {
         // 1) Bring up procs and spawn actors.
         let instance = testing::instance().await;
@@ -566,6 +567,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -632,6 +634,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
     async fn test_actor_states_with_process_exit() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -699,6 +702,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
     async fn test_actor_states_on_sliced_mesh() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -772,6 +776,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
     async fn test_cast() {
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);

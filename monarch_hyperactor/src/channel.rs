@@ -158,6 +158,8 @@ mod tests {
     use super::*;
 
     #[test]
+    // TODO: OSS: failed to retrieve ipv6 address
+    #[cfg_attr(not(fbcode_build), ignore)]
     fn test_channel_any_and_parse() -> PyResult<()> {
         // just make sure any() and parse() calls work for all transports
         for transport in [
