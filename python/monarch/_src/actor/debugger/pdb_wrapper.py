@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 import bdb
 import inspect
 import io
@@ -15,8 +15,9 @@ import socket
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
+from types import FrameType, TracebackType
 
-from typing import Dict, TYPE_CHECKING
+from typing import Any, Dict, Generator, Optional, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._src.actor.sync_state import fake_sync_state
@@ -33,7 +34,7 @@ class DebuggerWrite:
 
 
 @contextmanager
-def _debug_controller_request_ctx():
+def _debug_controller_request_ctx() -> Generator[None, None, None]:
     try:
         with fake_sync_state():
             yield
@@ -49,7 +50,7 @@ class PdbWrapper(pdb.Pdb):
         actor_id: ActorId,
         controller: "DebugController",
         header: str | None = None,
-    ):
+    ) -> None:
         self.rank = rank
         self.coords = coords
         self.header = header
@@ -59,7 +60,7 @@ class PdbWrapper(pdb.Pdb):
         super().__init__(stdout=WriteWrapper(self), stdin=ReadWrapper.create(self))
         self._first = True
 
-    def set_trace(self, frame=None):
+    def set_trace(self, frame: Optional[FrameType] = None) -> None:
         with _debug_controller_request_ctx():
             self.controller.debugger_session_start.call_one(
                 self.rank,
@@ -71,7 +72,7 @@ class PdbWrapper(pdb.Pdb):
             self.message(self.header)
         super().set_trace(frame)
 
-    def do_clear(self, arg):
+    def do_clear(self, arg: str) -> None:
         if not arg:
             # Sending `clear` without any argument specified will
             # request confirmation from the user using the `input` function,
@@ -82,31 +83,31 @@ class PdbWrapper(pdb.Pdb):
         else:
             super().do_clear(arg)
 
-    def lookupmodule(self, filename):
-        filename = super().lookupmodule(filename)
+    def lookupmodule(self, filename: str) -> Optional[str]:
+        result = super().lookupmodule(filename)
         if (
-            filename is not None
-            and not os.path.exists(filename)
-            and filename not in linecache.cache
+            result is not None
+            and not os.path.exists(result)
+            and result not in linecache.cache
         ):
             from monarch._src.actor.actor_mesh import ActorError
             from monarch._src.actor.source_loader import load_remote_source
 
             try:
                 with fake_sync_state():
-                    source = load_remote_source(filename)
+                    source = load_remote_source(result)
                     if source:
-                        linecache.cache[filename] = (
+                        linecache.cache[result] = (
                             len(source),
                             None,
                             source.splitlines(keepends=True),
-                            filename,
+                            result,
                         )
             except ActorError as e:
                 self.error(f"Failed querying root client host for source code: {e}")
-        return filename
+        return result
 
-    def end_debug_session(self):
+    def end_debug_session(self) -> None:
         with _debug_controller_request_ctx():
             self.controller.debugger_session_end.call_one(
                 self.actor_id.actor_name, self.rank
@@ -117,7 +118,7 @@ class PdbWrapper(pdb.Pdb):
         self.stdin = sys.stdin
         self.stdout = sys.stdout
 
-    def post_mortem(self, exc_tb):
+    def post_mortem(self, exc_tb: TracebackType) -> None:
         self._first = False
         # See builtin implementation of pdb.post_mortem() for reference.
         self.reset()
@@ -125,10 +126,10 @@ class PdbWrapper(pdb.Pdb):
 
 
 class ReadWrapper(io.RawIOBase):
-    def __init__(self, session: "PdbWrapper"):
+    def __init__(self, session: "PdbWrapper") -> None:
         self.session = session
 
-    def readinto(self, b):
+    def readinto(self, b: Any) -> int:
         with _debug_controller_request_ctx():
             response = self.session.controller.debugger_read.call_one(
                 self.session.actor_id.actor_name, self.session.rank, len(b)
@@ -147,18 +148,18 @@ class ReadWrapper(io.RawIOBase):
         return True
 
     @classmethod
-    def create(cls, session: "PdbWrapper"):
+    def create(cls, session: "PdbWrapper") -> io.TextIOWrapper:
         return io.TextIOWrapper(io.BufferedReader(cls(session)))
 
 
 class WriteWrapper:
-    def __init__(self, session: "PdbWrapper"):
+    def __init__(self, session: "PdbWrapper") -> None:
         self.session = session
 
     def writable(self) -> bool:
         return True
 
-    def write(self, s: str):
+    def write(self, s: str) -> None:
         function = None
         lineno = None
         if self.session.curframe is not None:
@@ -177,5 +178,5 @@ class WriteWrapper:
                 ),
             ).get()
 
-    def flush(self):
+    def flush(self) -> None:
         pass

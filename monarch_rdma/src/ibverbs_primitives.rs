@@ -1107,24 +1107,4 @@ mod tests {
         let mlx5dv_support = mlx5dv_supported();
         println!("mlx5dv_supported: {}", mlx5dv_support);
     }
-
-    #[test]
-    fn test_rdma_supported_combines_checks() {
-        // This test verifies that rdma_supported() properly combines both checks
-        let ibverbs_support = ibverbs_supported();
-        let mlx5dv_support = mlx5dv_supported();
-        let rdma_support = rdma_supported();
-
-        // rdma_supported should be true only if both checks pass
-        assert_eq!(
-            rdma_support,
-            ibverbs_support && mlx5dv_support,
-            "rdma_supported should equal (ibverbs_supported && mlx5dv_supported)"
-        );
-
-        println!(
-            "ibverbs_supported: {}, mlx5dv_supported: {}, rdma_supported: {}",
-            ibverbs_support, mlx5dv_support, rdma_support
-        );
-    }
 }

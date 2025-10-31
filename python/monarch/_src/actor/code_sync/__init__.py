@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 from monarch._rust_bindings.monarch_extension.code_sync import (  # noqa: F401
     CodeSyncMeshClient,

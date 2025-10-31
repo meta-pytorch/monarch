@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 import asyncio
 from dataclasses import dataclass
 from typing import Dict, Generator, List, Optional, Tuple
@@ -24,7 +24,7 @@ class DebugSessionInfo:
     function: str | None
     lineno: int | None
 
-    def __lt__(self, other):
+    def __lt__(self, other: "DebugSessionInfo") -> bool:
         if self.actor_name < other.actor_name:
             return True
         elif self.actor_name == other.actor_name:
@@ -38,20 +38,27 @@ class DebugSession:
 
     def __init__(
         self, rank: int, coords: Dict[str, int], hostname: str, actor_name: str
-    ):
+    ) -> None:
         self.rank = rank
         self.coords = coords
         self.hostname = hostname
         self.actor_name = actor_name
         self._active = False
-        self._message_queue = asyncio.Queue()
-        self._task = None
-        self._pending_send_to_actor = asyncio.Queue()
-        self._outputs_since_last_input = []
-        self._function_lineno = None
+        self._message_queue: asyncio.Queue[str | Tuple[str, DebuggerWrite]] = (
+            asyncio.Queue()
+        )
+        self._task: Optional[asyncio.Task[None]] = None
+        self._pending_send_to_actor: asyncio.Queue[bytes] = asyncio.Queue()
+        self._outputs_since_last_input: List[DebuggerWrite] = []
+        self._function_lineno: Optional[Tuple[str, int]] = None
         self._need_read = False
 
-    async def _event_loop(self, debug_io: DebugIO, line=None, suppress_output=False):
+    async def _event_loop(
+        self,
+        debug_io: DebugIO,
+        line: Optional[str] = None,
+        suppress_output: bool = False,
+    ) -> None:
         if not suppress_output:
             # If the user had previously attached to this debug session,
             # then it would have printed various messages from the
@@ -105,6 +112,7 @@ class DebugSession:
                     raise
             elif message[0] == "write":
                 output = message[1]
+                assert isinstance(output, DebuggerWrite)
                 # If the user sees this output but then detaches from the session,
                 # its useful to store all outputs since the last input so that
                 # they can be printed again when the user re-attaches.
@@ -117,7 +125,7 @@ class DebugSession:
                 f"Detaching from debug session for {self.actor_name} {self.rank} ({self.hostname})\n"
             )
 
-    def get_info(self):
+    def get_info(self) -> DebugSessionInfo:
         function = lineno = None
         if self._function_lineno is not None:
             function, lineno = self._function_lineno
@@ -125,7 +133,12 @@ class DebugSession:
             self.actor_name, self.rank, self.coords, self.hostname, function, lineno
         )
 
-    async def attach(self, debug_io: DebugIO, line=None, suppress_output=False):
+    async def attach(
+        self,
+        debug_io: DebugIO,
+        line: Optional[str] = None,
+        suppress_output: bool = False,
+    ) -> None:
         self._active = True
         if not suppress_output:
             await debug_io.output(
@@ -141,7 +154,7 @@ class DebugSession:
             )
         self._active = False
 
-    async def detach(self):
+    async def detach(self) -> None:
         if self._active:
             await self._message_queue.put("detach")
 
@@ -159,7 +172,7 @@ class DebugSession:
 
 
 class DebugSessions:
-    def __init__(self):
+    def __init__(self) -> None:
         self._sessions: Dict[str, Dict[int, DebugSession]] = {}
 
     def insert(self, session: DebugSession) -> None:
