@@ -40,11 +40,6 @@ setup_rust_toolchain() {
     cargo install cargo-nextest --locked
 }
 
-install_build_dependencies() {
-    echo "Installing build dependencies..."
-    pip install -r build-requirements.txt ${1:-}
-}
-
 # Install Python test dependencies
 install_python_test_dependencies() {
     echo "Installing test dependencies..."
@@ -115,7 +110,6 @@ setup_build_environment() {
     setup_conda_environment "${python_version}"
     install_system_dependencies
     setup_rust_toolchain
-    install_build_dependencies "${install_args}"
 }
 
 # Detect and configure CUDA environment for linking

@@ -23,7 +23,6 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::context;
-use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;

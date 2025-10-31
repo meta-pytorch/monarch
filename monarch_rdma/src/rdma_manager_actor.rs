@@ -234,7 +234,7 @@ impl Drop for RdmaManagerActor {
         }
 
         // 3. Clean up memory regions
-        let mr_count = self.mr_map.len();
+        let _mr_count = self.mr_map.len();
         for (id, mr_ptr) in self.mr_map.drain() {
             if mr_ptr != 0 {
                 unsafe {

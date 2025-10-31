@@ -8,7 +8,6 @@
 
 use std::path::PathBuf;
 
-use build_utils::*;
 #[cfg(target_os = "macos")]
 fn main() {}
 

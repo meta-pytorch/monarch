@@ -22,6 +22,8 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::global_root_client;
@@ -31,7 +33,6 @@ use ndslice::ViewExt;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::time::Instant;
 
 #[derive(Actor, Default, Debug)]
 #[hyperactor::export(
@@ -84,7 +85,7 @@ async fn main() {
     loop {
         let mut received = HashSet::new();
         let (port, mut rx) = instance.open_port();
-        let begin = Instant::now();
+        let begin = RealClock.now();
         actor_mesh
             .cast(instance, TestMessage::Ping(port.bind()))
             .unwrap();
@@ -93,6 +94,6 @@ async fn main() {
         }
 
         eprintln!("ping {}ms", begin.elapsed().as_millis());
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        RealClock.sleep(Duration::from_secs(1)).await;
     }
 }
