@@ -27,15 +27,15 @@ where
     }
 
     assert!(
-        name.starts_with("monarch/hyperactor_mesh/"),
-        "invalid resource {}: must start with \"monarch/hyperactor_mesh/\"",
+        name.starts_with("monarch/monarch_hyperactor/"),
+        "invalid resource {}: must start with \"monarch/monarch_hyperactor/\"",
         name
     );
 
     let path: PathBuf = name
         .replace(
-            "monarch/hyperactor_mesh/",
-            "../target/debug/hyperactor_mesh_test_",
+            "monarch/monarch_hyperactor/",
+            "../target/debug/monarch_hyperactor_test_",
         )
         .into();
 
