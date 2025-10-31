@@ -1686,3 +1686,35 @@ def test_login_job():
             assert v == "hello!"
 
         j.kill()
+
+
+class TestPytokioActor(Actor):
+    @endpoint
+    def context_propagated_through_spawn(self) -> None:
+        cx = context()
+
+        async def task():
+            assert cx is context()
+
+        PythonTask.from_coroutine(coro=task()).spawn().block_on()
+
+    @endpoint
+    def context_propagated_through_spawn_blocking(self) -> None:
+        cx = context()
+
+        def task():
+            assert cx is context()
+
+        PythonTask.spawn_blocking(task).block_on()
+
+
+def test_context_propagated_through_python_task_spawn():
+    p = this_host().spawn_procs()
+    a = p.spawn("test_pytokio_actor", TestPytokioActor)
+    a.context_propagated_through_spawn.call().get()
+
+
+def test_context_propagated_through_python_task_spawn_blocking():
+    p = this_host().spawn_procs()
+    a = p.spawn("test_pytokio_actor", TestPytokioActor)
+    a.context_propagated_through_spawn_blocking.call().get()
