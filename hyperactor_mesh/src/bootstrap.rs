@@ -66,6 +66,8 @@ use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tracing::Instrument;
+use tracing::Level;
 
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
@@ -404,6 +406,15 @@ impl Bootstrap {
                 socket_dir_path,
                 config,
             } => {
+                let entered = tracing::span!(
+                    Level::INFO,
+                    "proc_bootstrap",
+                    %proc_id,
+                    %backend_addr,
+                    %callback_addr,
+                    socket_dir_path = %socket_dir_path.display(),
+                )
+                .entered();
                 if let Some(attrs) = config {
                     config::set(config::Source::ClientOverride, attrs);
                     tracing::debug!("bootstrap: installed ClientOverride config snapshot (Proc)");
@@ -440,16 +451,20 @@ impl Bootstrap {
 
                 let proc = Proc::new(proc_id.clone(), proc_sender.into_boxed());
 
+                let span = entered.exit();
+
                 let agent_handle = ok!(ProcMeshAgent::boot_v1(proc.clone())
+                    .instrument(span.clone())
                     .await
                     .map_err(|e| HostError::AgentSpawnFailure(proc_id, e)));
 
                 // Finally serve the proc on the same transport as the backend address,
                 // and call back.
-                let (proc_addr, proc_rx) = ok!(channel::serve(serve_addr, "proc_backend"));
+                let (proc_addr, proc_rx) = ok!(channel::serve(serve_addr));
                 proc.clone().serve(proc_rx);
                 ok!(ok!(channel::dial(callback_addr))
                     .send((proc_addr, agent_handle.bind::<ProcMeshAgent>()))
+                    .instrument(span)
                     .await
                     .map_err(ChannelError::from));
 
@@ -1800,16 +1815,15 @@ impl ProcManager for BootstrapProcManager {
     /// Returns a [`BootstrapProcHandle`] that exposes the child
     /// process's lifecycle (status, wait/ready, termination). Errors
     /// are surfaced as [`HostError`].
+    #[tracing::instrument(skip(self, config))]
     async fn spawn(
         &self,
         proc_id: ProcId,
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) = channel::serve(
-            ChannelAddr::any(ChannelTransport::Unix),
-            &format!("BootstrapProcManager::spawn callback_addr: {}", &proc_id),
-        )?;
+        let (callback_addr, mut callback_rx) =
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
 
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
@@ -2096,8 +2110,17 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_INDEX_ENV, err))?
             .parse()?;
         let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
-        let (serve_addr, mut rx) =
-            channel::serve(listen_addr, "bootstrap_v0_proc_mesh listen_addr")?;
+
+        let entered = tracing::span!(
+            Level::INFO,
+            "bootstrap_v0_proc_mesh",
+            %bootstrap_addr,
+            %bootstrap_index,
+            %listen_addr,
+        )
+        .entered();
+
+        let (serve_addr, mut rx) = channel::serve(listen_addr)?;
         let tx = channel::dial(bootstrap_addr.clone())?;
 
         let (rtx, mut return_channel) = oneshot::channel();
@@ -2106,6 +2129,8 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             rtx,
         )?;
         tokio::spawn(exit_if_missed_heartbeat(bootstrap_index, bootstrap_addr));
+
+        let _ = entered.exit();
 
         let mut the_msg;
 
@@ -2125,16 +2150,17 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             }
         }
         loop {
-            let _ = hyperactor::tracing::info_span!("wait_for_next_message_from_mesh_agent");
             match the_msg? {
                 Allocator2Process::StartProc(proc_id, listen_transport) => {
-                    let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone()).await?;
-                    let (proc_addr, proc_rx) = channel::serve(
-                        ChannelAddr::any(listen_transport),
-                        &format!("bootstrap_v0_proc_mesh proc_addr: {}", &proc_id,),
-                    )?;
+                    let span = tracing::span!(Level::INFO, "Allocator2Process::StartProc", %proc_id, %listen_transport);
+                    let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone())
+                        .instrument(span.clone())
+                        .await?;
+                    let entered = span.entered();
+                    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(listen_transport))?;
                     let handle = proc.clone().serve(proc_rx);
                     drop(handle); // linter appeasement; it is safe to drop this future
+                    let span = entered.exit();
                     tx.send(Process2Allocator(
                         bootstrap_index,
                         Process2AllocatorMessage::StartedProc(
@@ -2143,6 +2169,7 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
                             proc_addr,
                         ),
                     ))
+                    .instrument(span)
                     .await?;
                     procs.lock().await.push(proc);
                 }
@@ -2541,7 +2568,7 @@ mod tests {
 
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test").unwrap();
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
         let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
         proc.clone().serve(proc_rx);
         router.bind(id!(client[0]).into(), proc_addr.clone());
@@ -3382,8 +3409,7 @@ mod tests {
     ) -> (ProcId, ChannelAddr) {
         // Serve a Unix channel as the "backend_addr" and hook it into
         // this test proc.
-        let (backend_addr, rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test").unwrap();
+        let (backend_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
 
         // Route messages arriving on backend_addr into this test
         // proc's mailbox so the bootstrap child can reach the host
