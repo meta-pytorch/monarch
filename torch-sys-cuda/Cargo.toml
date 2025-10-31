@@ -9,13 +9,10 @@ license = "BSD-3-Clause"
 links = "torch_cuda"
 
 [dependencies]
-anyhow = "1.0.98"
-async-trait = "0.1.86"
 cxx = "1.0.119"
 derive_more = { version = "1.0.0", features = ["full"] }
 fxhash = "0.2.1"
 nccl-sys = { path = "../nccl-sys" }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.12"
 torch-sys = { version = "0.0.0", path = "../torch-sys" }

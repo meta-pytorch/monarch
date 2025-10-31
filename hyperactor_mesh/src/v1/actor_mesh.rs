@@ -158,6 +158,7 @@ pub struct ActorMeshRef<A: Referable> {
 
 impl<A: Referable> ActorMeshRef<A> {
     /// Cast a message to all the actors in this mesh
+    #[allow(clippy::result_large_err)]
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> v1::Result<()>
     where
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -170,6 +171,7 @@ impl<A: Referable> ActorMeshRef<A> {
     /// This should *only* be used for temporary support for selections in the tensor
     /// engine. If you use this for anything else, you will be fired (you too, OSS
     /// contributor).
+    #[allow(clippy::result_large_err)]
     pub(crate) fn cast_for_tensor_engine_only_do_not_use<M>(
         &self,
         cx: &impl context::Actor,
@@ -183,6 +185,7 @@ impl<A: Referable> ActorMeshRef<A> {
         self.cast_with_selection(cx, sel, message)
     }
 
+    #[allow(clippy::result_large_err)]
     fn cast_with_selection<M>(
         &self,
         cx: &impl context::Actor,
@@ -226,6 +229,7 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn cast_v0<M>(
         &self,
         cx: &impl context::Actor,
@@ -266,6 +270,7 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     pub async fn actor_states(
         &self,
         cx: &impl context::Actor,

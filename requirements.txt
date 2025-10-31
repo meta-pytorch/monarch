@@ -10,3 +10,4 @@ torchx-nightly
 lark
 tabulate
 opentelemetry-api
+clusterscope

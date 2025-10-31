@@ -34,6 +34,10 @@ jobs:
         # Setup build environment (conda + system deps + rust + build deps)
         setup_build_environment
 
+        # Install torch nightly
+        pip install ${{ matrix.torch-spec }}
+        pip install -r build-requirements.txt
+
         # Setup Tensor Engine
         setup_tensor_engine
 

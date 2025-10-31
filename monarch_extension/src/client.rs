@@ -578,7 +578,7 @@ impl ClientActor {
     }
 
     #[staticmethod]
-    fn new_with_parent(proc: &PyProc, parent: &PyActorId) -> PyResult<Self> {
+    fn new_with_parent(_proc: &PyProc, _parent: &PyActorId) -> PyResult<Self> {
         // XXX:
         unimplemented!("this is not a valid thing to do!");
         // Ok(Self {
