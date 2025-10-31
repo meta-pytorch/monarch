@@ -283,12 +283,6 @@ class ProcMesh(MeshTrait):
 
         return pm
 
-    def __repr__(self) -> str:
-        return repr(self._proc_mesh)
-
-    def __str__(self) -> str:
-        return str(self._proc_mesh)
-
     def _spawn_nonblocking(
         self, name: str, Class: Type[TActor], *args: Any, **kwargs: Any
     ) -> TActor:
