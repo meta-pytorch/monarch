@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 import contextlib
 import dataclasses
@@ -16,33 +16,40 @@ import site
 import sys
 import threading
 from pathlib import Path
-from types import ModuleType
-from typing import Dict, List, Optional, Tuple
+from types import ModuleType, TracebackType
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
 
 
-class SysAuditHookGuard(contextlib.AbstractContextManager):
+class SysAuditHookGuard(contextlib.AbstractContextManager["SysAuditHookGuard", None]):
     """
     A guard (and context manager), which will unregister an import hook when
     closed or deleted.
     """
 
-    def __init__(self, hooks, idx):
-        self._hooks = hooks
-        self._idx = idx
+    def __init__(
+        self, hooks: Dict[int, Callable[[str, tuple[Any, ...]], None]], idx: int
+    ) -> None:
+        self._hooks: Dict[int, Callable[[str, tuple[Any, ...]], None]] = hooks
+        self._idx: int = idx
 
-    def close(self):
+    def close(self) -> None:
         self._hooks.pop(self._idx, None)
 
-    def __enter__(self):
+    def __enter__(self) -> "SysAuditHookGuard":
         return self
 
-    def __exit__(self, *args):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.close()
 
-    def __del__(self):
+    def __del__(self) -> None:
         self.close()
 
 
@@ -55,29 +62,30 @@ class SysAuditHookMultiplexer:
     removal.
     """
 
-    def __init__(self):
-        self._idx = itertools.count()
-        self._hooks = {}
+    def __init__(self) -> None:
+        self._idx: itertools.count[int] = itertools.count()
+        self._hooks: Dict[int, Callable[[str, tuple[Any, ...]], None]] = {}
 
-    def _callback(self, event, args):
+    def _callback(self, event: str, args: tuple[Any, ...]) -> None:
         for hook in self._hooks.values():
             hook(event, args)
 
-    def add(self, hook) -> SysAuditHookGuard:
+    def add(self, hook: Callable[[str, tuple[Any, ...]], None]) -> SysAuditHookGuard:
         idx = next(self._idx)
         self._hooks[idx] = hook
         return SysAuditHookGuard(self._hooks, idx)
 
     _instance_lock = threading.Lock()
-    _instance = None
+    _instance: Optional["SysAuditHookMultiplexer"] = None
 
     @classmethod
-    def singleton(cls):
+    def singleton(cls) -> "SysAuditHookMultiplexer":
         if cls._instance is None:
             with cls._instance_lock:
                 if cls._instance is None:
                     cls._instance = SysAuditHookMultiplexer()
                     sys.addaudithook(cls._instance._callback)
+        assert cls._instance is not None
         return cls._instance
 
 
@@ -93,12 +101,12 @@ class SysAuditImportHook:
     imported.
     """
 
-    def __init__(self, callback):
-        self._callback = callback
+    def __init__(self, callback: Callable[[str, ModuleType], None]) -> None:
+        self._callback: Callable[[str, ModuleType], None] = callback
         self._state = ThreadLocalState()
 
     @classmethod
-    def install(cls, callback) -> SysAuditHookGuard:
+    def install(cls, callback: Callable[[str, ModuleType], None]) -> SysAuditHookGuard:
         return SysAuditHookMultiplexer.singleton().add(SysAuditImportHook(callback))
 
     def _py_filename(self, filename: Path) -> Path:
@@ -106,7 +114,7 @@ class SysAuditImportHook:
             return filename.with_suffix(".py")
         return filename
 
-    def __call__(self, event, args):
+    def __call__(self, event: str, args: tuple[Any, ...]) -> None:
         if event == "import":
             # While `filename` is specific as an argument to the import event, it's
             # almost always `None`, so we need to wait for a subsequent exec event
@@ -123,13 +131,14 @@ class SysAuditImportHook:
             module = sys.modules.get(module_name)
             if module is None:
                 return
-            if getattr(module, "__file__", None) is None:
+            module_file = getattr(module, "__file__", None)
+            if module_file is None:
                 return
             (code_obj,) = args
             if code_obj.co_filename is None:
                 return
             # code objects store the original source name, not the pyc
-            if self._py_filename(Path(module.__file__)) != Path(code_obj.co_filename):
+            if self._py_filename(Path(module_file)) != Path(code_obj.co_filename):
                 return
             self._callback(module_name, module)
 
@@ -150,12 +159,14 @@ class AutoReloader:
     Track changes to modules and reloads them when they change.
     """
 
-    def __init__(self, reload=importlib.reload):
-        self._reload = reload
+    def __init__(
+        self, reload: Callable[[ModuleType], ModuleType] = importlib.reload
+    ) -> None:
+        self._reload: Callable[[ModuleType], ModuleType] = reload
         self._tracked_modules: Dict[str, Tuple[Path, Fingerprint]] = {}
         self._track_all_imported()
 
-    def _maybe_track_module(self, name: str, module: ModuleType):
+    def _maybe_track_module(self, name: str, module: ModuleType) -> None:
         filename = getattr(module, "__file__", None)
         if filename is None:
             return
@@ -181,13 +192,13 @@ class AutoReloader:
             Fingerprint.for_path(filename),
         )
 
-    def _track_all_imported(self):
+    def _track_all_imported(self) -> None:
         for name, module in sys.modules.items():
             if module is None:
                 continue
             self._maybe_track_module(name, module)
 
-    def import_callback(self, name: str, module: ModuleType):
+    def import_callback(self, name: str, module: ModuleType) -> None:
         """
         Callback for when a module has been imported.
         """
@@ -215,9 +226,11 @@ class AutoReloader:
 
 
 class AutoReloadActor(Actor):
-    def __init__(self):
+    def __init__(self) -> None:
         self._reloader = AutoReloader()
-        self._hook_guard = SysAuditImportHook.install(self._reloader.import_callback)
+        self._hook_guard: SysAuditHookGuard = SysAuditImportHook.install(
+            self._reloader.import_callback
+        )
 
     @endpoint
     async def reload(self) -> None:

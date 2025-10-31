@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 import warnings
 from math import prod
@@ -80,7 +80,7 @@ class HostMeshV0(MeshTrait):
         shape: Shape,
         allocator: AllocateMixin,
         alloc_constraints: Optional[AllocConstraints] = None,
-    ):
+    ) -> None:
         warnings.warn(
             (
                 "DEPRECATION WARNING: using a deprecated version of HostMesh. This is going be removed imminently. "
@@ -186,7 +186,7 @@ def fake_in_process_host_v0() -> "HostMeshV0":
     return HostMeshV0(Shape.unity(), LocalAllocator())
 
 
-def hosts_from_config_v0(name: str):
+def hosts_from_config_v0(name: str) -> HostMeshV0:
     """
     Get the host mesh 'name' from the monarch configuration for the project.
 

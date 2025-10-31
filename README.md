@@ -70,6 +70,9 @@ torchmonarch-nightly is built with torch nightly.
 
 ### Build and Install from Source
 
+If you're building Monarch from source, you should be building it with the nightly PyTorch as well for ABI compatibility.
+
+
 #### On Fedora distributions
 
 ```sh
@@ -87,7 +90,7 @@ rustup default nightly
 conda install libunwind -y
 
 # Install the correct cuda and cuda-toolkit versions for your machine
-sudo dnf install cuda-toolkit-12-0 cuda-12-0
+sudo dnf install cuda-toolkit-12-8 cuda-12-8
 
 # Install clang-dev and nccl-dev
 sudo dnf install clang-devel libnccl-devel
@@ -99,6 +102,7 @@ conda update -n monarchenv --all -c conda-forge -y
 sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
 
 # Install build dependencies
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
 pip install -r build-requirements.txt
 # Install test dependencies
 pip install -r python/tests/requirements.txt
@@ -134,7 +138,11 @@ sudo apt install -y clang
 export CC=clang
 export CXX=clang++
 
+# Install the correct cuda and cuda-toolkit versions for your machine
+sudo apt install -y cuda-toolkit-12-8 cuda-12-8
+
 # Install build dependencies
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
 pip install -r build-requirements.txt
 # Install test dependencies
 pip install -r python/tests/requirements.txt
@@ -153,9 +161,9 @@ pip install --no-build-isolation -e .
 pip list | grep monarch
 ```
 
-#### On MacOS
+#### On non-CUDA machines
 
-You can also build Monarch to run locally on a MacOS system.
+You can also build Monarch to run on non-CUDA machines, e.g. locally on a MacOS system.
 
 Note that this does not support tensor engine, which is tied to CUDA and RDMA (via ibverbs).
 
@@ -172,6 +180,7 @@ rustup toolchain install nightly
 rustup default nightly
 
 # Install build dependencies
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
 pip install -r build-requirements.txt
 # Install test dependencies
 pip install -r python/tests/requirements.txt
