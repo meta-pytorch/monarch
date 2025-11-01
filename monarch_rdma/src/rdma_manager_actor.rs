@@ -29,8 +29,11 @@
 //! See test examples: `test_rdma_write_loopback` and `test_rdma_read_loopback`.
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
@@ -48,12 +51,16 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 
+use crate::ibverbs_primitives::IbvWc;
 use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
+use crate::ibverbs_primitives::RdmaOperation;
 use crate::ibverbs_primitives::RdmaQpInfo;
 use crate::ibverbs_primitives::ibverbs_supported;
 use crate::ibverbs_primitives::resolve_qp_type;
+use crate::rdma_components::MAX_RDMA_MSG_SIZE;
 use crate::rdma_components::PollTarget;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
@@ -61,11 +68,75 @@ use crate::rdma_components::RdmaQueuePair;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::validate_execution_context;
 
-/// Wrapper for a queue pair with a semaphore for fair access control.
+#[derive(Debug)]
+struct CompletionTracker {
+    // wr_id -> channel to send completion result.
+    reply_channels: Arc<DashMap<u64, oneshot::Sender<Result<IbvWc, anyhow::Error>>>>,
+    polling_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl CompletionTracker {
+    pub fn new() -> Self {
+        Self {
+            reply_channels: Arc::new(DashMap::new()),
+            polling_task: None,
+        }
+    }
+
+    /// Submit a tracking request for a work request ID. Returns a channel to receive the result.
+    pub fn submit(&self, wr_id: u64) -> oneshot::Receiver<Result<IbvWc, anyhow::Error>> {
+        let (tx, rx) = oneshot::channel();
+        self.reply_channels.insert(wr_id, tx);
+        rx
+    }
+
+    pub fn start_polling(&mut self, qp: RdmaQueuePair) {
+        if self.polling_task.is_none() {
+            let reply_channels = self.reply_channels.clone();
+            let polling_task = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_micros(500));
+                loop {
+                    match qp.poll_once_stateless(PollTarget::Send) {
+                        Ok(Some(wc)) => {
+                            if let Some((wr_id, tx)) = reply_channels.remove(&wc.wr_id()) {
+                                tx.send(Ok(wc)).unwrap_or_else(|_| {
+                                    tracing::info!(
+                                        "Failed to send completion result for wr_id {}, receiver might be cancelled",
+                                        wr_id
+                                    );
+                                });
+                            } else {
+                                tracing::warn!(
+                                    "No completion result channel found for wr_id {}, this is likely a bug",
+                                    wc.wr_id()
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            // No completion available yet
+                            interval.tick().await;
+                        }
+                        Err(e) => {
+                            tracing::error!("Polling error: {}", e);
+                            // FIXME(yuxuanh): broadcast error to all pending requests
+                            break;
+                        }
+                    }
+                }
+            });
+            self.polling_task = Some(polling_task);
+        } else {
+            panic!("Polling task already started");
+        }
+    }
+}
+
+/// Wrapper for a queue pair with a semaphore for access control and a polling task.
 #[derive(Debug, Clone)]
 pub struct QueuePairEntry {
     pub qp: RdmaQueuePair,
     pub semaphore: Arc<Semaphore>,
+    completion_tracker: Arc<CompletionTracker>,
 }
 
 /// Represents the state of a queue pair in the manager.
@@ -108,6 +179,7 @@ pub enum RdmaManagerMessage {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
+        start_polling: bool,
         #[reply]
         /// `reply` - Reply channel to return the queue pair for communication
         reply: OncePortRef<RdmaQueuePair>,
@@ -142,8 +214,6 @@ pub enum RdmaManagerMessage {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
-        /// `qp` - The queue pair to return (ownership transferred back)
-        qp: RdmaQueuePair,
     },
     ReadInto {
         local: RdmaBuffer,
@@ -193,6 +263,8 @@ pub struct RdmaManagerActor {
     // Map of PCI addresses to their optimal RDMA devices
     // This is populated during actor initialization using the device selection algorithm
     pci_to_device: HashMap<String, crate::ibverbs_primitives::RdmaDevice>,
+
+    next_wr_id: AtomicU64,
 }
 
 impl Drop for RdmaManagerActor {
@@ -655,6 +727,179 @@ impl RdmaManagerActor {
             ))
         }
     }
+
+    fn next_wr_id(&self) -> u64 {
+        self.next_wr_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn post_op_chunked(
+        &self,
+        qp_entry: &QueuePairEntry,
+        lhandle: RdmaBuffer,
+        rhandle: RdmaBuffer,
+        op_type: RdmaOperation,
+    ) -> Result<Vec<oneshot::Receiver<Result<IbvWc, anyhow::Error>>>, anyhow::Error> {
+        let total_size = lhandle.size;
+        match op_type {
+            RdmaOperation::Write => {
+                if rhandle.size < total_size {
+                    return Err(anyhow::anyhow!(
+                        "Remote buffer size ({}) is smaller than local buffer size ({})",
+                        rhandle.size,
+                        total_size
+                    ));
+                }
+            }
+            RdmaOperation::Read => {
+                if rhandle.size > total_size {
+                    return Err(anyhow::anyhow!(
+                        "Remote buffer size ({}) is larger than local buffer size ({}).",
+                        rhandle.size,
+                        total_size
+                    ));
+                }
+            }
+            _ => {
+                unimplemented!("Unsupported operation type: {:?}", op_type)
+            }
+        }
+
+        let mut qp = qp_entry.qp.clone();
+        let tracker = &qp_entry.completion_tracker;
+
+        let mut remaining = total_size;
+        let mut offset = 0;
+        let mut rxs = Vec::new();
+        while remaining > 0 {
+            let chunk_size = std::cmp::min(remaining, MAX_RDMA_MSG_SIZE);
+            let wr_id = self.next_wr_id();
+            rxs.push(tracker.submit(wr_id));
+            qp.post_op(
+                lhandle.addr + offset,
+                lhandle.lkey,
+                chunk_size,
+                wr_id,
+                true,
+                op_type,
+                rhandle.addr + offset,
+                rhandle.rkey,
+            )?;
+            remaining -= chunk_size;
+            offset += chunk_size;
+        }
+        Ok(rxs)
+    }
+
+    async fn request_queue_pair_entry(
+        &mut self,
+        cx: &Context<'_, RdmaManagerActor>,
+        other: ActorRef<RdmaManagerActor>,
+        self_device: String,
+        other_device: String,
+        start_polling: bool,
+    ) -> Result<QueuePairEntry, anyhow::Error> {
+        let inner_key = (other.actor_id().clone(), other_device.clone());
+        // Phase 1: Get or create the QueuePairEntry
+        let entry = loop {
+            let qp_state = self
+                .device_qps
+                .get(&self_device)
+                .and_then(|map| map.get(&inner_key))
+                .cloned();
+
+            match qp_state {
+                Some(QueuePairState::Ready(entry)) => {
+                    // Queue pair is ready
+                    break entry;
+                }
+                Some(QueuePairState::ConnectionError(err)) => {
+                    // Connection previously failed, propagate error
+                    return Err(anyhow::anyhow!("Connection previously failed: {}", err));
+                }
+                Some(QueuePairState::Connecting(ref notify)) => {
+                    // Another task is connecting, wait for notification
+                    let notify = notify.clone();
+                    drop(qp_state); // Release borrows before awaiting
+
+                    notify.notified().await;
+                    // Loop back to re-check state (could be Ready or ConnectionError now)
+                    continue;
+                }
+                None => {
+                    // No connection exists, we need to establish it
+                    let notify = Arc::new(Notify::new());
+
+                    // Insert Connecting state
+                    self.device_qps
+                        .entry(self_device.clone())
+                        .or_insert_with(HashMap::new)
+                        .insert(
+                            inner_key.clone(),
+                            QueuePairState::Connecting(notify.clone()),
+                        );
+
+                    // Establish the connection
+                    let result = self
+                        .establish_connection(
+                            cx,
+                            other.clone(),
+                            self_device.clone(),
+                            other_device.clone(),
+                        )
+                        .await;
+
+                    match result {
+                        Ok(qp) => {
+                            let mut completion_tracker = CompletionTracker::new();
+                            if start_polling {
+                                completion_tracker.start_polling(qp.clone());
+                            }
+                            let entry = QueuePairEntry {
+                                qp,
+                                semaphore: Arc::new(Semaphore::new(1)),
+                                completion_tracker: completion_tracker.into(),
+                            };
+
+                            // Update state to Ready
+                            self.device_qps
+                                .get_mut(&self_device)
+                                .unwrap()
+                                .insert(inner_key.clone(), QueuePairState::Ready(entry.clone()));
+
+                            // Notify all waiters
+                            notify.notify_waiters();
+                            break entry;
+                        }
+                        Err(e) => {
+                            let arc_err = Arc::new(e);
+
+                            // Insert ConnectionError state for all current and future requesters
+                            self.device_qps.get_mut(&self_device).unwrap().insert(
+                                inner_key.clone(),
+                                QueuePairState::ConnectionError(arc_err.clone()),
+                            );
+
+                            // Notify all waiters to fail
+                            notify.notify_waiters();
+                            return Err(anyhow::anyhow!("Connection failed: {}", arc_err));
+                        }
+                    }
+                }
+            }
+        };
+
+        // Phase 2: Acquire semaphore permit (fair FIFO waiting)
+        let permit = entry
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to acquire semaphore: {}", e))?;
+
+        // Forget the permit so it doesn't auto-release on drop
+        permit.forget();
+
+        Ok(entry)
+    }
 }
 
 #[async_trait]
@@ -708,6 +953,7 @@ impl Actor for RdmaManagerActor {
             mr_map: HashMap::new(),
             mrv_id: 0,
             pci_to_device,
+            next_wr_id: AtomicU64::new(0),
         })
     }
 
@@ -798,6 +1044,8 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// * `other` - The ActorRef of the remote RDMA manager actor to communicate with.
     /// * `self_device` - The local device name.
     /// * `other_device` - The remote device name.
+    /// * `start_polling` - Whether to start polling for completions immediately after the connection is established.
+    ///      If the queue pair is already created before, this argument has no effect.
     ///
     /// # Returns
     ///
@@ -809,103 +1057,15 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
+        start_polling: bool,
     ) -> Result<RdmaQueuePair, anyhow::Error> {
-        let inner_key = (other.actor_id().clone(), other_device.clone());
-        // Phase 1: Get or create the QueuePairEntry
-        let entry = loop {
-            let qp_state = self
-                .device_qps
-                .get(&self_device)
-                .and_then(|map| map.get(&inner_key))
-                .cloned();
-
-            match qp_state {
-                Some(QueuePairState::Ready(entry)) => {
-                    // Queue pair is ready
-                    break entry;
-                }
-                Some(QueuePairState::ConnectionError(err)) => {
-                    // Connection previously failed, propagate error
-                    return Err(anyhow::anyhow!("Connection previously failed: {}", err));
-                }
-                Some(QueuePairState::Connecting(ref notify)) => {
-                    // Another task is connecting, wait for notification
-                    let notify = notify.clone();
-                    drop(qp_state); // Release borrows before awaiting
-
-                    notify.notified().await;
-                    // Loop back to re-check state (could be Ready or ConnectionError now)
-                    continue;
-                }
-                None => {
-                    // No connection exists, we need to establish it
-                    let notify = Arc::new(Notify::new());
-
-                    // Insert Connecting state
-                    self.device_qps
-                        .entry(self_device.clone())
-                        .or_insert_with(HashMap::new)
-                        .insert(
-                            inner_key.clone(),
-                            QueuePairState::Connecting(notify.clone()),
-                        );
-
-                    // Establish the connection
-                    let result = self
-                        .establish_connection(
-                            cx,
-                            other.clone(),
-                            self_device.clone(),
-                            other_device.clone(),
-                        )
-                        .await;
-
-                    match result {
-                        Ok(qp) => {
-                            let entry = QueuePairEntry {
-                                qp,
-                                semaphore: Arc::new(Semaphore::new(1)),
-                            };
-
-                            // Update state to Ready
-                            self.device_qps
-                                .get_mut(&self_device)
-                                .unwrap()
-                                .insert(inner_key.clone(), QueuePairState::Ready(entry.clone()));
-
-                            // Notify all waiters
-                            notify.notify_waiters();
-                            break entry;
-                        }
-                        Err(e) => {
-                            let arc_err = Arc::new(e);
-
-                            // Insert ConnectionError state for all current and future requesters
-                            self.device_qps.get_mut(&self_device).unwrap().insert(
-                                inner_key.clone(),
-                                QueuePairState::ConnectionError(arc_err.clone()),
-                            );
-
-                            // Notify all waiters to fail
-                            notify.notify_waiters();
-                            return Err(anyhow::anyhow!("Connection failed: {}", arc_err));
-                        }
-                    }
-                }
-            }
-        };
-
-        // Phase 2: Acquire semaphore permit (fair FIFO waiting)
-        let permit = entry
-            .semaphore
-            .acquire()
+        match self
+            .request_queue_pair_entry(cx, other, self_device, other_device, start_polling)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to acquire semaphore: {}", e))?;
-
-        // Forget the permit so it doesn't auto-release on drop
-        permit.forget();
-
-        Ok(entry.qp.clone())
+        {
+            Ok(entry) => Ok(entry.qp),
+            Err(e) => Err(e),
+        }
     }
 
     async fn initialize_qp(
@@ -957,6 +1117,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         let entry = QueuePairEntry {
             qp,
             semaphore: Arc::new(Semaphore::new(1)),
+            completion_tracker: CompletionTracker::new().into(),
         };
 
         // Insert the QP into the nested map structure
@@ -1086,7 +1247,6 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
-        _qp: RdmaQueuePair,
     ) -> Result<(), anyhow::Error> {
         let inner_key = (other.actor_id().clone(), other_device.clone());
 
@@ -1122,6 +1282,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
             )),
         }
     }
+
     async fn read_into(
         &mut self,
         cx: &Context<Self>,
@@ -1133,24 +1294,25 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
         let local_device = local.device_name.clone();
         let remote_device = remote.device_name.clone();
-        let mut qp = self
-            .request_queue_pair(
+        let qp_entry = self
+            .request_queue_pair_entry(
                 cx,
                 remote_owner.clone(),
                 local_device.clone(),
                 remote_device.clone(),
+                true,
             )
             .await?;
-        qp.put(local.clone(), remote)?;
-        let result = local
-            .wait_for_completion(&mut qp, PollTarget::Send, timeout)
-            .await;
+        let rxs = self.post_op_chunked(&qp_entry, local, remote, RdmaOperation::Write);
 
         // Release the queue pair back to the actor
-        self.release_queue_pair(cx, remote_owner, local_device, remote_device, qp)
+        self.release_queue_pair(cx, remote_owner, local_device, remote_device)
             .await?;
 
-        result?;
+        for rx in rxs? {
+            rx.await??;
+        }
+
         Ok(())
     }
     async fn write_from(
@@ -1164,25 +1326,25 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
         let local_device = local.device_name.clone();
         let remote_device = remote.device_name.clone();
-        let mut qp = self
-            .request_queue_pair(
+        let mut qp_entry = self
+            .request_queue_pair_entry(
                 cx,
                 remote_owner.clone(),
                 local_device.clone(),
                 remote_device.clone(),
+                true,
             )
             .await?;
-
-        qp.get(local.clone(), remote)?;
-        let result = local
-            .wait_for_completion(&mut qp, PollTarget::Send, timeout)
-            .await;
+        let rxs = self.post_op_chunked(&qp_entry, local, remote, RdmaOperation::Read);
 
         // Release the queue pair back to the actor
-        self.release_queue_pair(cx, remote_owner, local_device, remote_device, qp)
+        self.release_queue_pair(cx, remote_owner, local_device, remote_device)
             .await?;
 
-        result?;
+        for rx in rxs? {
+            rx.await?;
+        }
+
         Ok(())
     }
 }

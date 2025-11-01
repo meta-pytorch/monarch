@@ -39,6 +39,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -52,7 +53,6 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
-                qp_1,
             )
             .await?;
 
@@ -77,6 +77,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -89,7 +90,6 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
-                qp_1,
             )
             .await?;
 
@@ -116,6 +116,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -146,6 +147,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -174,6 +176,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         let mut qp_2 = env
@@ -183,6 +186,7 @@ mod tests {
                 env.actor_1.clone(),
                 env.rdma_handle_2.device_name.clone(),
                 env.rdma_handle_1.device_name.clone(),
+                false,
             )
             .await?;
         qp_2.put_with_recv(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
@@ -212,6 +216,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -242,6 +247,7 @@ mod tests {
                 env.actor_1.clone(),
                 env.rdma_handle_2.device_name.clone(),
                 env.rdma_handle_1.device_name.clone(),
+                false,
             )
             .await?;
         qp_2.enqueue_get(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
@@ -335,6 +341,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -374,6 +381,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.enqueue_get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -412,6 +420,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         let mut qp_2 = env
@@ -421,6 +430,7 @@ mod tests {
                 env.actor_1.clone(),
                 env.rdma_handle_2.device_name.clone(),
                 env.rdma_handle_1.device_name.clone(),
+                false,
             )
             .await?;
         recv_wqe_gpu(
@@ -469,6 +479,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
@@ -504,6 +515,7 @@ mod tests {
                 env.actor_2.clone(),
                 env.rdma_handle_1.device_name.clone(),
                 env.rdma_handle_2.device_name.clone(),
+                false,
             )
             .await?;
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
