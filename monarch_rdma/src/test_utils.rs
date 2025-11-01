@@ -262,8 +262,8 @@ pub mod test_utils {
     }
 
     pub struct RdmaManagerTestEnv<'a> {
-        buffer_1: Buffer,
-        buffer_2: Buffer,
+        pub buffer_1: Buffer,
+        pub buffer_2: Buffer,
         pub client_1: &'a Instance<()>,
         pub client_2: &'a Instance<()>,
         pub actor_1: ActorRef<RdmaManagerActor>,
@@ -272,6 +272,11 @@ pub mod test_utils {
         pub rdma_handle_2: RdmaBuffer,
         cuda_context_1: Option<cuda_sys::CUcontext>,
         cuda_context_2: Option<cuda_sys::CUcontext>,
+        accel1: String,
+        accel2: String,
+        parsed_accel1: (String, usize),
+        parsed_accel2: (String, usize),
+        buffer_pairs: Vec<(Buffer, Buffer)>,
     }
 
     #[derive(Debug, Clone)]
@@ -500,7 +505,239 @@ pub mod test_utils {
                 rdma_handle_2,
                 cuda_context_1: cuda_contexts.first().cloned().flatten(),
                 cuda_context_2: cuda_contexts.get(1).cloned().flatten(),
+                accel1: accel1.to_string(),
+                accel2: accel2.to_string(),
+                parsed_accel1,
+                parsed_accel2,
+                buffer_pairs: Vec::new(),
             })
+        }
+
+        /// # Arguments
+        /// * `buffer_size` - The size of the buffers to create
+        ///
+        /// # Returns
+        /// A tuple of (RdmaBuffer, RdmaBuffer) representing handles to the two newly created buffers
+        pub async fn create_buffer_pair(
+            &mut self,
+            buffer_size: usize,
+        ) -> Result<(RdmaBuffer, RdmaBuffer), anyhow::Error> {
+            // Allocate buffer 1
+            let buf_1 = if self.parsed_accel1.0 == "cpu" {
+                let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
+                let ptr = buffer.as_mut_ptr() as u64;
+                let len = buffer.len();
+                Box::leak(buffer); // Leak the buffer so it lives for the test duration
+                Buffer {
+                    ptr,
+                    len,
+                    cpu_ref: None, // Already leaked, no need to keep reference
+                }
+            } else if self.parsed_accel1.0 == "cuda" {
+                // CUDA case for buffer 1
+                unsafe {
+                    let mut dptr: cuda_sys::CUdeviceptr = std::mem::zeroed();
+                    let mut handle: cuda_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
+                    let mut device: cuda_sys::CUdevice = std::mem::zeroed();
+
+                    cu_check!(cuda_sys::cuDeviceGet(
+                        &mut device,
+                        self.parsed_accel1.1 as i32
+                    ));
+                    cu_check!(cuda_sys::cuCtxSetCurrent(
+                        self.cuda_context_1
+                            .expect("No CUDA context found for accel1")
+                    ));
+
+                    let mut granularity: usize = 0;
+                    let mut prop: cuda_sys::CUmemAllocationProp = std::mem::zeroed();
+                    prop.type_ = cuda_sys::CUmemAllocationType::CU_MEM_ALLOCATION_TYPE_PINNED;
+                    prop.location.type_ = cuda_sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE;
+                    prop.location.id = device;
+                    prop.allocFlags.gpuDirectRDMACapable = 1;
+                    prop.requestedHandleTypes =
+                        cuda_sys::CUmemAllocationHandleType::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+                    cu_check!(cuda_sys::cuMemGetAllocationGranularity(
+                        &mut granularity as *mut usize,
+                        &prop,
+                        cuda_sys::CUmemAllocationGranularity_flags::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
+                    ));
+
+                    let padded_size: usize = ((buffer_size - 1) / granularity + 1) * granularity;
+                    assert!(padded_size == buffer_size);
+
+                    cu_check!(cuda_sys::cuMemCreate(
+                        &mut handle as *mut cuda_sys::CUmemGenericAllocationHandle,
+                        padded_size,
+                        &prop,
+                        0
+                    ));
+
+                    cu_check!(cuda_sys::cuMemAddressReserve(
+                        &mut dptr as *mut cuda_sys::CUdeviceptr,
+                        padded_size,
+                        0,
+                        0,
+                        0,
+                    ));
+
+                    let err = cuda_sys::cuMemMap(
+                        dptr as cuda_sys::CUdeviceptr,
+                        padded_size,
+                        0,
+                        handle as cuda_sys::CUmemGenericAllocationHandle,
+                        0,
+                    );
+                    if err != cuda_sys::CUresult::CUDA_SUCCESS {
+                        panic!("failed reserving and mapping memory {:?}", err);
+                    }
+
+                    let mut access_desc: cuda_sys::CUmemAccessDesc = std::mem::zeroed();
+                    access_desc.location.type_ =
+                        cuda_sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE;
+                    access_desc.location.id = device;
+                    access_desc.flags =
+                        cuda_sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+                    cu_check!(cuda_sys::cuMemSetAccess(dptr, padded_size, &access_desc, 1));
+
+                    Buffer {
+                        ptr: dptr,
+                        len: padded_size,
+                        cpu_ref: None,
+                    }
+                }
+            } else {
+                panic!("Unsupported accelerator type: {}", self.parsed_accel1.0);
+            };
+
+            // Allocate buffer 2
+            let buf_2 = if self.parsed_accel2.0 == "cpu" {
+                let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
+                let ptr = buffer.as_mut_ptr() as u64;
+                let len = buffer.len();
+                Box::leak(buffer);
+                Buffer {
+                    ptr,
+                    len,
+                    cpu_ref: None,
+                }
+            } else if self.parsed_accel2.0 == "cuda" {
+                // CUDA case for buffer 2
+                unsafe {
+                    let mut dptr: cuda_sys::CUdeviceptr = std::mem::zeroed();
+                    let mut handle: cuda_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
+                    let mut device: cuda_sys::CUdevice = std::mem::zeroed();
+
+                    cu_check!(cuda_sys::cuDeviceGet(
+                        &mut device,
+                        self.parsed_accel2.1 as i32
+                    ));
+                    cu_check!(cuda_sys::cuCtxSetCurrent(
+                        self.cuda_context_2
+                            .expect("No CUDA context found for accel2")
+                    ));
+
+                    let mut granularity: usize = 0;
+                    let mut prop: cuda_sys::CUmemAllocationProp = std::mem::zeroed();
+                    prop.type_ = cuda_sys::CUmemAllocationType::CU_MEM_ALLOCATION_TYPE_PINNED;
+                    prop.location.type_ = cuda_sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE;
+                    prop.location.id = device;
+                    prop.allocFlags.gpuDirectRDMACapable = 1;
+                    prop.requestedHandleTypes =
+                        cuda_sys::CUmemAllocationHandleType::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+                    cu_check!(cuda_sys::cuMemGetAllocationGranularity(
+                        &mut granularity as *mut usize,
+                        &prop,
+                        cuda_sys::CUmemAllocationGranularity_flags::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
+                    ));
+
+                    let padded_size: usize = ((buffer_size - 1) / granularity + 1) * granularity;
+                    assert!(padded_size == buffer_size);
+
+                    cu_check!(cuda_sys::cuMemCreate(
+                        &mut handle as *mut cuda_sys::CUmemGenericAllocationHandle,
+                        padded_size,
+                        &prop,
+                        0
+                    ));
+
+                    cu_check!(cuda_sys::cuMemAddressReserve(
+                        &mut dptr as *mut cuda_sys::CUdeviceptr,
+                        padded_size,
+                        0,
+                        0,
+                        0,
+                    ));
+
+                    let err = cuda_sys::cuMemMap(
+                        dptr as cuda_sys::CUdeviceptr,
+                        padded_size,
+                        0,
+                        handle as cuda_sys::CUmemGenericAllocationHandle,
+                        0,
+                    );
+                    if err != cuda_sys::CUresult::CUDA_SUCCESS {
+                        panic!("failed reserving and mapping memory {:?}", err);
+                    }
+
+                    let mut access_desc: cuda_sys::CUmemAccessDesc = std::mem::zeroed();
+                    access_desc.location.type_ =
+                        cuda_sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE;
+                    access_desc.location.id = device;
+                    access_desc.flags =
+                        cuda_sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+                    cu_check!(cuda_sys::cuMemSetAccess(dptr, padded_size, &access_desc, 1));
+                    Buffer {
+                        ptr: dptr,
+                        len: padded_size,
+                        cpu_ref: None,
+                    }
+                }
+            } else {
+                panic!("Unsupported accelerator type: {}", self.parsed_accel2.0);
+            };
+
+            // Fill buffer1 with test data
+            if self.parsed_accel1.0 == "cuda" {
+                let mut temp_buffer = vec![0u8; buffer_size].into_boxed_slice();
+                for (i, val) in temp_buffer.iter_mut().enumerate() {
+                    *val = ((i + 42) % 256) as u8;
+                }
+                unsafe {
+                    cu_check!(cuda_sys::cuCtxSetCurrent(
+                        self.cuda_context_1.expect("No CUDA context found")
+                    ));
+                    cu_check!(cuda_sys::cuMemcpyHtoD_v2(
+                        buf_1.ptr,
+                        temp_buffer.as_ptr() as *const std::ffi::c_void,
+                        temp_buffer.len()
+                    ));
+                }
+            } else if self.parsed_accel1.0 == "cpu" {
+                unsafe {
+                    let ptr = buf_1.ptr as *mut u8;
+                    for i in 0..buf_1.len {
+                        *ptr.add(i) = ((i + 42) % 256) as u8;
+                    }
+                }
+            } else {
+                panic!("Unsupported accelerator type: {}", self.parsed_accel1.0);
+            }
+
+            // Register buffers with actors
+            let rdma_handle_1 = self
+                .actor_1
+                .request_buffer(self.client_1, buf_1.ptr as usize, buffer_size)
+                .await?;
+            let rdma_handle_2 = self
+                .actor_2
+                .request_buffer(self.client_2, buf_2.ptr as usize, buffer_size)
+                .await?;
+
+            self.buffer_pairs.push((buf_1, buf_2));
+            Ok((rdma_handle_1, rdma_handle_2))
         }
 
         pub async fn cleanup(self) -> Result<(), anyhow::Error> {
@@ -567,11 +804,29 @@ pub mod test_utils {
             .await
         }
 
-        pub async fn verify_buffers(&self, size: usize) -> Result<(), anyhow::Error> {
+        pub async fn verify_buffers(&self) -> Result<(), anyhow::Error> {
+            self.verify_buffer_pair(&self.buffer_1, &self.buffer_2)
+                .await?;
+            Ok(())
+        }
+
+        pub async fn verify_buffer_pair(
+            &self,
+            buf_1: &Buffer,
+            buf_2: &Buffer,
+        ) -> Result<(), anyhow::Error> {
             let mut buf_vec = Vec::new();
+            if buf_1.len != buf_2.len {
+                return Err(anyhow::anyhow!(
+                    "Buffers have different lengths: {} vs {}",
+                    buf_1.len,
+                    buf_2.len
+                ));
+            }
+            let size = buf_1.len;
             for (virtual_addr, cuda_context) in [
-                (self.buffer_1.ptr, self.cuda_context_1),
-                (self.buffer_2.ptr, self.cuda_context_2),
+                (buf_1.ptr, self.cuda_context_1),
+                (buf_2.ptr, self.cuda_context_2),
             ] {
                 if cuda_context.is_some() {
                     let mut temp_buffer = vec![0u8; size].into_boxed_slice();
@@ -605,9 +860,32 @@ pub mod test_utils {
                 let ptr2: *mut u8 = buf_vec[1].ptr as *mut u8;
                 for i in 0..buf_vec[0].len {
                     if *ptr1.add(i) != *ptr2.add(i) {
-                        return Err(anyhow::anyhow!("Buffers are not equal at index {}", i));
+                        return Err(anyhow::anyhow!(
+                            "Buffers are not equal at index {}, buf_1[{}]={}, buf_2[{}]={}",
+                            i,
+                            i,
+                            *ptr1.add(i),
+                            i,
+                            *ptr2.add(i)
+                        ));
                     }
                 }
+            }
+            Ok(())
+        }
+
+        pub async fn verify_all_buffer_pairs(&self) -> Result<(), anyhow::Error> {
+            for i in 0..self.buffer_pairs.len() {
+                let (buf_1, buf_2) = &self.buffer_pairs[i];
+                self.verify_buffer_pair(buf_1, buf_2).await.map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to verify buffer pair {}: {:?} and {:?}: {}",
+                        i,
+                        buf_1,
+                        buf_2,
+                        e
+                    )
+                })?;
             }
             Ok(())
         }
