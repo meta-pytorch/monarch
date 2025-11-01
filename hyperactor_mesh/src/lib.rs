@@ -35,11 +35,25 @@ pub mod test_utils;
 mod testresource;
 pub mod v1;
 
+// Generated build information module
+#[cfg(fbcode_build)]
+#[path = "../build_info.rs"]
+pub mod build_info;
+
 pub use actor_mesh::RootActorMesh;
 pub use actor_mesh::SlicedActorMesh;
 pub use bootstrap::Bootstrap;
 pub use bootstrap::bootstrap;
 pub use bootstrap::bootstrap_or_die;
+// Re-export build info attributes for easy access
+#[cfg(fbcode_build)]
+pub use build_info::BUILD_COMMIT;
+#[cfg(fbcode_build)]
+pub use build_info::BUILD_HOST;
+#[cfg(fbcode_build)]
+pub use build_info::BUILD_TIMESTAMP;
+#[cfg(fbcode_build)]
+pub use build_info::BUILD_USER;
 pub use comm::CommActor;
 pub use dashmap;
 pub use hyperactor_mesh_macros::sel;
