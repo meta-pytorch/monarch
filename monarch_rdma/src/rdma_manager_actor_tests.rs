@@ -56,7 +56,7 @@ mod tests {
             )
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -93,7 +93,7 @@ mod tests {
             )
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -123,7 +123,7 @@ mod tests {
         // Poll for completion
         wait_for_completion(&mut qp_1, PollTarget::Send, 2).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -151,7 +151,7 @@ mod tests {
         qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
         wait_for_completion(&mut qp_1, PollTarget::Send, 2).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -188,7 +188,7 @@ mod tests {
         qp_2.put_with_recv(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
         qp_1.recv(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
         wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -219,7 +219,7 @@ mod tests {
         // Poll for completion
         wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -249,7 +249,7 @@ mod tests {
         // Poll for completion
         wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -270,7 +270,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -292,7 +292,7 @@ mod tests {
             .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -342,7 +342,7 @@ mod tests {
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -381,7 +381,7 @@ mod tests {
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         Ok(())
     }
 
@@ -440,7 +440,7 @@ mod tests {
         ring_db_gpu(&mut qp_2).await?;
         wait_for_completion_gpu(&mut qp_1, PollTarget::Recv, 10).await?;
         wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -475,7 +475,7 @@ mod tests {
 
         wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -510,7 +510,7 @@ mod tests {
 
         wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -538,7 +538,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -564,7 +564,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -590,7 +590,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -616,7 +616,7 @@ mod tests {
             .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -644,7 +644,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -672,7 +672,7 @@ mod tests {
             .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -704,7 +704,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -736,7 +736,70 @@ mod tests {
             .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers().await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_concurrent_read_into() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+
+        let mut env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+
+        // Create three distinct buffer pairs that share the same actors
+        let (h1_a, h2_a) = env.create_buffer_pair(BSIZE).await?;
+        let (h1_b, h2_b) = env.create_buffer_pair(BSIZE).await?;
+        let (h1_c, h2_c) = env.create_buffer_pair(BSIZE).await?;
+
+        // Launch 3 concurrent read_into operations, each with its own buffer pair
+        // All operations share the same queue pair connection and should wait fairly
+        let task1 = h1_a.read_into(env.client_1, h2_a.clone(), 2);
+        let task2 = h1_b.read_into(env.client_1, h2_b.clone(), 2);
+        let task3 = h1_c.read_into(env.client_1, h2_c.clone(), 2);
+
+        tokio::try_join!(task1, task2, task3)?;
+        env.verify_all_buffer_pairs().await?;
+
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_concurrent_write_from() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+
+        let mut env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+
+        // Create three distinct buffer pairs that share the same actors
+        let (h1_a, h2_a) = env.create_buffer_pair(BSIZE).await?;
+        let (h1_b, h2_b) = env.create_buffer_pair(BSIZE).await?;
+        let (h1_c, h2_c) = env.create_buffer_pair(BSIZE).await?;
+
+        // Launch 3 concurrent write_from operations, each with its own buffer pair
+        // All operations share the same queue pair connection and should wait fairly
+        let task1 = h1_a.write_from(env.client_1, h2_a.clone(), 2);
+        let task2 = h1_b.write_from(env.client_1, h2_b.clone(), 2);
+        let task3 = h1_c.write_from(env.client_1, h2_c.clone(), 2);
+
+        tokio::try_join!(task1, task2, task3)?;
+
+        env.verify_all_buffer_pairs().await?;
+
         env.cleanup().await?;
         Ok(())
     }
