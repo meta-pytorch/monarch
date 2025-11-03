@@ -46,7 +46,6 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
-use tracing::Level;
 use uuid::Uuid;
 
 use crate as hyperactor;
@@ -334,9 +333,8 @@ impl Proc {
     }
 
     /// Create a new direct-addressed proc.
-    #[tracing::instrument]
     pub async fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
-        let (addr, rx) = channel::serve(addr)?;
+        let (addr, rx) = channel::serve(addr, &format!("creating Proc::direct: {}", name))?;
         let proc_id = ProcId::Direct(addr, name);
         let proc = Self::new(proc_id, DialMailboxRouter::new().into_boxed());
         proc.clone().serve(rx);
@@ -344,13 +342,15 @@ impl Proc {
     }
 
     /// Create a new direct-addressed proc with a default sender for the forwarder.
-    #[tracing::instrument(skip(default))]
     pub fn direct_with_default(
         addr: ChannelAddr,
         name: String,
         default: BoxedMailboxSender,
     ) -> Result<Self, ChannelError> {
-        let (addr, rx) = channel::serve(addr)?;
+        let (addr, rx) = channel::serve(
+            addr,
+            &format!("creating Proc::direct_with_default: {}", name),
+        )?;
         let proc_id = ProcId::Direct(addr, name);
         let proc = Self::new(
             proc_id,
@@ -495,18 +495,15 @@ impl Proc {
         params: A::Params,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_root_id(name)?;
-        let span = tracing::span!(
-            Level::INFO,
+        let _ = tracing::debug_span!(
             "spawn_actor",
             actor_name = name,
             actor_type = std::any::type_name::<A>(),
             actor_id = actor_id.to_string(),
         );
-        let (instance, mut actor_loop_receivers, work_rx) = {
-            let _guard = span.clone().entered();
-            Instance::new(self.clone(), actor_id.clone(), false, None)
-        };
-        let actor = A::new(params).instrument(span.clone()).await?;
+        let (instance, mut actor_loop_receivers, work_rx) =
+            Instance::new(self.clone(), actor_id.clone(), false, None);
+        let actor = A::new(params).await?;
         // Add this actor to the proc's actor ledger. We do not actively remove
         // inactive actors from ledger, because the actor's state can be inferred
         // from its weak cell.
@@ -516,7 +513,6 @@ impl Proc {
 
         instance
             .start(actor, actor_loop_receivers.take().unwrap(), work_rx)
-            .instrument(span)
             .await
     }
 

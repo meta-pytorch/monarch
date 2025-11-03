@@ -57,14 +57,13 @@ impl Router {
     /// Servers are memoized, and we maintain only one per transport; thus
     /// subsequent calls using the same transport will return the same address.
     #[allow(dead_code)]
-    #[tracing::instrument(skip(self))]
     pub async fn serve(&self, transport: &ChannelTransport) -> Result<ChannelAddr, ChannelError> {
         let mut servers = self.servers.lock().await;
         if let Some(addr) = servers.get(transport) {
             return Ok(addr.clone());
         }
 
-        let (addr, rx) = channel::serve(ChannelAddr::any(transport.clone()))?;
+        let (addr, rx) = channel::serve(ChannelAddr::any(transport.clone()), "Router::serve")?;
         self.router.clone().serve(rx);
         servers.insert(transport.clone(), addr.clone());
         Ok(addr)
