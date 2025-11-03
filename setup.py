@@ -209,7 +209,8 @@ setup(
     long_description=readme,
     long_description_content_type="text/markdown",
     ext_modules=[
-        controller_C,
+        # TODO - re-enable this once builds are working again.
+        # controller_C,
         common_C,
     ],
     entry_points={
