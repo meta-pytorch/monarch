@@ -17,6 +17,7 @@ pub mod testactor;
 pub mod testing;
 pub mod value_mesh;
 
+use std::io;
 use std::str::FromStr;
 
 pub use actor_mesh::ActorMesh;
@@ -25,6 +26,7 @@ use enum_as_inner::EnumAsInner;
 pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
 use ndslice::view;
 pub use proc_mesh::ProcMesh;
@@ -122,13 +124,13 @@ pub enum Error {
 
     #[error(
         "error spawning proc mesh: statuses: {}",
-        RankedValues::invert(&*.statuses)
+        RankedValues::invert(statuses)
     )]
     ProcSpawnError { statuses: RankedValues<Status> },
 
     #[error(
         "error spawning actor mesh: statuses: {}",
-        RankedValues::invert(&*.statuses)
+        RankedValues::invert(statuses)
     )]
     ActorSpawnError { statuses: RankedValues<Status> },
 
@@ -138,8 +140,17 @@ pub enum Error {
     )]
     ActorStopError { statuses: RankedValues<Status> },
 
+    #[error("error spawning actor: {0}")]
+    SingletonActorSpawnError(anyhow::Error),
+
     #[error("error: {0} does not exist")]
     NotExist(Name),
+
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Host(#[from] HostError),
 }
 
 /// Errors that occur during serialization and deserialization.
@@ -222,7 +233,8 @@ pub type Result<T> = std::result::Result<T, Error>;
     Ord,
     Hash,
     Serialize,
-    Deserialize
+    Deserialize,
+    EnumAsInner
 )]
 pub enum Name {
     /// Normal names for most actors.

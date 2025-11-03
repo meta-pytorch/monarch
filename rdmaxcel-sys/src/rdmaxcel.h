@@ -24,6 +24,12 @@ typedef enum {
   CQE_POLL_TRUE = 1
 } cqe_poll_result_t;
 
+// RDMA queue pair type selection
+typedef enum {
+  RDMA_QP_TYPE_STANDARD = 1, // Standard ibverbs queue pair
+  RDMA_QP_TYPE_MLX5DV = 2 // mlx5dv extended queue pair
+} rdma_qp_type_t;
+
 // C-compatible structure for CUDA segment information
 typedef struct {
   size_t phys_address; // Physical memory address of the segment
@@ -69,7 +75,8 @@ struct ibv_qp* create_qp(
     int max_send_wr,
     int max_recv_wr,
     int max_send_sge,
-    int max_recv_sge);
+    int max_recv_sge,
+    rdma_qp_type_t qp_type);
 
 struct mlx5dv_qp* create_mlx5dv_qp(struct ibv_qp* qp);
 

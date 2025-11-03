@@ -49,14 +49,14 @@ use super::ProcStopReason;
 use crate::assign::Ranks;
 use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
+use crate::bootstrap::MESH_ENABLE_FILE_CAPTURE;
+use crate::bootstrap::MESH_ENABLE_LOG_FORWARDING;
+use crate::bootstrap::MESH_TAIL_LOG_LINES;
 use crate::bootstrap::Process2Allocator;
 use crate::bootstrap::Process2AllocatorMessage;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::shortuuid::ShortUuid;
-
-/// The maximum number of log lines to tail keep for managed processes.
-const MAX_TAIL_LOG_LINES: usize = 100;
 
 pub const CLIENT_TRACE_ID_LABEL: &str = "CLIENT_TRACE_ID";
 
@@ -89,11 +89,8 @@ impl Allocator for ProcessAllocator {
 
     #[hyperactor::instrument(fields(name = "process_allocate", monarch_client_trace_id = spec.constraints.match_labels.get(CLIENT_TRACE_ID_LABEL).cloned().unwrap_or_else(|| "".to_string())))]
     async fn allocate(&mut self, spec: AllocSpec) -> Result<ProcessAlloc, AllocatorError> {
-        let (bootstrap_addr, rx) = channel::serve(
-            ChannelAddr::any(ChannelTransport::Unix),
-            "ProcessAllocator allocate bootstrap_addr",
-        )
-        .map_err(anyhow::Error::from)?;
+        let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix))
+            .map_err(anyhow::Error::from)?;
 
         if spec.transport == ChannelTransport::Local {
             return Err(AllocatorError::Other(anyhow::anyhow!(
@@ -176,14 +173,32 @@ impl Child {
     fn monitored(
         local_rank: usize,
         mut process: tokio::process::Child,
-        log_channel: ChannelAddr,
+        log_channel: Option<ChannelAddr>,
+        tail_size: usize,
     ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
         let stop_reason = Arc::new(OnceLock::new());
         let process_pid = Arc::new(std::sync::Mutex::new(process.id().map(|id| id as i32)));
 
-        // Take stdout and stderr from the process
+        // Take ownership of the child's stdio pipes.
+        //
+        // NOTE:
+        // - These Options are `Some(...)` **only if** the parent
+        //   spawned the child with
+        //   `stdout(Stdio::piped())/stderr(Stdio::piped())`, which
+        //   the caller decides via its `need_stdio` calculation:
+        //     need_stdio = enable_forwarding || tail_size > 0
+        // - If `need_stdio == false` the parent used
+        //   `Stdio::inherit()` and both will be `None`. In that case
+        //   we intentionally *skip* installing `StreamFwder`s and
+        //   the child writes directly to the parent's console with
+        //   no interception, no tail.
+        // - Even when we do install `StreamFwder`s, if `log_channel
+        //   == None` (forwarding disabled) we still mirror to the
+        //   parent console and keep an in-memory tail, but we don't
+        //   send anything over the mesh log channel. (In the v0 path
+        //   there's also no `FileAppender`.)
         let stdout_pipe = process.stdout.take();
         let stderr_pipe = process.stderr.take();
 
@@ -208,10 +223,10 @@ impl Child {
             let log_channel_clone = log_channel.clone();
             *stdout_fwder.lock().expect("stdout_fwder mutex poisoned") = Some(StreamFwder::start(
                 stdout,
-                None, // TODO: Remove once V0 path is not supported anymore
+                None, // No file appender in v0.
                 OutputTarget::Stdout,
-                MAX_TAIL_LOG_LINES,
-                log_channel_clone,
+                tail_size,
+                log_channel_clone, // Optional channel address
                 pid,
                 local_rank,
             ));
@@ -222,10 +237,10 @@ impl Child {
             let stderr_fwder = child_stderr_fwder.clone();
             *stderr_fwder.lock().expect("stderr_fwder mutex poisoned") = Some(StreamFwder::start(
                 stderr,
-                None, // TODO: Remove once V0 path is not supported anymore
+                None, // No file appender in v0.
                 OutputTarget::Stderr,
-                MAX_TAIL_LOG_LINES,
-                log_channel,
+                tail_size,
+                log_channel, // Optional channel address
                 pid,
                 local_rank,
             ));
@@ -431,7 +446,44 @@ impl ProcessAlloc {
             return None;
         }
         let mut cmd = self.cmd.lock().await;
-        let log_channel: ChannelAddr = ChannelAddr::any(ChannelTransport::Unix);
+
+        // Read config (defaults are in 'bootstrap.rs').
+        let enable_forwarding = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
+        let enable_file_capture = hyperactor::config::global::get(MESH_ENABLE_FILE_CAPTURE);
+        let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
+
+        // We don't support FileAppender in this v0 allocator path; warn if asked.
+        if enable_file_capture {
+            tracing::warn!(
+                "MESH_ENABLE_FILE_CAPTURE=true, but ProcessAllocator (v0) has no FileAppender; \
+                 files will NOT be written in this path"
+            );
+        }
+
+        let need_stdio = enable_forwarding || tail_size > 0;
+
+        if need_stdio {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        } else {
+            cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+            tracing::info!(
+                enable_forwarding,
+                enable_file_capture,
+                tail_size,
+                "child stdio NOT captured (forwarding/file_capture/tail all disabled); \
+                 inheriting parent console"
+            );
+        }
+
+        // Only allocate & export a log channel when forwarding is
+        // enabled.
+        let log_channel: Option<ChannelAddr> = if enable_forwarding {
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
+            cmd.env(bootstrap::BOOTSTRAP_LOG_CHANNEL, addr.to_string());
+            Some(addr)
+        } else {
+            None
+        };
 
         let index = self.created.len();
         self.created.push(ShortUuid::generate());
@@ -446,9 +498,6 @@ impl ProcessAlloc {
             self.client_context.trace_id.as_str(),
         );
         cmd.env(bootstrap::BOOTSTRAP_INDEX_ENV, index.to_string());
-        cmd.env(bootstrap::BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
 
         tracing::debug!("spawning process {:?}", cmd);
         match cmd.spawn() {
@@ -474,7 +523,8 @@ impl ProcessAlloc {
                         None
                     }
                     Ok(rank) => {
-                        let (handle, monitor) = Child::monitored(rank, process, log_channel);
+                        let (handle, monitor) =
+                            Child::monitored(rank, process, log_channel, tail_size);
 
                         // Insert into active map BEFORE spawning the monitor task
                         // This prevents a race where the monitor completes before insertion

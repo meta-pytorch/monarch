@@ -294,7 +294,7 @@ pub mod test_utils {
     }
 
     impl RdmaManagerTestEnv<'_> {
-        /// Sets up the RDMA test environment.
+        /// Sets up the RDMA test environment with a specified QP type.
         ///
         /// This function initializes the RDMA test environment by setting up two actor meshes
         /// with their respective RDMA configurations. It also prepares two buffers for testing
@@ -305,14 +305,20 @@ pub mod test_utils {
         /// * `buffer_size` - The size of the buffers to be used in the test.
         /// * `accel1` - Accelerator for first actor (e.g., "cpu:0", "cuda:0")
         /// * `accel2` - Accelerator for second actor (e.g., "cpu:0", "cuda:1")
-        pub async fn setup(
+        /// * `qp_type` - The queue pair type to use (Auto, Standard, or Mlx5dv)
+        pub async fn setup_with_qp_type(
             buffer_size: usize,
             accel1: &str,
             accel2: &str,
+            qp_type: crate::ibverbs_primitives::RdmaQpType,
         ) -> Result<Self, anyhow::Error> {
             // Use device selection logic to find optimal RDMA devices
             let mut config1 = IbverbsConfig::targeting(accel1);
             let mut config2 = IbverbsConfig::targeting(accel2);
+
+            // Set the QP type
+            config1.qp_type = qp_type;
+            config2.qp_type = qp_type;
 
             let parsed_accel1 = parse_accel(accel1, &mut config1).await;
             let parsed_accel2 = parse_accel(accel2, &mut config2).await;
@@ -535,6 +541,30 @@ pub mod test_utils {
                 }
             }
             Ok(())
+        }
+
+        /// Sets up the RDMA test environment with auto-detected QP type.
+        ///
+        /// This is a convenience wrapper around `setup_with_qp_type` that uses
+        /// `RdmaQpType::Auto` to automatically select the appropriate QP type.
+        ///
+        /// # Arguments
+        ///
+        /// * `buffer_size` - The size of the buffers to be used in the test.
+        /// * `accel1` - Accelerator for first actor (e.g., "cpu:0", "cuda:0")
+        /// * `accel2` - Accelerator for second actor (e.g., "cpu:0", "cuda:1")
+        pub async fn setup(
+            buffer_size: usize,
+            accel1: &str,
+            accel2: &str,
+        ) -> Result<Self, anyhow::Error> {
+            Self::setup_with_qp_type(
+                buffer_size,
+                accel1,
+                accel2,
+                crate::ibverbs_primitives::RdmaQpType::Auto,
+            )
+            .await
         }
 
         pub async fn verify_buffers(&self, size: usize) -> Result<(), anyhow::Error> {

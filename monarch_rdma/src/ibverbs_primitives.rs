@@ -87,6 +87,35 @@ impl AsMut<rdmaxcel_sys::ibv_gid> for Gid {
     }
 }
 
+/// Queue pair type for RDMA operations.
+///
+/// Controls whether to use standard ibverbs queue pairs or mlx5dv extended queue pairs.
+/// Auto mode automatically selects based on device capabilities.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RdmaQpType {
+    /// Auto-detect based on device capabilities
+    Auto,
+    /// Force standard ibverbs queue pair
+    Standard,
+    /// Force mlx5dv extended queue pair
+    Mlx5dv,
+}
+
+/// Converts `RdmaQpType` to the corresponding integer enum value in rdmaxcel_sys.
+pub fn resolve_qp_type(qp_type: RdmaQpType) -> u32 {
+    match qp_type {
+        RdmaQpType::Auto => {
+            if mlx5dv_supported() {
+                rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV
+            } else {
+                rdmaxcel_sys::RDMA_QP_TYPE_STANDARD
+            }
+        }
+        RdmaQpType::Standard => rdmaxcel_sys::RDMA_QP_TYPE_STANDARD,
+        RdmaQpType::Mlx5dv => rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV,
+    }
+}
+
 /// Represents ibverbs specific configurations.
 ///
 /// This struct holds various parameters required to establish and manage an RDMA connection.
@@ -133,6 +162,8 @@ pub struct IbverbsConfig {
     /// `hw_init_delay_ms` - The delay in milliseconds before initializing the hardware.
     /// This is used to allow the hardware to settle before starting the first transmission.
     pub hw_init_delay_ms: u64,
+    /// `qp_type` - The type of queue pair to create (Auto, Standard, or Mlx5dv).
+    pub qp_type: RdmaQpType,
 }
 
 /// Default RDMA parameters below are based on common values from rdma-core examples
@@ -160,6 +191,7 @@ impl Default for IbverbsConfig {
             psn: rand::random::<u32>() & 0xffffff,
             use_gpu_direct: false, // nv_peermem enabled for cuda
             hw_init_delay_ms: 2,
+            qp_type: RdmaQpType::Auto,
         }
     }
 }
@@ -698,21 +730,9 @@ fn ibverbs_supported_impl() -> bool {
 
 /// Checks if RDMA is fully supported on this system.
 ///
-/// This is the canonical function to check if RDMA can be used. It verifies both:
-/// 1. Basic ibverbs device availability (`ibverbs_supported()`)
-/// 2. mlx5dv device-specific extensions (`mlx5dv_supported()`)
-///
-/// mlx5dv extensions are required for this library's advanced features including
-/// GPU Direct RDMA and direct queue pair manipulation. Systems with non-Mellanox
-/// RDMA devices will have `ibverbs_supported() == true` but `rdma_supported() == false`.
-///
-/// The result is cached after the first call, making subsequent calls essentially free.
-///
-/// # Returns
-///
-/// `true` if both ibverbs devices and mlx5dv extensions are available, `false` otherwise.
+/// This is the canonical function to check if RDMA can be used.
 pub fn rdma_supported() -> bool {
-    ibverbs_supported() && mlx5dv_supported()
+    ibverbs_supported()
 }
 
 /// Represents a view of a memory region that can be registered with an RDMA device.
@@ -1086,25 +1106,5 @@ mod tests {
         // The test just verifies the function doesn't panic
         let mlx5dv_support = mlx5dv_supported();
         println!("mlx5dv_supported: {}", mlx5dv_support);
-    }
-
-    #[test]
-    fn test_rdma_supported_combines_checks() {
-        // This test verifies that rdma_supported() properly combines both checks
-        let ibverbs_support = ibverbs_supported();
-        let mlx5dv_support = mlx5dv_supported();
-        let rdma_support = rdma_supported();
-
-        // rdma_supported should be true only if both checks pass
-        assert_eq!(
-            rdma_support,
-            ibverbs_support && mlx5dv_support,
-            "rdma_supported should equal (ibverbs_supported && mlx5dv_supported)"
-        );
-
-        println!(
-            "ibverbs_supported: {}, mlx5dv_supported: {}, rdma_supported: {}",
-            ibverbs_support, mlx5dv_support, rdma_support
-        );
     }
 }

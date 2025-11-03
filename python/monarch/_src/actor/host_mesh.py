@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 import warnings
 from math import prod
@@ -24,7 +24,7 @@ from monarch._src.actor.proc_mesh import (
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch._src.actor.v1.host_mesh import (
-    _bootstrap_cmd,
+    _bootstrap_cmd,  # noqa: F401
     create_local_host_mesh as create_local_host_mesh_v1,
     fake_in_process_host as fake_in_process_host_v1,
     host_mesh_from_alloc as host_mesh_from_alloc_v1,
@@ -80,7 +80,7 @@ class HostMeshV0(MeshTrait):
         shape: Shape,
         allocator: AllocateMixin,
         alloc_constraints: Optional[AllocConstraints] = None,
-    ):
+    ) -> None:
         warnings.warn(
             (
                 "DEPRECATION WARNING: using a deprecated version of HostMesh. This is going be removed imminently. "
@@ -186,7 +186,7 @@ def fake_in_process_host_v0() -> "HostMeshV0":
     return HostMeshV0(Shape.unity(), LocalAllocator())
 
 
-def hosts_from_config_v0(name: str):
+def hosts_from_config_v0(name: str) -> HostMeshV0:
     """
     Get the host mesh 'name' from the monarch configuration for the project.
 

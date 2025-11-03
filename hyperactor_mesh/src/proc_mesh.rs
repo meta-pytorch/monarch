@@ -273,6 +273,7 @@ impl ProcMesh {
         C.get_or_init(|| AtomicUsize::new(0))
     }
 
+    #[tracing::instrument(skip_all)]
     #[hyperactor::observe_result("ProcMesh")]
     async fn allocate_boxed_inner(
         mut alloc: Box<dyn Alloc + Send + Sync>,
@@ -314,11 +315,8 @@ impl ProcMesh {
         //    everything else, so now the whole mesh should be able to communicate.
         let client_proc_id =
             ProcId::Ranked(WorldId(format!("{}_client", alloc.world_id().name())), 0);
-        let (client_proc_addr, client_rx) = channel::serve(
-            ChannelAddr::any(alloc.transport()),
-            &format!("client_proc_addr: {}", &client_proc_id),
-        )
-        .map_err(|err| AllocatorError::Other(err.into()))?;
+        let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(alloc.transport()))
+            .map_err(|err| AllocatorError::Other(err.into()))?;
         tracing::info!(
             name = "ProcMesh::Allocate::ChannelServe",
             alloc_id = alloc_id,
@@ -383,7 +381,7 @@ impl ProcMesh {
         // Ensure that the router is served so that agents may reach us.
         let (router_channel_addr, router_rx) = alloc
             .client_router_addr()
-            .serve_with_config("client_router_addr")
+            .serve_with_config()
             .map_err(AllocatorError::Other)?;
         router.serve(router_rx);
         tracing::info!("router channel started listening on addr: {router_channel_addr}");
@@ -697,6 +695,7 @@ impl ProcMesh {
                     .collect(),
                 actor_event_router: actor_event_router.clone(),
             }),
+            #[allow(clippy::todo)]
             ProcMeshKind::V1(_proc_mesh) => todo!(),
         }
     }

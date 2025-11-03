@@ -28,7 +28,8 @@ struct ibv_qp* create_qp(
     int max_send_wr,
     int max_recv_wr,
     int max_send_sge,
-    int max_recv_sge) {
+    int max_recv_sge,
+    rdma_qp_type_t qp_type) {
   // Create separate completion queues for send and receive operations
   struct ibv_cq* send_cq = ibv_create_cq(context, cq_entries, NULL, NULL, 0);
   if (!send_cq) {
@@ -43,44 +44,85 @@ struct ibv_qp* create_qp(
     return NULL;
   }
 
-  // Initialize extended queue pair attributes
-  struct ibv_qp_init_attr_ex qp_init_attr_ex = {
-      .qp_context = NULL,
-      .send_cq = send_cq,
-      .recv_cq = recv_cq,
-      .srq = NULL,
-      .cap =
-          {
-              .max_send_wr = max_send_wr,
-              .max_recv_wr = max_recv_wr,
-              .max_send_sge = max_send_sge,
-              .max_recv_sge = max_recv_sge,
-              .max_inline_data = 0,
-          },
-      .qp_type = IBV_QPT_RC,
-      .sq_sig_all = 0,
-      .pd = pd,
-      .comp_mask = IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_SEND_OPS_FLAGS,
-      .send_ops_flags = IBV_QP_EX_WITH_RDMA_WRITE | IBV_QP_EX_WITH_RDMA_READ |
-          IBV_QP_EX_WITH_SEND,
-      .create_flags = 0,
-  };
+  switch (qp_type) {
+    case RDMA_QP_TYPE_MLX5DV: {
+      // Initialize extended queue pair attributes
+      struct ibv_qp_init_attr_ex qp_init_attr_ex = {
+          .qp_context = NULL,
+          .send_cq = send_cq,
+          .recv_cq = recv_cq,
+          .srq = NULL,
+          .cap =
+              {
+                  .max_send_wr = max_send_wr,
+                  .max_recv_wr = max_recv_wr,
+                  .max_send_sge = max_send_sge,
+                  .max_recv_sge = max_recv_sge,
+                  .max_inline_data = 0,
+              },
+          .qp_type = IBV_QPT_RC,
+          .sq_sig_all = 0,
+          .pd = pd,
+          .comp_mask = IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_SEND_OPS_FLAGS,
+          .send_ops_flags = IBV_QP_EX_WITH_RDMA_WRITE |
+              IBV_QP_EX_WITH_RDMA_READ | IBV_QP_EX_WITH_SEND,
+          .create_flags = 0,
+      };
 
-  struct mlx5dv_qp_init_attr mlx5dv_attr = {};
-  mlx5dv_attr.comp_mask |= MLX5DV_QP_INIT_ATTR_MASK_SEND_OPS_FLAGS;
-  mlx5dv_attr.send_ops_flags =
-      MLX5DV_QP_EX_WITH_MKEY_CONFIGURE | MLX5DV_QP_EX_WITH_MR_LIST;
+      struct mlx5dv_qp_init_attr mlx5dv_attr = {};
+      mlx5dv_attr.comp_mask |= MLX5DV_QP_INIT_ATTR_MASK_SEND_OPS_FLAGS;
+      mlx5dv_attr.send_ops_flags =
+          MLX5DV_QP_EX_WITH_MKEY_CONFIGURE | MLX5DV_QP_EX_WITH_MR_LIST;
 
-  // Create extended queue pair
-  struct ibv_qp* qp = mlx5dv_create_qp(context, &qp_init_attr_ex, &mlx5dv_attr);
-  if (!qp) {
-    perror("failed to create extended queue pair (QP)");
-    ibv_destroy_cq(send_cq);
-    ibv_destroy_cq(recv_cq);
-    return NULL;
+      // Create extended queue pair
+      struct ibv_qp* qp =
+          mlx5dv_create_qp(context, &qp_init_attr_ex, &mlx5dv_attr);
+      if (!qp) {
+        perror("failed to create extended queue pair (QP)");
+        ibv_destroy_cq(send_cq);
+        ibv_destroy_cq(recv_cq);
+        return NULL;
+      }
+
+      return qp;
+    }
+
+    case RDMA_QP_TYPE_STANDARD: {
+      // Initialize queue pair attributes
+      struct ibv_qp_init_attr qp_init_attr = {
+          .qp_context = NULL,
+          .send_cq = send_cq,
+          .recv_cq = recv_cq,
+          .srq = NULL,
+          .cap =
+              {
+                  .max_send_wr = max_send_wr,
+                  .max_recv_wr = max_recv_wr,
+                  .max_send_sge = max_send_sge,
+                  .max_recv_sge = max_recv_sge,
+                  .max_inline_data = 0,
+              },
+          .qp_type = IBV_QPT_RC,
+          .sq_sig_all = 0,
+      };
+
+      // Create queue pair
+      struct ibv_qp* qp = ibv_create_qp(pd, &qp_init_attr);
+      if (!qp) {
+        perror("failed to create queue pair (QP)");
+        ibv_destroy_cq(send_cq);
+        ibv_destroy_cq(recv_cq);
+        return NULL;
+      }
+
+      return qp;
+    }
+
+    default: {
+      perror("Invalid QP type");
+      return NULL;
+    }
   }
-
-  return qp;
 }
 
 struct mlx5dv_qp* create_mlx5dv_qp(struct ibv_qp* qp) {

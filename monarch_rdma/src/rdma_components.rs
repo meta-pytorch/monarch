@@ -66,6 +66,7 @@ use crate::ibverbs_primitives::IbvWc;
 use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaOperation;
 use crate::ibverbs_primitives::RdmaQpInfo;
+use crate::ibverbs_primitives::resolve_qp_type;
 
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct DoorBell {
@@ -521,7 +522,9 @@ impl RdmaQueuePair {
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an RdmaQueuePair from config {}", config);
         unsafe {
-            // standard ibverbs QP
+            // Resolve Auto to a concrete QP type based on device capabilities
+            let resolved_qp_type = resolve_qp_type(config.qp_type);
+
             let qp = rdmaxcel_sys::create_qp(
                 context,
                 pd,
@@ -530,6 +533,7 @@ impl RdmaQueuePair {
                 config.max_recv_wr.try_into().unwrap(),
                 config.max_send_sge.try_into().unwrap(),
                 config.max_recv_sge.try_into().unwrap(),
+                resolved_qp_type,
             );
 
             if qp.is_null() {

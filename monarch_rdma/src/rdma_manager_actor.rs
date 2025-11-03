@@ -48,6 +48,7 @@ use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaQpInfo;
 use crate::ibverbs_primitives::ibverbs_supported;
+use crate::ibverbs_primitives::resolve_qp_type;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
@@ -120,7 +121,7 @@ pub enum RdmaManagerMessage {
         reply: OncePortRef<RdmaQpInfo>,
     },
     ReleaseQueuePair {
-        /// `other` - The ActorId to release queue pair for  
+        /// `other` - The ActorId to release queue pair for
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
@@ -149,6 +150,8 @@ pub struct RdmaManagerActor {
     // Flag indicating PyTorch CUDA allocator compatibility
     // True if both C10 CUDA allocator is enabled AND expandable segments are enabled
     pt_cuda_alloc: bool,
+
+    mlx5dv_enabled: bool,
 
     // Map of unique RdmaMemoryRegionView to ibv_mr*.  In case of cuda w/ pytorch its -1
     // since its managed independently.  Only used for registration/deregistration purposes
@@ -231,7 +234,7 @@ impl Drop for RdmaManagerActor {
         }
 
         // 3. Clean up memory regions
-        let mr_count = self.mr_map.len();
+        let _mr_count = self.mr_map.len();
         for (id, mr_ptr) in self.mr_map.drain() {
             if mr_ptr != 0 {
                 unsafe {
@@ -248,7 +251,7 @@ impl Drop for RdmaManagerActor {
         }
 
         // 4. Deregister all CUDA segments (if using PyTorch CUDA allocator)
-        if self.pt_cuda_alloc {
+        if self.cuda_pt_alloc_enabled() {
             unsafe {
                 let result = rdmaxcel_sys::deregister_segments();
                 if result != 0 {
@@ -265,6 +268,11 @@ impl Drop for RdmaManagerActor {
 }
 
 impl RdmaManagerActor {
+    /// Whether to register all memory regions allocated by the PyTorch CUDA allocator
+    /// True if both `pt_cuda_alloc` and `mlx5dv_enabled` are true
+    fn cuda_pt_alloc_enabled(&self) -> bool {
+        self.pt_cuda_alloc && self.mlx5dv_enabled
+    }
     /// Get or create a domain and loopback QP for the specified RDMA device
     fn get_or_create_device_domain(
         &mut self,
@@ -420,10 +428,7 @@ impl RdmaManagerActor {
             let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
             let mrv;
 
-            // Copy pt_cuda_alloc to avoid borrowing issues
-            let pt_cuda_alloc = self.pt_cuda_alloc;
-
-            if is_cuda && pt_cuda_alloc {
+            if is_cuda && self.cuda_pt_alloc_enabled() {
                 // Get registered segments and check if our memory range is covered
                 let mut maybe_mrv = self.find_cuda_segment_for_address(addr, size);
                 // not found, lets re-sync with caching allocator  and retry
@@ -529,6 +534,8 @@ impl Actor for RdmaManagerActor {
 
         let pt_cuda_alloc = crate::rdma_components::pt_cuda_allocator_compatibility();
 
+        let mlx5dv_enabled = resolve_qp_type(config.qp_type) == rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV;
+
         // check config and hardware support align
         if config.use_gpu_direct {
             match validate_execution_context().await {
@@ -557,6 +564,7 @@ impl Actor for RdmaManagerActor {
             device_domains: HashMap::new(),
             config,
             pt_cuda_alloc,
+            mlx5dv_enabled,
             mr_map: HashMap::new(),
             mrv_id: 0,
             pci_to_device,
