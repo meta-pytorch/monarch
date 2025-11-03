@@ -417,7 +417,7 @@ impl ProcActor {
         labels: HashMap<String, String>,
         lifecycle_mode: ProcLifecycleMode,
     ) -> Result<BootstrappedProc, anyhow::Error> {
-        let (local_addr, rx) = channel::serve(listen_addr)?;
+        let (local_addr, rx) = channel::serve(listen_addr, "bootstrap_for_proc")?;
         let mailbox_handle = proc.clone().serve(rx);
         let (state_tx, mut state_rx) = watch::channel(ProcState::AwaitingJoin);
 

@@ -840,6 +840,7 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 #[crate::instrument]
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
+    reason: &str,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     match addr {
         ChannelAddr::Tcp(addr) => {
@@ -870,7 +871,9 @@ pub fn serve<M: RemoteMessage>(
     .map(|(addr, inner)| {
         tracing::debug!(
             name = "serve",
-            %addr,
+            "serving channel address {} for {}",
+            addr,
+            reason
         );
         (addr, ChannelRx { inner })
     })
@@ -1047,7 +1050,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_connections() {
         for addr in ChannelTransport::all().map(ChannelAddr::any) {
-            let (listen_addr, mut rx) = crate::channel::serve::<u64>(addr).unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<u64>(addr, "test").unwrap();
 
             let mut sends: JoinSet<()> = JoinSet::new();
             for message in 0u64..100u64 {
@@ -1086,7 +1089,7 @@ mod tests {
                 continue;
             }
 
-            let (listen_addr, rx) = crate::channel::serve::<u64>(addr).unwrap();
+            let (listen_addr, rx) = crate::channel::serve::<u64>(addr, "test").unwrap();
 
             let tx = dial::<u64>(listen_addr).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
@@ -1135,7 +1138,7 @@ mod tests {
     #[cfg_attr(not(feature = "fb"), ignore)]
     async fn test_dial_serve() {
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr, "test").unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();
             tx.try_post(123, oneshot::channel().0).unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
@@ -1155,7 +1158,7 @@ mod tests {
         );
         let _guard2 = config.override_key(crate::config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         for addr in addrs() {
-            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr).unwrap();
+            let (listen_addr, mut rx) = crate::channel::serve::<i32>(addr, "test").unwrap();
             let tx = crate::channel::dial(listen_addr).unwrap();
             tx.send(123).await.unwrap();
             assert_eq!(rx.recv().await.unwrap(), 123);
