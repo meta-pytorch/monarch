@@ -170,7 +170,7 @@ impl Entry {
         self.value = Value::String(buf);
     }
 
-    fn set_debug(&mut self, name: &'static str, value: &(dyn std::fmt::Debug)) {
+    fn set_debug(&mut self, name: &'static str, value: &dyn std::fmt::Debug) {
         self.reset();
         let mut buf = self.buffer.take().unwrap_or_else(String::new);
 
@@ -325,7 +325,7 @@ impl Visit for Event {
         self.next_field().set_error(field.name(), value);
     }
 
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &(dyn std::fmt::Debug)) {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         self.next_field().set_debug(field.name(), value);
     }
 }

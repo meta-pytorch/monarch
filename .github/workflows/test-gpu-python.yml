@@ -45,6 +45,10 @@ jobs:
         # Setup CUDA environment and library paths
         setup_cuda_environment
 
+        # Install torch nightly before installing the wheel,
+        # so that we can test the wheel against the latest nightly
+        pip install ${{ matrix.torch-spec }}
+
         # Install the built wheel from artifact
         install_wheel_from_artifact
 

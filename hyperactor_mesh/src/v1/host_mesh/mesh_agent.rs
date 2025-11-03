@@ -27,6 +27,7 @@ use hyperactor::Proc;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::context;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
@@ -75,13 +76,14 @@ impl HostAgentMode {
 
     async fn terminate_proc(
         &self,
+        cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         #[allow(clippy::match_same_arms)]
         match self {
-            HostAgentMode::Process(host) => host.terminate_proc(proc, timeout).await,
-            HostAgentMode::Local(host) => host.terminate_proc(proc, timeout).await,
+            HostAgentMode::Process(host) => host.terminate_proc(cx, proc, timeout).await,
+            HostAgentMode::Local(host) => host.terminate_proc(cx, proc, timeout).await,
         }
     }
 }
@@ -212,7 +214,7 @@ impl Handler<resource::Stop> for HostMeshAgent {
                         !*stopped
                     };
                     if should_stop {
-                        host.terminate_proc(proc_id, timeout).await?;
+                        host.terminate_proc(&cx, proc_id, timeout).await?;
                         *stopped = true;
                     }
                     // use Stopped as a successful result for Stop.
@@ -290,7 +292,18 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        get_rank_status.reply.send(cx, overlay)?;
+        let result = get_rank_status.reply.send(cx, overlay);
+        // Ignore errors, because returning Err from here would cause the HostMeshAgent
+        // to be stopped, which would take down the entire host. This only means
+        // some actor that requested the rank status failed to receive it.
+        if let Err(e) = result {
+            tracing::warn!(
+                actor = %cx.self_id(),
+                "failed to send GetRankStatus reply to {} due to error: {}",
+                get_rank_status.reply.port_id().actor_id(),
+                e
+            );
+        }
         Ok(())
     }
 }
@@ -317,13 +330,13 @@ impl Handler<ShutdownHost> for HostMeshAgent {
             match host_mode {
                 HostAgentMode::Process(host) => {
                     let summary = host
-                        .terminate_children(msg.timeout, msg.max_in_flight.clamp(1, 256))
+                        .terminate_children(cx, msg.timeout, msg.max_in_flight.clamp(1, 256))
                         .await;
                     tracing::info!(?summary, "terminated children on host");
                 }
                 HostAgentMode::Local(host) => {
                     let summary = host
-                        .terminate_children(msg.timeout, msg.max_in_flight)
+                        .terminate_children(cx, msg.timeout, msg.max_in_flight)
                         .await;
                     tracing::info!(?summary, "terminated children on local host");
                 }
@@ -403,7 +416,18 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
             },
         };
 
-        get_state.reply.send(cx, state)?;
+        let result = get_state.reply.send(cx, state);
+        // Ignore errors, because returning Err from here would cause the HostMeshAgent
+        // to be stopped, which would take down the entire host. This only means
+        // some actor that requested the state of a proc failed to receive it.
+        if let Err(e) = result {
+            tracing::warn!(
+                actor = %cx.self_id(),
+                "failed to send GetState reply to {} due to error: {}",
+                get_state.reply.port_id().actor_id(),
+                e
+            );
+        }
         Ok(())
     }
 }
@@ -443,7 +467,7 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
                 None => BootstrapCommand::current()?,
             };
             tracing::info!("booting host with proc command {:?}", command);
-            let manager = BootstrapProcManager::new(command);
+            let manager = BootstrapProcManager::new(command).unwrap();
             let (host, _) = Host::serve(manager, transport.any()).await?;
             HostAgentMode::Process(host)
         };
@@ -501,7 +525,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic() {
         let (host, _handle) = Host::serve(
-            BootstrapProcManager::new(BootstrapCommand::test()),
+            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
