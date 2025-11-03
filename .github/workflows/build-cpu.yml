@@ -29,8 +29,9 @@ jobs:
         # Setup build environment (conda + system deps + rust + build deps)
         setup_build_environment
 
-        # Install torch nightly (CPU version)
-        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+        # Install torch 2.9.0 (CPU version) (versioned wheel preferred
+        # for build hermeticity)
+        pip install torch==2.9.0+cpu --index-url https://download.pytorch.org/whl/cpu
         pip install -r build-requirements.txt
 
         # Build monarch (No tensor engine, CPU version)

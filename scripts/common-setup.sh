@@ -64,7 +64,7 @@ setup_tensor_engine() {
 # Install PyTorch with C++ development headers (libtorch) for Rust compilation
 setup_pytorch_with_headers() {
     local gpu_arch_version=${1:-"12.6"}
-    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126"}
+    local torch_spec=${2:-"torch==2.9.0+cu126 --index-url https://download.pytorch.org/whl/cu126"}
 
     echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
 
@@ -110,6 +110,10 @@ setup_build_environment() {
     setup_conda_environment "${python_version}"
     install_system_dependencies
     setup_rust_toolchain
+    if [ -n "$install_args" ]; then
+        echo "Installing PyTorch with: ${install_args}"
+        pip install ${install_args}
+    fi
 }
 
 # Detect and configure CUDA environment for linking
