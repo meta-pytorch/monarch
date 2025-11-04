@@ -420,20 +420,12 @@ struct GradientGenerator {
     DEBUG_PRINT(
         "// add: " << node->node->name()
                    << ", input_nr=" << static_cast<int>(input_nr) << "\n");
-#if !defined(FBCODE_BUILD)
-    realInputBuffer(node).add(
-        input_nr,
-        check_and_reduce(node->node, input_nr, std::move(t)),
-        std::nullopt,
-        std::nullopt);
-#else
     realInputBuffer(node).add(
         input_nr,
         check_and_reduce(node->node, input_nr, std::move(t)),
         std::nullopt,
         std::nullopt,
         node->node);
-#endif
   }
 
   InputBuffer& realInputBuffer(NodeState* state) {
