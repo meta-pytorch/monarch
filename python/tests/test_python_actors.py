@@ -1713,6 +1713,8 @@ async def async_setup_with_spawn() -> None:
     await bar.incr.call()
 
 
+# oss_skip: passes internally but fails on CI with "ValueError: error spawning proc mesh: statuses: Timeout(30.000905376s)=0..1"
+@pytest.mark.oss_skip
 def test_setup() -> None:
     procs = this_host().spawn_procs(bootstrap=setup_with_spawn)
     counter = procs.spawn("counter", Counter, 0)
@@ -1721,6 +1723,8 @@ def test_setup() -> None:
     time.sleep(10)
 
 
+# oss_skip: passes internally but fails on CI with "ValueError: error spawning proc mesh: statuses: Timeout(30.000905376s)=0..1"
+@pytest.mark.oss_skip
 def test_setup_async() -> None:
     procs = this_host().spawn_procs(bootstrap=async_setup_with_spawn)
     counter = procs.spawn("counter", Counter, 0)
