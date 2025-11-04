@@ -55,7 +55,7 @@ Stable and nightly distributions require libmxl and libibverbs (runtime).
 `sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel`
 
 ## Ubuntu
-`sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev rdma-core-dev`
+`sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev`
 
 ### Stable
 
