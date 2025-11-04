@@ -41,7 +41,7 @@
 //! 7. Resources are cleaned up when dropped
 
 /// Maximum size for a single RDMA operation in bytes (1 GiB)
-const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
+pub const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 
 use std::ffi::CStr;
 use std::fs;
@@ -130,31 +130,15 @@ impl RdmaBuffer {
             remote.owner.actor_id(),
             remote,
         );
-        let remote_owner = remote.owner.clone();
-
-        let local_device = self.device_name.clone();
-        let remote_device = remote.device_name.clone();
-        let mut qp = self
-            .owner
-            .request_queue_pair_deprecated(
+        self.owner
+            .read_into(
                 client,
-                remote_owner.clone(),
-                local_device.clone(),
-                remote_device.clone(),
+                self.clone(),
+                remote,
+                tokio::time::Duration::from_secs(timeout),
             )
             .await?;
-
-        qp.put(self.clone(), remote)?;
-        let result = self
-            .wait_for_completion(&mut qp, PollTarget::Send, timeout)
-            .await;
-
-        // Release the queue pair back to the actor
-        self.owner
-            .release_queue_pair_deprecated(client, remote_owner, local_device, remote_device, qp)
-            .await?;
-
-        result
+        Ok(true)
     }
 
     /// Write from the provided memory into the RdmaBuffer.
@@ -182,32 +166,14 @@ impl RdmaBuffer {
             remote.owner.actor_id(),
             remote,
         );
-        let remote_owner = remote.owner.clone(); // Clone before the move!
-
-        // Extract device name from buffer, fallback to a default if not present
-        let local_device = self.device_name.clone();
-        let remote_device = remote.device_name.clone();
-
-        let mut qp = self
-            .owner
-            .request_queue_pair_deprecated(
+        self.owner
+            .write_from(
                 client,
-                remote_owner.clone(),
-                local_device.clone(),
-                remote_device.clone(),
+                self.clone(),
+                remote,
+                tokio::time::Duration::from_secs(timeout),
             )
             .await?;
-        qp.get(self.clone(), remote)?;
-        let result = self
-            .wait_for_completion(&mut qp, PollTarget::Send, timeout)
-            .await;
-
-        // Release the queue pair back to the actor
-        self.owner
-            .release_queue_pair_deprecated(client, remote_owner, local_device, remote_device, qp)
-            .await?;
-
-        result?;
         Ok(true)
     }
     /// Waits for the completion of an RDMA operation.
@@ -217,21 +183,19 @@ impl RdmaBuffer {
     ///
     /// # Arguments
     /// * `qp` - The RDMA Queue Pair to poll for completion
-    /// * `timeout` - Timeout in seconds for the RDMA operation to complete.
+    /// * `timeout` - Timeout for the RDMA operation to complete.
     ///
     /// # Returns
     /// `Ok(true)` if the operation completes successfully within the timeout,
     /// or an error if the timeout is reached
-    async fn wait_for_completion(
+    pub async fn wait_for_completion(
         &self,
         qp: &mut RdmaQueuePair,
         poll_target: PollTarget,
-        timeout: u64,
+        timeout: tokio::time::Duration,
     ) -> Result<bool, anyhow::Error> {
-        let timeout = Duration::from_secs(timeout);
-        let start_time = std::time::Instant::now();
-
-        while start_time.elapsed() < timeout {
+        RealClock.timeout(timeout, async {
+        loop {
             match qp.poll_completion_target(poll_target) {
                 Ok(Some(_wc)) => {
                     tracing::debug!("work completed");
@@ -252,11 +216,14 @@ impl RdmaBuffer {
                 }
             }
         }
-        tracing::error!("timed out while waiting on request completion");
-        Err(anyhow::anyhow!(
-            "[buffer({:?})] rdma operation did not complete in time",
-            self
-        ))
+        }).await.map_err(|_| {
+            tracing::error!("timed out while waiting on request completion");
+            anyhow::anyhow!(
+                "[buffer({:?})] rdma operation did not complete in time (timeout={:?})",
+                self,
+                timeout
+            )
+        })?
     }
 
     /// Drop the buffer and release remote handles.
@@ -1057,7 +1024,7 @@ impl RdmaQueuePair {
     /// * `op_type` - Optional operation type
     /// * `raddr` - the remote address, representing the memory location on the remote peer
     /// * `rkey` - the remote key, representing the key required to access the remote memory region
-    fn post_op(
+    pub fn post_op(
         &mut self,
         laddr: usize,
         lkey: u32,
@@ -1318,6 +1285,51 @@ impl RdmaQueuePair {
         }
     }
 
+    /// Poll for completions on the specified completion queue.
+    /// This function does not mutate the various indices (e.g. send_db_idx, send_cq_idx, etc.)
+    /// However, it does change the state of the device. As such,
+    /// calling this function while using poll_completion_target() will result in
+    /// a race condition, since poll_completion_target() will not see the completion retrieved by this function.
+    pub fn poll_once_stateless(&self, target: PollTarget) -> Result<Option<IbvWc>, anyhow::Error> {
+        let cq = if target == PollTarget::Send {
+            self.send_cq as *mut rdmaxcel_sys::ibv_cq
+        } else {
+            self.recv_cq as *mut rdmaxcel_sys::ibv_cq
+        };
+        let context = self.context as *mut rdmaxcel_sys::ibv_context;
+        unsafe {
+            let ops = &mut (*context).ops;
+            let mut wc = std::mem::MaybeUninit::<rdmaxcel_sys::ibv_wc>::zeroed().assume_init();
+            let ret = ops.poll_cq.as_mut().unwrap()(cq, 1, &mut wc);
+
+            if ret < 0 {
+                return Err(anyhow::anyhow!(
+                    "Failed to poll CQ (target={:?}): {}",
+                    target,
+                    Error::last_os_error()
+                ));
+            }
+
+            if ret > 0 {
+                if !wc.is_valid() {
+                    if let Some((status, vendor_err)) = wc.error() {
+                        return Err(anyhow::anyhow!(
+                            "work completion (target={:?}) failed with status: {:?}, vendor error: {}, wr_id: {}",
+                            target,
+                            status,
+                            vendor_err,
+                            wc.wr_id(),
+                        ));
+                    }
+                }
+                return Ok(Some(IbvWc::from(wc)));
+            }
+        }
+
+        // No completion found
+        Ok(None)
+    }
+
     pub fn poll_send_completion(&mut self) -> Result<Option<IbvWc>, anyhow::Error> {
         self.poll_completion_target(PollTarget::Send)
     }
@@ -1326,7 +1338,6 @@ impl RdmaQueuePair {
         self.poll_completion_target(PollTarget::Recv)
     }
 }
-
 /// Utility to validate execution context.
 ///
 /// Remote Execution environments do not always have access to the nvidia_peermem module
