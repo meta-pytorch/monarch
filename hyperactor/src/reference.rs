@@ -737,6 +737,18 @@ impl<A: Referable> ActorRef<A> {
         self.port().send(cx, message)
     }
 
+    /// Send an [`M`]-typed message to the referenced actor.
+    pub fn send_no_return<M: RemoteMessage>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+    ) -> Result<(), MailboxSenderError>
+    where
+        A: RemoteHandles<M>,
+    {
+        self.port().send_no_return(cx, message)
+    }
+
     /// Send an [`M`]-typed message to the referenced actor, with additional context provided by
     /// headers.
     pub fn send_with_headers<M: RemoteMessage>(
@@ -748,7 +760,7 @@ impl<A: Referable> ActorRef<A> {
     where
         A: RemoteHandles<M>,
     {
-        self.port().send_with_headers(cx, headers, message)
+        self.port().send_with_headers(cx, headers, message, true)
     }
 
     /// The caller guarantees that the provided actor ID is also a valid,
@@ -891,7 +903,7 @@ impl PortId {
     pub fn send(&self, cx: &impl context::Actor, serialized: Serialized) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized);
+        cx.post(self.clone(), headers, serialized, true);
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -904,7 +916,7 @@ impl PortId {
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized);
+        cx.post(self.clone(), headers, serialized, true);
     }
 
     /// Split this port, returning a new port that relays messages to the port
@@ -1020,7 +1032,18 @@ impl<M: RemoteMessage> PortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message)
+        self.send_with_headers(cx, Attrs::new(), message, true)
+    }
+
+    /// Send a message to this port, provided a sending capability, such as
+    /// [`crate::actor::Instance`]. Do not return undeliverable messages to
+    /// the sender.
+    pub fn send_no_return(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+    ) -> Result<(), MailboxSenderError> {
+        self.send_with_headers(cx, Attrs::new(), message, false)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1031,6 +1054,7 @@ impl<M: RemoteMessage> PortRef<M> {
         cx: &impl context::Actor,
         headers: Attrs,
         message: M,
+        return_undeliverable: bool,
     ) -> Result<(), MailboxSenderError> {
         let serialized = Serialized::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
@@ -1038,7 +1062,7 @@ impl<M: RemoteMessage> PortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        self.send_serialized(cx, headers, serialized);
+        self.send_serialized(cx, headers, serialized, return_undeliverable);
         Ok(())
     }
 
@@ -1049,10 +1073,11 @@ impl<M: RemoteMessage> PortRef<M> {
         cx: &impl context::Actor,
         mut headers: Attrs,
         message: Serialized,
+        return_undeliverable: bool,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
-        cx.post(self.port_id.clone(), headers, message);
+        cx.post(self.port_id.clone(), headers, message, return_undeliverable);
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
@@ -1145,7 +1170,18 @@ impl<M: RemoteMessage> OncePortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message)
+        self.send_with_headers(cx, Attrs::new(), message, true)
+    }
+
+    /// Send a message to this port, provided a sending capability, such as
+    /// [`crate::actor::Instance`]. Do not return undelivered messages back to
+    /// the sender.
+    pub fn send_no_return(
+        self,
+        cx: &impl context::Actor,
+        message: M,
+    ) -> Result<(), MailboxSenderError> {
+        self.send_with_headers(cx, Attrs::new(), message, false)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1155,6 +1191,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
         cx: &impl context::Actor,
         mut headers: Attrs,
         message: M,
+        return_undeliverable: bool,
     ) -> Result<(), MailboxSenderError> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         let serialized = Serialized::serialize(&message).map_err(|err| {
@@ -1163,7 +1200,12 @@ impl<M: RemoteMessage> OncePortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        cx.post(self.port_id.clone(), headers, serialized);
+        cx.post(
+            self.port_id.clone(),
+            headers,
+            serialized,
+            return_undeliverable,
+        );
         Ok(())
     }
 }

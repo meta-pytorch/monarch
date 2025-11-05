@@ -212,6 +212,10 @@ pub struct MessageEnvelope {
 
     /// Decremented at every `MailboxSender` hop.
     ttl: u8,
+
+    /// If true, undeliverable messages should be returned to sender. Else, they
+    /// are dropped.
+    return_undeliverable: bool,
     // TODO: add typename, source, seq, etc.
 }
 
@@ -225,6 +229,8 @@ impl MessageEnvelope {
             errors: Vec::new(),
             headers,
             ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            // By default, all undeliverable messages should be returned to the sender.
+            return_undeliverable: true,
         }
     }
 
@@ -247,6 +253,8 @@ impl MessageEnvelope {
             dest,
             errors: Vec::new(),
             ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            // By default, all undeliverable messages should be returned to the sender.
+            return_undeliverable: true,
         })
     }
 
@@ -332,6 +340,13 @@ impl MessageEnvelope {
         self.sender = sender;
     }
 
+    /// Set to true if you want this message to be returned to sender if it cannot
+    /// reach dest. This is the default.
+    /// Set to false if you want the message to be dropped instead.
+    pub fn set_return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
+    }
+
     /// The message has been determined to be undeliverable with the
     /// provided error. Mark the envelope with the error and return to
     /// sender.
@@ -392,6 +407,7 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         } = self;
 
         (
@@ -401,6 +417,7 @@ impl MessageEnvelope {
                 errors,
                 headers,
                 ttl,
+                return_undeliverable,
             },
             data,
         )
@@ -413,6 +430,7 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         } = metadata;
 
         Self {
@@ -422,7 +440,12 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         }
+    }
+
+    fn return_undeliverable(&self) -> bool {
+        self.return_undeliverable
     }
 }
 
@@ -451,6 +474,7 @@ pub struct MessageMetadata {
     errors: Vec<DeliveryError>,
     headers: Attrs,
     ttl: u8,
+    return_undeliverable: bool,
 }
 
 /// Errors that occur during mailbox operations. Each error is associated
@@ -1539,6 +1563,7 @@ impl MailboxSender for Mailbox {
                     dest,
                     errors: metadata_errors,
                     ttl,
+                    return_undeliverable,
                 } = metadata;
 
                 // We use the entry API here so that we can remove the
@@ -1567,6 +1592,7 @@ impl MailboxSender for Mailbox {
                                 dest,
                                 errors: metadata_errors,
                                 ttl,
+                                return_undeliverable,
                             },
                             data,
                         )

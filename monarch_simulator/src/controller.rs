@@ -113,7 +113,7 @@ impl ControllerMessageHandler for SimControllerActor {
         tracing::info!("controller send to ranks {:?}: {}", ranks, message);
         self.worker_actor_ref
             .port::<WorkerMessage>()
-            .send_serialized(cx, Attrs::new(), message);
+            .send_serialized(cx, Attrs::new(), message, true);
         Ok(())
     }
 

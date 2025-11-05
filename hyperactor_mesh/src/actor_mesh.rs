@@ -141,7 +141,7 @@ where
 
     comm_actor_ref
         .port()
-        .send_with_headers(cx, headers, cast_message)?;
+        .send_with_headers(cx, headers, cast_message, true)?;
 
     Ok(())
 }
