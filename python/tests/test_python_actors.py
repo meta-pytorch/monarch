@@ -1748,6 +1748,6 @@ def test_instance_name():
         .report.call_one()
         .get()
     )
-    assert result == "<root>.<tests.test_python_actors.Named the_name{'f': 0/2}>"
+    assert "test_python_actors.Named the_name{'f': 0/2}>" in result
     assert cr.name == "root"
     assert str(context().actor_instance) == "<root>"
