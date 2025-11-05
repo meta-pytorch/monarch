@@ -424,8 +424,12 @@ struct GradientGenerator {
         input_nr,
         check_and_reduce(node->node, input_nr, std::move(t)),
         std::nullopt,
-        std::nullopt,
-        node->node);
+        std::nullopt
+        // TODO: comment out the following line so the monarch wheel can be
+        // compatible with the old version of torch. Uncomment it when the
+        // torch version is updated in the wheel.
+        // node->node
+    );
   }
 
   InputBuffer& realInputBuffer(NodeState* state) {
