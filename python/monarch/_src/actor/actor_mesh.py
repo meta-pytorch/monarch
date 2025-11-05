@@ -265,15 +265,15 @@ class _ActorFilter(logging.Filter):
         super().__init__()
 
     def filter(self, record: Any) -> bool:
-        from monarch.actor import per_actor_logging_prefix
+        from monarch.actor import _per_actor_logging_prefix
 
         ctx = _context.get(None)
-        if ctx is not None and per_actor_logging_prefix is not None:
-            record.msg = per_actor_logging_prefix(ctx.actor_instance) + record.msg
+        if ctx is not None and _per_actor_logging_prefix is not None:
+            record.msg = _per_actor_logging_prefix(ctx.actor_instance) + record.msg
         return True
 
 
-def per_actor_logging_prefix(instance: Instance | CreatorInstance) -> str:
+def _per_actor_logging_prefix(instance: Instance | CreatorInstance) -> str:
     return f"[actor={instance}] "
 
 

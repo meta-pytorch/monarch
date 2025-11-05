@@ -15,6 +15,7 @@ from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor.actor_mesh import (
+    _per_actor_logging_prefix,
     Accumulator,
     Actor,
     ActorError,
@@ -27,7 +28,6 @@ from monarch._src.actor.actor_mesh import (
     current_size,
     enable_transport,
     Endpoint,
-    per_actor_logging_prefix,
     Point,
     Port,
     PortReceiver,
@@ -108,6 +108,6 @@ __all__ = [
     "Context",
     "ChannelTransport",
     "unhandled_fault_hook",
-    "per_actor_logging_prefix",
+    "_per_actor_logging_prefix",
     "MeshFailure",
 ]

@@ -1781,15 +1781,15 @@ def test_instance_name():
     logs = CaptureLogs()
     logs.logger.error("HUH")
     assert "actor=<root>" in logs.contents
-    default = monarch.actor.per_actor_logging_prefix
+    default = monarch.actor._per_actor_logging_prefix
     try:
-        monarch.actor.per_actor_logging_prefix = lambda inst: "<test>"
+        monarch.actor._per_actor_logging_prefix = lambda inst: "<test>"
         logs = CaptureLogs()
         logs.logger.error("HUH")
         assert "<test>" in logs.contents
-        monarch.actor.per_actor_logging_prefix = None
-        # make sure we can set per_actor_logging_prefix to none.
+        monarch.actor._per_actor_logging_prefix = None
+        # make sure we can set _per_actor_logging_prefix to none.
         logs = CaptureLogs()
         logs.logger.error("HUH")
     finally:
-        monarch.actor.per_actor_logging_prefix = default
+        monarch.actor._per_actor_logging_prefix = default
