@@ -24,7 +24,7 @@ import unittest.mock
 from contextlib import contextmanager
 from tempfile import TemporaryDirectory
 from types import ModuleType
-from typing import cast, Tuple
+from typing import Any, cast, Tuple
 
 import monarch.actor
 import pytest
@@ -1754,7 +1754,7 @@ class CaptureLogs:
 
 class Named(Actor):
     @endpoint
-    def report(self):
+    def report(self) -> Any:
         logs = CaptureLogs()
         logs.logger.error("HUH")
         assert (
