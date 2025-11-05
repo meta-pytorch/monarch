@@ -22,7 +22,7 @@ import unittest
 import unittest.mock
 from tempfile import TemporaryDirectory
 from types import ModuleType
-from typing import cast, Tuple
+from typing import Any, cast, Tuple
 
 import monarch.actor
 import pytest
@@ -1735,7 +1735,7 @@ def test_setup_async() -> None:
 
 class Named(Actor):
     @endpoint
-    def report(self):
+    def report(self) -> Any:
         return context().actor_instance.creator, str(context().actor_instance)
 
 
