@@ -1601,6 +1601,51 @@ def test_simple_bootstrap():
             proc.wait()
 
 
+def test_channel_dial_serve():
+    """Test that dial and serve functions work for sending and receiving bytes messages."""
+    from monarch._rust_bindings.monarch_hyperactor.bootstrap import dial, serve
+
+    # Setup: Start a server on a fixed port
+    rx = serve("tcp://*:18765")
+
+    # Setup: Create a client that connects to the server
+    tx = dial("tcp://localhost:18765")
+
+    # Execute: Send a message from client to server
+    test_message = b"Hello, Monarch!"
+    tx.send(test_message).block_on()
+
+    # Execute: Receive the message on the server
+    received = rx.recv().block_on()
+
+    # Assert: The received message matches what was sent
+    assert received == test_message
+
+
+def test_channel_unix_socket():
+    """Test that dial and serve work with Unix domain sockets."""
+    from monarch._rust_bindings.monarch_hyperactor.bootstrap import dial, serve
+
+    with TemporaryDirectory() as tmpdir:
+        # Setup: Create a Unix socket address
+        socket_path = os.path.join(tmpdir, "test.sock")
+        unix_addr = f"ipc://{socket_path}"
+
+        # Setup: Start a server on the Unix socket
+        rx = serve(unix_addr)
+
+        # Setup: Create a client
+        tx = dial(unix_addr)
+
+        # Execute: Send and receive a message
+        test_message = b"Unix socket test"
+        tx.send(test_message).block_on()
+        received = rx.recv().block_on()
+
+        # Assert: Message was received correctly
+        assert received == test_message
+
+
 class HostMeshActor(Actor):
     @endpoint
     async def this_host(self) -> HostMesh:
