@@ -161,6 +161,12 @@ class Instance(abc.ABC):
     rank: Point
     proc_mesh: "ProcMesh"
     _controller_controller: "_ControllerController"
+    name: str  # the name this actor was given on spawn
+    class_name: str  # the fully qualified class name of the actor.
+    creator: Optional[
+        "CreatorInstance"
+    ]  # information about the actor who spawned this actor
+    # None if this actor is the spawning actor.
 
     # this property is used to hold the handles to actors and processes launched by this actor
     # in order to keep them alive until this actor exits.
@@ -178,6 +184,47 @@ class Instance(abc.ABC):
     @staticmethod
     def _as_py(ins: HyInstance) -> "Instance":
         return cast(Instance, ins)
+
+    def _as_creator(self) -> "CreatorInstance":
+        return CreatorInstance(
+            self.rank,
+            self.proc_mesh,
+            self.proc,
+            self.name,
+            self.class_name,
+            self.creator,
+        )
+
+    def __repr__(self) -> str:
+        return _qualified_name(self)
+
+
+@dataclass
+class CreatorInstance:
+    """
+    An instance that can be serialized so it can be passed around
+    to describe the creation hierarchy of an actor instance.
+    """
+
+    rank: Point
+    proc_mesh: "ProcMesh"
+    proc: "ProcMesh"
+    name: str
+    class_name: Optional[str]
+    creator: Optional["CreatorInstance"]
+
+    def __repr__(self) -> str:
+        return _qualified_name(self)
+
+
+def _qualified_name(ins: "CreatorInstance | Instance | None") -> str:
+    names = []
+    while ins:
+        class_prefix = "" if ins.class_name is None else f"{ins.class_name} "
+        rank_postfix = str(ins.rank) if len(ins.rank) > 0 else ""
+        names.append(f"<{class_prefix}{ins.name}{rank_postfix}>")
+        ins = ins.creator
+    return ".".join(reversed(names))
 
 
 @rust_struct("monarch_hyperactor::context::Context")
@@ -881,8 +928,16 @@ class _Actor:
             match method:
                 case MethodSpecifier.Init():
                     ins = ctx.actor_instance
-                    Class, ins.proc_mesh, ins._controller_controller, *args = args
+                    (
+                        Class,
+                        ins.proc_mesh,
+                        ins._controller_controller,
+                        ins.name,
+                        ins.creator,
+                        *args,
+                    ) = args
                     ins.rank = ctx.message_rank
+                    ins.class_name = f"{Class.__module__}.{Class.__qualname__}"
                     try:
                         self.instance = Class(*args, **kwargs)
                         self._maybe_exit_debugger()
@@ -1183,6 +1238,7 @@ class ActorMesh(MeshTrait, Generic[T]):
     def _create(
         cls,
         Class: Type[T],
+        name: str,
         actor_mesh: "PythonActorMesh",
         shape: Shape,
         proc_mesh: "ProcMesh",
@@ -1205,7 +1261,18 @@ class ActorMesh(MeshTrait, Generic[T]):
             None,
             False,
         )
-        send(ep, (mesh._class, proc_mesh, controller_controller, *args), kwargs)
+        send(
+            ep,
+            (
+                mesh._class,
+                proc_mesh,
+                controller_controller,
+                name,
+                context().actor_instance._as_creator(),
+                *args,
+            ),
+            kwargs,
+        )
 
         return mesh
 
