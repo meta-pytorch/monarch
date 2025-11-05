@@ -206,6 +206,22 @@ pub enum MethodSpecifier {
     Init {},
 }
 
+impl std::fmt::Display for MethodSpecifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MethodSpecifier::ReturnsResponse { name } => {
+                write!(f, "{}", name)
+            }
+            MethodSpecifier::ExplicitPort { name } => {
+                write!(f, "{}", name)
+            }
+            MethodSpecifier::Init {} => {
+                write!(f, "__init__")
+            }
+        }
+    }
+}
+
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
 pub enum PythonMessageKind {
@@ -698,16 +714,21 @@ impl Handler<PythonMessage> for PythonActor {
         message: PythonMessage,
     ) -> anyhow::Result<()> {
         let resolved = message.resolve_indirect_call(cx).await?;
+        let endpoint = resolved.method.to_string();
 
         // Create a channel for signaling panics in async endpoints.
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
-        let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+        let (future, rank) = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
             let instance = self.instance.get_or_insert_with(|| {
                 let instance: crate::context::PyInstance = cx.into();
                 instance.into_pyobject(py).unwrap().into()
             });
+            let rank = instance
+                .getattr(py, "rank")?
+                .getattr(py, "rank")?
+                .extract::<usize>(py)?;
             let awaitable = self.actor.call_method(
                 py,
                 "handle",
@@ -728,6 +749,7 @@ impl Handler<PythonMessage> for PythonActor {
                 self.get_task_locals(py),
                 awaitable.into_bound(py),
             )
+            .map(|a| (a, rank))
             .map_err(|err| err.into())
         })?;
 
@@ -735,14 +757,15 @@ impl Handler<PythonMessage> for PythonActor {
         tokio::spawn(
             handle_async_endpoint_panic(
                 cx.port(),
-                // self.panic_sender.clone(),
                 PythonTask::new(future)?,
                 receiver,
             )
             .instrument(
-                tracing::info_span!("py_panic_handler")
-                    .follows_from(tracing::Span::current().id())
-                    .clone(),
+                tracing::info_span!(
+                    "Calling endpoint on PythonActor", actor = %cx.self_id(), rank = rank, endpoint = endpoint
+                ).or_current()
+                .follows_from(tracing::Span::current().id())
+                .clone(),
             ),
         );
         Ok(())
