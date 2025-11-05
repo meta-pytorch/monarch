@@ -1757,10 +1757,7 @@ class Named(Actor):
     def report(self) -> Any:
         logs = CaptureLogs()
         logs.logger.error("HUH")
-        assert (
-            "test_python_actors.Named the_name{'f': 0/2}>"
-            in logs.contents
-        )
+        assert "test_python_actors.Named the_name{'f': 0/2}>" in logs.contents
 
         return context().actor_instance.creator, str(context().actor_instance)
 
