@@ -24,7 +24,7 @@ from monarch._src.actor.proc_mesh import (
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch._src.actor.v1.host_mesh import (
-    _bootstrap_cmd,
+    _bootstrap_cmd,  # noqa: F401
     create_local_host_mesh as create_local_host_mesh_v1,
     fake_in_process_host as fake_in_process_host_v1,
     host_mesh_from_alloc as host_mesh_from_alloc_v1,
