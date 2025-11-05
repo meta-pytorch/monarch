@@ -1734,6 +1734,51 @@ def test_login_job():
         j.kill()
 
 
+_global_foo = None
+
+
+def setup_with_spawn() -> None:
+    global _global_foo
+    proc = this_proc()
+    # Doesn't matter which actor is spawned, just make sure it persists.
+    _global_foo = proc.spawn("foo", Counter, 0)
+    _global_foo.incr.call().get()
+    # Spawn one that dies to make sure it doesn't cause any issues.
+    bar = proc.spawn("bar", Counter, 0)
+    bar.incr.call().get()
+
+
+async def async_setup_with_spawn() -> None:
+    global _global_foo
+    proc = this_proc()
+    # Doesn't matter which actor is spawned, just make sure it persists.
+    _global_foo = proc.spawn("foo", Counter, 0)
+    await _global_foo.incr.call()
+    # Spawn one that dies to make sure it doesn't cause any issues.
+    bar = proc.spawn("bar", Counter, 0)
+    await bar.incr.call()
+
+
+# oss_skip: passes internally but fails on CI with "ValueError: error spawning proc mesh: statuses: Timeout(30.000905376s)=0..1"
+@pytest.mark.oss_skip
+def test_setup() -> None:
+    procs = this_host().spawn_procs(bootstrap=setup_with_spawn)
+    counter = procs.spawn("counter", Counter, 0)
+    counter.incr.call().get()
+    # Make sure no errors occur in the meantime
+    time.sleep(10)
+
+
+# oss_skip: passes internally but fails on CI with "ValueError: error spawning proc mesh: statuses: Timeout(30.000905376s)=0..1"
+@pytest.mark.oss_skip
+def test_setup_async() -> None:
+    procs = this_host().spawn_procs(bootstrap=async_setup_with_spawn)
+    counter = procs.spawn("counter", Counter, 0)
+    counter.incr.call().get()
+    # Make sure no errors occur in the meantime
+    time.sleep(10)
+
+
 class CaptureLogs:
     def __init__(self):
         log_stream = io.StringIO()
