@@ -13,6 +13,7 @@ import functools
 import inspect
 import itertools
 import logging
+import sys
 import threading
 from abc import abstractproperty
 
@@ -265,15 +266,14 @@ class _ActorFilter(logging.Filter):
         super().__init__()
 
     def filter(self, record: Any) -> bool:
-        from monarch.actor import _per_actor_logging_prefix
-
+        fn = sys.modules["monarch.actor"].per_actor_logging_prefix
         ctx = _context.get(None)
-        if ctx is not None and _per_actor_logging_prefix is not None:
-            record.msg = _per_actor_logging_prefix(ctx.actor_instance) + record.msg
+        if ctx is not None and fn is not None:
+            record.msg = fn(ctx.actor_instance) + record.msg
         return True
 
 
-def _per_actor_logging_prefix(instance: Instance | CreatorInstance) -> str:
+def per_actor_logging_prefix(instance: Instance | CreatorInstance) -> str:
     return f"[actor={instance}] "
 
 

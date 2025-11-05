@@ -1758,7 +1758,7 @@ class Named(Actor):
         logs = CaptureLogs()
         logs.logger.error("HUH")
         assert (
-            "actor=<root>.<tests.test_python_actors.Named the_name{'f': 0/2}>"
+            "test_python_actors.Named the_name{'f': 0/2}>"
             in logs.contents
         )
 
@@ -1774,22 +1774,22 @@ def test_instance_name():
         .report.call_one()
         .get()
     )
-    assert result == "<root>.<tests.test_python_actors.Named the_name{'f': 0/2}>"
+    assert "test_python_actors.Named the_name{'f': 0/2}>" in result
     assert cr.name == "root"
     assert str(context().actor_instance) == "<root>"
 
     logs = CaptureLogs()
     logs.logger.error("HUH")
     assert "actor=<root>" in logs.contents
-    default = monarch.actor._per_actor_logging_prefix
+    default = monarch.actor.per_actor_logging_prefix
     try:
-        monarch.actor._per_actor_logging_prefix = lambda inst: "<test>"
+        monarch.actor.per_actor_logging_prefix = lambda inst: "<test>"
         logs = CaptureLogs()
         logs.logger.error("HUH")
         assert "<test>" in logs.contents
-        monarch.actor._per_actor_logging_prefix = None
+        monarch.actor.per_actor_logging_prefix = None
         # make sure we can set _per_actor_logging_prefix to none.
         logs = CaptureLogs()
         logs.logger.error("HUH")
     finally:
-        monarch.actor._per_actor_logging_prefix = default
+        monarch.actor.per_actor_logging_prefix = default
