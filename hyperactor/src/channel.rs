@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use std::net::Ipv6Addr;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
+use std::panic::Location;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -838,9 +839,11 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 /// Serve on the provided channel address. The server is turned down
 /// when the returned Rx is dropped.
 #[crate::instrument]
+#[track_caller]
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
+    let caller = Location::caller();
     match addr {
         ChannelAddr::Tcp(addr) => {
             let (addr, rx) = net::tcp::serve::<M>(addr)?;
@@ -871,6 +874,7 @@ pub fn serve<M: RemoteMessage>(
         tracing::debug!(
             name = "serve",
             %addr,
+            %caller,
         );
         (addr, ChannelRx { inner })
     })
