@@ -1606,16 +1606,22 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Represents the full input to [`fn behavior`].
 struct BehaviorInput {
     behavior: Ident,
+    generics: syn::Generics,
     handlers: Vec<HandlerSpec>,
 }
 
 impl syn::parse::Parse for BehaviorInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let behavior: Ident = input.parse()?;
+        let generics: syn::Generics = input.parse()?;
         let _: Token![,] = input.parse()?;
         let raw_handlers = input.parse_terminated(HandlerSpec::parse, Token![,])?;
         let handlers = raw_handlers.into_iter().collect();
-        Ok(BehaviorInput { behavior, handlers })
+        Ok(BehaviorInput {
+            behavior,
+            generics,
+            handlers,
+        })
     }
 }
 
@@ -1634,20 +1640,118 @@ impl syn::parse::Parse for BehaviorInput {
 ///     u64,
 /// );
 /// ```
+///
+/// This macro also supports generic behaviors:
+/// ```
+/// hyperactor::behavior!(
+///     TestBehavior<T>,
+///     Message<T> { castable = true },
+///     u64,
+/// );
+/// ```
 #[proc_macro]
 pub fn behavior(input: TokenStream) -> TokenStream {
-    let BehaviorInput { behavior, handlers } = parse_macro_input!(input as BehaviorInput);
+    let BehaviorInput {
+        behavior,
+        generics,
+        handlers,
+    } = parse_macro_input!(input as BehaviorInput);
     let tys = HandlerSpec::add_indexed(handlers);
+
+    // Add bounds to generics for Named, Serialize, Deserialize
+    let mut bounded_generics = generics.clone();
+    for param in bounded_generics.type_params_mut() {
+        param.bounds.push(syn::parse_quote!(hyperactor::Named));
+        param.bounds.push(syn::parse_quote!(serde::Serialize));
+        param.bounds.push(syn::parse_quote!(std::marker::Send));
+        param.bounds.push(syn::parse_quote!(std::marker::Sync));
+        param.bounds.push(syn::parse_quote!(std::fmt::Debug));
+        // Note: lifetime parameters are not *actually* hygienic.
+        // https://github.com/rust-lang/rust/issues/54727
+        let lifetime =
+            syn::Lifetime::new("'hyperactor_behavior_de", proc_macro2::Span::mixed_site());
+        param
+            .bounds
+            .push(syn::parse_quote!(for<#lifetime> serde::Deserialize<#lifetime>));
+    }
+
+    // Split the generics for use in different contexts
+    let (impl_generics, ty_generics, where_clause) = bounded_generics.split_for_impl();
+
+    // Create a combined generics for the Binds impl that includes both A and the behavior's generics
+    let mut binds_generics = bounded_generics.clone();
+    binds_generics.params.insert(
+        0,
+        syn::GenericParam::Type(syn::TypeParam {
+            attrs: vec![],
+            ident: Ident::new("A", proc_macro2::Span::call_site()),
+            colon_token: None,
+            bounds: Punctuated::new(),
+            eq_token: None,
+            default: None,
+        }),
+    );
+    let (binds_impl_generics, _, _) = binds_generics.split_for_impl();
+
+    // Determine typename and typehash implementation based on whether we have generics
+    let type_params: Vec<_> = bounded_generics.type_params().collect();
+    let has_generics = !type_params.is_empty();
+
+    let (typename_impl, typehash_impl) = if has_generics {
+        // Create format string with placeholders for each generic parameter
+        let placeholders = vec!["{}"; type_params.len()].join(", ");
+        let placeholders_format_string = format!("<{}>", placeholders);
+        let format_string = quote! { concat!(std::module_path!(), "::", stringify!(#behavior), #placeholders_format_string) };
+
+        let type_param_idents: Vec<_> = type_params.iter().map(|p| &p.ident).collect();
+        (
+            quote! {
+                hyperactor::data::intern_typename!(Self, #format_string, #(#type_param_idents),*)
+            },
+            quote! {
+                hyperactor::cityhasher::hash(Self::typename())
+            },
+        )
+    } else {
+        (
+            quote! {
+                concat!(std::module_path!(), "::", stringify!(#behavior))
+            },
+            quote! {
+                static TYPEHASH: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+                    hyperactor::cityhasher::hash(<#behavior as hyperactor::data::Named>::typename())
+                });
+                *TYPEHASH
+            },
+        )
+    };
+
+    let type_param_idents = generics.type_params().map(|p| &p.ident).collect::<Vec<_>>();
 
     let expanded = quote! {
         #[doc = "The generated behavior struct."]
-        #[derive(Debug, hyperactor::Named, serde::Serialize, serde::Deserialize)]
-        pub struct #behavior;
-        impl hyperactor::actor::Referable for #behavior {}
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        pub struct #behavior #impl_generics #where_clause {
+            _phantom: std::marker::PhantomData<(#(#type_param_idents),*)>
+        }
 
-        impl<A> hyperactor::actor::Binds<A> for #behavior
+        impl #impl_generics hyperactor::Named for #behavior #ty_generics #where_clause {
+            fn typename() -> &'static str {
+                #typename_impl
+            }
+
+            fn typehash() -> u64 {
+                #typehash_impl
+            }
+        }
+
+        impl #impl_generics hyperactor::actor::Referable for #behavior #ty_generics #where_clause {}
+
+        impl #binds_impl_generics hyperactor::actor::Binds<A> for #behavior #ty_generics
         where
-            A: hyperactor::Actor #(+ hyperactor::Handler<#tys>)* {
+            A: hyperactor::Actor #(+ hyperactor::Handler<#tys>)*,
+            #where_clause
+        {
             fn bind(ports: &hyperactor::proc::Ports<A>) {
                 #(
                     ports.bind::<#tys>();
@@ -1656,7 +1760,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
         }
 
         #(
-            impl hyperactor::actor::RemoteHandles<#tys> for #behavior {}
+            impl #impl_generics hyperactor::actor::RemoteHandles<#tys> for #behavior #ty_generics #where_clause {}
         )*
     };
 
