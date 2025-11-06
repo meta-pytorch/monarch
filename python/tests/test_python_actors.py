@@ -22,7 +22,7 @@ import unittest
 import unittest.mock
 from tempfile import TemporaryDirectory
 from types import ModuleType
-from typing import cast, Tuple
+from typing import Any, cast, Tuple
 
 import monarch.actor
 import pytest
@@ -1731,3 +1731,23 @@ def test_setup_async() -> None:
     counter.incr.call().get()
     # Make sure no errors occur in the meantime
     time.sleep(10)
+
+
+class Named(Actor):
+    @endpoint
+    def report(self) -> Any:
+        return context().actor_instance.creator, str(context().actor_instance)
+
+
+def test_instance_name():
+    cr, result = (
+        this_host()
+        .spawn_procs(per_host={"f": 2})
+        .spawn("the_name", Named)
+        .slice(f=0)
+        .report.call_one()
+        .get()
+    )
+    assert "test_python_actors.Named the_name{'f': 0/2}>" in result
+    assert cr.name == "root"
+    assert str(context().actor_instance) == "<root>"
