@@ -124,23 +124,18 @@ impl MailboxClient {
             let return_handle_0 = return_handle.clone();
             tokio::spawn(async move {
                 let result = return_receiver.await;
-                if let Ok(message) = result {
-                    let _ = return_handle_0.send(Undeliverable(message));
-                } else {
-                    // Sender dropped, this task can end.
+                if let Ok(SendError(e, message)) = result {
+                    message.undeliverable(
+                        DeliveryError::BrokenLink(format!(
+                            "failed to enqueue in MailboxClient when processing buffer: {e}"
+                        )),
+                        return_handle_0,
+                    );
                 }
             });
             // Send the message for transmission.
-            let return_handle_1 = return_handle.clone();
-            async move {
-                if let Err(SendError(_, envelope)) = tx.try_post(envelope, return_channel) {
-                    // Failed to enqueue.
-                    envelope.undeliverable(
-                        DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
-                        return_handle_1.clone(),
-                    );
-                }
-            }
+            tx.try_post(envelope, return_channel);
+            future::ready(())
         });
         let this = Self {
             buffer,
