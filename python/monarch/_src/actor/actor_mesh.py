@@ -10,10 +10,10 @@ import abc
 import collections
 import contextvars
 import functools
+import importlib
 import inspect
 import itertools
 import logging
-import sys
 import threading
 from abc import abstractproperty
 
@@ -261,12 +261,17 @@ _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
 )
 
 
+@cache
+def _monarch_actor() -> Any:
+    return importlib.import_module("monarch.actor")
+
+
 class _ActorFilter(logging.Filter):
     def __init__(self) -> None:
         super().__init__()
 
     def filter(self, record: Any) -> bool:
-        fn = sys.modules["monarch.actor"].per_actor_logging_prefix
+        fn = _monarch_actor().per_actor_logging_prefix
         ctx = _context.get(None)
         if ctx is not None and fn is not None:
             record.msg = fn(ctx.actor_instance) + record.msg
