@@ -22,7 +22,7 @@ Under the hood, network transports use a length-prefixed, multipart frame with c
 ```rust
 #[async_trait]
 pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>>;
+    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>);
     fn post(&self, message: M);
     async fn send(&self, message: M) -> Result<(), SendError<M>>;
     fn addr(&self) -> ChannelAddr;
@@ -32,8 +32,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
 
 - **`try_post(message, return_channel)`**
   Enqueues locally.
-  - Immediate failure → `Err(SendError(ChannelError::Closed, message))`.
-  - `Ok(())` means queued; if delivery later fails, the original message is sent back on `return_channel`.
+  - If delivery later fails, the original message is sent back on `return_channel` as SendError.
 
 - **`post(message)`**
   Fire-and-forget wrapper around `try_post`. The caller should monitor `status()` for health instead of relying on return values.
@@ -91,7 +90,7 @@ pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
 ### Failure semantics
 - **Closed receiver:** `recv()` returns `Err(ChannelError::Closed)`.
 - **Network transports:** disconnects trigger exponential backoff reconnects; unacked messages are retried. If recovery ultimately fails (e.g., connection cannot be re-established within the delivery timeout window), the client closes and returns all undelivered/unacked messages via their `return_channel`. `status()` flips to `Closed`.
-- **Local transport:** no delayed return path; if the receiver is gone, `try_post` fails immediately with `Err(SendError(ChannelError::Closed, message))`.
+- **Local transport:** no delayed return path.
 - **Network disconnects (EOF/I/O error/temporary break):** the client reconnects with exponential backoff and resends any unacked messages; the server deduplicates by `seq`.
 - **Delivery timeout:** see [Size & time limits](#size--time-limits).
 
@@ -104,7 +103,7 @@ pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
 
 Concrete channel implementations that satisfy `Tx<M>` / `Rx<M>`:
 
-- **Local** — in-process only; uses `tokio::sync::mpsc`. No network framing/acks. `try_post` fails immediately if the receiver is gone.
+- **Local** — in-process only; uses `tokio::sync::mpsc`. No network framing/acks.
   _Dial/serve:_ `serve_local::<M>()`, `ChannelAddr::Local(_)`.
 
 - **TCP** — `tokio::net::TcpStream` with 8-byte BE length-prefixed frames; `seq`/`ack` for exactly-once into the server queue; reconnects with backoff.

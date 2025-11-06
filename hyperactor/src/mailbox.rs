@@ -70,6 +70,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Debug;
+use std::future;
 use std::future::Future;
 use std::ops::Bound::Excluded;
 use std::pin::Pin;
@@ -1100,30 +1101,24 @@ impl MailboxClient {
         let tx_monitoring = CancellationToken::new();
         let buffer = Buffer::new(move |envelope, return_handle| {
             let tx = Arc::clone(&tx);
-            let (return_channel, return_receiver) = oneshot::channel();
+            let (return_channel, return_receiver) =
+                oneshot::channel::<SendError<MessageEnvelope>>();
             // Set up for delivery failure.
             let return_handle_0 = return_handle.clone();
             tokio::spawn(async move {
                 let result = return_receiver.await;
-                if let Ok(message) = result {
-                    let _ = return_handle_0.send(Undeliverable(message));
-                } else {
-                    // Sender dropped, this task can end.
-                }
-            });
-            // Send the message for transmission.
-            let return_handle_1 = return_handle.clone();
-            async move {
-                if let Err(SendError(e, envelope)) = tx.try_post(envelope, return_channel) {
-                    // Failed to enqueue.
-                    envelope.undeliverable(
+                if let Ok(SendError(e, message)) = result {
+                    message.undeliverable(
                         DeliveryError::BrokenLink(format!(
                             "failed to enqueue in MailboxClient when processing buffer: {e}"
                         )),
-                        return_handle_1.clone(),
+                        return_handle_0,
                     );
                 }
-            }
+            });
+            // Send the message for transmission.
+            tx.try_post(envelope, return_channel);
+            future::ready(())
         });
         let this = Self {
             buffer,
