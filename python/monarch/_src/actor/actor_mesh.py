@@ -10,6 +10,7 @@ import abc
 import collections
 import contextvars
 import functools
+import importlib
 import inspect
 import itertools
 import logging
@@ -17,6 +18,8 @@ import threading
 from abc import abstractproperty
 
 from dataclasses import dataclass
+
+from functools import cache
 from pprint import pformat
 from textwrap import indent
 from traceback import TracebackException
@@ -257,6 +260,51 @@ _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
 )
 
+
+@cache
+def _monarch_actor() -> Any:
+    return importlib.import_module("monarch.actor")
+
+
+class _ActorFilter(logging.Filter):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def filter(self, record: Any) -> bool:
+        fn = _monarch_actor().per_actor_logging_prefix
+        ctx = _context.get(None)
+        if ctx is not None and fn is not None:
+            record.msg = fn(ctx.actor_instance) + record.msg
+        return True
+
+
+def per_actor_logging_prefix(instance: Instance | CreatorInstance) -> str:
+    return f"[actor={instance}] "
+
+
+@cache
+def _init_context_log_handler() -> None:
+    af: _ActorFilter = _ActorFilter()
+    logger = logging.getLogger()
+    for handler in logger.handlers:
+        handler.addFilter(af)
+
+    _original_addHandler: Any = logging.Logger.addHandler
+
+    def _patched_addHandler(self: logging.Logger, hdlr: logging.Handler) -> None:
+        _original_addHandler(self, hdlr)
+        if af not in hdlr.filters:
+            hdlr.addFilter(af)
+
+    # pyre-ignore[8]: Intentionally monkey-patching Logger.addHandler
+    logging.Logger.addHandler = _patched_addHandler
+
+
+def _set_context(c: Context) -> None:
+    _init_context_log_handler()
+    _context.set(c)
+
+
 T = TypeVar("T")
 
 
@@ -305,7 +353,7 @@ def context() -> Context:
     c = _context.get(None)
     if c is None:
         c = Context._root_client_context()
-        _context.set(c)
+        _set_context(c)
 
         from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
@@ -919,7 +967,7 @@ class _Actor:
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
         try:
-            _context.set(ctx)
+            _set_context(ctx)
 
             DebugContext.set(DebugContext())
 
@@ -1053,7 +1101,7 @@ class _Actor:
     def _handle_undeliverable_message(
         self, cx: Context, message: UndeliverableMessageEnvelope
     ) -> bool:
-        _context.set(cx)
+        _set_context(cx)
         handle_undeliverable = getattr(
             self.instance, "_handle_undeliverable_message", None
         )
@@ -1063,7 +1111,7 @@ class _Actor:
             return False
 
     def __supervise__(self, cx: Context, *args: Any, **kwargs: Any) -> object:
-        _context.set(cx)
+        _set_context(cx)
         instance = self.instance
         if instance is None:
             # This could happen because of the following reasons. Both
