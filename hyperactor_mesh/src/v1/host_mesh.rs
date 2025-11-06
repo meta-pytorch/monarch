@@ -236,7 +236,7 @@ impl HostMesh {
 
         let addr = config::global::get_cloned(DEFAULT_TRANSPORT).any();
 
-        let manager = BootstrapProcManager::new(BootstrapCommand::current()?);
+        let manager = BootstrapProcManager::new(BootstrapCommand::current()?)?;
         let (host, _handle) = Host::serve(manager, addr).await?;
         let addr = host.addr().clone();
         let host_mesh_agent = host

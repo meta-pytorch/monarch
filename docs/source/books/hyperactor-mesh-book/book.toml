@@ -1,0 +1,5 @@
+[book]
+authors = ["Shayne Fletcher"]
+language = "en"
+src = "src"
+title = "Hyperactor-mesh Book"

@@ -4,14 +4,14 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 import os
 import re
 from pathlib import Path
 
 
-def _local_device_count():
+def _local_device_count() -> int:
     if "CUDA_VISIBLE_DEVICES" in os.environ:
         return len(os.environ["CUDA_VISIBLE_DEVICES"].split(","))
     dev_path = Path("/dev")

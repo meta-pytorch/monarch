@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 import functools
 import importlib
 import importlib.abc
@@ -35,7 +35,7 @@ def load_remote_source(filename: str) -> str:
 
 
 class RemoteImportLoader(importlib.abc.Loader):
-    def __init__(self, filename: str):
+    def __init__(self, filename: str) -> None:
         self._filename = filename
 
     def get_source(self, _module_name: str) -> str:

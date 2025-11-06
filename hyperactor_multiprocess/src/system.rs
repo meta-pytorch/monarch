@@ -45,6 +45,7 @@ impl System {
     /// Spawns a system actor and serves it at the provided channel
     /// address. This becomes a well-known address with which procs
     /// can bootstrap.
+    #[tracing::instrument]
     pub async fn serve(
         addr: ChannelAddr,
         supervision_update_timeout: tokio::time::Duration,
@@ -55,7 +56,7 @@ impl System {
         let (actor_handle, system_proc) = SystemActor::bootstrap_with_clock(params, clock).await?;
         actor_handle.bind::<SystemActor>();
 
-        let (local_addr, rx) = channel::serve(addr, "System::serve")?;
+        let (local_addr, rx) = channel::serve(addr)?;
         let mailbox_handle = system_proc.clone().serve(rx);
 
         Ok(ServerHandle {
@@ -90,8 +91,7 @@ impl System {
             BoxedMailboxSender::new(self.sender().await?),
         );
 
-        let (proc_addr, proc_rx) =
-            channel::serve(ChannelAddr::any(self.addr.transport()), "system").unwrap();
+        let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(self.addr.transport())).unwrap();
 
         let _proc_serve_handle: MailboxServerHandle = proc.clone().serve(proc_rx);
 
