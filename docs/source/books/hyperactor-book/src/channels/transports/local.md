@@ -12,4 +12,3 @@
 
 **notes:**
 - `Tx::send` completes after local enqueue (oneshot dropped).
-- if the receiver is dropped, `try_post` fails immediately with `Err(SendError(ChannelError::Closed, message))`.
