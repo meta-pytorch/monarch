@@ -162,15 +162,11 @@ mod tests {
 
     use super::*;
 
-    fn unused_return_channel<M>() -> oneshot::Sender<M> {
-        oneshot::channel().0
-    }
-
     #[tokio::test]
     async fn test_local_basic() {
         let (tx, mut rx) = local::new::<u64>();
 
-        tx.try_post(123, unused_return_channel());
+        tx.post(123);
         assert_eq!(rx.recv().await.unwrap(), 123);
     }
 
@@ -181,7 +177,7 @@ mod tests {
 
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.try_post(123, unused_return_channel());
+        tx.post(123);
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);
@@ -196,7 +192,7 @@ mod tests {
         let (port, mut rx) = local::serve::<u64>();
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.try_post(123, unused_return_channel());
+        tx.post(123);
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);

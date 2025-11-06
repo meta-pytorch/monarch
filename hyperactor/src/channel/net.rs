@@ -2482,10 +2482,6 @@ mod tests {
 
     use super::*;
 
-    fn unused_return_channel<M>() -> oneshot::Sender<M> {
-        oneshot::channel().0
-    }
-
     #[cfg(target_os = "linux")] // uses abstract names
     #[tracing_test::traced_test]
     #[tokio::test]
@@ -2508,16 +2504,16 @@ mod tests {
         // out of the buffer because NetRx could not ack through the closed
         // channel.
         {
-            let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
-            tx.try_post(123, unused_return_channel());
+            let tx: ChannelTx<u64> = crate::channel::dial::<u64>(addr.clone()).unwrap();
+            tx.post(123);
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
             let tx = dial::<u64>(addr.clone()).unwrap();
-            tx.try_post(321, unused_return_channel());
-            tx.try_post(111, unused_return_channel());
-            tx.try_post(444, unused_return_channel());
+            tx.post(321);
+            tx.post(111);
+            tx.post(444);
 
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
@@ -2553,14 +2549,14 @@ mod tests {
         // Dial the channel before we actually serve it.
         let addr = ChannelAddr::Unix(socket_addr.clone());
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
-        tx.try_post(123, unused_return_channel());
+        tx.post(123);
 
         let (_, mut rx) = net::unix::serve::<u64>(socket_addr).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
-        tx.try_post(321, unused_return_channel());
-        tx.try_post(111, unused_return_channel());
-        tx.try_post(444, unused_return_channel());
+        tx.post(321);
+        tx.post(111);
+        tx.post(444);
 
         assert_eq!(rx.recv().await.unwrap(), 321);
         assert_eq!(rx.recv().await.unwrap(), 111);
@@ -2577,15 +2573,15 @@ mod tests {
         let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
         {
             let tx = dial::<u64>(addr.clone()).unwrap();
-            tx.try_post(123, unused_return_channel());
+            tx.post(123);
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
             let tx = dial::<u64>(addr.clone()).unwrap();
-            tx.try_post(321, unused_return_channel());
-            tx.try_post(111, unused_return_channel());
-            tx.try_post(444, unused_return_channel());
+            tx.post(321);
+            tx.post(111);
+            tx.post(444);
 
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
@@ -2620,7 +2616,7 @@ mod tests {
         {
             // Leave some headroom because Tx will wrap the payload in Frame::Message.
             let message = "a".repeat(default_size_in_bytes - 1024);
-            tx.try_post(message.clone(), unused_return_channel());
+            tx.post(message.clone());
             assert_eq!(rx.recv().await.unwrap(), message);
         }
         // Bigger than the default size will fail.
@@ -2669,15 +2665,15 @@ mod tests {
         let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr).unwrap();
         {
             let tx = dial::<u64>(local_addr.clone()).unwrap();
-            tx.try_post(123, unused_return_channel());
+            tx.post(123);
         }
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         {
             let tx = dial::<u64>(local_addr.clone()).unwrap();
-            tx.try_post(321, unused_return_channel());
-            tx.try_post(111, unused_return_channel());
-            tx.try_post(444, unused_return_channel());
+            tx.post(321);
+            tx.post(111);
+            tx.post(444);
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
             assert_eq!(rx.recv().await.unwrap(), 444);
@@ -3338,7 +3334,7 @@ mod tests {
 
     async fn net_tx_send(tx: &NetTx<u64>, msgs: &[u64]) {
         for msg in msgs {
-            tx.try_post(*msg, unused_return_channel());
+            tx.post(*msg);
         }
     }
 
@@ -3657,7 +3653,7 @@ mod tests {
         let tx = NetTx::<u64>::new(link);
         let mut tx_status = tx.status().clone();
         // send a message
-        tx.try_post(100, unused_return_channel());
+        tx.post(100);
         let (mut reader, writer) = take_receiver(&receiver_storage).await;
         // Confirm message is sent to rx.
         verify_stream(&mut reader, &[(0u64, 100u64)], None, line!()).await;
@@ -3675,7 +3671,7 @@ mod tests {
         assert!(!tx_status.has_changed().unwrap());
         assert_eq!(*tx_status.borrow(), TxStatus::Active);
 
-        tx.try_post(101, unused_return_channel());
+        tx.post(101);
         // Confirm message is sent to rx.
         verify_message(&mut reader, (1u64, 101u64), line!()).await;
 
@@ -3751,7 +3747,7 @@ mod tests {
                 RealClock
                     .sleep(Duration::from_micros(rand::random::<u64>() % 100))
                     .await;
-                tx.try_post(message, unused_return_channel());
+                tx.post(message);
             }
             tracing::debug!("NetTx sent all messages");
             // It is important to return tx instead of dropping it here, because
@@ -3819,7 +3815,7 @@ mod tests {
                 RealClock
                     .sleep(Duration::from_micros(rand::random::<u64>() % 100))
                     .await;
-                tx.try_post(message, unused_return_channel());
+                tx.post(message);
             }
             RealClock.sleep(Duration::from_secs(5)).await;
             tracing::debug!("NetTx sent all messages");
@@ -3916,7 +3912,7 @@ mod tests {
                     .map(char::from)
                     .collect::<String>();
                 for _ in 0..total_num_msgs {
-                    tx2.try_post(random_string.clone(), unused_return_channel());
+                    tx2.post(random_string.clone());
                 }
             }));
         }
