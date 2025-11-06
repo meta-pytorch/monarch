@@ -216,18 +216,40 @@ enum HostMeshAllocation {
 }
 
 impl HostMesh {
-    /// Fork a new `HostMesh` from this process, returning the new `HostMesh`
-    /// to the parent (owning) process, while running forever in child processes
-    /// (i.e., individual procs).
+    /// Bring up a local single-host mesh and, in the launcher
+    /// process, return a `HostMesh` handle for it.
     ///
-    /// All of the code preceding the call to `local` will run in each child proc;
-    /// thus it is important to call `local` early in the lifetime of the program,
-    /// and to ensure that it is reached unconditionally.
+    /// There are two execution modes:
     ///
-    /// This is intended for testing, development, examples.
+    /// - bootstrap-child mode: if `Bootstrap::get_from_env()` says
+    ///   this process was launched as a bootstrap child, we call
+    ///   `boot.bootstrap().await`, which hands control to the
+    ///   bootstrap logic for this process (as defined by the
+    ///   `BootstrapCommand` the parent used to spawn it). if that
+    ///   call returns, we log the error and terminate. this branch
+    ///   does not produce a `HostMesh`.
+    ///
+    /// - launcher mode: otherwise, we are the process that is setting
+    ///   up the mesh. we create a `Host`, spawn a `HostMeshAgent` in
+    ///   it, and build a single-host `HostMesh` around that. that
+    ///   `HostMesh` is returned to the caller.
+    ///
+    /// This API is intended for tests, examples, and local bring-up,
+    /// not production.
     ///
     /// TODO: fix up ownership
     pub async fn local() -> v1::Result<HostMesh> {
+        Self::local_with_bootstrap(BootstrapCommand::current()?).await
+    }
+
+    /// Same as [`local`], but the caller supplies the
+    /// `BootstrapCommand` instead of deriving it from the current
+    /// process.
+    ///
+    /// The provided `bootstrap_cmd` is used when spawning bootstrap
+    /// children and determines the behavior of
+    /// `boot.bootstrap().await` in those children.
+    pub async fn local_with_bootstrap(bootstrap_cmd: BootstrapCommand) -> v1::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
             let err = boot.bootstrap().await;
             tracing::error!("failed to bootstrap local host mesh process: {}", err);
@@ -236,7 +258,7 @@ impl HostMesh {
 
         let addr = config::global::get_cloned(DEFAULT_TRANSPORT).any();
 
-        let manager = BootstrapProcManager::new(BootstrapCommand::current()?)?;
+        let manager = BootstrapProcManager::new(bootstrap_cmd)?;
         let (host, _handle) = Host::serve(manager, addr).await?;
         let addr = host.addr().clone();
         let host_mesh_agent = host
