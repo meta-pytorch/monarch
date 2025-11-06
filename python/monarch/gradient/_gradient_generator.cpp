@@ -424,7 +424,8 @@ struct GradientGenerator {
         input_nr,
         check_and_reduce(node->node, input_nr, std::move(t)),
         std::nullopt,
-        std::nullopt);
+        std::nullopt,
+        node->node);
   }
 
   InputBuffer& realInputBuffer(NodeState* state) {

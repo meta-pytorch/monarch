@@ -30,6 +30,9 @@ jobs:
         # docs build will use 3.13
         setup_build_environment 3.13
 
+        # Install PyTorch with CUDA support (matching build-cuda.yml)
+        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126
+
         # Setup Tensor Engine
         setup_tensor_engine
 
@@ -37,9 +40,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r build-requirements.txt
         pip install -r docs/requirements.txt
-
-        # Install PyTorch with CUDA support (matching build-cuda.yml)
-        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126
 
         # Set environment variables for CUDA build
         export USE_CUDA=1

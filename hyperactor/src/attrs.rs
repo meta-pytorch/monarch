@@ -311,7 +311,6 @@ macro_rules! impl_attrvalue {
 
 // Implement AttrValue for common standard library types
 impl_attrvalue!(
-    bool,
     i8,
     i16,
     i32,
@@ -381,6 +380,24 @@ where
         let start = start.parse().map_err(|e: E| e.into())?;
         let end = end.parse().map_err(|e: E| e.into())?;
         Ok(start..end)
+    }
+}
+
+impl AttrValue for bool {
+    fn display(&self) -> String {
+        if *self { 1.to_string() } else { 0.to_string() }
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        let value = value.to_ascii_lowercase();
+        match value.as_str() {
+            "0" | "false" => Ok(false),
+            "1" | "true" => Ok(true),
+            _ => Err(anyhow::anyhow!(
+                "expected `0`, `1`, `true` or `false`, got `{}`",
+                value
+            )),
+        }
     }
 }
 
@@ -627,11 +644,40 @@ impl<'de> Visitor<'de> for AttrsVisitor {
             });
         let keys_by_name = &*KEYS_BY_NAME;
 
+        let exe_name = std::env::current_exe()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unknown-exe>".to_string());
+
         let mut attrs = Attrs::new();
         while let Some(key_name) = access.next_key::<String>()? {
             let Some(&key) = keys_by_name.get(key_name.as_str()) else {
-                // Silently ignore unknown keys
-                access.next_value::<serde::de::IgnoredAny>()?;
+                // We hit an attribute key that this binary doesn't
+                // know about.
+                //
+                // In JSON we'd just deserialize that value into
+                // `IgnoredAny` and move on. With bincode we *can't*
+                // do that safely:
+                //
+                // - We don't know this key's value type.
+                // - That means we don't know how many bytes to
+                //   consume for the value.
+                // - If we guess wrong or try `IgnoredAny`, bincode
+                //   would need `Deserializer::deserialize_any()` to
+                //   skip it, but bincode refuses because it can't
+                //   know how many bytes to advance.
+                //
+                // Result: we cannot safely "skip" the unknown value
+                // without risking desync of the remaining stream. So
+                // we abort here and surface which key caused it, and
+                // the caller must strip it before sending.
+                access.next_value::<serde::de::IgnoredAny>().map_err(|_| {
+                    serde::de::Error::custom(format!(
+                        "unknown attr key '{}' on binary '{}'; \
+                         this binary doesn't know this key and cannot skip its value safely under bincode",
+                        key_name, exe_name,
+                    ))
+                })?;
                 continue;
             };
 
@@ -1189,5 +1235,59 @@ mod tests {
 
         attrs.set(CRATE_LOCAL_ATTR, "test".to_string());
         assert_eq!(attrs[CRATE_LOCAL_ATTR], "test".to_string());
+    }
+
+    #[test]
+    fn attrs_deserialize_unknown_key_is_error() {
+        // Build a real Attrs, but inject a key that this binary does
+        // NOT know about. We do that with
+        // insert_value_by_name_unchecked(), which bypasses the
+        // declare_attrs!/inventory registration path.
+        //
+        // Then:
+        //   1. Serialize that Attrs with bincode (the real wire
+        //      format).
+        //   2. Attempt to bincode-deserialize those bytes back into
+        //      Attrs.
+        //
+        // During deserialization, AttrsVisitor::visit_map() will:
+        //   - read the key string
+        //   - fail to find it in KEYS_BY_NAME (the compiled-in
+        //     registry)
+        //   - immediately error instead of trying to skip the value,
+        //     because with bincode we can't safely consume an unknown
+        //     typed value without risking stream desync.
+        //
+        // This reproduces exactly what happens when a parent proc
+        // sends an Attrs containing a key the child binary wasn't
+        // built with.
+
+        // Definitely not declared in this crate's inventory:
+        let bad_key: &'static str = "monarch_hyperactor::pytokio::unawaited_pytokio_traceback";
+
+        // Make an Attrs that pretends to have that key. u32 already
+        // implements AttrValue -> SerializableValue, so we can just
+        // box a 0u32.
+        let mut attrs = Attrs::new();
+        attrs.insert_value_by_name_unchecked(bad_key, Box::new(0u32));
+
+        // Serialize this Attrs using bincode (same codec we use on
+        // the wire).
+        let wire_bytes = bincode::serialize(&attrs).unwrap();
+
+        // Now try to decode those bytes back into Attrs. This should
+        // hit the unknown-key branch and return Err.
+        let err = bincode::deserialize::<Attrs>(&wire_bytes)
+            .expect_err("should error on unknown attr key");
+
+        let exe_str = std::env::current_exe()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unknown-exe>".to_string());
+        let msg = format!("{err}");
+
+        assert!(msg.contains("unknown attr key"), "got: {msg}");
+        assert!(msg.contains(bad_key), "got: {msg}");
+        assert!(msg.contains(&exe_str), "got: {msg}");
     }
 }

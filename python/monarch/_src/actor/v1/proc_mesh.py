@@ -8,6 +8,7 @@
 
 import asyncio
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from typing import (
     Any,
+    Awaitable,
     Callable,
     cast,
     Dict,
@@ -238,7 +240,7 @@ class ProcMesh(MeshTrait):
         host_mesh: "HostMesh",
         hy_proc_mesh: "Shared[HyProcMesh]",
         region: Region,
-        setup: Callable[[], None] | None = None,
+        setup: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         _attach_controller_controller: bool = True,
     ) -> "ProcMesh":
         pm = ProcMesh(hy_proc_mesh, host_mesh, region, region, None)
@@ -251,7 +253,7 @@ class ProcMesh(MeshTrait):
         async def task(
             pm: "ProcMesh",
             hy_proc_mesh_task: "Shared[HyProcMesh]",
-            setup_actor: Optional["SetupActor"],
+            setup_actor: "SetupActor | AsyncSetupActor | None",
             stream_log_to_client: bool,
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
@@ -268,13 +270,16 @@ class ProcMesh(MeshTrait):
 
         setup_actor = None
         if setup is not None:
-            from monarch._src.actor.proc_mesh import SetupActor  # noqa
+            from monarch._src.actor.proc_mesh import AsyncSetupActor, SetupActor  # noqa
 
+            actor_type = (
+                AsyncSetupActor if inspect.iscoroutinefunction(setup) else SetupActor
+            )
             # The SetupActor needs to be spawned outside of `task` for now,
             # since spawning a python actor requires a blocking call to
             # pickle the proc mesh, and we can't do that from the tokio runtime.
             setup_actor = pm._spawn_nonblocking_on(
-                hy_proc_mesh, "setup", SetupActor, setup
+                hy_proc_mesh, "setup", actor_type, setup
             )
 
         pm._proc_mesh = PythonTask.from_coroutine(
@@ -282,12 +287,6 @@ class ProcMesh(MeshTrait):
         ).spawn()
 
         return pm
-
-    def __repr__(self) -> str:
-        return repr(self._proc_mesh)
-
-    def __str__(self) -> str:
-        return str(self._proc_mesh)
 
     def _spawn_nonblocking(
         self, name: str, Class: Type[TActor], *args: Any, **kwargs: Any

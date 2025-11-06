@@ -15,6 +15,7 @@ use std::future;
 use std::io;
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -35,6 +36,7 @@ use hyperactor::ProcId;
 use hyperactor::attrs::Attrs;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelError;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
@@ -51,16 +53,21 @@ use hyperactor::host::HostError;
 use hyperactor::host::ProcHandle;
 use hyperactor::host::ProcManager;
 use hyperactor::host::TerminateSummary;
+use hyperactor::mailbox::IntoBoxedMailboxSender;
+use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
+use tempfile::TempDir;
 use tokio::process::Child;
 use tokio::process::ChildStderr;
 use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tracing::Instrument;
+use tracing::Level;
 
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
@@ -69,6 +76,8 @@ use crate::resource::StopAllClient;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
+
+mod mailbox;
 
 declare_attrs! {
     /// Enable forwarding child stdout/stderr over the mesh log
@@ -276,6 +285,10 @@ pub enum Bootstrap {
         backend_addr: ChannelAddr,
         /// The callback address used to indicate successful spawning.
         callback_addr: ChannelAddr,
+        /// Directory for storing proc socket files. Procs place their sockets
+        /// in this directory, so that they can be looked up by other procs
+        /// for direct transfer.
+        socket_dir_path: PathBuf,
         /// Optional config snapshot (`hyperactor::config::Attrs`)
         /// captured by the parent. If present, the child installs it
         /// as the `ClientOverride` layer so the parent's effective config
@@ -390,8 +403,18 @@ impl Bootstrap {
                 proc_id,
                 backend_addr,
                 callback_addr,
+                socket_dir_path,
                 config,
             } => {
+                let entered = tracing::span!(
+                    Level::INFO,
+                    "proc_bootstrap",
+                    %proc_id,
+                    %backend_addr,
+                    %callback_addr,
+                    socket_dir_path = %socket_dir_path.display(),
+                )
+                .entered();
                 if let Some(attrs) = config {
                     config::set(config::Source::ClientOverride, attrs);
                     tracing::debug!("bootstrap: installed ClientOverride config snapshot (Proc)");
@@ -409,15 +432,43 @@ impl Bootstrap {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
 
-                let result =
-                    host::spawn_proc(proc_id, backend_addr, callback_addr, |proc| async move {
-                        ProcMeshAgent::boot_v1(proc).await
-                    })
-                    .await;
-                match result {
-                    Ok(_proc) => halt().await,
-                    Err(e) => e.into(),
-                }
+                let (local_addr, name) = ok!(proc_id
+                    .as_direct()
+                    .ok_or_else(|| anyhow::anyhow!("invalid proc id type: {}", proc_id)));
+                // TODO provide a direct way to construct these
+                let serve_addr = format!("unix:{}", socket_dir_path.join(name).display());
+                let serve_addr = serve_addr.parse().unwrap();
+
+                // The following is a modified host::spawn_proc to support direct
+                // dialing between local procs: 1) we bind each proc to a deterministic
+                // address in socket_dir_path; 2) we use LocalProcDialer to dial these
+                // addresses for local procs.
+                let proc_sender = mailbox::LocalProcDialer::new(
+                    local_addr.clone(),
+                    socket_dir_path,
+                    ok!(MailboxClient::dial(backend_addr)),
+                );
+
+                let proc = Proc::new(proc_id.clone(), proc_sender.into_boxed());
+
+                let span = entered.exit();
+
+                let agent_handle = ok!(ProcMeshAgent::boot_v1(proc.clone())
+                    .instrument(span.clone())
+                    .await
+                    .map_err(|e| HostError::AgentSpawnFailure(proc_id, e)));
+
+                // Finally serve the proc on the same transport as the backend address,
+                // and call back.
+                let (proc_addr, proc_rx) = ok!(channel::serve(serve_addr));
+                proc.clone().serve(proc_rx);
+                ok!(ok!(channel::dial(callback_addr))
+                    .send((proc_addr, agent_handle.bind::<ProcMeshAgent>()))
+                    .instrument(span)
+                    .await
+                    .map_err(ChannelError::from));
+
+                halt().await
             }
             Bootstrap::Host {
                 addr,
@@ -435,7 +486,8 @@ impl Bootstrap {
                     Some(command) => command,
                     None => ok!(BootstrapCommand::current()),
                 };
-                let manager = BootstrapProcManager::new(command);
+                let manager = BootstrapProcManager::new(command).unwrap();
+
                 let (host, _handle) = ok!(Host::serve(manager, addr).await);
                 let addr = host.addr().clone();
                 let host_mesh_agent = ok!(host
@@ -1512,6 +1564,11 @@ pub struct BootstrapProcManager {
     /// FileMonitor that aggregates logs from all children.
     /// None if file monitor creation failed.
     file_appender: Option<Arc<crate::logging::FileAppender>>,
+
+    /// Directory for storing proc socket files. Procs place their sockets
+    /// in this directory, so that they can be looked up by other procs
+    /// for direct transfer.
+    socket_dir: TempDir,
 }
 
 impl Drop for BootstrapProcManager {
@@ -1561,7 +1618,7 @@ impl BootstrapProcManager {
     /// This is the general entry point when you want to manage procs
     /// backed by a specific binary path (e.g. a bootstrap
     /// trampoline).
-    pub(crate) fn new(command: BootstrapCommand) -> Self {
+    pub(crate) fn new(command: BootstrapCommand) -> Result<Self, io::Error> {
         let file_appender = if hyperactor::config::global::get(MESH_ENABLE_FILE_CAPTURE) {
             match crate::logging::FileAppender::new() {
                 Some(fm) => {
@@ -1577,17 +1634,23 @@ impl BootstrapProcManager {
             None
         };
 
-        Self {
+        Ok(Self {
             command,
             children: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             pid_table: Arc::new(std::sync::Mutex::new(HashMap::new())),
             file_appender,
-        }
+            socket_dir: runtime_dir()?,
+        })
     }
 
     /// The bootstrap command used to launch processes.
     pub fn command(&self) -> &BootstrapCommand {
         &self.command
+    }
+
+    /// The socket directory, where per-proc Unix sockets are placed.
+    pub fn socket_dir(&self) -> &Path {
+        self.socket_dir.path()
     }
 
     /// Return the current [`ProcStatus`] for the given [`ProcId`], if
@@ -1752,21 +1815,21 @@ impl ProcManager for BootstrapProcManager {
     /// Returns a [`BootstrapProcHandle`] that exposes the child
     /// process's lifecycle (status, wait/ready, termination). Errors
     /// are surfaced as [`HostError`].
+    #[tracing::instrument(skip(self, config))]
     async fn spawn(
         &self,
         proc_id: ProcId,
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) = channel::serve(
-            ChannelAddr::any(ChannelTransport::Unix),
-            &format!("BootstrapProcManager::spawn callback_addr: {}", &proc_id),
-        )?;
+        let (callback_addr, mut callback_rx) =
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
 
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
             backend_addr,
             callback_addr,
+            socket_dir_path: self.socket_dir.path().to_owned(),
             config: Some(config.client_config_override),
         };
         let mut cmd = self.command.new();
@@ -2047,8 +2110,17 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_INDEX_ENV, err))?
             .parse()?;
         let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
-        let (serve_addr, mut rx) =
-            channel::serve(listen_addr, "bootstrap_v0_proc_mesh listen_addr")?;
+
+        let entered = tracing::span!(
+            Level::INFO,
+            "bootstrap_v0_proc_mesh",
+            %bootstrap_addr,
+            %bootstrap_index,
+            %listen_addr,
+        )
+        .entered();
+
+        let (serve_addr, mut rx) = channel::serve(listen_addr)?;
         let tx = channel::dial(bootstrap_addr.clone())?;
 
         let (rtx, mut return_channel) = oneshot::channel();
@@ -2057,6 +2129,8 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             rtx,
         )?;
         tokio::spawn(exit_if_missed_heartbeat(bootstrap_index, bootstrap_addr));
+
+        let _ = entered.exit();
 
         let mut the_msg;
 
@@ -2076,16 +2150,17 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
             }
         }
         loop {
-            let _ = hyperactor::tracing::info_span!("wait_for_next_message_from_mesh_agent");
             match the_msg? {
                 Allocator2Process::StartProc(proc_id, listen_transport) => {
-                    let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone()).await?;
-                    let (proc_addr, proc_rx) = channel::serve(
-                        ChannelAddr::any(listen_transport),
-                        &format!("bootstrap_v0_proc_mesh proc_addr: {}", &proc_id,),
-                    )?;
+                    let span = tracing::span!(Level::INFO, "Allocator2Process::StartProc", %proc_id, %listen_transport);
+                    let (proc, mesh_agent) = ProcMeshAgent::bootstrap(proc_id.clone())
+                        .instrument(span.clone())
+                        .await?;
+                    let entered = span.entered();
+                    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(listen_transport))?;
                     let handle = proc.clone().serve(proc_rx);
                     drop(handle); // linter appeasement; it is safe to drop this future
+                    let span = entered.exit();
                     tx.send(Process2Allocator(
                         bootstrap_index,
                         Process2AllocatorMessage::StartedProc(
@@ -2094,6 +2169,7 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
                             proc_addr,
                         ),
                     ))
+                    .instrument(span)
                     .await?;
                     procs.lock().await.push(proc);
                 }
@@ -2227,6 +2303,18 @@ impl Write for Debug {
     }
 }
 
+/// Create a new runtime [`TempDir`]. The directory is created in
+/// `$XDG_RUNTIME_DIR`, otherwise falling back to the system tempdir.
+fn runtime_dir() -> io::Result<TempDir> {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(runtime_dir) => {
+            let path = PathBuf::from(runtime_dir);
+            tempfile::tempdir_in(path)
+        }
+        None => tempfile::tempdir(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -2270,6 +2358,7 @@ mod tests {
                 proc_id: id!(foo[0]),
                 backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
+                socket_dir_path: PathBuf::from("notexist"),
                 config: None,
             },
         ];
@@ -2327,6 +2416,8 @@ mod tests {
         attrs[MESH_TAIL_LOG_LINES] = 123;
         attrs[MESH_BOOTSTRAP_ENABLE_PDEATHSIG] = false;
 
+        let socket_dir = runtime_dir().unwrap();
+
         // Proc case
         {
             let original = Bootstrap::Proc {
@@ -2334,6 +2425,7 @@ mod tests {
                 backend_addr: ChannelAddr::any(ChannelTransport::Unix),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 config: Some(attrs.clone()),
+                socket_dir_path: socket_dir.path().to_owned(),
             };
             let env_str = original.to_env_safe_string().expect("encode bootstrap");
             let decoded = Bootstrap::from_env_safe_string(&env_str).expect("decode bootstrap");
@@ -2373,14 +2465,13 @@ mod tests {
         use std::process::Stdio;
 
         use tokio::process::Command;
-        use tokio::time::Duration;
 
         // Manager; program path is irrelevant for this test.
         let command = BootstrapCommand {
             program: PathBuf::from("/bin/true"),
             ..Default::default()
         };
-        let manager = BootstrapProcManager::new(command);
+        let manager = BootstrapProcManager::new(command).unwrap();
 
         // Spawn a long-running child process (sleep 30) with
         // kill_on_drop(true).
@@ -2477,7 +2568,7 @@ mod tests {
 
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test").unwrap();
+            channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
         let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
         proc.clone().serve(proc_rx);
         router.bind(id!(client[0]).into(), proc_addr.clone());
@@ -2760,7 +2851,7 @@ mod tests {
             program: PathBuf::from("/bin/true"),
             ..Default::default()
         };
-        let manager = BootstrapProcManager::new(command);
+        let manager = BootstrapProcManager::new(command).unwrap();
 
         // Spawn a fast-exiting child.
         let mut cmd = Command::new("true");
@@ -2794,7 +2885,7 @@ mod tests {
             program: PathBuf::from("/bin/sleep"),
             ..Default::default()
         };
-        let manager = BootstrapProcManager::new(command);
+        let manager = BootstrapProcManager::new(command).unwrap();
 
         // Spawn a process that will live long enough to kill.
         let mut cmd = Command::new("/bin/sleep");
@@ -2911,7 +3002,8 @@ mod tests {
         let manager = BootstrapProcManager::new(BootstrapCommand {
             program: PathBuf::from("/bin/true"),
             ..Default::default()
-        });
+        })
+        .unwrap();
         let unknown = ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "nope".into());
         assert!(manager.status(&unknown).await.is_none());
     }
@@ -2921,7 +3013,8 @@ mod tests {
         let manager = BootstrapProcManager::new(BootstrapCommand {
             program: PathBuf::from("/bin/sleep"),
             ..Default::default()
-        });
+        })
+        .unwrap();
 
         // Long-ish child so it's alive while we "steal" it.
         let mut cmd = Command::new("/bin/sleep");
@@ -2960,7 +3053,8 @@ mod tests {
         let manager = BootstrapProcManager::new(BootstrapCommand {
             program: PathBuf::from("/bin/sleep"),
             ..Default::default()
-        });
+        })
+        .unwrap();
 
         let mut cmd = Command::new("/bin/sleep");
         cmd.arg("5").stdout(Stdio::null()).stderr(Stdio::null());
@@ -3313,18 +3407,18 @@ mod tests {
         instance: &hyperactor::Instance<()>,
         _tag: &str,
     ) -> (ProcId, ChannelAddr) {
-        let proc_id = id!(bootstrap_child[0]);
-
         // Serve a Unix channel as the "backend_addr" and hook it into
         // this test proc.
-        let (backend_addr, rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix), "test").unwrap();
+        let (backend_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
 
         // Route messages arriving on backend_addr into this test
         // proc's mailbox so the bootstrap child can reach the host
         // router.
         instance.proc().clone().serve(rx);
 
+        // We return an arbitrary (but unbound!) unix direct proc id here;
+        // it is okay, as we're not testing connectivity.
+        let proc_id = ProcId::Direct(ChannelTransport::Unix.any(), "test".to_string());
         (proc_id, backend_addr)
     }
 
@@ -3336,7 +3430,7 @@ mod tests {
             .unwrap();
         let (instance, _handle) = root.instance("client").unwrap();
 
-        let mgr = BootstrapProcManager::new(BootstrapCommand::test());
+        let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
         let handle = mgr
             .spawn(
@@ -3399,7 +3493,7 @@ mod tests {
             .unwrap();
         let (instance, _handle) = root.instance("client").unwrap();
 
-        let mgr = BootstrapProcManager::new(BootstrapCommand::test());
+        let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
 
         // Proc identity + host backend channel the child will dial.
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_kill").await;
@@ -3441,7 +3535,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_cannonical_simple() {
+    async fn bootstrap_canonical_simple() {
         // SAFETY: unit-test scoped
         unsafe {
             std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
@@ -3622,7 +3716,8 @@ mod tests {
         let manager = BootstrapProcManager::new(BootstrapCommand {
             program: std::path::PathBuf::from("/bin/true"), // unused in this test
             ..Default::default()
-        });
+        })
+        .unwrap();
 
         // Give the monitors time to start
         RealClock.sleep(Duration::from_millis(1000)).await;

@@ -6,6 +6,38 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+/// Pytokio allows Python coroutines to await Rust futures, in specific contexts.
+///
+/// A PythonTask is constructed in Python from `PythonTask.from_coroutine()`:
+///
+/// ```ignore
+/// async def task():
+///     # ... async work, await other python tasks
+/// task = PythonTask.from_coroutine(coro=task())
+/// ```
+///
+/// The task may only await *other* PythonTasks; it is an error to await arbitrary
+/// Python awaitables. In this way, Pytokio is a way to use Python to compose Tokio futures.
+///
+/// A task can be spawned in order to produce an awaitable that can be awaited in
+/// any async context:
+///
+/// ```ignore
+/// shared = task.spawn()
+/// result = await shared
+/// ```
+///
+/// Spawn spawns a tokio task that drives the coroutine to completion, and, using the Python
+/// awaitable protocol, allows those coroutines to await other Tokio futures in turn.
+///
+/// PythonTasks can also be awaited synchronously by `block_on`:
+///
+/// ```ignore
+/// result = task.block_on()
+/// ```
+///
+/// This allows PythonTasks to be used in either async or sync contexts -- the underlying
+/// code executes in exactly the same way, driven by an underlying tokio task.
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
@@ -37,14 +69,14 @@ declare_attrs! {
     /// If true, when a pytokio PythonTask fails, the traceback of the original callsite
     /// will be logged.
     @meta(CONFIG = ConfigAttr {
-        env_name: Some("MONARCH_HYPERACTOR_UNAWAITED_PYTOKIO_TRACEBACK".to_string()),
-        py_name: Some("unawaited_pytokio_traceback".to_string()),
+        env_name: Some("MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK".to_string()),
+        py_name: Some("enable_unawaited_python_task_traceback".to_string()),
     })
-    pub attr UNAWAITED_PYTOKIO_TRACEBACK: u8 = 0;
+    pub attr ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK: bool = false;
 }
 
 fn current_traceback() -> PyResult<Option<PyObject>> {
-    if config::global::get(UNAWAITED_PYTOKIO_TRACEBACK) != 0 {
+    if config::global::get(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK) {
         Python::with_gil(|py| {
             Ok(Some(
                 py.import("traceback")?
@@ -242,7 +274,7 @@ fn send_result(
                 let tb = if let Some(tb) = traceback {
                     format_traceback(py, &tb).unwrap()
                 } else {
-                    "None (run with `MONARCH_HYPERACTOR_UNAWAITED_PYTOKIO_TRACEBACK=1` to see a traceback here)\n".into()
+                    "None (run with `MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1` to see a traceback here)\n".into()
                 };
                 tracing::error!(
                     "PythonTask errored but is not being awaited; this will not crash your program, but indicates that \

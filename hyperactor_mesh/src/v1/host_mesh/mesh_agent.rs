@@ -467,7 +467,7 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
                 None => BootstrapCommand::current()?,
             };
             tracing::info!("booting host with proc command {:?}", command);
-            let manager = BootstrapProcManager::new(command);
+            let manager = BootstrapProcManager::new(command).unwrap();
             let (host, _) = Host::serve(manager, transport.any()).await?;
             HostAgentMode::Process(host)
         };
@@ -525,7 +525,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic() {
         let (host, _handle) = Host::serve(
-            BootstrapProcManager::new(BootstrapCommand::test()),
+            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
             ChannelTransport::Unix.any(),
         )
         .await
