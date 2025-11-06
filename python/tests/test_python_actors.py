@@ -9,6 +9,7 @@
 import asyncio
 import ctypes
 import importlib.resources
+import io
 import logging
 import operator
 import os
@@ -20,9 +21,10 @@ import threading
 import time
 import unittest
 import unittest.mock
+from contextlib import contextmanager
 from tempfile import TemporaryDirectory
 from types import ModuleType
-from typing import cast, Tuple
+from typing import Any, cast, Tuple
 
 import monarch.actor
 import pytest
@@ -67,7 +69,6 @@ from monarch.actor import (
 )
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
-
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
@@ -1731,3 +1732,61 @@ def test_setup_async() -> None:
     counter.incr.call().get()
     # Make sure no errors occur in the meantime
     time.sleep(10)
+
+
+class CaptureLogs:
+    def __init__(self):
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("capture")
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+        self.log_stream = log_stream
+        self.logger = logger
+
+    @property
+    def contents(self) -> str:
+        return self.log_stream.getvalue()
+
+
+class Named(Actor):
+    @endpoint
+    def report(self) -> Any:
+        logs = CaptureLogs()
+        logs.logger.error("HUH")
+        assert "test_python_actors.Named the_name{'f': 0/2}>" in logs.contents
+
+        return context().actor_instance.creator, str(context().actor_instance)
+
+
+def test_instance_name():
+    cr, result = (
+        this_host()
+        .spawn_procs(per_host={"f": 2})
+        .spawn("the_name", Named)
+        .slice(f=0)
+        .report.call_one()
+        .get()
+    )
+    assert "test_python_actors.Named the_name{'f': 0/2}>" in result
+    assert cr.name == "root"
+    assert str(context().actor_instance) == "<root>"
+
+    logs = CaptureLogs()
+    logs.logger.error("HUH")
+    assert "actor=<root>" in logs.contents
+    default = monarch.actor.per_actor_logging_prefix
+    try:
+        monarch.actor.per_actor_logging_prefix = lambda inst: "<test>"
+        logs = CaptureLogs()
+        logs.logger.error("HUH")
+        assert "<test>" in logs.contents
+        monarch.actor.per_actor_logging_prefix = None
+        # make sure we can set _per_actor_logging_prefix to none.
+        logs = CaptureLogs()
+        logs.logger.error("HUH")
+    finally:
+        monarch.actor.per_actor_logging_prefix = default
