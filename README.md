@@ -134,6 +134,9 @@ sudo apt install -y ninja-build
 sudo apt install -y libunwind-dev
 sudo apt install -y clang
 
+# Install the libunwind package on conda
+conda install -c conda-forge libunwind
+
 # Set clang as the default C/C++ compiler
 export CC=clang
 export CXX=clang++
@@ -157,8 +160,12 @@ USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
 # or setup for development
 pip install --no-build-isolation -e .
 
+# Preload libgcc_s.so.1 from the current Conda environment to ensure correct GCC runtime linking,
+export LD_PRELOAD="$CONDA_PREFIX/lib/libgcc_s.so.1:$LD_PRELOAD"
+
 # Verify installation
 pip list | grep monarch
+python -c 'import monarch; print("monarch ok")'
 ```
 
 #### On non-CUDA machines
