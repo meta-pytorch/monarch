@@ -274,7 +274,7 @@ class _ActorFilter(logging.Filter):
         fn = _monarch_actor().per_actor_logging_prefix
         ctx = _context.get(None)
         if ctx is not None and fn is not None:
-            record.msg = fn(ctx.actor_instance) + record.msg
+            record.msg = f"{fn(ctx.actor_instance)}{record.msg}"
         return True
 
 
