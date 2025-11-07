@@ -51,6 +51,12 @@ endpoint_call_one_latency_histogram: Histogram = METER.create_histogram(
     description="Latency of endpoint call_one operations in microseconds",
 )
 
+# Histogram for measuring endpoint stream latency per yield
+endpoint_stream_latency_histogram: Histogram = METER.create_histogram(
+    name="endpoint_stream_latency.us",
+    description="Latency of endpoint stream operations per yield in microseconds",
+)
+
 T = TypeVar("T")
 
 
@@ -247,9 +253,17 @@ class Endpoint(ABC, Generic[P, R]):
         extent: Extent = self._send(args, kwargs, port=p)
         r: "PortReceiver[R]" = r_port
 
+        method_name: str = self._get_method_name()
+
         def _stream() -> Generator[Future[R], None, None]:
             for _ in range(extent.nelements):
-                yield r.recv()
+                measured_coro = _measure_latency(
+                    r._recv(),
+                    endpoint_stream_latency_histogram,
+                    method_name,
+                    extent.nelements,
+                )
+                yield Future(coro=measured_coro)
 
         return _stream()
 
