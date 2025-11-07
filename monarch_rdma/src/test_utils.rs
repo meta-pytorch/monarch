@@ -329,6 +329,7 @@ pub mod test_utils {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Local,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
@@ -347,6 +348,7 @@ pub mod test_utils {
                     constraints: Default::default(),
                     proc_name: None,
                     transport: ChannelTransport::Local,
+                    proc_allocation_mode: Default::default(),
                 })
                 .await
                 .unwrap();
