@@ -7,14 +7,15 @@
 # pyre-strict
 
 import functools
+import time
 from abc import ABC, abstractmethod
-from datetime import datetime
 from typing import (
     Any,
     Awaitable,
     Callable,
     cast,
     Concatenate,
+    Coroutine,
     Dict,
     Generator,
     Generic,
@@ -44,6 +45,51 @@ endpoint_call_latency_histogram: Histogram = METER.create_histogram(
     description="Latency of endpoint call operations in microseconds",
 )
 
+# Histogram for measuring endpoint call_one latency
+endpoint_call_one_latency_histogram: Histogram = METER.create_histogram(
+    name="endpoint_call_one_latency.us",
+    description="Latency of endpoint call_one operations in microseconds",
+)
+
+T = TypeVar("T")
+
+
+def _measure_latency(
+    coro: Coroutine[Any, Any, T],
+    histogram: Histogram,
+    method_name: str,
+    actor_count: int,
+) -> Coroutine[Any, Any, T]:
+    """
+    Decorator to measure and record latency of an async operation.
+
+    Args:
+        coro: The coroutine to measure
+        histogram: The histogram to record metrics to
+        method_name: Name of the method being called
+        actor_count: Number of actors involved in the call
+
+    Returns:
+        A wrapped coroutine that records latency metrics
+    """
+    start_time: float = time.monotonic()
+
+    async def _wrapper() -> T:
+        try:
+            return await coro
+        finally:
+            duration_us = int((time.monotonic() - start_time) * 1_000_000)
+            histogram.record(
+                duration_us,
+                attributes={
+                    "method": method_name,
+                    "actor_count": actor_count,
+                },
+            )
+
+    return _wrapper()
+
+
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.mailbox import (
         OncePortReceiver as HyOncePortReceiver,
@@ -64,6 +110,19 @@ class Endpoint(ABC, Generic[P, R]):
     def __init__(self, propagator: Propagator) -> None:
         self._propagator_arg = propagator
         self._cache: Optional[Dict[Any, Any]] = None
+
+    def _get_method_name(self) -> str:
+        """
+        Extract method name from this endpoint's method specifier.
+
+        Returns:
+            The method name, or "unknown" if not available
+        """
+        method_specifier = self._call_name()
+        if hasattr(method_specifier, "name"):
+            # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
+            return method_specifier.name
+        return "unknown"
 
     @abstractmethod
     def _send(
@@ -119,56 +178,60 @@ class Endpoint(ABC, Generic[P, R]):
         return r.recv()
 
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
-        p, r = self._port(once=True)
+        p, r_port = self._port(once=True)
+        r: PortReceiver[R] = r_port
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         extent = self._send(args, kwargs, port=p, selection="choose")
         if extent.nelements != 1:
             raise ValueError(
                 f"Can only use 'call_one' on a single Actor but this actor has shape {extent}"
             )
-        return r.recv()
+
+        method_name = self._get_method_name()
+
+        async def process() -> R:
+            result = await r.recv()
+            return result
+
+        measured_coro = _measure_latency(
+            process(),
+            endpoint_call_one_latency_histogram,
+            method_name,
+            1,
+        )
+        return Future(coro=measured_coro)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
         from monarch._src.actor.actor_mesh import RankedPortReceiver, ValueMesh
 
-        start_time: datetime = datetime.now()
         p, unranked = self._port()
         r: RankedPortReceiver[R] = unranked.ranked()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         extent: Extent = self._send(args, kwargs, port=p)
 
-        method_specifier = self._call_name()
-        if hasattr(method_specifier, "name"):
-            # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
-            method_name: str = method_specifier.name
-        else:
-            method_name: str = "unknown"
+        method_name = self._get_method_name()
 
         async def process() -> "ValueMesh[R]":
             from monarch._rust_bindings.monarch_hyperactor.shape import Shape
             from monarch._src.actor.shape import NDSlice
 
-            try:
-                results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
-                for _ in range(extent.nelements):
-                    rank, value = await r._recv()
-                    results[rank] = value
-                call_shape = Shape(
-                    extent.labels,
-                    NDSlice.new_row_major(extent.sizes),
-                )
-                return ValueMesh(call_shape, results)
-            finally:
-                duration = datetime.now() - start_time
-                endpoint_call_latency_histogram.record(
-                    duration.microseconds,
-                    attributes={
-                        "method": str(method_name),
-                        "actor_count": extent.nelements,
-                    },
-                )
+            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
+            for _ in range(extent.nelements):
+                rank, value = await r._recv()
+                results[rank] = value
+            call_shape = Shape(
+                extent.labels,
+                NDSlice.new_row_major(extent.sizes),
+            )
+            return ValueMesh(call_shape, results)
 
-        return Future(coro=process())
+        measured_coro = _measure_latency(
+            process(),
+            endpoint_call_latency_histogram,
+            method_name,
+            extent.nelements,
+        )
+        return Future(coro=measured_coro)
 
     def stream(
         self, *args: P.args, **kwargs: P.kwargs
