@@ -292,7 +292,12 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        let result = get_rank_status.reply.send(cx, overlay);
+        // If this response is not deliverable, it doesn't need to be sent back
+        // to this agent. This is a read-only query of the proc state, and can
+        // be retried.
+        let port_id = get_rank_status.reply.port_id().clone();
+        let reply_port = PortRef::attest_no_return(port_id);
+        let result = reply_port.send(cx, overlay);
         // Ignore errors, because returning Err from here would cause the HostMeshAgent
         // to be stopped, which would take down the entire host. This only means
         // some actor that requested the rank status failed to receive it.
@@ -416,7 +421,12 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
             },
         };
 
-        let result = get_state.reply.send(cx, state);
+        // If this response is not deliverable, it doesn't need to be sent back
+        // to this agent. This is a read-only query of the proc state, and can
+        // be retried.
+        let port_id = get_state.reply.port_id().clone();
+        let reply_port = PortRef::attest_no_return(port_id);
+        let result = reply_port.send(cx, state);
         // Ignore errors, because returning Err from here would cause the HostMeshAgent
         // to be stopped, which would take down the entire host. This only means
         // some actor that requested the state of a proc failed to receive it.

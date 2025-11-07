@@ -61,7 +61,7 @@ pub trait Actor: Mailbox {
 pub(crate) trait MailboxExt: Mailbox {
     /// Post a message to the provided destination with the provided headers, and data.
     /// All messages posted from actors should use this implementation.
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized);
+    fn post(&self, dest: PortId, headers: Attrs, data: Serialized, return_undeliverable: bool);
 
     /// Split a port, using a provided reducer spec, if provided.
     fn split(
@@ -80,7 +80,7 @@ static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
 
 /// Only actors CanSend because they need a return port.
 impl<T: Actor + Send + Sync> MailboxExt for T {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
+    fn post(&self, dest: PortId, headers: Attrs, data: Serialized, return_undeliverable: bool) {
         let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
             let actor_id = self.mailbox().actor_id();
             if CAN_SEND_WARNED_MAILBOXES
@@ -97,7 +97,9 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             mailbox::monitored_return_handle()
         });
 
-        let envelope = MessageEnvelope::new(self.mailbox().actor_id().clone(), dest, data, headers);
+        let mut envelope =
+            MessageEnvelope::new(self.mailbox().actor_id().clone(), dest, data, headers);
+        envelope.set_return_undeliverable(return_undeliverable);
         MailboxSender::post(self.mailbox(), envelope, return_handle);
     }
 

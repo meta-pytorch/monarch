@@ -697,7 +697,12 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        let result = get_rank_status.reply.send(cx, overlay);
+        // If this response is not deliverable, it doesn't need to be sent back
+        // to this agent. This is a read-only query of the actor state, and can
+        // be retried.
+        let port_id = get_rank_status.reply.port_id().clone();
+        let reply_port = PortRef::attest_no_return(port_id);
+        let result = reply_port.send(cx, overlay);
         // Ignore errors, because returning Err from here would cause the ProcMeshAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.
@@ -762,7 +767,12 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
             },
         };
 
-        let result = get_state.reply.send(cx, state);
+        // If this response is not deliverable, it doesn't need to be sent back
+        // to this agent. This is a read-only query of the actor state, and can
+        // be retried.
+        let port_id = get_state.reply.port_id().clone();
+        let reply_port = PortRef::attest_no_return(port_id);
+        let result = reply_port.send(cx, state);
         // Ignore errors, because returning Err from here would cause the ProcMeshAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.

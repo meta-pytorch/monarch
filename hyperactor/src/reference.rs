@@ -725,6 +725,15 @@ impl<A: Referable> ActorRef<A> {
         PortRef::attest(self.actor_id.port_id(<M as Named>::port()))
     }
 
+    /// Get the remote port for message type [`M`] for the referenced actor.
+    /// Messages sent to this port will be dropped if they are undeliverable.
+    pub fn port_no_return<M: RemoteMessage>(&self) -> PortRef<M>
+    where
+        A: RemoteHandles<M>,
+    {
+        PortRef::attest_no_return(self.actor_id.port_id(<M as Named>::port()))
+    }
+
     /// Send an [`M`]-typed message to the referenced actor.
     pub fn send<M: RemoteMessage>(
         &self,
@@ -891,7 +900,7 @@ impl PortId {
     pub fn send(&self, cx: &impl context::Actor, serialized: Serialized) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized);
+        cx.post(self.clone(), headers, serialized, true);
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -904,7 +913,7 @@ impl PortId {
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized);
+        cx.post(self.clone(), headers, serialized, true);
     }
 
     /// Split this port, returning a new port that relays messages to the port
@@ -964,6 +973,7 @@ pub struct PortRef<M> {
     )]
     reducer_opts: Option<ReducerOpts>,
     phantom: PhantomData<M>,
+    return_undeliverable: bool,
 }
 
 impl<M: RemoteMessage> PortRef<M> {
@@ -975,6 +985,7 @@ impl<M: RemoteMessage> PortRef<M> {
             reducer_spec: None,
             reducer_opts: None,
             phantom: PhantomData,
+            return_undeliverable: true,
         }
     }
 
@@ -986,6 +997,7 @@ impl<M: RemoteMessage> PortRef<M> {
             reducer_spec,
             reducer_opts: None, // TODO: provide attest_reducible_opts
             phantom: PhantomData,
+            return_undeliverable: true,
         }
     }
 
@@ -993,6 +1005,20 @@ impl<M: RemoteMessage> PortRef<M> {
     /// converted to a reachable, typed port reference.
     pub fn attest_message_port(actor: &ActorId) -> Self {
         PortRef::<M>::attest(actor.port_id(<M as Named>::port()))
+    }
+
+    /// The caller attests that the provided PortId can be
+    /// converted to a reachable, typed port reference. If
+    /// a message sent using this port is undeliverable, it
+    /// will simply be dropped and ignored.
+    pub fn attest_no_return(port_id: PortId) -> Self {
+        Self {
+            port_id,
+            reducer_spec: None,
+            reducer_opts: None,
+            phantom: PhantomData,
+            return_undeliverable: false,
+        }
     }
 
     /// The typehash of this port's reducer, if any. Reducers
@@ -1052,7 +1078,12 @@ impl<M: RemoteMessage> PortRef<M> {
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
-        cx.post(self.port_id.clone(), headers, message);
+        cx.post(
+            self.port_id.clone(),
+            headers,
+            message,
+            self.return_undeliverable,
+        );
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
@@ -1068,6 +1099,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
             reducer_spec: self.reducer_spec.clone(),
             reducer_opts: self.reducer_opts.clone(),
             phantom: PhantomData,
+            return_undeliverable: self.return_undeliverable,
         }
     }
 }
@@ -1145,7 +1177,18 @@ impl<M: RemoteMessage> OncePortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message)
+        self.send_with_headers(cx, Attrs::new(), message, true)
+    }
+
+    /// Send a message to this port, provided a sending capability, such as
+    /// [`crate::actor::Instance`]. Do not return undelivered messages back to
+    /// the sender.
+    pub fn send_no_return(
+        self,
+        cx: &impl context::Actor,
+        message: M,
+    ) -> Result<(), MailboxSenderError> {
+        self.send_with_headers(cx, Attrs::new(), message, false)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1155,6 +1198,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
         cx: &impl context::Actor,
         mut headers: Attrs,
         message: M,
+        return_undeliverable: bool,
     ) -> Result<(), MailboxSenderError> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         let serialized = Serialized::serialize(&message).map_err(|err| {
@@ -1163,7 +1207,12 @@ impl<M: RemoteMessage> OncePortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        cx.post(self.port_id.clone(), headers, serialized);
+        cx.post(
+            self.port_id.clone(),
+            headers,
+            serialized,
+            return_undeliverable,
+        );
         Ok(())
     }
 }
