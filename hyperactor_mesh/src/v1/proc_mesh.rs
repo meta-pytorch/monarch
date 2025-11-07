@@ -11,7 +11,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::ops::Deref;
+use std::panic::Location;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use hyperactor::Actor;
@@ -46,7 +50,9 @@ use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Notify;
+use tracing::Instrument;
 use tracing::Level;
+use tracing::span;
 
 use crate::CommActor;
 use crate::alloc::Alloc;
@@ -282,15 +288,37 @@ impl ProcMesh {
         .await
     }
 
+    fn alloc_counter() -> &'static AtomicUsize {
+        static C: OnceLock<AtomicUsize> = OnceLock::new();
+        C.get_or_init(|| AtomicUsize::new(0))
+    }
+
     /// Allocate a new ProcMesh from the provided alloc.
     /// Allocate does not require an owning actor because references are not owned.
     #[tracing::instrument(skip_all)]
+    #[track_caller]
     pub async fn allocate(
         cx: &impl context::Actor,
         mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
         name: &str,
     ) -> v1::Result<Self> {
-        let running = alloc.initialize().await?;
+        let alloc_id = Self::alloc_counter().fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            name = "ProcMesh::Allocate::Attempt",
+            alloc_id,
+            caller = %Location::caller(),
+            shape = ?alloc.shape(),
+            "allocating proc mesh"
+        );
+
+        let running = alloc
+            .initialize()
+            .instrument(span!(
+                Level::INFO,
+                "ProcMesh::Allocate::Initialize",
+                alloc_id
+            ))
+            .await?;
 
         // Wire the newly created mesh into the proc, so that it is routable.
         // We route all of the relevant prefixes into the proc's forwarder,
@@ -308,6 +336,11 @@ impl ProcMesh {
             proc.clone().serve(rx);
             addr
         };
+        tracing::info!(
+            name = "ProcMesh::Allocate::ChannelServe",
+            alloc_id = alloc_id,
+            "proc started listening on addr: {proc_channel_addr}"
+        );
 
         let bind_allocated_procs = |router: &DialMailboxRouter| {
             // Route all of the allocated procs:
