@@ -27,7 +27,6 @@ from monarch._src.actor.actor_mesh import (
     current_size,
     enable_transport,
     Endpoint,
-    per_actor_logging_prefix,
     Point,
     Port,
     PortReceiver,
@@ -108,6 +107,5 @@ __all__ = [
     "Context",
     "ChannelTransport",
     "unhandled_fault_hook",
-    "per_actor_logging_prefix",
     "MeshFailure",
 ]
