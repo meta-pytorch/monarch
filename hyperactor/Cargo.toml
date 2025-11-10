@@ -50,7 +50,7 @@ dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 derivative = "2.2"
 dns-lookup = "1.0"
 enum-as-inner = "0.6.0"
-erased-serde = "0.4.9"
+erased-serde = "0.3.31"
 fastrand = "2.1.1"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"
