@@ -1177,17 +1177,6 @@ impl<M: RemoteMessage> OncePortRef<M> {
     }
 
     /// Send a message to this port, provided a sending capability, such as
-    /// [`crate::actor::Instance`]. Do not return undelivered messages back to
-    /// the sender.
-    pub fn send_no_return(
-        self,
-        cx: &impl context::Actor,
-        message: M,
-    ) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message, false)
-    }
-
-    /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`]. Additional context can be provided in the form of headers.
     pub fn send_with_headers(
         self,
