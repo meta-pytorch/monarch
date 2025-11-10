@@ -56,9 +56,21 @@ jobs:
 
         # Run GPU Rust tests
         echo "Running OSS Rust tests..."
-        # TODO: fix broken tests, then update to `cargo test --no-fail-fast`
-        cargo test -p monarch_rdma
         # Uses cargo nextest to run tests in separate processes, which better matches
         # internal buck test behavior.
-        # TODO: increase coverage to more crates.
-        cargo nextest run -p hyperactor --no-fail-fast
+        # The CI profile is configured in .config/nextest.toml
+        # Exclude filter is for packages that don't build in Github Actions yet.
+        # * monarch_messages: monarch/target/debug/deps/monarch_messages-...:
+        #   /lib64/libm.so.6: version `GLIBC_2.29' not found
+        #   (required by /meta-pytorch/monarch/libtorch/lib/libtorch_cpu.so)
+        cargo nextest run --workspace --profile ci \
+          --exclude monarch_messages \
+          --exclude monarch_tensor_worker \
+          --exclude monarch_simulator_lib \
+          --exclude torch-sys \
+          --exclude torch-sys-cuda
+        # Copy the test results to the expected location
+        # TODO: error in pytest-results-action, TypeError: results.testsuites.testsuite.testcase is not iterable
+        # Don't try to parse these results for now.
+        # mkdir -p "${RUNNER_TEST_RESULTS_DIR:-test-results}"
+        # cp target/nextest/ci/junit.xml "${RUNNER_TEST_RESULTS_DIR:-test-results}/junit.xml"
