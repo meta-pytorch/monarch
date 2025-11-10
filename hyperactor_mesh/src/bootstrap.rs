@@ -218,16 +218,18 @@ async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: Channe
         Ok(tx) => tx,
 
         Err(err) => {
+            // TODO: Log lifecycle state change in here.
             tracing::error!(
-                "Failed to establish heartbeat connection to allocator, exiting! (addr: {:?}): {}",
+                "Failed to establish heartbeat connection from proc to allocator, exiting! (addr: {:?}): {}",
                 bootstrap_addr,
                 err
             );
             std::process::exit(1);
         }
     };
+    // TODO: Log lifecycle state change in here.
     tracing::info!(
-        "Heartbeat connection established to allocator (idx: {bootstrap_index}, addr: {bootstrap_addr:?})",
+        "Heartbeat connection established from proc to allocator (idx: {bootstrap_index}, addr: {bootstrap_addr:?})",
     );
     loop {
         RealClock.sleep(Duration::from_secs(5)).await;
@@ -240,11 +242,13 @@ async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: Channe
             .await;
 
         if let Err(err) = result {
+            // TODO: Log lifecycle state change in here.
             tracing::error!(
-                "Heartbeat failed to allocator, exiting! (addr: {:?}): {}",
+                "Heartbeat failed to be sent from proc to allocator, exiting! (addr: {:?}): {}",
                 bootstrap_addr,
                 err
             );
+            // TODO: Should there be a graceful exit here?
             std::process::exit(1);
         }
     }
