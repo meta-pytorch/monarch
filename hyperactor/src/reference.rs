@@ -1173,7 +1173,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message, true)
+        self.send_with_headers(cx, Attrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1183,7 +1183,6 @@ impl<M: RemoteMessage> OncePortRef<M> {
         cx: &impl context::Actor,
         mut headers: Attrs,
         message: M,
-        return_undeliverable: bool,
     ) -> Result<(), MailboxSenderError> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         let serialized = Serialized::serialize(&message).map_err(|err| {
@@ -1192,12 +1191,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        cx.post(
-            self.port_id.clone(),
-            headers,
-            serialized,
-            return_undeliverable,
-        );
+        cx.post(self.port_id.clone(), headers, serialized, true);
         Ok(())
     }
 }
