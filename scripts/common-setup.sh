@@ -168,6 +168,12 @@ run_test_groups() {
     echo "Usage: run_test_groups <enable_actor_error_test: 0|1>"
     return 2
   fi
+  # Make sure the runtime linker uses the conda env's libstdc++
+  # (which was used to compile monarch) instead of the system's.
+  # TODO: Revisit this to determine if this is the proper/most
+  # sustainable/most robust solution.
+  export CONDA_LIBSTDCPP="${CONDA_PREFIX}/lib/libstdc++.so.6"
+  export LD_PRELOAD="${CONDA_LIBSTDCPP}${LD_PRELOAD:+:$LD_PRELOAD}"
   local FAILED_GROUPS=()
   for GROUP in $(seq 1 10); do
     echo "Running test group $GROUP of 10..."
