@@ -3366,15 +3366,15 @@ mod tests {
 
         // Split it twice on actor1
         let port_id1 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone())
+            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
             .unwrap();
         let port_id2 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone())
+            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
             .unwrap();
 
         // A split port id can also be split
         let port_id2_1 = port_id2
-            .split(&actor1, reducer_spec, reducer_opts.clone())
+            .split(&actor1, reducer_spec, reducer_opts.clone(), true)
             .unwrap();
 
         Setup {
@@ -3397,7 +3397,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_no_reducer() {
         let Setup {
             mut receiver,
@@ -3483,7 +3483,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_every_n_messages() {
         let config = crate::config::global::lock();
         let _config_guard = config.override_key(
@@ -3496,7 +3496,7 @@ mod tests {
         let port_id = port_handle.bind().port_id().clone();
         // Split it
         let reducer_spec = accum::sum::<u64>().reducer_spec();
-        let split_port_id = port_id.split(&actor, reducer_spec, None).unwrap();
+        let split_port_id = port_id.split(&actor, reducer_spec, None, true).unwrap();
 
         // Send 9 messages.
         for msg in [1, 5, 3, 4, 2, 91, 92, 93, 94] {

@@ -1324,7 +1324,11 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         let agent = self.agent_ref();
         if let Some(agent) = agent {
             // TODO: add a reply to StopAll and wait for it.
-            if let Err(e) = agent.port_no_return().send(cx, resource::StopAll {}) {
+            let mut port = agent.port();
+            // If the proc is already dead, then the StopAll message will be undeliverable,
+            // which should be ignored.
+            port.return_undeliverable(false);
+            if let Err(e) = port.send(cx, resource::StopAll {}) {
                 // Cannot send to agent, proceed with SIGTERM.
                 tracing::warn!(
                     "ProcMeshAgent {} didn't respond in time to stop proc: {}",
@@ -1499,6 +1503,7 @@ impl BootstrapCommand {
     /// bootstrap processes under proc manager control. Not available
     /// outside of test builds.
     #[cfg(test)]
+    #[cfg(fbcode_build)]
     pub(crate) fn test() -> Self {
         Self {
             program: crate::testresource::get("monarch/hyperactor_mesh/bootstrap"),
@@ -3415,6 +3420,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_handle_terminate_graceful() {
         // Create a root direct-addressed proc + client instance.
         let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
@@ -3478,6 +3484,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_handle_kill_forced() {
         // Root proc + client instance (so the child can dial back).
         let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
@@ -3527,6 +3534,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_canonical_simple() {
         // SAFETY: unit-test scoped
         unsafe {
@@ -3551,6 +3559,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();

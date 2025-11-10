@@ -725,15 +725,6 @@ impl<A: Referable> ActorRef<A> {
         PortRef::attest(self.actor_id.port_id(<M as Named>::port()))
     }
 
-    /// Get the remote port for message type [`M`] for the referenced actor.
-    /// Messages sent to this port will be dropped if they are undeliverable.
-    pub fn port_no_return<M: RemoteMessage>(&self) -> PortRef<M>
-    where
-        A: RemoteHandles<M>,
-    {
-        PortRef::attest_no_return(self.actor_id.port_id(<M as Named>::port()))
-    }
-
     /// Send an [`M`]-typed message to the referenced actor.
     pub fn send<M: RemoteMessage>(
         &self,
@@ -923,8 +914,14 @@ impl PortId {
         cx: &impl context::Actor,
         reducer_spec: Option<ReducerSpec>,
         reducer_opts: Option<ReducerOpts>,
+        return_undeliverable: bool,
     ) -> anyhow::Result<PortId> {
-        cx.split(self.clone(), reducer_spec, reducer_opts)
+        cx.split(
+            self.clone(),
+            reducer_spec,
+            reducer_opts,
+            return_undeliverable,
+        )
     }
 }
 
@@ -1007,20 +1004,6 @@ impl<M: RemoteMessage> PortRef<M> {
         PortRef::<M>::attest(actor.port_id(<M as Named>::port()))
     }
 
-    /// The caller attests that the provided PortId can be
-    /// converted to a reachable, typed port reference. If
-    /// a message sent using this port is undeliverable, it
-    /// will simply be dropped and ignored.
-    pub fn attest_no_return(port_id: PortId) -> Self {
-        Self {
-            port_id,
-            reducer_spec: None,
-            reducer_opts: None,
-            phantom: PhantomData,
-            return_undeliverable: false,
-        }
-    }
-
     /// The typehash of this port's reducer, if any. Reducers
     /// may be used to coalesce messages sent to a port.
     pub fn reducer_spec(&self) -> &Option<ReducerSpec> {
@@ -1090,6 +1073,12 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn into_sink<C: context::Actor>(self, cx: C) -> PortSink<C, M> {
         PortSink::new(cx, self)
     }
+
+    /// Set whether or not messages sent to this port that are undeliverable
+    /// should be returned to the sender.
+    pub fn return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
+    }
 }
 
 impl<M: RemoteMessage> Clone for PortRef<M> {
@@ -1112,7 +1101,12 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
 
 /// The parameters extracted from [`PortRef`] to [`Bindings`].
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
-pub struct UnboundPort(pub PortId, pub Option<ReducerSpec>, pub Option<ReducerOpts>);
+pub struct UnboundPort(
+    pub PortId,
+    pub Option<ReducerSpec>,
+    pub Option<ReducerOpts>,
+    pub bool, // return_undeliverable
+);
 
 impl UnboundPort {
     /// Update the port id of this binding.
@@ -1127,6 +1121,7 @@ impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
             port_ref.port_id.clone(),
             port_ref.reducer_spec.clone(),
             port_ref.reducer_opts.clone(),
+            port_ref.return_undeliverable,
         )
     }
 }
@@ -1143,6 +1138,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
         self.port_id = bound.0;
         self.reducer_spec = bound.1;
         self.reducer_opts = bound.2;
+        self.return_undeliverable = bound.3;
         Ok(())
     }
 }

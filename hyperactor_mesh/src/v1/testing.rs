@@ -45,6 +45,7 @@ pub async fn instance() -> &'static Instance<()> {
     INSTANCE.get_or_init(fresh_instance).await
 }
 
+#[cfg(fbcode_build)]
 pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMesh> {
     let mut meshes = Vec::new();
 
@@ -55,6 +56,7 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -74,6 +76,7 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -87,12 +90,14 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
 }
 
 /// Return different alloc implementations with the provided extent.
+#[cfg(fbcode_build)]
 pub async fn allocs(extent: Extent) -> Vec<Box<dyn Alloc + Send + Sync>> {
     let spec = AllocSpec {
         extent: extent.clone(),
         constraints: Default::default(),
         proc_name: None,
         transport: default_transport(),
+        proc_allocation_mode: Default::default(),
     };
 
     vec![
@@ -121,6 +126,7 @@ pub async fn local_proc_mesh(extent: Extent) -> (ProcMesh, Instance<()>, DialMai
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Local,
+            proc_allocation_mode: Default::default(),
         })
         .await
         .unwrap();
@@ -134,6 +140,7 @@ pub async fn local_proc_mesh(extent: Extent) -> (ProcMesh, Instance<()>, DialMai
 }
 
 /// Create a host mesh using multiple processes running on the test machine.
+#[cfg(fbcode_build)]
 pub async fn host_mesh(extent: Extent) -> HostMesh {
     let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
         "monarch/hyperactor_mesh/bootstrap",
@@ -144,6 +151,7 @@ pub async fn host_mesh(extent: Extent) -> HostMesh {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         })
         .await
         .unwrap();

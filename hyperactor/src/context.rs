@@ -69,6 +69,7 @@ pub(crate) trait MailboxExt: Mailbox {
         port_id: PortId,
         reducer_spec: Option<ReducerSpec>,
         reducer_opts: Option<ReducerOpts>,
+        return_undeliverable: bool,
     ) -> anyhow::Result<PortId>;
 }
 
@@ -108,11 +109,20 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         port_id: PortId,
         reducer_spec: Option<ReducerSpec>,
         reducer_opts: Option<ReducerOpts>,
+        return_undeliverable: bool,
     ) -> anyhow::Result<PortId> {
-        fn post(mailbox: &mailbox::Mailbox, port_id: PortId, msg: Serialized) {
+        fn post(
+            mailbox: &mailbox::Mailbox,
+            port_id: PortId,
+            msg: Serialized,
+            return_undeliverable: bool,
+        ) {
+            let mut envelope =
+                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Attrs::new());
+            envelope.set_return_undeliverable(return_undeliverable);
             mailbox::MailboxSender::post(
                 mailbox,
-                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Attrs::new()),
+                envelope,
                 // TODO(pzhang) figure out how to use upstream's return handle,
                 // instead of getting a new one like this.
                 // This is okay for now because upstream is currently also using
@@ -137,7 +147,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             dyn Fn(Serialized) -> Result<(), (Serialized, anyhow::Error)> + Send + Sync,
         > = match reducer {
             None => Box::new(move |serialized: Serialized| {
-                post(&mailbox, port_id.clone(), serialized);
+                post(&mailbox, port_id.clone(), serialized, return_undeliverable);
                 Ok(())
             }),
             Some(reducer) => {
@@ -156,7 +166,9 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                             let mut buf = buffer.lock().unwrap();
                             match buf.reduce() {
                                 None => (),
-                                Some(Ok(reduced)) => post(&mailbox, port_id.clone(), reduced),
+                                Some(Ok(reduced)) => {
+                                    post(&mailbox, port_id.clone(), reduced, return_undeliverable)
+                                }
                                 // We simply ignore errors here, and let them be propagated
                                 // later in the enqueueing function.
                                 //
@@ -199,7 +211,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         None => Ok(()),
                         Some(Ok(reduced)) => {
                             alarm.lock().unwrap().disarm();
-                            post(&mailbox, port_id.clone(), reduced);
+                            post(&mailbox, port_id.clone(), reduced, return_undeliverable);
                             Ok(())
                         }
                         Some(Err(e)) => Err((buf.pop().unwrap(), e)),
