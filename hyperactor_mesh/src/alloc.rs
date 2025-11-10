@@ -931,6 +931,7 @@ pub(crate) mod testing {
     /// a proc that does not time out when it is asked to wait for
     /// a stuck actor.
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_allocator_stuck_task() {
         // Override config.
         // Use temporary config for this test

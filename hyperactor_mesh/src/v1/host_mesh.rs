@@ -1137,6 +1137,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_allocate() {
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
@@ -1247,6 +1248,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_extrinsic_allocation() {
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
@@ -1290,6 +1292,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_failing_proc_allocation() {
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
@@ -1323,6 +1326,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_halting_proc_allocation() {
         let config = config::global::lock();
         let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(5));
@@ -1367,6 +1371,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_client_config_override() {
         let config = hyperactor::config::global::lock();
         let _guard1 = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);

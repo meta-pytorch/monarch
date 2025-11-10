@@ -3371,7 +3371,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_no_reducer() {
         let Setup {
             mut receiver,
@@ -3457,7 +3457,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_every_n_messages() {
         let config = crate::config::global::lock();
         let _config_guard = config.override_key(

@@ -26,6 +26,8 @@ use tempfile::TempDir;
 use tokio::fs;
 
 #[tokio::test]
+// TODO: OSS: ModuleNotFoundError: No module named 'monarch'
+#[cfg_attr(not(fbcode_build), ignore)]
 async fn test_auto_reload_actor() -> Result<()> {
     pyo3::prepare_freethreaded_python();
     Python::with_gil(|py| py.run(c_str!("import monarch._rust_bindings"), None, None))?;

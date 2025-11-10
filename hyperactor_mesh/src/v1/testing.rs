@@ -45,6 +45,7 @@ pub async fn instance() -> &'static Instance<()> {
     INSTANCE.get_or_init(fresh_instance).await
 }
 
+#[cfg(fbcode_build)]
 pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMesh> {
     let mut meshes = Vec::new();
 
@@ -89,6 +90,7 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
 }
 
 /// Return different alloc implementations with the provided extent.
+#[cfg(fbcode_build)]
 pub async fn allocs(extent: Extent) -> Vec<Box<dyn Alloc + Send + Sync>> {
     let spec = AllocSpec {
         extent: extent.clone(),
@@ -138,6 +140,7 @@ pub async fn local_proc_mesh(extent: Extent) -> (ProcMesh, Instance<()>, DialMai
 }
 
 /// Create a host mesh using multiple processes running on the test machine.
+#[cfg(fbcode_build)]
 pub async fn host_mesh(extent: Extent) -> HostMesh {
     let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
         "monarch/hyperactor_mesh/bootstrap",

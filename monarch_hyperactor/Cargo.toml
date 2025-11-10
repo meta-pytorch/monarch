@@ -62,3 +62,7 @@ dir-diff = "0.3"
 
 [features]
 default = []
+packaged_rsync = []
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

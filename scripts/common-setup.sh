@@ -24,7 +24,8 @@ setup_conda_environment() {
 install_system_dependencies() {
     echo "Installing system dependencies..."
     dnf update -y
-    dnf install clang-devel libunwind libunwind-devel -y
+    # Protobuf compiler is required for the tracing-perfetto-sdk-schema crate.
+    dnf install clang-devel libunwind libunwind-devel protobuf-compiler -y
 }
 
 # Install and configure Rust nightly toolchain
