@@ -183,7 +183,7 @@ declare_attrs! {
     })
     pub attr CHANNEL_MULTIPART: bool = true;
 
-    /// How often to check for full MSPC channel on NetRx.
+    /// How often to check for full MPSC channel on NetRx.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL".to_string()),
         py_name: None,
