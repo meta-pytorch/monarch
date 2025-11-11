@@ -93,6 +93,7 @@ async fn main() {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             },
             WorldId("test_world_id".to_string()),
             0,

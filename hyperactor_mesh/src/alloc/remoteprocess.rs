@@ -41,6 +41,7 @@ use hyperactor::reference::Reference;
 use hyperactor::serde_json;
 use mockall::automock;
 use ndslice::Region;
+use ndslice::Slice;
 use ndslice::View;
 use ndslice::ViewExt;
 use ndslice::view::Extent;
@@ -249,6 +250,7 @@ impl RemoteProcessAllocator {
                                 constraints,
                                 proc_name: None, // TODO(meriksen, direct addressing): we need to pass the addressing mode here
                                 transport: ChannelTransport::Unix,
+                                proc_allocation_mode: Default::default(),
                             };
 
                             match process_allocator.allocate(spec.clone()).await {
@@ -761,96 +763,230 @@ impl RemoteProcessAlloc {
         let hostnames: Vec<_> = hosts.iter().map(|e| e.hostname.clone()).collect();
         tracing::info!("obtained {} hosts for this allocation", hostnames.len());
 
-        // We require at least a dimension for hosts, and one for sub-host (e.g., GPUs)
-        anyhow::ensure!(
-            self.spec.extent.len() >= 2,
-            "invalid extent: {}, expected at least 2 dimensions",
-            self.spec.extent
-        );
+        // Split the extent into regions, one per host.
+        use crate::alloc::ProcAllocationMode;
 
-        // We group by the innermost dimension of the extent.
-        let split_dim = &self.spec.extent.labels()[self.spec.extent.len() - 1];
-        for (i, region) in self.spec.extent.group_by(split_dim)?.enumerate() {
-            let host = &hosts[i];
-            tracing::debug!("allocating: {} for host: {}", region, host.id);
+        // For HostLevel, pre-compute regions. For ProcLevel, skip this step.
+        let regions: Option<Vec<_>> = match self.spec.proc_allocation_mode {
+            ProcAllocationMode::ProcLevel => {
+                // We require at least a dimension for hosts, and one for sub-host (e.g., GPUs)
+                anyhow::ensure!(
+                    self.spec.extent.len() >= 2,
+                    "invalid extent: {}, expected at least 2 dimensions",
+                    self.spec.extent
+                );
+                None
+            }
+            ProcAllocationMode::HostLevel => Some({
+                // HostLevel: each point is a host, create a region for each point
+                let num_points = self.spec.extent.num_ranks();
+                anyhow::ensure!(
+                    hosts.len() >= num_points,
+                    "HostLevel allocation mode requires {} hosts (one per point in extent {}), but only {} hosts were provided",
+                    num_points,
+                    self.spec.extent,
+                    hosts.len()
+                );
 
-            let remote_addr = match self.spec.transport {
-                ChannelTransport::MetaTls(_) => {
-                    format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
+                // For HostLevel, create a single-point region for each rank
+                // Each region contains one point that maps to the correct global rank
+                let labels = self.spec.extent.labels().to_vec();
+
+                // Compute strides for row-major layout: strides[i] = product of sizes[i+1..n]
+                let extent_sizes = self.spec.extent.sizes();
+                let mut parent_strides = vec![1; extent_sizes.len()];
+                for i in (0..extent_sizes.len() - 1).rev() {
+                    parent_strides[i] = parent_strides[i + 1] * extent_sizes[i + 1];
                 }
-                ChannelTransport::Tcp(TcpMode::Localhost) => {
-                    // TODO: @rusch see about moving over to config for this
-                    format!("tcp![::1]:{}", self.remote_allocator_port)
-                }
-                ChannelTransport::Tcp(TcpMode::Hostname) => {
-                    format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
-                }
-                // Used only for testing.
-                ChannelTransport::Unix => host.hostname.clone(),
-                _ => {
-                    anyhow::bail!(
-                        "unsupported transport for host {}: {:?}",
-                        host.id,
-                        self.spec.transport,
+
+                (0..num_points)
+                    .map(|rank| {
+                        // Create a slice containing only this rank
+                        // Use parent's strides so local point [0,0,...] maps to the correct global rank
+                        let sizes = vec![1; labels.len()];
+                        Region::new(
+                            labels.clone(),
+                            Slice::new(rank, sizes, parent_strides.clone()).unwrap(),
+                        )
+                    })
+                    .collect()
+            }),
+        };
+
+        match self.spec.proc_allocation_mode {
+            ProcAllocationMode::ProcLevel => {
+                // We group by the innermost dimension of the extent.
+                let split_dim = &self.spec.extent.labels()[self.spec.extent.len() - 1];
+                for (i, region) in self.spec.extent.group_by(split_dim)?.enumerate() {
+                    let host = &hosts[i];
+                    tracing::debug!("allocating: {} for host: {}", region, host.id);
+
+                    let remote_addr = match self.spec.transport {
+                        ChannelTransport::MetaTls(_) => {
+                            format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
+                        }
+                        ChannelTransport::Tcp(TcpMode::Localhost) => {
+                            // TODO: @rusch see about moving over to config for this
+                            format!("tcp![::1]:{}", self.remote_allocator_port)
+                        }
+                        ChannelTransport::Tcp(TcpMode::Hostname) => {
+                            format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
+                        }
+                        // Used only for testing.
+                        ChannelTransport::Unix => host.hostname.clone(),
+                        _ => {
+                            anyhow::bail!(
+                                "unsupported transport for host {}: {:?}",
+                                host.id,
+                                self.spec.transport,
+                            );
+                        }
+                    };
+
+                    tracing::debug!("dialing remote: {} for host {}", remote_addr, host.id);
+                    let remote_addr = remote_addr.parse::<ChannelAddr>()?;
+                    let tx = channel::dial(remote_addr.clone())
+                        .map_err(anyhow::Error::from)
+                        .context(format!(
+                            "failed to dial remote {} for host {}",
+                            remote_addr, host.id
+                        ))?;
+
+                    // Possibly we could use the HostId directly here.
+                    let alloc_key = ShortUuid::generate();
+                    assert!(
+                        self.alloc_to_host
+                            .insert(alloc_key.clone(), host.id.clone())
+                            .is_none()
+                    );
+
+                    let trace_id = hyperactor_telemetry::trace::get_or_create_trace_id();
+                    let client_context = Some(ClientContext { trace_id });
+                    let message = RemoteProcessAllocatorMessage::Allocate {
+                        alloc_key: alloc_key.clone(),
+                        extent: region.extent(),
+                        bootstrap_addr: self.bootstrap_addr.clone(),
+                        hosts: hostnames.clone(),
+                        client_context,
+                        // Make sure allocator's forwarder uses the same IP address
+                        // which is known to alloc. This is to avoid allocator picks
+                        // its host's private IP address, while its known addres to
+                        // alloc is a public IP address. In some environment, that
+                        // could lead to port unreachable error.
+                        forwarder_addr: with_unspecified_port_or_any(&remote_addr),
+                    };
+                    tracing::info!(
+                        name = message.as_ref(),
+                        "sending allocate message to workers"
+                    );
+                    tx.post(message);
+
+                    self.host_states.insert(
+                        host.id.clone(),
+                        RemoteProcessAllocHostState {
+                            alloc_key,
+                            host_id: host.id.clone(),
+                            tx,
+                            active_procs: HashSet::new(),
+                            region,
+                            world_id: None,
+                            failed: false,
+                            allocated: false,
+                        },
+                        remote_addr,
                     );
                 }
-            };
 
-            tracing::debug!("dialing remote: {} for host {}", remote_addr, host.id);
-            let remote_addr = remote_addr.parse::<ChannelAddr>()?;
-            let tx = channel::dial(remote_addr.clone())
-                .map_err(anyhow::Error::from)
-                .context(format!(
-                    "failed to dial remote {} for host {}",
-                    remote_addr, host.id
-                ))?;
+                self.ordered_hosts = hosts;
+            }
+            ProcAllocationMode::HostLevel => {
+                let regions = regions.unwrap();
+                let num_regions = regions.len();
+                for (i, region) in regions.into_iter().enumerate() {
+                    let host = &hosts[i];
+                    tracing::debug!("allocating: {} for host: {}", region, host.id);
 
-            // Possibly we could use the HostId directly here.
-            let alloc_key = ShortUuid::generate();
-            assert!(
-                self.alloc_to_host
-                    .insert(alloc_key.clone(), host.id.clone())
-                    .is_none()
-            );
+                    let remote_addr = match self.spec.transport {
+                        ChannelTransport::MetaTls(_) => {
+                            format!("metatls!{}:{}", host.hostname, self.remote_allocator_port)
+                        }
+                        ChannelTransport::Tcp(TcpMode::Localhost) => {
+                            // TODO: @rusch see about moving over to config for this
+                            format!("tcp![::1]:{}", self.remote_allocator_port)
+                        }
+                        ChannelTransport::Tcp(TcpMode::Hostname) => {
+                            format!("tcp!{}:{}", host.hostname, self.remote_allocator_port)
+                        }
+                        // Used only for testing.
+                        ChannelTransport::Unix => host.hostname.clone(),
+                        _ => {
+                            anyhow::bail!(
+                                "unsupported transport for host {}: {:?}",
+                                host.id,
+                                self.spec.transport,
+                            );
+                        }
+                    };
 
-            let trace_id = hyperactor_telemetry::trace::get_or_create_trace_id();
-            let client_context = Some(ClientContext { trace_id });
-            let message = RemoteProcessAllocatorMessage::Allocate {
-                alloc_key: alloc_key.clone(),
-                extent: region.extent(),
-                bootstrap_addr: self.bootstrap_addr.clone(),
-                hosts: hostnames.clone(),
-                client_context,
-                // Make sure allocator's forwarder uses the same IP address
-                // which is known to alloc. This is to avoid allocator picks
-                // its host's private IP address, while its known addres to
-                // alloc is a public IP address. In some environment, that
-                // could lead to port unreachable error.
-                forwarder_addr: with_unspecified_port_or_any(&remote_addr),
-            };
-            tracing::info!(
-                name = message.as_ref(),
-                "sending allocate message to workers"
-            );
-            tx.post(message);
+                    tracing::debug!("dialing remote: {} for host {}", remote_addr, host.id);
+                    let remote_addr = remote_addr.parse::<ChannelAddr>()?;
+                    let tx = channel::dial(remote_addr.clone())
+                        .map_err(anyhow::Error::from)
+                        .context(format!(
+                            "failed to dial remote {} for host {}",
+                            remote_addr, host.id
+                        ))?;
 
-            self.host_states.insert(
-                host.id.clone(),
-                RemoteProcessAllocHostState {
-                    alloc_key,
-                    host_id: host.id.clone(),
-                    tx,
-                    active_procs: HashSet::new(),
-                    region,
-                    world_id: None,
-                    failed: false,
-                    allocated: false,
-                },
-                remote_addr,
-            );
+                    // Possibly we could use the HostId directly here.
+                    let alloc_key = ShortUuid::generate();
+                    assert!(
+                        self.alloc_to_host
+                            .insert(alloc_key.clone(), host.id.clone())
+                            .is_none()
+                    );
+
+                    let trace_id = hyperactor_telemetry::trace::get_or_create_trace_id();
+                    let client_context = Some(ClientContext { trace_id });
+                    let message = RemoteProcessAllocatorMessage::Allocate {
+                        alloc_key: alloc_key.clone(),
+                        extent: region.extent(),
+                        bootstrap_addr: self.bootstrap_addr.clone(),
+                        hosts: hostnames.clone(),
+                        client_context,
+                        // Make sure allocator's forwarder uses the same IP address
+                        // which is known to alloc. This is to avoid allocator picks
+                        // its host's private IP address, while its known addres to
+                        // alloc is a public IP address. In some environment, that
+                        // could lead to port unreachable error.
+                        forwarder_addr: with_unspecified_port_or_any(&remote_addr),
+                    };
+                    tracing::info!(
+                        name = message.as_ref(),
+                        "sending allocate message to workers"
+                    );
+                    tx.post(message);
+
+                    self.host_states.insert(
+                        host.id.clone(),
+                        RemoteProcessAllocHostState {
+                            alloc_key,
+                            host_id: host.id.clone(),
+                            tx,
+                            active_procs: HashSet::new(),
+                            region,
+                            world_id: None,
+                            failed: false,
+                            allocated: false,
+                        },
+                        remote_addr,
+                    );
+                }
+
+                // Only store hosts that were actually used for regions
+                // If num_regions < hosts.len(), we only use the first num_regions hosts
+                self.ordered_hosts = hosts.into_iter().take(num_regions).collect();
+            }
         }
-
-        self.ordered_hosts = hosts;
         self.start_comm_watcher().await;
         self.started = true;
 
@@ -2058,6 +2194,7 @@ mod test_alloc {
     use super::*;
 
     #[async_timed_test(timeout_secs = 60)]
+    #[cfg(fbcode_build)]
     async fn test_alloc_simple() {
         // Use temporary config for this test
         let config = hyperactor::config::global::lock();
@@ -2076,6 +2213,7 @@ mod test_alloc {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
 
@@ -2187,6 +2325,7 @@ mod test_alloc {
     }
 
     #[async_timed_test(timeout_secs = 60)]
+    #[cfg(fbcode_build)]
     async fn test_alloc_host_failure() {
         // Use temporary config for this test
         let config = hyperactor::config::global::lock();
@@ -2205,6 +2344,7 @@ mod test_alloc {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
 
@@ -2318,6 +2458,7 @@ mod test_alloc {
     }
 
     #[async_timed_test(timeout_secs = 15)]
+    #[cfg(fbcode_build)]
     async fn test_alloc_inner_alloc_failure() {
         // SAFETY: Test happens in single-threaded code.
         unsafe {
@@ -2336,6 +2477,7 @@ mod test_alloc {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         };
         let world_id = WorldId("test_world_id".to_string());
 
@@ -2453,6 +2595,7 @@ mod test_alloc {
 
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 60)]
+    #[cfg(fbcode_build)]
     async fn test_remote_process_alloc_signal_handler() {
         let num_proc_meshes = 5;
         let hosts_per_proc_mesh = 5;

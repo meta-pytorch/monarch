@@ -10,11 +10,11 @@ import abc
 import collections
 import contextvars
 import functools
-import importlib
 import inspect
 import itertools
 import logging
 import threading
+import warnings
 from abc import abstractproperty
 
 from dataclasses import dataclass
@@ -75,6 +75,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
 )
+from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
@@ -91,6 +92,7 @@ from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
+
 from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer
@@ -261,25 +263,23 @@ _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
 )
 
 
-@cache
-def _monarch_actor() -> Any:
-    return importlib.import_module("monarch.actor")
-
-
 class _ActorFilter(logging.Filter):
     def __init__(self) -> None:
         super().__init__()
 
     def filter(self, record: Any) -> bool:
-        fn = _monarch_actor().per_actor_logging_prefix
-        ctx = _context.get(None)
-        if ctx is not None and fn is not None:
-            record.msg = fn(ctx.actor_instance) + record.msg
+        try:
+            if not config.prefix_python_logs_with_actor:
+                return True
+            ctx = _context.get(None)
+            if ctx is not None:
+                record.msg = f"[actor={ctx.actor_instance}] {record.msg}"
+        except Exception as e:
+            warnings.warn(
+                f"failed to add monarch actor information to python logs: {e}",
+                stacklevel=2,
+            )
         return True
-
-
-def per_actor_logging_prefix(instance: Instance | CreatorInstance) -> str:
-    return f"[actor={instance}] "
 
 
 @cache
