@@ -315,49 +315,58 @@ pub struct ActorError {
 }
 
 /// The kinds of actor serving errors.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ActorErrorKind {
-    /// Error while processing actor, i.e., returned by the actor's
-    /// processing method.
-    #[error("processing error: {0}")]
-    Processing(#[source] anyhow::Error),
-
-    /// Unwound stracktrace of a panic.
-    #[error("panic: {0}")]
-    Panic(#[source] anyhow::Error),
-
-    /// Error during actor initialization.
-    #[error("initialization error: {0}")]
-    Init(#[source] anyhow::Error),
-
-    /// An underlying mailbox error.
-    #[error(transparent)]
-    Mailbox(#[from] MailboxError),
-
-    /// An underlying mailbox sender error.
-    #[error(transparent)]
-    MailboxSender(#[from] MailboxSenderError),
-
-    /// An underlying checkpoint error.
-    #[error("checkpoint error: {0}")]
-    Checkpoint(#[source] CheckpointError),
-
-    /// An underlying message log error.
-    #[error("message log error: {0}")]
-    MessageLog(#[source] MessageLogError),
-
-    /// The actor's state could not be determined.
-    #[error("actor is in an indeterminate state")]
-    IndeterminateState,
+    /// Generic error with a formatted message.
+    #[error("{0}")]
+    Generic(String),
 
     /// An actor supervision event was not handled.
     #[error("supervision: {0}")]
-    UnhandledSupervisionEvent(#[from] ActorSupervisionEvent),
+    UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
+}
 
-    /// A special kind of error that allows us to clone errors: we can keep the
-    /// error string, but we lose the error structure.
-    #[error("{0}")]
-    Passthrough(#[from] anyhow::Error),
+impl ActorErrorKind {
+    /// Error while processing actor, i.e., returned by the actor's
+    /// processing method.
+    pub fn processing(err: anyhow::Error) -> Self {
+        Self::Generic(format!("processing error: {}", err))
+    }
+
+    /// Unwound stracktrace of a panic.
+    pub fn panic(err: anyhow::Error) -> Self {
+        Self::Generic(format!("panic: {}", err))
+    }
+
+    /// Error during actor initialization.
+    pub fn init(err: anyhow::Error) -> Self {
+        Self::Generic(format!("initialization error: {}", err))
+    }
+
+    /// An underlying mailbox error.
+    pub fn mailbox(err: MailboxError) -> Self {
+        Self::Generic(err.to_string())
+    }
+
+    /// An underlying mailbox sender error.
+    pub fn mailbox_sender(err: MailboxSenderError) -> Self {
+        Self::Generic(err.to_string())
+    }
+
+    /// An underlying checkpoint error.
+    pub fn checkpoint(err: CheckpointError) -> Self {
+        Self::Generic(format!("checkpoint error: {}", err))
+    }
+
+    /// An underlying message log error.
+    pub fn message_log(err: MessageLogError) -> Self {
+        Self::Generic(format!("message log error: {}", err))
+    }
+
+    /// The actor's state could not be determined.
+    pub fn indeterminate_state() -> Self {
+        Self::Generic("actor is in an indeterminate state".to_string())
+    }
 }
 
 impl ActorError {
@@ -367,14 +376,6 @@ impl ActorError {
             actor_id: Box::new(actor_id.clone()),
             kind: Box::new(kind),
         }
-    }
-
-    /// Passthrough this error.
-    fn passthrough(&self) -> Self {
-        ActorError::new(
-            &self.actor_id,
-            ActorErrorKind::Passthrough(anyhow::anyhow!("{}", self.kind)),
-        )
     }
 }
 
@@ -395,7 +396,7 @@ impl From<MailboxError> for ActorError {
     fn from(inner: MailboxError) -> Self {
         Self {
             actor_id: Box::new(inner.actor_id().clone()),
-            kind: Box::new(ActorErrorKind::from(inner)),
+            kind: Box::new(ActorErrorKind::mailbox(inner)),
         }
     }
 }
@@ -404,7 +405,7 @@ impl From<MailboxSenderError> for ActorError {
     fn from(inner: MailboxSenderError) -> Self {
         Self {
             actor_id: Box::new(inner.location().actor_id().clone()),
-            kind: Box::new(ActorErrorKind::from(inner)),
+            kind: Box::new(ActorErrorKind::mailbox_sender(inner)),
         }
     }
 }
@@ -413,7 +414,7 @@ impl From<ActorSupervisionEvent> for ActorError {
     fn from(inner: ActorSupervisionEvent) -> Self {
         Self {
             actor_id: Box::new(inner.actor_id.clone()),
-            kind: Box::new(ActorErrorKind::UnhandledSupervisionEvent(inner)),
+            kind: Box::new(ActorErrorKind::UnhandledSupervisionEvent(Box::new(inner))),
         }
     }
 }
@@ -473,9 +474,8 @@ pub enum ActorStatus {
     Stopping,
     /// The actor is stopped. It is no longer processing messages.
     Stopped,
-    /// The actor failed with the provided actor error formatted in string
-    /// representation.
-    Failed(String),
+    /// The actor failed with the provided actor error.
+    Failed(ActorErrorKind),
 }
 
 impl ActorStatus {
@@ -489,23 +489,11 @@ impl ActorStatus {
         matches!(self, Self::Failed(_))
     }
 
-    /// Create a passthrough of this status. The returned status is a clone,
-    /// except that [`ActorStatus::Failed`] is replaced with its passthrough.
-    fn passthrough(&self) -> Self {
-        match self {
-            Self::Unknown => Self::Unknown,
-            Self::Created => Self::Created,
-            Self::Initializing => Self::Initializing,
-            Self::Client => Self::Client,
-            Self::Idle => Self::Idle,
-            Self::Processing(instant, handler) => Self::Processing(*instant, handler.clone()),
-            Self::Saving(instant) => Self::Saving(*instant),
-            Self::Loading(instant) => Self::Loading(*instant),
-            Self::Stopping => Self::Stopping,
-            Self::Stopped => Self::Stopped,
-            Self::Failed(err) => Self::Failed(err.clone()),
-        }
+    /// Create a generic failure status with the provided error message.
+    pub fn generic_failure(message: impl Into<String>) -> Self {
+        Self::Failed(ActorErrorKind::Generic(message.into()))
     }
+
     fn span_string(&self) -> &'static str {
         self.arm().unwrap_or_default()
     }
@@ -662,7 +650,7 @@ impl<A: Actor> IntoFuture for ActorHandle<A> {
             let result = status_receiver.wait_for(ActorStatus::is_terminal).await;
             match result {
                 Err(_) => ActorStatus::Unknown,
-                Ok(status) => status.passthrough(),
+                Ok(status) => status.clone(),
             }
         };
 

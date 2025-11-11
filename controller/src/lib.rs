@@ -544,7 +544,7 @@ impl ControllerMessageHandler for ControllerActor {
                             (
                                 actor.clone(),
                                 match status {
-                                    ActorStatus::Failed(msg) => msg.clone(),
+                                    ActorStatus::Failed(msg) => msg.to_string(),
                                     _ => format!("unexpected actor status {status}"),
                                 },
                             )

@@ -814,13 +814,14 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
         cx: &Context<Self>,
         event: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
+        let actor_id = event.actor_id.clone();
         let status = event.status();
         let message = ProcSupervisionState {
             world_id: self.params.world_id.clone(),
             proc_id: self.params.proc.proc_id().clone(),
             proc_addr: self.params.local_addr.clone(),
             proc_health: ProcStatus::Alive,
-            failed_actors: Vec::from([(event.actor_id, status)]),
+            failed_actors: Vec::from([(actor_id, status)]),
         };
         self.params.supervisor_actor_ref.update(cx, message).await?;
         Ok(())

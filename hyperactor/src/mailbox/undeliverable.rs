@@ -109,7 +109,7 @@ pub(crate) fn return_undeliverable(
 pub enum UndeliverableMessageError {
     /// Delivery of a message to its destination failed.
     #[error(
-        "a message from {} to {} was undeliverable and returned: {:?}: {envelope}", 
+        "a message from {} to {} was undeliverable and returned: {:?}: {envelope}",
         .envelope.sender(),
         .envelope.dest(),
         .envelope.error_msg()
@@ -163,7 +163,7 @@ pub fn supervise_undeliverable_messages_with<R, F>(
 
                     if let Err(e) = sink.send(ActorSupervisionEvent::new(
                         actor_id,
-                        ActorStatus::Failed(format!("message not delivered: {}", env)),
+                        ActorStatus::generic_failure(format!("message not delivered: {}", env)),
                         Some(headers),
                         None,
                     )) {

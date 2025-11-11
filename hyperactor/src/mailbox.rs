@@ -3116,8 +3116,8 @@ mod tests {
         let ActorStatus::Failed(ref msg) = *foo_status.borrow() else {
             unreachable!()
         };
-        assert!(msg.as_str().contains(
-            "serving quux[0].foo[0]: processing error: a message from \
+        assert!(msg.to_string().contains(
+            "processing error: a message from \
                 quux[0].foo[0] to corge[0].bar[0][9999] was undeliverable and returned"
         ));
 
