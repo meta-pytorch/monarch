@@ -106,13 +106,6 @@ declare_attrs! {
     })
     pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// Message delivery timeout
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_CHANNEL_WATCHDOG_INTERVAL".to_string()),
-        py_name: None,
-    })
-    pub attr CHANNEL_WATCHDOG_INTERVAL: Duration = Duration::from_secs(10);
-
     /// Timeout used by allocator for stopping a proc.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_PROCESS_EXIT_TIMEOUT".to_string()),
