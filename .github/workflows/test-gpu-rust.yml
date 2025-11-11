@@ -60,10 +60,12 @@ jobs:
         # internal buck test behavior.
         # The CI profile is configured in .config/nextest.toml
         # Exclude filter is for packages that don't build in Github Actions yet.
-        # * monarch_messages: monarch/target/debug/deps/monarch_messages-...:
+        # * controller - Old system actor tests that we are trying to deprecate.
+        # * monarch_messages - torch-sys-cuda: monarch/target/debug/deps/monarch_messages-...:
         #   /lib64/libm.so.6: version `GLIBC_2.29' not found
         #   (required by /meta-pytorch/monarch/libtorch/lib/libtorch_cpu.so)
         cargo nextest run --workspace --profile ci \
+          --exclude controller \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \
           --exclude monarch_simulator_lib \
