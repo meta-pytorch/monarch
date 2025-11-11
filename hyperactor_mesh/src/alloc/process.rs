@@ -699,6 +699,7 @@ mod tests {
         crate::testresource::get("monarch/hyperactor_mesh/bootstrap")
     )));
 
+    #[cfg(fbcode_build)]
     #[tokio::test]
     async fn test_sigterm_on_group_fail() {
         let bootstrap_binary = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -710,6 +711,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();

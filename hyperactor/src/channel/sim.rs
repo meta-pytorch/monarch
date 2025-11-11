@@ -277,12 +277,14 @@ pub(crate) struct SimRx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         let data = match Serialized::serialize(&message) {
             Ok(data) => data,
             Err(err) => {
-                if let Err(m) = return_channel.send(SendError(err.into(), message)) {
-                    tracing::warn!("failed to deliver SendError: {}", m);
+                if let Some(return_channel) = return_channel {
+                    return_channel
+                        .send(SendError(err.into(), message))
+                        .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
                 }
 
                 return;
@@ -311,14 +313,20 @@ impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
                     _ => handle.send_event(event),
                 };
                 if let Err(err) = result {
-                    if let Err(m) = return_channel.send(SendError(err.into(), message)) {
-                        tracing::warn!("failed to deliver SendError: {}", m);
+                    if let Some(return_channel) = return_channel {
+                        return_channel
+                            .send(SendError(err.into(), message))
+                            .unwrap_or_else(|m| {
+                                tracing::warn!("failed to deliver SendError: {}", m)
+                            });
                     }
                 }
             }
             Err(err) => {
-                if let Err(m) = return_channel.send(SendError(err.into(), message)) {
-                    tracing::warn!("failed to deliver SendError: {}", m);
+                if let Some(return_channel) = return_channel {
+                    return_channel
+                        .send(SendError(err.into(), message))
+                        .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
                 }
             }
         }

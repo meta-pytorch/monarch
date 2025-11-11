@@ -72,19 +72,23 @@ pub struct LocalTx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         let data: Data = match bincode::serialize(&message) {
             Ok(data) => data,
             Err(err) => {
-                if let Err(m) = return_channel.send(SendError(err.into(), message)) {
-                    tracing::warn!("failed to deliver SendError: {}", m);
+                if let Some(return_channel) = return_channel {
+                    return_channel
+                        .send(SendError(err.into(), message))
+                        .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
                 }
                 return;
             }
         };
         if self.tx.send(data).is_err() {
-            if let Err(m) = return_channel.send(SendError(ChannelError::Closed, message)) {
-                tracing::warn!("failed to deliver SendError: {}", m);
+            if let Some(return_channel) = return_channel {
+                return_channel
+                    .send(SendError(ChannelError::Closed, message))
+                    .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
             }
         }
     }
