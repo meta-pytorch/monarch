@@ -121,22 +121,10 @@ with open("README.md", encoding="utf8") as f:
     readme = f.read()
 
 if sys.platform.startswith("linux"):
-    # Always include the active env's lib (Conda-safe)
+    # With extension-module, we don't link libpython, but we still need
+    # RPATH for finding libtorch and other PyTorch libraries
     conda_lib = os.path.join(sys.prefix, "lib")
 
-    # Only use LIBDIR if it actually contains the current libpython
-    ldlib = sysconfig.get_config_var("LDLIBRARY") or ""
-    libdir = sysconfig.get_config_var("LIBDIR") or ""
-    py_lib = ""
-    if libdir and ldlib:
-        cand = os.path.join(libdir, ldlib)
-        if os.path.exists(cand) and os.path.realpath(libdir) != os.path.realpath(
-            conda_lib
-        ):
-            py_lib = libdir
-
-    # Prefer sidecar .so next to the extension; then the conda env;
-    # then (optionally) py_lib
     flags = [
         "-C",
         "link-arg=-Wl,--enable-new-dtags",
@@ -145,14 +133,8 @@ if sys.platform.startswith("linux"):
         "-C",
         "link-arg=-Wl,-rpath,$ORIGIN",
         "-C",
-        "link-arg=-Wl,-rpath,$ORIGIN/..",
-        "-C",
-        "link-arg=-Wl,-rpath,$ORIGIN/../../..",
-        "-C",
-        "link-arg=-Wl,-rpath," + conda_lib,
+        "link-arg=-Wl,-rpath," + conda_lib,  # For libtorch
     ]
-    if py_lib:
-        flags += ["-C", "link-arg=-Wl,-rpath," + py_lib]
 
     cur = os.environ.get("RUSTFLAGS", "")
     os.environ["RUSTFLAGS"] = (cur + " " + " ".join(flags)).strip()
