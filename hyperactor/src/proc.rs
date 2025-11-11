@@ -1106,7 +1106,7 @@ impl<A: Actor> Instance<A> {
                 ..
             }) => (event.actor_status.clone(), Some(event)),
             Err(err) => {
-                let error_kind = ActorErrorKind::Generic(err.to_string());
+                let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                 (
                     ActorStatus::Failed(error_kind.clone()),
                     Some(ActorSupervisionEvent::new(

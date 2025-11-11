@@ -1278,7 +1278,7 @@ mod tests {
             .await;
         assert_matches!(
             result.unwrap().unwrap(),
-            ActorStatus::Failed(msg) if msg.contains("test actor is erroring out")
+            ActorStatus::Failed(msg) if msg.to_string().contains("test actor is erroring out")
         );
 
         server_handle.stop().await.unwrap();
