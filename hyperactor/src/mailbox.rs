@@ -99,6 +99,9 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
+use tracing::Level;
+use tracing::span;
 
 use crate as hyperactor; // for macros
 use crate::Named;
@@ -115,6 +118,7 @@ use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
+use crate::config;
 use crate::context;
 use crate::data::Serialized;
 use crate::id;
@@ -122,6 +126,7 @@ use crate::metrics;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
+use crate::sync::watchdog::Watchdog;
 
 mod undeliverable;
 /// For [`Undeliverable`], a message type for delivery failures.
@@ -225,7 +230,7 @@ impl MessageEnvelope {
             data,
             errors: Vec::new(),
             headers,
-            ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            ttl: config::global::get(config::MESSAGE_TTL_DEFAULT),
         }
     }
 
@@ -247,7 +252,7 @@ impl MessageEnvelope {
             sender: source,
             dest,
             errors: Vec::new(),
-            ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            ttl: config::global::get(config::MESSAGE_TTL_DEFAULT),
         })
     }
 
@@ -1036,6 +1041,10 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         });
 
         let (stopped_tx, mut stopped_rx) = watch::channel(false);
+
+        let addr = rx.addr();
+        let mut watchdog = Watchdog::spawn(config::global::get(config::CHANNEL_WATCHDOG_INTERVAL));
+
         let join_handle = tokio::spawn(async move {
             let mut detached = false;
 
@@ -1045,6 +1054,18 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 }
 
                 tokio::select! {
+                    biased;
+
+                    _ = watchdog.tick() => (),
+
+                    result = stopped_rx.changed(), if !detached  => {
+                        tracing::debug!(
+                            "the mailbox server is stopped"
+                        );
+                        detached = result.is_err();
+                    }
+
+
                     message = rx.recv() => {
                         match message {
                             // Relay the message to the port directly.
@@ -1056,21 +1077,9 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                             Err(channel_err) => break Err(MailboxServerError::from(channel_err)),
                         }
                     }
-                    result = stopped_rx.changed(), if !detached  => {
-                        detached = result.is_err();
-                        if detached {
-                            tracing::debug!(
-                                "the mailbox server is detached for Rx {}", rx.addr()
-                            );
-                        } else {
-                            tracing::debug!(
-                                "the mailbox server is stopped for Rx {}", rx.addr()
-                            );
-                        }
-                    }
                 }
             }
-        });
+        }.instrument(span!(Level::INFO, "mailbox server", %addr)));
 
         MailboxServerHandle {
             join_handle,
@@ -1807,7 +1816,7 @@ impl<M> PortReceiver<M> {
     pub async fn recv(&mut self) -> Result<M, MailboxError> {
         let mut next = self.receiver.recv().await;
         // To coalesce, get the last message from the queue if there are
-        // more on the mspc queue.
+        // more on the mpsc queue.
         if self.coalesce
             && let Some(latest) = self.drain().pop()
         {
@@ -3422,8 +3431,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_id_sum_reducer() {
-        let config = crate::config::global::lock();
-        let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 1);
+        let config = config::global::lock();
+        let _config_guard = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let sum_accumulator = accum::sum::<u64>();
         let reducer_spec = sum_accumulator.reducer_spec();
@@ -3459,11 +3468,9 @@ mod tests {
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_every_n_messages() {
-        let config = crate::config::global::lock();
-        let _config_guard = config.override_key(
-            crate::config::SPLIT_MAX_BUFFER_AGE,
-            Duration::from_secs(600),
-        );
+        let config = config::global::lock();
+        let _config_guard =
+            config.override_key(config::SPLIT_MAX_BUFFER_AGE, Duration::from_secs(600));
         let proc = Proc::local();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
@@ -3492,8 +3499,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_timeout_flush() {
-        let config = crate::config::global::lock();
-        let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 100);
+        let config = config::global::lock();
+        let _config_guard = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 100);
 
         let Setup {
             mut receiver,
@@ -3535,8 +3542,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_timeout_and_size_flush() {
-        let config = crate::config::global::lock();
-        let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 3);
+        let config = config::global::lock();
+        let _config_guard = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 3);
 
         let Setup {
             mut receiver,
