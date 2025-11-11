@@ -9,6 +9,7 @@
 import asyncio
 import ctypes
 import importlib.resources
+import io
 import logging
 import operator
 import os
@@ -67,7 +68,6 @@ from monarch.actor import (
 )
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
-
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
@@ -1733,9 +1733,31 @@ def test_setup_async() -> None:
     time.sleep(10)
 
 
+class CaptureLogs:
+    def __init__(self):
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("capture")
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+        self.log_stream = log_stream
+        self.logger = logger
+
+    @property
+    def contents(self) -> str:
+        return self.log_stream.getvalue()
+
+
 class Named(Actor):
     @endpoint
     def report(self) -> Any:
+        logs = CaptureLogs()
+        logs.logger.error("HUH")
+        assert "test_python_actors.Named the_name{'f': 0/2}>" in logs.contents
+
         return context().actor_instance.creator, str(context().actor_instance)
 
 
@@ -1751,3 +1773,14 @@ def test_instance_name():
     assert "test_python_actors.Named the_name{'f': 0/2}>" in result
     assert cr.name == "root"
     assert str(context().actor_instance) == "<root>"
+
+    logs = CaptureLogs()
+    logs.logger.error("HUH")
+    assert "actor=<root>" in logs.contents
+    try:
+        monarch.actor.config.prefix_python_logs_with_actor = False
+        logs = CaptureLogs()
+        logs.logger.error("HUH")
+        assert "actor=" not in logs.contents
+    finally:
+        monarch.actor.config.prefix_python_logs_with_actor = True

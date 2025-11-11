@@ -1,4 +1,4 @@
-# 3. HostMesh from an allocation (what `HostMesh::allocate(...)` actually does)
+#  §3 HostMesh from an allocation (what `HostMesh::allocate(...)` actually does)
 
 At this point we already have:
 

@@ -774,7 +774,6 @@ impl HostMeshRef {
                     // the reply does not need to be returned to the sender.
                     reply_tx.return_undeliverable(false);
                     mesh_agent
-                        .port()
                         .send(
                             cx,
                             resource::GetState {
@@ -786,9 +785,7 @@ impl HostMeshRef {
                             v1::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
                         })?;
                     let state = match RealClock
-                        .timeout(config::global::get(PROC_SPAWN_MAX_IDLE), async move {
-                            reply_rx.recv().await
-                        })
+                        .timeout(config::global::get(PROC_SPAWN_MAX_IDLE), reply_rx.recv())
                         .await
                     {
                         Ok(Ok(state)) => state,
