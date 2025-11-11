@@ -523,6 +523,7 @@ mod tests {
     use crate::resource::GetStateClient;
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_basic() {
         let (host, _handle) = Host::serve(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),

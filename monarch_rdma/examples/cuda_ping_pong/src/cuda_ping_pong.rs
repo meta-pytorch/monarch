@@ -696,6 +696,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await?,
     )
@@ -709,6 +710,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await?,
     )

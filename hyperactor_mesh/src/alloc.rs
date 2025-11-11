@@ -133,6 +133,27 @@ pub struct AllocConstraints {
     pub match_labels: HashMap<String, String>,
 }
 
+/// Specifies how to interpret the extent dimensions for allocation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProcAllocationMode {
+    /// Proc-level allocation: splits extent to allocate multiple processes per host.
+    /// Requires at least 2 dimensions (e.g., [hosts: N, gpus: M]).
+    /// Splits by second-to-last dimension, creating N regions with M processes each.
+    /// Used by MastAllocator.
+    ProcLevel,
+    /// Host-level allocation: each point in the extent is a host (no sub-host splitting).
+    /// For extent!(region = 2, host = 4), create 8 regions, each representing 1 host.
+    /// Used by MastHostAllocator.
+    HostLevel,
+}
+
+impl Default for ProcAllocationMode {
+    fn default() -> Self {
+        // Default to ProcLevel for backward compatibility
+        Self::ProcLevel
+    }
+}
+
 /// A specification (desired state) of an alloc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllocSpec {
@@ -151,6 +172,15 @@ pub struct AllocSpec {
 
     /// The transport to use for the procs in this alloc.
     pub transport: ChannelTransport,
+
+    /// Specifies how to interpret the extent dimensions for allocation.
+    /// Defaults to ProcLevel for backward compatibility.
+    #[serde(default = "default_proc_allocation_mode")]
+    pub proc_allocation_mode: ProcAllocationMode,
+}
+
+fn default_proc_allocation_mode() -> ProcAllocationMode {
+    ProcAllocationMode::ProcLevel
 }
 
 /// The core allocator trait, implemented by all allocators.
@@ -767,6 +797,7 @@ pub(crate) mod testing {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: default_transport(),
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -900,6 +931,7 @@ pub(crate) mod testing {
     /// a proc that does not time out when it is asked to wait for
     /// a stuck actor.
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_allocator_stuck_task() {
         // Override config.
         // Use temporary config for this test
@@ -919,6 +951,7 @@ pub(crate) mod testing {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();

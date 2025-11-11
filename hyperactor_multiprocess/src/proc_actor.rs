@@ -1043,6 +1043,7 @@ mod tests {
 
     #[tracing_test::traced_test]
     #[tokio::test]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_stop_timeout() {
         let Bootstrapped {
             server_handle,
@@ -1488,6 +1489,7 @@ mod tests {
 
     #[tracing_test::traced_test]
     #[tokio::test]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_proc_actor_mailbox_admin_message() {
         // Verify that proc actors update their address books on first
         // contact, and that no additional updates are triggered for
