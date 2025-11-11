@@ -22,12 +22,13 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.allocator import AllocateMixin
 from monarch._src.actor.host_mesh import host_mesh_from_alloc
 from monarch._src.actor.meta.allocator import (
-    MastAllocator,
     MastAllocatorBase,
     MastAllocatorConfig,
+    MastHostAllocator,
+    MastHostAllocatorBase,
 )
 
-from monarch._src.job.job import BatchJob, JobState, JobTrait
+from monarch._src.job.job import BatchJob, enable_transport, JobState, JobTrait
 
 from monarch.tools.commands import create, info, kill
 from monarch.tools.components.meta import hyperactor
@@ -38,6 +39,8 @@ from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/con
 
 from torchx.specs import AppState
 from torchx.specs.fb.component_helpers import Packages
+
+enable_transport("metatls")
 
 
 class _MASTSpec(NamedTuple):
@@ -56,7 +59,7 @@ MONARCH_PORT: int = 26600
 
 class _MASTAllocator(AllocateMixin):
     def __init__(self, config: MastAllocatorConfig, job_start: Shared[None]):
-        self._mast = MastAllocatorBase(config)
+        self._mast = MastHostAllocatorBase(config)
         self._job_start = job_start
 
     def allocate_nonblocking(self, spec: AllocSpec) -> "PythonTask[Alloc]":
@@ -171,7 +174,9 @@ class MASTJob(JobTrait):
                 ),
                 job_started,
             )
-            constraints = AllocConstraints({MastAllocator.ALLOC_LABEL_TASK_GROUP: name})
+            constraints = AllocConstraints(
+                {MastHostAllocator.ALLOC_LABEL_TASK_GROUP: name}
+            )
             host_meshes[name] = host_mesh_from_alloc(
                 name, Extent(["hosts"], [num_host]), allocator, constraints
             )

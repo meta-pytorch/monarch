@@ -21,7 +21,6 @@ import threading
 import time
 import unittest
 import unittest.mock
-from contextlib import contextmanager
 from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import Any, cast, Tuple
@@ -1778,15 +1777,10 @@ def test_instance_name():
     logs = CaptureLogs()
     logs.logger.error("HUH")
     assert "actor=<root>" in logs.contents
-    default = monarch.actor.per_actor_logging_prefix
     try:
-        monarch.actor.per_actor_logging_prefix = lambda inst: "<test>"
+        monarch.actor.config.prefix_python_logs_with_actor = False
         logs = CaptureLogs()
         logs.logger.error("HUH")
-        assert "<test>" in logs.contents
-        monarch.actor.per_actor_logging_prefix = None
-        # make sure we can set _per_actor_logging_prefix to none.
-        logs = CaptureLogs()
-        logs.logger.error("HUH")
+        assert "actor=" not in logs.contents
     finally:
-        monarch.actor.per_actor_logging_prefix = default
+        monarch.actor.config.prefix_python_logs_with_actor = True

@@ -1127,6 +1127,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -1145,6 +1146,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -1180,6 +1182,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -1237,6 +1240,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -1261,6 +1265,7 @@ mod tests {
         use crate::sel;
 
         #[tokio::test]
+        #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance().await;
             let ext = extent!(host = 4);

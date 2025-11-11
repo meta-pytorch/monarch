@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
+
+from monarch._src.actor import config
 from monarch._src.actor.actor_mesh import (
     Accumulator,
     Actor,
@@ -27,7 +29,6 @@ from monarch._src.actor.actor_mesh import (
     current_size,
     enable_transport,
     Endpoint,
-    per_actor_logging_prefix,
     Point,
     Port,
     PortReceiver,
@@ -41,7 +42,6 @@ from monarch._src.actor.future import Future
 from monarch._src.actor.supervision import unhandled_fault_hook
 
 from monarch._src.actor.v1 import enabled as v1_enabled
-
 
 if v1_enabled or TYPE_CHECKING:
     from monarch._src.actor.v1.host_mesh import (
@@ -108,6 +108,6 @@ __all__ = [
     "Context",
     "ChannelTransport",
     "unhandled_fault_hook",
-    "per_actor_logging_prefix",
     "MeshFailure",
+    "config",
 ]
