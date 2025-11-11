@@ -64,7 +64,6 @@ hyperactor::behavior!(
 #[cfg(test)]
 mod test {
     use hyperactor::Actor;
-    use hyperactor::ActorRef;
     use hyperactor::Context;
     use hyperactor::Handler;
 
@@ -114,14 +113,5 @@ mod test {
         _message: Stop => unimplemented!(),
     }
 
-    #[test]
-    fn test_controller_behavior() {
-        use hyperactor::ActorHandle;
-
-        // This is a compile-time check that TestMeshController implements
-        // the Controller<TestMesh> behavior correctly.
-        fn _assert_bind(handle: ActorHandle<TestMeshController>) -> ActorRef<Controller<TestMesh>> {
-            handle.bind()
-        }
-    }
+    hyperactor::assert_behaves!(TestMeshController as Controller<TestMesh>);
 }
