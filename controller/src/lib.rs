@@ -665,7 +665,9 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
+    // TODO: worker messages are 0 instead of 1, or sometimes times out.
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn basic_controller() {
         // TODO: Add a proper multiworker test
         let proc = Proc::local();
@@ -856,6 +858,7 @@ mod tests {
         );
     }
 
+    // Can't use async_timed_test because of tokio::time::pause and advance.
     #[tokio::test]
     async fn worker_timeout() {
         tokio::time::pause();
@@ -976,6 +979,7 @@ mod tests {
         );
     }
 
+    // Can't use async_timed_test because of tokio::time::pause and advance.
     #[tokio::test]
     async fn test_failure_on_worker_timeout() {
         tokio::time::pause();
@@ -1113,7 +1117,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
+    // TODO: sometimes times out.
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn failure_propagation() {
         // Serve a system.
         let server_handle = System::serve(
@@ -1342,7 +1348,7 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_eager_failure_reporting() {
         // Serve a system.
         let server_handle = System::serve(
@@ -1515,7 +1521,7 @@ mod tests {
         assert_eq!(successes, 1);
     }
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_bootstrap() {
         let server_handle = System::serve(
             ChannelAddr::any(ChannelTransport::Local),
@@ -1592,7 +1598,8 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_sim_supervision_failure() {
         // Start system actor.
         simnet::start();
@@ -1702,7 +1709,8 @@ mod tests {
         let records = simnet::simnet_handle().unwrap().close().await.unwrap();
         eprintln!("{}", serde_json::to_string_pretty(&records).unwrap());
     }
-    #[tokio::test]
+
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_failure() {
         // Start system actor.
         let timeout: Duration = Duration::from_secs(6);
