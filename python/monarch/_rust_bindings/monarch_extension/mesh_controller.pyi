@@ -10,6 +10,7 @@ from traceback import FrameSummary
 from typing import List, NamedTuple, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension import client
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as ProcMeshV0
@@ -36,7 +37,7 @@ class _Controller:
         msg: NamedTuple,
     ) -> None: ...
     def _drain_and_stop(
-        self,
+        self, instance: Instance
     ) -> List[client.LogMessage | client.WorkerResponse | client.DebuggerMessage]: ...
     def sync_at_exit(self, port: PortId) -> None:
         """

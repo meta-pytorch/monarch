@@ -13,7 +13,6 @@ import os
 import pdb  # noqa
 import traceback
 from collections import deque
-from functools import partial
 from logging import Logger
 from typing import (
     Any,
@@ -28,14 +27,13 @@ from typing import (
 )
 
 import torch.utils._python_dispatch
-from monarch._rust_bindings.monarch_extension import client, tensor_worker
+from monarch._rust_bindings.monarch_extension import client
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     WorldState,
 )
 from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.actor import (
-    MethodSpecifier,
     PythonMessage,
     PythonMessageKind,
     UnflattenArg,
@@ -45,7 +43,6 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor.actor_mesh import ActorEndpoint, Channel, Port
 from monarch._src.actor.shape import NDSlice
 from monarch.common import device_mesh, messages, stream
@@ -104,7 +101,7 @@ class Controller(_Controller):
     def drain_and_stop(
         self,
     ) -> List[LogMessage | MessageResult | client.DebuggerMessage]:
-        self._drain_and_stop()
+        self._drain_and_stop(context().actor_instance._as_rust())
         return []
 
     def worker_world_state(self) -> WorldState:

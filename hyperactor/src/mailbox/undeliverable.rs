@@ -98,9 +98,11 @@ pub(crate) fn return_undeliverable(
     return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     envelope: MessageEnvelope,
 ) {
-    let envelope_copy = envelope.clone();
-    if (return_handle.send(Undeliverable(envelope))).is_err() {
-        UndeliverableMailboxSender.post(envelope_copy, /*unsued*/ return_handle)
+    if envelope.return_undeliverable() {
+        let envelope_copy = envelope.clone();
+        if (return_handle.send(Undeliverable(envelope))).is_err() {
+            UndeliverableMailboxSender.post(envelope_copy, /*unused*/ return_handle)
+        }
     }
 }
 

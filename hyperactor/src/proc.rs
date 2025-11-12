@@ -514,10 +514,10 @@ impl Proc {
             .ledger
             .insert(actor_id.clone(), instance.cell.downgrade())?;
 
-        instance
+        Ok(instance
             .start(actor, actor_loop_receivers.take().unwrap(), work_rx)
             .instrument(span)
-            .await
+            .await)
     }
 
     /// Create and return an actor instance and its corresponding handle. This allows actors to be
@@ -575,9 +575,9 @@ impl Proc {
         let (instance, mut actor_loop_receivers, work_rx) =
             Instance::new(self.clone(), actor_id, false, Some(parent.clone()));
         let actor = A::new(params).await?;
-        instance
+        Ok(instance
             .start(actor, actor_loop_receivers.take().unwrap(), work_rx)
-            .await
+            .await)
     }
 
     /// Call `abort` on the `JoinHandle` associated with the given
@@ -1036,7 +1036,7 @@ impl<A: Actor> Instance<A> {
 
     /// Send a message to the actor running on the proc.
     pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
-        <Self as context::MailboxExt>::post(self, port_id, headers, message)
+        <Self as context::MailboxExt>::post(self, port_id, headers, message, true)
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
@@ -1061,13 +1061,13 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
-    #[hyperactor::instrument(fields(actor_id=self.cell.actor_id().clone().to_string(), actor_name=self.cell.actor_id().name()))]
+    #[hyperactor::instrument_infallible(fields(actor_id=self.cell.actor_id().clone().to_string(), actor_name=self.cell.actor_id().name()))]
     async fn start(
         self,
         actor: A,
         actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
         work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
+    ) -> ActorHandle<A> {
         let instance_cell = self.cell.clone();
         let actor_id = self.cell.actor_id().clone();
         let actor_handle = ActorHandle::new(self.cell.clone(), self.ports.clone());
@@ -1081,7 +1081,7 @@ impl<A: Actor> Instance<A> {
             .set(actor_task_handle)
             .unwrap_or_else(|_| panic!("{}: task handle store failed", actor_id));
 
-        Ok(actor_handle)
+        actor_handle
     }
 
     async fn serve(

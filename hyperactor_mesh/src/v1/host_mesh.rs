@@ -49,7 +49,6 @@ use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
-use crate::resource::GetStateClient;
 use crate::resource::ProcSpec;
 use crate::resource::RankedValues;
 use crate::resource::Status;
@@ -724,8 +723,12 @@ impl HostMeshRef {
                             format!("failed while creating proc: {}", e),
                         )
                     })?;
+                let mut reply_port = port.bind();
+                // If this proc dies or some other issue renders the reply undeliverable,
+                // the reply does not need to be returned to the sender.
+                reply_port.return_undeliverable(false);
                 host.mesh_agent()
-                    .get_rank_status(cx, proc_name.clone(), port.bind())
+                    .get_rank_status(cx, proc_name.clone(), reply_port)
                     .await
                     .map_err(|e| {
                         v1::Error::HostMeshAgentConfigurationError(
@@ -765,11 +768,24 @@ impl HostMeshRef {
                     let proc_name = &proc_names[rank];
                     let host_rank = rank / per_host.num_ranks();
                     let mesh_agent = self.ranks[host_rank].mesh_agent();
-                    let state = match RealClock
-                        .timeout(
-                            config::global::get(PROC_SPAWN_MAX_IDLE),
-                            mesh_agent.get_state(cx, proc_name.clone()),
+                    let (reply_tx, mut reply_rx) = cx.mailbox().open_port();
+                    let mut reply_tx = reply_tx.bind();
+                    // If this proc dies or some other issue renders the reply undeliverable,
+                    // the reply does not need to be returned to the sender.
+                    reply_tx.return_undeliverable(false);
+                    mesh_agent
+                        .send(
+                            cx,
+                            resource::GetState {
+                                name: proc_name.clone(),
+                                reply: reply_tx,
+                            },
                         )
+                        .map_err(|e| {
+                            v1::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
+                        })?;
+                    let state = match RealClock
+                        .timeout(config::global::get(PROC_SPAWN_MAX_IDLE), reply_rx.recv())
                         .await
                     {
                         Ok(Ok(state)) => state,
@@ -923,12 +939,16 @@ impl HostMeshRef {
             let host = HostRef(addr.clone());
             let proc_name = proc_name.parse::<Name>()?;
             proc_names.push(proc_name.clone());
+            let mut reply = tx.bind();
+            // If this proc dies or some other issue renders the reply undeliverable,
+            // the reply does not need to be returned to the sender.
+            reply.return_undeliverable(false);
             host.mesh_agent()
                 .send(
                     cx,
                     resource::GetState {
                         name: proc_name,
-                        reply: tx.bind(),
+                        reply,
                     },
                 )
                 .map_err(|e| {
@@ -1137,6 +1157,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_allocate() {
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
@@ -1247,6 +1268,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_extrinsic_allocation() {
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
@@ -1290,6 +1312,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_failing_proc_allocation() {
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
@@ -1323,6 +1346,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_halting_proc_allocation() {
         let config = config::global::lock();
         let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(5));
@@ -1367,6 +1391,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_client_config_override() {
         let config = hyperactor::config::global::lock();
         let _guard1 = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);

@@ -2572,7 +2572,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 60)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_basic() {
         let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
         {
@@ -2605,7 +2605,7 @@ mod tests {
     // The message size is limited by CODEC_MAX_FRAME_LENGTH.
     #[async_timed_test(timeout_secs = 5)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_message_size() {
         let default_size_in_bytes = 100 * 1024 * 1024;
         // Use temporary config for this test
@@ -2635,7 +2635,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_flush() {
         let config = config::global::lock();
         // Set a large value to effectively prevent acks from being sent except
@@ -2659,7 +2659,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     // TODO: OSS: failed to retrieve ipv6 address
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_meta_tls_basic() {
         let addr = ChannelAddr::any(ChannelTransport::MetaTls(TlsMode::IpV6));
         let meta_addr = match addr {
@@ -3273,7 +3273,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_tx_delivery_timeout() {
         // This link always fails to connect.
         let link = MockLink::<u64>::fail_connects();
@@ -3699,7 +3699,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_exceeded_limit_with_connected_link() {
         verify_ack_exceeded_limit(false).await;
     }
@@ -3707,7 +3707,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_exceeded_limit_with_broken_link() {
         verify_ack_exceeded_limit(true).await;
     }
@@ -3878,7 +3878,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_throughput() {
         let config = config::global::lock();
         let _guard =
@@ -3930,7 +3930,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 60)]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_net_tx_closed_on_server_reject() {
         let link = MockLink::<u64>::new();
         let receiver_storage = link.receiver_storage();
