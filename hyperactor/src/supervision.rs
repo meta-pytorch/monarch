@@ -22,6 +22,7 @@ use serde::Serialize;
 
 use crate as hyperactor; // for macros
 use crate::Named;
+use crate::actor::ActorErrorKind;
 use crate::actor::ActorStatus;
 use crate::attrs::Attrs;
 use crate::reference::ActorId;
@@ -63,10 +64,12 @@ impl ActorSupervisionEvent {
     /// Compute an actor status from this event, ensuring that "caused-by"
     /// events are included in failure states. This should be used as the
     /// actor status when reporting events to users.
-    pub fn status(&self) -> ActorStatus {
-        match &self.actor_status {
-            ActorStatus::Failed(msg) => ActorStatus::Failed(format!("{}: {}", self, msg)),
-            status => status.clone(),
+    pub fn status(self) -> ActorStatus {
+        match self.actor_status {
+            ActorStatus::Failed(_) => {
+                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(self)))
+            }
+            status => status,
         }
     }
 }

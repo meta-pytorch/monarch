@@ -2222,7 +2222,7 @@ mod tests {
                 .status
                 .clone();
             if let ActorStatus::Failed(msg) = status {
-                assert!(msg.contains(&expected_msg));
+                assert!(msg.to_string().contains(&expected_msg));
                 break;
             } else {
                 tokio::task::yield_now().await;
