@@ -1,4 +1,4 @@
-# 2. Process allocator & v0 bootstrap (get something that can spawn processes)
+#  §2 Process allocator & v0 bootstrap (get something that can spawn processes)
 
 ## 2. Get something that can spawn processes
 

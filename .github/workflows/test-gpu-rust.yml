@@ -54,10 +54,6 @@ jobs:
         # Setup PyTorch with C++ headers using common-setup utility
         setup_pytorch_with_headers "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-spec }}"
 
-        # We amend the RUSTFLAGS here because they have already been altered by `setup_cuda_environment`
-        # and any RUSTFLAGS environment variable overrides the definition in .cargo/config.toml.
-        export RUSTFLAGS="--cfg tracing_unstable ${RUSTFLAGS:-}"
-
         # Run GPU Rust tests
         echo "Running OSS Rust tests..."
         # Uses cargo nextest to run tests in separate processes, which better matches
