@@ -891,7 +891,7 @@ impl PortId {
     pub fn send(&self, cx: &impl context::Actor, serialized: Serialized) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized);
+        cx.post(self.clone(), headers, serialized, true);
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -904,7 +904,7 @@ impl PortId {
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized);
+        cx.post(self.clone(), headers, serialized, true);
     }
 
     /// Split this port, returning a new port that relays messages to the port
@@ -914,8 +914,14 @@ impl PortId {
         cx: &impl context::Actor,
         reducer_spec: Option<ReducerSpec>,
         reducer_opts: Option<ReducerOpts>,
+        return_undeliverable: bool,
     ) -> anyhow::Result<PortId> {
-        cx.split(self.clone(), reducer_spec, reducer_opts)
+        cx.split(
+            self.clone(),
+            reducer_spec,
+            reducer_opts,
+            return_undeliverable,
+        )
     }
 }
 
@@ -964,6 +970,7 @@ pub struct PortRef<M> {
     )]
     reducer_opts: Option<ReducerOpts>,
     phantom: PhantomData<M>,
+    return_undeliverable: bool,
 }
 
 impl<M: RemoteMessage> PortRef<M> {
@@ -975,6 +982,7 @@ impl<M: RemoteMessage> PortRef<M> {
             reducer_spec: None,
             reducer_opts: None,
             phantom: PhantomData,
+            return_undeliverable: true,
         }
     }
 
@@ -986,6 +994,7 @@ impl<M: RemoteMessage> PortRef<M> {
             reducer_spec,
             reducer_opts: None, // TODO: provide attest_reducible_opts
             phantom: PhantomData,
+            return_undeliverable: true,
         }
     }
 
@@ -1052,12 +1061,23 @@ impl<M: RemoteMessage> PortRef<M> {
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
-        cx.post(self.port_id.clone(), headers, message);
+        cx.post(
+            self.port_id.clone(),
+            headers,
+            message,
+            self.return_undeliverable,
+        );
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
     pub fn into_sink<C: context::Actor>(self, cx: C) -> PortSink<C, M> {
         PortSink::new(cx, self)
+    }
+
+    /// Set whether or not messages sent to this port that are undeliverable
+    /// should be returned to the sender.
+    pub fn return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
     }
 }
 
@@ -1068,6 +1088,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
             reducer_spec: self.reducer_spec.clone(),
             reducer_opts: self.reducer_opts.clone(),
             phantom: PhantomData,
+            return_undeliverable: self.return_undeliverable,
         }
     }
 }
@@ -1080,7 +1101,12 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
 
 /// The parameters extracted from [`PortRef`] to [`Bindings`].
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
-pub struct UnboundPort(pub PortId, pub Option<ReducerSpec>, pub Option<ReducerOpts>);
+pub struct UnboundPort(
+    pub PortId,
+    pub Option<ReducerSpec>,
+    pub Option<ReducerOpts>,
+    pub bool, // return_undeliverable
+);
 
 impl UnboundPort {
     /// Update the port id of this binding.
@@ -1095,6 +1121,7 @@ impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
             port_ref.port_id.clone(),
             port_ref.reducer_spec.clone(),
             port_ref.reducer_opts.clone(),
+            port_ref.return_undeliverable,
         )
     }
 }
@@ -1111,6 +1138,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
         self.port_id = bound.0;
         self.reducer_spec = bound.1;
         self.reducer_opts = bound.2;
+        self.return_undeliverable = bound.3;
         Ok(())
     }
 }
@@ -1163,7 +1191,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        cx.post(self.port_id.clone(), headers, serialized);
+        cx.post(self.port_id.clone(), headers, serialized, true);
         Ok(())
     }
 }

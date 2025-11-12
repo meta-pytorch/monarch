@@ -867,13 +867,17 @@ impl ProcMeshRef {
             }),
         );
 
+        let mut reply = port.bind();
+        // If this proc dies or some other issue renders the reply undeliverable,
+        // the reply does not need to be returned to the sender.
+        reply.return_undeliverable(false);
         // Send a message to all ranks. They reply with overlays to
         // `port`.
         self.agent_mesh().cast(
             cx,
             resource::GetRankStatus {
                 name: name.clone(),
-                reply: port.bind(),
+                reply,
             },
         )?;
 
