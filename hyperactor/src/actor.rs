@@ -723,24 +723,21 @@ pub trait RemoteHandles<M: RemoteMessage>: Referable {}
 /// # use hyperactor::Named;
 ///
 /// // First, define a behavior, based on handling a single message type `()`.
-/// hyperactor::behavior!(
-///   UnitBehavior,
-///   (),
-/// )
+/// hyperactor::behavior!(UnitBehavior, ());
 ///
-/// #[derive(hyperactor::Actor, Default)]
+/// #[derive(hyperactor::Actor, Debug, Default)]
 /// struct MyActor;
 ///
 /// #[async_trait::async_trait]
 /// impl hyperactor::Handler<()> for MyActor {
-///   async fn handle(
-///      &mut self,
-///      _cx: &hyperactor::Context<Self>,
-///      _message: (),
-///   ) -> Result<(), anyhow::Error> {
-///     // no-op
-///     Ok(())
-///   }
+///     async fn handle(
+///         &mut self,
+///         _cx: &hyperactor::Context<Self>,
+///         _message: (),
+///     ) -> Result<(), anyhow::Error> {
+///         // no-op
+///         Ok(())
+///     }
 /// }
 ///
 /// hyperactor::assert_behaves!(MyActor as UnitBehavior);
