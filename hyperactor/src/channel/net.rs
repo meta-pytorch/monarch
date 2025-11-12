@@ -445,7 +445,7 @@ impl<'a, M: RemoteMessage> Unacked<'a, M> {
             // message.0 <= largest could happen in the following scenario:
             //
             // 1. NetTx sent seq=2 and seq=3.
-            // 2. NetRx received messages and put them on its mspc channel.
+            // 2. NetRx received messages and put them on its mpsc channel.
             //    But before NetRx acked, the connection was broken.
             // 3. NetTx reconnected. In this case, NetTx will put unacked
             //    messages, i.e. 2 and 3, back to outbox.
@@ -1062,7 +1062,7 @@ impl<M: RemoteMessage> NetTx<M> {
                         }
                     }
                     // UnboundedReceiver::recv() is cancel safe.
-                    // Only checking mspc channel when outbox is empty. In this way, we prioritize
+                    // Only checking mpsc channel when outbox is empty. In this way, we prioritize
                     // sending messages already in outbox.
                     work_result = receiver.recv(), if outbox.is_empty() => {
                         match work_result {
@@ -1591,7 +1591,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 Ok(()) => {
                                     // In channel's contract, "delivered" means the message
                                     // is sent to the NetRx object. Therefore, we could bump
-                                    // `next_seq` as far as the message is put on the mspc
+                                    // `next_seq` as far as the message is put on the mpsc
                                     // channel.
                                     //
                                     // Note that when/how the messages in NetRx are processed
@@ -1601,7 +1601,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     next.seq = seq+1;
                                 }
                                 Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: relaying message to mspc channel")), false)
+                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: relaying message to mpsc channel")), false)
                                 }
                             }
                         },
@@ -1700,7 +1700,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         (final_next, final_result)
     }
 
-    // NetRx's buffer, i.e. the mspc channel between NetRx and its
+    // NetRx's buffer, i.e. the mpsc channel between NetRx and its
     // client, should rarely be full for long. But when it is full, it
     // will block NetRx from taking more messages, sending back ack,
     // and subsequently lead to uncommon behaviors such as ack
@@ -1733,7 +1733,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     // Full buffer should happen rarely. So we also add a log
                     // here to make debugging easy.
                     tracing::debug!(
-                        "{log_id}: encountered full mspc channel for {} secs",
+                        "{log_id}: encountered full mpsc channel for {} secs",
                         start.elapsed().as_secs(),
                     );
                 }
@@ -3362,7 +3362,7 @@ mod tests {
             drop(reader);
             drop(writer);
             handle.await.unwrap().unwrap();
-            // mspc is closed too and there should be no unread message left.
+            // mpsc is closed too and there should be no unread message left.
             assert_eq!(rx.recv().await, Some(103));
             assert_eq!(rx.recv().await, None);
         };
@@ -3401,7 +3401,7 @@ mod tests {
 
             cancel_token.cancel();
             handle.await.unwrap().unwrap();
-            // mspc is closed too and there should be no unread message left.
+            // mpsc is closed too and there should be no unread message left.
             assert!(rx.recv().await.is_none());
             // No more acks from server.
             assert!(reader.next().await.unwrap().is_none());
@@ -3435,7 +3435,7 @@ mod tests {
 
         cancel_token.cancel();
         handle.await.unwrap().unwrap();
-        // mspc is closed too and there should be no unread message left.
+        // mpsc is closed too and there should be no unread message left.
         assert!(rx.recv().await.is_none());
         // No more acks from server.
         assert!(reader.next().await.unwrap().is_none());
