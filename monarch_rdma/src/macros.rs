@@ -10,7 +10,7 @@
 macro_rules! cu_check {
     ($result:expr) => {
         if $result != cuda_sys::CUresult::CUDA_SUCCESS {
-            let mut error_string: *const i8 = std::ptr::null();
+            let mut error_string: *const std::os::raw::c_char = std::ptr::null();
             cuda_sys::cuGetErrorString($result, &mut error_string);
             panic!(
                 "cuda failure {}:{} {:?} '{}'",

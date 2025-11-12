@@ -126,13 +126,13 @@ mod tests {
         let first = Name::new("first");
         let second = Name::new("second");
         let third = Name::new("third");
-        let (first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(
+        let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(
             format!("unix:{}/{}", dir.path().display(), first)
                 .parse()
                 .unwrap(),
         )
         .unwrap();
-        let (second_addr, mut second_rx) = channel::serve::<MessageEnvelope>(
+        let (_second_addr, _second_rx) = channel::serve::<MessageEnvelope>(
             format!("unix:{}/{}", dir.path().display(), second)
                 .parse()
                 .unwrap(),
