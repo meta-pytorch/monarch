@@ -269,8 +269,13 @@ impl CommActor {
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
         message.data_mut().visit_mut::<UnboundPort>(
-            |UnboundPort(port_id, reducer_spec, reducer_opts)| {
-                let split = port_id.split(cx, reducer_spec.clone(), reducer_opts.clone())?;
+            |UnboundPort(port_id, reducer_spec, reducer_opts, return_undeliverable)| {
+                let split = port_id.split(
+                    cx,
+                    reducer_spec.clone(),
+                    reducer_opts.clone(),
+                    *return_undeliverable,
+                )?;
 
                 #[cfg(test)]
                 tests::collect_split_port(port_id, &split, deliver_here);

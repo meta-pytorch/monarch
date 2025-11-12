@@ -28,6 +28,7 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::OncePortHandle;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::context;
@@ -68,6 +69,7 @@ use monarch_tensor_worker::WorkerActor;
 use ndslice::Slice;
 use ndslice::ViewExt;
 use ndslice::selection::ReifySlice;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tokio::sync::Mutex;
@@ -87,7 +89,6 @@ pub(crate) fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult
 )]
 struct _Controller {
     controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>>,
-    all_ranks: Slice,
     broker_id: (String, usize),
 }
 
@@ -130,7 +131,6 @@ impl _Controller {
         let proc_mesh_ref = proc_mesh.borrow().unwrap();
         let shape = proc_mesh_ref.shape();
         let slice = shape.slice();
-        let all_ranks = shape.slice().clone();
         if !slice.is_contiguous() || slice.offset() != 0 {
             return Err(PyValueError::new_err(
                 "NYI: proc mesh for workers must be contiguous and start at offset 0",
@@ -158,7 +158,6 @@ impl _Controller {
 
         Ok(Self {
             controller_handle,
-            all_ranks,
             // note that 0 is the _pid_ of the broker, which will be 0 for
             // top-level spawned actors.
             // todo: plumb these through as proper actor mesh refs
@@ -233,14 +232,19 @@ impl _Controller {
             .map_err(to_py_error)
     }
 
-    fn _drain_and_stop(&mut self) -> PyResult<()> {
+    fn _drain_and_stop(&mut self, py: Python<'_>, instance: &PyInstance) -> PyResult<()> {
+        let (stop_worker_port, stop_worker_receiver) =
+            instance_dispatch!(instance, |cx_instance| { cx_instance.open_once_port() });
+
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::Send {
-                slices: vec![self.all_ranks.clone()],
-                message: WorkerMessage::Exit { error: None },
+            .send(ClientToControllerMessage::StopWorkers {
+                response_port: stop_worker_port,
             })
             .map_err(to_py_error)?;
+        signal_safe_block_on(py, async move { stop_worker_receiver.recv().await })?
+            .map_err(to_py_error)?
+            .map_err(PyRuntimeError::new_err)?;
         self.controller_handle
             .blocking_lock()
             .drain_and_stop()
@@ -663,6 +667,9 @@ enum ClientToControllerMessage {
     SyncAtExit {
         port: PortRef<PythonMessage>,
     },
+    StopWorkers {
+        response_port: OncePortHandle<Result<(), String>>,
+    },
 }
 
 struct MeshControllerActor {
@@ -679,6 +686,10 @@ struct MeshControllerActor {
 impl MeshControllerActor {
     fn workers(&self) -> SharedCellRef<RootActorMesh<'static, WorkerActor>> {
         self.workers.as_ref().unwrap().borrow().unwrap()
+    }
+
+    fn brokers(&self) -> SharedCellRef<RootActorMesh<'static, LocalStateBrokerActor>> {
+        self.brokers.as_ref().unwrap().borrow().unwrap()
     }
 
     fn handle_debug(
@@ -909,6 +920,15 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
                     },
                 )?;
                 self.history.report_exit(port);
+            }
+            ClientToControllerMessage::StopWorkers { response_port } => {
+                let worker_stop_result = self.workers().stop(this).await;
+                let broker_stop_result = self.brokers().stop(this).await;
+                if worker_stop_result.is_ok() && broker_stop_result.is_ok() {
+                    response_port.send(Ok(()))?;
+                } else {
+                    response_port.send(Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)))?;
+                }
             }
         }
         Ok(())
