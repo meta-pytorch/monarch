@@ -60,10 +60,14 @@ ENABLE_MSG_LOGGING = (
     else ""
 )
 
+ENABLE_TRACING_UNSTABLE = "--cfg=tracing_unstable"
+
 os.environ.update(
     {
         "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}",
-        "RUSTFLAGS": " ".join(["-Zthreads=16", ENABLE_MSG_LOGGING]),
+        "RUSTFLAGS": " ".join(
+            ["-Zthreads=16", ENABLE_MSG_LOGGING, ENABLE_TRACING_UNSTABLE]
+        ),
         "LIBTORCH_LIB": TORCH_LIB_PATH,
         "LIBTORCH_INCLUDE": ":".join(torch_include_paths()),
         "_GLIBCXX_USE_CXX11_ABI": str(int(torch._C._GLIBCXX_USE_CXX11_ABI)),
@@ -156,6 +160,7 @@ if sys.platform.startswith("linux"):
 
     cur = os.environ.get("RUSTFLAGS", "")
     os.environ["RUSTFLAGS"] = (cur + " " + " ".join(flags)).strip()
+
 
 rust_extensions = [
     RustBin(
