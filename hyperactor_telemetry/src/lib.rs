@@ -33,8 +33,6 @@ pub const DISABLE_SQLITE_TRACING: &str = "DISABLE_SQLITE_TRACING";
 /// Environment variable constants
 // Log level (debug, info, warn, error, critical) to capture for Monarch traces on dedicated log file (changes based on environment, see `log_file_path`).
 const MONARCH_FILE_LOG_ENV: &str = "MONARCH_FILE_LOG";
-// Log level (debug, info, warn, error, critical) to capture for Monarch traces on stderr.
-const MONARCH_STDERR_LOG_ENV: &str = "MONARCH_STDERR_LOG";
 
 pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
 
@@ -600,29 +598,6 @@ pub fn initialize_logging_with_log_prefix(
                 .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
         );
 
-    let stderr_log_level = match env::Env::current() {
-        env::Env::Local => LOG_LEVEL_ERROR,
-        env::Env::MastEmulator => LOG_LEVEL_INFO,
-        env::Env::Mast => LOG_LEVEL_ERROR,
-        env::Env::Test => LOG_LEVEL_DEBUG,
-    };
-    let stderr_layer = fmt::Layer::default()
-        .with_writer(std::io::stderr)
-        .event_format(PrefixedFormatter::new(prefix_env_var))
-        .fmt_fields(GlogFields::default().compact())
-        .with_ansi(std::io::stderr().is_terminal())
-        .with_filter(
-            Targets::new()
-                .with_default(LevelFilter::from_level(
-                    tracing::Level::from_str(
-                        &std::env::var(MONARCH_STDERR_LOG_ENV)
-                            .unwrap_or(stderr_log_level.to_string()),
-                    )
-                    .expect("Invalid log level"),
-                ))
-                .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
-        );
-
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -645,7 +620,6 @@ pub fn initialize_logging_with_log_prefix(
                 None
             })
             .with(file_layer)
-            .with(stderr_layer)
             .with(if is_layer_enabled(DISABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
@@ -680,7 +654,6 @@ pub fn initialize_logging_with_log_prefix(
     {
         if let Err(err) = Registry::default()
             .with(file_layer)
-            .with(stderr_layer)
             .with(
                 if std::env::var(DISABLE_RECORDER_TRACING).unwrap_or_default() != "1" {
                     Some(recorder().layer())
