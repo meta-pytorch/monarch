@@ -55,6 +55,7 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -74,6 +75,7 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();
@@ -93,6 +95,7 @@ pub async fn allocs(extent: Extent) -> Vec<Box<dyn Alloc + Send + Sync>> {
         constraints: Default::default(),
         proc_name: None,
         transport: default_transport(),
+        proc_allocation_mode: Default::default(),
     };
 
     vec![
@@ -121,6 +124,7 @@ pub async fn local_proc_mesh(extent: Extent) -> (ProcMesh, Instance<()>, DialMai
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Local,
+            proc_allocation_mode: Default::default(),
         })
         .await
         .unwrap();
@@ -144,6 +148,7 @@ pub async fn host_mesh(extent: Extent) -> HostMesh {
             constraints: Default::default(),
             proc_name: None,
             transport: ChannelTransport::Unix,
+            proc_allocation_mode: Default::default(),
         })
         .await
         .unwrap();

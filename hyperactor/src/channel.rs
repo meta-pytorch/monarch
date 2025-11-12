@@ -108,16 +108,24 @@ pub enum TxStatus {
 /// The transmit end of an M-typed channel.
 #[async_trait]
 pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
+    /// Post a message; returning failed deliveries on the return channel, if provided.
+    /// If provided, the sender is dropped when the message has been
+    /// enqueued at the channel endpoint.
+    ///
+    /// Users should use the `try_post`, and `post` variants directly.
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>);
+
     /// Enqueue a `message` on the local end of the channel. The
     /// message is either delivered, or we eventually discover that
     /// the channel has failed and it will be sent back on `return_channel`.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
-    // TODO: Consider making return channel optional to indicate that the log can be dropped.
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>);
+    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
+        self.do_post(message, Some(return_channel));
+    }
 
     /// Enqueue a message to be sent on the channel.
     fn post(&self, message: M) {
-        self.try_post(message, oneshot::channel().0);
+        self.do_post(message, None);
     }
 
     /// Send a message synchronously, returning when the messsage has
@@ -176,10 +184,12 @@ impl<M: RemoteMessage> MpscTx<M> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         if let Err(mpsc::error::SendError(message)) = self.tx.send(message) {
-            if let Err(m) = return_channel.send(SendError(ChannelError::Closed, message)) {
-                tracing::warn!("failed to deliver SendError: {}", m);
+            if let Some(return_channel) = return_channel {
+                return_channel
+                    .send(SendError(ChannelError::Closed, message))
+                    .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
             }
         }
     }
@@ -744,13 +754,13 @@ enum ChannelTxKind<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         match &self.inner {
-            ChannelTxKind::Local(tx) => tx.try_post(message, return_channel),
-            ChannelTxKind::Tcp(tx) => tx.try_post(message, return_channel),
-            ChannelTxKind::MetaTls(tx) => tx.try_post(message, return_channel),
-            ChannelTxKind::Sim(tx) => tx.try_post(message, return_channel),
-            ChannelTxKind::Unix(tx) => tx.try_post(message, return_channel),
+            ChannelTxKind::Local(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::Tcp(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::MetaTls(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::Sim(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::Unix(tx) => tx.do_post(message, return_channel),
         }
     }
 
