@@ -125,6 +125,17 @@ impl Actor for HostMeshAgent {
     type Params = HostAgentMode;
 
     async fn new(host: HostAgentMode) -> anyhow::Result<Self> {
+        if let HostAgentMode::Process(_) = host {
+            let (directory, file) = hyperactor_telemetry::log_file_path(
+                hyperactor_telemetry::env::Env::current(),
+                None,
+            )
+            .unwrap();
+            eprintln!(
+                "Monarch internal logs are being written to {}/{}.log",
+                directory, file
+            );
+        }
         Ok(Self {
             host: Some(host),
             created: HashMap::new(),

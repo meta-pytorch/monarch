@@ -1102,18 +1102,21 @@ impl<A: Actor> Instance<A> {
         let (actor_status, event) = match result {
             Ok(_) => (ActorStatus::Stopped, None),
             Err(ActorError {
-                kind: box ActorErrorKind::UnhandledSupervisionEvent(event),
+                kind: box ActorErrorKind::UnhandledSupervisionEvent(box event),
                 ..
             }) => (event.actor_status.clone(), Some(event)),
-            Err(err) => (
-                ActorStatus::Failed(err.to_string()),
-                Some(ActorSupervisionEvent::new(
-                    self.cell.actor_id().clone(),
-                    ActorStatus::Failed(err.to_string()),
-                    None,
-                    None,
-                )),
-            ),
+            Err(err) => {
+                let error_kind = ActorErrorKind::Generic(err.kind.to_string());
+                (
+                    ActorStatus::Failed(error_kind.clone()),
+                    Some(ActorSupervisionEvent::new(
+                        self.cell.actor_id().clone(),
+                        ActorStatus::Failed(error_kind),
+                        None,
+                        None,
+                    )),
+                )
+            }
         };
 
         if let Some(parent) = self.cell.maybe_unlink_parent() {
@@ -1174,7 +1177,10 @@ impl<A: Actor> Instance<A> {
                     .unwrap_or_else(|e| format!("Cannot take backtrace due to: {:?}", e));
                 Err(ActorError::new(
                     self.self_id(),
-                    ActorErrorKind::Panic(anyhow::anyhow!("{}\n{}", err_msg, backtrace)),
+                    ActorErrorKind::panic(anyhow::anyhow!(
+                        "{}
+{}", err_msg, backtrace
+                    )),
                 ))
             }
         };
@@ -1244,7 +1250,7 @@ impl<A: Actor> Instance<A> {
         actor
             .init(self)
             .await
-            .map_err(|err| ActorError::new(self.self_id(), ActorErrorKind::Init(err)))?;
+            .map_err(|err| ActorError::new(self.self_id(), ActorErrorKind::init(err)))?;
         let need_drain;
         'messages: loop {
             self.change_status(ActorStatus::Idle);
@@ -1260,7 +1266,7 @@ impl<A: Actor> Instance<A> {
                         for supervision_event in supervision_event_receiver.drain() {
                             self.handle_supervision_event(actor, supervision_event).await?;
                         }
-                        return Err(ActorError::new(self.self_id(), ActorErrorKind::Processing(err)));
+                        return Err(ActorError::new(self.self_id(), ActorErrorKind::processing(err)));
                     }
                 }
                 signal = signal_receiver.recv() => {
@@ -1293,7 +1299,7 @@ impl<A: Actor> Instance<A> {
                 if let Err(err) = work.handle(actor, self).await {
                     return Err(ActorError::new(
                         self.self_id(),
-                        ActorErrorKind::Processing(err),
+                        ActorErrorKind::processing(err),
                     ));
                 }
                 n += 1;
@@ -1323,7 +1329,7 @@ impl<A: Actor> Instance<A> {
                 // The supervision event wasn't handled by this actor, chain it and bubble it up.
                 let supervision_event = ActorSupervisionEvent::new(
                     self.self_id().clone(),
-                    ActorStatus::Failed("did not handle supervision event".to_string()),
+                    ActorStatus::generic_failure("did not handle supervision event"),
                     None,
                     Some(Box::new(supervision_event)),
                 );
@@ -1334,7 +1340,10 @@ impl<A: Actor> Instance<A> {
                 // Create a new supervision event for this failure and propagate it.
                 let supervision_event = ActorSupervisionEvent::new(
                     self.self_id().clone(),
-                    ActorStatus::Failed(format!("failed to handle supervision event: {}", err)),
+                    ActorStatus::generic_failure(format!(
+                        "failed to handle supervision event: {}",
+                        err
+                    )),
                     None,
                     Some(Box::new(supervision_event)),
                 );
@@ -2388,17 +2397,17 @@ mod tests {
                 "some random failure"
             )))
             .unwrap();
-        let root_2_actor_id = root_2.actor_id().clone();
+        let _root_2_actor_id = root_2.actor_id().clone();
         assert_matches!(
             root_2.await,
-            ActorStatus::Failed(err) if err == format!("serving {}: processing error: some random failure", root_2_actor_id)
+            ActorStatus::Failed(err) if err.to_string() == "processing error: some random failure"
         );
 
         // TODO: should we provide finer-grained stop reasons, e.g., to indicate it was
         // stopped by a parent failure?
-        assert_eq!(
+        assert_matches!(
             root.await,
-            ActorStatus::Failed("did not handle supervision event".to_string())
+            ActorStatus::Failed(ActorErrorKind::Generic(msg)) if msg == "did not handle supervision event"
         );
         assert_eq!(root_2_1.await, ActorStatus::Stopped);
         assert_eq!(root_1.await, ActorStatus::Stopped);
@@ -2913,16 +2922,13 @@ mod tests {
             // The time field is ignored for Eq and PartialEq.
             ActorSupervisionEvent::new(
                 child_actor_id,
-                ActorStatus::Failed(
+                ActorStatus::generic_failure(
                     "failed to handle supervision event: failed to handle supervision event!"
-                        .to_string(),
                 ),
                 None,
                 Some(Box::new(ActorSupervisionEvent::new(
                     grandchild_actor_id,
-                    ActorStatus::Failed(
-                        "serving local[0].parent[2]: processing error: trigger failure".to_string()
-                    ),
+                    ActorStatus::generic_failure("processing error: trigger failure"),
                     None,
                     None,
                 ))),

@@ -501,7 +501,10 @@ async fn actor_states_monitor<A, F>(
                 0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_id().clone(),
-                    ActorStatus::Failed(format!("Unable to query for proc states: {:?}", e)),
+                    ActorStatus::generic_failure(format!(
+                        "Unable to query for proc states: {:?}",
+                        e
+                    )),
                     None,
                     None,
                 ),
@@ -551,7 +554,10 @@ async fn actor_states_monitor<A, F>(
                 0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_id().clone(),
-                    ActorStatus::Failed(format!("Unable to query for actor states: {:?}", e)),
+                    ActorStatus::generic_failure(format!(
+                        "Unable to query for actor states: {:?}",
+                        e
+                    )),
                     None,
                     None,
                 ),
