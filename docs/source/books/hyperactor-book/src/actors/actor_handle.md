@@ -162,7 +162,7 @@ impl<A: Actor> IntoFuture for ActorHandle<A> {
             let result = status_receiver.wait_for(ActorStatus::is_terminal).await;
             match result {
                 Err(_) => ActorStatus::Unknown,
-                Ok(status) => status.passthrough(),
+                Ok(status) => status.clone(),
             }
         };
         future.boxed()

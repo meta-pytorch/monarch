@@ -34,70 +34,66 @@ from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 
 from monarch._src.actor.future import Future
-from monarch._src.actor.telemetry import METER
+from monarch._src.actor.metrics import (
+    endpoint_broadcast_error_counter,
+    endpoint_broadcast_throughput_counter,
+    endpoint_call_error_counter,
+    endpoint_call_latency_histogram,
+    endpoint_call_one_error_counter,
+    endpoint_call_one_latency_histogram,
+    endpoint_call_one_throughput_counter,
+    endpoint_call_throughput_counter,
+    endpoint_choose_error_counter,
+    endpoint_choose_latency_histogram,
+    endpoint_choose_throughput_counter,
+    endpoint_stream_latency_histogram,
+    endpoint_stream_throughput_counter,
+)
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
 
-from opentelemetry.metrics import Histogram
-
-# Histogram for measuring endpoint call latency
-endpoint_call_latency_histogram: Histogram = METER.create_histogram(
-    name="endpoint_call_latency.us",
-    description="Latency of endpoint call operations in microseconds",
-)
-
-# Histogram for measuring endpoint call_one latency
-endpoint_call_one_latency_histogram: Histogram = METER.create_histogram(
-    name="endpoint_call_one_latency.us",
-    description="Latency of endpoint call_one operations in microseconds",
-)
-
-# Histogram for measuring endpoint stream latency per yield
-endpoint_stream_latency_histogram: Histogram = METER.create_histogram(
-    name="endpoint_stream_latency.us",
-    description="Latency of endpoint stream operations per yield in microseconds",
-)
-
-# Histogram for measuring endpoint choose latency
-endpoint_choose_latency_histogram: Histogram = METER.create_histogram(
-    name="endpoint_choose_latency.us",
-    description="Latency of endpoint choose operations in microseconds",
-)
+from opentelemetry.metrics import Counter, Histogram
 
 T = TypeVar("T")
 
 
-def _measure_latency(
+def _observe_latency_and_error(
     coro: Coroutine[Any, Any, T],
     start_time_ns: int,
     histogram: Histogram,
+    error_counter: Counter,
     method_name: str,
     actor_count: int,
 ) -> Coroutine[Any, Any, T]:
     """
-    Decorator to measure and record latency of an async operation.
+    Observe and record latency and errors of an async operation.
 
     Args:
-        coro: The coroutine to measure
-        histogram: The histogram to record metrics to
+        coro: The coroutine to observe
+        histogram: The histogram to record latency metrics to
+        error_counter: The counter to record error metrics to
         method_name: Name of the method being called
         actor_count: Number of actors involved in the call
 
     Returns:
-        A wrapped coroutine that records latency metrics
+        A wrapped coroutine that records error and latency metrics
     """
 
     async def _wrapper() -> T:
+        error_occurred = False
         try:
             return await coro
+        except Exception:
+            error_occurred = True
+            raise
         finally:
             duration_us = int((time.monotonic_ns() - start_time_ns) / 1_000)
-            histogram.record(
-                duration_us,
-                attributes={
-                    "method": method_name,
-                    "actor_count": actor_count,
-                },
-            )
+            attributes = {
+                "method": method_name,
+                "actor_count": actor_count,
+            }
+            histogram.record(duration_us, attributes=attributes)
+            if error_occurred:
+                error_counter.add(1, attributes=attributes)
 
     return _wrapper()
 
@@ -136,18 +132,23 @@ class Endpoint(ABC, Generic[P, R]):
             return method_specifier.name
         return "unknown"
 
-    def _with_latency_measurement(
-        self, start_time_ns: int, histogram: Histogram, actor_count: int
+    def _with_telemetry(
+        self,
+        start_time_ns: int,
+        histogram: Histogram,
+        error_counter: Counter,
+        actor_count: int,
     ) -> Any:
         """
-        Decorator factory to add latency measurement to async functions.
+        Decorator factory to add telemetry (latency and error tracking) to async functions.
 
         Args:
-            histogram: The histogram to record metrics to
+            histogram: The histogram to record latency metrics to
+            error_counter: The counter to record error metrics to
             actor_count: Number of actors involved in the operation
 
         Returns:
-            A decorator that wraps async functions with latency measurement
+            A decorator that wraps async functions with telemetry measurement
         """
         method_name: str = self._get_method_name()
 
@@ -155,8 +156,13 @@ class Endpoint(ABC, Generic[P, R]):
             @functools.wraps(func)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
                 coro = func(*args, **kwargs)
-                return _measure_latency(
-                    coro, start_time_ns, histogram, method_name, actor_count
+                return _observe_latency_and_error(
+                    coro,
+                    start_time_ns,
+                    histogram,
+                    error_counter,
+                    method_name,
+                    actor_count,
                 )
 
             return wrapper
@@ -210,6 +216,9 @@ class Endpoint(ABC, Generic[P, R]):
 
         Load balanced RPC-style entrypoint for request/response messaging.
         """
+        # Track throughput at method entry
+        method_name: str = self._get_method_name()
+        endpoint_choose_throughput_counter.add(1, attributes={"method": method_name})
 
         p, r_port = self._port(once=True)
         r: "PortReceiver[R]" = r_port
@@ -217,8 +226,11 @@ class Endpoint(ABC, Generic[P, R]):
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         self._send(args, kwargs, port=p, selection="choose")
 
-        @self._with_latency_measurement(
-            start_time, endpoint_choose_latency_histogram, 1
+        @self._with_telemetry(
+            start_time,
+            endpoint_choose_latency_histogram,
+            endpoint_choose_error_counter,
+            1,
         )
         async def process() -> R:
             result = await r.recv()
@@ -227,6 +239,10 @@ class Endpoint(ABC, Generic[P, R]):
         return Future(coro=process())
 
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+        # Track throughput at method entry
+        method_name: str = self._get_method_name()
+        endpoint_call_one_throughput_counter.add(1, attributes={"method": method_name})
+
         p, r_port = self._port(once=True)
         r: PortReceiver[R] = r_port
         start_time: int = time.monotonic_ns()
@@ -237,8 +253,11 @@ class Endpoint(ABC, Generic[P, R]):
                 f"Can only use 'call_one' on a single Actor but this actor has shape {extent}"
             )
 
-        @self._with_latency_measurement(
-            start_time, endpoint_call_one_latency_histogram, 1
+        @self._with_telemetry(
+            start_time,
+            endpoint_call_one_latency_histogram,
+            endpoint_call_one_error_counter,
+            1,
         )
         async def process() -> R:
             result = await r.recv()
@@ -250,13 +269,19 @@ class Endpoint(ABC, Generic[P, R]):
         from monarch._src.actor.actor_mesh import RankedPortReceiver, ValueMesh
 
         start_time: int = time.monotonic_ns()
+        # Track throughput at method entry
+        method_name: str = self._get_method_name()
+        endpoint_call_throughput_counter.add(1, attributes={"method": method_name})
         p, unranked = self._port()
         r: RankedPortReceiver[R] = unranked.ranked()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         extent: Extent = self._send(args, kwargs, port=p)
 
-        @self._with_latency_measurement(
-            start_time, endpoint_call_latency_histogram, extent.nelements
+        @self._with_telemetry(
+            start_time,
+            endpoint_call_latency_histogram,
+            endpoint_call_error_counter,
+            extent.nelements,
         )
         async def process() -> "ValueMesh[R]":
             from monarch._rust_bindings.monarch_hyperactor.shape import Shape
@@ -283,14 +308,22 @@ class Endpoint(ABC, Generic[P, R]):
         This enables processing results from multiple actors incrementally as
         they become available. Returns an async generator of response values.
         """
+        # Track throughput at method entry
+        method_name: str = self._get_method_name()
+        endpoint_stream_throughput_counter.add(1, attributes={"method": method_name})
+
         p, r_port = self._port()
         start_time: int = time.monotonic_ns()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
         extent: Extent = self._send(args, kwargs, port=p)
         r: "PortReceiver[R]" = r_port
 
-        latency_decorator: Any = self._with_latency_measurement(
-            start_time, endpoint_stream_latency_histogram, extent.nelements
+        # Note: stream doesn't track errors per-yield since errors propagate to caller
+        latency_decorator: Any = self._with_telemetry(
+            start_time,
+            endpoint_stream_latency_histogram,
+            endpoint_broadcast_error_counter,  # Placeholder, errors not tracked per-yield
+            extent.nelements,
         )
 
         def _stream() -> Generator[Future[R], None, None]:
@@ -314,8 +347,18 @@ class Endpoint(ABC, Generic[P, R]):
         """
         from monarch._src.actor.actor_mesh import send
 
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        send(self, args, kwargs)
+        method_name: str = self._get_method_name()
+        attributes = {
+            "method": method_name,
+            "actor_count": 0,  # broadcast doesn't track specific count
+        }
+        try:
+            # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+            send(self, args, kwargs)
+            endpoint_broadcast_throughput_counter.add(1, attributes=attributes)
+        except Exception:
+            endpoint_broadcast_error_counter.add(1, attributes=attributes)
+            raise
 
     @abstractmethod
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R: ...
