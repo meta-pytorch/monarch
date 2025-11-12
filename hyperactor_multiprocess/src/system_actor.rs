@@ -1961,8 +1961,11 @@ mod tests {
                 proc_addr: ChannelAddr::any(ChannelTransport::Local),
                 proc_id: proc_id_1.clone(),
                 proc_health: ProcStatus::Alive,
-                failed_actors: [(actor_id.clone(), ActorStatus::Failed("Actor failed".into()))]
-                    .to_vec(),
+                failed_actors: [(
+                    actor_id.clone(),
+                    ActorStatus::generic_failure("Actor failed"),
+                )]
+                .to_vec(),
             },
             &clock,
         );
