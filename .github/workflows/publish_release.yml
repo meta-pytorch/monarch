@@ -21,7 +21,7 @@ jobs:
         include:
           - name: 4xlarge
             runs-on: linux.g5.4xlarge.nvidia.gpu
-            install-args: '--pre --extra-index-url https://download.pytorch.org/whl/test/cu128'
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128'
             gpu-arch-type: "cuda"
             gpu-arch-version: "12.8"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
@@ -34,7 +34,12 @@ jobs:
       upload-artifact: monarch-${{ matrix.python-version }}-${{ matrix.gpu-arch-type }}${{ matrix.gpu-arch-version }}
       script: |
         source scripts/common-setup.sh
-        setup_build_environment ${{ matrix.python-version }} "${{ matrix.install-args }}"
+        setup_build_environment ${{ matrix.python-version }}
+
+        # Install torch nightly before installing the wheel,
+        # so that we can test the wheel against the latest nightly
+        pip install ${{ matrix.torch-spec }}
+        pip install -r build-requirements.txt
 
         # Setup Tensor Engine dependencies
         setup_tensor_engine

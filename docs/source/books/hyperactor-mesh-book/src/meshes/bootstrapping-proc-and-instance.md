@@ -1,4 +1,4 @@
-## 1. Proc and Instance (start from a Proc you control)
+##  §1 Proc and Instance (start from a Proc you control)
 
 We begin in a process that can already run hyperactor code and create an instance:
 

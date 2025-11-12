@@ -378,7 +378,7 @@ impl RdmaManagerActor {
 
             if is_cuda {
                 // Use rdmaxcel utility to get PCI address from CUDA pointer
-                let mut pci_addr_buf = [0i8; 16]; // Enough space for "ffff:ff:ff.0\0"
+                let mut pci_addr_buf: [std::os::raw::c_char; 16] = [0; 16]; // Enough space for "ffff:ff:ff.0\0"
                 let err = rdmaxcel_sys::get_cuda_pci_address_from_ptr(
                     addr as u64,
                     pci_addr_buf.as_mut_ptr(),
