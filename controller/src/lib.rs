@@ -1857,7 +1857,7 @@ mod tests {
         let mut system = System::new(server_handle.local_addr().clone());
         let client_mailbox = system.attach().await.unwrap();
         let (_client_supervision_tx, mut client_supervision_rx) =
-            client_mailbox.open_port::<ClientMessage>();
+            client_mailbox.bind_actor_port::<ClientMessage>();
 
         // Bootstrap the controller
         let controller_id = id!(controller[0].root);
