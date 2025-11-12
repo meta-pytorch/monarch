@@ -21,6 +21,7 @@ use serde::Serialize;
 
 use crate::resource::CreateOrUpdate;
 use crate::resource::GetState;
+use crate::resource::Resource;
 use crate::resource::Status;
 use crate::resource::Stop;
 use crate::v1::ValueMesh;
@@ -49,17 +50,14 @@ pub trait Mesh {
     /// The mesh-specific specification for this resource.
     type Spec: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
 
-    /// The mesh-specific state for thsi resource.
+    /// The mesh-specific state for this resource.
     type State: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
 }
 
-// A behavior defining the interface for a mesh controller.
-hyperactor::behavior!(
-    Controller<M: Mesh>,
-    CreateOrUpdate<Spec<M::Spec>>,
-    GetState<State<M::State>>,
-    Stop,
-);
+impl<M: Mesh> Resource for M {
+    type Spec = Spec<M::Spec>;
+    type State = State<M::State>;
+}
 
 #[cfg(test)]
 mod test {
@@ -68,6 +66,7 @@ mod test {
     use hyperactor::Handler;
 
     use super::*;
+    use crate::resource::Controller;
 
     // Consider upstreaming this into `hyperactor` -- lightweight handler definitions
     // can be quite useful.
