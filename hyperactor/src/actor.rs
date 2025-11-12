@@ -739,7 +739,7 @@ pub trait RemoteHandles<M: RemoteMessage>: Referable {}
 ///      _message: (),
 ///   ) -> Result<(), anyhow::Error> {
 ///     // no-op
-///     Ok((b))
+///     Ok(())
 ///   }
 /// }
 ///
