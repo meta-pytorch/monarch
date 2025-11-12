@@ -1,4 +1,4 @@
-# Boostrapping from Python
+# §5 Boostrapping from Python
 
 So far we described the Rust side: there is a host, the host has a `HostMeshAgent`, and we send `CreateOrUpdate<ProcSpec>` etc. That's the control plane.
 
