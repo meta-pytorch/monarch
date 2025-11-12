@@ -71,7 +71,7 @@ use tracing::Level;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
-use crate::resource::StopAllClient;
+use crate::resource;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
@@ -1323,20 +1323,17 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         // they are in the Ready state and have an Agent we can message.
         let agent = self.agent_ref();
         if let Some(agent) = agent {
-            let mailbox_result = RealClock.timeout(timeout, agent.stop_all(cx)).await;
-            if let Err(timeout_err) = mailbox_result {
-                // Agent didn't respond in time, proceed with SIGTERM.
+            // TODO: add a reply to StopAll and wait for it.
+            let mut port = agent.port();
+            // If the proc is already dead, then the StopAll message will be undeliverable,
+            // which should be ignored.
+            port.return_undeliverable(false);
+            if let Err(e) = port.send(cx, resource::StopAll {}) {
+                // Cannot send to agent, proceed with SIGTERM.
                 tracing::warn!(
                     "ProcMeshAgent {} didn't respond in time to stop proc: {}",
                     agent.actor_id(),
-                    timeout_err,
-                );
-            } else if let Ok(Err(e)) = mailbox_result {
-                // Other mailbox error, proceed with SIGTERM.
-                tracing::warn!(
-                    "ProcMeshAgent {} did not successfully stop all actors: {}",
-                    agent.actor_id(),
-                    e
+                    e,
                 );
             }
         }

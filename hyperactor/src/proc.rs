@@ -1036,7 +1036,7 @@ impl<A: Actor> Instance<A> {
 
     /// Send a message to the actor running on the proc.
     pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
-        <Self as context::MailboxExt>::post(self, port_id, headers, message)
+        <Self as context::MailboxExt>::post(self, port_id, headers, message, true)
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
