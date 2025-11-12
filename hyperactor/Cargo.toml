@@ -83,6 +83,7 @@ tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 unicode-ident = "1.0.12"
 uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+valuable = { version = "0.1", features = ["derive"] }
 
 [dev-dependencies]
 buck-resources = "1"
