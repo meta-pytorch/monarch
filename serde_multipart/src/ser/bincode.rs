@@ -13,13 +13,15 @@ use ::bincode::Options;
 use serde::Serialize;
 use serde::ser;
 
+use crate::FragmentedPart;
 use crate::Part;
 
 /// Multipart serializer for bincode. This passes through serialization to bincode,
-/// but also records the parts encoded by [`Part::serialize`].
+/// but also records the parts encoded by [`Part::serialize`] and [`FragmentedPart::serialize`].
 pub struct Serializer<W, O: Options> {
     ser: ::bincode::Serializer<W, O>,
     parts: Vec<Part>,
+    fragmented_parts: Vec<FragmentedPart>,
 }
 
 impl<W, O: Options> Serializer<W, O> {
@@ -27,6 +29,7 @@ impl<W, O: Options> Serializer<W, O> {
         Self {
             ser,
             parts: Vec::new(),
+            fragmented_parts: Vec::new(),
         }
     }
 
@@ -35,8 +38,13 @@ impl<W, O: Options> Serializer<W, O> {
         self.parts.push(part.clone());
     }
 
-    pub(crate) fn into_parts(self) -> Vec<Part> {
-        self.parts
+    /// Serialize a FragmentedPart by appending it to the fragmented_parts list.
+    pub(crate) fn serialize_fragmented_part(&mut self, parts: &FragmentedPart) {
+        self.fragmented_parts.push(parts.clone());
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<Part>, Vec<FragmentedPart>) {
+        (self.parts, self.fragmented_parts)
     }
 }
 

@@ -15,21 +15,32 @@ use bincode::ErrorKind;
 use bincode::Options;
 use serde::de::IntoDeserializer;
 
+use crate::FragmentedPart;
 use crate::part::Part;
 
 /// Multipart deserializer for bincode. This passes through to the underlying bincode
-/// deserializer, but dequeues serialized parts when they are needed by [`Part::deserialize`].
+/// deserializer, but dequeues serialized parts when they are needed by
+/// [`Part::deserialize`] or [`FragmentedPart::deserialize`].
 pub struct Deserializer<R, O: Options> {
     de: bincode::Deserializer<R, O>,
     parts: VecDeque<Part>,
+    fragmented_parts: VecDeque<FragmentedPart>,
 }
 
 impl<R, O> Deserializer<R, O>
 where
     O: Options,
 {
-    pub(crate) fn new(de: bincode::Deserializer<R, O>, parts: VecDeque<Part>) -> Self {
-        Self { de, parts }
+    pub(crate) fn new(
+        de: bincode::Deserializer<R, O>,
+        parts: VecDeque<Part>,
+        fragmented_parts: VecDeque<FragmentedPart>,
+    ) -> Self {
+        Self {
+            de,
+            parts,
+            fragmented_parts,
+        }
     }
 
     pub(crate) fn deserialize_part(&mut self) -> Result<Part, Error> {
@@ -38,8 +49,14 @@ where
         })
     }
 
+    pub(crate) fn deserialize_fragmented_part(&mut self) -> Result<FragmentedPart, Error> {
+        self.fragmented_parts.pop_front().ok_or_else(|| {
+            ErrorKind::Custom("fragmented part underrun while decoding".to_string()).into()
+        })
+    }
+
     pub(crate) fn end(self) -> Result<(), Error> {
-        if self.parts.is_empty() {
+        if self.parts.is_empty() && self.fragmented_parts.is_empty() {
             Ok(())
         } else {
             Err(ErrorKind::Custom("multipart overrun while decoding".to_string()).into())
