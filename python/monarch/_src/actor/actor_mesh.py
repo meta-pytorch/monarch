@@ -392,12 +392,15 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
 
     Currently only one transport type may be enabled at one time.
     In the future we may allow multiple to be enabled.
+
+    For Meta usage, use metatls-hostname
     """
     if isinstance(transport, str):
         transport = {
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
+            "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
         }.get(transport)
         if transport is None:
             raise ValueError(f"unknown transport: {transport}")
