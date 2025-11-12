@@ -39,6 +39,11 @@ setup_rust_toolchain() {
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
     cargo install cargo-nextest --locked
+
+    # We amend the RUSTFLAGS here because they have already been altered by `setup_cuda_environment`
+    # (and a few other places); RUSTFLAGS environment variable overrides the definition in
+    # .cargo/config.toml.
+    export RUSTFLAGS="--cfg tracing_unstable ${RUSTFLAGS:-}"
 }
 
 # Install Python test dependencies
@@ -107,7 +112,6 @@ setup_pytorch_with_headers() {
 # Common setup for build workflows (environment + system deps + rust)
 setup_build_environment() {
     local python_version=${1:-3.10}
-    local install_args=${2:-}
     setup_conda_environment "${python_version}"
     install_system_dependencies
     setup_rust_toolchain
