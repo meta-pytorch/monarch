@@ -60,6 +60,10 @@ use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonUndeliverableMessageEnvelope;
+use crate::metrics::ENDPOINT_ACTOR_COUNT;
+use crate::metrics::ENDPOINT_ACTOR_ERROR;
+use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
+use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::proc::InstanceWrapper;
 use crate::proc::PyActorId;
 use crate::proc::PyProc;
@@ -204,6 +208,22 @@ pub enum MethodSpecifier {
     ExplicitPort { name: String },
     /// Construct the object
     Init {},
+}
+
+impl std::fmt::Display for MethodSpecifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MethodSpecifier::ReturnsResponse { name } => {
+                write!(f, "{}", name)
+            }
+            MethodSpecifier::ExplicitPort { name } => {
+                write!(f, "{}", name)
+            }
+            MethodSpecifier::Init {} => {
+                write!(f, "__init__")
+            }
+        }
+    }
 }
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
@@ -698,16 +718,21 @@ impl Handler<PythonMessage> for PythonActor {
         message: PythonMessage,
     ) -> anyhow::Result<()> {
         let resolved = message.resolve_indirect_call(cx).await?;
+        let endpoint = resolved.method.to_string();
 
         // Create a channel for signaling panics in async endpoints.
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
-        let future = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
+        let (future, rank) = Python::with_gil(|py| -> Result<_, SerializablePyErr> {
             let instance = self.instance.get_or_insert_with(|| {
                 let instance: crate::context::PyInstance = cx.into();
                 instance.into_pyobject(py).unwrap().into()
             });
+            let rank = instance
+                .getattr(py, "rank")?
+                .getattr(py, "rank")?
+                .extract::<usize>(py)?;
             let awaitable = self.actor.call_method(
                 py,
                 "handle",
@@ -728,6 +753,7 @@ impl Handler<PythonMessage> for PythonActor {
                 self.get_task_locals(py),
                 awaitable.into_bound(py),
             )
+            .map(|a| (a, rank))
             .map_err(|err| err.into())
         })?;
 
@@ -735,14 +761,21 @@ impl Handler<PythonMessage> for PythonActor {
         tokio::spawn(
             handle_async_endpoint_panic(
                 cx.port(),
-                // self.panic_sender.clone(),
                 PythonTask::new(future)?,
                 receiver,
+                cx.self_id().to_string(),
+                endpoint.clone(),
             )
             .instrument(
-                tracing::info_span!("py_panic_handler")
-                    .follows_from(tracing::Span::current().id())
-                    .clone(),
+                tracing::info_span!(
+                    "PythonActor endpoint",
+                    actor_id = %cx.self_id(),
+                    %rank,
+                    %endpoint
+                )
+                .or_current()
+                .follows_from(tracing::Span::current().id())
+                .clone(),
             ),
         );
         Ok(())
@@ -837,7 +870,19 @@ async fn handle_async_endpoint_panic(
     panic_sender: PortHandle<PanicFromPy>,
     task: PythonTask,
     side_channel: oneshot::Receiver<PyObject>,
+    actor_id: String,
+    endpoint: String,
 ) {
+    // Create attributes for metrics with actor_id and endpoint
+    let attributes =
+        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id, "endpoint" => endpoint);
+
+    // Record the start time for latency measurement
+    let start_time = std::time::Instant::now();
+
+    // Increment throughput counter
+    ENDPOINT_ACTOR_COUNT.add(1, attributes);
+
     let err_or_never = async {
         // The side channel will resolve with a value if a panic occured during
         // processing of the async endpoint, see [Panics in async endpoints].
@@ -848,6 +893,7 @@ async fn handle_async_endpoint_panic(
                     .unwrap()
                     .clone()
                     .into();
+                ENDPOINT_ACTOR_PANIC.add(1, attributes);
                 Some(err.into())
             }),
             // An Err means that the sender has been dropped without sending.
@@ -869,10 +915,17 @@ async fn handle_async_endpoint_panic(
             result
         }
     } {
+        // Record error and panic metrics
+        ENDPOINT_ACTOR_ERROR.add(1, attributes);
+
         panic_sender
             .send(PanicFromPy(panic))
             .expect("Unable to send panic message");
     }
+
+    // Record latency in microseconds
+    let elapsed_micros = start_time.elapsed().as_micros() as f64;
+    ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM.record(elapsed_micros, attributes);
 }
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]

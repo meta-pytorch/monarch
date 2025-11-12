@@ -314,7 +314,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[test]
     // TODO: OSS: The logs_assert function returned an error: missing log lines: {"# export HYPERACTOR_DEFAULT_ENCODING=serde_multipart", ...}
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     fn test_from_env() {
         // Set environment variables
         // SAFETY: TODO: Audit that the environment access only happens in single-threaded code.
@@ -334,7 +334,7 @@ mod tests {
         let expected_lines: HashSet<&str> = indoc! {"
             # export HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE=0.01
             # export HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL=5s
-            # export HYPERACTOR_CHANNEL_MULTIPART=true
+            # export HYPERACTOR_CHANNEL_MULTIPART=1
             # export HYPERACTOR_DEFAULT_ENCODING=serde_multipart
             # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=5s
             # export HYPERACTOR_STOP_ACTOR_TIMEOUT=10s

@@ -72,18 +72,25 @@ pub struct LocalTx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
-    fn try_post(
-        &self,
-        message: M,
-        _return_channel: oneshot::Sender<M>,
-    ) -> Result<(), SendError<M>> {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         let data: Data = match bincode::serialize(&message) {
             Ok(data) => data,
-            Err(err) => return Err(SendError(err.into(), message)),
+            Err(err) => {
+                if let Some(return_channel) = return_channel {
+                    return_channel
+                        .send(SendError(err.into(), message))
+                        .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
+                }
+                return;
+            }
         };
-        self.tx
-            .send(data)
-            .map_err(|_| SendError(ChannelError::Closed, message))
+        if self.tx.send(data).is_err() {
+            if let Some(return_channel) = return_channel {
+                return_channel
+                    .send(SendError(ChannelError::Closed, message))
+                    .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
+            }
+        }
     }
 
     fn addr(&self) -> ChannelAddr {
@@ -159,15 +166,11 @@ mod tests {
 
     use super::*;
 
-    fn unused_return_channel<M>() -> oneshot::Sender<M> {
-        oneshot::channel().0
-    }
-
     #[tokio::test]
     async fn test_local_basic() {
         let (tx, mut rx) = local::new::<u64>();
 
-        tx.try_post(123, unused_return_channel()).unwrap();
+        tx.post(123);
         assert_eq!(rx.recv().await.unwrap(), 123);
     }
 
@@ -178,15 +181,14 @@ mod tests {
 
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.try_post(123, unused_return_channel()).unwrap();
+        tx.post(123);
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);
 
-        assert_matches!(
-            tx.try_post(123, unused_return_channel()),
-            Err(SendError(ChannelError::Closed, 123))
-        );
+        let (return_tx, return_rx) = oneshot::channel();
+        tx.try_post(123, return_tx);
+        assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
     }
 
     #[tokio::test]
@@ -194,7 +196,7 @@ mod tests {
         let (port, mut rx) = local::serve::<u64>();
         let tx = local::dial::<u64>(port).unwrap();
 
-        tx.try_post(123, unused_return_channel()).unwrap();
+        tx.post(123);
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         drop(rx);

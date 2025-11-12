@@ -47,7 +47,6 @@ use hyperactor::config::ConfigAttr;
 use hyperactor::config::global as config;
 use hyperactor::context;
 use hyperactor::declare_attrs;
-use hyperactor::host;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::ProcHandle;
@@ -72,7 +71,7 @@ use tracing::Level;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
-use crate::resource::StopAllClient;
+use crate::resource;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
@@ -1324,20 +1323,17 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         // they are in the Ready state and have an Agent we can message.
         let agent = self.agent_ref();
         if let Some(agent) = agent {
-            let mailbox_result = RealClock.timeout(timeout, agent.stop_all(cx)).await;
-            if let Err(timeout_err) = mailbox_result {
-                // Agent didn't respond in time, proceed with SIGTERM.
+            // TODO: add a reply to StopAll and wait for it.
+            let mut port = agent.port();
+            // If the proc is already dead, then the StopAll message will be undeliverable,
+            // which should be ignored.
+            port.return_undeliverable(false);
+            if let Err(e) = port.send(cx, resource::StopAll {}) {
+                // Cannot send to agent, proceed with SIGTERM.
                 tracing::warn!(
                     "ProcMeshAgent {} didn't respond in time to stop proc: {}",
                     agent.actor_id(),
-                    timeout_err,
-                );
-            } else if let Ok(Err(e)) = mailbox_result {
-                // Other mailbox error, proceed with SIGTERM.
-                tracing::warn!(
-                    "ProcMeshAgent {} did not successfully stop all actors: {}",
-                    agent.actor_id(),
-                    e
+                    e,
                 );
             }
         }
@@ -1507,6 +1503,7 @@ impl BootstrapCommand {
     /// bootstrap processes under proc manager control. Not available
     /// outside of test builds.
     #[cfg(test)]
+    #[cfg(fbcode_build)]
     pub(crate) fn test() -> Self {
         Self {
             program: crate::testresource::get("monarch/hyperactor_mesh/bootstrap"),
@@ -2127,7 +2124,7 @@ async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
         tx.try_post(
             Process2Allocator(bootstrap_index, Process2AllocatorMessage::Hello(serve_addr)),
             rtx,
-        )?;
+        );
         tokio::spawn(exit_if_missed_heartbeat(bootstrap_index, bootstrap_addr));
 
         let _ = entered.exit();
@@ -3423,6 +3420,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_handle_terminate_graceful() {
         // Create a root direct-addressed proc + client instance.
         let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
@@ -3486,6 +3484,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn bootstrap_handle_kill_forced() {
         // Root proc + client instance (so the child can dial back).
         let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
@@ -3535,7 +3534,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_cannonical_simple() {
+    #[cfg(fbcode_build)]
+    async fn bootstrap_canonical_simple() {
         // SAFETY: unit-test scoped
         unsafe {
             std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
@@ -3559,6 +3559,7 @@ mod tests {
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await
             .unwrap();

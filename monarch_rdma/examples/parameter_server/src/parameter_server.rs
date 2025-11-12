@@ -481,6 +481,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await?,
     )
@@ -509,6 +510,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
                 constraints: Default::default(),
                 proc_name: None,
                 transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
             })
             .await?,
     )

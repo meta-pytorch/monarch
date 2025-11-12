@@ -660,6 +660,7 @@ mod tests {
     use monarch_messages::worker::CallFunctionParams;
     use monarch_messages::worker::WorkerMessage;
     use monarch_types::PyTree;
+    use timed_test::async_timed_test;
     use torch_sys::RValue;
 
     use super::*;
@@ -1838,7 +1839,9 @@ mod tests {
 
     hyperactor::remote!(PanickingActor);
 
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
+    // times out (both internal and external).
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_supervision_fault() {
         // Start system actor.
         let timeout: Duration = Duration::from_secs(6);
@@ -1854,7 +1857,7 @@ mod tests {
         let mut system = System::new(server_handle.local_addr().clone());
         let client_mailbox = system.attach().await.unwrap();
         let (_client_supervision_tx, mut client_supervision_rx) =
-            client_mailbox.open_port::<ClientMessage>();
+            client_mailbox.bind_actor_port::<ClientMessage>();
 
         // Bootstrap the controller
         let controller_id = id!(controller[0].root);

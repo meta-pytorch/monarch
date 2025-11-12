@@ -49,7 +49,6 @@ use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
-use crate::resource::GetStateClient;
 use crate::resource::ProcSpec;
 use crate::resource::RankedValues;
 use crate::resource::Status;
@@ -216,18 +215,40 @@ enum HostMeshAllocation {
 }
 
 impl HostMesh {
-    /// Fork a new `HostMesh` from this process, returning the new `HostMesh`
-    /// to the parent (owning) process, while running forever in child processes
-    /// (i.e., individual procs).
+    /// Bring up a local single-host mesh and, in the launcher
+    /// process, return a `HostMesh` handle for it.
     ///
-    /// All of the code preceding the call to `local` will run in each child proc;
-    /// thus it is important to call `local` early in the lifetime of the program,
-    /// and to ensure that it is reached unconditionally.
+    /// There are two execution modes:
     ///
-    /// This is intended for testing, development, examples.
+    /// - bootstrap-child mode: if `Bootstrap::get_from_env()` says
+    ///   this process was launched as a bootstrap child, we call
+    ///   `boot.bootstrap().await`, which hands control to the
+    ///   bootstrap logic for this process (as defined by the
+    ///   `BootstrapCommand` the parent used to spawn it). if that
+    ///   call returns, we log the error and terminate. this branch
+    ///   does not produce a `HostMesh`.
+    ///
+    /// - launcher mode: otherwise, we are the process that is setting
+    ///   up the mesh. we create a `Host`, spawn a `HostMeshAgent` in
+    ///   it, and build a single-host `HostMesh` around that. that
+    ///   `HostMesh` is returned to the caller.
+    ///
+    /// This API is intended for tests, examples, and local bring-up,
+    /// not production.
     ///
     /// TODO: fix up ownership
     pub async fn local() -> v1::Result<HostMesh> {
+        Self::local_with_bootstrap(BootstrapCommand::current()?).await
+    }
+
+    /// Same as [`local`], but the caller supplies the
+    /// `BootstrapCommand` instead of deriving it from the current
+    /// process.
+    ///
+    /// The provided `bootstrap_cmd` is used when spawning bootstrap
+    /// children and determines the behavior of
+    /// `boot.bootstrap().await` in those children.
+    pub async fn local_with_bootstrap(bootstrap_cmd: BootstrapCommand) -> v1::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
             let err = boot.bootstrap().await;
             tracing::error!("failed to bootstrap local host mesh process: {}", err);
@@ -236,7 +257,7 @@ impl HostMesh {
 
         let addr = config::global::get_cloned(DEFAULT_TRANSPORT).any();
 
-        let manager = BootstrapProcManager::new(BootstrapCommand::current()?)?;
+        let manager = BootstrapProcManager::new(bootstrap_cmd)?;
         let (host, _handle) = Host::serve(manager, addr).await?;
         let addr = host.addr().clone();
         let host_mesh_agent = host
@@ -702,8 +723,12 @@ impl HostMeshRef {
                             format!("failed while creating proc: {}", e),
                         )
                     })?;
+                let mut reply_port = port.bind();
+                // If this proc dies or some other issue renders the reply undeliverable,
+                // the reply does not need to be returned to the sender.
+                reply_port.return_undeliverable(false);
                 host.mesh_agent()
-                    .get_rank_status(cx, proc_name.clone(), port.bind())
+                    .get_rank_status(cx, proc_name.clone(), reply_port)
                     .await
                     .map_err(|e| {
                         v1::Error::HostMeshAgentConfigurationError(
@@ -743,11 +768,24 @@ impl HostMeshRef {
                     let proc_name = &proc_names[rank];
                     let host_rank = rank / per_host.num_ranks();
                     let mesh_agent = self.ranks[host_rank].mesh_agent();
-                    let state = match RealClock
-                        .timeout(
-                            config::global::get(PROC_SPAWN_MAX_IDLE),
-                            mesh_agent.get_state(cx, proc_name.clone()),
+                    let (reply_tx, mut reply_rx) = cx.mailbox().open_port();
+                    let mut reply_tx = reply_tx.bind();
+                    // If this proc dies or some other issue renders the reply undeliverable,
+                    // the reply does not need to be returned to the sender.
+                    reply_tx.return_undeliverable(false);
+                    mesh_agent
+                        .send(
+                            cx,
+                            resource::GetState {
+                                name: proc_name.clone(),
+                                reply: reply_tx,
+                            },
                         )
+                        .map_err(|e| {
+                            v1::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
+                        })?;
+                    let state = match RealClock
+                        .timeout(config::global::get(PROC_SPAWN_MAX_IDLE), reply_rx.recv())
                         .await
                     {
                         Ok(Ok(state)) => state,
@@ -901,12 +939,16 @@ impl HostMeshRef {
             let host = HostRef(addr.clone());
             let proc_name = proc_name.parse::<Name>()?;
             proc_names.push(proc_name.clone());
+            let mut reply = tx.bind();
+            // If this proc dies or some other issue renders the reply undeliverable,
+            // the reply does not need to be returned to the sender.
+            reply.return_undeliverable(false);
             host.mesh_agent()
                 .send(
                     cx,
                     resource::GetState {
                         name: proc_name,
-                        reply: tx.bind(),
+                        reply,
                     },
                 )
                 .map_err(|e| {
@@ -1115,6 +1157,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_allocate() {
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
@@ -1225,6 +1268,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_extrinsic_allocation() {
         let config = hyperactor::config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
@@ -1268,6 +1312,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_failing_proc_allocation() {
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
@@ -1301,6 +1346,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_halting_proc_allocation() {
         let config = config::global::lock();
         let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(5));
@@ -1345,6 +1391,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_client_config_override() {
         let config = hyperactor::config::global::lock();
         let _guard1 = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);

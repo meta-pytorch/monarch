@@ -24,7 +24,8 @@ setup_conda_environment() {
 install_system_dependencies() {
     echo "Installing system dependencies..."
     dnf update -y
-    dnf install clang-devel libunwind libunwind-devel -y
+    # Protobuf compiler is required for the tracing-perfetto-sdk-schema crate.
+    dnf install clang-devel libunwind libunwind-devel protobuf-compiler -y
 }
 
 # Install and configure Rust nightly toolchain
@@ -106,7 +107,6 @@ setup_pytorch_with_headers() {
 # Common setup for build workflows (environment + system deps + rust)
 setup_build_environment() {
     local python_version=${1:-3.10}
-    local install_args=${2:-}
     setup_conda_environment "${python_version}"
     install_system_dependencies
     setup_rust_toolchain
@@ -168,6 +168,12 @@ run_test_groups() {
     echo "Usage: run_test_groups <enable_actor_error_test: 0|1>"
     return 2
   fi
+  # Make sure the runtime linker uses the conda env's libstdc++
+  # (which was used to compile monarch) instead of the system's.
+  # TODO: Revisit this to determine if this is the proper/most
+  # sustainable/most robust solution.
+  export CONDA_LIBSTDCPP="${CONDA_PREFIX}/lib/libstdc++.so.6"
+  export LD_PRELOAD="${CONDA_LIBSTDCPP}${LD_PRELOAD:+:$LD_PRELOAD}"
   local FAILED_GROUPS=()
   for GROUP in $(seq 1 10); do
     echo "Running test group $GROUP of 10..."
