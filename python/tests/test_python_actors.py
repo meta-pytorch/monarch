@@ -1761,6 +1761,9 @@ class Named(Actor):
         return context().actor_instance.creator, str(context().actor_instance)
 
 
+# oss_skip: flaky internally but fails on CI with "ValueError: error spawning proc mesh: statuses: Timeout(30.000905376s)=0..1"
+# TODO: fix flakiness @zdevito T244881215
+@pytest.mark.oss_skip
 def test_instance_name():
     cr, result = (
         this_host()
