@@ -16,6 +16,7 @@ use std::path::PathBuf;
 ///
 /// We should convert these tests to integration tests, so that cargo can
 /// also manage the binaries.
+#[cfg(fbcode_build)]
 pub fn get<S>(name: S) -> PathBuf
 where
     S: AsRef<str>,

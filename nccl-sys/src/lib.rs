@@ -56,17 +56,20 @@ mod inner {
         pub internal: [::std::os::raw::c_char; 128usize],
     }
 
-    fn deserialize_array<'de, D>(deserializer: D) -> Result<[i8; 128], D::Error>
+    fn deserialize_array<'de, D>(deserializer: D) -> Result<[::std::os::raw::c_char; 128], D::Error>
     where
         D: Deserializer<'de>,
     {
-        let vec: Vec<i8> = Deserialize::deserialize(deserializer)?;
-        vec.try_into().map_err(|v: Vec<i8>| {
+        let vec: Vec<::std::os::raw::c_char> = Deserialize::deserialize(deserializer)?;
+        vec.try_into().map_err(|v: Vec<::std::os::raw::c_char>| {
             serde::de::Error::invalid_length(v.len(), &"expected an array of length 128")
         })
     }
 
-    fn serialize_array<S>(array: &[i8; 128], serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize_array<S>(
+        array: &[::std::os::raw::c_char; 128],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
