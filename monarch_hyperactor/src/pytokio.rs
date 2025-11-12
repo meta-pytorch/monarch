@@ -50,6 +50,8 @@ use hyperactor::config::CONFIG;
 use hyperactor::config::ConfigAttr;
 use monarch_types::SerializablePyErr;
 use pyo3::IntoPyObjectExt;
+#[cfg(test)]
+use pyo3::PyClass;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyStopIteration;
 use pyo3::exceptions::PyTimeoutError;
@@ -69,14 +71,14 @@ declare_attrs! {
     /// If true, when a pytokio PythonTask fails, the traceback of the original callsite
     /// will be logged.
     @meta(CONFIG = ConfigAttr {
-        env_name: Some("MONARCH_HYPERACTOR_UNAWAITED_PYTOKIO_TRACEBACK".to_string()),
-        py_name: Some("unawaited_pytokio_traceback".to_string()),
+        env_name: Some("MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK".to_string()),
+        py_name: Some("enable_unawaited_python_task_traceback".to_string()),
     })
-    pub attr UNAWAITED_PYTOKIO_TRACEBACK: u8 = 0;
+    pub attr ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK: bool = false;
 }
 
 fn current_traceback() -> PyResult<Option<PyObject>> {
-    if config::global::get(UNAWAITED_PYTOKIO_TRACEBACK) != 0 {
+    if config::global::get(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK) {
         Python::with_gil(|py| {
             Ok(Some(
                 py.import("traceback")?
@@ -274,7 +276,7 @@ fn send_result(
                 let tb = if let Some(tb) = traceback {
                     format_traceback(py, &tb).unwrap()
                 } else {
-                    "None (run with `MONARCH_HYPERACTOR_UNAWAITED_PYTOKIO_TRACEBACK=1` to see a traceback here)\n".into()
+                    "None (run with `MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1` to see a traceback here)\n".into()
                 };
                 tracing::error!(
                     "PythonTask errored but is not being awaited; this will not crash your program, but indicates that \
@@ -546,4 +548,73 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_function(f)?;
 
     Ok(())
+}
+
+/// Ensure the embedded Python interpreter is initialized exactly
+/// once.
+///
+/// Safe to call from multiple threads, multiple times.
+#[cfg(test)]
+pub(crate) fn ensure_python() {
+    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        pyo3::prepare_freethreaded_python();
+    });
+}
+
+#[cfg(test)]
+// Helper: let us "await" a `PyPythonTask` in Rust.
+//
+// Semantics:
+//   - consume the `PyPythonTask`,
+//   - take the inner future,
+//   - `.await` it on tokio to get `Py<PyAny>`,
+//   - turn that into `Py<T>`.
+pub(crate) trait AwaitPyExt {
+    async fn await_py<T: PyClass>(self) -> Result<Py<T>, PyErr>;
+
+    // For tasks whose future just resolves to (), i.e. no object,
+    // just "did it work?"
+    async fn await_unit(self) -> Result<(), PyErr>;
+}
+
+#[cfg(test)]
+impl AwaitPyExt for PyPythonTask {
+    async fn await_py<T: PyClass>(mut self) -> Result<Py<T>, PyErr> {
+        // Take ownership of the inner future.
+        let fut = self
+            .take_task()
+            .expect("PyPythonTask already consumed in await_py");
+
+        // Await a Result<Py<PyAny>, PyErr>.
+        let py_any: Py<PyAny> = fut.await?;
+
+        // Convert Py<PyAny> -> Py<T>.
+        Python::with_gil(|py| {
+            let bound_any = py_any.bind(py);
+
+            // Try extract a Py<T>.
+            let obj: Py<T> = bound_any
+                .extract::<Py<T>>()
+                .expect("spawn() did not return expected Python type");
+
+            Ok(obj)
+        })
+    }
+
+    async fn await_unit(mut self) -> Result<(), PyErr> {
+        let fut = self
+            .take_task()
+            .expect("PyPythonTask already consumed in await_unit");
+
+        // Await it. This still gives us a Py<PyAny> because
+        // Python-side return values are always materialized as 'some
+        // object'. For "no value" / None, that's just a PyAny(None).
+        let py_any: Py<PyAny> = fut.await?;
+
+        // We don't need to extract anything. Just drop it.
+        drop(py_any);
+
+        Ok(())
+    }
 }

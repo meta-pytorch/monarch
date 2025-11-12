@@ -70,6 +70,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Debug;
+use std::future;
 use std::future::Future;
 use std::ops::Bound::Excluded;
 use std::pin::Pin;
@@ -212,6 +213,10 @@ pub struct MessageEnvelope {
 
     /// Decremented at every `MailboxSender` hop.
     ttl: u8,
+
+    /// If true, undeliverable messages should be returned to sender. Else, they
+    /// are dropped.
+    return_undeliverable: bool,
     // TODO: add typename, source, seq, etc.
 }
 
@@ -225,6 +230,8 @@ impl MessageEnvelope {
             errors: Vec::new(),
             headers,
             ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            // By default, all undeliverable messages should be returned to the sender.
+            return_undeliverable: true,
         }
     }
 
@@ -247,6 +254,8 @@ impl MessageEnvelope {
             dest,
             errors: Vec::new(),
             ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            // By default, all undeliverable messages should be returned to the sender.
+            return_undeliverable: true,
         })
     }
 
@@ -332,6 +341,13 @@ impl MessageEnvelope {
         self.sender = sender;
     }
 
+    /// Set to true if you want this message to be returned to sender if it cannot
+    /// reach dest. This is the default.
+    /// Set to false if you want the message to be dropped instead.
+    pub fn set_return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
+    }
+
     /// The message has been determined to be undeliverable with the
     /// provided error. Mark the envelope with the error and return to
     /// sender.
@@ -392,6 +408,7 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         } = self;
 
         (
@@ -401,6 +418,7 @@ impl MessageEnvelope {
                 errors,
                 headers,
                 ttl,
+                return_undeliverable,
             },
             data,
         )
@@ -413,6 +431,7 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         } = metadata;
 
         Self {
@@ -422,7 +441,12 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         }
+    }
+
+    fn return_undeliverable(&self) -> bool {
+        self.return_undeliverable
     }
 }
 
@@ -451,6 +475,7 @@ pub struct MessageMetadata {
     errors: Vec<DeliveryError>,
     headers: Attrs,
     ttl: u8,
+    return_undeliverable: bool,
 }
 
 /// Errors that occur during mailbox operations. Each error is associated
@@ -1100,30 +1125,24 @@ impl MailboxClient {
         let tx_monitoring = CancellationToken::new();
         let buffer = Buffer::new(move |envelope, return_handle| {
             let tx = Arc::clone(&tx);
-            let (return_channel, return_receiver) = oneshot::channel();
+            let (return_channel, return_receiver) =
+                oneshot::channel::<SendError<MessageEnvelope>>();
             // Set up for delivery failure.
             let return_handle_0 = return_handle.clone();
             tokio::spawn(async move {
                 let result = return_receiver.await;
-                if let Ok(message) = result {
-                    let _ = return_handle_0.send(Undeliverable(message));
-                } else {
-                    // Sender dropped, this task can end.
-                }
-            });
-            // Send the message for transmission.
-            let return_handle_1 = return_handle.clone();
-            async move {
-                if let Err(SendError(e, envelope)) = tx.try_post(envelope, return_channel) {
-                    // Failed to enqueue.
-                    envelope.undeliverable(
+                if let Ok(SendError(e, message)) = result {
+                    message.undeliverable(
                         DeliveryError::BrokenLink(format!(
                             "failed to enqueue in MailboxClient when processing buffer: {e}"
                         )),
-                        return_handle_1.clone(),
+                        return_handle_0,
                     );
                 }
-            }
+            });
+            // Send the message for transmission.
+            tx.try_post(envelope, return_channel);
+            future::ready(())
         });
         let this = Self {
             buffer,
@@ -1539,6 +1558,7 @@ impl MailboxSender for Mailbox {
                     dest,
                     errors: metadata_errors,
                     ttl,
+                    return_undeliverable,
                 } = metadata;
 
                 // We use the entry API here so that we can remove the
@@ -1567,6 +1587,7 @@ impl MailboxSender for Mailbox {
                                 dest,
                                 errors: metadata_errors,
                                 ttl,
+                                return_undeliverable,
                             },
                             data,
                         )
@@ -3345,15 +3366,15 @@ mod tests {
 
         // Split it twice on actor1
         let port_id1 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone())
+            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
             .unwrap();
         let port_id2 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone())
+            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
             .unwrap();
 
         // A split port id can also be split
         let port_id2_1 = port_id2
-            .split(&actor1, reducer_spec, reducer_opts.clone())
+            .split(&actor1, reducer_spec, reducer_opts.clone(), true)
             .unwrap();
 
         Setup {
@@ -3376,7 +3397,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_no_reducer() {
         let Setup {
             mut receiver,
@@ -3462,7 +3483,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_every_n_messages() {
         let config = crate::config::global::lock();
         let _config_guard = config.override_key(
@@ -3475,7 +3496,7 @@ mod tests {
         let port_id = port_handle.bind().port_id().clone();
         // Split it
         let reducer_spec = accum::sum::<u64>().reducer_spec();
-        let split_port_id = port_id.split(&actor, reducer_spec, None).unwrap();
+        let split_port_id = port_id.split(&actor, reducer_spec, None, true).unwrap();
 
         // Send 9 messages.
         for msg in [1, 5, 3, 4, 2, 91, 92, 93, 94] {

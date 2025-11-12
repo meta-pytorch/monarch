@@ -88,7 +88,6 @@ use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::Message;
 use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
@@ -176,8 +175,8 @@ fn serialize_bincode<S: ?Sized + serde::Serialize>(
 /// A Tx implemented on top of a Link. The Tx manages the link state,
 /// reconnections, etc.
 #[derive(Debug)]
-pub(crate) struct NetTx<M: Message> {
-    sender: mpsc::UnboundedSender<(M, oneshot::Sender<M>, Instant)>,
+pub(crate) struct NetTx<M: RemoteMessage> {
+    sender: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
     dest: ChannelAddr,
     status: watch::Receiver<TxStatus>,
 }
@@ -202,7 +201,7 @@ impl<M: RemoteMessage> NetTx<M> {
     // hard to maintain.
     async fn run(
         link: impl Link,
-        mut receiver: mpsc::UnboundedReceiver<(M, oneshot::Sender<M>, Instant)>,
+        mut receiver: mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
         notify: watch::Sender<TxStatus>,
     ) {
         // If we can't deliver a message within this limit consider
@@ -215,7 +214,7 @@ impl<M: RemoteMessage> NetTx<M> {
             // When this message was written to the stream. None means it is not
             // written yet.
             sent_at: Option<Instant>,
-            return_channel: oneshot::Sender<M>,
+            return_channel: oneshot::Sender<SendError<M>>,
         }
 
         impl<M: RemoteMessage> fmt::Display for QueuedMessage<M> {
@@ -304,7 +303,12 @@ impl<M: RemoteMessage> NetTx<M> {
             pub(crate) fn try_return(self) {
                 match serde_multipart::deserialize_bincode::<Frame<M>>(self.message) {
                     Ok(Frame::Message(_, msg)) => {
-                        let _ = self.return_channel.send(msg);
+                        if let Err(m) = self
+                            .return_channel
+                            .send(SendError(ChannelError::Closed, msg))
+                        {
+                            tracing::warn!("failed to deliver SendError: {}", m);
+                        }
                     }
                     Ok(_) => {
                         tracing::debug!(
@@ -364,7 +368,7 @@ impl<M: RemoteMessage> NetTx<M> {
 
             fn push_back(
                 &mut self,
-                (message, return_channel, received_at): (M, oneshot::Sender<M>, Instant),
+                (message, return_channel, received_at): (M, oneshot::Sender<SendError<M>>, Instant),
             ) -> Result<(), String> {
                 assert!(
                     self.deque.back().is_none_or(|msg| msg.seq < self.next_seq),
@@ -987,7 +991,9 @@ impl<M: RemoteMessage> NetTx<M> {
                     .chain(outbox.deque.drain(..))
                     .for_each(|queued| queued.try_return());
                 while let Ok((msg, return_channel, _)) = receiver.try_recv() {
-                    let _ = return_channel.send(msg);
+                    if let Err(m) = return_channel.send(SendError(ChannelError::Closed, msg)) {
+                        tracing::warn!("failed to deliver SendError: {}", m);
+                    }
                 }
             }
             _ => (),
@@ -1024,11 +1030,15 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
         &self.status
     }
 
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<M>) -> Result<(), SendError<M>> {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         tracing::trace!(name = "post", "sending message to {}", self.dest);
-        self.sender
-            .send((message, return_channel, RealClock.now()))
-            .map_err(|err| SendError(ChannelError::Closed, err.0.0))
+
+        let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
+        if let Err(mpsc::error::SendError((message, return_channel, _))) =
+            self.sender.send((message, return_channel, RealClock.now()))
+        {
+            let _ = return_channel.send(SendError(ChannelError::Closed, message));
+        }
     }
 }
 
@@ -2455,6 +2465,7 @@ pub(crate) mod meta {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches::assert_matches;
     use std::marker::PhantomData;
     use std::sync::RwLock;
     use std::sync::atomic::AtomicBool;
@@ -2474,10 +2485,6 @@ mod tests {
     use tokio::io::DuplexStream;
 
     use super::*;
-
-    fn unused_return_channel<M>() -> oneshot::Sender<M> {
-        oneshot::channel().0
-    }
 
     #[cfg(target_os = "linux")] // uses abstract names
     #[tracing_test::traced_test]
@@ -2501,20 +2508,29 @@ mod tests {
         // out of the buffer because NetRx could not ack through the closed
         // channel.
         {
-            let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
-            tx.try_post(123, unused_return_channel()).unwrap();
+            let tx: ChannelTx<u64> = crate::channel::dial::<u64>(addr.clone()).unwrap();
+            tx.post(123);
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
-            let tx = dial::<u64>(addr).unwrap();
-            tx.try_post(321, unused_return_channel()).unwrap();
-            tx.try_post(111, unused_return_channel()).unwrap();
-            tx.try_post(444, unused_return_channel()).unwrap();
+            let tx = dial::<u64>(addr.clone()).unwrap();
+            tx.post(321);
+            tx.post(111);
+            tx.post(444);
 
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
             assert_eq!(rx.recv().await.unwrap(), 444);
+        }
+
+        {
+            let tx = dial::<u64>(addr).unwrap();
+            drop(rx);
+
+            let (return_tx, return_rx) = oneshot::channel();
+            tx.try_post(123, return_tx);
+            assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
         }
 
         Ok(())
@@ -2537,14 +2553,14 @@ mod tests {
         // Dial the channel before we actually serve it.
         let addr = ChannelAddr::Unix(socket_addr.clone());
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
-        tx.try_post(123, unused_return_channel()).unwrap();
+        tx.post(123);
 
         let (_, mut rx) = net::unix::serve::<u64>(socket_addr).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
-        tx.try_post(321, unused_return_channel()).unwrap();
-        tx.try_post(111, unused_return_channel()).unwrap();
-        tx.try_post(444, unused_return_channel()).unwrap();
+        tx.post(321);
+        tx.post(111);
+        tx.post(444);
 
         assert_eq!(rx.recv().await.unwrap(), 321);
         assert_eq!(rx.recv().await.unwrap(), 111);
@@ -2554,33 +2570,42 @@ mod tests {
     }
 
     #[tracing_test::traced_test]
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_basic() {
         let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
         {
             let tx = dial::<u64>(addr.clone()).unwrap();
-            tx.try_post(123, unused_return_channel()).unwrap();
+            tx.post(123);
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
 
         {
-            let tx = dial::<u64>(addr).unwrap();
-            tx.try_post(321, unused_return_channel()).unwrap();
-            tx.try_post(111, unused_return_channel()).unwrap();
-            tx.try_post(444, unused_return_channel()).unwrap();
+            let tx = dial::<u64>(addr.clone()).unwrap();
+            tx.post(321);
+            tx.post(111);
+            tx.post(444);
 
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
             assert_eq!(rx.recv().await.unwrap(), 444);
+        }
+
+        {
+            let tx = dial::<u64>(addr).unwrap();
+            drop(rx);
+
+            let (return_tx, return_rx) = oneshot::channel();
+            tx.try_post(123, return_tx);
+            assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
         }
     }
 
     // The message size is limited by CODEC_MAX_FRAME_LENGTH.
     #[async_timed_test(timeout_secs = 5)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_message_size() {
         let default_size_in_bytes = 100 * 1024 * 1024;
         // Use temporary config for this test
@@ -2595,23 +2620,22 @@ mod tests {
         {
             // Leave some headroom because Tx will wrap the payload in Frame::Message.
             let message = "a".repeat(default_size_in_bytes - 1024);
-            tx.try_post(message.clone(), unused_return_channel())
-                .unwrap();
+            tx.post(message.clone());
             assert_eq!(rx.recv().await.unwrap(), message);
         }
         // Bigger than the default size will fail.
         {
             let (return_channel, return_receiver) = oneshot::channel();
             let message = "a".repeat(default_size_in_bytes + 1024);
-            tx.try_post(message.clone(), return_channel).unwrap();
+            tx.try_post(message.clone(), return_channel);
             let returned = return_receiver.await.unwrap();
-            assert_eq!(message, returned);
+            assert_eq!(message, returned.1);
         }
     }
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_flush() {
         let config = config::global::lock();
         // Set a large value to effectively prevent acks from being sent except
@@ -2624,7 +2648,7 @@ mod tests {
         let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
         let net_tx = dial::<u64>(addr.clone()).unwrap();
         let (tx, rx) = oneshot::channel();
-        net_tx.try_post(1, tx).unwrap();
+        net_tx.try_post(1, tx);
         assert_eq!(net_rx.recv().await.unwrap(), 1);
         drop(net_rx);
         // Using `is_err` to confirm the message is delivered/acked is confusing,
@@ -2635,7 +2659,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     // TODO: OSS: failed to retrieve ipv6 address
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_meta_tls_basic() {
         let addr = ChannelAddr::any(ChannelTransport::MetaTls(TlsMode::IpV6));
         let meta_addr = match addr {
@@ -2645,18 +2669,27 @@ mod tests {
         let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr).unwrap();
         {
             let tx = dial::<u64>(local_addr.clone()).unwrap();
-            tx.try_post(123, unused_return_channel()).unwrap();
+            tx.post(123);
         }
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         {
-            let tx = dial::<u64>(local_addr).unwrap();
-            tx.try_post(321, unused_return_channel()).unwrap();
-            tx.try_post(111, unused_return_channel()).unwrap();
-            tx.try_post(444, unused_return_channel()).unwrap();
+            let tx = dial::<u64>(local_addr.clone()).unwrap();
+            tx.post(321);
+            tx.post(111);
+            tx.post(444);
             assert_eq!(rx.recv().await.unwrap(), 321);
             assert_eq!(rx.recv().await.unwrap(), 111);
             assert_eq!(rx.recv().await.unwrap(), 444);
+        }
+
+        {
+            let tx = dial::<u64>(local_addr).unwrap();
+            drop(rx);
+
+            let (return_tx, return_rx) = oneshot::channel();
+            tx.try_post(123, return_tx);
+            assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
         }
     }
 
@@ -3240,7 +3273,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_tx_delivery_timeout() {
         // This link always fails to connect.
         let link = MockLink::<u64>::fail_connects();
@@ -3250,7 +3283,7 @@ mod tests {
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let mut tx_receiver = tx.status().clone();
         let (return_channel, _return_receiver) = oneshot::channel();
-        tx.try_post(123, return_channel).unwrap();
+        tx.try_post(123, return_channel);
         verify_tx_closed(&mut tx_receiver, "failed to deliver message within timeout").await;
     }
 
@@ -3305,7 +3338,7 @@ mod tests {
 
     async fn net_tx_send(tx: &NetTx<u64>, msgs: &[u64]) {
         for msg in msgs {
-            tx.try_post(*msg, unused_return_channel()).unwrap();
+            tx.post(*msg);
         }
     }
 
@@ -3568,7 +3601,7 @@ mod tests {
         // Verify sent-and-ack a message. This is necessary for the test to
         // trigger a connection.
         let (return_channel_tx, return_channel_rx) = oneshot::channel();
-        net_tx.try_post(100, return_channel_tx).unwrap();
+        net_tx.try_post(100, return_channel_tx);
         let (mut reader, mut writer) = take_receiver(&receiver_storage).await;
         verify_stream(&mut reader, &[(0u64, 100u64)], None, line!()).await;
         // ack it
@@ -3600,7 +3633,7 @@ mod tests {
         .unwrap();
 
         let (return_channel_tx, return_channel_rx) = oneshot::channel();
-        net_tx.try_post(101, return_channel_tx).unwrap();
+        net_tx.try_post(101, return_channel_tx);
         // Verify the message is sent to Rx.
         verify_message(&mut reader, (1u64, 101u64), line!()).await;
         // although we did not ack the message after it is sent, since we already
@@ -3624,7 +3657,7 @@ mod tests {
         let tx = NetTx::<u64>::new(link);
         let mut tx_status = tx.status().clone();
         // send a message
-        tx.try_post(100, unused_return_channel()).unwrap();
+        tx.post(100);
         let (mut reader, writer) = take_receiver(&receiver_storage).await;
         // Confirm message is sent to rx.
         verify_stream(&mut reader, &[(0u64, 100u64)], None, line!()).await;
@@ -3642,7 +3675,7 @@ mod tests {
         assert!(!tx_status.has_changed().unwrap());
         assert_eq!(*tx_status.borrow(), TxStatus::Active);
 
-        tx.try_post(101, unused_return_channel()).unwrap();
+        tx.post(101);
         // Confirm message is sent to rx.
         verify_message(&mut reader, (1u64, 101u64), line!()).await;
 
@@ -3666,7 +3699,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_exceeded_limit_with_connected_link() {
         verify_ack_exceeded_limit(false).await;
     }
@@ -3674,7 +3707,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_exceeded_limit_with_broken_link() {
         verify_ack_exceeded_limit(true).await;
     }
@@ -3718,7 +3751,7 @@ mod tests {
                 RealClock
                     .sleep(Duration::from_micros(rand::random::<u64>() % 100))
                     .await;
-                tx.try_post(message, unused_return_channel()).unwrap();
+                tx.post(message);
             }
             tracing::debug!("NetTx sent all messages");
             // It is important to return tx instead of dropping it here, because
@@ -3786,7 +3819,7 @@ mod tests {
                 RealClock
                     .sleep(Duration::from_micros(rand::random::<u64>() % 100))
                     .await;
-                tx.try_post(message, unused_return_channel()).unwrap();
+                tx.post(message);
             }
             RealClock.sleep(Duration::from_secs(5)).await;
             tracing::debug!("NetTx sent all messages");
@@ -3845,7 +3878,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_throughput() {
         let config = config::global::lock();
         let _guard =
@@ -3883,7 +3916,7 @@ mod tests {
                     .map(char::from)
                     .collect::<String>();
                 for _ in 0..total_num_msgs {
-                    let _ = tx2.try_post(random_string.clone(), unused_return_channel());
+                    tx2.post(random_string.clone());
                 }
             }));
         }
@@ -3897,7 +3930,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 60)]
     // TODO: OSS: The logs_assert function returned an error: expected log not found
-    #[cfg_attr(not(feature = "fb"), ignore)]
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_net_tx_closed_on_server_reject() {
         let link = MockLink::<u64>::new();
         let receiver_storage = link.receiver_storage();

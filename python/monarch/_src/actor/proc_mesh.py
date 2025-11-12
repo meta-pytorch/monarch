@@ -8,6 +8,7 @@
 
 import asyncio
 import importlib.metadata
+import inspect
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from pathlib import Path
 
 from typing import (
     Any,
+    Awaitable,
     Callable,
     cast,
     Dict,
@@ -116,11 +118,27 @@ class SetupActor(Actor):
         self._setup_method = env
 
     @endpoint
-    async def setup(self) -> None:
+    def setup(self) -> None:
         """
         Call the user defined setup method with the monarch context.
         """
         self._setup_method()
+
+
+class AsyncSetupActor(Actor):
+    """
+    A helper actor to set up the actor mesh with user defined setup method.
+    """
+
+    def __init__(self, env: Callable[[], Awaitable[None]]) -> None:
+        self._setup_method = env
+
+    @endpoint
+    async def setup(self) -> None:
+        """
+        Call the user defined setup method with the monarch context.
+        """
+        await self._setup_method()
 
 
 T = TypeVar("T")
@@ -382,7 +400,7 @@ class ProcMeshV0(MeshTrait):
         async def task(
             pm: "ProcMeshV0",
             hy_proc_mesh_task: "Shared[HyProcMeshV0]",
-            setup_actor: Optional[SetupActor],
+            setup_actor: SetupActor | AsyncSetupActor | None,
             stream_log_to_client: bool,
         ) -> HyProcMeshV0:
             hy_proc_mesh = await hy_proc_mesh_task
@@ -391,6 +409,9 @@ class ProcMeshV0(MeshTrait):
 
             if setup_actor is not None:
                 await setup_actor.setup.call()
+                # Cleanup resources held by the setup actor. We only need to run
+                # the function, and not keep anything it created around.
+                await cast(ActorMesh[SetupActor], setup_actor).stop()
 
             return hy_proc_mesh
 
@@ -399,8 +420,11 @@ class ProcMeshV0(MeshTrait):
             # If the user has passed the setup lambda, we need to call
             # it here before any of the other actors are spawned so that
             # the environment variables are set up before cuda init.
+            actor_type = (
+                AsyncSetupActor if inspect.iscoroutinefunction(setup) else SetupActor
+            )
             setup_actor = pm._spawn_nonblocking_on(
-                hy_proc_mesh, "setup", SetupActor, setup
+                hy_proc_mesh, "setup", actor_type, setup
             )
 
         pm._proc_mesh = PythonTask.from_coroutine(
@@ -439,6 +463,7 @@ class ProcMeshV0(MeshTrait):
         actor_mesh = HyProcMeshV0.spawn_async(pm, name, _Actor)
         service = ActorMesh._create(
             Class,
+            name,
             actor_mesh,
             self._shape,
             self,

@@ -11,6 +11,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::RwLock;
 use std::sync::RwLockReadGuard;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -47,6 +49,11 @@ pub fn get_tokio_runtime<'l>() -> std::sync::MappedRwLockReadGuard<'l, tokio::ru
     if write_guard.is_none() {
         *write_guard = Some(
             tokio::runtime::Builder::new_multi_thread()
+                .thread_name_fn(|| {
+                    static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+                    let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                    format!("monarch-pytokio-worker-{}", id)
+                })
                 .enable_all()
                 .build()
                 .unwrap(),

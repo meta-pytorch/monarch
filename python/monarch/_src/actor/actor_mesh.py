@@ -14,9 +14,12 @@ import inspect
 import itertools
 import logging
 import threading
+import warnings
 from abc import abstractproperty
 
 from dataclasses import dataclass
+
+from functools import cache
 from pprint import pformat
 from textwrap import indent
 from traceback import TracebackException
@@ -72,6 +75,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
 )
+from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
@@ -88,6 +92,7 @@ from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
+
 from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer
@@ -161,6 +166,12 @@ class Instance(abc.ABC):
     rank: Point
     proc_mesh: "ProcMesh"
     _controller_controller: "_ControllerController"
+    name: str  # the name this actor was given on spawn
+    class_name: str  # the fully qualified class name of the actor.
+    creator: Optional[
+        "CreatorInstance"
+    ]  # information about the actor who spawned this actor
+    # None if this actor is the spawning actor.
 
     # this property is used to hold the handles to actors and processes launched by this actor
     # in order to keep them alive until this actor exits.
@@ -178,6 +189,47 @@ class Instance(abc.ABC):
     @staticmethod
     def _as_py(ins: HyInstance) -> "Instance":
         return cast(Instance, ins)
+
+    def _as_creator(self) -> "CreatorInstance":
+        return CreatorInstance(
+            self.rank,
+            self.proc_mesh,
+            self.proc,
+            self.name,
+            self.class_name,
+            self.creator,
+        )
+
+    def __repr__(self) -> str:
+        return _qualified_name(self)
+
+
+@dataclass
+class CreatorInstance:
+    """
+    An instance that can be serialized so it can be passed around
+    to describe the creation hierarchy of an actor instance.
+    """
+
+    rank: Point
+    proc_mesh: "ProcMesh"
+    proc: "ProcMesh"
+    name: str
+    class_name: Optional[str]
+    creator: Optional["CreatorInstance"]
+
+    def __repr__(self) -> str:
+        return _qualified_name(self)
+
+
+def _qualified_name(ins: "CreatorInstance | Instance | None") -> str:
+    names = []
+    while ins:
+        class_prefix = "" if ins.class_name is None else f"{ins.class_name} "
+        rank_postfix = str(ins.rank) if len(ins.rank) > 0 else ""
+        names.append(f"<{class_prefix}{ins.name}{rank_postfix}>")
+        ins = ins.creator
+    return ".".join(reversed(names))
 
 
 @rust_struct("monarch_hyperactor::context::Context")
@@ -209,6 +261,49 @@ class Context:
 _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
 )
+
+
+class _ActorFilter(logging.Filter):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def filter(self, record: Any) -> bool:
+        try:
+            if not config.prefix_python_logs_with_actor:
+                return True
+            ctx = _context.get(None)
+            if ctx is not None:
+                record.msg = f"[actor={ctx.actor_instance}] {record.msg}"
+        except Exception as e:
+            warnings.warn(
+                f"failed to add monarch actor information to python logs: {e}",
+                stacklevel=2,
+            )
+        return True
+
+
+@cache
+def _init_context_log_handler() -> None:
+    af: _ActorFilter = _ActorFilter()
+    logger = logging.getLogger()
+    for handler in logger.handlers:
+        handler.addFilter(af)
+
+    _original_addHandler: Any = logging.Logger.addHandler
+
+    def _patched_addHandler(self: logging.Logger, hdlr: logging.Handler) -> None:
+        _original_addHandler(self, hdlr)
+        if af not in hdlr.filters:
+            hdlr.addFilter(af)
+
+    # pyre-ignore[8]: Intentionally monkey-patching Logger.addHandler
+    logging.Logger.addHandler = _patched_addHandler
+
+
+def _set_context(c: Context) -> None:
+    _init_context_log_handler()
+    _context.set(c)
+
 
 T = TypeVar("T")
 
@@ -258,7 +353,7 @@ def context() -> Context:
     c = _context.get(None)
     if c is None:
         c = Context._root_client_context()
-        _context.set(c)
+        _set_context(c)
 
         from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
@@ -297,12 +392,15 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
 
     Currently only one transport type may be enabled at one time.
     In the future we may allow multiple to be enabled.
+
+    For Meta usage, use metatls-hostname
     """
     if isinstance(transport, str):
         transport = {
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
+            "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
         }.get(transport)
         if transport is None:
             raise ValueError(f"unknown transport: {transport}")
@@ -872,7 +970,7 @@ class _Actor:
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
         try:
-            _context.set(ctx)
+            _set_context(ctx)
 
             DebugContext.set(DebugContext())
 
@@ -881,8 +979,16 @@ class _Actor:
             match method:
                 case MethodSpecifier.Init():
                     ins = ctx.actor_instance
-                    Class, ins.proc_mesh, ins._controller_controller, *args = args
+                    (
+                        Class,
+                        ins.proc_mesh,
+                        ins._controller_controller,
+                        ins.name,
+                        ins.creator,
+                        *args,
+                    ) = args
                     ins.rank = ctx.message_rank
+                    ins.class_name = f"{Class.__module__}.{Class.__qualname__}"
                     try:
                         self.instance = Class(*args, **kwargs)
                         self._maybe_exit_debugger()
@@ -998,7 +1104,7 @@ class _Actor:
     def _handle_undeliverable_message(
         self, cx: Context, message: UndeliverableMessageEnvelope
     ) -> bool:
-        _context.set(cx)
+        _set_context(cx)
         handle_undeliverable = getattr(
             self.instance, "_handle_undeliverable_message", None
         )
@@ -1008,7 +1114,7 @@ class _Actor:
             return False
 
     def __supervise__(self, cx: Context, *args: Any, **kwargs: Any) -> object:
-        _context.set(cx)
+        _set_context(cx)
         instance = self.instance
         if instance is None:
             # This could happen because of the following reasons. Both
@@ -1183,6 +1289,7 @@ class ActorMesh(MeshTrait, Generic[T]):
     def _create(
         cls,
         Class: Type[T],
+        name: str,
         actor_mesh: "PythonActorMesh",
         shape: Shape,
         proc_mesh: "ProcMesh",
@@ -1205,7 +1312,18 @@ class ActorMesh(MeshTrait, Generic[T]):
             None,
             False,
         )
-        send(ep, (mesh._class, proc_mesh, controller_controller, *args), kwargs)
+        send(
+            ep,
+            (
+                mesh._class,
+                proc_mesh,
+                controller_controller,
+                name,
+                context().actor_instance._as_creator(),
+                *args,
+            ),
+            kwargs,
+        )
 
         return mesh
 

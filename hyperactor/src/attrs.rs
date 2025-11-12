@@ -311,7 +311,6 @@ macro_rules! impl_attrvalue {
 
 // Implement AttrValue for common standard library types
 impl_attrvalue!(
-    bool,
     i8,
     i16,
     i32,
@@ -381,6 +380,24 @@ where
         let start = start.parse().map_err(|e: E| e.into())?;
         let end = end.parse().map_err(|e: E| e.into())?;
         Ok(start..end)
+    }
+}
+
+impl AttrValue for bool {
+    fn display(&self) -> String {
+        if *self { 1.to_string() } else { 0.to_string() }
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        let value = value.to_ascii_lowercase();
+        match value.as_str() {
+            "0" | "false" => Ok(false),
+            "1" | "true" => Ok(true),
+            _ => Err(anyhow::anyhow!(
+                "expected `0`, `1`, `true` or `false`, got `{}`",
+                value
+            )),
+        }
     }
 }
 
@@ -629,7 +646,7 @@ impl<'de> Visitor<'de> for AttrsVisitor {
 
         let exe_name = std::env::current_exe()
             .ok()
-            .and_then(|p| p.file_name().map(|os| os.to_string_lossy().to_string()))
+            .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<unknown-exe>".to_string());
 
         let mut attrs = Attrs::new();
@@ -1263,8 +1280,14 @@ mod tests {
         let err = bincode::deserialize::<Attrs>(&wire_bytes)
             .expect_err("should error on unknown attr key");
 
+        let exe_str = std::env::current_exe()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unknown-exe>".to_string());
         let msg = format!("{err}");
+
         assert!(msg.contains("unknown attr key"), "got: {msg}");
         assert!(msg.contains(bad_key), "got: {msg}");
+        assert!(msg.contains(&exe_str), "got: {msg}");
     }
 }

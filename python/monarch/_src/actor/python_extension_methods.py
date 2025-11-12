@@ -25,9 +25,14 @@ class PatchRustClass:
             raise ValueError(f"mismatched type names {rust_name} != {python_name}")
         for name, implementation in python_class.__dict__.items():
             if hasattr(self.rust_class, name):
-                # do not patch in the stub methods that
-                # are already defined by the rust implementation
-                continue
+                the_attr = getattr(self.rust_class, name)
+                is_object_default = name.startswith("__") and getattr(
+                    the_attr, "__qualname__", ""
+                ).startswith("object.")
+                if not is_object_default:
+                    # do not patch in the stub methods that
+                    # are already defined by the rust implementation
+                    continue
             if not callable(implementation) and not isinstance(
                 implementation, property
             ):

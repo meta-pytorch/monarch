@@ -136,7 +136,7 @@ impl RdmaBuffer {
         let remote_device = remote.device_name.clone();
         let mut qp = self
             .owner
-            .request_queue_pair_deprecated(
+            .request_queue_pair(
                 client,
                 remote_owner.clone(),
                 local_device.clone(),
@@ -151,7 +151,7 @@ impl RdmaBuffer {
 
         // Release the queue pair back to the actor
         self.owner
-            .release_queue_pair_deprecated(client, remote_owner, local_device, remote_device, qp)
+            .release_queue_pair(client, remote_owner, local_device, remote_device, qp)
             .await?;
 
         result
@@ -190,7 +190,7 @@ impl RdmaBuffer {
 
         let mut qp = self
             .owner
-            .request_queue_pair_deprecated(
+            .request_queue_pair(
                 client,
                 remote_owner.clone(),
                 local_device.clone(),
@@ -204,7 +204,7 @@ impl RdmaBuffer {
 
         // Release the queue pair back to the actor
         self.owner
-            .release_queue_pair_deprecated(client, remote_owner, local_device, remote_device, qp)
+            .release_queue_pair(client, remote_owner, local_device, remote_device, qp)
             .await?;
 
         result?;
@@ -272,9 +272,7 @@ impl RdmaBuffer {
     /// `Ok(())` if the operation completed successfully.
     pub async fn drop_buffer(&self, client: &impl context::Actor) -> Result<(), anyhow::Error> {
         tracing::debug!("[buffer] dropping buffer {:?}", self);
-        self.owner
-            .release_buffer_deprecated(client, self.clone())
-            .await?;
+        self.owner.release_buffer(client, self.clone()).await?;
         Ok(())
     }
 }

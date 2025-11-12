@@ -1462,7 +1462,7 @@ mod tests {
     }
 
     // Given expression `expr`, options `opts` and slice `slice`,
-    // cannonical usage is:
+    // canonical usage is:
     // ```rust
     // let nodes = expr.eval(&opts, slice.clone())?.collect::<Vec<usize>>();
     // ```
