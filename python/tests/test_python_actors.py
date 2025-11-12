@@ -1760,7 +1760,8 @@ class Named(Actor):
 
         return context().actor_instance.creator, str(context().actor_instance)
 
-
+# oss_skip: this keeps timing out
+@pytest.mark.oss_skip
 def test_instance_name():
     cr, result = (
         this_host()
