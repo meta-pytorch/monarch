@@ -19,11 +19,8 @@ use ndslice::Extent;
 use serde::Deserialize;
 use serde::Serialize;
 
-
-
 use crate::resource::Resource;
 use crate::resource::Status;
-
 use crate::v1::ValueMesh;
 
 /// Mesh specs
@@ -67,6 +64,9 @@ mod test {
 
     use super::*;
     use crate::resource::Controller;
+    use crate::resource::CreateOrUpdate;
+    use crate::resource::GetState;
+    use crate::resource::Stop;
 
     // Consider upstreaming this into `hyperactor` -- lightweight handler definitions
     // can be quite useful.
