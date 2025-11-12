@@ -1,4 +1,4 @@
-# 4. Doing real work (hosts → procs → actors)
+#  §4 Doing real work (hosts → procs → actors)
 
 We can now line up the rest of `bootstrap_cannonical_simple` and see that the remaining calls are just "use the host we just created."
 
@@ -10,7 +10,7 @@ let host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
     .unwrap();
 ```
 
-was the part we just broke down in §1.4 — it consumed the allocation, talked to the children, ran the trampoline, and gave us a real `HostMesh`.
+was the part we just broke down in §3 — it consumed the allocation, talked to the children, ran the trampoline, and gave us a real `HostMesh`.
 
 The test immediately does two more things:
 
