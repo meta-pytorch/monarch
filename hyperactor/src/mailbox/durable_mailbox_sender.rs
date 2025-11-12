@@ -267,7 +267,7 @@ pub mod test_utils {
                     observer.send(("read".to_string(), msg.clone())).unwrap();
                 }
             }
-            Ok(futures::stream::iter(filtered_items.into_iter()))
+            Ok(futures::stream::iter(filtered_items))
         }
 
         async fn read_one(&self, seq_id: SeqId) -> Result<M, MessageLogError> {

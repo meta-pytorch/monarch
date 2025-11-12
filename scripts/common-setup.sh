@@ -107,7 +107,6 @@ setup_pytorch_with_headers() {
 # Common setup for build workflows (environment + system deps + rust)
 setup_build_environment() {
     local python_version=${1:-3.10}
-    local install_args=${2:-}
     setup_conda_environment "${python_version}"
     install_system_dependencies
     setup_rust_toolchain

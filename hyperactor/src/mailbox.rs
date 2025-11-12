@@ -213,6 +213,10 @@ pub struct MessageEnvelope {
 
     /// Decremented at every `MailboxSender` hop.
     ttl: u8,
+
+    /// If true, undeliverable messages should be returned to sender. Else, they
+    /// are dropped.
+    return_undeliverable: bool,
     // TODO: add typename, source, seq, etc.
 }
 
@@ -226,6 +230,8 @@ impl MessageEnvelope {
             errors: Vec::new(),
             headers,
             ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            // By default, all undeliverable messages should be returned to the sender.
+            return_undeliverable: true,
         }
     }
 
@@ -248,6 +254,8 @@ impl MessageEnvelope {
             dest,
             errors: Vec::new(),
             ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            // By default, all undeliverable messages should be returned to the sender.
+            return_undeliverable: true,
         })
     }
 
@@ -333,6 +341,13 @@ impl MessageEnvelope {
         self.sender = sender;
     }
 
+    /// Set to true if you want this message to be returned to sender if it cannot
+    /// reach dest. This is the default.
+    /// Set to false if you want the message to be dropped instead.
+    pub fn set_return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
+    }
+
     /// The message has been determined to be undeliverable with the
     /// provided error. Mark the envelope with the error and return to
     /// sender.
@@ -393,6 +408,7 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         } = self;
 
         (
@@ -402,6 +418,7 @@ impl MessageEnvelope {
                 errors,
                 headers,
                 ttl,
+                return_undeliverable,
             },
             data,
         )
@@ -414,6 +431,7 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         } = metadata;
 
         Self {
@@ -423,7 +441,12 @@ impl MessageEnvelope {
             errors,
             headers,
             ttl,
+            return_undeliverable,
         }
+    }
+
+    fn return_undeliverable(&self) -> bool {
+        self.return_undeliverable
     }
 }
 
@@ -452,6 +475,7 @@ pub struct MessageMetadata {
     errors: Vec<DeliveryError>,
     headers: Attrs,
     ttl: u8,
+    return_undeliverable: bool,
 }
 
 /// Errors that occur during mailbox operations. Each error is associated
@@ -1534,6 +1558,7 @@ impl MailboxSender for Mailbox {
                     dest,
                     errors: metadata_errors,
                     ttl,
+                    return_undeliverable,
                 } = metadata;
 
                 // We use the entry API here so that we can remove the
@@ -1562,6 +1587,7 @@ impl MailboxSender for Mailbox {
                                 dest,
                                 errors: metadata_errors,
                                 ttl,
+                                return_undeliverable,
                             },
                             data,
                         )
@@ -3340,15 +3366,15 @@ mod tests {
 
         // Split it twice on actor1
         let port_id1 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone())
+            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
             .unwrap();
         let port_id2 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone())
+            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
             .unwrap();
 
         // A split port id can also be split
         let port_id2_1 = port_id2
-            .split(&actor1, reducer_spec, reducer_opts.clone())
+            .split(&actor1, reducer_spec, reducer_opts.clone(), true)
             .unwrap();
 
         Setup {
@@ -3470,7 +3496,7 @@ mod tests {
         let port_id = port_handle.bind().port_id().clone();
         // Split it
         let reducer_spec = accum::sum::<u64>().reducer_spec();
-        let split_port_id = port_id.split(&actor, reducer_spec, None).unwrap();
+        let split_port_id = port_id.split(&actor, reducer_spec, None, true).unwrap();
 
         // Send 9 messages.
         for msg in [1, 5, 3, 4, 2, 91, 92, 93, 94] {
