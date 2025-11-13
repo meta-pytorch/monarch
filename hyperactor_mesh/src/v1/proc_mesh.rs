@@ -720,8 +720,8 @@ impl ProcMeshRef {
                                 create_rank: rank,
                                 supervision_events: vec![ActorSupervisionEvent::new(
                                     agent_id,
-                                    ActorStatus::Stopped,
                                     None,
+                                    ActorStatus::Stopped,
                                     None,
                                 )],
                             }),

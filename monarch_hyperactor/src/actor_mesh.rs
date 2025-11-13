@@ -315,8 +315,8 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                     // Dummy actor as placeholder to indicate the whole mesh is stopped
                     // TODO(albertli): remove this when pushing all supervision logic to rust.
                     id!(default[0].actor[0]),
-                    ActorStatus::generic_failure("actor mesh is stopped due to proc mesh shutdown"),
                     None,
+                    ActorStatus::generic_failure("actor mesh is stopped due to proc mesh shutdown"),
                     None,
                 )),
             };
@@ -372,10 +372,10 @@ impl PythonActorMeshImpl {
                         // Dummy actor as placeholder to indicate the whole mesh is stopped
                         // TODO(albertli): remove this when pushing all supervision logic to rust.
                         id!(default[0].actor[0]),
+                        None,
                         ActorStatus::generic_failure(
                             "actor mesh is stopped due to proc mesh shutdown",
                         ),
-                        None,
                         None,
                     ),
                 )))

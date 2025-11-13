@@ -373,8 +373,8 @@ fn actor_state_to_supervision_events(
             } else {
                 vec![ActorSupervisionEvent::new(
                     actor_id.expect("actor_id is None"),
-                    ActorStatus::Stopped,
                     None,
+                    ActorStatus::Stopped,
                     None,
                 )]
             }
@@ -501,11 +501,11 @@ async fn actor_states_monitor<A, F>(
                 0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_id().clone(),
+                    None,
                     ActorStatus::generic_failure(format!(
                         "Unable to query for proc states: {:?}",
                         e
                     )),
-                    None,
                     None,
                 ),
                 mesh.name(),
@@ -531,8 +531,8 @@ async fn actor_states_monitor<A, F>(
                             .state
                             .map(|s| s.mesh_agent.actor_id().clone())
                             .unwrap_or(cx.instance().self_id().clone()),
-                        ActorStatus::Stopped,
                         None,
+                        ActorStatus::Stopped,
                         None,
                     ),
                     mesh.name(),
@@ -554,11 +554,11 @@ async fn actor_states_monitor<A, F>(
                 0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_id().clone(),
+                    None,
                     ActorStatus::generic_failure(format!(
                         "Unable to query for actor states: {:?}",
                         e
                     )),
-                    None,
                     None,
                 ),
                 mesh.name(),

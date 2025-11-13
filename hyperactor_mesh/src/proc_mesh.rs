@@ -842,8 +842,8 @@ impl ProcEvents {
                         // TODO(T231868026): find a better way to represent all actors in a proc for supervision event
                         let event = ActorSupervisionEvent::new(
                             proc_id.actor_id("any", 0),
-                            ActorStatus::generic_failure(format!("proc {} is stopped", proc_id)),
                             None,
+                            ActorStatus::generic_failure(format!("proc {} is stopped", proc_id)),
                             None,
                         );
                         tracing::debug!(name = "ActorSupervisionEventDelivery", event = ?event);

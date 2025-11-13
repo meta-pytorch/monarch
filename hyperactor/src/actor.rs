@@ -131,6 +131,13 @@ pub trait Actor: Sized + Send + Debug + 'static {
     ) -> Result<(), anyhow::Error> {
         handle_undeliverable_message(cx, envelope)
     }
+
+    /// If overridden, we will use this name in place of the
+    /// ActorId for talking about this actor in supervision error
+    /// messages.
+    fn display_name(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Default implementation of [`Actor::handle_undeliverable_message`]. Defined
@@ -321,8 +328,11 @@ pub enum ActorErrorKind {
     #[error("{0}")]
     Generic(String),
 
-    /// An actor supervision event was not handled.
-    #[error("supervision: {0}")]
+    /// An error that occurred while trying to handle a supervision event.
+    #[error("{0} while handling {1}")]
+    ErrorDuringHandlingSupervision(String, Box<ActorSupervisionEvent>),
+    /// The actor did not attempt to handle
+    #[error("{0}")]
     UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
 }
 
@@ -330,7 +340,12 @@ impl ActorErrorKind {
     /// Error while processing actor, i.e., returned by the actor's
     /// processing method.
     pub fn processing(err: anyhow::Error) -> Self {
-        Self::Generic(format!("processing error: {}", err))
+        // Unbox err from the anyhow err. Check if it is an ActorErrorKind object.
+        // If it is directly use it as the new ActorError's ActorErrorKind.
+        // This lets us directly pass the ActorErrorKind::UnhandledSupervisionEvent
+        // up the handling infrastructure.
+        err.downcast::<ActorErrorKind>()
+            .unwrap_or_else(|err| Self::Generic(err.to_string()))
     }
 
     /// Unwound stracktrace of a panic.
@@ -406,15 +421,6 @@ impl From<MailboxSenderError> for ActorError {
         Self {
             actor_id: Box::new(inner.location().actor_id().clone()),
             kind: Box::new(ActorErrorKind::mailbox_sender(inner)),
-        }
-    }
-}
-
-impl From<ActorSupervisionEvent> for ActorError {
-    fn from(inner: ActorSupervisionEvent) -> Self {
-        Self {
-            actor_id: Box::new(inner.actor_id.clone()),
-            kind: Box::new(ActorErrorKind::UnhandledSupervisionEvent(Box::new(inner))),
         }
     }
 }
