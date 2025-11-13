@@ -222,6 +222,7 @@ pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSu
         resource::StopAll { cast = true },
         resource::GetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
+        resource::GetAllRankStatus { cast = true },
     ]
 )]
 pub struct ProcMeshAgent {
@@ -274,12 +275,14 @@ impl ProcMeshAgent {
         proc.spawn::<Self>("agent", agent).await
     }
 
-    async fn destroy_and_wait<'a>(
+    async fn destroy_and_wait_except_current<'a>(
         &mut self,
         cx: &Context<'a, Self>,
         timeout: tokio::time::Duration,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
-        self.proc.destroy_and_wait::<Self>(timeout, Some(cx)).await
+        self.proc
+            .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true)
+            .await
     }
 }
 
@@ -451,9 +454,9 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
         let event = update_event_actor_id(event);
         if self.record_supervision_events {
             tracing::info!(
-                "Received supervision event on proc {}: {:?}, recording",
-                self.proc.proc_id(),
-                event
+                proc_id = %self.proc.proc_id(),
+                %event,
+                "recording supervision event",
             );
             self.supervision_events
                 .entry(event.actor_id.clone())
@@ -467,9 +470,9 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
             // the whole process.
             tracing::error!(
                 name = SupervisionEventState::SupervisionEventTransmitFailed.as_ref(),
-                "proc {}: could not propagate supervision event {:?}: crashing",
-                cx.self_id().proc_id(),
-                event
+                proc_id = %cx.self_id().proc_id(),
+                %event,
+                "could not propagate supervision event, crashing",
             );
 
             // We should have a custom "crash" function here, so that this works
@@ -559,67 +562,38 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
 #[async_trait]
 impl Handler<resource::Stop> for ProcMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
-        use crate::v1::StatusOverlay;
-
         // We don't remove the actor from the state map, instead we just store
         // its state as Stopped.
         let actor = self.actor_states.get_mut(&message.name);
-        enum StatusOrActorId {
-            Status(resource::Status),
-            ActorId(ActorId),
-        }
         // Have to separate stop_actor from setting "stopped" because it borrows
         // as mutable and cannot have self borrowed mutably twice.
-        let (rank, actor_id) = match actor {
+        let actor_id = match actor {
             Some(actor_state) => {
-                let rank = actor_state.create_rank;
                 match &actor_state.spawn {
                     Ok(actor_id) => {
                         if actor_state.stopped {
-                            (rank, StatusOrActorId::Status(resource::Status::Stopped))
+                            None
                         } else {
                             actor_state.stopped = true;
-                            (rank, StatusOrActorId::ActorId(actor_id.clone()))
+                            Some(actor_id.clone())
                         }
                     }
                     // If the original spawn had failed, the actor is still considered
                     // successfully stopped.
-                    Err(_) => (rank, StatusOrActorId::Status(resource::Status::Stopped)),
+                    Err(_) => None,
                 }
             }
             // TODO: represent unknown rank
-            None => (
-                usize::MAX,
-                StatusOrActorId::Status(resource::Status::NotExist),
-            ),
+            None => None,
         };
         let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
-        let status = match actor_id {
-            StatusOrActorId::Status(s) => s,
-            StatusOrActorId::ActorId(actor_id) => {
-                // If this fails, we will still leave the actor_state as stopped,
-                // because it shouldn't be attempted again.
-                let stop_result = self
-                    .stop_actor(cx, actor_id, timeout.as_millis() as u64)
-                    .await?;
-                match stop_result {
-                    // use Stopped as a successful result.
-                    StopActorResult::Success => resource::Status::Stopped,
-                    StopActorResult::Timeout => resource::Status::Timeout(timeout),
-                    StopActorResult::NotFound => resource::Status::NotExist,
-                }
-            }
-        };
-
-        // Send a sparse overlay update. If rank is unknown, emit an
-        // empty overlay.
-        let overlay = if rank == usize::MAX {
-            StatusOverlay::new()
-        } else {
-            StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
-                .expect("valid single-run overlay")
-        };
-        message.reply.send(cx, overlay)?;
+        if let Some(actor_id) = actor_id {
+            // While this function returns a Result, it never returns an Err
+            // value so we can simply expect without any failure handling.
+            self.stop_actor(cx, actor_id, timeout.as_millis() as u64)
+                .await
+                .expect("stop_actor cannot fail");
+        }
 
         Ok(())
     }
@@ -635,12 +609,21 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
         let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         // By passing in the self context, destroy_and_wait will stop this agent
         // last, after all others are stopped.
-        let _stop_result = self.destroy_and_wait(cx, timeout).await?;
-        for (_, actor_state) in self.actor_states.iter_mut() {
-            // Mark all actors as stopped.
-            actor_state.stopped = true;
+        let stop_result = self.destroy_and_wait_except_current(cx, timeout).await;
+        match stop_result {
+            Ok(_) => {
+                for (_, actor_state) in self.actor_states.iter_mut() {
+                    // Mark all actors as stopped.
+                    actor_state.stopped = true;
+                }
+                Ok(())
+            }
+            Err(e) => Err(anyhow::anyhow!(
+                "failed to StopAll on {}: {:?}",
+                cx.self_id(),
+                e
+            )),
         }
-        Ok(())
     }
 }
 
@@ -698,6 +681,69 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
                 .expect("valid single-run overlay")
         };
         let result = get_rank_status.reply.send(cx, overlay);
+        // Ignore errors, because returning Err from here would cause the ProcMeshAgent
+        // to be stopped, which would prevent querying and spawning other actors.
+        // This only means some actor that requested the state of an actor failed to receive it.
+        if let Err(e) = result {
+            tracing::warn!(
+                actor = %cx.self_id(),
+                "failed to send GetRankStatus reply to {} due to error: {}",
+                get_rank_status.reply.port_id().actor_id(),
+                e
+            );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::GetAllRankStatus> for ProcMeshAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        get_rank_status: resource::GetAllRankStatus,
+    ) -> anyhow::Result<()> {
+        use crate::resource::Status;
+
+        let mut ranks = Vec::new();
+        for (_name, state) in self.actor_states.iter() {
+            match state {
+                ActorInstanceState {
+                    spawn: Ok(actor_id),
+                    create_rank,
+                    stopped,
+                } => {
+                    if *stopped {
+                        ranks.push((*create_rank, resource::Status::Stopped));
+                    } else {
+                        let supervision_events = self
+                            .supervision_events
+                            .get(actor_id)
+                            .map_or_else(Vec::new, |a| a.clone());
+                        ranks.push((
+                            *create_rank,
+                            if supervision_events.is_empty() {
+                                resource::Status::Running
+                            } else {
+                                resource::Status::Failed(format!(
+                                    "because of supervision events: {:?}",
+                                    supervision_events
+                                ))
+                            },
+                        ));
+                    }
+                }
+                ActorInstanceState {
+                    spawn: Err(e),
+                    create_rank,
+                    ..
+                } => {
+                    ranks.push((*create_rank, Status::Failed(e.to_string())));
+                }
+            }
+        }
+
+        let result = get_rank_status.reply.send(cx, ranks);
         // Ignore errors, because returning Err from here would cause the ProcMeshAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.

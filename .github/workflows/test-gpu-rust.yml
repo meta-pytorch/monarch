@@ -63,7 +63,7 @@ jobs:
         # * monarch_messages: monarch/target/debug/deps/monarch_messages-...:
         #   /lib64/libm.so.6: version `GLIBC_2.29' not found
         #   (required by /meta-pytorch/monarch/libtorch/lib/libtorch_cpu.so)
-        cargo nextest run --workspace --profile ci \
+        timeout 12m cargo nextest run --workspace --profile ci \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \
           --exclude monarch_simulator_lib \

@@ -659,11 +659,30 @@ impl Proc {
     /// If `cx` is specified, it means this method was called from inside an actor
     /// in which case we shouldn't wait for it to stop and need to delay aborting
     /// its task.
-    #[hyperactor::instrument]
     pub async fn destroy_and_wait<A: Actor>(
         &mut self,
         timeout: Duration,
         cx: Option<&Context<'_, A>>,
+    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+        self.destroy_and_wait_except_current::<A>(timeout, cx, false)
+            .await
+    }
+
+    /// Stop the proc. Returns a pair of:
+    /// - the actors observed to stop;
+    /// - the actors not observed to stop when timeout.
+    ///
+    /// If `cx` is specified, it means this method was called from inside an actor
+    /// in which case we shouldn't wait for it to stop and need to delay aborting
+    /// its task.
+    /// If except_current is true, don't stop the actor represented by "cx" at
+    /// all.
+    #[hyperactor::instrument]
+    pub async fn destroy_and_wait_except_current<A: Actor>(
+        &mut self,
+        timeout: Duration,
+        cx: Option<&Context<'_, A>>,
+        except_current: bool,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         tracing::debug!("{}: proc stopping", self.proc_id());
 
@@ -736,6 +755,7 @@ impl Proc {
 
         if let Some(this_handle) = this_handle
             && let Some(this_actor_id) = this_actor_id
+            && !except_current
         {
             tracing::debug!("{}: aborting (delayed) {:?}", this_actor_id, this_handle);
             this_handle.abort()
