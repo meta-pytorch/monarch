@@ -265,7 +265,7 @@ impl<M> PortReceiver<M> {
     pub async fn recv(&mut self) -> Result<M, MailboxError> {
         let mut next = self.receiver.recv().await;
         // To coalesce, get the last message from the queue if there are
-        // more on the mspc queue.
+        // more on the mpsc queue.
         if self.coalesce {
             if let Some(latest) = self.drain().pop() {
                 next = Some(latest);
