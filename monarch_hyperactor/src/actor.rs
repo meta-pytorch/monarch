@@ -22,6 +22,8 @@ use hyperactor::Named;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 use hyperactor::ProcId;
+use hyperactor::actor::ActorError;
+use hyperactor::attrs::Attrs;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
@@ -568,6 +570,63 @@ impl Actor for PythonActor {
                 instance: None,
             })
         })?)
+    }
+
+    async fn cleanup(
+        &mut self,
+        this: &Instance<Self>,
+        err: Option<&ActorError>,
+    ) -> anyhow::Result<()> {
+        // Calls the "__cleanup__" method on the python instance to allow the actor
+        // to control its own cleanup.
+        // No headers because this isn't in the context of a message.
+        let cx = Context::new(this, Attrs::new());
+        // Turn the ActorError into a representation of the error. We may not
+        // have an original exception object or traceback, so we just pass in
+        // the message.
+        let err_as_str = err.map(|e| e.to_string());
+        let future = Python::with_gil(|py| {
+            let py_cx = match self.instance {
+                Some(ref instance) => crate::context::PyContext::new(&cx, instance.clone_ref(py)),
+                None => {
+                    let py_instance: crate::context::PyInstance = this.into();
+                    crate::context::PyContext::new(
+                        &cx,
+                        py_instance
+                            .into_py_any(py)?
+                            .downcast_bound(py)
+                            .map_err(PyErr::from)?
+                            .clone()
+                            .unbind(),
+                    )
+                }
+            }
+            .into_bound_py_any(py)?;
+            let actor = self.actor.bind(py);
+            // Some tests don't use the Actor base class, so add this check
+            // to be defensive.
+            match actor.hasattr("__cleanup__") {
+                Ok(false) | Err(_) => {
+                    // No cleanup found, default to returning None
+                    return Ok(None);
+                }
+                _ => {}
+            }
+            let awaitable = actor
+                .call_method("__cleanup__", (&py_cx, err_as_str), None)
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?;
+            if awaitable.is_none() {
+                Ok(None)
+            } else {
+                pyo3_async_runtimes::into_future_with_locals(self.get_task_locals(py), awaitable)
+                    .map(Some)
+                    .map_err(anyhow::Error::from)
+            }
+        })?;
+        if let Some(future) = future {
+            future.await.map_err(anyhow::Error::from)?;
+        }
+        Ok(())
     }
 
     async fn handle_undeliverable_message(
