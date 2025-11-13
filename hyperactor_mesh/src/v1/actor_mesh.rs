@@ -368,9 +368,6 @@ impl<A: Referable> fmt::Display for ActorMeshRef<A> {
     }
 }
 
-// proc_mesh: ProcMeshRef,
-// name: Name,
-
 impl<A: Referable> PartialEq for ActorMeshRef<A> {
     fn eq(&self, other: &Self) -> bool {
         self.proc_mesh == other.proc_mesh && self.name == other.name
