@@ -182,15 +182,16 @@ run_test_groups() {
     pkill -9 python || true
     pkill -9 pytest || true
     sleep 2
+    # Isolate runs each test in a separate forked process which enhances reliability.
     if [[ "$enable_actor_error_test" == "1" ]]; then
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        LC_ALL=C pytest --isolate python/tests/ -s -v -m "not oss_skip" \
             --ignore-glob="**/meta/**" \
             --dist=no \
             --group="$GROUP" \
             --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
             --splits=10
     else
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        LC_ALL=C pytest --isolate python/tests/ -s -v -m "not oss_skip" \
             --ignore-glob="**/meta/**" \
             --dist=no \
             --ignore=python/tests/test_actor_error.py \
