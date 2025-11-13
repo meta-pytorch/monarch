@@ -5,4 +5,4 @@ markers = [
 ]
 asyncio_mode = "auto"
 # Default timeout of 5 minutes
-timeout = 300
+isolate_timeout = 300
