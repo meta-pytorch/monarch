@@ -835,8 +835,9 @@ impl ProcMeshRef {
             .to_string();
 
         let serialized_params = bincode::serialize(params)?;
+        let agent_mesh = self.agent_mesh();
 
-        self.agent_mesh().cast(
+        agent_mesh.cast(
             cx,
             resource::CreateOrUpdate::<mesh_agent::ActorSpec> {
                 name: name.clone(),
@@ -873,7 +874,7 @@ impl ProcMeshRef {
         reply.return_undeliverable(false);
         // Send a message to all ranks. They reply with overlays to
         // `port`.
-        self.agent_mesh().cast(
+        agent_mesh.cast(
             cx,
             resource::GetRankStatus {
                 name: name.clone(),
@@ -910,6 +911,7 @@ impl ProcMeshRef {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &statuses,
                         Status::NotExist,
+                        Status::is_not_exist,
                         self.ranks.len(),
                     );
                     Err(Error::ActorSpawnError { statuses: legacy })
@@ -922,6 +924,7 @@ impl ProcMeshRef {
                 let legacy = mesh_to_rankedvalues_with_default(
                     &complete,
                     Status::Timeout(elapsed),
+                    Status::is_not_exist,
                     self.ranks.len(),
                 );
                 Err(Error::ActorSpawnError { statuses: legacy })
@@ -936,6 +939,14 @@ impl ProcMeshRef {
         mesh_name: Name,
     ) -> v1::Result<()> {
         let region = self.region().clone();
+        let agent_mesh = self.agent_mesh();
+        agent_mesh.cast(
+            cx,
+            resource::Stop {
+                name: mesh_name.clone(),
+            },
+        )?;
+
         // Open an accum port that *receives overlays* and *emits full
         // meshes*.
         //
@@ -953,9 +964,9 @@ impl ProcMeshRef {
                 max_update_interval: Some(Duration::from_millis(50)),
             }),
         );
-        self.agent_mesh().cast(
+        agent_mesh.cast(
             cx,
-            resource::Stop {
+            resource::GetRankStatus {
                 name: mesh_name,
                 reply: port.bind(),
             },
@@ -982,6 +993,7 @@ impl ProcMeshRef {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &statuses,
                         Status::NotExist,
+                        Status::is_not_exist,
                         self.ranks.len(),
                     );
                     Err(Error::ActorStopError { statuses: legacy })
@@ -993,6 +1005,7 @@ impl ProcMeshRef {
                 let legacy = mesh_to_rankedvalues_with_default(
                     &complete,
                     Status::Timeout(start_time.elapsed()),
+                    Status::is_not_exist,
                     self.ranks.len(),
                 );
                 Err(Error::ActorStopError { statuses: legacy })
