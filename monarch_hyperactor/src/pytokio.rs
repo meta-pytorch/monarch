@@ -49,6 +49,7 @@ use hyperactor::config;
 use hyperactor::config::CONFIG;
 use hyperactor::config::ConfigAttr;
 use monarch_types::SerializablePyErr;
+use monarch_types::py_global;
 use pyo3::IntoPyObjectExt;
 #[cfg(test)]
 use pyo3::PyClass;
@@ -76,6 +77,9 @@ declare_attrs! {
     })
     pub attr ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK: bool = false;
 }
+
+py_global!(context, "monarch._src.actor.actor_mesh", "context");
+py_global!(actor_mesh_module, "monarch._src.actor", "actor_mesh");
 
 fn current_traceback() -> PyResult<Option<PyObject>> {
     if config::global::get(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK) {
@@ -336,10 +340,7 @@ impl PyPythonTask {
         // context() from the context in which the PythonTask was constructed.
         // We need to do this manually because the value of the contextvar isn't
         // maintained inside the tokio runtime.
-        let monarch_context = py
-            .import("monarch._src.actor.actor_mesh")?
-            .call_method0("context")?
-            .unbind();
+        let monarch_context = context(py).call0()?.unbind();
         PyPythonTask::new(async move {
             let (coroutine_iterator, none) = Python::with_gil(|py| {
                 coro.into_bound(py)
@@ -355,11 +356,11 @@ impl PyPythonTask {
                 let action: PyResult<Action> = Python::with_gil(|py| {
                     // We may be executing in a new thread at this point, so we need to set the value
                     // of context().
-                    let _context = py
-                        .import("monarch._src.actor.actor_mesh")?
-                        .getattr("_context")?;
+                    let _context = actor_mesh_module(py).getattr("_context")?;
                     let old_context = _context.call_method1("get", (PyNone::get(py),))?;
-                    _context.call_method1("set", (monarch_context.clone_ref(py),))?;
+                    _context
+                        .call_method1("set", (monarch_context.clone_ref(py),))
+                        .expect("failed to set _context");
 
                     let result = match last {
                         Ok(value) => coroutine_iterator.bind(py).call_method1("send", (value,)),
@@ -369,7 +370,9 @@ impl PyPythonTask {
                     };
 
                     // Reset context() so that when this tokio thread yields, it has its original state.
-                    _context.call_method1("set", (old_context,))?;
+                    _context
+                        .call_method1("set", (old_context,))
+                        .expect("failed to restore _context");
                     match result {
                         Ok(task) => Ok(Action::Wait(
                             task.extract::<Py<PyPythonTask>>()
@@ -415,14 +418,29 @@ impl PyPythonTask {
     }
 
     #[staticmethod]
-    fn spawn_blocking(f: PyObject) -> PyResult<PyShared> {
+    fn spawn_blocking(py: Python<'_>, f: PyObject) -> PyResult<PyShared> {
         let (tx, rx) = watch::channel(None);
         let traceback = current_traceback()?;
         let traceback1 = traceback
             .as_ref()
             .map_or_else(|| None, |t| Python::with_gil(|py| Some(t.clone_ref(py))));
+        let monarch_context = context(py).call0()?.unbind();
+        // The `_context` contextvar needs to be propagated through to the thread that
+        // runs the blocking tokio task. Upon completion, the original value of `_context`
+        // is restored.
         let handle = get_tokio_runtime().spawn_blocking(move || {
-            let result = Python::with_gil(|py| f.call0(py));
+            let result = Python::with_gil(|py| {
+                let _context = actor_mesh_module(py).getattr("_context")?;
+                let old_context = _context.call_method1("get", (PyNone::get(py),))?;
+                _context
+                    .call_method1("set", (monarch_context.clone_ref(py),))
+                    .expect("failed to set _context");
+                let result = f.call0(py);
+                _context
+                    .call_method1("set", (old_context,))
+                    .expect("failed to restore _context");
+                result
+            });
             send_result(tx, result, traceback1);
         });
         Ok(PyShared {
