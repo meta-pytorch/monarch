@@ -72,23 +72,49 @@ impl ActorSupervisionEvent {
             status => status,
         }
     }
+
+    /// Returns true if this is a user actor event, false if it's a system actor event.
+    /// System actors (like "agent") are internal to Monarch and should not be exposed to users.
+    pub fn is_user_actor_event(&self) -> bool {
+        self.actor_id.name() != "agent"
+    }
 }
 
 impl std::error::Error for ActorSupervisionEvent {}
 
 impl fmt::Display for ActorSupervisionEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}: {} at {}",
-            self.actor_id,
-            self.actor_status,
-            DateTime::<Local>::from(self.occurred_at),
-        )?;
-        if let Some(message_headers) = &self.message_headers {
-            let headers = serde_json::to_string(&message_headers)
-                .expect("could not serialize message headers");
-            write!(f, " (headers: {})", headers)?;
+        if self.is_user_actor_event() {
+            write!(
+                f,
+                "{}: {} at {}",
+                self.actor_id,
+                self.actor_status,
+                DateTime::<Local>::from(self.occurred_at),
+            )?;
+            if let Some(message_headers) = &self.message_headers {
+                let headers = serde_json::to_string(&message_headers)
+                    .expect("could not serialize message headers");
+                write!(f, " (headers: {})", headers)?;
+            }
+        } else {
+            // System actor event - show simplified message
+            match self.actor_id.proc_id() {
+                crate::reference::ProcId::Direct(addr, _) => {
+                    write!(
+                        f,
+                        "{} is not reacheable, check the log on the host for details",
+                        addr
+                    )?;
+                }
+                crate::reference::ProcId::Ranked(_, _) => {
+                    write!(
+                        f,
+                        "{} is not reacheable, check the log on the host for details",
+                        self.actor_id.proc_id()
+                    )?;
+                }
+            }
         }
         if let Some(caused_by) = &self.caused_by {
             write!(f, ": (caused by: {})", caused_by)?;
