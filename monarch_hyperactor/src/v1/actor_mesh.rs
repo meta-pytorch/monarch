@@ -442,15 +442,22 @@ fn send_state_change<F>(
     } else {
         Unhealthy::Crashed(event.clone())
     };
-    let event_actor_id = event.actor_id.clone();
     let py_event = PyActorSupervisionEvent::from(event.clone());
-    let pyerr = PyErr::new::<SupervisionError, _>(format!(
-        "Actor {} exited because of the following reason: {}",
-        event_actor_id,
-        py_event
-            .__repr__()
-            .expect("repr failed on PyActorSupervisionEvent")
-    ));
+    let pyerr = if event.is_user_actor_event() {
+        PyErr::new::<SupervisionError, _>(format!(
+            "Actor {} exited because of the following reason: {}",
+            event.actor_id,
+            py_event
+                .__repr__()
+                .expect("repr failed on PyActorSupervisionEvent")
+        ))
+    } else {
+        PyErr::new::<SupervisionError, _>(
+            py_event
+                .__repr__()
+                .expect("repr failed on PyActorSupervisionEvent"),
+        )
+    };
     sender.send(Some(pyerr)).expect("receiver closed");
 }
 
