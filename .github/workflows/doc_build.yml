@@ -44,7 +44,7 @@ jobs:
         # Set environment variables for CUDA build
         export USE_CUDA=1
         export USE_TENSOR_ENGINE=1
-        export RUSTFLAGS="-Zthreads=16"
+        export RUSTFLAGS="-Zthreads=16 ${RUSTFLAGS:-}"
         export _GLIBCXX_USE_CXX11_ABI=1
         export CUDA_LIB_DIR=/usr/lib64
 

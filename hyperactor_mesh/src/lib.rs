@@ -32,6 +32,8 @@ pub mod resource;
 mod router;
 pub mod shared_cell;
 pub mod shortuuid;
+#[cfg(target_os = "linux")]
+mod systemd;
 pub mod test_utils;
 mod testresource;
 pub mod v1;
