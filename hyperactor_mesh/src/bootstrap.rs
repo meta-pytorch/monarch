@@ -72,6 +72,7 @@ use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
+use crate::resource::Status;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
@@ -1200,6 +1201,43 @@ impl BootstrapProcHandle {
             .take();
         (out, err)
     }
+
+    async fn send_stop_all(
+        &self,
+        cx: &impl context::Actor,
+        agent: ActorRef<ProcMeshAgent>,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        // For all of the messages and replies in this function:
+        // if the proc is already dead, then the message will be undeliverable,
+        // which should be ignored.
+        // If this message isn't deliverable to the agent, the process may have
+        // stopped already. No need to produce any errors, just continue with
+        // killing the process.
+        let mut agent_port = agent.port();
+        agent_port.return_undeliverable(false);
+        agent_port.send(cx, resource::StopAll {})?;
+        let (reply_port, mut rx) = cx.mailbox().open_port::<Vec<(usize, Status)>>();
+        let mut reply_port = reply_port.bind();
+        reply_port.return_undeliverable(false);
+        // Similar to above, if we cannot query for the stopped actors, just
+        // proceed with SIGTERM.
+        let mut agent_port = agent.port();
+        agent_port.return_undeliverable(false);
+        agent_port.send(cx, resource::GetAllRankStatus { reply: reply_port })?;
+        // If there's a timeout waiting for a reply, continue with SIGTERM.
+        let statuses = RealClock.timeout(timeout, rx.recv()).await??;
+        let has_failure = statuses.iter().any(|(_rank, status)| status.is_failure());
+
+        if has_failure {
+            Err(anyhow::anyhow!(
+                "StopAll had some actors that failed: {:?}",
+                statuses,
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[async_trait]
@@ -1323,19 +1361,18 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         // they are in the Ready state and have an Agent we can message.
         let agent = self.agent_ref();
         if let Some(agent) = agent {
-            // TODO: add a reply to StopAll and wait for it.
-            let mut port = agent.port();
-            // If the proc is already dead, then the StopAll message will be undeliverable,
-            // which should be ignored.
-            port.return_undeliverable(false);
-            if let Err(e) = port.send(cx, resource::StopAll {}) {
-                // Cannot send to agent, proceed with SIGTERM.
+            if let Err(e) = self.send_stop_all(cx, agent.clone(), timeout).await {
+                // Variety of possible errors, proceed with SIGTERM.
                 tracing::warn!(
-                    "ProcMeshAgent {} didn't respond in time to stop proc: {}",
+                    "ProcMeshAgent {} could not successfully stop all actors: {}",
                     agent.actor_id(),
                     e,
                 );
             }
+            // Even if the StopAll message and response is fully effective, we
+            // still want to send SIGTERM to actually exit the process and free
+            // any leftover resources. No actor should be running at this
+            // point.
         }
         // After the stop all actors message may be successful, we still need
         // to actually stop the process.
