@@ -102,7 +102,7 @@ struct ProcCreationState {
         resource::CreateOrUpdate<ProcSpec>,
         resource::Stop,
         resource::GetState<ProcState>,
-        resource::GetRankStatus,
+        resource::GetRankStatus { cast = true },
         ShutdownHost
     ]
 )]
@@ -196,57 +196,36 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
 #[async_trait]
 impl Handler<resource::Stop> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
-        use crate::resource::Status;
-        use crate::v1::StatusOverlay;
-
         let host = self.host.as_mut().expect("host present");
         let manager = host.as_process().map(Host::manager);
         let timeout = hyperactor::config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
         // We don't remove the proc from the state map, instead we just store
         // its state as Stopped.
         let proc = self.created.get_mut(&message.name);
-        let (rank, status) = match proc {
-            Some(ProcCreationState {
-                rank,
-                created,
-                stopped,
-            }) => match created {
-                Ok((proc_id, _)) => {
-                    let proc_status = match manager {
-                        Some(manager) => manager.status(proc_id).await,
-                        None => None,
-                    };
-                    // Fetch status from the ProcStatus object if it's available
-                    // for more details.
-                    // This prevents trying to kill a process that is already dead.
-                    let should_stop = if let Some(status) = &proc_status {
-                        resource::Status::from(status.clone()).is_healthy()
-                    } else {
-                        !*stopped
-                    };
-                    if should_stop {
-                        host.terminate_proc(&cx, proc_id, timeout).await?;
-                        *stopped = true;
-                    }
-                    // use Stopped as a successful result for Stop.
-                    (*rank, Status::Stopped)
-                }
-                Err(e) => (
-                    *rank,
-                    Status::Failed(format!("Actor already failed with {}", e)),
-                ),
-            },
-            // TODO: represent unknown rank
-            None => (usize::MAX, Status::NotExist),
-        };
+        if let Some(ProcCreationState {
+            created: Ok((proc_id, _)),
+            stopped,
+            ..
+        }) = proc
+        {
+            let proc_status = match manager {
+                Some(manager) => manager.status(proc_id).await,
+                None => None,
+            };
+            // Fetch status from the ProcStatus object if it's available
+            // for more details.
+            // This prevents trying to kill a process that is already dead.
+            let should_stop = if let Some(status) = &proc_status {
+                resource::Status::from(status.clone()).is_healthy()
+            } else {
+                !*stopped
+            };
+            if should_stop {
+                host.terminate_proc(&cx, proc_id, timeout).await?;
+                *stopped = true;
+            }
+        }
 
-        let overlay = if rank == usize::MAX {
-            StatusOverlay::new()
-        } else {
-            StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
-                .expect("valid single-run overlay")
-        };
-        message.reply.send(cx, overlay)?;
         Ok(())
     }
 }

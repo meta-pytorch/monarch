@@ -89,6 +89,13 @@ impl Status {
         )
     }
 
+    /// Tells whether the status represents a failure. A failure is both terminating
+    /// (the resource is not running), but also means abnormal exit (the resource
+    /// did not stop cleanly).
+    pub fn is_failure(&self) -> bool {
+        matches!(self, Self::Failed(_) | Self::Timeout(_))
+    }
+
     pub fn is_healthy(&self) -> bool {
         matches!(self, Status::Initializing | Status::Running)
     }
@@ -210,6 +217,26 @@ impl GetRankStatus {
     }
 }
 
+/// Get the status of all resources across the mesh.
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    Handler,
+    HandleClient,
+    RefClient,
+    Bind,
+    Unbind
+)]
+pub struct GetAllRankStatus {
+    /// Returns the status and rank of all resources.
+    /// TODO: migrate to a ValueOverlay.
+    #[binding(include)]
+    pub reply: PortRef<Vec<(usize, Status)>>,
+}
+
 /// The state of a resource.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct State<S> {
@@ -270,13 +297,11 @@ pub struct CreateOrUpdate<S> {
 pub struct Stop {
     /// The name of the resource to stop.
     pub name: Name,
-    /// The status of the rank.
-    #[binding(include)]
-    pub reply: PortRef<StatusOverlay>,
 }
 
 /// Stop all resources owned by the receiver of this message.
-/// No reply, this is meant to force a stop without waiting for acknowledgement.
+/// No reply, this just issues the stop command.
+/// Use GetRankStatus to determine if it has successfully stopped.
 #[derive(
     Debug,
     Clone,

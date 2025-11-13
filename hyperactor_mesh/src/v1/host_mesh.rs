@@ -56,7 +56,6 @@ use crate::v1;
 use crate::v1::Name;
 use crate::v1::ProcMesh;
 use crate::v1::ProcMeshRef;
-use crate::v1::StatusMesh;
 use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 pub use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
@@ -585,15 +584,23 @@ impl Drop for HostMesh {
 /// shim once Error::ActorSpawnError carries a StatusMesh
 /// (ValueMesh<Status>) directly. At that point, use the mesh
 /// as-is and remove `mesh_to_rankedvalues_*` calls below.
-pub(crate) fn mesh_to_rankedvalues_with_default(
-    mesh: &StatusMesh,
-    default: Status,
+/// is_sentinel should return true if the value matches a previous filled in
+/// value. If the input value matches the sentinel, it gets replaced with the
+/// default.
+pub(crate) fn mesh_to_rankedvalues_with_default<T, F>(
+    mesh: &ValueMesh<T>,
+    default: T,
+    is_sentinel: F,
     len: usize,
-) -> RankedValues<Status> {
+) -> RankedValues<T>
+where
+    T: Eq + Clone + 'static,
+    F: Fn(&T) -> bool,
+{
     let mut out = RankedValues::from((0..len, default));
     for (i, s) in mesh.values().enumerate() {
-        if !matches!(s, Status::NotExist) {
-            out.merge_from(RankedValues::from((i..i + 1, s.clone())));
+        if !is_sentinel(&s) {
+            out.merge_from(RankedValues::from((i..i + 1, s)));
         }
     }
     out
@@ -809,6 +816,7 @@ impl HostMeshRef {
                 let legacy = mesh_to_rankedvalues_with_default(
                     &complete,
                     Status::Timeout(start_time.elapsed()),
+                    Status::is_not_exist,
                     num_ranks,
                 );
                 return Err(v1::Error::ProcSpawnError { statuses: legacy });
@@ -831,16 +839,17 @@ impl HostMeshRef {
     ) -> anyhow::Result<()> {
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
-        let (tx, rx) = cx.mailbox().open_accum_port_opts(
+        let mut proc_names = Vec::new();
+        let num_ranks = region.num_ranks();
+        // Accumulator outputs full StatusMesh snapshots; seed with
+        // NotExist.
+        let (port, rx) = cx.mailbox().open_accum_port_opts(
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
             }),
         );
-        let mut num_ranks = 0;
-        let mut proc_names = Vec::new();
         for proc_id in procs.into_iter() {
-            num_ranks += 1;
             let Some((addr, proc_name)) = proc_id.as_direct() else {
                 return Err(anyhow::anyhow!(
                     "host mesh proc {} must be direct addressed",
@@ -859,10 +868,12 @@ impl HostMeshRef {
             host.mesh_agent().send(
                 cx,
                 resource::Stop {
-                    name: proc_name,
-                    reply: tx.bind(),
+                    name: proc_name.clone(),
                 },
             )?;
+            host.mesh_agent()
+                .get_rank_status(cx, proc_name, port.bind())
+                .await?;
         }
         tracing::info!(
             "Sending Stop to host mesh {} for {:?} procs",
@@ -876,17 +887,12 @@ impl HostMeshRef {
             rx,
             num_ranks,
             config::global::get(PROC_STOP_MAX_IDLE),
-            region,
+            region.clone(), // fallback mesh if nothing arrives
         )
         .await
         {
             Ok(statuses) => {
-                let failed = statuses.values().any(|s| {
-                    matches!(
-                        s,
-                        resource::Status::Failed(_) | resource::Status::Timeout(_)
-                    )
-                });
+                let failed = statuses.values().any(|s| s.is_failure());
                 if failed {
                     return Err(anyhow::anyhow!(
                         "failed to terminate proc mesh: {:?}",
@@ -900,6 +906,7 @@ impl HostMeshRef {
                 let legacy = mesh_to_rankedvalues_with_default(
                     &complete,
                     Status::Timeout(start_time.elapsed()),
+                    Status::is_not_exist,
                     num_ranks,
                 );
                 return Err(anyhow::anyhow!(
