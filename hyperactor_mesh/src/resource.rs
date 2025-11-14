@@ -359,6 +359,23 @@ where
     }
 }
 
+/// A trait that bundles a set of types that together define a resource.
+pub trait Resource {
+    /// The spec specification for this resource.
+    type Spec: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+
+    /// The state for this resource.
+    type State: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+}
+
+// A behavior defining the interface for a mesh controller.
+hyperactor::behavior!(
+    Controller<R: Resource>,
+    CreateOrUpdate<R::Spec>,
+    GetState<R::State>,
+    Stop,
+);
+
 /// RankedValues compactly represents rank-indexed values of type T.
 /// It stores contiguous values in a set of intervals; thus it is
 /// efficient and compact when the cardinality of T-typed values is
