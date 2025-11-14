@@ -33,6 +33,7 @@ use super::framed::FrameReader;
 use super::framed::FrameWrite;
 use super::framed::WriteState;
 use crate::RemoteMessage;
+use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
@@ -203,14 +204,18 @@ struct Outbox<'a, M: RemoteMessage> {
     next_seq: u64,
     deque: MessageDeque<M>,
     log_id: &'a str,
+    dest_addr: &'a ChannelAddr,
+    session_id: u64,
 }
 
 impl<'a, M: RemoteMessage> Outbox<'a, M> {
-    fn new(log_id: &'a str) -> Self {
+    fn new(log_id: &'a str, dest_addr: &'a ChannelAddr, session_id: u64) -> Self {
         Self {
             next_seq: 0,
             deque: MessageDeque(VecDeque::new()),
             log_id,
+            dest_addr,
+            session_id,
         }
     }
 
@@ -255,7 +260,24 @@ impl<'a, M: RemoteMessage> Outbox<'a, M> {
 
         let frame = Frame::Message(self.next_seq, message);
         let message = serialize_bincode(&frame).map_err(|e| format!("serialization error: {e}"))?;
-        metrics::REMOTE_MESSAGE_SEND_SIZE.record(message.frame_len() as f64, &[]);
+        let message_size = message.frame_len();
+        metrics::REMOTE_MESSAGE_SEND_SIZE.record(message_size as f64, &[]);
+
+        // Track throughput for this channel pair
+        metrics::CHANNEL_THROUGHPUT_BYTES.add(
+            message_size as u64,
+            hyperactor_telemetry::kv_pairs!(
+                "dest" => self.dest_addr.to_string(),
+                "session_id" => self.session_id.to_string(),
+            ),
+        );
+        metrics::CHANNEL_THROUGHPUT_MESSAGES.add(
+            1,
+            hyperactor_telemetry::kv_pairs!(
+                "dest" => self.dest_addr.to_string(),
+                "session_id" => self.session_id.to_string(),
+            ),
+        );
 
         self.deque.push_back(QueuedMessage {
             seq: self.next_seq,
@@ -371,7 +393,7 @@ impl<'a, M: RemoteMessage> Unacked<'a, M> {
     }
 
     /// Remove acked messages from the deque.
-    fn prune(&mut self, acked: u64, acked_at: Instant) {
+    fn prune(&mut self, acked: u64, acked_at: Instant, dest_addr: &ChannelAddr, session_id: u64) {
         assert!(
             self.largest_acked.as_ref().map_or(0, |i| i.0) <= acked,
             "{}: received out-of-order ack; received: {}; stored largest: {}",
@@ -386,7 +408,16 @@ impl<'a, M: RemoteMessage> Unacked<'a, M> {
         let deque = &mut self.deque;
         while let Some(msg) = deque.front() {
             if msg.seq <= acked {
-                deque.pop_front();
+                let msg: QueuedMessage<M> = deque.pop_front().unwrap();
+                // Track latency: time from when message was first received to when it was acked
+                let latency_micros = msg.received_at.elapsed().as_micros() as i64;
+                metrics::CHANNEL_LATENCY_MICROS.record(
+                    latency_micros as f64,
+                    hyperactor_telemetry::kv_pairs!(
+                        "dest" => dest_addr.to_string(),
+                        "session_id" => session_id.to_string(),
+                    ),
+                );
             } else {
                 // Messages in the deque are orderd by seq in ascending
                 // order. So we could return early once we encounter
@@ -461,9 +492,9 @@ enum State<'a, M: RemoteMessage> {
 }
 
 impl<'a, M: RemoteMessage> State<'a, M> {
-    fn init(log_id: &'a str) -> Self {
+    fn init(log_id: &'a str, dest_addr: &'a ChannelAddr, session_id: u64) -> Self {
         Self::Running(Deliveries {
-            outbox: Outbox::new(log_id),
+            outbox: Outbox::new(log_id, dest_addr, session_id),
             unacked: Unacked::new(None, log_id),
         })
     }
@@ -543,7 +574,8 @@ async fn run<M: RemoteMessage>(
 
     let session_id = rand::random();
     let log_id = format!("session {}.{}", link.dest(), session_id);
-    let mut state = State::init(&log_id);
+    let dest = link.dest();
+    let mut state = State::init(&log_id, &dest, session_id);
     let mut conn = Conn::reconnect_with_default();
 
     let (state, conn) = loop {
@@ -859,7 +891,7 @@ where
                                 Ok(response) => {
                                     match response {
                                         NetRxResponse::Ack(ack) => {
-                                            unacked.prune(ack, RealClock.now());
+                                            unacked.prune(ack, RealClock.now(), &link.dest(), session_id);
                                             (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                         }
                                         NetRxResponse::Reject => {
@@ -934,6 +966,15 @@ where
                                 "{log_id}: outbox send error: {err}; message size: {}",
                                 outbox.front_size().expect("outbox should not be empty"),
                             );
+                                // Track error for this channel pair
+                                metrics::CHANNEL_ERRORS.add(
+                                    1,
+                                    hyperactor_telemetry::kv_pairs!(
+                                        "dest" => link.dest().to_string(),
+                                        "session_id" => session_id.to_string(),
+                                        "error_type" => metrics::ChannelErrorType::SendError.as_str(),
+                                    ),
+                                );
                             (State::Running(Deliveries { outbox, unacked }), Conn::reconnect_with_default())
                         }
                     }
@@ -1030,6 +1071,18 @@ where
 
                         // Need to resend unacked after reconnecting.
                         let largest_acked = unacked.largest_acked;
+                        let num_retries = unacked.deque.len();
+                        if num_retries > 0 {
+                            // Track reconnection for this channel pair
+                            metrics::CHANNEL_RECONNECTIONS.add(
+                                1,
+                                hyperactor_telemetry::kv_pairs!(
+                                    "dest" => link.dest().to_string(),
+                                    "transport" => link.dest().transport().to_string(),
+                                    "reason" => "reconnect_with_unacked",
+                                ),
+                            );
+                        }
                         outbox.requeue_unacked(unacked.deque);
                         (
                             State::Running(Deliveries {
@@ -1060,6 +1113,15 @@ where
                             link.dest(),
                             session_id,
                             err
+                        );
+                        // Track connection error for this channel pair
+                        metrics::CHANNEL_ERRORS.add(
+                            1,
+                            hyperactor_telemetry::kv_pairs!(
+                                "dest" => link.dest().to_string(),
+                                "session_id" => session_id.to_string(),
+                                "error_type" => metrics::ChannelErrorType::ConnectionError.as_str(),
+                            ),
                         );
                         (
                             State::Running(Deliveries { outbox, unacked }),

@@ -418,7 +418,11 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                 return Err(AllocatorError::Incomplete(self.extent().clone()));
             };
 
-            let name = state.arm().unwrap_or("unknown");
+            let name = tracing::Span::current()
+                .metadata()
+                .map(|m| m.name())
+                .unwrap_or("initialize");
+            let status = format!("ProcState:{}", state.arm().unwrap_or("unknown"));
 
             match state {
                 ProcState::Created {
@@ -427,17 +431,20 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                     let rank = point.rank();
                     if let Some(old_create_key) = created.insert(rank, create_key.clone()) {
                         tracing::warn!(
+                            name,
+                            status,
+                            rank,
                             "rank {rank} reassigned from {old_create_key} to {create_key}"
                         );
                     }
                     tracing::info!(
-                        name = name,
-                        rank = rank,
+                        name,
+                        status,
+                        rank,
                         "proc with create key {}, rank {}: created",
                         create_key,
                         rank
                     );
-                    // tracing::info!("created: {} rank {}: created", create_key, rank);
                 }
                 ProcState::Running {
                     create_key,
@@ -447,7 +454,9 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                 } => {
                     let Some(rank) = created.rank(&create_key) else {
                         tracing::warn!(
-                            name = name,
+                            name,
+                            %proc_id,
+                            status,
                             "proc id {proc_id} with create key {create_key} \
                             is running, but was not created"
                         );
@@ -463,14 +472,19 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                     if let Some(old_allocated_proc) = running.insert(*rank, allocated_proc.clone())
                     {
                         tracing::warn!(
-                            name = name,
+                            name,
+                            %proc_id,
+                            status,
+                            rank,
                             "duplicate running notifications for {rank}: \
                             old:{old_allocated_proc}; \
                             new:{allocated_proc}"
                         )
                     }
                     tracing::info!(
-                        name = name,
+                        name,
+                        %proc_id,
+                        status,
                         "proc {} rank {}: running at addr:{addr} mesh_agent:{mesh_agent}",
                         proc_id,
                         rank
@@ -481,7 +495,8 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                 // ProcState::Failed to fail the whole allocation.
                 ProcState::Stopped { create_key, reason } => {
                     tracing::error!(
-                        name = name,
+                        name,
+                        status,
                         "allocation failed for proc with create key {}: {}",
                         create_key,
                         reason
@@ -493,7 +508,8 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                     description,
                 } => {
                     tracing::error!(
-                        name = name,
+                        name,
+                        status,
                         "allocation failed for world {}: {}",
                         world_id,
                         description

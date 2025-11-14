@@ -181,9 +181,21 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     };
 
                     // De-frame the multi-part message.
+                    let bytes_len = bytes.len();
                     let message = match serde_multipart::Message::from_framed(bytes) {
                         Ok(message) => message,
-                        Err(err) => break (
+                        Err(err) => {
+                            // Track deframing error for this channel pair
+                            metrics::CHANNEL_ERRORS.add(
+                                1,
+                                hyperactor_telemetry::kv_pairs!(
+                                    "source" => self.source.to_string(),
+                                    "dest" => self.dest.to_string(),
+                                    "session_id" => session_id.to_string(),
+                                    "error_type" => metrics::ChannelErrorType::DeframeError.as_str(),
+                                ),
+                            );
+                            break (
                             next,
                             Err::<(), anyhow::Error>(err.into()).context(
                                 format!(
@@ -192,7 +204,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 )
                             ),
                             false
-                        ),
+                        )
+                    },
                     };
 
                     // Finally decode the message. This assembles the M-typed message
@@ -220,6 +233,23 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             }
                             match self.send_with_buffer_metric(&log_id, &tx, message).await {
                                 Ok(()) => {
+                                    // Track throughput for this channel pair
+                                    metrics::CHANNEL_THROUGHPUT_BYTES.add(
+                                        bytes_len as u64,
+                                        hyperactor_telemetry::kv_pairs!(
+                                            "source" => self.source.to_string(),
+                                            "dest" => self.dest.to_string(),
+                                            "session_id" => session_id.to_string(),
+                                        ),
+                                    );
+                                    metrics::CHANNEL_THROUGHPUT_MESSAGES.add(
+                                        1,
+                                        hyperactor_telemetry::kv_pairs!(
+                                            "source" => self.source.to_string(),
+                                            "dest" => self.dest.to_string(),
+                                            "session_id" => session_id.to_string(),
+                                        ),
+                                    );
                                     // In channel's contract, "delivered" means the message
                                     // is sent to the NetRx object. Therefore, we could bump
                                     // `next_seq` as far as the message is put on the mpsc
@@ -236,16 +266,28 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 }
                             }
                         },
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: deserialize message with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            false
-                        ),
+                        Err(err) => {
+                            // Track deserialization error for this channel pair
+                            metrics::CHANNEL_ERRORS.add(
+                                1,
+                                hyperactor_telemetry::kv_pairs!(
+                                    "source" => self.source.to_string(),
+                                    "dest" => self.dest.to_string(),
+                                    "session_id" => session_id.to_string(),
+                                    "error_type" => metrics::ChannelErrorType::DeserializeError.as_str(),
+                                ),
+                            );
+                            break (
+                                next,
+                                Err::<(), anyhow::Error>(err.into()).context(
+                                    format!(
+                                        "{log_id}: deserialize message with M = {}",
+                                        type_name::<M>(),
+                                    )
+                                ),
+                                false
+                            )
+                        },
                     }
                 },
             }
@@ -490,11 +532,13 @@ where
                             };
 
                             if let Err(ref err) = res {
-                                metrics::CHANNEL_CONNECTION_ERRORS.add(
+                                        metrics::CHANNEL_ERRORS.add(
                                     1,
                                     hyperactor_telemetry::kv_pairs!(
                                         "transport" => dest.transport().to_string(),
                                         "error" => err.to_string(),
+                                        "error_type" => metrics::ChannelErrorType::ConnectionError.as_str(),
+                                        "dest" => dest.to_string(),
                                     ),
                                 );
 
@@ -513,12 +557,13 @@ where
                     });
                     }
                     Err(err) => {
-                        metrics::CHANNEL_CONNECTION_ERRORS.add(
+                        metrics::CHANNEL_ERRORS.add(
                             1,
                             hyperactor_telemetry::kv_pairs!(
                                 "transport" => listener_channel_addr.transport().to_string(),
                                 "operation" => "accept",
                                 "error" => err.to_string(),
+                                "error_type" => metrics::ChannelErrorType::ConnectionError.as_str(),
                             ),
                         );
 
