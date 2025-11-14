@@ -1180,6 +1180,7 @@ impl<A: Actor> Instance<A> {
         // https://docs.rs/tokio/latest/tokio/task/struct.JoinError.html#method.is_panic
         // What we do here is just to catch it early so we can handle it.
 
+        let mut did_panic = false;
         let result = match AssertUnwindSafe(self.run(actor, &mut actor_loop_receivers, work_rx))
             .catch_unwind()
             .await
@@ -1187,6 +1188,7 @@ impl<A: Actor> Instance<A> {
             Ok(result) => result,
             Err(err) => {
                 // This is only the error message. Backtrace is not included.
+                did_panic = true;
                 let err_msg = err
                     .downcast_ref::<&str>()
                     .copied()
@@ -1252,8 +1254,41 @@ impl<A: Actor> Instance<A> {
                 }
             }
         }
-
-        result
+        // Run the actor cleanup function before the actor stops to delete
+        // resources. If it times out, continue with stopping the actor.
+        // Don't call it if there was a panic, because the actor may
+        // be in an invalid state and unable to access anything, for example
+        // the GIL.
+        let cleanup_result = if !did_panic {
+            let cleanup_timeout = config::global::get(config::CLEANUP_TIMEOUT);
+            match RealClock
+                .timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
+                .await
+            {
+                Ok(Ok(x)) => Ok(x),
+                Ok(Err(e)) => Err(ActorError::new(self.self_id(), ActorErrorKind::cleanup(e))),
+                Err(e) => Err(ActorError::new(
+                    self.self_id(),
+                    ActorErrorKind::cleanup(e.into()),
+                )),
+            }
+        } else {
+            Ok(())
+        };
+        if let Err(ref actor_err) = result {
+            // The original result error takes precedence over the cleanup error,
+            // so make sure the cleanup error is still logged in that case.
+            if let Err(ref err) = cleanup_result {
+                tracing::warn!(
+                    cleanup_err = %err,
+                    %actor_err,
+                    "ignoring cleanup error after actor error",
+                );
+            }
+        }
+        // If the original exit was not an error, let cleanup errors be
+        // surfaced.
+        result.and(cleanup_result)
     }
 
     /// Initialize and run the actor until it fails or is stopped.
