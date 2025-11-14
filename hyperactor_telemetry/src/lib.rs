@@ -59,6 +59,7 @@ pub mod in_memory_reader;
 mod meta;
 mod otel;
 mod pool;
+pub mod prometheus;
 pub mod recorder;
 mod spool;
 pub mod sqlite;
