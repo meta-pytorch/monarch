@@ -694,7 +694,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
     with pytest.raises(
         SupervisionError,
         match="actor mesh is stopped due to proc mesh shutdown"
-        + "|Actor .* exited because of the following reason.*process failure",
+        + "|Actor .* exited because of the following reason.*stopped",
     ):
         await actor_mesh.check.call()
 

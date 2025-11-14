@@ -15,6 +15,31 @@ use hyperactor_telemetry::declare_static_histogram;
 use hyperactor_telemetry::declare_static_timer;
 use hyperactor_telemetry::declare_static_up_down_counter;
 
+/// Error types for channel-related errors. Only used for telemetry.
+#[derive(Debug, Clone, Copy)]
+pub enum ChannelErrorType {
+    /// Error occurred while sending a message.
+    SendError,
+    /// Error occurred while connecting to a channel.
+    ConnectionError,
+    /// Error occurred while deframing a message.
+    DeframeError,
+    /// Error occurred while deserializing a message.
+    DeserializeError,
+}
+
+impl ChannelErrorType {
+    /// Returns the string representation of the error type.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChannelErrorType::SendError => "send_error",
+            ChannelErrorType::ConnectionError => "connection_error",
+            ChannelErrorType::DeframeError => "deframe_error",
+            ChannelErrorType::DeserializeError => "deserialize_error",
+        }
+    }
+}
+
 // MAILBOX
 // Tracks messages that couldn't be delivered to their destination and were returned as undeliverable
 declare_static_counter!(
@@ -44,15 +69,22 @@ declare_static_timer!(
 declare_static_histogram!(REMOTE_MESSAGE_SEND_SIZE, "channel.remote_message_send_size");
 // Tracks the number of new channel connections established (client and server)
 declare_static_counter!(CHANNEL_CONNECTIONS, "channel.connections");
-// Tracks errors that occur when establishing channel connections
-declare_static_counter!(CHANNEL_CONNECTION_ERRORS, "channel.connection_errors");
 // Tracks the number of channel reconnection attempts
 declare_static_counter!(CHANNEL_RECONNECTIONS, "channel.reconnections");
+// Tracks errors for each channel pair
+declare_static_counter!(CHANNEL_ERRORS, "channel.errors");
 // Tracks the number of NetRx encountering full buffer, i.e. its mpsc channel.
 
 // This metric counts how often the NetRx→client mpsc channel remains full,
 // incrementing once per CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL while blocked.
 declare_static_counter!(CHANNEL_NET_RX_BUFFER_FULL, "channel.net_rx_buffer_full");
+
+// Tracks throughput (bytes sent)
+declare_static_counter!(CHANNEL_THROUGHPUT_BYTES, "channel.throughput.bytes");
+// Tracks throughput (message count)
+declare_static_counter!(CHANNEL_THROUGHPUT_MESSAGES, "channel.throughput.messages");
+// Tracks message latency for each channel pair in microseconds
+declare_static_histogram!(CHANNEL_LATENCY_MICROS, "channel.latency.us");
 
 // PROC MESH
 // Tracks the number of active processes in the process mesh

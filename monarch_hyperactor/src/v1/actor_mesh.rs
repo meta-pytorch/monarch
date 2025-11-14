@@ -526,23 +526,38 @@ async fn actor_states_monitor<A, F>(
                 .iter()
                 .find(|(_rank, state)| state.status.is_terminating())
             {
+                // TODO: allow "actor supervision event" to be general, and
+                // make the proc failure the cause. It is a hack to try to determine
+                // the correct status based on process exit status.
+                let actor_status = match state.state.and_then(|s| s.proc_status) {
+                    Some(ProcStatus::Stopped { .. })
+                    // SIGTERM
+                    | Some(ProcStatus::Killed { signal: 15, .. })
+                    // Conservatively treat lack of status as stopped
+                    | None => ActorStatus::Stopped,
+
+                    Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
+                        "process failure: {}",
+                        status
+                    ))),
+                };
+
                 send_state_change(
                     point.rank(),
                     ActorSupervisionEvent::new(
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
                         mesh.get(point.rank()).unwrap().actor_id().clone(),
-                        // TODO: allow "actor supervision event" to be general, and
-                        // make the proc failure the cause.
-                        ActorStatus::Failed(ActorErrorKind::Generic(format!(
-                            "process failure: {}",
-                            state
-                                .state
-                                .and_then(|state| state.proc_status)
-                                .unwrap_or_else(|| ProcStatus::Failed {
-                                    reason: "unknown".to_string()
-                                })
-                        ))),
+                        actor_status,
+                        // ActorStatus::Failed(ActorErrorKind::Generic(format!(
+                        //     "process failure: {}",
+                        //     state
+                        //         .state
+                        //         .and_then(|state| state.proc_status)
+                        //         .unwrap_or_else(|| ProcStatus::Failed {
+                        //             reason: "unknown".to_string()
+                        //         })
+                        // ))),
                         None,
                         None,
                     ),
