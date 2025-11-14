@@ -51,7 +51,7 @@ pub fn log_message_latency_if_sampling(headers: &Attrs, actor_id: String) {
     }
 
     if !headers.contains_key(SEND_TIMESTAMP) {
-        tracing::warn!(
+        tracing::debug!(
             actor_id = actor_id,
             "SEND_TIMESTAMP missing from message headers, cannot measure latency"
         );
