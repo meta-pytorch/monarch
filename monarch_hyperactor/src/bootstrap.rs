@@ -36,6 +36,13 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
         fbinit::perform_init();
     };
 
+    // SAFETY: Does not derefrence pointers or rely on undefined
+    // memory. No other threads are likely to be modifying it
+    // concurrently. We do this to avoid glog's SIGTERM backtraces.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+    }
+
     hyperactor::tracing::debug!("entering async bootstrap");
     crate::runtime::future_into_py::<_, ()>(py, async move {
         // SAFETY:
