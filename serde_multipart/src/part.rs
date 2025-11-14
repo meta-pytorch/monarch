@@ -9,6 +9,7 @@
 use std::ops::Deref;
 
 use bytes::Bytes;
+use bytes::BytesMut;
 use bytes::buf::Reader as BufReader;
 use bytes::buf::Writer as BufWriter;
 use serde::Deserialize;
@@ -122,5 +123,166 @@ pub(crate) type BincodeDeserializer =
 impl<'de, 'a> PartDeserializer<'de, &'a mut BincodeDeserializer> for Part {
     fn deserialize(deserializer: &'a mut BincodeDeserializer) -> Result<Self, bincode::Error> {
         deserializer.deserialize_part()
+    }
+}
+
+/// A logically contiguous part that may be physically fragmented or contiguous.
+///
+/// During serialization, parts are extracted separately (allowing zero-copy from construction).
+/// During deserialization, data arrives as a single contiguous `Part`.
+///
+/// Use this when:
+/// - Construction creates multiple Parts (e.g., multiple pickle writes to a Buffer)
+/// - Consumption needs contiguous bytes (e.g., unpickling requires contiguous buffer)
+/// - Network read already gives contiguous bytes (no need to split and re-concat)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FragmentedPart {
+    /// Multiple fragments that need to be concatenated when accessed
+    Fragmented(Vec<Part>),
+    /// Already contiguous data (typically from deserialization)
+    Contiguous(Part),
+}
+
+impl Default for FragmentedPart {
+    fn default() -> Self {
+        Self::Contiguous(Part::default())
+    }
+}
+
+impl FragmentedPart {
+    pub fn new(parts: Vec<Part>) -> Self {
+        if parts.len() == 1 {
+            Self::Contiguous(parts.into_iter().next().unwrap())
+        } else {
+            Self::Fragmented(parts)
+        }
+    }
+
+    pub fn into_parts(self) -> Vec<Part> {
+        match self {
+            Self::Fragmented(parts) => parts,
+            Self::Contiguous(part) => vec![part],
+        }
+    }
+
+    /// Convert into bytes, concatenating fragments if necessary.
+    pub fn into_bytes(self) -> Bytes {
+        match self {
+            Self::Contiguous(part) => part.into_inner(),
+            Self::Fragmented(parts) => {
+                let total_len: usize = parts.iter().map(|p| p.len()).sum();
+                let mut result = BytesMut::with_capacity(total_len);
+                for part in parts {
+                    result.extend_from_slice(&part.to_bytes());
+                }
+                result.freeze()
+            }
+        }
+    }
+
+    /// Get bytes as a reference, concatenating fragments if necessary.
+    pub fn as_bytes(&self) -> Bytes {
+        match self {
+            Self::Contiguous(part) => part.to_bytes(),
+            Self::Fragmented(parts) => {
+                let total_len: usize = parts.iter().map(|p| p.len()).sum();
+                let mut result = BytesMut::with_capacity(total_len);
+                for part in parts {
+                    result.extend_from_slice(&part.to_bytes());
+                }
+                result.freeze()
+            }
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Part] {
+        match self {
+            Self::Fragmented(parts) => parts.as_slice(),
+            Self::Contiguous(part) => std::slice::from_ref(part),
+        }
+    }
+
+    /// Returns the total length in bytes of the fragmented part.
+    /// For contiguous parts, this is just the part length.
+    /// For fragmented parts, this is the sum of all fragment lengths.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Contiguous(part) => part.len(),
+            Self::Fragmented(parts) => parts.iter().map(|p| p.len()).sum(),
+        }
+    }
+
+    /// Returns whether the fragmented part is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Serialization trait for FragmentedPart (similar to PartSerializer)
+trait FragmentedPartSerializer<S: serde::Serializer> {
+    fn serialize(parts: &FragmentedPart, s: S) -> Result<S::Ok, S::Error>;
+}
+
+/// Default: serialize as Vec<Part>
+impl<S: serde::Serializer> FragmentedPartSerializer<S> for FragmentedPart {
+    default fn serialize(part: &FragmentedPart, s: S) -> Result<S::Ok, S::Error> {
+        match part {
+            FragmentedPart::Fragmented(parts) => parts.serialize(s),
+            FragmentedPart::Contiguous(part) => vec![part.clone()].serialize(s),
+        }
+    }
+}
+
+/// Specialized for our BincodeSerializer
+impl<'a> FragmentedPartSerializer<&'a mut BincodeSerializer> for FragmentedPart {
+    fn serialize(
+        parts: &FragmentedPart,
+        s: &'a mut BincodeSerializer,
+    ) -> Result<(), bincode::Error> {
+        // Tell the serializer to extract this as a fragmented part
+        s.serialize_fragmented_part(parts);
+        // Serialize as empty Vec in the body (parts are extracted)
+        Vec::<Part>::new().serialize(s)
+    }
+}
+
+impl Serialize for FragmentedPart {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        <FragmentedPart as FragmentedPartSerializer<S>>::serialize(self, serializer)
+    }
+}
+
+/// Deserialization trait for FragmentedPart
+trait FragmentedPartDeserializer<'de, D: serde::Deserializer<'de>>: Sized {
+    fn deserialize(d: D) -> Result<Self, D::Error>;
+}
+
+/// Default: deserialize as Vec<Part>
+impl<'de, D: serde::Deserializer<'de>> FragmentedPartDeserializer<'de, D> for FragmentedPart {
+    default fn deserialize(deserializer: D) -> Result<Self, D::Error> {
+        let parts = Vec::<Part>::deserialize(deserializer)?;
+        Ok(Self::new(parts))
+    }
+}
+
+/// Specialized for our BincodeDeserializer
+impl<'de, 'a> FragmentedPartDeserializer<'de, &'a mut BincodeDeserializer> for FragmentedPart {
+    fn deserialize(deserializer: &'a mut BincodeDeserializer) -> Result<Self, bincode::Error> {
+        // Read the Vec (should be empty from serialization)
+        let _empty: Vec<Part> = Vec::deserialize(&mut *deserializer)?;
+        // Pull the actual fragmented part from the deserializer
+        deserializer.deserialize_fragmented_part()
+    }
+}
+
+impl<'de> Deserialize<'de> for FragmentedPart {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <FragmentedPart as FragmentedPartDeserializer<'de, D>>::deserialize(deserializer)
     }
 }
