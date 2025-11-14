@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -478,7 +479,16 @@ impl fmt::Display for Signal {
 }
 
 /// The runtime status of an actor.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Named)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Clone,
+    Named,
+    EnumAsInner
+)]
 pub enum ActorStatus {
     /// The actor status is unknown.
     Unknown,
@@ -511,12 +521,7 @@ pub enum ActorStatus {
 impl ActorStatus {
     /// Tells whether the status is a terminal state.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Stopped | Self::Failed(_))
-    }
-
-    /// Tells whether the status represents a failure.
-    pub fn is_failed(&self) -> bool {
-        matches!(self, Self::Failed(_))
+        self.is_stopped() || self.is_failed()
     }
 
     /// Create a generic failure status with the provided error message.
@@ -732,6 +737,43 @@ pub trait Binds<A: Actor>: Referable {
 /// Handles is a marker trait specifying that message type [`M`]
 /// is handled by a specific actor type.
 pub trait RemoteHandles<M: RemoteMessage>: Referable {}
+
+/// Check if the actor behaves-as the a given behavior (defined by [`behavior!`]).
+///
+/// ```
+/// # use serde::Serialize;
+/// # use serde::Deserialize;
+/// # use hyperactor::Named;
+///
+/// // First, define a behavior, based on handling a single message type `()`.
+/// hyperactor::behavior!(UnitBehavior, ());
+///
+/// #[derive(hyperactor::Actor, Debug, Default)]
+/// struct MyActor;
+///
+/// #[async_trait::async_trait]
+/// impl hyperactor::Handler<()> for MyActor {
+///     async fn handle(
+///         &mut self,
+///         _cx: &hyperactor::Context<Self>,
+///         _message: (),
+///     ) -> Result<(), anyhow::Error> {
+///         // no-op
+///         Ok(())
+///     }
+/// }
+///
+/// hyperactor::assert_behaves!(MyActor as UnitBehavior);
+/// ```
+#[macro_export]
+macro_rules! assert_behaves {
+    ($ty:ty as $behavior:ty) => {
+        const _: fn() = || {
+            fn check<B: hyperactor::actor::Binds<$ty>>() {}
+            check::<$behavior>();
+        };
+    };
+}
 
 #[cfg(test)]
 mod tests {

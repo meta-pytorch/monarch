@@ -21,6 +21,7 @@ use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
+use std::panic::Location;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -47,6 +48,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::Level;
+use tracing::Span;
 use uuid::Uuid;
 
 use crate as hyperactor;
@@ -54,6 +56,7 @@ use crate::Actor;
 use crate::ActorRef;
 use crate::Handler;
 use crate::Message;
+use crate::Named as _;
 use crate::RemoteMessage;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
@@ -147,6 +150,19 @@ struct ProcState {
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
 
     clock: ClockKind,
+}
+
+impl Drop for ProcState {
+    fn drop(&mut self) {
+        // We only want log ProcStatus::Dropped when ProcState is dropped,
+        // rather than Proc is dropped. This is because we need to wait for
+        // Proc::inner's ref count becomes 0.
+        tracing::info!(
+            proc_id = %self.proc_id,
+            name = "ProcStatus",
+            status = "Dropped"
+        );
+    }
 }
 
 /// A snapshot view of the proc's actor ledger.
@@ -334,7 +350,6 @@ impl Proc {
     }
 
     /// Create a new direct-addressed proc.
-    #[tracing::instrument]
     pub async fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
         let proc_id = ProcId::Direct(addr, name);
@@ -344,7 +359,6 @@ impl Proc {
     }
 
     /// Create a new direct-addressed proc with a default sender for the forwarder.
-    #[tracing::instrument(skip(default))]
     pub fn direct_with_default(
         addr: ChannelAddr,
         name: String,
@@ -366,6 +380,11 @@ impl Proc {
         forwarder: BoxedMailboxSender,
         clock: ClockKind,
     ) -> Self {
+        tracing::info!(
+            proc_id = %proc_id,
+            name = "ProcStatus",
+            status = "Created"
+        );
         Self {
             inner: Arc::new(ProcState {
                 proc_id,
@@ -789,7 +808,6 @@ impl Proc {
     }
 
     /// Create a root allocation in the proc.
-    #[hyperactor::instrument(fields(actor_name=name))]
     fn allocate_root_id(&self, name: &str) -> Result<ActorId, anyhow::Error> {
         let name = name.to_string();
         match self.state().roots.entry(name.to_string()) {
@@ -1024,8 +1042,36 @@ impl<A: Actor> Instance<A> {
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
+    #[track_caller]
     fn change_status(&self, new: ActorStatus) {
-        self.status_tx.send_replace(new.clone());
+        let old = self.status_tx.send_replace(new.clone());
+        // Actor status changes between Idle and Processing when handling every
+        // message. It creates too many logs if we want to log these 2 states.
+        // Therefore we skip the status changes between them.
+        if !((old.is_idle() && new.is_processing()) || (old.is_processing() && new.is_idle())) {
+            let new_status = new.arm().unwrap_or("unknown");
+            let change_reason = match new {
+                ActorStatus::Failed(reason) => reason.to_string(),
+                _ => "".to_string(),
+            };
+            tracing::info!(
+                name = "ActorStatus",
+                actor_id = %self.self_id(),
+                actor_name = self.self_id().name(),
+                status = new_status,
+                prev_status = old.arm().unwrap_or("unknown"),
+                caller = %Location::caller(),
+                change_reason,
+            );
+        }
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.status_tx.borrow().is_terminal()
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.status_tx.borrow().is_stopped()
     }
 
     /// This instance's actor ID.
@@ -1091,9 +1137,14 @@ impl<A: Actor> Instance<A> {
         let instance_cell = self.cell.clone();
         let actor_id = self.cell.actor_id().clone();
         let actor_handle = ActorHandle::new(self.cell.clone(), self.ports.clone());
-        let actor_task_handle = A::spawn_server_task(panic_handler::with_backtrace_tracking(
-            self.serve(actor, actor_loop_receivers, work_rx),
-        ));
+        let actor_task_handle = A::spawn_server_task(
+            panic_handler::with_backtrace_tracking(self.serve(
+                actor,
+                actor_loop_receivers,
+                work_rx,
+            ))
+            .instrument(Span::current()),
+        );
         tracing::debug!("{}: spawned with {:?}", actor_id, actor_task_handle);
         instance_cell
             .inner
@@ -1118,23 +1169,35 @@ impl<A: Actor> Instance<A> {
         let result = self
             .run_actor_tree(&mut actor, actor_loop_receivers, &mut work_rx)
             .await;
-        let (actor_status, event) = match result {
-            Ok(_) => (ActorStatus::Stopped, None),
-            Err(ActorError {
-                kind: box ActorErrorKind::UnhandledSupervisionEvent(box event),
-                ..
-            }) => (event.actor_status.clone(), Some(event)),
+        let event = match result {
+            Ok(_) => {
+                // actor should have been stopped by run_actor_tree
+                assert!(self.is_stopped());
+                None
+            }
             Err(err) => {
-                let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                (
-                    ActorStatus::Failed(error_kind.clone()),
-                    Some(ActorSupervisionEvent::new(
-                        self.cell.actor_id().clone(),
-                        actor.display_name(),
-                        ActorStatus::Failed(error_kind),
-                        None,
-                    )),
-                )
+                match *err.kind {
+                    ActorErrorKind::UnhandledSupervisionEvent(box event) => {
+                        // Currently only terminated actors are allowed to raise supervision events.
+                        // If we want to change that in the future, we need to modify the exit
+                        // status here too, because we use event's actor_status as this actor's
+                        // terminal status.
+                        assert!(event.actor_status.is_terminal());
+                        self.change_status(event.actor_status.clone());
+                        Some(event)
+                    }
+                    _ => {
+                        let error_kind = ActorErrorKind::Generic(err.kind.to_string());
+                        let status = ActorStatus::Failed(error_kind);
+                        self.change_status(status.clone());
+                        Some(ActorSupervisionEvent::new(
+                            self.cell.actor_id().clone(),
+                            actor.display_name(),
+                            status,
+                            None,
+                        ))
+                    }
+                }
             }
         };
 
@@ -1163,7 +1226,6 @@ impl<A: Actor> Instance<A> {
                 self.proc.handle_supervision_event(event);
             }
         }
-        self.change_status(actor_status);
     }
 
     /// Runs the actor, and manages its supervision tree. When the function returns,
@@ -1206,10 +1268,16 @@ impl<A: Actor> Instance<A> {
             }
         };
 
-        if let Err(ref err) = result {
-            tracing::error!("{}: actor failure: {}", self.self_id(), err);
+        match &result {
+            Ok(_) => assert!(self.is_stopped()),
+            Err(err) => {
+                tracing::error!("{}: actor failure: {}", self.self_id(), err);
+                assert!(!self.is_terminal());
+                // Send Stopping instead of Failed, because we still need to
+                // unlink child actors.
+                self.change_status(ActorStatus::Stopping);
+            }
         }
-        self.change_status(ActorStatus::Stopping);
 
         // After this point, we know we won't spawn any more children,
         // so we can safely read the current child keys.
@@ -1291,7 +1359,6 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Initialize and run the actor until it fails or is stopped.
-    #[tracing::instrument(level = "info", skip_all, fields(actor_id = %self.self_id()))]
     async fn run(
         &mut self,
         actor: &mut A,
@@ -1399,6 +1466,7 @@ impl<A: Actor> Instance<A> {
         }
     }
 
+    #[hyperactor::instrument(fields(actor_id = self.self_id().to_string(), actor_name = self.self_id().name()))]
     async unsafe fn handle_message<M: Message>(
         &mut self,
         actor: &mut A,
@@ -1428,18 +1496,12 @@ impl<A: Actor> Instance<A> {
             &headers,
             self.self_id().to_string(),
         );
-        let span = tracing::debug_span!(
-            "actor_status",
-            actor_id = self.self_id().to_string(),
-            actor_name = self.self_id().name(),
-            name = self.cell.status().borrow().to_string(),
-        );
 
         let context = Context::new(self, headers);
         // Pass a reference to the context to the handler, so that deref
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
-        actor.handle(&context, message).instrument(span).await
+        actor.handle(&context, message).await
     }
 
     // Spawn on child on this instance. Currently used only by cap::CanSpawn.
@@ -1528,6 +1590,15 @@ impl<A: Actor> Drop for Instance<A> {
             if status.is_terminal() {
                 false
             } else {
+                tracing::info!(
+                    name = "ActorStatus",
+                    actor_id = %self.self_id(),
+                    actor_name = self.self_id().name(),
+                    status = "Stopped",
+                    prev_status = status.arm().unwrap_or("unknown"),
+                    caller = %Location::caller(),
+                    "Instance is dropped",
+                );
                 *status = ActorStatus::Stopped;
                 true
             }

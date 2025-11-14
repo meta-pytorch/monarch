@@ -1,5 +1,10 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 import os
-import time
 
 from threading import Event
 from typing import Callable, Optional, TypeVar
@@ -14,26 +19,30 @@ T = TypeVar("T")
 
 
 class Lambda(Actor):
+    # pyre-ignore[56]
     @endpoint
-    def run(self, l: Callable[[], T]) -> T:
-        return l()
+    def run(self, func: Callable[[], T]) -> T:
+        return func()
 
 
 class Nest(Actor):
     def __init__(self):
         self.nest = this_host().spawn_procs().spawn("nested", Lambda)
 
+    # pyre-ignore[56]
     @endpoint
-    def nested(self, l: Callable[[], T]) -> T:
-        return self.nest.run.broadcast(l)
+    def nested(self, func: Callable[[], T]) -> T:
+        return self.nest.run.broadcast(func)
 
+    # pyre-ignore[56]
     @endpoint
-    def nested_call_one(self, l: Callable[[], T]) -> T:
-        return self.nest.run.call_one(l).get()
+    def nested_call_one(self, func: Callable[[], T]) -> T:
+        return self.nest.run.call_one(func).get()
 
+    # pyre-ignore[56]
     @endpoint
-    def direct(self, l: Callable[[], T]) -> T:
-        return l()
+    def direct(self, func: Callable[[], T]) -> T:
+        return func()
 
     @endpoint
     def kill_nest(self) -> None:
@@ -92,8 +101,8 @@ def test_actor_failure():
     If an actor dies, the client should receive an unhandled fault.
     """
     with FaultCapture() as capture:
-        l = this_host().spawn_procs().spawn("actor", Lambda)
-        l.run.broadcast(error)
+        actor = this_host().spawn_procs().spawn("actor", Lambda)
+        actor.run.broadcast(error)
 
     capture.assert_fault_occurred("This occurred because the actor itself failed.")
 
@@ -103,8 +112,8 @@ def test_proc_failure():
     If a proc dies, the client should receive an unhandled fault.
     """
     with FaultCapture() as capture:
-        l = this_host().spawn_procs().spawn("actor", Nest)
-        l.kill_nest.call_one().get()
+        actor = this_host().spawn_procs().spawn("actor", Nest)
+        actor.kill_nest.call_one().get()
 
     capture.assert_fault_occurred()
 
@@ -114,10 +123,10 @@ def test_nested_mesh_kills_actor_actor_error():
     If a nested actor errors, the fault should propagate to the client.
     """
     with FaultCapture() as capture:
-        l = this_host().spawn_procs().spawn("actor", Nest)
-        v = l.nested_call_one.call_one(lambda: 4).get()
+        actor = this_host().spawn_procs().spawn("actor", Nest)
+        v = actor.nested_call_one.call_one(lambda: 4).get()
         assert v == 4
-        l.nested.call_one(error).get()
+        actor.nested.call_one(error).get()
         print("ERRORED THE ACTOR")
     capture.assert_fault_occurred(
         "actor <root>.<tests.test_supervision_hierarchy.Nest actor>.<tests.test_supervision_hierarchy.Lambda nested> failed"

@@ -141,10 +141,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Spawn our actor, and get a handle for rank 0.
     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
         proc.spawn("shopping", ()).await?;
-    // We attest this is safe because we know this is the id of an
-    // actor we just spawned.
-    let shopping_api: hyperactor::ActorRef<ShoppingApi> =
-        hyperactor::ActorRef::attest(shopping_list_actor.actor_id().clone());
+    let shopping_api: hyperactor::ActorRef<ShoppingApi> = shopping_list_actor.bind();
     // We join the system, so that we can send messages to actors.
     let (client, _) = proc.instance("client").unwrap();
 
