@@ -49,11 +49,13 @@ use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
+use serde_multipart::FragmentedPart;
 use serde_multipart::Part;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
+use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
@@ -267,7 +269,7 @@ fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, Py
 #[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
 pub struct PythonMessage {
     pub kind: PythonMessageKind,
-    pub message: Part,
+    pub message: FragmentedPart,
 }
 
 struct ResolvedCallMethod {
@@ -283,7 +285,14 @@ impl PythonMessage {
     pub fn new_from_buf(kind: PythonMessageKind, message: impl Into<Part>) -> Self {
         Self {
             kind,
-            message: message.into(),
+            message: FragmentedPart::Contiguous(message.into()),
+        }
+    }
+
+    pub fn new_from_fragmented(kind: PythonMessageKind, fragmented_part: FragmentedPart) -> Self {
+        Self {
+            kind,
+            message: fragmented_part,
         }
     }
 
@@ -338,7 +347,7 @@ impl PythonMessage {
                     Ok(ResolvedCallMethod {
                         method: name,
                         bytes: FrozenBuffer {
-                            inner: self.message.into_inner(),
+                            inner: self.message.into_bytes(),
                         },
                         local_state,
                         response_port,
@@ -377,7 +386,7 @@ impl PythonMessage {
                 Ok(ResolvedCallMethod {
                     method: name,
                     bytes: FrozenBuffer {
-                        inner: self.message.into_inner(),
+                        inner: self.message.into_bytes(),
                     },
                     local_state,
                     response_port,
@@ -396,7 +405,7 @@ impl std::fmt::Debug for PythonMessage {
             .field("kind", &self.kind)
             .field(
                 "message",
-                &hyperactor::data::HexFmt(&(*self.message)[..]).to_string(),
+                &hyperactor::data::HexFmt(&(*self.message.as_bytes())[..]).to_string(),
             )
             .finish()
     }
@@ -425,9 +434,11 @@ impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
     pub fn new<'py>(kind: PythonMessageKind, message: Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(buff) = message.extract::<Bound<'py, FrozenBuffer>>() {
-            let frozen = buff.borrow_mut();
-            return Ok(PythonMessage::new_from_buf(kind, frozen.inner.clone()));
+        if let Ok(mut buff) = message.extract::<PyRefMut<'py, Buffer>>() {
+            return Ok(PythonMessage::new_from_fragmented(
+                kind,
+                buff.into_fragmented_part(),
+            ));
         } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
             return Ok(PythonMessage::new_from_buf(
                 kind,
@@ -448,7 +459,7 @@ impl PythonMessage {
     #[getter]
     fn message(&self) -> FrozenBuffer {
         FrozenBuffer {
-            inner: self.message.clone().into_inner(),
+            inner: self.message.as_bytes(),
         }
     }
 }
@@ -1060,7 +1071,7 @@ mod tests {
                 },
                 response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
             },
-            message: Part::from(vec![1, 2, 3]),
+            message: FragmentedPart::Contiguous(Part::from(vec![1, 2, 3])),
         };
         {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
