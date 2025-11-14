@@ -72,7 +72,6 @@ use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
-use crate::resource::Status;
 use crate::v1;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
@@ -1202,12 +1201,15 @@ impl BootstrapProcHandle {
         (out, err)
     }
 
+    /// Sends a StopAll message to the ProcMeshAgent, which should exit the process.
+    /// Waits for the successful state change of the process. If the process
+    /// doesn't reach a terminal state, returns Err.
     async fn send_stop_all(
         &self,
         cx: &impl context::Actor,
         agent: ActorRef<ProcMeshAgent>,
         timeout: Duration,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<ProcStatus> {
         // For all of the messages and replies in this function:
         // if the proc is already dead, then the message will be undeliverable,
         // which should be ignored.
@@ -1217,25 +1219,12 @@ impl BootstrapProcHandle {
         let mut agent_port = agent.port();
         agent_port.return_undeliverable(false);
         agent_port.send(cx, resource::StopAll {})?;
-        let (reply_port, mut rx) = cx.mailbox().open_port::<Vec<(usize, Status)>>();
-        let mut reply_port = reply_port.bind();
-        reply_port.return_undeliverable(false);
-        // Similar to above, if we cannot query for the stopped actors, just
-        // proceed with SIGTERM.
-        let mut agent_port = agent.port();
-        agent_port.return_undeliverable(false);
-        agent_port.send(cx, resource::GetAllRankStatus { reply: reply_port })?;
-        // If there's a timeout waiting for a reply, continue with SIGTERM.
-        let statuses = RealClock.timeout(timeout, rx.recv()).await??;
-        let has_failure = statuses.iter().any(|(_rank, status)| status.is_failure());
-
-        if has_failure {
-            Err(anyhow::anyhow!(
-                "StopAll had some actors that failed: {:?}",
-                statuses,
-            ))
-        } else {
-            Ok(())
+        // The agent handling Stop should exit the process, if it doesn't within
+        // the time window, we escalate to SIGTERM.
+        match RealClock.timeout(timeout, self.wait()).await {
+            Ok(Ok(st)) => Ok(st),
+            Ok(Err(e)) => Err(anyhow::anyhow!("agent did not exit the process: {:?}", e)),
+            Err(_) => Err(anyhow::anyhow!("agent did not exit the process in time")),
         }
     }
 }
@@ -1361,20 +1350,19 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         // they are in the Ready state and have an Agent we can message.
         let agent = self.agent_ref();
         if let Some(agent) = agent {
-            if let Err(e) = self.send_stop_all(cx, agent.clone(), timeout).await {
-                // Variety of possible errors, proceed with SIGTERM.
-                tracing::warn!(
-                    "ProcMeshAgent {} could not successfully stop all actors: {}",
-                    agent.actor_id(),
-                    e,
-                );
+            match self.send_stop_all(cx, agent.clone(), timeout).await {
+                Ok(st) => return Ok(st),
+                Err(e) => {
+                    // Variety of possible errors, proceed with SIGTERM.
+                    tracing::warn!(
+                        "ProcMeshAgent {} could not successfully stop all actors: {}",
+                        agent.actor_id(),
+                        e,
+                    );
+                }
             }
-            // Even if the StopAll message and response is fully effective, we
-            // still want to send SIGTERM to actually exit the process and free
-            // any leftover resources. No actor should be running at this
-            // point.
         }
-        // After the stop all actors message may be successful, we still need
+        // If the stop all actors message was unsuccessful, we need
         // to actually stop the process.
         let _ = self.mark_stopping();
 
@@ -1690,7 +1678,7 @@ impl BootstrapProcManager {
     /// Return the current [`ProcStatus`] for the given [`ProcId`], if
     /// the proc is known to this manager.
     ///
-    /// This querprocies the live [`BootstrapProcHandle`] stored in the
+    /// This queries the live [`BootstrapProcHandle`] stored in the
     /// manager's internal map. It provides an immediate snapshot of
     /// lifecycle state (`Starting`, `Running`, `Stopping`, `Stopped`,
     /// etc.).

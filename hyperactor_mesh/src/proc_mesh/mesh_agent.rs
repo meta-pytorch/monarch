@@ -222,7 +222,6 @@ pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSu
         resource::StopAll { cast = true },
         resource::GetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
-        resource::GetAllRankStatus { cast = true },
     ]
 )]
 pub struct ProcMeshAgent {
@@ -599,6 +598,10 @@ impl Handler<resource::Stop> for ProcMeshAgent {
     }
 }
 
+/// Handles `StopAll` by coordinating an orderly stop of child actors and then
+/// exiting the process. This handler never returns to the caller: it calls
+/// `std::process::exit(0/1)` after shutdown. Any sender must *not* expect a
+/// reply or send any further message, and should watch `ProcStatus` instead.
 #[async_trait]
 impl Handler<resource::StopAll> for ProcMeshAgent {
     async fn handle(
@@ -610,19 +613,26 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
         // By passing in the self context, destroy_and_wait will stop this agent
         // last, after all others are stopped.
         let stop_result = self.destroy_and_wait_except_current(cx, timeout).await;
+        // Exit here to cleanup all remaining resources held by the process.
+        // This means ProcMeshAgent will never run cleanup or any other code
+        // from exiting its root actor. Senders of this message should never
+        // send any further messages or expect a reply.
         match stop_result {
-            Ok(_) => {
-                for (_, actor_state) in self.actor_states.iter_mut() {
-                    // Mark all actors as stopped.
-                    actor_state.stopped = true;
-                }
-                Ok(())
+            Ok((stopped_actors, aborted_actors)) => {
+                // No need to clean up any state, the process is exiting.
+                tracing::info!(
+                    actor = %cx.self_id(),
+                    "exiting process after receiving StopAll message on ProcMeshAgent. \
+                    stopped actors = {:?}, aborted actors = {:?}",
+                    stopped_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                    aborted_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                );
+                std::process::exit(0);
             }
-            Err(e) => Err(anyhow::anyhow!(
-                "failed to StopAll on {}: {:?}",
-                cx.self_id(),
-                e
-            )),
+            Err(e) => {
+                tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcMeshAgent: {:?}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -681,69 +691,6 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
                 .expect("valid single-run overlay")
         };
         let result = get_rank_status.reply.send(cx, overlay);
-        // Ignore errors, because returning Err from here would cause the ProcMeshAgent
-        // to be stopped, which would prevent querying and spawning other actors.
-        // This only means some actor that requested the state of an actor failed to receive it.
-        if let Err(e) = result {
-            tracing::warn!(
-                actor = %cx.self_id(),
-                "failed to send GetRankStatus reply to {} due to error: {}",
-                get_rank_status.reply.port_id().actor_id(),
-                e
-            );
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<resource::GetAllRankStatus> for ProcMeshAgent {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        get_rank_status: resource::GetAllRankStatus,
-    ) -> anyhow::Result<()> {
-        use crate::resource::Status;
-
-        let mut ranks = Vec::new();
-        for (_name, state) in self.actor_states.iter() {
-            match state {
-                ActorInstanceState {
-                    spawn: Ok(actor_id),
-                    create_rank,
-                    stopped,
-                } => {
-                    if *stopped {
-                        ranks.push((*create_rank, resource::Status::Stopped));
-                    } else {
-                        let supervision_events = self
-                            .supervision_events
-                            .get(actor_id)
-                            .map_or_else(Vec::new, |a| a.clone());
-                        ranks.push((
-                            *create_rank,
-                            if supervision_events.is_empty() {
-                                resource::Status::Running
-                            } else {
-                                resource::Status::Failed(format!(
-                                    "because of supervision events: {:?}",
-                                    supervision_events
-                                ))
-                            },
-                        ));
-                    }
-                }
-                ActorInstanceState {
-                    spawn: Err(e),
-                    create_rank,
-                    ..
-                } => {
-                    ranks.push((*create_rank, Status::Failed(e.to_string())));
-                }
-            }
-        }
-
-        let result = get_rank_status.reply.send(cx, ranks);
         // Ignore errors, because returning Err from here would cause the ProcMeshAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.

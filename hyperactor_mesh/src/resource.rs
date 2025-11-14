@@ -217,26 +217,6 @@ impl GetRankStatus {
     }
 }
 
-/// Get the status of all resources across the mesh.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    Handler,
-    HandleClient,
-    RefClient,
-    Bind,
-    Unbind
-)]
-pub struct GetAllRankStatus {
-    /// Returns the status and rank of all resources.
-    /// TODO: migrate to a ValueOverlay.
-    #[binding(include)]
-    pub reply: PortRef<Vec<(usize, Status)>>,
-}
-
 /// The state of a resource.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct State<S> {
