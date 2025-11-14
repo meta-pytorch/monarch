@@ -99,7 +99,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_ENABLE_LOG_FORWARDING".to_string()),
         py_name: None,
     })
-    pub attr MESH_ENABLE_LOG_FORWARDING: bool = true;
+    pub attr MESH_ENABLE_LOG_FORWARDING: bool = false;
 
     /// When `true`: if stdio is piped, each child's `StreamFwder`
     /// also forwards lines to a host-scoped `FileAppender` managed by
@@ -124,7 +124,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_ENABLE_FILE_CAPTURE".to_string()),
         py_name: None,
     })
-    pub attr MESH_ENABLE_FILE_CAPTURE: bool = true;
+    pub attr MESH_ENABLE_FILE_CAPTURE: bool = false;
 
     /// Maximum number of log lines retained in a proc's stderr/stdout
     /// tail buffer. Used by [`StreamFwder`] when wiring child
@@ -133,7 +133,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_TAIL_LOG_LINES".to_string()),
         py_name: None,
     })
-    pub attr MESH_TAIL_LOG_LINES: usize = 100;
+    pub attr MESH_TAIL_LOG_LINES: usize = 0;
 
     /// If enabled (default), bootstrap child processes install
     /// `PR_SET_PDEATHSIG(SIGKILL)` so the kernel reaps them if the
@@ -3692,6 +3692,10 @@ mod tests {
     #[tokio::test]
     async fn exit_tail_is_attached_and_logged() {
         hyperactor_telemetry::initialize_logging_for_test();
+
+        let lock = hyperactor::config::global::lock();
+        let _guard = lock.override_key(MESH_TAIL_LOG_LINES, 100);
+
         // Spawn a child that writes to stderr then exits 7.
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
