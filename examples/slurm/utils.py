@@ -4,26 +4,18 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import getpass
+"""
+Utility functions for running Monarch examples on SLURM with v1 API.
 
-import json
+Provides helper functions for creating and managing SLURM jobs:
+- create_slurm_job(): Create a new SLURM job with mesh configuration
+- cleanup_job(): Terminate and clean up SLURM jobs
+"""
+
 import logging
-import os
-import pathlib
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
-from monarch._src.actor.allocator import RemoteAllocator, TorchXRemoteAllocInitializer
+from monarch.job import JobTrait, SlurmJob
 
-from monarch.actor import ProcMesh
-from monarch.tools import commands
-from monarch.tools.components import hyperactor
-from monarch.tools.config import Config
-
-
-USER = getpass.getuser()
-HOME = pathlib.Path().home()
-CWD = os.getcwd()
-DEACTIVATE = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,60 +25,62 @@ logging.basicConfig(
 )
 logger: logging.Logger = logging.getLogger(__name__)
 
-# pre-configured for H100
-HOST_TYPE = "gpu.xlarge"
-HOST_MEMORY = 2062607
 
+def create_slurm_job(
+    mesh_name: str,
+    num_nodes: int,
+    gpus_per_node: int,
+    time_limit: str = "06:00:00",
+    python_exe: str = None,
+) -> SlurmJob:
+    """
+    Create a SLURM job for Monarch v1 API.
 
-async def get_appdef(num_hosts: int, host_type: str = HOST_TYPE):
-    # similar to Docker image; should contain a conda env in the $img_root/conda/ directory
-    # when config.workspace is not None, an ephemeral fbpkg version is created
-    # that conda-packs the currently active local conda env AND the directory specified by workspace
-    image = "monarch_default_workspace:latest"
+    Args:
+        mesh_name: Name assigned to the primary mesh for this example.
+                   A JobTrait can consist of multiple meshes, and
+                   Monarch allows for re-attaching to ongoing jobs.
+        num_nodes: Number of nodes allocated per mesh
+        gpus_per_node: Number of GPUs per node in the mesh
+        time_limit: Time limit for the SLURM job (default: "06:00:00")
+        python_exe: Optional path to python executable
 
-    appdef = hyperactor.host_mesh(
-        image=image,
-        meshes=[f"mesh0:{num_hosts}:{host_type}"],  # mesh_name:num_hosts:host_type
-    )
-    return appdef
+    Returns:
+        SlurmJob: A configured SLURM job instance
 
+    Note:
+        SlurmJob is just one instance of a Monarch scheduler interface.
+        Consult the JobTrait documentation to find one that's right for your usecase.
+    """
+    default_job_name = "monarch_example"
 
-async def get_server_info(appdef, host_memory: int = HOST_MEMORY):
-    jobname = f"monarch-{USER}"
+    slurm_job_args = {
+        "meshes": {mesh_name: num_nodes},
+        "job_name": default_job_name,
+        "gpus_per_node": gpus_per_node,
+        "time_limit": time_limit,
+    }
+    if python_exe:
+        slurm_job_args["python_exe"] = python_exe
 
-    # TODO: Register this so we don't have to do this every time
-    for role in appdef.roles:
-        role.resource.memMB = host_memory
-
-    config = Config(
-        scheduler="slurm",
-        appdef=appdef,
-        workspace=str(CWD),  # or None to disable building ephemeral,
-    )
-
-    server_info = await commands.get_or_create(
-        jobname,
-        config,
-        force_restart=False,
-    )
-    return server_info
-
-
-async def create_proc_mesh(num_hosts, appdef, server_info):
-    num_gpus_per_host = appdef.roles[0].resource.gpu
-
-    logger.info(
-        "\n===== Server Info =====\n%s",
-        json.dumps(server_info.to_json(), indent=2),
+    return SlurmJob(
+        **slurm_job_args,
+        # ... additional args can be passed here
     )
 
-    allocator = RemoteAllocator(
-        world_id="foo",
-        initializer=TorchXRemoteAllocInitializer(server_info.server_handle),
-    )
-    alloc = await allocator.allocate(
-        AllocSpec(AllocConstraints(), hosts=num_hosts, gpus=num_gpus_per_host)
-    )
 
-    proc_mesh = await ProcMesh.from_alloc(alloc)
-    return proc_mesh
+async def cleanup_job(job: JobTrait) -> None:
+    """
+    Cancel the SLURM job, releasing all reserved nodes back to the cluster.
+
+    Args:
+        job: A JobTrait, like the one returned from create_slurm_job()
+
+    Note:
+        The job will also terminate automatically when the configured TTL
+        is exceeded, but explicit cleanup is recommended for long-running
+        notebooks or scripts.
+    """
+    job.kill()
+    logger.info("Job terminated successfully")
+
