@@ -1017,10 +1017,7 @@ async def test_supervise_callback_unhandled():
     )
 
     message = re.compile(
-        """\
-__supervise__ on .*supervisor.* did not handle a supervision event, propagating to next owner. \
-Original event:.*error_actor.*\
-""",
+        r"The actor .* and all its descendants have failed\..*error_actor",
         re.DOTALL,
     )
     # Note that __supervise__ will not get called until the next message

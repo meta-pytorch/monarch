@@ -78,6 +78,10 @@ impl MeshFailure {
     fn mesh(&self) {}
 
     fn __repr__(&self) -> String {
+        format!("{}", self)
+    }
+
+    fn report(&self) -> String {
         format!("{}", self.event)
     }
 }

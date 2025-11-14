@@ -3143,7 +3143,7 @@ mod tests {
             unreachable!()
         };
         assert!(msg.to_string().contains(
-            "processing error: a message from \
+            "a message from \
                 quux[0].foo[0] to corge[0].bar[0][9999] was undeliverable and returned"
         ));
 

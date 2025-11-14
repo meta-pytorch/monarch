@@ -1,16 +1,16 @@
 import os
-import subprocess
-import sys
 import time
-from typing import Callable, TypeVar
 
-import cloudpickle
-from monarch.actor import this_host
+from threading import Event
+from typing import Callable, Optional, TypeVar
+
+import monarch.actor
+from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
+
+from monarch.actor import Actor, endpoint, this_host
 
 
 T = TypeVar("T")
-
-from monarch.actor import Actor, endpoint
 
 
 class Lambda(Actor):
@@ -51,84 +51,74 @@ class SuperviseNest(Nest):
         print("SUPERVISE: ", x)
 
 
-def actor_failure_proc():
-    l = this_host().spawn_procs().spawn("actor", Lambda)
-    l.run.broadcast(error)
-    time.sleep(10)
+class FaultCapture:
+    """Helper class to capture unhandled faults for testing."""
 
+    def __init__(self):
+        self.failure_happened = Event()
+        self.captured_failure: Optional[MeshFailure] = None
+        self.original_hook = None
 
-def run_subprocess(l: Callable[[], None]):
-    # serialize l via cloudpickle.
-    pickled = cloudpickle.dumps(l)
-    # run sys.executable -c 'cloudpickle.loads({repr of cloudpickle bytes})()'
-    code = f"import cloudpickle; cloudpickle.loads({pickled!r})()"
-    result = subprocess.run([sys.executable, "-c", code])
-    # return the exit code
-    return result.returncode
+    def __enter__(self):
+        self.original_hook = monarch.actor.unhandled_fault_hook
+        monarch.actor.unhandled_fault_hook = self.capture_fault
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.failure_happened.wait(timeout=10)
+        monarch.actor.unhandled_fault_hook = self.original_hook
+
+    def capture_fault(self, failure: MeshFailure) -> None:
+        """Capture the fault instead of exiting the process."""
+        print(f"Captured fault: {failure.report()}")
+        self.captured_failure = failure
+        self.failure_happened.set()
+
+    def assert_fault_occurred(self, expected_substring: Optional[str] = None):
+        """Assert that a fault was captured, optionally checking the message."""
+        assert (
+            self.captured_failure is not None
+        ), "Expected a fault to be captured, but none occurred"
+        if expected_substring:
+            report = self.captured_failure.report()
+            assert expected_substring in report, (
+                f"Expected fault message to contain '{expected_substring}', "
+                f"but got: {report}"
+            )
 
 
 def test_actor_failure():
     """
-    If an actor dies, the client should die.
-
-    If we have qualms about killing the client, we should provide a monarch.panic_hook that normall
-    kills the process, but can be configured to do something else.
-
-        monarch.panic_hook = ...
+    If an actor dies, the client should receive an unhandled fault.
     """
-    assert 0 != run_subprocess(actor_failure_proc)
+    with FaultCapture() as capture:
+        l = this_host().spawn_procs().spawn("actor", Lambda)
+        l.run.broadcast(error)
 
-
-def run_subprocess_proc_failure():
-    l = this_host().spawn_procs().spawn("actor", Nest)
-    print("Killed ", l.kill_nest.call_one().get())
-    time.sleep(10)
+    capture.assert_fault_occurred("This occurred because the actor itself failed.")
 
 
 def test_proc_failure():
     """
-    If a proc dies, the client should die.
+    If a proc dies, the client should receive an unhandled fault.
     """
+    with FaultCapture() as capture:
+        l = this_host().spawn_procs().spawn("actor", Nest)
+        l.kill_nest.call_one().get()
 
-    assert 0 != run_subprocess(run_subprocess_proc_failure)
-
-
-def nested_mesh_kills_actor():
-    l = this_host().spawn_procs().spawn("actor", Nest)
-    v = l.nested_call_one.call_one(lambda: 4).get()
-    print(v)
-    assert v == 4
-    l.kill_nest.call_one().get()
-    print("KILLED!")
-    for i in range(10):
-        l.direct.call_one(lambda: None).get()
-        print("Nest still alive", i)
-        time.sleep(1)
-    raise RuntimeError("Nest was never killed?")
-
-
-def nested_mesh_kills_actor_actor_error():
-    l = this_host().spawn_procs().spawn("actor", Nest)
-    v = l.nested_call_one.call_one(lambda: 4).get()
-    l.nested.call_one(error).get()
-    print("ERRORED THE ACTOR")
-    for i in range(10):
-        l.direct.call_one(lambda: None).get()
-        print("Nest still alive", i)
-        time.sleep(1)
-    print("Nest was never killed")
+    capture.assert_fault_occurred()
 
 
 def test_nested_mesh_kills_actor_actor_error():
-    assert 0 != run_subprocess(nested_mesh_kills_actor_actor_error)
-
-
-def a_dead_man_tells_no_tales():
-    l = this_host().spawn_procs().spawn("actor", Lambda)
-    l.run.broadcast(error)
-    assert 4 == l.run.call_one(lambda: 4).get()
-    print("HOW DID I GET 4? The actor should have died before it got this message.")
-
-
-def test_a_dead_man_tells_no_tales():
-    assert 0 != run_subprocess(a_dead_man_tells_no_tales)
+    """
+    If a nested actor errors, the fault should propagate to the client.
+    """
+    with FaultCapture() as capture:
+        l = this_host().spawn_procs().spawn("actor", Nest)
+        v = l.nested_call_one.call_one(lambda: 4).get()
+        assert v == 4
+        l.nested.call_one(error).get()
+        print("ERRORED THE ACTOR")
+    capture.assert_fault_occurred(
+        "actor <root>.<tests.test_supervision_hierarchy.Nest actor>.<tests.test_supervision_hierarchy.Lambda nested> failed"
+    )

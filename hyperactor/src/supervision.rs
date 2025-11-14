@@ -131,7 +131,7 @@ impl fmt::Display for ActorSupervisionEvent {
         let failing_event = self.actually_failing_actor();
         let failing_actor = failing_event.actor_name();
         let its_name = if failing_actor == actor_name {
-            "the actor itself"
+            "itself"
         } else {
             &failing_actor
         };

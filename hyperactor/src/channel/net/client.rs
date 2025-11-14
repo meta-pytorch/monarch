@@ -576,6 +576,8 @@ async fn run<M: RemoteMessage>(
             // TODO(T233029051): Return reason through return_channel too.
             reason: _,
         } => {
+            // Close the channel to prevent any further messages from being sent.
+            receiver.close();
             // Return in order from oldest to newest, messages
             // either not acknowledged or not sent.
             unacked
@@ -584,9 +586,7 @@ async fn run<M: RemoteMessage>(
                 .chain(outbox.deque.drain(..))
                 .for_each(|queued| queued.try_return());
             while let Ok((msg, return_channel, _)) = receiver.try_recv() {
-                if let Err(m) = return_channel.send(SendError(ChannelError::Closed, msg)) {
-                    tracing::warn!("failed to deliver SendError: {}", m);
-                }
+                let _ = return_channel.send(SendError(ChannelError::Closed, msg));
             }
         }
         _ => (),
