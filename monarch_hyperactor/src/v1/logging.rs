@@ -310,9 +310,9 @@ impl LoggingMeshClient {
             // re-spawning infra, which we deliberately don't do at
             // runtime.
             (None, true) => {
-                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "log forwarding disabled by config at startup; cannot enable streaming_to_client",
-                ));
+                // return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                //     "log forwarding disabled by config at startup; cannot enable streaming_to_client",
+                // ));
             }
         }
 
@@ -592,6 +592,9 @@ mod tests {
                     );
                 }
 
+                /*
+                // Update (SF: 2025, 11, 13): We now ignore stream to client requests if
+                // log forwarding is enabled.
                 // (c) stream_to_client = true when forwarding was
                 //     never spawned -> Err
                 let res = client_ref.set_mode(&py_instance, true, None, 10);
@@ -606,6 +609,7 @@ mod tests {
                         "unexpected err when enabling streaming with no forwarders: {msg}"
                     );
                 }
+                */
             });
 
             drop(client_py); // See note "NOTE ON LIFECYCLE / CLEANUP"

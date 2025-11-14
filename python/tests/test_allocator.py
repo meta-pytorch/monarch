@@ -254,9 +254,19 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             r"exited with code 1: Traceback \(most recent call last\).*",
         ):
             with remote_process_allocator(
-                envs={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}
+                envs={
+                    "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
+                    "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
+                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                    "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
+                }
             ) as host1, remote_process_allocator(
-                envs={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}
+                envs={
+                    "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
+                    "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
+                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                    "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
+                }
             ) as host2:
                 allocator = RemoteAllocator(
                     world_id="test_remote_allocator",

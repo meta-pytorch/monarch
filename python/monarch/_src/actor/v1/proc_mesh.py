@@ -365,8 +365,8 @@ class ProcMesh(MeshTrait):
 
     async def logging_option(
         self,
-        stream_to_client: bool = True,
-        aggregate_window_sec: int | None = 3,
+        stream_to_client: bool = False,
+        aggregate_window_sec: int | None = None,
         level: int = logging.INFO,
     ) -> None:
         """

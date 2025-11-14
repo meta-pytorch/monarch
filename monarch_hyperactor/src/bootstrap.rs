@@ -36,6 +36,20 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
         fbinit::perform_init();
     };
 
+    // SAFETY: This is an FFI call to libc::signal, which is unsafe by
+    // signature. We pass a valid signal number (SIGTERM) and a
+    // well-defined handler constant (SIG_DFL). This only installs the
+    // default disposition for SIGTERM; it does not call back into
+    // Rust. We do this during bootstrap (before spawning threads or
+    // installing other handlers) to avoid glog's SIGTERM backtraces,
+    // and we accept the process-wide effect. We are not invoking it
+    // from a signal handler, so async-signal-safety constraints on
+    // the caller don't apply here. If we ever need finer control
+    // (flags, SA_RESTART), we should switch to sigaction(2).
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+    }
+
     hyperactor::tracing::debug!("entering async bootstrap");
     crate::runtime::future_into_py::<_, ()>(py, async move {
         // SAFETY:

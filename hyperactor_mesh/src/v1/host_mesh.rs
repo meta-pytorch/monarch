@@ -1125,6 +1125,7 @@ mod tests {
 
     use super::*;
     use crate::Bootstrap;
+    use crate::bootstrap::MESH_TAIL_LOG_LINES;
     use crate::resource::Status;
     use crate::v1::ActorMesh;
     use crate::v1::testactor;
@@ -1321,6 +1322,9 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_failing_proc_allocation() {
+        let lock = hyperactor::config::global::lock();
+        let _guard = lock.override_key(MESH_TAIL_LOG_LINES, 100);
+
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
         let hosts = vec![free_localhost_addr(), free_localhost_addr()];
