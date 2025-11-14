@@ -828,8 +828,9 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 /// if the channel cannot be established. The underlying connection is
 /// dropped whenever the returned Tx is dropped.
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
+#[track_caller]
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
-    tracing::debug!(name = "dial", "dialing channel {}", addr);
+    tracing::debug!(name = "dial", caller = %Location::caller(), %addr, "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
         ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
