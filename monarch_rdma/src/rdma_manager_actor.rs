@@ -267,11 +267,30 @@ impl Drop for RdmaManagerActor {
     }
 }
 
+fn cuda_pt_alloc_disabled() -> bool {
+    static VAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VAL.get_or_init(
+        || match std::env::var("MONARCH_RDMA_CUDA_PT_ALLOC_DISABLED") {
+            Ok(val) => match val.as_str() {
+                "1" => true,
+                "0" => false,
+                _ => {
+                    tracing::warn!(
+                        "MONARCH_RDMA_CUDA_PT_ALLOC_DISABLED is not set to 0 or 1, defaulting to false"
+                    );
+                    false
+                }
+            }
+            Err(_) => false,
+        },
+    )
+}
+
 impl RdmaManagerActor {
     /// Whether to register all memory regions allocated by the PyTorch CUDA allocator
     /// True if both `pt_cuda_alloc` and `mlx5dv_enabled` are true
     fn cuda_pt_alloc_enabled(&self) -> bool {
-        self.pt_cuda_alloc && self.mlx5dv_enabled
+        self.pt_cuda_alloc && self.mlx5dv_enabled && !cuda_pt_alloc_disabled()
     }
     /// Get or create a domain and loopback QP for the specified RDMA device
     fn get_or_create_device_domain(
