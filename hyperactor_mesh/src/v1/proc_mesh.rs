@@ -51,8 +51,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Notify;
 use tracing::Instrument;
-use tracing::Level;
-use tracing::span;
 
 use crate::CommActor;
 use crate::alloc::Alloc;
@@ -295,28 +293,40 @@ impl ProcMesh {
 
     /// Allocate a new ProcMesh from the provided alloc.
     /// Allocate does not require an owning actor because references are not owned.
-    #[tracing::instrument(skip_all)]
     #[track_caller]
     pub async fn allocate(
         cx: &impl context::Actor,
-        mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
+        alloc: Box<dyn Alloc + Send + Sync + 'static>,
         name: &str,
+    ) -> v1::Result<Self> {
+        let caller = Location::caller();
+        Self::allocate_inner(cx, alloc, Name::new(name), caller).await
+    }
+
+    // Use allocate_inner to set field mesh_name in span
+    #[hyperactor::instrument(fields(mesh_name=name.to_string()))]
+    async fn allocate_inner(
+        cx: &impl context::Actor,
+        mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
+        name: Name,
+        caller: &'static Location<'static>,
     ) -> v1::Result<Self> {
         let alloc_id = Self::alloc_counter().fetch_add(1, Ordering::Relaxed) + 1;
         tracing::info!(
-            name = "ProcMesh::Allocate::Attempt",
+            name = "ProcMeshStatus",
+            status = "Allocate::Attempt",
+            %caller,
             alloc_id,
-            caller = %Location::caller(),
             shape = ?alloc.shape(),
             "allocating proc mesh"
         );
 
         let running = alloc
             .initialize()
-            .instrument(span!(
-                Level::INFO,
-                "ProcMesh::Allocate::Initialize",
-                alloc_id
+            .instrument(tracing::info_span!(
+                "ProcMeshStatus::Allocate::Initialize",
+                alloc_id,
+                mesh_name = name.to_string()
             ))
             .await?;
 
@@ -330,17 +340,18 @@ impl ProcMesh {
         // First make sure we can serve the proc:
         let proc_channel_addr = {
             let _guard =
-                tracing::span!(Level::INFO, "allocate_serve_proc", proc_id = %proc.proc_id())
-                    .entered();
+                tracing::info_span!("allocate_serve_proc", proc_id = %proc.proc_id()).entered();
             let (addr, rx) = channel::serve(ChannelAddr::any(alloc.transport()))?;
             proc.clone().serve(rx);
+            tracing::info!(
+                name = "ProcMeshStatus",
+                status = "Allocate::ChannelServe",
+                mesh_name = name.to_string(),
+                %addr,
+                "proc started listening on addr: {addr}"
+            );
             addr
         };
-        tracing::info!(
-            name = "ProcMesh::Allocate::ChannelServe",
-            alloc_id = alloc_id,
-            "proc started listening on addr: {proc_channel_addr}"
-        );
 
         let bind_allocated_procs = |router: &DialMailboxRouter| {
             // Route all of the allocated procs:
@@ -423,7 +434,6 @@ impl ProcMesh {
             .collect();
 
         let stop = Arc::new(Notify::new());
-        let name = Name::new(name);
         let extent = alloc.extent().clone();
 
         {
@@ -453,10 +463,10 @@ impl ProcMesh {
                         }
                     }
                 }
-            });
+            }.instrument(tracing::info_span!("alloc_monitor")));
         }
 
-        Self::create(
+        let mesh = Self::create(
             cx,
             name,
             ProcMeshAllocation::Allocated {
@@ -466,14 +476,21 @@ impl ProcMesh {
             },
             true, // alloc-based meshes support comm actors
         )
-        .await
+        .await;
+        match &mesh {
+            Ok(_) => tracing::info!(name = "ProcMeshStatus", status = "Allocate::Created"),
+            Err(error) => {
+                tracing::info!(name = "ProcMeshStatus", status = "Allocate::Failed", %error)
+            }
+        }
+        mesh
     }
 
     /// Detach the proc mesh from the lifetime of `self`, and return its reference.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn detach(self) -> ProcMeshRef {
         // This also keeps the ProcMeshAllocation::Allocated alloc task alive.
-        self.current_ref
+        self.current_ref.clone()
     }
 
     /// Stop this mesh gracefully.
@@ -505,6 +522,16 @@ impl Deref for ProcMesh {
 
     fn deref(&self) -> &Self::Target {
         &self.current_ref
+    }
+}
+
+impl Drop for ProcMesh {
+    fn drop(&mut self) {
+        tracing::info!(
+            name = "ProcMeshStatus",
+            mesh_name = %self.name,
+            status = "Dropped",
+        );
     }
 }
 
