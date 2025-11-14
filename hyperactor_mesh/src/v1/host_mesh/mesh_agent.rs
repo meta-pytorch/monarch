@@ -355,7 +355,7 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
         cx: &Context<Self>,
         get_state: resource::GetState<ProcState>,
     ) -> anyhow::Result<()> {
-        let manager = self
+        let manager: Option<&BootstrapProcManager> = self
             .host
             .as_mut()
             .expect("host")
