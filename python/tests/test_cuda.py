@@ -9,13 +9,14 @@
 import os
 import sys
 import unittest
-from typing import Dict, List
+from typing import cast, Dict, List
 
 import cloudpickle
-import monarch.actor
 import torch
+import torch.distributed as dist
+from monarch._src.actor.actor_mesh import ActorMesh
 from monarch._src.actor.host_mesh import create_local_host_mesh, fake_in_process_host
-from monarch.actor import Actor, endpoint
+from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 
 
 class CudaInitTestActor(Actor):
@@ -44,6 +45,42 @@ class CudaInitTestActor(Actor):
     async def is_cuda_initialized(self) -> bool:
         """Return whether CUDA was initialized"""
         return self.cuda_initialized
+
+
+class TorchDistributedActor(Actor):
+    """Actor that initializes CUDA and checks environment variables"""
+
+    def __init__(self) -> None:
+        self.rank = int(current_rank()["gpus"])
+        self.world_size = int(current_size()["gpus"])
+        self.port = 29500
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = str(self.port)
+
+    @endpoint
+    def init_torch_distributed(self) -> None:
+        if not dist.is_initialized():
+            dist.init_process_group(
+                backend="nccl",
+                world_size=self.world_size,
+                rank=self.rank,
+            )
+
+    @endpoint
+    def is_initialized(self) -> bool:
+        return dist.is_initialized()
+
+    # Cleanup is a special function called automatically on actor stop.
+    def __cleanup__(self, exc: Exception | None) -> None:
+        self.logger.info(f"Cleanup called with exception: {exc}")
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+class IsTorchInitializedActor(Actor):
+    @endpoint
+    def is_initialized(self) -> bool:
+        return dist.is_initialized()
 
 
 class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
@@ -149,3 +186,16 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
                 env_vars.get("CUDA_DEVICE_MAX_CONNECTIONS"),
                 "1",
             )
+
+    async def test_cleanup_torch_distributed(self) -> None:
+        """Test that calling stop on the actor destroys the process group"""
+        proc_mesh = this_host().spawn_procs(per_host={"gpus": 1})
+
+        actor = proc_mesh.spawn("torch_init", TorchDistributedActor)
+        tester = proc_mesh.spawn("check", IsTorchInitializedActor)
+        await actor.init_torch_distributed.call_one()
+        self.assertTrue(await actor.is_initialized.call_one())
+        # Stop the actor and ensure cleanup is called, by using another actor
+        # on the same proc.
+        await cast(ActorMesh[TorchDistributedActor], actor).stop()
+        self.assertFalse(await tester.is_initialized.call_one())
