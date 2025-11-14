@@ -454,7 +454,7 @@ impl ProcessAlloc {
 
         // We don't support FileAppender in this v0 allocator path; warn if asked.
         if enable_file_capture {
-            tracing::warn!(
+            tracing::info!(
                 "MESH_ENABLE_FILE_CAPTURE=true, but ProcessAllocator (v0) has no FileAppender; \
                  files will NOT be written in this path"
             );
