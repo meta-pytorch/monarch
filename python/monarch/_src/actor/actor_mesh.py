@@ -1145,34 +1145,6 @@ class _Actor:
             # propagated to the next owner.
             return None
 
-    async def __cleanup__(self, cx: Context, exc: str | Exception | None) -> None:
-        """Cleans up any resources owned by this Actor before stopping. Automatically
-        called even if there is an error"""
-        _context.set(cx)
-        instance = self.instance
-        if instance is None:
-            # If there is no instance, there's nothing to clean up, the actor
-            # was never constructed
-            return None
-
-        # Forward a call to supervise on this actor to the user-provided instance.
-        cleanup = getattr(instance, "__cleanup__", None)
-        if cleanup is None:
-            return None
-
-        if isinstance(exc, str):
-            # Wrap the string in an exception object so the main API of __cleanup__
-            # is to take an optional exception object.
-            # The raw string is used for wider compatibility with other error
-            # types for now.
-            exc = Exception(exc)
-
-        if inspect.iscoroutinefunction(cleanup):
-            return await cleanup(exc)
-        else:
-            with fake_sync_state():
-                return cleanup(exc)
-
     def __repr__(self) -> str:
         return f"_Actor(instance={self.instance!r})"
 
@@ -1260,7 +1232,6 @@ class ActorMesh(MeshTrait, Generic[T]):
 
         async_endpoints = []
         sync_endpoints = []
-        async_cleanup = None
         for attr_name in dir(self._class):
             attr_value = getattr(self._class, attr_name, None)
             if isinstance(attr_value, EndpointProperty):
@@ -1284,27 +1255,12 @@ class ActorMesh(MeshTrait, Generic[T]):
                     async_endpoints.append(attr_name)
                 else:
                     sync_endpoints.append(attr_name)
-            if attr_name == "__cleanup__" and attr_value is not None:
-                async_cleanup = inspect.iscoroutinefunction(attr_value)
 
         if sync_endpoints and async_endpoints:
             raise ValueError(
                 f"{self._class} mixes both async and sync endpoints."
                 "Synchronous endpoints cannot be mixed with async endpoints because they can cause the asyncio loop to deadlock if they wait."
                 f"sync: {sync_endpoints} async: {async_endpoints}"
-            )
-        if sync_endpoints and async_cleanup:
-            raise ValueError(
-                f"{self._class} has sync endpoints, but an async __cleanup__. Make sure __cleanup__ is also synchronous."
-                "Synchronous endpoints cannot be mixed with async endpoints because they can cause the asyncio loop to deadlock if they wait."
-                f"sync: {sync_endpoints}"
-            )
-        # Check for False explicitly because None means there is no cleanup.
-        if async_endpoints and async_cleanup is False:
-            raise ValueError(
-                f"{self._class} has async endpoints, but a synchronous __cleanup__. Make sure __cleanup__ is also async."
-                "Synchronous endpoints cannot be mixed with async endpoints because they can cause the asyncio loop to deadlock if they wait."
-                f"sync: {sync_endpoints}"
             )
 
     def __getattr__(self, attr: str) -> NotAnEndpoint:
