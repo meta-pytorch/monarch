@@ -21,6 +21,7 @@ use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
+use std::panic::Location;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -47,6 +48,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::Level;
+use tracing::Span;
 use uuid::Uuid;
 
 use crate as hyperactor;
@@ -54,6 +56,7 @@ use crate::Actor;
 use crate::ActorRef;
 use crate::Handler;
 use crate::Message;
+use crate::Named as _;
 use crate::RemoteMessage;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
@@ -789,7 +792,6 @@ impl Proc {
     }
 
     /// Create a root allocation in the proc.
-    #[hyperactor::instrument(fields(actor_name=name))]
     fn allocate_root_id(&self, name: &str) -> Result<ActorId, anyhow::Error> {
         let name = name.to_string();
         match self.state().roots.entry(name.to_string()) {
@@ -1024,8 +1026,28 @@ impl<A: Actor> Instance<A> {
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
+    #[track_caller]
     fn change_status(&self, new: ActorStatus) {
-        self.status_tx.send_replace(new.clone());
+        let old = self.status_tx.send_replace(new.clone());
+        // Actor status changes between Idle and Processing when handling every
+        // message. It creates too many logs if we want to log these 2 states.
+        // Therefore we skip the status changes between them.
+        if !((old.is_idle() && new.is_processing()) || (old.is_processing() && new.is_idle())) {
+            let new_status = new.arm().unwrap_or("unknown");
+            let change_reason = match new {
+                ActorStatus::Failed(reason) => reason.to_string(),
+                _ => "".to_string(),
+            };
+            tracing::info!(
+                name = "ActorStatus",
+                actor_id = %self.self_id(),
+                actor_name = self.self_id().name(),
+                status = new_status,
+                prev_status = old.arm().unwrap_or("unknown"),
+                caller = %Location::caller(),
+                change_reason,
+            );
+        }
     }
 
     fn is_terminal(&self) -> bool {
@@ -1099,9 +1121,14 @@ impl<A: Actor> Instance<A> {
         let instance_cell = self.cell.clone();
         let actor_id = self.cell.actor_id().clone();
         let actor_handle = ActorHandle::new(self.cell.clone(), self.ports.clone());
-        let actor_task_handle = A::spawn_server_task(panic_handler::with_backtrace_tracking(
-            self.serve(actor, actor_loop_receivers, work_rx),
-        ));
+        let actor_task_handle = A::spawn_server_task(
+            panic_handler::with_backtrace_tracking(self.serve(
+                actor,
+                actor_loop_receivers,
+                work_rx,
+            ))
+            .instrument(Span::current()),
+        );
         tracing::debug!("{}: spawned with {:?}", actor_id, actor_task_handle);
         instance_cell
             .inner
@@ -1316,7 +1343,6 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Initialize and run the actor until it fails or is stopped.
-    #[tracing::instrument(level = "info", skip_all, fields(actor_id = %self.self_id()))]
     async fn run(
         &mut self,
         actor: &mut A,
@@ -1431,6 +1457,7 @@ impl<A: Actor> Instance<A> {
         }
     }
 
+    #[hyperactor::instrument(fields(actor_id = self.self_id().to_string(), actor_name = self.self_id().name()))]
     async unsafe fn handle_message<M: Message>(
         &mut self,
         actor: &mut A,
@@ -1460,18 +1487,12 @@ impl<A: Actor> Instance<A> {
             &headers,
             self.self_id().to_string(),
         );
-        let span = tracing::debug_span!(
-            "actor_status",
-            actor_id = self.self_id().to_string(),
-            actor_name = self.self_id().name(),
-            name = self.cell.status().borrow().to_string(),
-        );
 
         let context = Context::new(self, headers);
         // Pass a reference to the context to the handler, so that deref
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
-        actor.handle(&context, message).instrument(span).await
+        actor.handle(&context, message).await
     }
 
     // Spawn on child on this instance. Currently used only by cap::CanSpawn.
@@ -1560,6 +1581,15 @@ impl<A: Actor> Drop for Instance<A> {
             if status.is_terminal() {
                 false
             } else {
+                tracing::info!(
+                    name = "ActorStatus",
+                    actor_id = %self.self_id(),
+                    actor_name = self.self_id().name(),
+                    status = "Stopped",
+                    prev_status = status.arm().unwrap_or("unknown"),
+                    caller = %Location::caller(),
+                    "Instance is dropped",
+                );
                 *status = ActorStatus::Stopped;
                 true
             }
