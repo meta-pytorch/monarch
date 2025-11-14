@@ -155,6 +155,14 @@ declare_attrs! {
     })
     pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// Timeout used by proc for running the cleanup callback on an actor.
+    /// Should be less than the timeout for STOP_ACTOR_TIMEOUT.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_CLEANUP_TIMEOUT".to_string()),
+        py_name: None,
+    })
+    pub attr CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
+
     /// Heartbeat interval for remote allocator
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
