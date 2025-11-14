@@ -68,6 +68,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     ///   `max_frame_length`. **This error is fatal:** once returned,
     ///   the `FrameReader` must be dropped; the underlying connection
     ///   is no longer valid.
+    #[tracing::instrument(skip_all)]
     pub async fn next(&mut self) -> io::Result<Option<Bytes>> {
         loop {
             match &mut self.state {
@@ -229,6 +230,7 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// returned futures at any time. Upon completion, the frame is guaranteed to be
     /// written, unless an error was encountered, in which case the underlying stream
     /// is in an undefined state.
+    #[tracing::instrument(skip_all)]
     pub async fn send(&mut self) -> io::Result<()> {
         loop {
             if self.len_buf.has_remaining() {

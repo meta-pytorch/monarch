@@ -771,6 +771,7 @@ impl PanicFlag {
 
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
+    #[hyperactor::instrument]
     async fn handle(
         &mut self,
         cx: &Context<PythonActor>,

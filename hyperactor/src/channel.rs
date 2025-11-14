@@ -119,11 +119,13 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
     /// message is either delivered, or we eventually discover that
     /// the channel has failed and it will be sent back on `return_channel`.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
+    #[hyperactor::instrument_infallible]
     fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
         self.do_post(message, Some(return_channel));
     }
 
     /// Enqueue a message to be sent on the channel.
+    #[hyperactor::instrument_infallible]
     fn post(&self, message: M) {
         self.do_post(message, None);
     }
@@ -803,6 +805,7 @@ enum ChannelRxKind<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
+    #[hyperactor::instrument]
     async fn recv(&mut self) -> Result<M, ChannelError> {
         match &mut self.inner {
             ChannelRxKind::Local(rx) => rx.recv().await,
