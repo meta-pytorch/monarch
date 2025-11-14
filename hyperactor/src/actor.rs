@@ -732,6 +732,43 @@ pub trait Binds<A: Actor>: Referable {
 /// is handled by a specific actor type.
 pub trait RemoteHandles<M: RemoteMessage>: Referable {}
 
+/// Check if the actor behaves-as the a given behavior (defined by [`behavior!`]).
+///
+/// ```
+/// # use serde::Serialize;
+/// # use serde::Deserialize;
+/// # use hyperactor::Named;
+///
+/// // First, define a behavior, based on handling a single message type `()`.
+/// hyperactor::behavior!(UnitBehavior, ());
+///
+/// #[derive(hyperactor::Actor, Debug, Default)]
+/// struct MyActor;
+///
+/// #[async_trait::async_trait]
+/// impl hyperactor::Handler<()> for MyActor {
+///     async fn handle(
+///         &mut self,
+///         _cx: &hyperactor::Context<Self>,
+///         _message: (),
+///     ) -> Result<(), anyhow::Error> {
+///         // no-op
+///         Ok(())
+///     }
+/// }
+///
+/// hyperactor::assert_behaves!(MyActor as UnitBehavior);
+/// ```
+#[macro_export]
+macro_rules! assert_behaves {
+    ($ty:ty as $behavior:ty) => {
+        const _: fn() = || {
+            fn check<B: hyperactor::actor::Binds<$ty>>() {}
+            check::<$behavior>();
+        };
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
