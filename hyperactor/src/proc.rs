@@ -1028,6 +1028,14 @@ impl<A: Actor> Instance<A> {
         self.status_tx.send_replace(new.clone());
     }
 
+    fn is_terminal(&self) -> bool {
+        self.status_tx.borrow().is_terminal()
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.status_tx.borrow().is_stopped()
+    }
+
     /// This instance's actor ID.
     pub fn self_id(&self) -> &ActorId {
         self.mailbox.actor_id()
@@ -1119,23 +1127,34 @@ impl<A: Actor> Instance<A> {
             .run_actor_tree(&mut actor, actor_loop_receivers, &mut work_rx)
             .await;
 
-        let (actor_status, event) = match result {
-            Ok(_) => (ActorStatus::Stopped, None),
-            Err(ActorError {
-                kind: box ActorErrorKind::UnhandledSupervisionEvent(box event),
-                ..
-            }) => (event.actor_status.clone(), Some(event)),
+        let event = match result {
+            Ok(_) => {
+                // actor should have been stopped by run_actor_tree
+                assert!(self.is_stopped());
+                None
+            }
             Err(err) => {
-                let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                (
-                    ActorStatus::Failed(error_kind.clone()),
-                    Some(ActorSupervisionEvent::new(
-                        self.cell.actor_id().clone(),
-                        ActorStatus::Failed(error_kind),
-                        None,
-                        None,
-                    )),
-                )
+                match *err.kind {
+                    ActorErrorKind::UnhandledSupervisionEvent(box event) => {
+                        // Currently only terminated actors are allowed to raise supervision events.
+                        // If we want to change that in the future, we need to modify the exit
+                        // status here too, because we use event's actor_status as this actor's
+                        // terminal status.
+                        assert!(event.actor_status.is_terminal());
+                        self.change_status(event.actor_status.clone());
+                        Some(event)
+                    }
+                    _ => {
+                        let error_kind = ActorErrorKind::Generic(err.kind.to_string());
+                        self.change_status(ActorStatus::Failed(error_kind.clone()));
+                        Some(ActorSupervisionEvent::new(
+                            self.cell.actor_id().clone(),
+                            ActorStatus::Failed(error_kind),
+                            None,
+                            None,
+                        ))
+                    }
+                }
             }
         };
 
@@ -1164,7 +1183,6 @@ impl<A: Actor> Instance<A> {
                 self.proc.handle_supervision_event(event);
             }
         }
-        self.change_status(actor_status);
     }
 
     /// Runs the actor, and manages its supervision tree. When the function returns,
@@ -1207,10 +1225,16 @@ impl<A: Actor> Instance<A> {
             }
         };
 
-        if let Err(ref err) = result {
-            tracing::error!("{}: actor failure: {}", self.self_id(), err);
+        match &result {
+            Ok(_) => assert!(self.is_stopped()),
+            Err(err) => {
+                tracing::error!("{}: actor failure: {}", self.self_id(), err);
+                assert!(!self.is_terminal());
+                // Send Stopping instead of Failed, because we still need to
+                // unlink child actors.
+                self.change_status(ActorStatus::Stopping);
+            }
         }
-        self.change_status(ActorStatus::Stopping);
 
         // After this point, we know we won't spawn any more children,
         // so we can safely read the current child keys.
