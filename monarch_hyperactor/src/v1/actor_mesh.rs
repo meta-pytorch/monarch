@@ -468,7 +468,7 @@ fn send_state_change<F>(
 /// * is_owned is true if this monitor is running on the owning instance. When true,
 ///   a message will be sent to "owner" if it is not None. If owner is None,
 ///   then a panic will be raised instead to crash the client.
-/// * time_between_tasks controls how frequently to poll.
+/// * time_between_tasks 1trols how frequently to poll.
 async fn actor_states_monitor<A, F>(
     cx: &impl context::Actor,
     mesh: ActorMeshRef<A>,
