@@ -152,6 +152,19 @@ struct ProcState {
     clock: ClockKind,
 }
 
+impl Drop for ProcState {
+    fn drop(&mut self) {
+        // We only want log ProcStatus::Dropped when ProcState is dropped,
+        // rather than Proc is dropped. This is because we need to wait for
+        // Proc::inner's ref count becomes 0.
+        tracing::info!(
+            proc_id = %self.proc_id,
+            name = "ProcStatus",
+            status = "Dropped"
+        );
+    }
+}
+
 /// A snapshot view of the proc's actor ledger.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ActorLedgerSnapshot {
@@ -337,7 +350,6 @@ impl Proc {
     }
 
     /// Create a new direct-addressed proc.
-    #[tracing::instrument]
     pub async fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
         let proc_id = ProcId::Direct(addr, name);
@@ -347,7 +359,6 @@ impl Proc {
     }
 
     /// Create a new direct-addressed proc with a default sender for the forwarder.
-    #[tracing::instrument(skip(default))]
     pub fn direct_with_default(
         addr: ChannelAddr,
         name: String,
@@ -369,6 +380,11 @@ impl Proc {
         forwarder: BoxedMailboxSender,
         clock: ClockKind,
     ) -> Self {
+        tracing::info!(
+            proc_id = %proc_id,
+            name = "ProcStatus",
+            status = "Created"
+        );
         Self {
             inner: Arc::new(ProcState {
                 proc_id,
