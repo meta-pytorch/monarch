@@ -82,25 +82,6 @@ pub trait Actor: Sized + Send + Debug + 'static {
         Ok(())
     }
 
-    /// Cleanup things used by this actor before shutting down. Notably this function
-    /// is async and allows more complex cleanup. Simpler cleanup can be handled
-    /// by the impl Drop for this Actor.
-    /// If err is not None, it is the error that this actor is failing with. Any
-    /// errors returned by this function will be logged and ignored.
-    /// If err is None, any errors returned by this function will be propagated
-    /// as an ActorError.
-    /// This function is not called if there is a panic in the actor, as the
-    /// actor may be in an indeterminate state. It is also not called if the
-    /// process is killed, there is no atexit handler or signal handler.
-    async fn cleanup(
-        &mut self,
-        _this: &Instance<Self>,
-        _err: Option<&ActorError>,
-    ) -> Result<(), anyhow::Error> {
-        // Default implementation: no cleanup.
-        Ok(())
-    }
-
     /// Spawn a child actor, given a spawning capability (usually given by [`Instance`]).
     /// The spawned actor will be supervised by the parent (spawning) actor.
     async fn spawn(
@@ -360,11 +341,6 @@ impl ActorErrorKind {
     /// Error during actor initialization.
     pub fn init(err: anyhow::Error) -> Self {
         Self::Generic(format!("initialization error: {}", err))
-    }
-
-    /// Error during actor cleanup.
-    pub fn cleanup(err: anyhow::Error) -> Self {
-        Self::Generic(format!("cleanup error: {}", err))
     }
 
     /// An underlying mailbox error.
