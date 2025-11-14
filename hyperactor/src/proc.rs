@@ -2518,14 +2518,15 @@ mod tests {
         let _root_2_actor_id = root_2.actor_id().clone();
         assert_matches!(
             root_2.await,
-            ActorStatus::Failed(err) if err.to_string() == "processing error: some random failure"
+            ActorStatus::Failed(err) if err.to_string() == "some random failure"
         );
 
         // TODO: should we provide finer-grained stop reasons, e.g., to indicate it was
         // stopped by a parent failure?
+        // Currently the parent fails with an error related to the child's failure.
         assert_matches!(
             root.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(msg)) if msg == "did not handle supervision event"
+            ActorStatus::Failed(err) if err.to_string().contains("some random failure")
         );
         assert_eq!(root_2_1.await, ActorStatus::Stopped);
         assert_eq!(root_1.await, ActorStatus::Stopped);
@@ -2951,7 +2952,7 @@ mod tests {
         assert!(!root_2_1_state.load(Ordering::SeqCst));
         assert_eq!(
             reported_event.event().map(|e| e.actor_id.clone()),
-            Some(root.actor_id().clone())
+            Some(root_2_1.actor_id().clone())
         );
     }
 

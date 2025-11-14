@@ -1211,7 +1211,7 @@ mod tests {
                 // The message will be returned!
                 assert_matches!(
                     events.next().await.unwrap(),
-                    ProcEvent::Crashed(0, reason) if reason.contains("failed: message not delivered")
+                    ProcEvent::Crashed(0, reason) if reason.contains("message not delivered")
                 );
 
                 // TODO: Stop the proc.
@@ -1333,7 +1333,7 @@ mod tests {
             // The message will be returned!
             assert_matches!(
                 events.next().await.unwrap(),
-                ProcEvent::Crashed(0, reason) if reason.contains("failed: message not delivered")
+                ProcEvent::Crashed(0, reason) if reason.contains("message not delivered")
             );
 
             // Get 'pong' to send 'ping' a message. Since 'ping's
@@ -1348,7 +1348,7 @@ mod tests {
             // The message will be returned!
             assert_matches!(
                 events.next().await.unwrap(),
-                ProcEvent::Crashed(0, reason) if reason.contains("failed: message not delivered")
+                ProcEvent::Crashed(0, reason) if reason.contains("message not delivered")
             );
         }
 
@@ -1403,7 +1403,7 @@ mod tests {
             // The message will be returned!
             assert_matches!(
                 events.next().await.unwrap(),
-                ProcEvent::Crashed(0, reason) if reason.contains("failed: message not delivered")
+                ProcEvent::Crashed(0, reason) if reason.contains("message not delivered")
             );
 
             // Stop the mesh.
