@@ -671,6 +671,16 @@ impl HostMeshRef {
         name: &str,
         per_host: Extent,
     ) -> v1::Result<ProcMesh> {
+        self.spawn_inner(cx, Name::new(name), per_host).await
+    }
+
+    #[hyperactor::instrument(fields(mesh_name=mesh_name.to_string()))]
+    async fn spawn_inner(
+        &self,
+        cx: &impl context::Actor,
+        mesh_name: Name,
+        per_host: Extent,
+    ) -> v1::Result<ProcMesh> {
         let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
         let host_labels = self.region.labels().iter().collect::<HashSet<_>>();
         if !per_host_labels
@@ -690,7 +700,13 @@ impl HostMeshRef {
             .map_err(|err| v1::Error::ConfigurationError(err.into()))?;
 
         let region: Region = extent.clone().into();
-        let mesh_name = Name::new(name);
+
+        tracing::info!(
+            name = "ProcMeshStatus",
+            status = "Spawn::Attempt",
+            %region,
+            "spawning proc mesh"
+        );
 
         let mut procs = Vec::new();
         let num_ranks = region.num_ranks();
@@ -714,7 +730,7 @@ impl HostMeshRef {
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
-                let proc_name = Name::new(format!("{}_{}", name, per_host_rank));
+                let proc_name = Name::new(format!("{}_{}", mesh_name.name(), per_host_rank));
                 proc_names.push(proc_name.clone());
                 host.mesh_agent()
                     .create_or_update(
@@ -743,8 +759,15 @@ impl HostMeshRef {
                             format!("failed while querying proc status: {}", e),
                         )
                     })?;
+                let proc_id = host.named_proc(&proc_name);
+                tracing::info!(
+                    name = "ProcMeshStatus",
+                    status = "Spawn::CreatingProc",
+                    %proc_id,
+                    rank = create_rank,
+                );
                 procs.push(ProcRef::new(
-                    host.named_proc(&proc_name),
+                    proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
                     ActorRef::attest(host.named_proc(&proc_name).actor_id("agent", 0)),
@@ -803,6 +826,15 @@ impl HostMeshRef {
                         },
                     };
 
+                    tracing::error!(
+                        name = "ProcMeshStatus",
+                        status = "Spawn::GetRankStatus",
+                        rank = host_rank,
+                        "rank {} is terminating with state: {}",
+                        host_rank,
+                        state
+                    );
+
                     return Err(v1::Error::ProcCreationError {
                         state,
                         host_rank,
@@ -811,6 +843,12 @@ impl HostMeshRef {
                 }
             }
             Err(complete) => {
+                tracing::error!(
+                    name = "ProcMeshStatus",
+                    status = "Spawn::GetRankStatus",
+                    "timeout after {:?} when waiting for procs being created",
+                    config::global::get(PROC_SPAWN_MAX_IDLE),
+                );
                 // Fill remaining ranks with a timeout status via the
                 // legacy shim.
                 let legacy = mesh_to_rankedvalues_with_default(
@@ -823,7 +861,10 @@ impl HostMeshRef {
             }
         }
 
-        ProcMesh::create_owned_unchecked(cx, mesh_name, extent, self.clone(), procs).await
+        let mesh =
+            ProcMesh::create_owned_unchecked(cx, mesh_name, extent, self.clone(), procs).await;
+        tracing::info!(name = "ProcMeshStatus", status = "Spawn::Created",);
+        mesh
     }
 
     /// The name of the referenced host mesh.

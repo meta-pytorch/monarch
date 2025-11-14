@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -472,7 +473,16 @@ impl fmt::Display for Signal {
 }
 
 /// The runtime status of an actor.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Named)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Clone,
+    Named,
+    EnumAsInner
+)]
 pub enum ActorStatus {
     /// The actor status is unknown.
     Unknown,
@@ -505,12 +515,7 @@ pub enum ActorStatus {
 impl ActorStatus {
     /// Tells whether the status is a terminal state.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Stopped | Self::Failed(_))
-    }
-
-    /// Tells whether the status represents a failure.
-    pub fn is_failed(&self) -> bool {
-        matches!(self, Self::Failed(_))
+        self.is_stopped() || self.is_failed()
     }
 
     /// Create a generic failure status with the provided error message.
