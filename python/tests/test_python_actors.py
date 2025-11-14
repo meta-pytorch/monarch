@@ -1816,3 +1816,50 @@ def test_context_propagated_through_python_task_spawn_blocking():
     p = this_host().spawn_procs()
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
     a.context_propagated_through_spawn_blocking.call().get()
+
+
+class ActorWithCleanup(Actor):
+    def __init__(self, counter: Counter) -> None:
+        self.counter = counter
+
+    @endpoint
+    def check(self) -> None:
+        pass
+
+    def __cleanup__(self, exc: Exception | None):
+        self.logger.info(f"Calling __cleanup__ on {self}, {exc=}")
+        self.counter.incr.call_one().get()
+
+
+class ActorWithAsyncCleanup(Actor):
+    def __init__(self, counter: Counter) -> None:
+        self.counter = counter
+
+    @endpoint
+    async def check(self) -> None:
+        pass
+
+    # Cleanup should match the async-ness of the other endpoints.
+    async def __cleanup__(self, exc: Exception | None):
+        self.logger.info(f"Calling __cleanup__ on {self}, {exc=}")
+        await self.counter.incr.call_one()
+
+
+def test_cleanup():
+    procs = this_host().spawn_procs(per_host={"gpus": 1})
+    counter = procs.spawn("counter", Counter, 0)
+    cleanup = procs.spawn("cleanup", ActorWithCleanup, counter)
+    # Call an endpoint to ensure it is constructed.
+    cleanup.check.call_one().get()
+    cast(ActorMesh[ActorWithCleanup], cleanup).stop().get()
+    assert counter.value.call_one().get() == 1
+
+
+def test_cleanup_async():
+    procs = this_host().spawn_procs(per_host={"gpus": 1})
+    counter = procs.spawn("counter", Counter, 0)
+    cleanup = procs.spawn("cleanup", ActorWithCleanup, counter)
+    # Call an endpoint to ensure it is constructed.
+    cleanup.check.call_one().get()
+    cast(ActorMesh[ActorWithCleanup], cleanup).stop().get()
+    assert counter.value.call_one().get() == 1
