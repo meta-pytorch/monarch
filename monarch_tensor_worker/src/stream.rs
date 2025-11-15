@@ -560,7 +560,7 @@ impl Actor for StreamActor {
             // use `block_in_place` for nested async-to-sync-to-async flows.
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
-                .enable_io()
+                .enable_all()
                 .build()
                 .unwrap();
             let result = rt.block_on(async {

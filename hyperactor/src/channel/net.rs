@@ -2093,9 +2093,9 @@ mod tests {
 
         // Verify the channel is closed due to ack timeout based on the log.
         let expected_log: &str = if disconnect_before_ack {
-            "failed to receive ack within timeout 2 secs; link is currently broken"
+            "failed to receive ack within timeout 2s; link is currently broken"
         } else {
-            "failed to receive ack within timeout 2 secs; link is currently connected"
+            "failed to receive ack within timeout 2s; link is currently connected"
         };
 
         verify_tx_closed(&mut tx_status, expected_log).await;
