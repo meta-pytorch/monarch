@@ -207,8 +207,7 @@ impl RdmaBuffer {
             .release_queue_pair(client, remote_owner, local_device, remote_device, qp)
             .await?;
 
-        result?;
-        Ok(true)
+        result
     }
     /// Waits for the completion of an RDMA operation.
     ///
