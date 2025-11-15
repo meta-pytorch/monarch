@@ -652,6 +652,7 @@ async def test_sigsegv_handling():
 
     # Depending on the timing, any of these messages could come back first.
     error_msg = (
+        "actor mesh is stopped due to proc mesh shutdown|"
         'actor mesh is stopped due to proc mesh shutdown.*Failed\\("Killed\\(sig=11.*\\)"\\)|'
         "Actor .* exited because of the following reason|"
         "Actor .* is unhealthy with reason"
@@ -692,7 +693,8 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
     # new call should fail with check of health state of actor mesh
     with pytest.raises(
         SupervisionError,
-        match="actor mesh is stopped due to proc mesh shutdown|Actor .* exited because of the following reason.*stopped",
+        match="actor mesh is stopped due to proc mesh shutdown"
+        + "|Actor .* exited because of the following reason.*stopped",
     ):
         await actor_mesh.check.call()
 
