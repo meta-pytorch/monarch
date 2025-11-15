@@ -677,7 +677,15 @@ impl<'a> std::fmt::Display for JsonFmt<'a> {
         /// Truncate the input string to MAX_JSON_VALUE_DISPLAY_LENGTH and append
         /// the truncated hash of the full value for easy comparison.
         fn truncate_and_hash(value_str: &str) -> String {
-            let truncated_str = &value_str[..MAX_JSON_VALUE_DISPLAY_LENGTH];
+            let truncate_at = MAX_JSON_VALUE_DISPLAY_LENGTH.min(value_str.len());
+
+            // Respect UTF-8 boundaries (multi-byte chars like emojis can be up to 4 bytes)
+            let mut safe_truncate_at = truncate_at;
+            while safe_truncate_at > 0 && !value_str.is_char_boundary(safe_truncate_at) {
+                safe_truncate_at -= 1;
+            }
+
+            let truncated_str = &value_str[..safe_truncate_at];
             let mut result = truncated_str.to_string();
             result.push_str(&format!("[...{} chars] ", value_str.len()));
             display_bytes_as_hash(&mut result, value_str.as_bytes()).unwrap();
@@ -949,6 +957,31 @@ mod tests {
             format!("{}", JsonFmt(&nested_json)),
             "{\"outer\":{\"inner\":{\"simple_value\":\"short\"},\"long_array\":\"[1,2,3,4[...28 chars] CRC:e5c881af 5b 31 2c 32 2c 33 2c 34 [...20 bytes]\",\"long_string\":\"aaaaaaaa[...18 chars] CRC:b8ac0e31 61 61 61 61 61 61 61 61 [...10 bytes]\"},\"simple_bool\":true,\"simple_number\":42}",
         );
+    }
+
+    #[test]
+    fn test_json_fmt_utf8_truncation() {
+        // Test that UTF-8 character boundaries are respected during truncation
+        // Create a string with multi-byte characters that would be truncated
+
+        // String with 7 ASCII chars + 4-byte emoji (total 11 bytes, truncates at 8)
+        let utf8_json = serde_json::json!({
+            "emoji": "1234567🦀"  // 7 + 4 = 11 bytes, MAX is 8
+        });
+
+        // Should truncate at byte 7 (before the emoji) to respect UTF-8 boundary
+        let result = format!("{}", JsonFmt(&utf8_json));
+
+        // Verify it doesn't panic and produces valid output
+        assert!(result.contains("1234567"));
+        assert!(!result.contains("🦀")); // Emoji should be truncated away
+
+        // Test with all multi-byte characters
+        let all_multibyte = serde_json::json!({
+            "chinese": "你好世界"  // Each char is 3 bytes = 12 bytes total
+        });
+        let result3 = format!("{}", JsonFmt(&all_multibyte));
+        assert!(!result3.is_empty());
     }
 
     #[test]
