@@ -23,6 +23,8 @@ use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 use hyperactor::ProcId;
 use hyperactor::actor::ActorError;
+use hyperactor::actor::ActorErrorKind;
+use hyperactor::actor::ActorStatus;
 use hyperactor::attrs::Attrs;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -30,6 +32,7 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor::reference::WorldId;
+use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
 use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -629,6 +632,12 @@ impl Actor for PythonActor {
         Ok(())
     }
 
+    fn display_name(&self) -> Option<String> {
+        self.instance.as_ref().and_then(|instance| {
+            Python::with_gil(|py| instance.bind(py).str().ok().map(|s| s.to_string()))
+        })
+    }
+
     async fn handle_undeliverable_message(
         &mut self,
         ins: &Instance<Self>,
@@ -901,24 +910,40 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                         // error. This will not set the causal chain for ActorSupervisionEvent,
                         // so make sure to include the original event in the error message
                         // to provide context.
-                        Err(anyhow::anyhow!(
-                            "__supervise__ on {} did not handle a supervision event, \
-                            propagating to next owner. Original event:\n{}",
-                            cx.self_id(),
-                            message.event
-                        ))
+
+                        // False -- we propagate the event onward, but update it with the fact that
+                        // this actor is now the event creator.
+                        let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                            ActorSupervisionEvent::new(
+                                cx.self_id().clone(),
+                                self.display_name(),
+                                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(
+                                    Box::new(message.event),
+                                )),
+                                None,
+                            ),
+                        ));
+                        Err(anyhow::Error::new(err))
                     }
                 }
                 Err(err) => {
                     // Any other exception will supersede in the propagation chain,
                     // and will become its own supervision failure.
                     // Include the event it was handling in the error message.
-                    Err(anyhow::anyhow!(
-                        "__supervise__ on {} raised an exception while handling a supervision event. Original event: {}. Exception raised: {}",
-                        cx.self_id(),
-                        message.event,
-                        err
-                    ))
+
+                    // Add to caused_by chain.
+                    let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                        ActorSupervisionEvent::new(
+                            cx.self_id().clone(),
+                            self.display_name(),
+                            ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
+                                err.to_string(),
+                                Box::new(message.event),
+                            )),
+                            None,
+                        ),
+                    ));
+                    Err(anyhow::Error::new(err))
                 }
             }
         })

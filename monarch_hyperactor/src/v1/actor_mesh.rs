@@ -375,8 +375,8 @@ fn actor_state_to_supervision_events(
             } else {
                 vec![ActorSupervisionEvent::new(
                     actor_id.expect("actor_id is None"),
-                    ActorStatus::Stopped,
                     None,
+                    ActorStatus::Stopped,
                     None,
                 )]
             }
@@ -503,11 +503,11 @@ async fn actor_states_monitor<A, F>(
                 0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_id().clone(),
+                    None,
                     ActorStatus::generic_failure(format!(
                         "unable to query for proc states: {:?}",
                         e
                     )),
-                    None,
                     None,
                 ),
                 mesh.name(),
@@ -548,6 +548,7 @@ async fn actor_states_monitor<A, F>(
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
                         mesh.get(point.rank()).unwrap().actor_id().clone(),
+                        None,
                         actor_status,
                         // ActorStatus::Failed(ActorErrorKind::Generic(format!(
                         //     "process failure: {}",
@@ -558,7 +559,6 @@ async fn actor_states_monitor<A, F>(
                         //             reason: "unknown".to_string()
                         //         })
                         // ))),
-                        None,
                         None,
                     ),
                     mesh.name(),
@@ -580,11 +580,11 @@ async fn actor_states_monitor<A, F>(
                 0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_id().clone(),
+                    None,
                     ActorStatus::generic_failure(format!(
                         "unable to query for actor states: {:?}",
                         e
                     )),
-                    None,
                     None,
                 ),
                 mesh.name(),

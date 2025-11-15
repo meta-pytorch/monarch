@@ -25,3 +25,8 @@ class MeshFailure:
     """
     @property
     def mesh(self) -> object: ...
+    def report(self) -> str:
+        """
+        User-readable error report for this particular failure.
+        """
+        ...

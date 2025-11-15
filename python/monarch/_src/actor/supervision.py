@@ -23,5 +23,5 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
     Single argument is the SupervisionEvent
     """
 
-    _logger.error(f"Unhandled mesh failure, crashing! {failure}")
+    _logger.error(f"Unhandled monarch error on the root actor: {failure.report()}")
     sys.exit(1)

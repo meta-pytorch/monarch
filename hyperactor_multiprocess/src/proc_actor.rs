@@ -29,7 +29,9 @@ use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
+use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorHandle;
+use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
@@ -815,7 +817,12 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
         event: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
         let actor_id = event.actor_id.clone();
-        let status = event.status();
+        let status = match event.actor_status {
+            ActorStatus::Failed(_) => {
+                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(event)))
+            }
+            status => status,
+        };
         let message = ProcSupervisionState {
             world_id: self.params.world_id.clone(),
             proc_id: self.params.proc.proc_id().clone(),

@@ -821,6 +821,8 @@ class DroppingPort:
         pass
 
     def exception(self, obj: Exception) -> None:
+        if isinstance(obj, ActorError):
+            obj = obj.exception
         # we deliver each error exactly once, so if there is no port to respond to,
         # the error is sent to the current actor as an exception.
         raise obj from None

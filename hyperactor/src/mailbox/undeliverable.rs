@@ -165,9 +165,9 @@ pub fn supervise_undeliverable_messages_with<R, F>(
 
                     if let Err(e) = sink.send(ActorSupervisionEvent::new(
                         actor_id,
+                        None,
                         ActorStatus::generic_failure(format!("message not delivered: {}", env)),
                         Some(headers),
-                        None,
                     )) {
                         tracing::warn!(
                             %e,

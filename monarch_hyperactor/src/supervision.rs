@@ -80,6 +80,10 @@ impl MeshFailure {
     fn __repr__(&self) -> String {
         format!("{}", self)
     }
+
+    fn report(&self) -> String {
+        format!("{}", self.event)
+    }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {

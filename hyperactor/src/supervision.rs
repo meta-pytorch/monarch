@@ -10,13 +10,13 @@
 
 use std::fmt;
 use std::fmt::Debug;
+use std::fmt::Write;
 use std::time::SystemTime;
 
-use chrono::DateTime;
-use chrono::offset::Local;
 use derivative::Derivative;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use indenter::indented;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -33,6 +33,8 @@ use crate::reference::ActorId;
 pub struct ActorSupervisionEvent {
     /// The actor id of the child actor where the event is triggered.
     pub actor_id: ActorId,
+    /// Friendly display name, if the actor class customized it.
+    pub display_name: Option<String>,
     /// The time when the event is triggered.
     #[derivative(PartialEq = "ignore")]
     pub occurred_at: SystemTime,
@@ -41,57 +43,108 @@ pub struct ActorSupervisionEvent {
     /// If this event is associated with a message, the message headers.
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Attrs>,
-    /// Optional supervision event that caused this event, for recursive propagation.
-    pub caused_by: Option<Box<ActorSupervisionEvent>>,
 }
 
 impl ActorSupervisionEvent {
     /// Create a new supervision event. Timestamp is set to the current time.
     pub fn new(
         actor_id: ActorId,
+        display_name: Option<String>,
         actor_status: ActorStatus,
         message_headers: Option<Attrs>,
-        caused_by: Option<Box<ActorSupervisionEvent>>,
     ) -> Self {
         Self {
             actor_id,
+            display_name,
             occurred_at: RealClock.system_time_now(),
             actor_status,
             message_headers,
-            caused_by,
         }
     }
-    /// Compute an actor status from this event, ensuring that "caused-by"
-    /// events are included in failure states. This should be used as the
-    /// actor status when reporting events to users.
-    pub fn status(self) -> ActorStatus {
-        match self.actor_status {
-            ActorStatus::Failed(_) => {
-                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(self)))
-            }
-            status => status,
+
+    fn actor_name(&self) -> String {
+        self.display_name
+            .clone()
+            .unwrap_or_else(|| self.actor_id.to_string())
+    }
+
+    fn actually_failing_actor(&self) -> &ActorSupervisionEvent {
+        let mut event = self;
+        while let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(e)) =
+            &event.actor_status
+        {
+            event = e;
         }
+        event
     }
 }
 
 impl std::error::Error for ActorSupervisionEvent {}
 
+fn fmt_status<'a>(
+    actor_id: &ActorId,
+    status: &'a ActorStatus,
+    f: &mut fmt::Formatter<'_>,
+) -> Result<Option<&'a ActorSupervisionEvent>, fmt::Error> {
+    let mut f = indented(f).with_str(" ");
+
+    match status {
+        ActorStatus::Stopped if actor_id.name() == "agent" => {
+            // Host agent stopped - use simplified message from D86984496
+            let name = match actor_id.proc_id() {
+                crate::reference::ProcId::Direct(addr, _) => addr.to_string(),
+                crate::reference::ProcId::Ranked(_, _) => actor_id.proc_id().to_string(),
+            };
+            write!(
+                f,
+                "The process {} owned by this actor became unresponsive and is assumed dead, check the log on the host for details",
+                name
+            )?;
+            Ok(None)
+        }
+        ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
+            msg,
+            during_handling_of,
+        )) => {
+            write!(f, "{}", msg)?;
+            Ok(Some(during_handling_of))
+        }
+        ActorStatus::Failed(ActorErrorKind::Generic(msg)) => {
+            write!(f, "{}", msg)?;
+            Ok(None)
+        }
+        status => {
+            write!(f, "{}", status)?;
+            Ok(None)
+        }
+    }
+}
+
 impl fmt::Display for ActorSupervisionEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
+        let actor_name = self.actor_name();
+        writeln!(
             f,
-            "{}: {} at {}",
-            self.actor_id,
-            self.actor_status,
-            DateTime::<Local>::from(self.occurred_at),
+            "The actor {} and all its descendants have failed.",
+            actor_name
         )?;
-        if let Some(message_headers) = &self.message_headers {
-            let headers = serde_json::to_string(&message_headers)
-                .expect("could not serialize message headers");
-            write!(f, " (headers: {})", headers)?;
-        }
-        if let Some(caused_by) = &self.caused_by {
-            write!(f, ": (caused by: {})", caused_by)?;
+        let failing_event = self.actually_failing_actor();
+        let failing_actor = failing_event.actor_name();
+        let its_name = if failing_actor == actor_name {
+            "itself"
+        } else {
+            &failing_actor
+        };
+        writeln!(f, "This occurred because the actor {} failed.", its_name)?;
+        writeln!(f, "The error was:")?;
+        let during_handling_of =
+            fmt_status(&failing_event.actor_id, &failing_event.actor_status, f)?;
+        if let Some(event) = during_handling_of {
+            writeln!(
+                f,
+                "This error occurred during the handling of another failure:"
+            )?;
+            fmt::Display::fmt(event, f)?;
         }
         Ok(())
     }
