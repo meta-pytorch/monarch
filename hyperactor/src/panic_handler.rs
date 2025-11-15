@@ -15,10 +15,19 @@ use std::future::Future;
 use std::ops::Deref;
 use std::panic;
 
+/// A struct to store the message and backtrace from a panic.
+#[derive(Clone)]
+pub struct PanicInfo {
+    /// The message from the panic.
+    pub message: String,
+    /// The backtrace from the panic.
+    pub backtrace: String,
+}
+
 tokio::task_local! {
     /// A task_local variable to store the backtrace from a panic, so it can be
     /// retrieved later.
-    static BACKTRACE: RefCell<Option<String>>;
+    static BACKTRACE: RefCell<Option<PanicInfo>>;
 }
 
 /// Call this from the main method of your application, and use it in conjunction
@@ -33,9 +42,23 @@ pub fn set_panic_hook() {
             || "unavailable".to_owned(),
             |loc: &panic::Location<'_>| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()),
         );
+        // Extract the panic message from the payload
+        let panic_msg = if let Some(&s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "panic message cannot be downcasted".to_string()
+        };
+
+        tracing::error!("stacktrace"=%backtrace, "panic at {loc}: {panic_msg}");
+
         let _result = BACKTRACE.try_with(|entry| match entry.try_borrow_mut() {
             Ok(mut entry_ref) => {
-                *entry_ref = Some(format!("panicked at {loc}\n{backtrace}"));
+                *entry_ref = Some(PanicInfo {
+                    message: panic_msg,
+                    backtrace: format!("panicked at {loc}\n{backtrace}"),
+                });
             }
             Err(borrow_mut_error) => {
                 eprintln!(
@@ -44,7 +67,6 @@ pub fn set_panic_hook() {
                 );
             }
         });
-        tracing::error!("stacktrace"=%backtrace, "panic at {loc}");
 
         // Execute the default hood to preserve the default behavior.
         prev(info);
@@ -62,11 +84,11 @@ where
 
 /// Take the backtrace from the task_local variable, and reset the task_local to
 /// None. Return error if the backtrace is not stored, or cannot be retrieved.
-pub fn take_panic_backtrace() -> Result<String, anyhow::Error> {
+pub fn take_panic_backtrace() -> Result<PanicInfo, anyhow::Error> {
     BACKTRACE.try_with(|entry| {
         entry.try_borrow_mut().map(|mut entry_ref| {
             let result = match entry_ref.deref() {
-                Some(bt) => Ok(bt.to_string()),
+                Some(bt) => Ok(bt.clone()),
                 None => Err(anyhow::anyhow!("nothing is stored in task_local")),
             };
             // Clear the task_local because the backtrace has been retrieve.
@@ -143,11 +165,9 @@ mod tests {
             .await;
             assert!(result.is_err());
             if backtrace_captured {
-                assert!(
-                    take_panic_backtrace()
-                        .unwrap()
-                        .contains("verify_inner_panic")
-                );
+                let info = take_panic_backtrace().unwrap();
+                assert_eq!(info.message, "wow!");
+                assert!(info.backtrace.contains("verify_inner_panic"));
             } else {
                 assert!(take_panic_backtrace().is_err());
             }
@@ -169,11 +189,9 @@ mod tests {
             assert!(result.is_ok());
 
             // Verify the outer task can get its own backtrace.
-            assert!(
-                take_panic_backtrace()
-                    .unwrap()
-                    .contains("test_nested_tasks")
-            );
+            let info = take_panic_backtrace().unwrap();
+            assert_eq!(info.message, "boom!");
+            assert!(info.backtrace.contains("test_nested_tasks"));
         })
         .await;
     }
