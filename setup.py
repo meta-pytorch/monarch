@@ -161,13 +161,23 @@ if sys.platform.startswith("linux"):
     cur = os.environ.get("RUSTFLAGS", "")
     os.environ["RUSTFLAGS"] = (cur + " " + " ".join(flags)).strip()
 
+# Check if MONARCH_BUILD_MESH_ONLY=1 to skip legacy builds
+SKIP_LEGACY_BUILDS = os.environ.get("MONARCH_BUILD_MESH_ONLY", "0") == "1"
 
-rust_extensions = [
-    RustBin(
-        target="process_allocator",
-        path="monarch_hyperactor/Cargo.toml",
-        debug=False,
-    ),
+rust_extensions = []
+
+# Legacy builds (kept for tests that still depend on them)
+if not SKIP_LEGACY_BUILDS:
+    rust_extensions.append(
+        RustBin(
+            target="process_allocator",
+            path="monarch_hyperactor/Cargo.toml",
+            debug=False,
+        )
+    )
+
+# Main extension (always built)
+rust_extensions.append(
     RustExtension(
         "monarch._rust_bindings",
         binding=Binding.PyO3,
@@ -175,10 +185,11 @@ rust_extensions = [
         debug=False,
         features=["tensor_engine"] if USE_TENSOR_ENGINE else [],
         args=[] if USE_TENSOR_ENGINE else ["--no-default-features"],
-    ),
-]
+    )
+)
 
-if USE_TENSOR_ENGINE:
+# Legacy controller bin (kept for tests that still depend on it)
+if USE_TENSOR_ENGINE and not SKIP_LEGACY_BUILDS:
     rust_extensions.append(
         RustExtension(
             {"controller_bin": "monarch.monarch_controller"},
