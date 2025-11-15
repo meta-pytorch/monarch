@@ -15,6 +15,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::RemoteMessage;
+use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::actor::RemotableActor;
@@ -22,6 +23,7 @@ use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_mesh::bootstrap::ProcStatus;
 use hyperactor_mesh::dashmap::DashMap;
 use hyperactor_mesh::proc_mesh::mesh_agent::ActorState;
 use hyperactor_mesh::resource;
@@ -466,7 +468,7 @@ fn send_state_change<F>(
 /// * is_owned is true if this monitor is running on the owning instance. When true,
 ///   a message will be sent to "owner" if it is not None. If owner is None,
 ///   then a panic will be raised instead to crash the client.
-/// * time_between_tasks controls how frequently to poll.
+/// * time_between_tasks 1trols how frequently to poll.
 async fn actor_states_monitor<A, F>(
     cx: &impl context::Actor,
     mesh: ActorMeshRef<A>,
@@ -503,7 +505,7 @@ async fn actor_states_monitor<A, F>(
                     cx.instance().self_id().clone(),
                     None,
                     ActorStatus::generic_failure(format!(
-                        "Unable to query for proc states: {:?}",
+                        "unable to query for proc states: {:?}",
                         e
                     )),
                     None,
@@ -520,19 +522,43 @@ async fn actor_states_monitor<A, F>(
         }
         if let Some(proc_states) = proc_states.unwrap() {
             // Check if the proc mesh is still alive.
-            if let Some((rank, state)) = proc_states
+            if let Some((point, state)) = proc_states
                 .iter()
                 .find(|(_rank, state)| state.status.is_terminating())
             {
+                // TODO: allow "actor supervision event" to be general, and
+                // make the proc failure the cause. It is a hack to try to determine
+                // the correct status based on process exit status.
+                let actor_status = match state.state.and_then(|s| s.proc_status) {
+                    Some(ProcStatus::Stopped { .. })
+                    // SIGTERM
+                    | Some(ProcStatus::Killed { signal: 15, .. })
+                    // Conservatively treat lack of status as stopped
+                    | None => ActorStatus::Stopped,
+
+                    Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
+                        "process failure: {}",
+                        status
+                    ))),
+                };
+
                 send_state_change(
-                    rank.rank(),
+                    point.rank(),
                     ActorSupervisionEvent::new(
-                        state
-                            .state
-                            .map(|s| s.mesh_agent.actor_id().clone())
-                            .unwrap_or(cx.instance().self_id().clone()),
+                        // Attribute this to the monitored actor, even if the underlying
+                        // cause is a proc_failure. We propagate the cause explicitly.
+                        mesh.get(point.rank()).unwrap().actor_id().clone(),
                         None,
-                        ActorStatus::Stopped,
+                        actor_status,
+                        // ActorStatus::Failed(ActorErrorKind::Generic(format!(
+                        //     "process failure: {}",
+                        //     state
+                        //         .state
+                        //         .and_then(|state| state.proc_status)
+                        //         .unwrap_or_else(|| ProcStatus::Failed {
+                        //             reason: "unknown".to_string()
+                        //         })
+                        // ))),
                         None,
                     ),
                     mesh.name(),
@@ -556,7 +582,7 @@ async fn actor_states_monitor<A, F>(
                     cx.instance().self_id().clone(),
                     None,
                     ActorStatus::generic_failure(format!(
-                        "Unable to query for actor states: {:?}",
+                        "unable to query for actor states: {:?}",
                         e
                     )),
                     None,
