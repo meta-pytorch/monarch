@@ -12,6 +12,7 @@
 #![feature(mpmc_channel)]
 #![feature(cfg_version)]
 #![feature(formatting_options)]
+#![recursion_limit = "256"]
 
 // TODO:ehedeman Remove or replace with better config once telemetry perf issues are solved
 /// Environment variable to disable the OpenTelemetry logging layer.
@@ -79,7 +80,6 @@ mod spool;
 pub mod sqlite;
 pub mod task;
 pub mod trace;
-use std::io::IsTerminal;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -716,6 +716,24 @@ pub mod env {
             std::env::set_var(HYPERACTOR_EXECUTION_ID_ENV, id.clone());
         }
         id
+    }
+
+    /// Returns a URL for the execution trace, if available.
+    #[cfg(fbcode_build)]
+    pub async fn execution_url() -> anyhow::Result<Option<String>> {
+        let fb = if fbinit::was_performed() {
+            fbinit::expect_init()
+        } else {
+            // Safety: This is going to be embedded in a python library, so we can't be sure when fbinit has been called.
+            unsafe { fbinit::perform_init() }
+        };
+        Ok(Some(
+            crate::meta::scuba_tracing::url::get_samples_shorturl(fb, &execution_id()).await?,
+        ))
+    }
+    #[cfg(not(fbcode_build))]
+    pub async fn execution_url() -> anyhow::Result<Option<String>> {
+        Ok(None)
     }
 
     #[derive(PartialEq)]
