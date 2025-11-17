@@ -760,6 +760,8 @@ where
         .as_ref()
         .map(|acked_seq| AckedSeqValue(acked_seq.clone()));
 
+    use hyperactor_telemetry::skip_record;
+
     tracing::span!(
         Level::ERROR,
         "net i/o loop",
@@ -769,6 +771,7 @@ where
         largest_acked = largest_acked.as_value(),
         outbox = QueueValue::from(&deliveries.outbox.deque).as_value(),
         unacked = QueueValue::from(&deliveries.unacked.deque).as_value(),
+        skip_record,
     )
 }
 
