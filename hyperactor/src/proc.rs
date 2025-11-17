@@ -531,7 +531,7 @@ impl Proc {
         // from its weak cell.
         self.state()
             .ledger
-            .insert(actor_id.clone(), instance.cell.downgrade())?;
+            .insert(actor_id.clone(), instance.inner.cell.downgrade())?;
 
         Ok(instance
             .start(actor, actor_loop_receivers.take().unwrap(), work_rx)
@@ -554,7 +554,7 @@ impl Proc {
         );
 
         let (instance, _, _) = Instance::new(self.clone(), actor_id.clone(), true, None);
-        let handle = ActorHandle::new(instance.cell.clone(), instance.ports.clone());
+        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
 
         instance.change_status(ActorStatus::Client);
 
@@ -575,7 +575,7 @@ impl Proc {
         );
 
         let (instance, _, _) = Instance::new(self.clone(), actor_id, false, Some(parent));
-        let handle = ActorHandle::new(instance.cell.clone(), instance.ports.clone());
+        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
         Ok((instance, handle))
     }
@@ -955,6 +955,10 @@ impl<A: Actor> Deref for Context<'_, A> {
 /// its full lifecycle, supervision, signal management, etc. Instances can represent
 /// a managed actor or a "client" actor that has joined the proc.
 pub struct Instance<A: Actor> {
+    inner: Arc<InstanceState<A>>,
+}
+
+struct InstanceState<A: Actor> {
     /// The proc that owns this instance.
     proc: Proc,
 
@@ -974,6 +978,33 @@ pub struct Instance<A: Actor> {
 
     /// Used to assign sequence numbers for messages sent from this actor.
     sequencer: Sequencer,
+}
+
+impl<A: Actor> InstanceState<A> {
+    fn self_id(&self) -> &ActorId {
+        self.mailbox.actor_id()
+    }
+}
+
+impl<A: Actor> Drop for InstanceState<A> {
+    fn drop(&mut self) {
+        self.status_tx.send_if_modified(|status| {
+            if status.is_terminal() {
+                false
+            } else {
+                tracing::info!(
+                    name = "ActorStatus",
+                    actor_id = %self.self_id(),
+                    actor_name = self.self_id().name(),
+                    status = "Stopped",
+                    prev_status = status.arm().unwrap_or("unknown"),
+                    "instance is dropped",
+                );
+                *status = ActorStatus::Stopped;
+                true
+            }
+        });
+    }
 }
 
 impl<A: Actor> Instance<A> {
@@ -1025,26 +1056,23 @@ impl<A: Actor> Instance<A> {
             ports.clone(),
         );
         let instance_id = Uuid::now_v7();
-        (
-            Self {
-                proc,
-                cell,
-                mailbox,
-                ports,
-                status_tx,
-                sequencer: Sequencer::new(instance_id),
-                id: instance_id,
-            },
-            actor_loop_receivers,
-            work_rx,
-        )
+        let inner = Arc::new(InstanceState {
+            proc,
+            cell,
+            mailbox,
+            ports,
+            status_tx,
+            sequencer: Sequencer::new(instance_id),
+            id: instance_id,
+        });
+        (Self { inner }, actor_loop_receivers, work_rx)
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     #[track_caller]
     fn change_status(&self, new: ActorStatus) {
-        let old = self.status_tx.send_replace(new.clone());
+        let old = self.inner.status_tx.send_replace(new.clone());
         // Actor status changes between Idle and Processing when handling every
         // message. It creates too many logs if we want to log these 2 states.
         // Therefore we skip the status changes between them.
@@ -1067,22 +1095,22 @@ impl<A: Actor> Instance<A> {
     }
 
     fn is_terminal(&self) -> bool {
-        self.status_tx.borrow().is_terminal()
+        self.inner.status_tx.borrow().is_terminal()
     }
 
     fn is_stopped(&self) -> bool {
-        self.status_tx.borrow().is_stopped()
+        self.inner.status_tx.borrow().is_stopped()
     }
 
     /// This instance's actor ID.
     pub fn self_id(&self) -> &ActorId {
-        self.mailbox.actor_id()
+        self.inner.self_id()
     }
 
     /// Signal the actor to stop.
     pub fn stop(&self) -> Result<(), ActorError> {
-        tracing::info!("Instance::stop called, {}", self.cell.actor_id());
-        self.cell.signal(Signal::DrainAndStop)
+        tracing::info!("Instance::stop called, {}", self.inner.cell.actor_id());
+        self.inner.cell.signal(Signal::DrainAndStop)
     }
 
     /// Open a new port that accepts M-typed messages. The returned
@@ -1090,14 +1118,14 @@ impl<A: Actor> Instance<A> {
     /// returned receiver should only be retained by the actor responsible
     /// for processing the delivered messages.
     pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
-        self.mailbox.open_port()
+        self.inner.mailbox.open_port()
     }
 
     /// Open a new one-shot port that accepts M-typed messages. The
     /// returned port may be used to send a single message; ditto the
     /// receiver may receive a single message.
     pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
-        self.mailbox.open_once_port()
+        self.inner.mailbox.open_once_port()
     }
 
     /// Send a message to the actor running on the proc.
@@ -1113,7 +1141,7 @@ impl<A: Actor> Instance<A> {
     {
         let port = self.port();
         let self_id = self.self_id().clone();
-        let clock = self.proc.state().clock.clone();
+        let clock = self.inner.proc.state().clock.clone();
         tokio::spawn(async move {
             clock.non_advancing_sleep(delay).await;
             if let Err(e) = port.send(message) {
@@ -1127,16 +1155,16 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
-    #[hyperactor::instrument_infallible(fields(actor_id=self.cell.actor_id().clone().to_string(), actor_name=self.cell.actor_id().name()))]
+    #[hyperactor::instrument_infallible(fields(actor_id=self.inner.cell.actor_id().clone().to_string(), actor_name=self.inner.cell.actor_id().name()))]
     async fn start(
         self,
         actor: A,
         actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
         work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
     ) -> ActorHandle<A> {
-        let instance_cell = self.cell.clone();
-        let actor_id = self.cell.actor_id().clone();
-        let actor_handle = ActorHandle::new(self.cell.clone(), self.ports.clone());
+        let instance_cell = self.inner.cell.clone();
+        let actor_id = self.inner.cell.actor_id().clone();
+        let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
         let actor_task_handle = A::spawn_server_task(
             panic_handler::with_backtrace_tracking(self.serve(
                 actor,
@@ -1191,7 +1219,7 @@ impl<A: Actor> Instance<A> {
                         let status = ActorStatus::Failed(error_kind);
                         self.change_status(status.clone());
                         Some(ActorSupervisionEvent::new(
-                            self.cell.actor_id().clone(),
+                            self.inner.cell.actor_id().clone(),
                             actor.display_name(),
                             status,
                             None,
@@ -1201,14 +1229,14 @@ impl<A: Actor> Instance<A> {
             }
         };
 
-        if let Some(parent) = self.cell.maybe_unlink_parent() {
+        if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
             if let Some(event) = event {
                 // Parent exists, failure should be propagated to the parent.
                 parent.send_supervision_event_or_crash(event);
             }
             // TODO: we should get rid of this signal, and use *only* supervision events for
             // the purpose of conveying lifecycle changes
-            if let Err(err) = parent.signal(Signal::ChildStopped(self.cell.pid())) {
+            if let Err(err) = parent.signal(Signal::ChildStopped(self.inner.cell.pid())) {
                 tracing::error!(
                     "{}: failed to send stop message to parent pid {}: {:?}",
                     self.self_id(),
@@ -1223,7 +1251,7 @@ impl<A: Actor> Instance<A> {
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
             if let Some(event) = event {
-                self.proc.handle_supervision_event(event);
+                self.inner.proc.handle_supervision_event(event);
             }
         }
     }
@@ -1282,7 +1310,7 @@ impl<A: Actor> Instance<A> {
         // After this point, we know we won't spawn any more children,
         // so we can safely read the current child keys.
         let mut to_unlink = Vec::new();
-        for child in self.cell.child_iter() {
+        for child in self.inner.cell.child_iter() {
             if let Err(err) = child.value().signal(Signal::Stop) {
                 tracing::error!(
                     "{}: failed to send stop signal to child pid {}: {:?}",
@@ -1295,18 +1323,18 @@ impl<A: Actor> Instance<A> {
         }
         // Manually unlink children that have already been stopped.
         for child in to_unlink {
-            self.cell.unlink(&child);
+            self.inner.cell.unlink(&child);
         }
 
         let (mut signal_receiver, _) = actor_loop_receivers;
-        while self.cell.child_count() > 0 {
+        while self.inner.cell.child_count() > 0 {
             match RealClock
                 .timeout(Duration::from_millis(500), signal_receiver.recv())
                 .await
             {
                 Ok(signal) => {
                     if let Signal::ChildStopped(pid) = signal? {
-                        assert!(self.cell.get_child(pid).is_none());
+                        assert!(self.inner.cell.get_child(pid).is_none());
                     }
                 }
                 Err(_) => {
@@ -1316,7 +1344,7 @@ impl<A: Actor> Instance<A> {
                     );
                     // No more waiting to receive messages. Unlink all remaining
                     // children.
-                    self.cell.unlink_all();
+                    self.inner.cell.unlink_all();
                     break;
                 }
             }
@@ -1403,7 +1431,7 @@ impl<A: Actor> Instance<A> {
                             break 'messages;
                         },
                         Signal::ChildStopped(pid) => {
-                            assert!(self.cell.get_child(pid).is_none());
+                            assert!(self.inner.cell.get_child(pid).is_none());
                         },
                     }
                 }
@@ -1411,7 +1439,8 @@ impl<A: Actor> Instance<A> {
                     self.handle_supervision_event(actor, supervision_event).await?;
                 }
             }
-            self.cell
+            self.inner
+                .cell
                 .inner
                 .num_processed_messages
                 .fetch_add(1, Ordering::SeqCst);
@@ -1504,17 +1533,20 @@ impl<A: Actor> Instance<A> {
         actor.handle(&context, message).await
     }
 
-    // Spawn on child on this instance. Currently used only by cap::CanSpawn.
+    /// Spawn on child on this instance. Currently used only by cap::CanSpawn.
     pub(crate) async fn spawn<C: Actor>(
         &self,
         params: C::Params,
     ) -> anyhow::Result<ActorHandle<C>> {
-        self.proc.spawn_child(self.cell.clone(), params).await
+        self.inner
+            .proc
+            .spawn_child(self.inner.cell.clone(), params)
+            .await
     }
 
     /// Create a new direct child instance.
     pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
-        self.proc.child_instance(self.cell.clone())
+        self.inner.proc.child_instance(self.inner.cell.clone())
     }
 
     /// Return a handle port handle representing the actor's message
@@ -1523,33 +1555,33 @@ impl<A: Actor> Instance<A> {
     where
         A: Handler<M>,
     {
-        self.ports.get()
+        self.inner.ports.get()
     }
 
     /// The [`ActorHandle`] corresponding to this instance.
     pub fn handle(&self) -> ActorHandle<A> {
-        ActorHandle::new(self.cell.clone(), Arc::clone(&self.ports))
+        ActorHandle::new(self.inner.cell.clone(), Arc::clone(&self.inner.ports))
     }
 
     /// The owning actor ref.
     pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
-        self.cell.bind(self.ports.as_ref())
+        self.inner.cell.bind(self.inner.ports.as_ref())
     }
 
     // Temporary in order to support python bindings.
     #[doc(hidden)]
     pub fn mailbox_for_py(&self) -> &Mailbox {
-        &self.mailbox
+        &self.inner.mailbox
     }
 
     /// A reference to the proc's clock
     pub fn clock(&self) -> &(impl Clock + use<A>) {
-        &self.proc.state().clock
+        &self.inner.proc.state().clock
     }
 
     /// The owning proc.
     pub fn proc(&self) -> &Proc {
-        &self.proc
+        &self.inner.proc
     }
 
     /// Clone this Instance to get an owned struct that can be
@@ -1558,75 +1590,47 @@ impl<A: Actor> Instance<A> {
     #[doc(hidden)]
     pub fn clone_for_py(&self) -> Self {
         Self {
-            proc: self.proc.clone(),
-            cell: self.cell.clone(),
-            mailbox: self.mailbox.clone(),
-            ports: self.ports.clone(),
-            status_tx: self.status_tx.clone(),
-            sequencer: self.sequencer.clone(),
-            id: self.id,
+            inner: Arc::clone(&self.inner),
         }
     }
 
     /// Get the join handle associated with this actor.
     fn actor_task_handle(&self) -> Option<&JoinHandle<()>> {
-        self.cell.inner.actor_task_handle.get()
+        self.inner.cell.inner.actor_task_handle.get()
     }
 
     /// Return this instance's sequencer.
     pub fn sequencer(&self) -> &Sequencer {
-        &self.sequencer
+        &self.inner.sequencer
     }
 
     /// Return this instance's ID.
     pub fn instance_id(&self) -> Uuid {
-        self.id
-    }
-}
-
-impl<A: Actor> Drop for Instance<A> {
-    fn drop(&mut self) {
-        self.status_tx.send_if_modified(|status| {
-            if status.is_terminal() {
-                false
-            } else {
-                tracing::info!(
-                    name = "ActorStatus",
-                    actor_id = %self.self_id(),
-                    actor_name = self.self_id().name(),
-                    status = "Stopped",
-                    prev_status = status.arm().unwrap_or("unknown"),
-                    caller = %Location::caller(),
-                    "Instance is dropped",
-                );
-                *status = ActorStatus::Stopped;
-                true
-            }
-        });
+        self.inner.id
     }
 }
 
 impl<A: Actor> context::Mailbox for Instance<A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        &self.inner.mailbox
     }
 }
 
 impl<A: Actor> context::Mailbox for Context<'_, A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        &self.instance.inner.mailbox
     }
 }
 
 impl<A: Actor> context::Mailbox for &Instance<A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        &self.inner.mailbox
     }
 }
 
 impl<A: Actor> context::Mailbox for &Context<'_, A> {
     fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
+        &self.instance.inner.mailbox
     }
 }
 
@@ -1665,7 +1669,7 @@ impl Instance<()> {
             self.actor_task_handle().is_none(),
             "can only bind actor port on instance with no running actor task"
         );
-        self.mailbox.bind_actor_port()
+        self.inner.mailbox.bind_actor_port()
     }
 }
 
@@ -1692,11 +1696,11 @@ impl ActorType {
 /// InstanceCell is reference counted and cloneable.
 #[derive(Clone, Debug)]
 pub struct InstanceCell {
-    inner: Arc<InstanceState>,
+    inner: Arc<InstanceCellState>,
 }
 
 #[derive(Debug)]
-struct InstanceState {
+struct InstanceCellState {
     /// The actor's id.
     actor_id: ActorId,
 
@@ -1736,7 +1740,7 @@ struct InstanceState {
     ports: Arc<dyn Any + Send + Sync>,
 }
 
-impl InstanceState {
+impl InstanceCellState {
     /// Unlink this instance from its parent, if it has one. If it was unlinked,
     /// the parent is returned.
     fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
@@ -1746,7 +1750,7 @@ impl InstanceState {
     }
 
     /// Unlink this instance from a child.
-    fn unlink(&self, child: &InstanceState) -> bool {
+    fn unlink(&self, child: &InstanceCellState) -> bool {
         assert_eq!(self.actor_id.proc_id(), child.actor_id.proc_id());
         self.children.remove(&child.actor_id.pid()).is_some()
     }
@@ -1766,7 +1770,7 @@ impl InstanceCell {
     ) -> Self {
         let _ais = actor_id.to_string();
         let cell = Self {
-            inner: Arc::new(InstanceState {
+            inner: Arc::new(InstanceCellState {
                 actor_id: actor_id.clone(),
                 actor_type,
                 proc: proc.clone(),
@@ -1788,7 +1792,7 @@ impl InstanceCell {
         cell
     }
 
-    fn wrap(inner: Arc<InstanceState>) -> Self {
+    fn wrap(inner: Arc<InstanceCellState>) -> Self {
         Self { inner }
     }
 
@@ -1940,7 +1944,7 @@ impl InstanceCell {
     }
 }
 
-impl Drop for InstanceState {
+impl Drop for InstanceCellState {
     fn drop(&mut self) {
         if let Some(parent) = self.maybe_unlink_parent() {
             tracing::debug!(
@@ -1959,7 +1963,7 @@ impl Drop for InstanceState {
 /// linkage between actors without creating a strong reference cycle.
 #[derive(Debug, Clone)]
 pub struct WeakInstanceCell {
-    inner: Weak<InstanceState>,
+    inner: Weak<InstanceCellState>,
 }
 
 impl Default for WeakInstanceCell {
