@@ -359,10 +359,23 @@ pub trait Alloc {
     /// Stop this alloc and wait for all procs to stop. Call will
     /// block until all ProcState events have been drained.
     async fn stop_and_wait(&mut self) -> Result<(), AllocatorError> {
+        tracing::error!(
+            name = "AllocStatus",
+            alloc_name = %self.world_id(),
+            status = "StopAndWait",
+        );
         self.stop().await?;
         while let Some(event) = self.next().await {
-            tracing::debug!("drained event: {:?}", event);
+            tracing::debug!(
+                alloc_name = %self.world_id(),
+                "drained event: {event:?}"
+            );
         }
+        tracing::error!(
+            name = "AllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Stopped",
+        );
         Ok(())
     }
 
