@@ -115,7 +115,7 @@ def test_pickle() -> None:
         Extent(["replicas", "hosts"], [2, 4]),
     )
     _unused, pickled = flatten(host, lambda _: False)
-    unpickled = unflatten(pickled, _unused)
+    unpickled = unflatten(pickled.freeze(), _unused)
     assert isinstance(unpickled, HostMesh)
     assert host.extent.labels == ["replicas", "hosts"]
     assert host.extent.sizes == [2, 4]
