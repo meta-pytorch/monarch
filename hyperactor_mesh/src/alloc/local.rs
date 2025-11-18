@@ -53,7 +53,13 @@ impl Allocator for LocalAllocator {
     type Alloc = LocalAlloc;
 
     async fn allocate(&mut self, spec: AllocSpec) -> Result<Self::Alloc, AllocatorError> {
-        Ok(LocalAlloc::new(spec))
+        let alloc = LocalAlloc::new(spec);
+        tracing::info!(
+            name = "LocalAllocStatus",
+            alloc_name = %alloc.world_id(),
+            status = "Allocated",
+        );
+        Ok(alloc)
     }
 }
 
@@ -259,12 +265,23 @@ impl Alloc for LocalAlloc {
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
+        tracing::info!(
+            name = "LocalAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Stopping",
+        );
         for rank in 0..self.size() {
             self.todo_tx
                 .send(Action::Stop(rank, ProcStopReason::Stopped))
                 .unwrap();
         }
         self.todo_tx.send(Action::Stopped).unwrap();
+        tracing::info!(
+            name = "LocalAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Stop::Sent",
+            "Stop was sent to local procs; check their log to determine if it exited."
+        );
         Ok(())
     }
 
@@ -275,7 +292,10 @@ impl Alloc for LocalAlloc {
 
 impl Drop for LocalAlloc {
     fn drop(&mut self) {
-        tracing::debug!(
+        tracing::info!(
+            name = "LocalAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Dropped",
             "dropping LocalAlloc of name: {}, world id: {}",
             self.name,
             self.world_id
