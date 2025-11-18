@@ -178,7 +178,12 @@ impl PythonActorMeshImpl {
         }
     }
 
-    fn make_monitor<F>(&self, instance: PyInstance, unhandled: F) -> SupervisionMonitor
+    fn make_monitor<F>(
+        &self,
+        instance: PyInstance,
+        unhandled: F,
+        supervision_display_name: String,
+    ) -> SupervisionMonitor
     where
         F: Fn(MeshFailure) + Send + 'static,
     {
@@ -190,6 +195,7 @@ impl PythonActorMeshImpl {
                 inner.health_state.clone(),
                 true,
                 unhandled,
+                supervision_display_name,
             ),
             // Ref meshes send no message, they are only used to generate
             // the v0 style exception.
@@ -199,6 +205,7 @@ impl PythonActorMeshImpl {
                 inner.health_state.clone(),
                 false,
                 unhandled,
+                supervision_display_name,
             ),
         }
     }
@@ -211,6 +218,7 @@ impl PythonActorMeshImpl {
         instance: &PyInstance,
         monitor: &Arc<Mutex<Option<SupervisionMonitor>>>,
         unhandled: F,
+        supervision_display_name: String,
     ) -> watch::Receiver<Option<PyErr>>
     where
         F: Fn(MeshFailure) + Send + 'static,
@@ -218,7 +226,7 @@ impl PythonActorMeshImpl {
         let mut guard = monitor.lock().unwrap();
         guard.get_or_insert_with(move || {
             let instance = Python::with_gil(|_py| instance.clone());
-            self.make_monitor(instance, unhandled)
+            self.make_monitor(instance, unhandled, supervision_display_name)
         });
         let monitor = guard.as_ref().unwrap();
         monitor.receiver.clone()
@@ -296,6 +304,7 @@ impl PythonActorMeshImpl {
         health_state: Arc<RootHealthState>,
         is_owned: bool,
         unhandled: F,
+        supervision_display_name: String,
     ) -> SupervisionMonitor
     where
         F: Fn(MeshFailure) + Send + 'static,
@@ -324,6 +333,7 @@ impl PythonActorMeshImpl {
                         time_between_checks,
                         sender,
                         canceled,
+                        supervision_display_name.clone(),
                     )
                     .await;
                 }
@@ -345,6 +355,7 @@ impl PythonActorMeshImpl {
                         time_between_checks,
                         sender,
                         canceled,
+                        supervision_display_name,
                     )
                     .await;
                 }
@@ -479,6 +490,7 @@ async fn actor_states_monitor<A, F>(
     time_between_checks: tokio::time::Duration,
     sender: watch::Sender<Option<PyErr>>,
     canceled: CancellationToken,
+    supervision_display_name: String,
 ) where
     A: Actor + RemotableActor + Referable,
     A::Params: RemoteMessage,
@@ -541,14 +553,39 @@ async fn actor_states_monitor<A, F>(
                         status
                     ))),
                 };
-
+                let display_name = if !point.is_empty() {
+                    let coords_pairs: Vec<String> = point
+                        .extent()
+                        .labels()
+                        .iter()
+                        .zip(point.coords_iter())
+                        .zip(point.extent().sizes())
+                        .map(|((label, coord), size)| format!("'{}': {}/{}", label, coord, size))
+                        .collect();
+                    if let Some(pos) = supervision_display_name.rfind('>') {
+                        format!(
+                            "{}{{{}}}{}",
+                            &supervision_display_name[..pos],
+                            coords_pairs.join(", "),
+                            &supervision_display_name[pos..]
+                        )
+                    } else {
+                        format!(
+                            "{}{{{}}}",
+                            supervision_display_name,
+                            coords_pairs.join(", ")
+                        )
+                    }
+                } else {
+                    supervision_display_name.clone()
+                };
                 send_state_change(
                     point.rank(),
                     ActorSupervisionEvent::new(
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
                         mesh.get(point.rank()).unwrap().actor_id().clone(),
-                        None,
+                        Some(format!("{} was running on a process which", display_name)),
                         actor_status,
                         // ActorStatus::Failed(ActorErrorKind::Generic(format!(
                         //     "process failure: {}",
@@ -580,7 +617,7 @@ async fn actor_states_monitor<A, F>(
                 0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_id().clone(),
-                    None,
+                    Some(supervision_display_name.clone()),
                     ActorStatus::generic_failure(format!(
                         "unable to query for actor states: {:?}",
                         e
@@ -707,7 +744,8 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         // Make a clone so each endpoint can get the same supervision events.
         let unhandled = self.get_unhandled(instance);
         let monitor = self.monitor().clone();
-        let mut receiver = self.supervision_receiver(instance, &monitor, unhandled);
+        let mut receiver =
+            self.supervision_receiver(instance, &monitor, unhandled, "unknown".to_string());
         PyPythonTask::new(async move {
             receiver.changed().await.map_err(|e| {
                 PyValueError::new_err(format!("Waiting for supervision event change: {}", e))
@@ -731,11 +769,15 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         .map(Some)
     }
 
-    fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
+    fn start_supervision(
+        &self,
+        instance: &PyInstance,
+        supervision_display_name: String,
+    ) -> PyResult<()> {
         // Fetch the receiver once, this will initialize the monitor task.
         let unhandled = self.get_unhandled(instance);
         let monitor = self.monitor().clone();
-        self.supervision_receiver(instance, &monitor, unhandled);
+        self.supervision_receiver(instance, &monitor, unhandled, supervision_display_name);
         Ok(())
     }
 
@@ -814,7 +856,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         ))
     }
 
-    fn start_supervision(&self, _instance: &PyInstance) -> PyResult<()> {
+    fn start_supervision(
+        &self,
+        _instance: &PyInstance,
+        _supervision_display_name: String,
+    ) -> PyResult<()> {
         Err(PyErr::new::<PyNotImplementedError, _>(
             "This should never be called on ActorMeshRef directly",
         ))
