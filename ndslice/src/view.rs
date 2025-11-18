@@ -769,6 +769,31 @@ impl Point {
     pub fn is_empty(&self) -> bool {
         self.extent.len() == 0
     }
+
+    /// Formats the coordinates of this Point as a string suitable for display names.
+    /// Returns a string in the format: "{'label': coord/size, 'label': coord/size, ...}"
+    ///
+    /// # Examples
+    /// ```
+    /// use ndslice::extent;
+    ///
+    /// let ext = extent!(x = 2, y = 3);
+    /// let point = ext.point(vec![1, 2]).unwrap();
+    /// assert_eq!(point.format_as_dict(), "{'x': 1/2, 'y': 2/3}");
+    /// ```
+    pub fn format_as_dict(&self) -> String {
+        format!(
+            "{{{}}}",
+            self.extent()
+                .labels()
+                .iter()
+                .zip(self.coords_iter())
+                .zip(self.extent().sizes())
+                .map(|((label, coord), size)| format!("'{}': {}/{}", label, coord, size))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
 }
 
 /// Formats a `Point` as a comma-separated list of per-axis

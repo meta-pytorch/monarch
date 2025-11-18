@@ -468,7 +468,9 @@ class _SingletonActorAdapator:
     def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
         return None
 
-    def start_supervision(self, instance: HyInstance) -> None:
+    def start_supervision(
+        self, instance: HyInstance, supervision_display_name: str
+    ) -> None:
         return None
 
     def stop(self, instance: HyInstance) -> "PythonTask[None]":
@@ -1255,10 +1257,6 @@ class ActorMesh(MeshTrait, Generic[T]):
         self._inner: "ActorMeshProtocol" = inner
         self._shape = shape
         self._proc_mesh = proc_mesh
-        # We don't start the supervision polling loop until the first call to
-        # supervision_event, which needs an Instance. Initialize here so events
-        # can be collected even without any endpoints being awaited.
-        self._inner.start_supervision(context().actor_instance._as_rust())
 
         async_endpoints = []
         sync_endpoints = []
@@ -1346,6 +1344,15 @@ class ActorMesh(MeshTrait, Generic[T]):
         **kwargs: Any,
     ) -> "ActorMesh[T]":
         mesh = cls(Class, actor_mesh, shape, proc_mesh)
+
+        # We don't start the supervision polling loop until the first call to
+        # supervision_event, which needs an Instance. Initialize here so events
+        # can be collected even without any endpoints being awaited.
+        instance = context().actor_instance
+        supervision_display_name = (
+            f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
+        )
+        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
 
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None

@@ -27,7 +27,9 @@ class Lambda(Actor):
 
 class Nest(Actor):
     def __init__(self):
-        self.nest = this_host().spawn_procs().spawn("nested", Lambda)
+        self.nest = (
+            this_host().spawn_procs(per_host={"a_dim": 1}).spawn("nested", Lambda)
+        )
 
     # pyre-ignore[56]
     @endpoint
@@ -112,10 +114,10 @@ def test_proc_failure():
     If a proc dies, the client should receive an unhandled fault.
     """
     with FaultCapture() as capture:
-        actor = this_host().spawn_procs().spawn("actor", Nest)
+        actor = this_host().spawn_procs().spawn("top", Nest)
         actor.kill_nest.call_one().get()
 
-    capture.assert_fault_occurred()
+    capture.assert_fault_occurred("nested{'a_dim': 0/1}")
 
 
 def test_nested_mesh_kills_actor_actor_error():
@@ -129,5 +131,5 @@ def test_nested_mesh_kills_actor_actor_error():
         actor.nested.call_one(error).get()
         print("ERRORED THE ACTOR")
     capture.assert_fault_occurred(
-        "actor <root>.<tests.test_supervision_hierarchy.Nest actor>.<tests.test_supervision_hierarchy.Lambda nested> failed"
+        "actor <root>.<tests.test_supervision_hierarchy.Nest actor>.<tests.test_supervision_hierarchy.Lambda nested{'a_dim': 0/1}> failed"
     )
