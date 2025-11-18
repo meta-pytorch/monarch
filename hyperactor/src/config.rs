@@ -163,12 +163,14 @@ declare_attrs! {
     })
     pub attr CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 
-    /// Heartbeat interval for remote allocator
+    /// Heartbeat interval for remote allocator. We do not rely on this heartbeat
+    /// anymore in v1, and it should be removed after we finishing the v0
+    /// deprecation.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
         py_name: None,
     })
-    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
 
     /// The default encoding to be used.
     @meta(CONFIG = ConfigAttr {
@@ -315,7 +317,7 @@ mod tests {
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
         assert_eq!(
             config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL],
-            Duration::from_secs(5)
+            Duration::from_secs(300)
         );
     }
 
@@ -344,7 +346,7 @@ mod tests {
             # export HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL=5s
             # export HYPERACTOR_CHANNEL_MULTIPART=1
             # export HYPERACTOR_DEFAULT_ENCODING=serde_multipart
-            # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=5s
+            # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=5m
             # export HYPERACTOR_STOP_ACTOR_TIMEOUT=10s
             # export HYPERACTOR_SPLIT_MAX_BUFFER_SIZE=5
             # export HYPERACTOR_MESSAGE_TTL_DEFAULT=64

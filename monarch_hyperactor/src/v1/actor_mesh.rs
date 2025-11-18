@@ -218,7 +218,7 @@ impl PythonActorMeshImpl {
         instance: &PyInstance,
         monitor: &Arc<Mutex<Option<SupervisionMonitor>>>,
         unhandled: F,
-        supervision_display_name: String,
+        supervision_display_name: Option<String>,
     ) -> watch::Receiver<Option<PyErr>>
     where
         F: Fn(MeshFailure) + Send + 'static,
@@ -226,7 +226,11 @@ impl PythonActorMeshImpl {
         let mut guard = monitor.lock().unwrap();
         guard.get_or_insert_with(move || {
             let instance = Python::with_gil(|_py| instance.clone());
-            self.make_monitor(instance, unhandled, supervision_display_name)
+            self.make_monitor(
+                instance,
+                unhandled,
+                supervision_display_name.unwrap_or_default(),
+            )
         });
         let monitor = guard.as_ref().unwrap();
         monitor.receiver.clone()
@@ -412,11 +416,6 @@ fn send_state_change<F>(
 ) where
     F: Fn(MeshFailure),
 {
-    tracing::info!(
-        "detected supervision event on monitored mesh: name={}, event={}",
-        mesh_name,
-        event,
-    );
     let failure = MeshFailure::new(mesh_name, rank, event.clone());
     // Any supervision event that is not a failure should not generate
     // call "unhandled".
@@ -424,20 +423,38 @@ fn send_state_change<F>(
     // user calls stop() on a proc or actor mesh.
     // It is not being terminated due to a failure. In this state, new messages
     // should not be sent, but we don't call unhandled when it is detected.
-    let is_failed = event.actor_status.is_failed();
+    let is_failed = event.is_error();
+    if is_failed {
+        tracing::warn!(
+            name = "SupervisionEvent",
+            %mesh_name,
+            %event,
+            "detected supervision error on monitored mesh: name={mesh_name}",
+        );
+    } else {
+        tracing::debug!(
+            name = "SupervisionEvent",
+            %mesh_name,
+            %event,
+            "detected non-error supervision event on monitored mesh: name={mesh_name}",
+        );
+    }
 
     // Send a notification to the owning actor of this mesh, if there is one.
     if let Some(owner) = owner {
-        if let Err(e) = owner.send(SupervisionFailureMessage {
+        if let Err(error) = owner.send(SupervisionFailureMessage {
             mesh_name: mesh_name.to_string(),
             rank,
             event: event.clone(),
         }) {
             tracing::warn!(
-                "failed to send supervision event {} to owner {}: {:?}. dropping event",
-                event,
+                name = "SupervisionEvent",
+                %mesh_name,
+                %event,
+                %error,
+                "failed to send supervision event to owner {}: {}. dropping event",
                 owner.actor_id(),
-                e
+                error
             );
         }
     } else if is_owned && is_failed {
@@ -554,27 +571,16 @@ async fn actor_states_monitor<A, F>(
                     ))),
                 };
                 let display_name = if !point.is_empty() {
-                    let coords_pairs: Vec<String> = point
-                        .extent()
-                        .labels()
-                        .iter()
-                        .zip(point.coords_iter())
-                        .zip(point.extent().sizes())
-                        .map(|((label, coord), size)| format!("'{}': {}/{}", label, coord, size))
-                        .collect();
+                    let coords_display = point.format_as_dict();
                     if let Some(pos) = supervision_display_name.rfind('>') {
                         format!(
-                            "{}{{{}}}{}",
+                            "{}{}{}",
                             &supervision_display_name[..pos],
-                            coords_pairs.join(", "),
+                            coords_display,
                             &supervision_display_name[pos..]
                         )
                     } else {
-                        format!(
-                            "{}{{{}}}",
-                            supervision_display_name,
-                            coords_pairs.join(", ")
-                        )
+                        format!("{}{}", supervision_display_name, coords_display)
                     }
                 } else {
                     supervision_display_name.clone()
@@ -587,15 +593,6 @@ async fn actor_states_monitor<A, F>(
                         mesh.get(point.rank()).unwrap().actor_id().clone(),
                         Some(format!("{} was running on a process which", display_name)),
                         actor_status,
-                        // ActorStatus::Failed(ActorErrorKind::Generic(format!(
-                        //     "process failure: {}",
-                        //     state
-                        //         .state
-                        //         .and_then(|state| state.proc_status)
-                        //         .unwrap_or_else(|| ProcStatus::Failed {
-                        //             reason: "unknown".to_string()
-                        //         })
-                        // ))),
                         None,
                     ),
                     mesh.name(),
@@ -744,8 +741,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         // Make a clone so each endpoint can get the same supervision events.
         let unhandled = self.get_unhandled(instance);
         let monitor = self.monitor().clone();
-        let mut receiver =
-            self.supervision_receiver(instance, &monitor, unhandled, "unknown".to_string());
+        let mut receiver = self.supervision_receiver(instance, &monitor, unhandled, None);
         PyPythonTask::new(async move {
             receiver.changed().await.map_err(|e| {
                 PyValueError::new_err(format!("Waiting for supervision event change: {}", e))
@@ -777,7 +773,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         // Fetch the receiver once, this will initialize the monitor task.
         let unhandled = self.get_unhandled(instance);
         let monitor = self.monitor().clone();
-        self.supervision_receiver(instance, &monitor, unhandled, supervision_display_name);
+        self.supervision_receiver(
+            instance,
+            &monitor,
+            unhandled,
+            Some(supervision_display_name),
+        );
         Ok(())
     }
 
