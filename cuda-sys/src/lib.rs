@@ -35,19 +35,3 @@ mod inner {
 
 pub use inner::*;
 
-#[cfg(test)]
-mod tests {
-    use std::mem::MaybeUninit;
-
-    use super::*;
-
-    #[test]
-    fn sanity() {
-        // SAFETY: testing bindings
-        unsafe {
-            let mut version = MaybeUninit::<i32>::uninit();
-            let result = cuDriverGetVersion(version.as_mut_ptr());
-            assert_eq!(result, cudaError_enum(0));
-        }
-    }
-}

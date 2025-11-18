@@ -7,6 +7,7 @@
  */
 
 #include "rdmaxcel.h"
+#include "driver_api.h"
 #include <c10/cuda/CUDAAllocatorConfig.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda.h>
@@ -235,7 +236,7 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
 
   // Get dmabuf handle for the entire segment
   int fd = -1;
-  CUresult cu_result = cuMemGetHandleForAddressRange(
+  CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
       &fd,
       static_cast<CUdeviceptr>(start_addr),
       total_size,
@@ -297,7 +298,7 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
         }
 
         int fd = -1;
-        CUresult cu_result = cuMemGetHandleForAddressRange(
+        CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
             &fd,
             static_cast<CUdeviceptr>(chunk_start),
             chunk_size,
@@ -352,7 +353,7 @@ int get_cuda_pci_address_from_ptr(
   }
 
   int device_ordinal = -1;
-  CUresult err = cuPointerGetAttribute(
+  CUresult err = rdmaxcel_cuPointerGetAttribute(
       &device_ordinal, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL, cuda_ptr);
 
   if (err != CUDA_SUCCESS) {
@@ -360,7 +361,7 @@ int get_cuda_pci_address_from_ptr(
   }
 
   CUdevice device;
-  err = cuDeviceGet(&device, device_ordinal);
+  err = rdmaxcel_cuDeviceGet(&device, device_ordinal);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_DEVICE_FAILED;
   }
@@ -371,20 +372,20 @@ int get_cuda_pci_address_from_ptr(
 
   // Get PCI bus ID
   err =
-      cuDeviceGetAttribute(&pci_bus_id, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device);
+      rdmaxcel_cuDeviceGetAttribute(&pci_bus_id, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
   }
 
   // Get PCI device ID
-  err = cuDeviceGetAttribute(
+  err = rdmaxcel_cuDeviceGetAttribute(
       &pci_device_id, CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID, device);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
   }
 
   // Get PCI domain ID
-  err = cuDeviceGetAttribute(
+  err = rdmaxcel_cuDeviceGetAttribute(
       &pci_domain_id, CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID, device);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;

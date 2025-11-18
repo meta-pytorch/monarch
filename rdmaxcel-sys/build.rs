@@ -21,10 +21,15 @@ fn main() {
     // Link against the mlx5 library
     println!("cargo:rustc-link-lib=mlx5");
 
+    // Link against dl for dynamic loading
+    println!("cargo:rustc-link-lib=dl");
+
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
     println!("cargo:rerun-if-changed=src/rdmaxcel.c");
     println!("cargo:rerun-if-changed=src/rdmaxcel.cpp");
+    println!("cargo:rerun-if-changed=src/driver_api.h");
+    println!("cargo:rerun-if-changed=src/driver_api.cpp");
 
     // Validate CUDA installation and get CUDA home path
     let cuda_home = match build_utils::validate_cuda_installation() {
@@ -88,6 +93,10 @@ fn main() {
         .allowlist_function("pt_cuda_allocator_compatibility")
         .allowlist_function("register_segments")
         .allowlist_function("deregister_segments")
+        .allowlist_function("rdmaxcel_cu.*")
+        .allowlist_function("get_cuda_pci_address_from_ptr")
+        .allowlist_function("rdmaxcel_print_device_info")
+        .allowlist_function("rdmaxcel_error_string")
         .allowlist_type("ibv_.*")
         .allowlist_type("mlx5dv_.*")
         .allowlist_type("mlx5_wqe_.*")
@@ -149,7 +158,8 @@ fn main() {
         }
     };
     println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
-    println!("cargo:rustc-link-lib=cuda");
+    // Note: libcuda is now loaded dynamically via dlopen in driver_api.cpp
+    // Only link cudart (CUDA Runtime API)
     println!("cargo:rustc-link-lib=cudart");
 
     // Link PyTorch C++ libraries for c10 symbols
@@ -213,7 +223,8 @@ fn main() {
 
             // Compile the C++ source file for CUDA allocator compatibility
             let cpp_source_path = format!("{}/src/rdmaxcel.cpp", manifest_dir);
-            if Path::new(&cpp_source_path).exists() {
+            let driver_api_cpp_path = format!("{}/src/driver_api.cpp", manifest_dir);
+            if Path::new(&cpp_source_path).exists() && Path::new(&driver_api_cpp_path).exists() {
                 let mut libtorch_include_dirs: Vec<PathBuf> = vec![];
 
                 // Use the same approach as torch-sys: Python discovery first, env vars as fallback
@@ -249,6 +260,7 @@ fn main() {
                 let mut cpp_build = cc::Build::new();
                 cpp_build
                     .file(&cpp_source_path)
+                    .file(&driver_api_cpp_path)
                     .include(format!("{}/src", manifest_dir))
                     .flag("-fPIC")
                     .cpp(true)
@@ -270,7 +282,12 @@ fn main() {
 
                 cpp_build.compile("rdmaxcel_cpp");
             } else {
-                panic!("C++ source file not found at {}", cpp_source_path);
+                if !Path::new(&cpp_source_path).exists() {
+                    panic!("C++ source file not found at {}", cpp_source_path);
+                }
+                if !Path::new(&driver_api_cpp_path).exists() {
+                    panic!("Driver API C++ source file not found at {}", driver_api_cpp_path);
+                }
             }
             // Compile the CUDA source file
             let cuda_source_path = format!("{}/src/rdmaxcel.cu", manifest_dir);
