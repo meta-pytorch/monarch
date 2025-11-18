@@ -1719,6 +1719,12 @@ impl BootstrapProcManager {
                 let (_lines, _bytes) = t.abort().await;
             }
 
+            let tail_str = if stderr_tail.is_empty() {
+                None
+            } else {
+                Some(stderr_tail.join("\n"))
+            };
+
             match wait_res {
                 Ok(status) => {
                     if let Some(sig) = status.signal() {
@@ -1726,24 +1732,12 @@ impl BootstrapProcManager {
                         if let Ok(mut table) = pid_table.lock() {
                             table.remove(&proc_id);
                         }
-                        if stderr_tail.is_empty() {
-                            tracing::debug!("proc {proc_id} killed by signal {sig}");
-                        } else {
-                            let tail = stderr_tail.join("\n");
-                            tracing::debug!(
-                                "proc {proc_id} killed by signal {sig}; stderr tail:\n{tail}"
-                            );
-                        }
+                        tracing::debug!(tail = tail_str, "proc {proc_id} killed by signal {sig}");
                     } else if let Some(code) = status.code() {
-                        let _ = handle.mark_stopped(code, stderr_tail.clone());
+                        let _ = handle.mark_stopped(code, stderr_tail);
                         if let Ok(mut table) = pid_table.lock() {
                             table.remove(&proc_id);
                         }
-                        let tail_str = if stderr_tail.is_empty() {
-                            None
-                        } else {
-                            Some(stderr_tail.join("\n"))
-                        };
                         if code == 0 {
                             tracing::debug!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited");
                         } else {
@@ -1754,19 +1748,14 @@ impl BootstrapProcManager {
                             false,
                             "unreachable: process terminated with neither signal nor exit code"
                         );
-                        tracing::error!(
-                            "proc {proc_id}: unreachable exit status (no code, no signal)"
-                        );
                         let _ = handle.mark_failed("process exited with unknown status");
                         if let Ok(mut table) = pid_table.lock() {
                             table.remove(&proc_id);
                         }
-                        if stderr_tail.is_empty() {
-                            tracing::warn!("proc {proc_id} unknown exit");
-                        } else {
-                            let tail = stderr_tail.join("\n");
-                            tracing::warn!("proc {proc_id} unknown exit; stderr tail:\n{tail}");
-                        }
+                        tracing::error!(
+                            tail = tail_str,
+                            "proc {proc_id} unknown exit: unreachable exit status (no code, no signal)"
+                        );
                     }
                 }
                 Err(e) => {
@@ -1774,12 +1763,7 @@ impl BootstrapProcManager {
                     if let Ok(mut table) = pid_table.lock() {
                         table.remove(&proc_id);
                     }
-                    if stderr_tail.is_empty() {
-                        tracing::info!("proc {proc_id} wait failed");
-                    } else {
-                        let tail = stderr_tail.join("\n");
-                        tracing::info!("proc {proc_id} wait failed; stderr tail:\n{tail}");
-                    }
+                    tracing::info!(tail = tail_str, "proc {proc_id} wait failed");
                 }
             }
         });
