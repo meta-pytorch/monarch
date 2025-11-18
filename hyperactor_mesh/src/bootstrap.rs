@@ -1725,23 +1725,32 @@ impl BootstrapProcManager {
                 Some(stderr_tail.join("\n"))
             };
 
+            let remove_from_pid_table = || {
+                let pid = if let Ok(mut table) = pid_table.lock() {
+                    table.remove(&proc_id)
+                } else {
+                    None
+                };
+
+                pid.map_or_else(|| "not available".to_string(), |i| format!("{i}"))
+            };
+
             match wait_res {
                 Ok(status) => {
                     if let Some(sig) = status.signal() {
                         let _ = handle.mark_killed(sig, status.core_dumped());
-                        if let Ok(mut table) = pid_table.lock() {
-                            table.remove(&proc_id);
-                        }
-                        tracing::debug!(tail = tail_str, "proc {proc_id} killed by signal {sig}");
+                        let pid_str = remove_from_pid_table();
+                        tracing::debug!(
+                            tail = tail_str,
+                            "proc {proc_id} killed by signal {sig}; proc's pid: {pid_str}"
+                        );
                     } else if let Some(code) = status.code() {
                         let _ = handle.mark_stopped(code, stderr_tail);
-                        if let Ok(mut table) = pid_table.lock() {
-                            table.remove(&proc_id);
-                        }
+                        let pid_str = remove_from_pid_table();
                         if code == 0 {
-                            tracing::debug!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited");
+                            tracing::debug!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited; proc's pid: {pid_str}");
                         } else {
-                            tracing::info!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited");
+                            tracing::info!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited; proc's pid: {pid_str}");
                         }
                     } else {
                         debug_assert!(
@@ -1749,21 +1758,20 @@ impl BootstrapProcManager {
                             "unreachable: process terminated with neither signal nor exit code"
                         );
                         let _ = handle.mark_failed("process exited with unknown status");
-                        if let Ok(mut table) = pid_table.lock() {
-                            table.remove(&proc_id);
-                        }
+                        let pid_str = remove_from_pid_table();
                         tracing::error!(
                             tail = tail_str,
-                            "proc {proc_id} unknown exit: unreachable exit status (no code, no signal)"
+                            "proc {proc_id} unknown exit: unreachable exit status (no code, no signal); proc's pid: {pid_str}"
                         );
                     }
                 }
                 Err(e) => {
                     let _ = handle.mark_failed(format!("wait_inner() failed: {e}"));
-                    if let Ok(mut table) = pid_table.lock() {
-                        table.remove(&proc_id);
-                    }
-                    tracing::info!(tail = tail_str, "proc {proc_id} wait failed");
+                    let pid_str = remove_from_pid_table();
+                    tracing::info!(
+                        tail = tail_str,
+                        "proc {proc_id} wait failed; proc's pid: {pid_str}"
+                    );
                 }
             }
         });
