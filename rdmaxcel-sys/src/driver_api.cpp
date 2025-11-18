@@ -8,29 +8,29 @@
 
 #include "driver_api.h"
 #include <dlfcn.h>
-#include <stdexcept>
 #include <iostream>
+#include <stdexcept>
 
 // List of CUDA driver functions needed by rdmaxcel
-#define RDMAXCEL_CUDA_DRIVER_API(_)  \
-  _(cuMemGetHandleForAddressRange)   \
-  _(cuMemGetAllocationGranularity)   \
-  _(cuMemCreate)                     \
-  _(cuMemAddressReserve)             \
-  _(cuMemMap)                        \
-  _(cuMemSetAccess)                  \
-  _(cuMemUnmap)                      \
-  _(cuMemAddressFree)                \
-  _(cuMemRelease)                    \
-  _(cuMemcpyHtoD_v2)                 \
-  _(cuMemcpyDtoH_v2)                 \
-  _(cuPointerGetAttribute)           \
-  _(cuInit)                          \
-  _(cuDeviceGet)                     \
-  _(cuDeviceGetCount)                \
-  _(cuDeviceGetAttribute)            \
-  _(cuCtxCreate_v2)                  \
-  _(cuCtxSetCurrent)                 \
+#define RDMAXCEL_CUDA_DRIVER_API(_) \
+  _(cuMemGetHandleForAddressRange)  \
+  _(cuMemGetAllocationGranularity)  \
+  _(cuMemCreate)                    \
+  _(cuMemAddressReserve)            \
+  _(cuMemMap)                       \
+  _(cuMemSetAccess)                 \
+  _(cuMemUnmap)                     \
+  _(cuMemAddressFree)               \
+  _(cuMemRelease)                   \
+  _(cuMemcpyHtoD_v2)                \
+  _(cuMemcpyDtoH_v2)                \
+  _(cuPointerGetAttribute)          \
+  _(cuInit)                         \
+  _(cuDeviceGet)                    \
+  _(cuDeviceGetCount)               \
+  _(cuDeviceGetAttribute)           \
+  _(cuCtxCreate_v2)                 \
+  _(cuCtxSetCurrent)                \
   _(cuGetErrorString)
 
 namespace rdmaxcel {
@@ -48,20 +48,24 @@ DriverAPI create_driver_api() {
   // Try to open libcuda.so.1 - RTLD_NOLOAD means only succeed if already loaded
   void* handle = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
-    std::cerr << "[RdmaXcel] Warning: libcuda.so.1 not loaded, trying to load it now" << std::endl;
+    std::cerr
+        << "[RdmaXcel] Warning: libcuda.so.1 not loaded, trying to load it now"
+        << std::endl;
     handle = dlopen("libcuda.so.1", RTLD_LAZY);
   }
 
   if (!handle) {
-    throw std::runtime_error(std::string("[RdmaXcel] Can't open libcuda.so.1: ") + dlerror());
+    throw std::runtime_error(
+        std::string("[RdmaXcel] Can't open libcuda.so.1: ") + dlerror());
   }
 
   DriverAPI r{};
 
-#define LOOKUP_CUDA_ENTRY(name)                       \
-  r.name##_ = reinterpret_cast<decltype(&name)>(dlsym(handle, #name)); \
-  if (!r.name##_) { \
-    throw std::runtime_error(std::string("[RdmaXcel] Can't find ") + #name + ": " + dlerror()); \
+#define LOOKUP_CUDA_ENTRY(name)                                            \
+  r.name##_ = reinterpret_cast<decltype(&name)>(dlsym(handle, #name));     \
+  if (!r.name##_) {                                                        \
+    throw std::runtime_error(                                              \
+        std::string("[RdmaXcel] Can't find ") + #name + ": " + dlerror()); \
   }
 
   RDMAXCEL_CUDA_DRIVER_API(LOOKUP_CUDA_ENTRY)
@@ -125,7 +129,8 @@ CUresult rdmaxcel_cuMemMap(
     size_t offset,
     CUmemGenericAllocationHandle handle,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->cuMemMap_(ptr, size, offset, handle, flags);
+  return rdmaxcel::DriverAPI::get()->cuMemMap_(
+      ptr, size, offset, handle, flags);
 }
 
 CUresult rdmaxcel_cuMemSetAccess(
@@ -148,12 +153,20 @@ CUresult rdmaxcel_cuMemRelease(CUmemGenericAllocationHandle handle) {
   return rdmaxcel::DriverAPI::get()->cuMemRelease_(handle);
 }
 
-CUresult rdmaxcel_cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount) {
-  return rdmaxcel::DriverAPI::get()->cuMemcpyHtoD_v2_(dstDevice, srcHost, ByteCount);
+CUresult rdmaxcel_cuMemcpyHtoD_v2(
+    CUdeviceptr dstDevice,
+    const void* srcHost,
+    size_t ByteCount) {
+  return rdmaxcel::DriverAPI::get()->cuMemcpyHtoD_v2_(
+      dstDevice, srcHost, ByteCount);
 }
 
-CUresult rdmaxcel_cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount) {
-  return rdmaxcel::DriverAPI::get()->cuMemcpyDtoH_v2_(dstHost, srcDevice, ByteCount);
+CUresult rdmaxcel_cuMemcpyDtoH_v2(
+    void* dstHost,
+    CUdeviceptr srcDevice,
+    size_t ByteCount) {
+  return rdmaxcel::DriverAPI::get()->cuMemcpyDtoH_v2_(
+      dstHost, srcDevice, ByteCount);
 }
 
 // Pointer queries
@@ -186,7 +199,8 @@ CUresult rdmaxcel_cuDeviceGetAttribute(
 }
 
 // Context management
-CUresult rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
+CUresult
+rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
   return rdmaxcel::DriverAPI::get()->cuCtxCreate_v2_(pctx, flags, dev);
 }
 
@@ -200,5 +214,3 @@ CUresult rdmaxcel_cuGetErrorString(CUresult error, const char** pStr) {
 }
 
 } // extern "C"
-
-

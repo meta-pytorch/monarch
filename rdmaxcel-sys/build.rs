@@ -286,7 +286,10 @@ fn main() {
                     panic!("C++ source file not found at {}", cpp_source_path);
                 }
                 if !Path::new(&driver_api_cpp_path).exists() {
-                    panic!("Driver API C++ source file not found at {}", driver_api_cpp_path);
+                    panic!(
+                        "Driver API C++ source file not found at {}",
+                        driver_api_cpp_path
+                    );
                 }
             }
             // Compile the CUDA source file

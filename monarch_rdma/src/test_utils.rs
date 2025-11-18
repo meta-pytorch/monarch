@@ -381,10 +381,17 @@ pub mod test_utils {
                     let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
 
                     let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut device, accel.1 as i32));
+                    cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(
+                        &mut device,
+                        accel.1 as i32
+                    ));
 
                     let mut context: rdmaxcel_sys::CUcontext = std::mem::zeroed();
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(&mut context, 0, accel.1 as i32));
+                    cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(
+                        &mut context,
+                        0,
+                        accel.1 as i32
+                    ));
                     cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
 
                     let mut granularity: usize = 0;
@@ -437,12 +444,15 @@ pub mod test_utils {
 
                     // set access
                     let mut access_desc: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
-                    access_desc.location.type_ =
-                        rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
+                    access_desc.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
                     access_desc.location.id = device;
-                    access_desc.flags =
-                        rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(dptr, padded_size, &access_desc, 1));
+                    access_desc.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
+                        dptr,
+                        padded_size,
+                        &access_desc,
+                        1
+                    ));
                     buf_vec.push(Buffer {
                         ptr: dptr,
                         len: padded_size,

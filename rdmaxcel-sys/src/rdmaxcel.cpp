@@ -7,7 +7,6 @@
  */
 
 #include "rdmaxcel.h"
-#include "driver_api.h"
 #include <c10/cuda/CUDAAllocatorConfig.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda.h>
@@ -15,6 +14,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include "driver_api.h"
 
 // MR size must be a multiple of 2MB
 const size_t MR_ALIGNMENT = 2ULL * 1024 * 1024;
@@ -371,8 +371,8 @@ int get_cuda_pci_address_from_ptr(
   int pci_domain_id = -1;
 
   // Get PCI bus ID
-  err =
-      rdmaxcel_cuDeviceGetAttribute(&pci_bus_id, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device);
+  err = rdmaxcel_cuDeviceGetAttribute(
+      &pci_bus_id, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
   }

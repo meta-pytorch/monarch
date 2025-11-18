@@ -61,9 +61,15 @@ CUresult rdmaxcel_cuMemAddressFree(CUdeviceptr ptr, size_t size);
 
 CUresult rdmaxcel_cuMemRelease(CUmemGenericAllocationHandle handle);
 
-CUresult rdmaxcel_cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
+CUresult rdmaxcel_cuMemcpyHtoD_v2(
+    CUdeviceptr dstDevice,
+    const void* srcHost,
+    size_t ByteCount);
 
-CUresult rdmaxcel_cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
+CUresult rdmaxcel_cuMemcpyDtoH_v2(
+    void* dstHost,
+    CUdeviceptr srcDevice,
+    size_t ByteCount);
 
 // Pointer queries
 CUresult rdmaxcel_cuPointerGetAttribute(
@@ -82,7 +88,8 @@ CUresult
 rdmaxcel_cuDeviceGetAttribute(int* pi, CUdevice_attribute attrib, CUdevice dev);
 
 // Context management
-CUresult rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
+CUresult
+rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx);
 
@@ -92,4 +99,3 @@ CUresult rdmaxcel_cuGetErrorString(CUresult error, const char** pStr);
 #ifdef __cplusplus
 } // extern "C"
 #endif
-
