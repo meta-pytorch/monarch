@@ -8,9 +8,9 @@
 
 //! Serde codec for multipart messages.
 //!
-//! Using [`serialize`] / [`deserialize`], fields typed [`Part`] are extracted
-//! from the main payload and appended to a list of `parts`. Each part is backed by
-//! [`bytes::Bytes`] for cheap, zero-copy sharing.
+//! Using [`serialize`] / [`deserialize`], fields typed [`Part`] or [`FragmentedPart`]
+//! are extracted from the main payload and appended to lists of parts. Each part is
+//! backed by [`bytes::Bytes`] for cheap, zero-copy sharing.
 //!
 //! On decode, the body and its parts are reassembled into the original value
 //! without copying.
@@ -20,11 +20,11 @@
 //! efficient network I/O without compacting data into a single buffer.
 //!
 //! Implementation note: this crate uses Rust's min_specialization feature to enable
-//! the use of [`Part`]s with any Serde serializer or deserializer. This feature
-//! is fairly restrictive, and thus the API offered by [`serialize`] / [`deserialize`]
+//! the use of [`Part`]s and [`FragmentedPart`]s with any Serde serializer or deserializer.
+//! This feature is fairly restrictive, and thus the API offered by [`serialize`] / [`deserialize`]
 //! is not customizable. If customization is needed, you need to add specialization
-//! implementations for these codecs. See [`part::PartSerializer`] and [`part::PartDeserializer`]
-//! for details.
+//! implementations for these codecs. See [`part::PartSerializer`], [`part::PartDeserializer`],
+//! [`FragmentedPartSerializer`], and [`FragmentedPartDeserializer`] for details.
 
 #![feature(min_specialization)]
 #![feature(assert_matches)]
@@ -46,6 +46,7 @@ mod part;
 mod ser;
 use bytes::Bytes;
 use bytes::BytesMut;
+pub use part::FragmentedPart;
 pub use part::Part;
 use serde::Deserialize;
 use serde::Serialize;
@@ -57,6 +58,7 @@ use serde::Serialize;
 pub struct Message {
     body: Part,
     parts: Vec<Part>,
+    fragmented_parts: Vec<FragmentedPart>,
     is_illegal: bool,
 }
 
@@ -66,6 +68,7 @@ impl Message {
         Self {
             body,
             parts,
+            fragmented_parts: vec![],
             is_illegal: false,
         }
     }
@@ -87,58 +90,145 @@ impl Message {
 
     /// Returns the total size (in bytes) of the message.
     pub fn len(&self) -> usize {
-        self.body.len() + self.parts.iter().map(|part| part.len()).sum::<usize>()
+        self.body.len()
+            + self.parts.iter().map(|part| part.len()).sum::<usize>()
+            + self
+                .fragmented_parts
+                .iter()
+                .map(|fp| fp.len())
+                .sum::<usize>()
     }
 
     /// Returns whether the message is empty. It is always false, since the body
     /// is always defined.
     pub fn is_empty(&self) -> bool {
-        self.body.is_empty() && self.parts.iter().all(|part| part.is_empty())
+        self.body.is_empty()
+            && self.parts.iter().all(|part| part.is_empty())
+            && self.fragmented_parts.iter().all(|fp| fp.is_empty())
     }
 
     /// Convert this message into its constituent components.
-    pub fn into_inner(self) -> (Part, Vec<Part>) {
-        (self.body, self.parts)
+    pub fn into_inner(self) -> (Part, Vec<Part>, Vec<FragmentedPart>) {
+        (self.body, self.parts, self.fragmented_parts)
     }
 
     /// Returns the total size (in bytes) of the message when it is framed.
     pub fn frame_len(&self) -> usize {
-        8 * (1 + self.num_parts()) + self.len()
+        if self.is_illegal {
+            // Illegal messages use a simplified frame format: u64::MAX marker + body
+            return 8 + self.body.len();
+        }
+
+        // Headers: body_len (8) + num_regular_parts (8) + num_fragmented (8)
+        let header_bytes = 3 * 8;
+
+        let body_bytes = self.body.len();
+
+        let regular_parts_bytes =
+            self.parts.len() * 8 + self.parts.iter().map(|p| p.len()).sum::<usize>();
+
+        let fragmented_parts_bytes = self.fragmented_parts.len() * 8
+            + self
+                .fragmented_parts
+                .iter()
+                .map(|fp| fp.len())
+                .sum::<usize>();
+
+        header_bytes + body_bytes + regular_parts_bytes + fragmented_parts_bytes
     }
 
     /// Efficiently frames a message containing the body and all of its parts
     /// using a simple frame-length encoding:
     ///
     /// ```text
-    /// +--------------------+-------------------+--------------------+-------------------+   ...   +
-    /// | body_len (u64 BE)  |   body bytes      | part1_len (u64 BE) |   part1 bytes     |         |
-    /// +--------------------+-------------------+--------------------+-------------------+         +
-    ///                                                                                      repeat
-    ///                                                                                        for
-    ///                                                                                      each part
+    /// ┌─────────────────────────┐
+    /// │ body_len (u64 BE)       │
+    /// ├─────────────────────────┤
+    /// │ body bytes              │
+    /// ├─────────────────────────┤
+    /// │ num_parts (u64 BE)      │
+    /// ├─────────────────────────┤
+    /// │ part1_len (u64 BE)      │
+    /// ├─────────────────────────┤
+    /// │ part1 bytes             │
+    /// ├─────────────────────────┤
+    /// │ part2_len (u64 BE)      │
+    /// ├─────────────────────────┤
+    /// │ part2 bytes             │
+    /// ├─────────────────────────┤
+    /// │ ...                     │
+    /// ├─────────────────────────┤
+    /// │ num_fragmented (u64 BE) │
+    /// ├─────────────────────────┤
+    /// │ frag1_len (u64 BE)      │
+    /// ├─────────────────────────┤
+    /// │ frag1 bytes             │
+    /// ├─────────────────────────┤
+    /// │ frag2_len (u64 BE)      │
+    /// ├─────────────────────────┤
+    /// │ frag2 bytes             │
+    /// ├─────────────────────────┤
+    /// │ ...                     │
+    /// └─────────────────────────┘
     /// ```
     pub fn framed(self) -> Frame {
         let is_illegal = self.is_illegal;
-        let (body, parts) = self.into_inner();
+        let (body, parts, fragmented_parts) = self.into_inner();
 
         if is_illegal {
-            assert!(parts.is_empty(), "illegal illegal message");
+            assert!(
+                parts.is_empty() && fragmented_parts.is_empty(),
+                "illegal illegal message"
+            );
             return Frame::from_buffers(vec![
                 Bytes::from_owner(u64::MAX.to_be_bytes()),
                 body.into_inner(),
             ]);
         }
 
-        let mut buffers = Vec::with_capacity(2 + 2 * parts.len());
+        let has_fragmented = !fragmented_parts.is_empty();
+
+        let fragmented_total_parts: usize =
+            fragmented_parts.iter().map(|fp| fp.as_slice().len()).sum();
+        let mut buffers = Vec::with_capacity(
+            3 +                           // body_len + body + num_regular_parts
+            2 * parts.len() +             // Regular parts (len + data each)
+            if has_fragmented { 1 + fragmented_parts.len() + fragmented_total_parts } else { 0 },
+        );
 
         let body = body.into_inner();
         buffers.push(Bytes::from_owner(body.len().to_be_bytes()));
         buffers.push(body);
 
+        // Number of regular parts
+        buffers.push(Bytes::from_owner(parts.len().to_be_bytes()));
+
         for part in parts {
             let part = part.into_inner();
+            // Length of this part
             buffers.push(Bytes::from_owner(part.len().to_be_bytes()));
+
             buffers.push(part);
+        }
+
+        if has_fragmented {
+            // Number of FragmentedParts
+            buffers.push(Bytes::from_owner(fragmented_parts.len().to_be_bytes()));
+
+            for frag_part in fragmented_parts {
+                let parts = frag_part.into_parts();
+                // Length of all parts/fragments
+                buffers.push(Bytes::from_owner(
+                    (parts.iter().map(|p| p.len()).sum::<usize>() as u64).to_be_bytes(),
+                ));
+
+                for part in parts {
+                    buffers.push(part.into_inner());
+                }
+            }
+        } else {
+            // Write 0 for num_fragmented if there are none
+            buffers.push(Bytes::from_owner(0u64.to_be_bytes()));
         }
 
         Frame::from_buffers(buffers)
@@ -154,18 +244,44 @@ impl Message {
             return Ok(Self {
                 body: buf.into(),
                 parts: vec![],
+                fragmented_parts: vec![],
                 is_illegal: true,
             });
         }
 
         let body = buf.split_to(body_len as usize);
-        let mut parts = Vec::new();
-        while !buf.is_empty() {
+
+        // Read number of regular parts
+        if buf.len() < 8 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let num_regular_parts = buf.get_u64() as usize;
+
+        if buf.len() < 8 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+
+        let mut parts = Vec::with_capacity(num_regular_parts);
+        for _ in 0..num_regular_parts {
             parts.push(Self::split_part(&mut buf)?.into());
         }
+
+        if buf.len() < 8 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let num_fragmented = buf.get_u64() as usize;
+
+        let mut fragmented_parts = Vec::with_capacity(num_fragmented);
+        for _ in 0..num_fragmented {
+            fragmented_parts.push(FragmentedPart::Contiguous(
+                Self::split_part(&mut buf)?.into(),
+            ));
+        }
+
         Ok(Self {
             body: body.into(),
             parts,
+            fragmented_parts,
             is_illegal: false,
         })
     }
@@ -322,9 +438,11 @@ pub fn serialize_bincode<S: ?Sized + serde::Serialize>(
     let mut serializer: part::BincodeSerializer =
         ser::bincode::Serializer::new(bincode::Serializer::new(buffer_borrow.writer(), options()));
     value.serialize(&mut serializer)?;
+    let (parts, fragmented_parts) = serializer.into_parts();
     Ok(Message {
         body: Part(buffer.into_inner().freeze()),
-        parts: serializer.into_parts(),
+        parts,
+        fragmented_parts,
         is_illegal: false,
     })
 }
@@ -336,17 +454,18 @@ where
     T: serde::de::DeserializeOwned,
 {
     if message.is_illegal {
-        let (body, parts) = message.into_inner();
-        if !parts.is_empty() {
+        let (body, parts, fragmented_parts) = message.into_inner();
+        if !parts.is_empty() || !fragmented_parts.is_empty() {
             return Err(bincode::ErrorKind::Custom("illegal illegal message".to_string()).into());
         }
         return bincode::deserialize_from(body.into_inner().reader());
     }
 
-    let (body, parts) = message.into_inner();
+    let (body, parts, fragmented_parts) = message.into_inner();
     let mut deserializer = part::BincodeDeserializer::new(
         bincode::Deserializer::with_reader(body.into_inner().reader(), options()),
         parts.into(),
+        fragmented_parts.into(),
     );
     let value = T::deserialize(&mut deserializer)?;
     // Check that all parts were consumed:
@@ -366,6 +485,7 @@ pub fn serialize_illegal_bincode<S: ?Sized + serde::Serialize>(
     Ok(Message {
         body: Part::from(bincode::serialize(value)?),
         parts: vec![],
+        fragmented_parts: vec![],
         is_illegal: true,
     })
 }
@@ -507,6 +627,7 @@ mod tests {
         let message = Message {
             body: Part::from("hello"),
             parts: vec![Part::from("world")],
+            fragmented_parts: vec![],
             is_illegal: false,
         };
         let err = deserialize_bincode::<String>(message).unwrap_err();
@@ -565,12 +686,48 @@ mod tests {
                 Part::from("xyz"),
                 Part::from("xyzd"),
             ],
+            fragmented_parts: vec![],
             is_illegal: false,
         };
 
         let mut framed = message.clone().framed();
         let framed = framed.copy_to_bytes(framed.remaining());
         assert_eq!(Message::from_framed(framed).unwrap(), message);
+    }
+
+    #[test]
+    fn test_fragmented_part_roundtrip() {
+        let fragments = vec![
+            Part::from("Hello"),
+            Part::from(" "),
+            Part::from("World"),
+            Part::from("!"),
+        ];
+        let expected_data = b"Hello World!";
+
+        let fragmented = FragmentedPart::Fragmented(fragments);
+        assert!(matches!(fragmented, FragmentedPart::Fragmented(_)));
+
+        #[derive(Serialize, Deserialize, Debug)]
+        struct TestStruct {
+            data: FragmentedPart,
+        }
+
+        let test_struct = TestStruct { data: fragmented };
+
+        let message = serialize_bincode(&test_struct).unwrap();
+
+        let mut framed = message.framed();
+        let framed_bytes = framed.copy_to_bytes(framed.remaining());
+
+        let unframed_message = Message::from_framed(framed_bytes).unwrap();
+
+        let deserialized: TestStruct = deserialize_bincode(unframed_message).unwrap();
+
+        assert!(matches!(deserialized.data, FragmentedPart::Contiguous(_)));
+
+        let contiguous_bytes = deserialized.data.into_bytes();
+        assert_eq!(&*contiguous_bytes, expected_data);
     }
 
     #[test]
