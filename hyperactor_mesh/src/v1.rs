@@ -26,6 +26,7 @@ use enum_as_inner::EnumAsInner;
 pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::Named;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
 use ndslice::view;
@@ -224,18 +225,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// and a unique UUID.
 ///
 /// Names have a concrete syntax--`{name}-{uuid}`--printed by `Display` and parsed by `FromStr`.
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    EnumAsInner
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Named, EnumAsInner)]
 pub enum Name {
     /// Normal names for most actors.
     Suffixed(String, ShortUuid),
@@ -286,6 +276,26 @@ impl Name {
             Self::Suffixed(_, uuid) => Some(uuid),
             Self::Reserved(_) => None,
         }
+    }
+}
+
+impl Serialize for Name {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Consider doing this only when `serializer.is_human_readable()`:
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Name {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Name::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
