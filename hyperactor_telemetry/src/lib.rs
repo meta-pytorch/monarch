@@ -26,9 +26,9 @@ pub const DISABLE_OTEL_METRICS: &str = "DISABLE_OTEL_METRICS";
 /// Set to "1" to disable the recorder output.
 pub const DISABLE_RECORDER_TRACING: &str = "DISABLE_RECORDER_TRACING";
 
-/// Environment variable to disable the sqlite logging layer.
-/// Set to "1" to disable the sqlite tracing.
-pub const DISABLE_SQLITE_TRACING: &str = "DISABLE_SQLITE_TRACING";
+/// Environment variable to enable the sqlite logging layer.
+/// Set to "1" to enable the sqlite tracing.
+pub const ENABLE_SQLITE_TRACING: &str = "ENABLE_SQLITE_TRACING";
 
 /// Environment variable constants
 // Log level (debug, info, warn, error, critical) to capture for Monarch traces on dedicated log file (changes based on environment, see `log_file_path`).
@@ -39,7 +39,6 @@ pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
 // Log level constants
 const LOG_LEVEL_INFO: &str = "info";
 const LOG_LEVEL_DEBUG: &str = "debug";
-const LOG_LEVEL_ERROR: &str = "error";
 
 // Span field constants
 const SPAN_FIELD_RECORDING: &str = "recording";
@@ -64,7 +63,6 @@ mod spool;
 pub mod sqlite;
 pub mod task;
 pub mod trace;
-use std::io::IsTerminal;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -606,21 +604,26 @@ pub fn initialize_logging_with_log_prefix(
     {
         use crate::env::Env;
         fn is_layer_enabled(env_var: &str) -> bool {
-            std::env::var(env_var).unwrap_or_default() != "1"
+            std::env::var(env_var).unwrap_or_default() == "1"
+        }
+        fn is_layer_disabled(env_var: &str) -> bool {
+            std::env::var(env_var).unwrap_or_default() == "1"
         }
         if let Err(err) = Registry::default()
-            .with(if is_layer_enabled(DISABLE_SQLITE_TRACING) {
+            .with(if is_layer_enabled(ENABLE_SQLITE_TRACING) {
+                // TODO: get_reloadable_sqlite_layer currently still returns None,
+                // and some additional work is required to make it work.
                 Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
             } else {
                 None
             })
-            .with(if is_layer_enabled(DISABLE_OTEL_TRACING) {
+            .with(if !is_layer_disabled(DISABLE_OTEL_TRACING) {
                 Some(otel::tracing_layer())
             } else {
                 None
             })
             .with(file_layer)
-            .with(if is_layer_enabled(DISABLE_RECORDER_TRACING) {
+            .with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
                 None
