@@ -636,14 +636,23 @@ pub fn initialize_logging_with_log_prefix(
     {
         use crate::env::Env;
         if use_unified {
+            let mut max_level = None;
+
+            let sqlite_enabled = std::env::var(ENABLE_SQLITE_TRACING).unwrap_or_default() == "1";
+
+            if sqlite_enabled {
+                match create_sqlite_exporter() {
+                    Ok(exporter) => {
+                        max_level = Some(tracing::level_filters::LevelFilter::TRACE);
+                        exporters.push(Box::new(exporter));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create SqliteExporter: {}", e);
+                    }
+                }
+            }
+
             if let Err(err) = Registry::default()
-                .with(if is_layer_enabled(ENABLE_SQLITE_TRACING) {
-                    // TODO: get_reloadable_sqlite_layer currently still returns None,
-                    // and some additional work is required to make it work.
-                    Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
-                } else {
-                    None
-                })
                 .with(if !is_layer_disabled(DISABLE_OTEL_TRACING) {
                     Some(otel::tracing_layer())
                 } else {
@@ -654,7 +663,7 @@ pub fn initialize_logging_with_log_prefix(
                 } else {
                     None
                 })
-                .with(unified::UnifiedLayer::new(exporters, None))
+                .with(unified::UnifiedLayer::new(exporters, max_level))
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
@@ -722,6 +731,20 @@ pub fn initialize_logging_with_log_prefix(
             tracing::debug!("logging already initialized for this process: {}", err);
         }
     }
+}
+
+fn create_sqlite_exporter() -> anyhow::Result<exporters::sqlite::SqliteExporter> {
+    let (db_path, _) = log_file_path(env::Env::current(), Some("traces"))
+        .expect("failed to determine trace db path");
+    let db_file = format!("{}/hyperactor_trace_{}.db", db_path, std::process::id());
+
+    let filter = Targets::new()
+        .with_target("execution", LevelFilter::OFF)
+        .with_target("opentelemetry", LevelFilter::OFF)
+        .with_target("hyperactor_telemetry", LevelFilter::OFF)
+        .with_default(LevelFilter::TRACE);
+
+    Ok(exporters::sqlite::SqliteExporter::new_with_file(&db_file, 100)?.with_target_filter(filter))
 }
 
 pub mod env {
