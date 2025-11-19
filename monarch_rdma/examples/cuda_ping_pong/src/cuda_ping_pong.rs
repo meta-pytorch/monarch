@@ -269,45 +269,45 @@ impl Actor for CudaRdmaActor {
         // For this example, we'll use a regular Rust allocation as a placeholder
         // The actual CUDA allocation would be handled by the monarch_rdma library
         unsafe {
-            cu_check!(cuda_sys::cuInit(0));
-            let mut dptr: cuda_sys::CUdeviceptr = std::mem::zeroed();
-            let mut handle: cuda_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
+            let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
+            let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
 
-            let mut device: cuda_sys::CUdevice = std::mem::zeroed();
-            cu_check!(cuda_sys::cuDeviceGet(&mut device, device_id as i32));
+            let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut device, device_id as i32));
 
-            let mut context: cuda_sys::CUcontext = std::mem::zeroed();
-            cu_check!(cuda_sys::cuCtxCreate_v2(&mut context, 0, device_id as i32));
-            cu_check!(cuda_sys::cuCtxSetCurrent(context));
+            let mut context: rdmaxcel_sys::CUcontext = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(&mut context, 0, device_id as i32));
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
 
             let mut granularity: usize = 0;
-            let mut prop: cuda_sys::CUmemAllocationProp = std::mem::zeroed();
-            prop.type_ = cuda_sys::CUmemAllocationType::CU_MEM_ALLOCATION_TYPE_PINNED;
-            prop.location.type_ = cuda_sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE;
+            let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
+            prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
+            prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
             prop.location.id = device;
             prop.allocFlags.gpuDirectRDMACapable = 1;
             prop.requestedHandleTypes =
-                cuda_sys::CUmemAllocationHandleType::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 
-            cu_check!(cuda_sys::cuMemGetAllocationGranularity(
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
                 &mut granularity as *mut usize,
                 &prop,
-                cuda_sys::CUmemAllocationGranularity_flags::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
+                rdmaxcel_sys::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
             ));
 
             // ensure our size is aligned
             let padded_size: usize = ((buffer_size - 1) / granularity + 1) * granularity;
             assert!(padded_size == buffer_size);
 
-            cu_check!(cuda_sys::cuMemCreate(
-                &mut handle as *mut cuda_sys::CUmemGenericAllocationHandle,
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemCreate(
+                &mut handle as *mut rdmaxcel_sys::CUmemGenericAllocationHandle,
                 padded_size,
                 &prop,
                 0
             ));
             // reserve and map the memory
-            cu_check!(cuda_sys::cuMemAddressReserve(
-                &mut dptr as *mut cuda_sys::CUdeviceptr,
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(
+                &mut dptr as *mut rdmaxcel_sys::CUdeviceptr,
                 padded_size,
                 0,
                 0,
@@ -317,23 +317,23 @@ impl Actor for CudaRdmaActor {
             assert!(padded_size % granularity == 0);
 
             // fails if a add cu_check macro; but passes if we don't
-            let err = cuda_sys::cuMemMap(
-                dptr as cuda_sys::CUdeviceptr,
+            let err = rdmaxcel_sys::rdmaxcel_cuMemMap(
+                dptr as rdmaxcel_sys::CUdeviceptr,
                 padded_size,
                 0,
-                handle as cuda_sys::CUmemGenericAllocationHandle,
+                handle as rdmaxcel_sys::CUmemGenericAllocationHandle,
                 0,
             );
-            if err != cuda_sys::CUresult::CUDA_SUCCESS {
+            if err != rdmaxcel_sys::CUDA_SUCCESS {
                 panic!("failed reserving and mapping memory {:?}", err);
             }
 
             // set access
-            let mut access_desc: cuda_sys::CUmemAccessDesc = std::mem::zeroed();
-            access_desc.location.type_ = cuda_sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE;
+            let mut access_desc: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
+            access_desc.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
             access_desc.location.id = device;
-            access_desc.flags = cuda_sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-            cu_check!(cuda_sys::cuMemSetAccess(dptr, padded_size, &access_desc, 1));
+            access_desc.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(dptr, padded_size, &access_desc, 1));
             Ok(Self {
                 device_id,
                 cpu_buffer,
@@ -385,15 +385,15 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
         self.cpu_buffer.fill(value);
 
         unsafe {
-            let mut context: cuda_sys::CUcontext = std::mem::zeroed();
-            cu_check!(cuda_sys::cuCtxCreate_v2(
+            let mut context: rdmaxcel_sys::CUcontext = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(
                 &mut context,
                 0,
                 self.device_id as i32
             ));
-            cu_check!(cuda_sys::cuCtxSetCurrent(context));
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
             cuda_sys::cudaDeviceSynchronize();
-            cu_check!(cuda_sys::cuMemcpyHtoD_v2(
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemcpyHtoD_v2(
                 self.cu_ptr as u64,
                 self.cpu_buffer.as_ptr() as *const std::ffi::c_void,
                 self.cpu_buffer.len()
@@ -459,13 +459,13 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
 
         validate_execution_context().await?;
         unsafe {
-            let mut context: cuda_sys::CUcontext = std::mem::zeroed();
-            cu_check!(cuda_sys::cuCtxCreate_v2(
+            let mut context: rdmaxcel_sys::CUcontext = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(
                 &mut context,
                 0,
                 self.device_id as i32
             ));
-            cu_check!(cuda_sys::cuCtxSetCurrent(context));
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
         }
         let qp = self
             .rdma_manager
@@ -532,17 +532,17 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
         VerifyBuffer(expected_values, reply): VerifyBuffer,
     ) -> Result<(), anyhow::Error> {
         unsafe {
-            let mut context: cuda_sys::CUcontext = std::mem::zeroed();
-            cu_check!(cuda_sys::cuCtxCreate_v2(
+            let mut context: rdmaxcel_sys::CUcontext = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(
                 &mut context,
                 0,
                 self.device_id as i32
             ));
-            cu_check!(cuda_sys::cuCtxSetCurrent(context));
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
             cuda_sys::cudaDeviceSynchronize();
-            cu_check!(cuda_sys::cuMemcpyDtoH_v2(
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemcpyDtoH_v2(
                 self.cpu_buffer.as_mut_ptr() as *mut std::ffi::c_void,
-                self.cu_ptr as cuda_sys::CUdeviceptr,
+                self.cu_ptr as rdmaxcel_sys::CUdeviceptr,
                 self.cpu_buffer.len(),
             ));
         }
