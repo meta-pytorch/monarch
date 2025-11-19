@@ -933,6 +933,7 @@ impl BootstrapProcHandle {
         addr: ChannelAddr,
         agent: ActorRef<ProcMeshAgent>,
     ) -> bool {
+        tracing::info!(proc_id = %self.proc_id, %addr, "{} running on pid {}", self.proc_id, pid);
         self.transition(|st| match st {
             ProcStatus::Starting | ProcStatus::Running { .. } => {
                 *st = ProcStatus::Ready {

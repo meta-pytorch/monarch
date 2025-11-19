@@ -452,11 +452,21 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
     ) -> anyhow::Result<()> {
         let event = update_event_actor_id(event);
         if self.record_supervision_events {
-            tracing::info!(
-                proc_id = %self.proc.proc_id(),
-                %event,
-                "recording supervision event",
-            );
+            if event.is_error() {
+                tracing::warn!(
+                    name = "SupervisionEvent",
+                    proc_id = %self.proc.proc_id(),
+                    %event,
+                    "recording supervision error",
+                );
+            } else {
+                tracing::debug!(
+                    name = "SupervisionEvent",
+                    proc_id = %self.proc.proc_id(),
+                    %event,
+                    "recording non-error supervision event",
+                );
+            }
             self.supervision_events
                 .entry(event.actor_id.clone())
                 .or_default()

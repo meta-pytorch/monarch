@@ -360,11 +360,22 @@ impl HostMesh {
         name: &str,
         bootstrap_params: Option<BootstrapCommand>,
     ) -> v1::Result<Self> {
+        Self::allocate_inner(cx, alloc, Name::new(name), bootstrap_params).await
+    }
+
+    // Use allocate_inner to set field mesh_name in span
+    #[hyperactor::instrument(fields(mesh_name=name.to_string()))]
+    async fn allocate_inner(
+        cx: &impl context::Actor,
+        alloc: Box<dyn Alloc + Send + Sync>,
+        name: Name,
+        bootstrap_params: Option<BootstrapCommand>,
+    ) -> v1::Result<Self> {
+        tracing::info!(name = "HostMeshStatus", status = "Allocate::Attempt");
         let transport = alloc.transport();
         let extent = alloc.extent().clone();
         let is_local = alloc.is_local();
-        let proc_mesh = ProcMesh::allocate(cx, alloc, name).await?;
-        let name = Name::new(name);
+        let proc_mesh = ProcMesh::allocate(cx, alloc, name.name()).await?;
 
         // TODO: figure out how to deal with MAST allocs. It requires an extra dimension,
         // into which it launches multiple procs, so we need to always specify an additional
@@ -405,7 +416,7 @@ impl HostMesh {
         }
 
         let proc_mesh_ref = proc_mesh.clone();
-        Ok(Self {
+        let mesh = Self {
             name: name.clone(),
             extent: extent.clone(),
             allocation: HostMeshAllocation::ProcMesh {
@@ -414,7 +425,9 @@ impl HostMesh {
                 hosts: hosts.clone(),
             },
             current_ref: HostMeshRef::new(name, extent.into(), hosts).unwrap(),
-        })
+        };
+        tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
+        Ok(mesh)
     }
 
     /// Take ownership of an existing host mesh reference.
@@ -490,6 +503,11 @@ impl Drop for HostMesh {
     /// only provides opportunistic cleanup to prevent process leaks
     /// if shutdown is skipped.
     fn drop(&mut self) {
+        tracing::info!(
+            name = "HostMeshStatus",
+            mesh_name = %self.name,
+            status = "Dropping",
+        );
         // Snapshot the owned hosts we're responsible for.
         let hosts: Vec<HostRef> = match &self.allocation {
             HostMeshAllocation::ProcMesh { hosts, .. } | HostMeshAllocation::Owned { hosts } => {
@@ -572,10 +590,17 @@ impl Drop for HostMesh {
             // No runtime here; PDEATHSIG and manager Drop remain the
             // last-resort safety net.
             tracing::warn!(
+                mesh_name = %self.name,
                 hosts = hosts.len(),
                 "HostMesh dropped without a tokio runtime; skipping best-effort shutdown"
             );
         }
+
+        tracing::info!(
+            name = "HostMeshStatus",
+            mesh_name = %self.name,
+            status = "Dropped",
+        );
     }
 }
 
@@ -1391,10 +1416,27 @@ mod tests {
             .spawn(&instance, "test", Extent::unity())
             .await
             .unwrap_err();
-        assert_matches!(
-            err, v1::Error::ProcCreationError { state: resource::State { status: resource::Status::Failed(msg), ..}, .. }
-            if msg.contains("failed to configure process: Terminal(Stopped { exit_code: 1")
-        );
+        eprintln!("error: {}", err);
+        if let v1::Error::ProcCreationError {
+            state:
+                resource::State {
+                    status: resource::Status::Failed(msg),
+                    ..
+                },
+            ..
+        } = err
+        {
+            assert_eq!(
+                msg,
+                "failed to configure process: Terminal(Stopped { exit_code: 1"
+            );
+        } else {
+            panic!();
+        }
+        // assert_matches!(
+        //     err, v1::Error::ProcCreationError { state: resource::State { status: resource::Status::Failed(msg), ..}, .. }
+        //     if msg.contains("failed to configure process: Terminal(Stopped { exit_code: 1")
+        // );
     }
 
     #[tokio::test]
