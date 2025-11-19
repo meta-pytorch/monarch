@@ -72,6 +72,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
     Region,
     Shape,
 )
+from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
 )
@@ -970,6 +971,7 @@ class _Actor:
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
     ) -> None:
+        method_name = None
         MESSAGES_HANDLED.add(1)
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
@@ -1000,7 +1002,7 @@ class _Actor:
                         self._saved_error = ActorError(
                             e, f"Remote actor {Class}.__init__ call failed."
                         )
-                        raise e
+                        raise
                     response_port.send(None)
                     return None
                 case MethodSpecifier.ReturnsResponse(name=method_name):
@@ -1008,6 +1010,7 @@ class _Actor:
                 case MethodSpecifier.ExplicitPort(name=method_name):
                     args = (response_port, *args)
                     response_port = DroppingPort()
+            assert isinstance(method_name, str)
 
             if self.instance is None:
                 # This could happen because of the following reasons. Both
@@ -1036,22 +1039,15 @@ class _Actor:
                 the_method = functools.partial(the_method._method, self.instance)
 
             if inspect.iscoroutinefunction(the_method):
-                try:
-                    if should_instrument:
-                        with TRACER.start_as_current_span(
-                            method_name,
-                            attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                        ):
-                            result = await the_method(*args, **kwargs)
-                    else:
+                if should_instrument:
+                    with TRACER.start_as_current_span(
+                        method_name,
+                        attributes={"actor_id": str(ctx.actor_instance.actor_id)},
+                    ):
                         result = await the_method(*args, **kwargs)
-                    self._maybe_exit_debugger()
-                except Exception as e:
-                    logging.critical(
-                        "Unhandled exception in actor endpoint",
-                        exc_info=e,
-                    )
-                    raise e
+                else:
+                    result = await the_method(*args, **kwargs)
+                self._maybe_exit_debugger()
             else:
                 with fake_sync_state():
                     if should_instrument:
@@ -1066,6 +1062,7 @@ class _Actor:
 
             response_port.send(result)
         except Exception as e:
+            log_endpoint_exception(e, method_name)
             self._post_mortem_debug(e.__traceback__)
             response_port.exception(ActorError(e))
         except BaseException as e:
