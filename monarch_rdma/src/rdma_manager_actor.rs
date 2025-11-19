@@ -366,13 +366,13 @@ impl RdmaManagerActor {
     ) -> Result<(RdmaMemoryRegionView, String), anyhow::Error> {
         unsafe {
             let mut mem_type: i32 = 0;
-            let ptr = addr as cuda_sys::CUdeviceptr;
-            let err = cuda_sys::cuPointerGetAttribute(
+            let ptr = addr as rdmaxcel_sys::CUdeviceptr;
+            let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
                 &mut mem_type as *mut _ as *mut std::ffi::c_void,
-                cuda_sys::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                rdmaxcel_sys::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
                 ptr,
             );
-            let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
+            let is_cuda = err == rdmaxcel_sys::CUDA_SUCCESS;
 
             let mut selected_rdma_device = None;
 
@@ -457,11 +457,11 @@ impl RdmaManagerActor {
                 mrv = maybe_mrv.unwrap();
             } else if is_cuda {
                 let mut fd: i32 = -1;
-                cuda_sys::cuMemGetHandleForAddressRange(
-                    &mut fd as *mut i32 as *mut std::ffi::c_void,
-                    addr as cuda_sys::CUdeviceptr,
+                rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
+                    &mut fd,
+                    addr as rdmaxcel_sys::CUdeviceptr,
                     size,
-                    cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+                    rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                     0,
                 );
                 mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(domain_pd, 0, size, 0, fd, access.0 as i32);

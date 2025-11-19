@@ -13,6 +13,7 @@
 #include <cuda_runtime.h>
 #include <infiniband/mlx5dv.h>
 #include <infiniband/verbs.h>
+#include "driver_api.h"
 
 #ifdef __cplusplus
 extern "C" {

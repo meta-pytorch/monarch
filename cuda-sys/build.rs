@@ -31,11 +31,11 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=gnu++20")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Allow the specified functions and types
-        .allowlist_function("cu.*")
-        .allowlist_function("CU.*")
-        .allowlist_type("cu.*")
-        .allowlist_type("CU.*")
+        // Allow the specified functions and types (CUDA Runtime API only)
+        .allowlist_function("cuda.*")
+        .allowlist_function("CUDA.*")
+        .allowlist_type("cuda.*")
+        .allowlist_type("CUDA.*")
         // Use newtype enum style
         .default_enum_style(bindgen::EnumVariation::NewType {
             is_bitfield: false,
@@ -78,7 +78,6 @@ fn main() {
         }
     };
     println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
-    println!("cargo:rustc-link-lib=cuda");
     println!("cargo:rustc-link-lib=cudart");
 
     // Generate bindings - fail fast if this doesn't work
