@@ -12,6 +12,7 @@
 //! verifies that the outputs are equivalent across all exporters:
 //! - Glog: Read log files and compare lines
 //! - SQLite: Query database and compare rows
+//! - Scuba: Mock client and compare logged samples
 //!
 //! Usage:
 //!   buck2 run //monarch/hyperactor_telemetry:correctness_test
@@ -26,6 +27,8 @@ struct TestResults {
     sqlite_path: Option<PathBuf>,
     #[allow(dead_code)]
     _sqlite_tracing: Option<hyperactor_telemetry::sqlite::SqliteTracing>,
+    scuba_tracing_samples: Vec<TelemetrySample>,
+    scuba_executions_samples: Vec<TelemetrySample>,
 }
 
 /// Record from log_events table (timestamps excluded for comparison)
@@ -66,7 +69,7 @@ impl CorrectnessTestHarness {
     where
         F: Fn(),
     {
-        initialize_logging_with_log_prefix(
+        let test_handle = initialize_logging_with_log_prefix_mock_scuba(
             DefaultTelemetryClock {},
             Some("TEST_LOG_PREFIX".to_string()),
         );
@@ -106,11 +109,111 @@ impl CorrectnessTestHarness {
             }
         }
 
+        let scuba_tracing_samples = test_handle.get_tracing_samples();
+        let scuba_executions_samples = test_handle.get_execution_samples();
+
         Ok(TestResults {
             sqlite_path,
             glog_path: Self::find_glog_path(),
+            scuba_tracing_samples,
+            scuba_executions_samples,
             _sqlite_tracing: sqlite_tracing,
         })
+    }
+    fn compare_scuba_samples(
+        &self,
+        old_samples: &[hyperactor_telemetry::TelemetrySample],
+        unified_samples: &[hyperactor_telemetry::TelemetrySample],
+        table_name: &str,
+    ) -> Result<()> {
+        use std::collections::BTreeMap;
+
+        println!("\n[Comparing {} Scuba Samples]", table_name);
+        println!("  Old samples: {}", old_samples.len());
+        println!("  Unified samples: {}", unified_samples.len());
+
+        if old_samples.is_empty() && unified_samples.is_empty() {
+            println!("  SKIP: No samples in either implementation");
+            return Ok(());
+        }
+
+        if !old_samples.is_empty() {
+            let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
+            for sample in old_samples {
+                if let Some(event_type) = sample.get_string("event_type") {
+                    *by_type.entry(event_type.to_string()).or_insert(0) += 1;
+                }
+            }
+            println!("  Old samples by event_type:");
+            for (event_type, count) in by_type {
+                println!("    {}: {}", event_type, count);
+            }
+        }
+
+        if old_samples.len() != unified_samples.len() {
+            return Err(anyhow::anyhow!(
+                "Sample count mismatch: old={} unified={}",
+                old_samples.len(),
+                unified_samples.len()
+            ));
+        }
+
+        for (i, (old, unified)) in old_samples.iter().zip(unified_samples.iter()).enumerate() {
+            let old_event_type = old.get_string("event_type");
+            let unified_event_type = unified.get_string("event_type");
+            if old_event_type != unified_event_type {
+                return Err(anyhow::anyhow!(
+                    "Sample #{} event_type mismatch: old={:?} unified={:?}",
+                    i,
+                    old_event_type,
+                    unified_event_type
+                ));
+            }
+
+            let old_name = old.get_string("name");
+            let unified_name = unified.get_string("name");
+
+            let skip_name_comparison = old_name
+                .map(|s| s.starts_with("event fbcode/"))
+                .unwrap_or(false)
+                && unified_name
+                    .map(|s| s.starts_with("event fbcode/"))
+                    .unwrap_or(false);
+
+            if !skip_name_comparison && old_name != unified_name {
+                return Err(anyhow::anyhow!(
+                    "Sample #{} name mismatch: old={:?} unified={:?}",
+                    i,
+                    old_name,
+                    unified_name
+                ));
+            }
+
+            let old_level = old.get_string("level");
+            let unified_level = unified.get_string("level");
+            if old_level != unified_level {
+                return Err(anyhow::anyhow!(
+                    "Sample #{} level mismatch: old={:?} unified={:?}",
+                    i,
+                    old_level,
+                    unified_level
+                ));
+            }
+
+            let old_target = old.get_string("target");
+            let unified_target = unified.get_string("target");
+            if old_target != unified_target {
+                return Err(anyhow::anyhow!(
+                    "Sample #{} target mismatch: old={:?} unified={:?}",
+                    i,
+                    old_target,
+                    unified_target
+                ));
+            }
+        }
+
+        println!("  ✓ All {} samples match!", old_samples.len());
+        Ok(())
     }
 
     fn find_glog_path() -> Option<PathBuf> {
@@ -623,6 +726,90 @@ fn main() -> Result<()> {
             }
         }
 
+        let old_tracing = PathBuf::from(format!(
+            "/tmp/{}/test_{}_old_scuba_tracing.json",
+            username, test_name
+        ));
+        let unified_tracing = PathBuf::from(format!(
+            "/tmp/{}/test_{}_unified_scuba_tracing.json",
+            username, test_name
+        ));
+
+        if !old_tracing.exists() || !unified_tracing.exists() {
+            println!("\n⚠ Scuba tracing sample files not found, skipping comparison");
+            if !old_tracing.exists() {
+                println!("  Missing: {}", old_tracing.display());
+            }
+            if !unified_tracing.exists() {
+                println!("  Missing: {}", unified_tracing.display());
+            }
+            all_passed = false;
+            test_passed = false;
+        } else {
+            let old_samples_json = std::fs::read_to_string(&old_tracing)?;
+            let unified_samples_json = std::fs::read_to_string(&unified_tracing)?;
+
+            let old_samples: Vec<TelemetrySample> = serde_json::from_str(&old_samples_json)?;
+            let unified_samples: Vec<TelemetrySample> =
+                serde_json::from_str(&unified_samples_json)?;
+
+            match harness.compare_scuba_samples(&old_samples, &unified_samples, "Tracing") {
+                Ok(()) => {
+                    println!("\n✓ Scuba tracing samples match");
+                }
+                Err(e) => {
+                    println!("\n✗ Scuba tracing comparison FAILED: {}", e);
+                    all_passed = false;
+                    test_passed = false;
+                }
+            }
+
+            let _ = std::fs::remove_file(&old_tracing);
+            let _ = std::fs::remove_file(&unified_tracing);
+        }
+
+        let old_executions = PathBuf::from(format!(
+            "/tmp/{}/test_{}_old_scuba_executions.json",
+            username, test_name
+        ));
+        let unified_executions = PathBuf::from(format!(
+            "/tmp/{}/test_{}_unified_scuba_executions.json",
+            username, test_name
+        ));
+
+        if !old_executions.exists() || !unified_executions.exists() {
+            println!("\n⚠ Scuba executions sample files not found, skipping comparison");
+            if !old_executions.exists() {
+                println!("  Missing: {}", old_executions.display());
+            }
+            if !unified_executions.exists() {
+                println!("  Missing: {}", unified_executions.display());
+            }
+            all_passed = false;
+            test_passed = false;
+        } else {
+            let old_samples_json = std::fs::read_to_string(&old_executions)?;
+            let unified_samples_json = std::fs::read_to_string(&unified_executions)?;
+
+            let old_samples: Vec<TelemetrySample> = serde_json::from_str(&old_samples_json)?;
+            let unified_samples: Vec<TelemetrySample> =
+                serde_json::from_str(&unified_samples_json)?;
+
+            match harness.compare_scuba_samples(&old_samples, &unified_samples, "Executions") {
+                Ok(()) => {
+                    println!("\n✓ Scuba executions samples match");
+                }
+                Err(e) => {
+                    println!("\n✗ Scuba executions comparison FAILED: {}", e);
+                    all_passed = false;
+                    test_passed = false;
+                }
+            }
+
+            let _ = std::fs::remove_file(&old_executions);
+            let _ = std::fs::remove_file(&unified_executions);
+        }
+
         if test_passed {
             println!("\n✓ Test PASSED: {}", test_name_to_display(test_name));
         } else {
@@ -753,6 +940,22 @@ fn run_single_test(test_name: &str, impl_type: &str) -> Result<()> {
     } else {
         println!("Warning: No SQLite database path found");
     }
+
+    let tracing_path = format!(
+        "/tmp/{}/test_{}_{}_scuba_tracing.json",
+        username, test_name, impl_suffix
+    );
+    let tracing_json = serde_json::to_string_pretty(&results.scuba_tracing_samples)?;
+    std::fs::write(&tracing_path, tracing_json)?;
+    println!("Scuba tracing samples saved to: {}", tracing_path);
+
+    let executions_path = format!(
+        "/tmp/{}/test_{}_{}_scuba_executions.json",
+        username, test_name, impl_suffix
+    );
+    let executions_json = serde_json::to_string_pretty(&results.scuba_executions_samples)?;
+    std::fs::write(&executions_path, executions_json)?;
+    println!("Scuba executions samples saved to: {}", executions_path);
 
     Ok(())
 }
