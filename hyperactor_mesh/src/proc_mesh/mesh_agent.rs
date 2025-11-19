@@ -401,7 +401,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
             match RealClock
                 .timeout(
                     tokio::time::Duration::from_millis(timeout_ms),
-                    status.wait_for(|state: &ActorStatus| matches!(*state, ActorStatus::Stopped)),
+                    status.wait_for(|state: &ActorStatus| state.is_terminal()),
                 )
                 .await
             {
