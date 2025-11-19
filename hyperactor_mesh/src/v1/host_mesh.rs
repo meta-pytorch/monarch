@@ -901,6 +901,7 @@ impl HostMeshRef {
     pub(crate) async fn stop_proc_mesh(
         &self,
         cx: &impl hyperactor::context::Actor,
+        proc_mesh_name: &Name,
         procs: impl IntoIterator<Item = ProcId>,
         region: Region,
     ) -> anyhow::Result<()> {
@@ -941,8 +942,18 @@ impl HostMeshRef {
             host.mesh_agent()
                 .get_rank_status(cx, proc_name, port.bind())
                 .await?;
+
+            tracing::info!(
+                name = "ProcMeshStatus",
+                mesh_name = %proc_mesh_name,
+                %proc_id,
+                status = "Stop::Sent",
+            );
         }
         tracing::info!(
+            mesh_name = %self.name,
+            name = "HostMeshStatus",
+            status = "ProcMesh::Stop::Sent",
             "Sending Stop to host mesh {} for {:?} procs",
             self.name,
             proc_names
@@ -961,11 +972,23 @@ impl HostMeshRef {
             Ok(statuses) => {
                 let failed = statuses.values().any(|s| s.is_failure());
                 if failed {
+                    tracing::error!(
+                        name = "ProcMeshStatus",
+                        mesh_name = %proc_mesh_name,
+                        status = "FailedToStop",
+                        "failed to terminate proc mesh: {:?}",
+                        statuses,
+                    );
                     return Err(anyhow::anyhow!(
                         "failed to terminate proc mesh: {:?}",
                         statuses,
                     ));
                 }
+                tracing::info!(
+                    name = "ProcMeshStatus",
+                    mesh_name = %proc_mesh_name,
+                    status = "Stopped",
+                );
             }
             Err(complete) => {
                 // Fill remaining ranks with a timeout status via the
@@ -976,8 +999,16 @@ impl HostMeshRef {
                     Status::is_not_exist,
                     num_ranks,
                 );
+                tracing::error!(
+                    name = "ProcMeshStatus",
+                    mesh_name = %proc_mesh_name,
+                    status = "StoppingTimeout",
+                    "failed to terminate proc mesh before timeout: {:?}",
+                    legacy,
+                );
                 return Err(anyhow::anyhow!(
-                    "failed to terminate proc mesh: {:?}",
+                    "failed to terminate proc mesh {} before timeout: {:?}",
+                    proc_mesh_name,
                     legacy
                 ));
             }

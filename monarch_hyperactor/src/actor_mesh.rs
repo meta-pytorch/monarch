@@ -79,7 +79,11 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     /// will provide "supervision_event" with events.
     /// The default implementation does nothing, and it is not required that
     /// it has to be called before supervision_event.
-    fn start_supervision(&self, _instance: &PyInstance) -> PyResult<()> {
+    fn start_supervision(
+        &self,
+        _instance: &PyInstance,
+        _supervision_display_name: String,
+    ) -> PyResult<()> {
         Ok(())
     }
 
@@ -156,8 +160,13 @@ impl PythonActorMesh {
         self.inner.supervision_event(instance)
     }
 
-    fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
-        self.inner.start_supervision(instance)
+    fn start_supervision(
+        &self,
+        instance: &PyInstance,
+        supervision_display_name: String,
+    ) -> PyResult<()> {
+        self.inner
+            .start_supervision(instance, supervision_display_name)
     }
 
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
@@ -387,8 +396,12 @@ impl PythonActorMeshImpl {
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
         ActorMeshProtocol::supervision_event(self, instance)
     }
-    fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
-        ActorMeshProtocol::start_supervision(self, instance)
+    fn start_supervision(
+        &self,
+        instance: &PyInstance,
+        supervision_display_name: String,
+    ) -> PyResult<()> {
+        ActorMeshProtocol::start_supervision(self, instance, supervision_display_name)
     }
 
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
@@ -543,6 +556,8 @@ impl Drop for PythonActorMeshImpl {
         self.monitor.abort();
     }
 }
+
+#[derive(Debug)]
 struct ClonePyErr {
     inner: PyErr,
 }
@@ -669,10 +684,16 @@ impl ActorMeshProtocol for AsyncActorMesh {
         if !self.supervised {
             return Ok(None);
         }
-        let mesh = self.mesh.clone();
         let instance = Python::with_gil(|_py| instance.clone());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mesh = self.mesh.clone();
+        self.push(async move {
+            if tx.send(mesh.await.unwrap()).is_err() {
+                panic!("oneshot failed");
+            }
+        });
         PyPythonTask::new(async move {
-            let mut event = mesh.await?.supervision_event(&instance)?.unwrap();
+            let mut event = rx.await.unwrap().supervision_event(&instance)?.unwrap();
             event.task()?.take_task()?.await
         })
         // This task must be aborted to run the Drop for the inner PyShared, in
@@ -680,7 +701,11 @@ impl ActorMeshProtocol for AsyncActorMesh {
         .map(|mut x| x.spawn_abortable().map(Some))?
     }
 
-    fn start_supervision(&self, instance: &PyInstance) -> PyResult<()> {
+    fn start_supervision(
+        &self,
+        instance: &PyInstance,
+        supervision_display_name: String,
+    ) -> PyResult<()> {
         if !self.supervised {
             return Ok(());
         }
@@ -689,7 +714,8 @@ impl ActorMeshProtocol for AsyncActorMesh {
         self.push(async move {
             let mesh = mesh.await;
             if let Ok(mesh) = mesh {
-                mesh.start_supervision(&instance).unwrap();
+                mesh.start_supervision(&instance, supervision_display_name)
+                    .unwrap();
             }
         });
         Ok(())
