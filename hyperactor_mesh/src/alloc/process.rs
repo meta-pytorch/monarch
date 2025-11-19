@@ -99,9 +99,16 @@ impl Allocator for ProcessAllocator {
         }
 
         let name = ShortUuid::generate();
+        let world_id = WorldId(name.to_string());
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %world_id,
+            addr = %bootstrap_addr,
+            status = "Allocated",
+        );
         Ok(ProcessAlloc {
             name: name.clone(),
-            world_id: WorldId(name.to_string()),
+            world_id,
             spec: spec.clone(),
             bootstrap_addr,
             rx,
@@ -666,6 +673,11 @@ impl Alloc for ProcessAlloc {
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Stopping",
+        );
         // We rely on the teardown here, and that the process should
         // exit on its own. We should have a hard timeout here as well,
         // so that we never rely on the system functioning correctly
@@ -676,13 +688,22 @@ impl Alloc for ProcessAlloc {
         }
 
         self.running = false;
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Stop::Sent",
+            "StopAndExit was sent to allocators; check their logs for the stop progress."
+        );
         Ok(())
     }
 }
 
 impl Drop for ProcessAlloc {
     fn drop(&mut self) {
-        tracing::debug!(
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Dropped",
             "dropping ProcessAlloc of name: {}, world id: {}",
             self.name,
             self.world_id
