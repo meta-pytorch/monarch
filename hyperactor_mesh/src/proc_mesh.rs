@@ -846,7 +846,7 @@ impl ProcEvents {
                             ActorStatus::generic_failure(format!("proc {} is stopped", proc_id)),
                             None,
                         );
-                        tracing::debug!(name = "ActorSupervisionEventDelivery", event = ?event);
+                        tracing::debug!(name = "SupervisionEvent", %event);
                         if entry.value().send(event.clone()).is_err() {
                             tracing::warn!(
                                 name = SupervisionEventState::SupervisionEventTransmitFailed.as_ref(),
@@ -856,7 +856,7 @@ impl ProcEvents {
                     }
 
                     let event = ProcEvent::Stopped(*rank, reason.clone());
-                    tracing::debug!(name = "delivering proc event", event = %event);
+                    tracing::debug!(name = "SupervisionEvent", %event);
 
                     break Some(ProcEvent::Stopped(*rank, reason));
                 }
@@ -880,7 +880,10 @@ impl ProcEvents {
                         status = %event.actor_status,
                         "proc supervision: event received with {had_headers} headers"
                     );
-                    tracing::debug!(?event, "proc supervision: full event");
+                    tracing::debug!(
+                        name = "SupervisionEvent",
+                        %event,
+                        "proc supervision: full event");
 
                     // Normalize events that came via the comm tree.
                     let event = update_event_actor_id(event);
