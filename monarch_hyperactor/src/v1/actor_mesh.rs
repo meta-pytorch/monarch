@@ -591,7 +591,7 @@ async fn actor_states_monitor<A, F>(
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
                         mesh.get(point.rank()).unwrap().actor_id().clone(),
-                        Some(format!("{} was running on a process which", display_name)),
+                        Some(display_name),
                         actor_status,
                         None,
                     ),
