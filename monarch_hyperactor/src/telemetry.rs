@@ -134,8 +134,15 @@ impl PyCounter {
         }
     }
 
-    fn add(&mut self, value: u64) {
-        self.inner.add(value, &[]);
+    fn add(&mut self, value: u64, attributes: Option<std::collections::HashMap<String, String>>) {
+        let kv_attributes: Vec<opentelemetry::KeyValue> = match attributes {
+            Some(attrs) => attrs
+                .into_iter()
+                .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+                .collect(),
+            None => vec![],
+        };
+        self.inner.add(value, &kv_attributes);
     }
 }
 
@@ -193,8 +200,15 @@ impl PyUpDownCounter {
         }
     }
 
-    fn add(&mut self, value: i64) {
-        self.inner.add(value, &[]);
+    fn add(&mut self, value: i64, attributes: Option<std::collections::HashMap<String, String>>) {
+        let kv_attributes: Vec<opentelemetry::KeyValue> = match attributes {
+            Some(attrs) => attrs
+                .into_iter()
+                .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+                .collect(),
+            None => vec![],
+        };
+        self.inner.add(value, &kv_attributes);
     }
 }
 
