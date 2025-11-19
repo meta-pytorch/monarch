@@ -1290,23 +1290,14 @@ impl<A: Actor> Instance<A> {
             .await
         {
             Ok(result) => result,
-            Err(err) => {
-                // This is only the error message. Backtrace is not included.
+            Err(_) => {
                 did_panic = true;
-                let err_msg = err
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .or_else(|| err.downcast_ref::<String>().map(|s| s.as_str()))
-                    .unwrap_or("panic cannot be downcasted");
-
-                let backtrace = panic_handler::take_panic_backtrace()
+                let panic_info = panic_handler::take_panic_info()
+                    .map(|info| info.to_string())
                     .unwrap_or_else(|e| format!("Cannot take backtrace due to: {:?}", e));
                 Err(ActorError::new(
                     self.self_id(),
-                    ActorErrorKind::panic(anyhow::anyhow!(
-                        "{}
-{}", err_msg, backtrace
-                    )),
+                    ActorErrorKind::panic(anyhow::anyhow!(panic_info)),
                 ))
             }
         };

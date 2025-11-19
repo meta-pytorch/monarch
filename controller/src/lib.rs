@@ -643,6 +643,7 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::message::IndexedErasedUnbound;
+    use hyperactor::panic_handler;
     use hyperactor::proc::Proc;
     use hyperactor::reference::GangId;
     use hyperactor::reference::ProcId;
@@ -1843,6 +1844,9 @@ mod tests {
     // times out (both internal and external).
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_supervision_fault() {
+        // Need this custom hook to store panic backtrace in task_local.
+        panic_handler::set_panic_hook();
+
         // Start system actor.
         let timeout: Duration = Duration::from_secs(6);
         let server_handle = System::serve(
@@ -1939,6 +1943,10 @@ mod tests {
         let Exception::Failure(err) = result.1.unwrap().unwrap_err() else {
             panic!("Expected Failure exception");
         };
-        assert!(err.backtrace.contains("some random failure"));
+        assert!(
+            err.backtrace.contains("some random failure"),
+            "got: {}",
+            err.backtrace
+        );
     }
 }
