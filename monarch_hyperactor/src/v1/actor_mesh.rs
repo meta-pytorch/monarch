@@ -401,11 +401,6 @@ fn send_state_change<F>(
 ) where
     F: Fn(MeshFailure),
 {
-    tracing::info!(
-        "detected supervision event on monitored mesh: name={}, event={}",
-        mesh_name,
-        event,
-    );
     let failure = MeshFailure::new(mesh_name, rank, event.clone());
     // Any supervision event that is not a failure should not generate
     // call "unhandled".
@@ -413,20 +408,38 @@ fn send_state_change<F>(
     // user calls stop() on a proc or actor mesh.
     // It is not being terminated due to a failure. In this state, new messages
     // should not be sent, but we don't call unhandled when it is detected.
-    let is_failed = event.actor_status.is_failed();
+    let is_failed = event.is_error();
+    if is_failed {
+        tracing::warn!(
+            name = "SupervisionEvent",
+            %mesh_name,
+            %event,
+            "detected supervision error on monitored mesh: name={mesh_name}",
+        );
+    } else {
+        tracing::debug!(
+            name = "SupervisionEvent",
+            %mesh_name,
+            %event,
+            "detected non-error supervision event on monitored mesh: name={mesh_name}",
+        );
+    }
 
     // Send a notification to the owning actor of this mesh, if there is one.
     if let Some(owner) = owner {
-        if let Err(e) = owner.send(SupervisionFailureMessage {
+        if let Err(error) = owner.send(SupervisionFailureMessage {
             mesh_name: mesh_name.to_string(),
             rank,
             event: event.clone(),
         }) {
             tracing::warn!(
-                "failed to send supervision event {} to owner {}: {:?}. dropping event",
-                event,
+                name = "SupervisionEvent",
+                %mesh_name,
+                %event,
+                %error,
+                "failed to send supervision event to owner {}: {}. dropping event",
                 owner.actor_id(),
-                e
+                error
             );
         }
     } else if is_owned && is_failed {

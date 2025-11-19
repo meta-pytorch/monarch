@@ -688,9 +688,14 @@ async fn tee(
                                 // Complete line found
                                 let mut line = String::from_utf8_lossy(&line_buffer).to_string();
 
-                                // Truncate if too long
+                                // Truncate if too long, respecting UTF-8 boundaries
+                                // (multi-byte chars like emojis can be up to 4 bytes)
                                 if line.len() > MAX_LINE_SIZE {
-                                    line.truncate(MAX_LINE_SIZE);
+                                    let mut truncate_at = MAX_LINE_SIZE;
+                                    while truncate_at > 0 && !line.is_char_boundary(truncate_at) {
+                                        truncate_at -= 1;
+                                    }
+                                    line.truncate(truncate_at);
                                     line.push_str("... [TRUNCATED]");
                                 }
 
@@ -749,8 +754,14 @@ async fn tee(
     // Send any remaining partial line
     if !line_buffer.is_empty() {
         let mut line = String::from_utf8_lossy(&line_buffer).to_string();
+        // Truncate if too long, respecting UTF-8 boundaries
+        // (multi-byte chars like emojis can be up to 4 bytes)
         if line.len() > MAX_LINE_SIZE {
-            line.truncate(MAX_LINE_SIZE);
+            let mut truncate_at = MAX_LINE_SIZE;
+            while truncate_at > 0 && !line.is_char_boundary(truncate_at) {
+                truncate_at -= 1;
+            }
+            line.truncate(truncate_at);
             line.push_str("... [TRUNCATED]");
         }
         let final_line = if let Some(ref p) = prefix {
@@ -2353,5 +2364,41 @@ mod tests {
         assert_eq!(result2.lines[0], b"line 3");
         assert!(result2.incomplete_line_buffer.is_empty());
         assert_eq!(result2.new_position, data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn test_utf8_truncation() {
+        // Test that StreamFwder doesn't panic when truncating lines
+        // with multi-byte chars.
+
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        // Create a line longer than MAX_LINE_SIZE with an emoji at the boundary
+        let mut long_line = "x".repeat(MAX_LINE_SIZE - 1);
+        long_line.push('🦀'); // 4-byte emoji - truncation will land in the middle
+        long_line.push('\n');
+
+        // Create IO streams
+        let (mut writer, reader) = tokio::io::duplex(8192);
+
+        // Start StreamFwder
+        let monitor = StreamFwder::start_with_writer(
+            reader,
+            Box::new(tokio::io::sink()), // discard output
+            None,                        // no file monitor needed
+            OutputTarget::Stdout,
+            1,     // tail buffer of 1 (need at least one sink)
+            None,  // no log channel
+            12345, // pid
+            None,  // no prefix
+        );
+
+        // Write the problematic line
+        writer.write_all(long_line.as_bytes()).await.unwrap();
+        drop(writer); // Close to signal EOF
+
+        // Wait for completion - should NOT panic
+        let (_lines, result) = monitor.abort().await;
+        result.expect("Should complete without panic despite UTF-8 truncation");
     }
 }
