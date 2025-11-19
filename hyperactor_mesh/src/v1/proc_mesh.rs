@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -75,6 +76,7 @@ use crate::v1::Name;
 use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_agent::ProcState;
 use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
+use crate::v1::mesh_controller::ActorMeshController;
 
 declare_attrs! {
     /// The maximum idle time between updates while spawning actor
@@ -686,6 +688,12 @@ impl ProcMeshRef {
         &self.name
     }
 
+    /// Returns the HostMeshRef that this ProcMeshRef might be backed by.
+    /// Returns None if this ProcMeshRef is backed by an Alloc instead of a host mesh.
+    pub fn hosts(&self) -> Option<&HostMeshRef> {
+        self.host_mesh.as_ref()
+    }
+
     /// The current statuses of procs in this mesh.
     pub async fn status(&self, cx: &impl context::Actor) -> v1::Result<ValueMesh<bool>> {
         let vm: ValueMesh<_> = self.map_into(|proc_ref| {
@@ -809,7 +817,7 @@ impl ProcMeshRef {
     }
 
     /// Returns an iterator over the proc ids in this mesh.
-    fn proc_ids(&self) -> impl Iterator<Item = ProcId> {
+    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = ProcId> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
     }
 
@@ -942,7 +950,7 @@ impl ProcMeshRef {
         // overlays are applied, it emits a new StatusMesh snapshot.
         // `wait()` loops on it, deciding when the stream is
         // "complete" (no more NotExist) or times out.
-        match GetRankStatus::wait(
+        let mesh = match GetRankStatus::wait(
             rx,
             self.ranks.len(),
             config::global::get(ACTOR_SPAWN_MAX_IDLE),
@@ -979,7 +987,14 @@ impl ProcMeshRef {
                 );
                 Err(Error::ActorSpawnError { statuses: legacy })
             }
-        }
+        }?;
+        // Spawn a unique mesh manager for each actor mesh, so the type of the
+        // mesh can be preserved.
+        let _controller: ActorHandle<ActorMeshController<A>> =
+            ActorMeshController::<A>::spawn(cx, mesh.deref().clone())
+                .await
+                .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        Ok(mesh)
     }
 
     /// Send stop actors message to all mesh agents for a specific mesh name
@@ -1034,10 +1049,11 @@ impl ProcMeshRef {
         .await
         {
             Ok(statuses) => {
-                let has_failed = statuses
-                    .values()
-                    .any(|s| matches!(s, Status::Failed(_) | Status::Timeout(_)));
-                if !has_failed {
+                // Check that all actors are in some terminal state.
+                // Failed is ok, because one of these actors may have failed earlier
+                // and we're trying to stop the others.
+                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                if all_stopped {
                     Ok(())
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(
