@@ -131,7 +131,7 @@ impl PyInstance {
     }
 
     #[getter]
-    fn actor_id(&self) -> PyActorId {
+    pub fn actor_id(&self) -> PyActorId {
         self.inner.self_id().clone().into()
     }
 }
