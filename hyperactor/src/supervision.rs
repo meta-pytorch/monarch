@@ -77,6 +77,11 @@ impl ActorSupervisionEvent {
         }
         event
     }
+
+    /// This event is for a a supervision error.
+    pub fn is_error(&self) -> bool {
+        self.actor_status.is_failed()
+    }
 }
 
 impl std::error::Error for ActorSupervisionEvent {}
