@@ -33,6 +33,8 @@ pub const ENABLE_SQLITE_TRACING: &str = "ENABLE_SQLITE_TRACING";
 /// Environment variable constants
 // Log level (debug, info, warn, error, critical) to capture for Monarch traces on dedicated log file (changes based on environment, see `log_file_path`).
 const MONARCH_FILE_LOG_ENV: &str = "MONARCH_FILE_LOG";
+// Suffix to append to log filenames for test isolation
+pub const MONARCH_LOG_SUFFIX_ENV: &str = "MONARCH_LOG_SUFFIX";
 
 pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
 
@@ -57,6 +59,7 @@ const ENV_VALUE_TEST: &str = "test";
 #[allow(dead_code)]
 const ENV_VALUE_LOCAL_MAST_SIMULATOR: &str = "local_mast_simulator";
 
+pub mod exporters;
 pub mod in_memory_reader;
 #[cfg(fbcode_build)]
 mod meta;
@@ -175,7 +178,8 @@ fn writer() -> Box<dyn Write + Send> {
     match env::Env::current() {
         env::Env::Test => Box::new(std::io::stderr()),
         env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
-            let (path, filename) = log_file_path(env::Env::current(), None).unwrap();
+            let suffix = std::env::var(MONARCH_LOG_SUFFIX_ENV).ok();
+            let (path, filename) = log_file_path(env::Env::current(), suffix.as_deref()).unwrap();
             match try_create_appender(&path, &filename, true) {
                 Ok(file_appender) => Box::new(file_appender),
                 Err(e) => {
@@ -610,6 +614,20 @@ pub fn initialize_logging_with_log_prefix(
                 .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
         );
 
+    let mut exporters: Vec<Box<dyn unified::TraceExporter>> = Vec::new();
+    if use_unified {
+        let min_level = tracing::Level::from_str(
+            &std::env::var(MONARCH_FILE_LOG_ENV).unwrap_or(file_log_level.to_string()),
+        )
+        .expect("Invalid log level");
+
+        exporters.push(Box::new(exporters::glog::GlogExporter::new(
+            writer_guard.0.clone(),
+            prefix_env_var.clone(),
+            min_level,
+        )));
+    }
+
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -631,13 +649,12 @@ pub fn initialize_logging_with_log_prefix(
                 } else {
                     None
                 })
-                .with(file_layer)
                 .with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
                     Some(recorder().layer())
                 } else {
                     None
                 })
-                .with(unified::UnifiedLayer::new(vec![], None))
+                .with(unified::UnifiedLayer::new(exporters, None))
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
@@ -688,25 +705,21 @@ pub fn initialize_logging_with_log_prefix(
     }
     #[cfg(not(fbcode_build))]
     {
-        let registry = Registry::default().with(file_layer).with(
-            if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
-                Some(recorder().layer())
-            } else {
-                None
-            },
-        );
+        let registry = Registry::default().with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
+            Some(recorder().layer())
+        } else {
+            None
+        });
 
         if use_unified {
             if let Err(err) = registry
-                .with(unified::UnifiedLayer::new(vec![], None))
+                .with(unified::UnifiedLayer::new(exporters, None))
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
-        } else {
-            if let Err(err) = registry.try_init() {
-                tracing::debug!("logging already initialized for this process: {}", err);
-            }
+        } else if let Err(err) = registry.with(file_layer).try_init() {
+            tracing::debug!("logging already initialized for this process: {}", err);
         }
     }
 }
