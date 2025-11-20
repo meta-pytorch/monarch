@@ -2731,6 +2731,8 @@ mod tests {
         // Stop root_1. This should remove it, and its child, from snapshot.
         root_1.drain_and_stop().unwrap();
         root_1.await;
+        // root also needs to stop processing messages to get a reliable number.
+        wait_until_idle(&root).await;
         {
             let snapshot = proc.state().ledger.snapshot();
             assert_eq!(
