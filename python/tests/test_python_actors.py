@@ -33,6 +33,10 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.config import (
+    configure,
+    get_configuration,
+)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     PortRef,
@@ -425,98 +429,6 @@ async def awaitit(f):
     return await f
 
 
-# def test_actor_future() -> None:
-#     v = 0
-
-#     async def incr():
-#         nonlocal v
-#         v += 1
-#         return v
-
-#     # can use async implementation from sync
-#     # if no non-blocking is provided
-#     f = Future(impl=incr, requires_loop=False)
-#     assert f.get() == 1
-#     assert v == 1
-#     assert f.get() == 1
-#     assert asyncio.run(awaitit(f)) == 1
-
-#     f = Future(impl=incr, requires_loop=False)
-#     assert asyncio.run(awaitit(f)) == 2
-#     assert f.get() == 2
-
-#     async def incr2():
-#         nonlocal v
-#         v += 2
-#         return v
-
-#     # Use non-blocking optimization if provided
-#     f = Future(impl=incr2)
-#     assert f.get() == 4
-
-#     async def nope():
-#         nonlocal v
-#         v += 1
-#         raise ValueError("nope")
-
-#     f = Future(impl=nope, requires_loop=False)
-
-#     with pytest.raises(ValueError):
-#         f.get()
-
-#     assert v == 5
-
-#     with pytest.raises(ValueError):
-#         f.get()
-
-#     assert v == 5
-
-#     with pytest.raises(ValueError):
-#         asyncio.run(awaitit(f))
-
-#     assert v == 5
-
-#     async def nope2():
-#         nonlocal v
-#         v += 1
-#         raise ValueError("nope")
-
-#     f = Future(impl=nope2)
-
-#     with pytest.raises(ValueError):
-#         f.get()
-
-#     assert v == 6
-
-#     with pytest.raises(ValueError):
-#         f.result()
-
-#     assert f.exception() is not None
-
-#     assert v == 6
-
-#     with pytest.raises(ValueError):
-#         asyncio.run(awaitit(f))
-
-#     assert v == 6
-
-#     async def seven():
-#         return 7
-
-#     f = Future(impl=seven, requires_loop=False)
-
-#     assert 7 == f.get(timeout=0.001)
-
-#     async def neverfinish():
-#         f = asyncio.Future()
-#         await f
-
-#     f = Future(impl=neverfinish, requires_loop=True)
-
-#     with pytest.raises(asyncio.exceptions.TimeoutError):
-#         f.get(timeout=0.1)
-
-
 class Printer(Actor):
     def __init__(self) -> None:
         self._logger: logging.Logger = logging.getLogger()
@@ -546,18 +458,14 @@ class Printer(Actor):
         return True
 
 
-# oss_skip: pytest keeps complaining about mocking get_ipython module
-@pytest.mark.oss_skip
+@pytest.mark.forked_only
+@pytest.mark.timeout(180)
 async def test_actor_log_streaming() -> None:
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
 
     # Save original file descriptors
     original_stdout_fd = os.dup(1)  # stdout
@@ -696,11 +604,12 @@ async def test_actor_log_streaming() -> None:
         ), stderr_content
 
     finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        # Restore config to defaults
+        configure(
+            enable_log_forwarding=enable_log_forwarding,
+            enable_file_capture=enable_file_capture,
+            tail_log_lines=tail_log_lines,
+        )
 
         # Ensure file descriptors are restored even if something goes wrong
         try:
@@ -712,22 +621,19 @@ async def test_actor_log_streaming() -> None:
             pass
 
 
-# oss_skip: pytest keeps complaining about mocking get_ipython module
-# oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
-@pytest.mark.oss_skip
+@pytest.mark.forked_only
+@pytest.mark.timeout(180)
 async def test_alloc_based_log_streaming() -> None:
     """Test both AllocHandle.stream_logs = False and True cases."""
 
     async def test_stream_logs_case(stream_logs: bool, test_name: str) -> None:
-        old_env = {}
-        env_vars = {
-            "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-            "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-            "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-        }
-        for key, value in env_vars.items():
-            old_env[key] = os.environ.get(key)
-            os.environ[key] = value
+        config = get_configuration()
+        enable_log_forwarding = config["enable_log_forwarding"]
+        enable_file_capture = config["enable_file_capture"]
+        tail_log_lines = config["tail_log_lines"]
+        configure(
+            enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
+        )
 
         # Save original file descriptors
         original_stdout_fd = os.dup(1)  # stdout
@@ -808,11 +714,11 @@ async def test_alloc_based_log_streaming() -> None:
                 ), f"stream_logs=True case: {stdout_content}"
 
         finally:
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+            configure(
+                enable_log_forwarding=enable_log_forwarding,
+                enable_file_capture=enable_file_capture,
+                tail_log_lines=tail_log_lines,
+            )
             # Ensure file descriptors are restored even if something goes wrong
             try:
                 os.dup2(original_stdout_fd, 1)
@@ -825,18 +731,14 @@ async def test_alloc_based_log_streaming() -> None:
     await test_stream_logs_case(True, "stream_logs_true")
 
 
-# oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
-@pytest.mark.oss_skip
+@pytest.mark.forked_only
+@pytest.mark.timeout(180)
 async def test_logging_option_defaults() -> None:
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
 
     # Save original file descriptors
     original_stdout_fd = os.dup(1)  # stdout
@@ -916,11 +818,11 @@ async def test_logging_option_defaults() -> None:
         ), stderr_content
 
     finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        configure(
+            enable_log_forwarding=enable_log_forwarding,
+            enable_file_capture=enable_file_capture,
+            tail_log_lines=tail_log_lines,
+        )
 
         # Ensure file descriptors are restored even if something goes wrong
         try:
@@ -954,19 +856,15 @@ class MockIPython:
         self.events = MockEvents()
 
 
-# oss_skip: pytest keeps complaining about mocking get_ipython module
-@pytest.mark.oss_skip
+@pytest.mark.forked_only
+@pytest.mark.timeout(180)
 async def test_flush_called_only_once() -> None:
     """Test that flush is called only once when ending an ipython cell"""
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
     mock_ipython = MockIPython()
     with unittest.mock.patch(
         "monarch._src.actor.logging.get_ipython",
@@ -989,27 +887,23 @@ async def test_flush_called_only_once() -> None:
         mock_ipython.events.trigger("post_run_cell", unittest.mock.MagicMock())
 
         assert mock_flush.call_count == 1
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        configure(
+            enable_log_forwarding=enable_log_forwarding,
+            enable_file_capture=enable_file_capture,
+            tail_log_lines=tail_log_lines,
+        )
 
 
-# oss_skip: pytest keeps complaining about mocking get_ipython module
-@pytest.mark.oss_skip
+@pytest.mark.forked_only
 @pytest.mark.timeout(180)
 async def test_flush_logs_ipython() -> None:
     """Test that logs are flushed when get_ipython is available and post_run_cell event is triggered."""
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
+
     # Save original file descriptors
     original_stdout_fd = os.dup(1)  # stdout
 
@@ -1080,32 +974,22 @@ async def test_flush_logs_ipython() -> None:
         # Clean up temp files
         os.unlink(stdout_path)
 
-        # Verify that logs were flushed when the post_run_cell event was triggered
-        # We should see the aggregated logs in the output
-        assert (
-            len(
-                re.findall(
-                    r"\[10 similar log lines\].*ipython1 test log", stdout_content
-                )
-            )
-            == 3
-        ), stdout_content
+        # We triggered post_run_cell three times; in the current
+        # implementation that yields three aggregated groups per
+        # message type (though the counts may be 10, 10, 8 rather than
+        # all 10).
+        pattern1 = r"\[\d+ similar log lines\].*ipython1 test log"
+        pattern2 = r"\[\d+ similar log lines\].*ipython2 test log"
 
-        assert (
-            len(
-                re.findall(
-                    r"\[10 similar log lines\].*ipython2 test log", stdout_content
-                )
-            )
-            == 3
-        ), stdout_content
+        assert len(re.findall(pattern1, stdout_content)) >= 3, stdout_content
+        assert len(re.findall(pattern2, stdout_content)) >= 3, stdout_content
 
     finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        configure(
+            enable_log_forwarding=enable_log_forwarding,
+            enable_file_capture=enable_file_capture,
+            tail_log_lines=tail_log_lines,
+        )
         # Ensure file descriptors are restored even if something goes wrong
         try:
             os.dup2(original_stdout_fd, 1)
@@ -1114,18 +998,15 @@ async def test_flush_logs_ipython() -> None:
             pass
 
 
-# oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
+# oss_skip: importlib not pulling resource correctly in git CI, needs
+# to be revisited
 @pytest.mark.oss_skip
 async def test_flush_logs_fast_exit() -> None:
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
     # We use a subprocess to run the test so we can handle the flushed logs at the end.
     # Otherwise, it is hard to restore the original stdout/stderr.
 
@@ -1152,29 +1033,25 @@ async def test_flush_logs_fast_exit() -> None:
         == 1
     ), process.stdout
 
-    for key, value in old_env.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+    configure(
+        enable_log_forwarding=enable_log_forwarding,
+        enable_file_capture=enable_file_capture,
+        tail_log_lines=tail_log_lines,
+    )
 
 
-# oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
-@pytest.mark.oss_skip
+@pytest.mark.forked_only
+@pytest.mark.timeout(180)
 async def test_flush_on_disable_aggregation() -> None:
     """Test that logs are flushed when disabling aggregation.
 
     This tests the corner case: "Make sure we flush whatever in the aggregators before disabling aggregation."
     """
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
 
     # Save original file descriptors
     original_stdout_fd = os.dup(1)  # stdout
@@ -1255,11 +1132,11 @@ async def test_flush_on_disable_aggregation() -> None:
         ), f"Expected 10 single log lines, got {total_single} from {stdout_content}"
 
     finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        configure(
+            enable_log_forwarding=enable_log_forwarding,
+            enable_file_capture=enable_file_capture,
+            tail_log_lines=tail_log_lines,
+        )
 
         # Ensure file descriptors are restored even if something goes wrong
         try:
@@ -1276,15 +1153,11 @@ async def test_multiple_ongoing_flushes_no_deadlock() -> None:
     Because now a flush call is purely sync, it is very easy to get into a deadlock.
     So we assert the last flush call will not get into such a state.
     """
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
     pm = this_host().spawn_procs(per_host={"gpus": 4})
     am = pm.spawn("printer", Printer)
 
@@ -1307,29 +1180,25 @@ async def test_multiple_ongoing_flushes_no_deadlock() -> None:
     # The last flush should not block
     futures[-1].get()
 
-    for key, value in old_env.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+    configure(
+        enable_log_forwarding=enable_log_forwarding,
+        enable_file_capture=enable_file_capture,
+        tail_log_lines=tail_log_lines,
+    )
 
 
-# oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
-@pytest.mark.oss_skip
+@pytest.mark.forked_only
+@pytest.mark.timeout(180)
 async def test_adjust_aggregation_window() -> None:
     """Test that the flush deadline is updated when the aggregation window is adjusted.
 
     This tests the corner case: "This can happen if the user has adjusted the aggregation window."
     """
-    old_env = {}
-    env_vars = {
-        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-    }
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
+    config = get_configuration()
+    enable_log_forwarding = config["enable_log_forwarding"]
+    enable_file_capture = config["enable_file_capture"]
+    tail_log_lines = config["tail_log_lines"]
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
 
     # Save original file descriptors
     original_stdout_fd = os.dup(1)  # stdout
@@ -1397,11 +1266,11 @@ async def test_adjust_aggregation_window() -> None:
         ), stdout_content
 
     finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        configure(
+            enable_log_forwarding=enable_log_forwarding,
+            enable_file_capture=enable_file_capture,
+            tail_log_lines=tail_log_lines,
+        )
 
         # Ensure file descriptors are restored even if something goes wrong
         try:

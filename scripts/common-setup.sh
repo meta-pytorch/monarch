@@ -188,20 +188,29 @@ run_test_groups() {
     pkill -9 pytest || true
     sleep 2
     if [[ "$enable_actor_error_test" == "1" ]]; then
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip and not forked_only" \
             --ignore-glob="**/meta/**" \
             --dist=no \
             --group="$GROUP" \
             --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
             --splits=10
     else
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip and not forked_only" \
             --ignore-glob="**/meta/**" \
             --dist=no \
             --ignore=python/tests/test_actor_error.py \
             --group="$GROUP" \
             --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
             --splits=10
+    fi
+
+    # Run forked-only tests once (e.g. in group 1) using pytest-forked
+    if [[ "$GROUP" == "1" ]]; then
+        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip and forked_only" \
+            --ignore-glob="**/meta/**" \
+            --dist=no \
+            --junit-xml="$test_results_dir/test-results-forked.xml" \
+            --forked
     fi
     # Check result and record failures
     if [[ $? -eq 0 ]]; then
