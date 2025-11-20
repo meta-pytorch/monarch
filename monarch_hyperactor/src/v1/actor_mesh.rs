@@ -443,7 +443,7 @@ fn send_state_change<F>(
     // Send a notification to the owning actor of this mesh, if there is one.
     if let Some(owner) = owner {
         if let Err(error) = owner.send(SupervisionFailureMessage {
-            mesh_name: actor_mesh_name.to_string(),
+            actor_mesh_name: actor_mesh_name.to_string(),
             rank,
             event: event.clone(),
         }) {
