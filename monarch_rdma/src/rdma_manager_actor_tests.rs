@@ -569,7 +569,7 @@ mod tests {
         Ok(())
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_rdma_read_into_cuda_vs_cuda() -> Result<(), anyhow::Error> {
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
