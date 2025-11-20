@@ -76,7 +76,7 @@ impl<A: Referable> ActorMesh<A> {
 
     /// Detach this mesh from the lifetime of `self`, and return its reference.
     pub(crate) fn detach(self) -> ActorMeshRef<A> {
-        self.current_ref
+        self.current_ref.clone()
     }
 
     /// Stop actors on this mesh across all procs.
@@ -110,6 +110,16 @@ impl<A: Referable> Clone for ActorMesh<A> {
             name: self.name.clone(),
             current_ref: self.current_ref.clone(),
         }
+    }
+}
+
+impl<A: Referable> Drop for ActorMesh<A> {
+    fn drop(&mut self) {
+        tracing::info!(
+            name = "ActorMeshStatus",
+            actor_mesh = %self.name,
+            status = "Dropped",
+        );
     }
 }
 
