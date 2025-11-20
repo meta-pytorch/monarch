@@ -500,7 +500,7 @@ fn send_state_change<F>(
 #[hyperactor::instrument_infallible(fields(
     host_mesh=actor_mesh.proc_mesh().host_mesh_name().map(|n| n.to_string()),
     proc_mesh=actor_mesh.proc_mesh().name().to_string(),
-    actor_mesh=actor_mesh.name().to_string(),
+    actor_name=actor_mesh.name().to_string(),
 ))]
 async fn actor_states_monitor<A, F>(
     cx: &impl context::Actor,

@@ -117,7 +117,7 @@ impl<A: Referable> Drop for ActorMesh<A> {
     fn drop(&mut self) {
         tracing::info!(
             name = "ActorMeshStatus",
-            actor_mesh = %self.name,
+            actor_name = %self.name,
             status = "Dropped",
         );
     }

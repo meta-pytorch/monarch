@@ -882,7 +882,7 @@ impl ProcMeshRef {
     #[hyperactor::instrument(fields(
         host_mesh=self.host_mesh_name().map(|n| n.to_string()),
         proc_mesh=self.name.to_string(),
-        actor_mesh=name.to_string(),
+        actor_name=name.to_string(),
     ))]
     pub(crate) async fn spawn_with_name<A: Actor + Referable>(
         &self,
