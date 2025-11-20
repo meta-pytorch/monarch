@@ -1741,18 +1741,24 @@ impl BootstrapProcManager {
                     if let Some(sig) = status.signal() {
                         let _ = handle.mark_killed(sig, status.core_dumped());
                         let pid_str = remove_from_pid_table();
-                        tracing::debug!(
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::KilledBySignal",
+                            %proc_id,
                             tail = tail_str,
-                            "proc {proc_id} killed by signal {sig}; proc's pid: {pid_str}"
+                            "killed by signal {sig}; proc's pid: {pid_str}"
                         );
                     } else if let Some(code) = status.code() {
                         let _ = handle.mark_stopped(code, stderr_tail);
                         let pid_str = remove_from_pid_table();
-                        if code == 0 {
-                            tracing::debug!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited; proc's pid: {pid_str}");
-                        } else {
-                            tracing::info!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited; proc's pid: {pid_str}");
-                        }
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::ExitWithCode",
+                            %proc_id,
+                            exit_code = code,
+                            tail = tail_str,
+                            "proc exited; proc's pid: {pid_str}"
+                        );
                     } else {
                         debug_assert!(
                             false,
@@ -1760,9 +1766,12 @@ impl BootstrapProcManager {
                         );
                         let _ = handle.mark_failed("process exited with unknown status");
                         let pid_str = remove_from_pid_table();
-                        tracing::error!(
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::Unknown",
+                            %proc_id,
                             tail = tail_str,
-                            "proc {proc_id} unknown exit: unreachable exit status (no code, no signal); proc's pid: {pid_str}"
+                            "unknown exit: unreachable exit status (no code, no signal); proc's pid: {pid_str}"
                         );
                     }
                 }
@@ -1770,6 +1779,9 @@ impl BootstrapProcManager {
                     let _ = handle.mark_failed(format!("wait_inner() failed: {e}"));
                     let pid_str = remove_from_pid_table();
                     tracing::info!(
+                        name = "ProcStatus",
+                        status = "Exited::WaitFailed",
+                        %proc_id,
                         tail = tail_str,
                         "proc {proc_id} wait failed; proc's pid: {pid_str}"
                     );
