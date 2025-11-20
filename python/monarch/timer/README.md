@@ -44,13 +44,13 @@ We provide an example of CudaTimer within Monarch workloads at [example_monarch.
 ```
 import torch
 from monarch import inspect, remote
-from monarch.rust_local_mesh import local_mesh
+from monarch.actor import this_host
 
 cuda_timer_start = remote("monarch.timer.remote_cuda_timer.cuda_timer_start", propagate="inspect")
 cuda_timer_stop = remote("monarch.timer.remote_cuda_timer.cuda_timer_stop", propagate="inspect")
 
 def main():
-    mesh = local_mesh(hosts=1, gpus_per_host=1)
+    mesh = this_host().spawn_procs(per_host={"hosts": 1, "gpus": 1})
 
     with mesh.activate():
         a = torch.randn(1000, 1000, device="cuda")
@@ -63,6 +63,5 @@ def main():
         cuda_average_ms = get_cuda_timer_average_ms()
         local_cuda_avg_ms = inspect(cuda_average_ms).item()
 
-    mesh.exit()
     print(f"average time w/ CudaTimer: {local_cuda_avg_ms:.4f} (ms)")
 ```
