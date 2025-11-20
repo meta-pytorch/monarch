@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -75,6 +76,7 @@ use crate::v1::Name;
 use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_agent::ProcState;
 use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
+use crate::v1::mesh_controller::ActorMeshController;
 
 declare_attrs! {
     /// The maximum idle time between updates while spawning actor
@@ -435,41 +437,52 @@ impl ProcMesh {
 
         let stop = Arc::new(Notify::new());
         let extent = alloc.extent().clone();
+        let alloc_name = alloc.world_id().to_string();
 
         {
             let stop = Arc::clone(&stop);
-            let name = name.clone();
 
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = stop.notified() => {
-                            // If we are explicitly stopped, the alloc is torn down.
-                            if let Err(e) = alloc.stop_and_wait().await {
-                                tracing::error!("alloc {}: failed to stop: {}", name, e);
-                            }
-                            break;
-                        }
-                        // We are mostly just using this to drive allocation events.
-                        proc_state = alloc.next() => {
-                            match proc_state {
-                                // The alloc was stopped.
-                                None => break,
-                                Some(proc_state) => {
-                                    tracing::info!("unmonitored allocation event for {}: {}", name, proc_state);
+            tokio::spawn(
+                async move {
+                    loop {
+                        tokio::select! {
+                            _ = stop.notified() => {
+                                // If we are explicitly stopped, the alloc is torn down.
+                                if let Err(error) = alloc.stop_and_wait().await {
+                                    tracing::error!(
+                                        name = "ProcMeshStatus",
+                                        alloc_name = %alloc.world_id(),
+                                        status = "FailedToStopAlloc",
+                                        %error,
+                                    );
                                 }
+                                break;
                             }
+                            // We are mostly just using this to drive allocation events.
+                            proc_state = alloc.next() => {
+                                match proc_state {
+                                    // The alloc was stopped.
+                                    None => break,
+                                    Some(proc_state) => {
+                                        tracing::debug!(
+                                            alloc_name = %alloc.world_id(),
+                                            "unmonitored allocation event: {}", proc_state);
+                                    }
+                                }
 
+                            }
                         }
                     }
                 }
-            }.instrument(tracing::info_span!("alloc_monitor")));
+                .instrument(tracing::info_span!("alloc_monitor")),
+            );
         }
 
         let mesh = Self::create(
             cx,
             name,
             ProcMeshAllocation::Allocated {
+                alloc_name,
                 stop,
                 extent,
                 ranks: Arc::new(ranks),
@@ -497,15 +510,24 @@ impl ProcMesh {
     pub async fn stop(&mut self, cx: &impl context::Actor) -> anyhow::Result<()> {
         let region = self.region.clone();
         match &mut self.allocation {
-            ProcMeshAllocation::Allocated { stop, .. } => {
+            ProcMeshAllocation::Allocated {
+                stop, alloc_name, ..
+            } => {
                 stop.notify_one();
+                tracing::info!(
+                    name = "ProcMeshStatus",
+                    mesh_name = %self.name,
+                    alloc_name,
+                    status = "StoppingAlloc",
+                    "sending stop to alloc {alloc_name}; check its log for stop status",
+                );
                 Ok(())
             }
             ProcMeshAllocation::Owned { hosts, .. } => {
-                let names = self.current_ref.proc_ids().collect::<Vec<ProcId>>();
+                let procs = self.current_ref.proc_ids().collect::<Vec<ProcId>>();
                 // We use the proc mesh region rather than the host mesh region
                 // because the host agent stores one entry per proc, not per host.
-                hosts.stop_proc_mesh(cx, names, region).await
+                hosts.stop_proc_mesh(cx, &self.name, procs, region).await
             }
         }
     }
@@ -539,6 +561,9 @@ impl Drop for ProcMesh {
 enum ProcMeshAllocation {
     /// A mesh that has been allocated from an `Alloc`.
     Allocated {
+        // The name of the alloc from which this mesh was allocated.
+        alloc_name: String,
+
         // A cancellation token used to stop the task keeping the alloc alive.
         stop: Arc<Notify>,
 
@@ -661,6 +686,12 @@ impl ProcMeshRef {
 
     pub fn name(&self) -> &Name {
         &self.name
+    }
+
+    /// Returns the HostMeshRef that this ProcMeshRef might be backed by.
+    /// Returns None if this ProcMeshRef is backed by an Alloc instead of a host mesh.
+    pub fn hosts(&self) -> Option<&HostMeshRef> {
+        self.host_mesh.as_ref()
     }
 
     /// The current statuses of procs in this mesh.
@@ -786,7 +817,7 @@ impl ProcMeshRef {
     }
 
     /// Returns an iterator over the proc ids in this mesh.
-    fn proc_ids(&self) -> impl Iterator<Item = ProcId> {
+    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = ProcId> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
     }
 
@@ -919,7 +950,7 @@ impl ProcMeshRef {
         // overlays are applied, it emits a new StatusMesh snapshot.
         // `wait()` loops on it, deciding when the stream is
         // "complete" (no more NotExist) or times out.
-        match GetRankStatus::wait(
+        let mesh = match GetRankStatus::wait(
             rx,
             self.ranks.len(),
             config::global::get(ACTOR_SPAWN_MAX_IDLE),
@@ -956,7 +987,14 @@ impl ProcMeshRef {
                 );
                 Err(Error::ActorSpawnError { statuses: legacy })
             }
-        }
+        }?;
+        // Spawn a unique mesh manager for each actor mesh, so the type of the
+        // mesh can be preserved.
+        let _controller: ActorHandle<ActorMeshController<A>> =
+            ActorMeshController::<A>::spawn(cx, mesh.deref().clone())
+                .await
+                .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        Ok(mesh)
     }
 
     /// Send stop actors message to all mesh agents for a specific mesh name
@@ -1011,10 +1049,11 @@ impl ProcMeshRef {
         .await
         {
             Ok(statuses) => {
-                let has_failed = statuses
-                    .values()
-                    .any(|s| matches!(s, Status::Failed(_) | Status::Timeout(_)));
-                if !has_failed {
+                // Check that all actors are in some terminal state.
+                // Failed is ok, because one of these actors may have failed earlier
+                // and we're trying to stop the others.
+                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                if all_stopped {
                     Ok(())
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(

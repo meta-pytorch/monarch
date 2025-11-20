@@ -65,6 +65,7 @@ from monarch.actor import (
     current_rank,
     current_size,
     endpoint,
+    ProcMesh,
 )
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
@@ -2007,3 +2008,47 @@ def test_cleanup_async():
     cleanup.check.call_one().get()
     cast(ActorMesh[ActorWithCleanup], cleanup).stop().get()
     assert counter.value.call_one().get() == 1
+
+
+class WrapperActor(Actor):
+    """Just spawns an actor and does nothing with it."""
+
+    def __init__(self, procs: ProcMesh, counter: Counter) -> None:
+        # Ensure both the proc mesh and actor mesh owned by this actor are
+        # cleaned up, and that there's no race between the two.
+        self.procs = this_host().spawn_procs()
+        # Also test that when spawning actors on a foreign proc mesh, the actors
+        # are cleaned up even though the client is still alive.
+        self.mesh_on_passed_procs = procs.spawn(
+            "inner_passed", ActorWithCleanup, counter
+        )
+        self.mesh_on_owned_procs = self.procs.spawn(
+            "inner_owned", ActorWithCleanup, counter
+        )
+
+    @endpoint
+    def check(self) -> None:
+        self.mesh_on_passed_procs.check.call().get()
+        self.mesh_on_owned_procs.check.call().get()
+
+    # Note that there is no __cleanup__ defined, the inner mesh should be
+    # automatically stopped without needing to define one.
+
+
+def test_recursive_stop():
+    """Tests that if A owns B, and A is stopped, B is also stopped. Cleanup
+    actors are used because we can observe a side effect of them stopping"""
+    procs = this_host().spawn_procs(per_host={"gpus": 1})
+    counter = procs.spawn("counter", Counter, 0)
+    wrapper = procs.spawn("wrapper", WrapperActor, procs, counter)
+    # Call an endpoint to ensure it is constructed.
+    wrapper.check.call_one().get()
+    # Calling stop on WrapperActor should also stop its owned ActorWithCleanup.
+    cast(ActorMesh[WrapperActor], wrapper).stop().get()
+    # The incr messages in the cleanups have no sequencing guarantee with when
+    # stop is complete, nor with any further messages sent from this client.
+    # So we need to make sure there is time for both messages to be processed.
+    time.sleep(10)
+    # Two increments to the counter: one for the actors on the owned proc mesh,
+    # and one for the actors on the passed-in proc mesh.
+    assert counter.value.call_one().get() == 2
