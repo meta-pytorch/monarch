@@ -475,18 +475,32 @@ impl HostMesh {
     /// `BootstrapProcManager`. On drop, the manager walks its PID
     /// table and sends SIGKILL to any procs it spawned—tying proc
     /// lifetimes to their hosts and preventing leaks.
+    #[hyperactor::instrument(fields(mesh_name=self.name.to_string()))]
     pub async fn shutdown(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
-        let mut attempted = 0;
-        let mut ok = 0;
+        tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
+        let mut failed_hosts = vec![];
         for host in self.current_ref.values() {
-            attempted += 1;
             if let Err(e) = host.shutdown(cx).await {
-                tracing::warn!(host = %host, error = %e, "host shutdown failed");
-            } else {
-                ok += 1;
+                tracing::warn!(
+                    name = "HostMeshStatus",
+                    status = "Shutdown::Host::Failed",
+                    host = %host,
+                    error = %e,
+                    "host shutdown failed"
+                );
+                failed_hosts.push(host);
             }
         }
-        tracing::info!(attempted, ok, "hostmesh shutdown summary");
+        if failed_hosts.is_empty() {
+            tracing::info!(name = "HostMeshStatus", status = "Shutdown::Success");
+        } else {
+            tracing::error!(
+                name = "HostMeshStatus",
+                status = "Shutdown::Failed",
+                "host mesh shutdown failed; check the logs of the failed hosts for details: {:?}",
+                failed_hosts
+            );
+        }
         Ok(())
     }
 }
@@ -711,7 +725,30 @@ impl HostMeshRef {
         name: &str,
         per_host: Extent,
     ) -> v1::Result<ProcMesh> {
-        self.spawn_inner(cx, Name::new(name), per_host).await
+        let proc_mesh_name = Name::new(name);
+        tracing::info!(
+            name = "HostMeshStatus",
+            status = "ProcMesh::Spawn::Attempt",
+            mesh_name = %self.name,
+            "spawning proc mesh {}", proc_mesh_name
+        );
+        let result = self.spawn_inner(cx, proc_mesh_name.clone(), per_host).await;
+        if result.is_ok() {
+            tracing::info!(
+                name = "HostMeshStatus",
+                status = "ProcMesh::Spawn::Success",
+                mesh_name = %self.name,
+                "spawned proc mesh {}", proc_mesh_name
+            );
+        } else {
+            tracing::error!(
+                name = "HostMeshStatus",
+                status = "ProcMesh::Spawn::Failed",
+                mesh_name = %self.name,
+                "failed to spawn proc mesh {}", proc_mesh_name
+            );
+        }
+        result
     }
 
     #[hyperactor::instrument(fields(mesh_name=mesh_name.to_string()))]
@@ -976,9 +1013,10 @@ impl HostMeshRef {
             mesh_name = %self.name,
             name = "HostMeshStatus",
             status = "ProcMesh::Stop::Sent",
-            "Sending Stop to host mesh {} for {:?} procs",
-            self.name,
-            proc_names
+            "sending Stop to proc mesh {} for {} procs: {}",
+            proc_mesh_name,
+            proc_names.len(),
+            proc_names.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ")
         );
 
         let start_time = RealClock.now();
