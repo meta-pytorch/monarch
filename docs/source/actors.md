@@ -16,6 +16,9 @@
 
 Actors are the fundamental building blocks of Monarch applications. They are isolated, concurrent state machines that communicate through asynchronous message passing. This document provides a comprehensive guide to understanding and using actors in Monarch.
 
+> **For deeper technical details on the Hyperactor actor system implementation**, see the [Hyperactor Book](../books/hyperactor-book/src/introduction.md) which provides comprehensive information on the underlying actor runtime and system architecture.
+
+
 ---
 
 ## What is an Actor?
