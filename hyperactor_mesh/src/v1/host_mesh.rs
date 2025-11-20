@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
@@ -62,6 +64,8 @@ pub use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
 use crate::v1::host_mesh::mesh_agent::ProcState;
 use crate::v1::host_mesh::mesh_agent::ShutdownHostClient;
+use crate::v1::mesh_controller::HostMeshController;
+use crate::v1::mesh_controller::ProcMeshController;
 use crate::v1::proc_mesh::ProcRef;
 
 declare_attrs! {
@@ -126,7 +130,10 @@ impl HostRef {
     /// This call returns `Ok(()))` only after the agent has finished
     /// the termination pass and released the host, so the host is no
     /// longer reachable when this returns.
-    async fn shutdown(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+    pub(crate) async fn shutdown(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+    ) -> anyhow::Result<()> {
         let agent = self.mesh_agent();
         let terminate_timeout =
             hyperactor::config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
@@ -426,6 +433,14 @@ impl HostMesh {
             },
             current_ref: HostMeshRef::new(name, extent.into(), hosts).unwrap(),
         };
+
+        // Spawn a unique mesh controller for each proc mesh, so the type of the
+        // mesh can be preserved.
+        let _controller: ActorHandle<HostMeshController> =
+            HostMeshController::spawn(cx, mesh.deref().clone())
+                .await
+                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
     }
@@ -889,6 +904,14 @@ impl HostMeshRef {
         let mesh =
             ProcMesh::create_owned_unchecked(cx, mesh_name, extent, self.clone(), procs).await;
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Created",);
+        if let Ok(ref mesh) = mesh {
+            // Spawn a unique mesh controller for each proc mesh, so the type of the
+            // mesh can be preserved.
+            let _controller: ActorHandle<ProcMeshController> =
+                ProcMeshController::spawn(cx, mesh.deref().clone())
+                    .await
+                    .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        }
         mesh
     }
 
@@ -900,6 +923,7 @@ impl HostMeshRef {
     pub(crate) async fn stop_proc_mesh(
         &self,
         cx: &impl hyperactor::context::Actor,
+        proc_mesh_name: &Name,
         procs: impl IntoIterator<Item = ProcId>,
         region: Region,
     ) -> anyhow::Result<()> {
@@ -940,8 +964,18 @@ impl HostMeshRef {
             host.mesh_agent()
                 .get_rank_status(cx, proc_name, port.bind())
                 .await?;
+
+            tracing::info!(
+                name = "ProcMeshStatus",
+                mesh_name = %proc_mesh_name,
+                %proc_id,
+                status = "Stop::Sent",
+            );
         }
         tracing::info!(
+            mesh_name = %self.name,
+            name = "HostMeshStatus",
+            status = "ProcMesh::Stop::Sent",
             "Sending Stop to host mesh {} for {:?} procs",
             self.name,
             proc_names
@@ -958,13 +992,25 @@ impl HostMeshRef {
         .await
         {
             Ok(statuses) => {
-                let failed = statuses.values().any(|s| s.is_failure());
-                if failed {
+                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                if !all_stopped {
+                    tracing::error!(
+                        name = "ProcMeshStatus",
+                        mesh_name = %proc_mesh_name,
+                        status = "FailedToStop",
+                        "failed to terminate proc mesh: {:?}",
+                        statuses,
+                    );
                     return Err(anyhow::anyhow!(
                         "failed to terminate proc mesh: {:?}",
                         statuses,
                     ));
                 }
+                tracing::info!(
+                    name = "ProcMeshStatus",
+                    mesh_name = %proc_mesh_name,
+                    status = "Stopped",
+                );
             }
             Err(complete) => {
                 // Fill remaining ranks with a timeout status via the
@@ -975,8 +1021,16 @@ impl HostMeshRef {
                     Status::is_not_exist,
                     num_ranks,
                 );
+                tracing::error!(
+                    name = "ProcMeshStatus",
+                    mesh_name = %proc_mesh_name,
+                    status = "StoppingTimeout",
+                    "failed to terminate proc mesh before timeout: {:?}",
+                    legacy,
+                );
                 return Err(anyhow::anyhow!(
-                    "failed to terminate proc mesh: {:?}",
+                    "failed to terminate proc mesh {} before timeout: {:?}",
+                    proc_mesh_name,
                     legacy
                 ));
             }

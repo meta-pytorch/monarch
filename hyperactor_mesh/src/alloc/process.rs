@@ -49,7 +49,6 @@ use super::ProcStopReason;
 use crate::assign::Ranks;
 use crate::bootstrap;
 use crate::bootstrap::Allocator2Process;
-use crate::bootstrap::MESH_ENABLE_FILE_CAPTURE;
 use crate::bootstrap::MESH_ENABLE_LOG_FORWARDING;
 use crate::bootstrap::MESH_TAIL_LOG_LINES;
 use crate::bootstrap::Process2Allocator;
@@ -99,9 +98,16 @@ impl Allocator for ProcessAllocator {
         }
 
         let name = ShortUuid::generate();
+        let world_id = WorldId(name.to_string());
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %world_id,
+            addr = %bootstrap_addr,
+            status = "Allocated",
+        );
         Ok(ProcessAlloc {
             name: name.clone(),
-            world_id: WorldId(name.to_string()),
+            world_id,
             spec: spec.clone(),
             bootstrap_addr,
             rx,
@@ -447,43 +453,30 @@ impl ProcessAlloc {
         }
         let mut cmd = self.cmd.lock().await;
 
-        // Read config (defaults are in 'bootstrap.rs').
+        // In the case `MESH_ENABLE_LOG_FORWARDING` is set it's
+        // probable the client execution context is a notebook. In
+        // that case, for output from this process's children to
+        // reach the client, we **must** use pipes and copy output
+        // from child to parent (**`Stdio::inherit`** does not work!).
+        // So, this variable is being used as a proxy for "use pipes"
+        // here.
         let enable_forwarding = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
-        let enable_file_capture = hyperactor::config::global::get(MESH_ENABLE_FILE_CAPTURE);
         let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
-
-        // We don't support FileAppender in this v0 allocator path; warn if asked.
-        if enable_file_capture {
-            tracing::info!(
-                "MESH_ENABLE_FILE_CAPTURE=true, but ProcessAllocator (v0) has no FileAppender; \
-                 files will NOT be written in this path"
-            );
-        }
-
-        let need_stdio = enable_forwarding || tail_size > 0;
-
-        if need_stdio {
+        if enable_forwarding || tail_size > 0 {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         } else {
             cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
             tracing::info!(
-                enable_forwarding,
-                enable_file_capture,
-                tail_size,
                 "child stdio NOT captured (forwarding/file_capture/tail all disabled); \
                  inheriting parent console"
             );
         }
-
-        // Only allocate & export a log channel when forwarding is
-        // enabled.
-        let log_channel: Option<ChannelAddr> = if enable_forwarding {
-            let addr = ChannelAddr::any(ChannelTransport::Unix);
-            cmd.env(bootstrap::BOOTSTRAP_LOG_CHANNEL, addr.to_string());
-            Some(addr)
-        } else {
-            None
-        };
+        // Regardless of the value of `MESH_ENABLE_LOG_FORWARDING`
+        // (c.f. `enable_forwarding`), we do not do log forwarding on
+        // these procs. This is because, now that we are on the v1
+        // path, the only procs we spawn via this code path are those
+        // to support `HostMeshAgent`s.
+        let log_channel: Option<ChannelAddr> = None;
 
         let index = self.created.len();
         self.created.push(ShortUuid::generate());
@@ -666,6 +659,11 @@ impl Alloc for ProcessAlloc {
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Stopping",
+        );
         // We rely on the teardown here, and that the process should
         // exit on its own. We should have a hard timeout here as well,
         // so that we never rely on the system functioning correctly
@@ -676,13 +674,22 @@ impl Alloc for ProcessAlloc {
         }
 
         self.running = false;
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Stop::Sent",
+            "StopAndExit was sent to allocators; check their logs for the stop progress."
+        );
         Ok(())
     }
 }
 
 impl Drop for ProcessAlloc {
     fn drop(&mut self) {
-        tracing::debug!(
+        tracing::info!(
+            name = "ProcessAllocStatus",
+            alloc_name = %self.world_id(),
+            status = "Dropped",
             "dropping ProcessAlloc of name: {}, world id: {}",
             self.name,
             self.world_id

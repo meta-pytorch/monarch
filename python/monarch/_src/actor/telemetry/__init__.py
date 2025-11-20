@@ -59,7 +59,10 @@ class Counter(metrics.Counter):
         attributes: Optional[Attributes] = None,
         context: Optional[Context] = None,
     ) -> None:
-        return self.inner.add(int(amount))
+        rust_attributes = None
+        if attributes:
+            rust_attributes = {str(k): str(v) for k, v in attributes.items()}
+        return self.inner.add(int(amount), attributes=rust_attributes)
 
 
 class UpDownCounter(metrics.UpDownCounter):
@@ -75,7 +78,10 @@ class UpDownCounter(metrics.UpDownCounter):
         attributes: Optional[Attributes] = None,
         context: Optional[Context] = None,
     ) -> None:
-        self.inner.add(int(amount))
+        rust_attributes = None
+        if attributes:
+            rust_attributes = {str(k): str(v) for k, v in attributes.items()}
+        self.inner.add(int(amount), attributes=rust_attributes)
 
 
 class Histogram(metrics.Histogram):

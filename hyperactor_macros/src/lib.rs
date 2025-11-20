@@ -1550,6 +1550,7 @@ impl Parse for ExportAttr {
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input: DeriveInput = parse_macro_input!(item as DeriveInput);
     let data_type_name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     let ExportAttr { spawn, handlers } = parse_macro_input!(attr as ExportAttr);
     let tys = HandlerSpec::add_indexed(handlers);
@@ -1560,7 +1561,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for ty in &tys {
         handles.push(quote! {
-            impl hyperactor::actor::RemoteHandles<#ty> for #data_type_name {}
+            impl #impl_generics hyperactor::actor::RemoteHandles<#ty> for #data_type_name #ty_generics #where_clause {}
         });
         bindings.push(quote! {
             ports.bind::<#ty>();
@@ -1573,24 +1574,24 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut expanded = quote! {
         #input
 
-        impl hyperactor::actor::Referable for #data_type_name {}
+        impl #impl_generics hyperactor::actor::Referable for #data_type_name #ty_generics #where_clause {}
 
         #(#handles)*
 
         #(#type_registrations)*
 
         // Always export the `Signal` type.
-        impl hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name {}
+        impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
 
-        impl hyperactor::actor::Binds<#data_type_name> for #data_type_name {
+        impl #impl_generics hyperactor::actor::Binds<#data_type_name #ty_generics> for #data_type_name #ty_generics #where_clause {
             fn bind(ports: &hyperactor::proc::Ports<Self>) {
                 #(#bindings)*
             }
         }
 
         // TODO: just use Named derive directly here.
-        impl hyperactor::data::Named for #data_type_name {
-            fn typename() -> &'static str { concat!(std::module_path!(), "::", stringify!(#data_type_name)) }
+        impl #impl_generics hyperactor::data::Named for #data_type_name #ty_generics #where_clause {
+            fn typename() -> &'static str { concat!(std::module_path!(), "::", stringify!(#data_type_name #ty_generics)) }
         }
     };
 

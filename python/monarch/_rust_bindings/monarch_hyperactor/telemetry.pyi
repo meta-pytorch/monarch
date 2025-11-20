@@ -100,12 +100,13 @@ class PyCounter:
         """
         ...
 
-    def add(self, value: int) -> None:
+    def add(self, value: int, *, attributes: dict[str, str] | None = None) -> None:
         """
         Add a value to the counter.
 
         Args:
         - value (int): The value to add to the counter (must be non-negative).
+        - attributes (dict[str, str] | None): Optional attributes to associate with the measurement.
         """
         ...
 
@@ -139,12 +140,13 @@ class PyUpDownCounter:
         """
         ...
 
-    def add(self, value: int) -> None:
+    def add(self, value: int, *, attributes: dict[str, str] | None = None) -> None:
         """
         Add a value to the up-down counter.
 
         Args:
         - value (int): The value to add to the counter (can be positive or negative).
+        - attributes (dict[str, str] | None): Optional attributes to associate with the measurement.
         """
         ...
 
