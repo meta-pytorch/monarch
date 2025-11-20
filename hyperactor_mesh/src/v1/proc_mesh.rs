@@ -688,7 +688,7 @@ impl ProcMeshRef {
         &self.name
     }
 
-    fn host_mesh_name(&self) -> Option<&Name> {
+    pub fn host_mesh_name(&self) -> Option<&Name> {
         self.host_mesh.as_ref().map(|h| h.name())
     }
 
