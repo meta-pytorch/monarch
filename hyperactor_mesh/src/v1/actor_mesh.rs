@@ -789,7 +789,7 @@ mod tests {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance().await;
-        let host_mesh = testing::host_mesh(extent!(host = 4)).await;
+        let mut host_mesh = testing::host_mesh(extent!(host = 4)).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", Extent::unity())
             .await

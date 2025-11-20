@@ -397,14 +397,15 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
     For Meta usage, use metatls-hostname
     """
     if isinstance(transport, str):
-        transport = {
+        new_transport = {
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
             "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
         }.get(transport)
-        if transport is None:
+        if new_transport is None:
             raise ValueError(f"unknown transport: {transport}")
+        transport = new_transport
 
     if _context.get(None) is not None:
         raise RuntimeError(
