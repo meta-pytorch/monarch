@@ -306,7 +306,7 @@ impl ProcMesh {
     }
 
     // Use allocate_inner to set field mesh_name in span
-    #[hyperactor::instrument(fields(mesh_name=name.to_string()))]
+    #[hyperactor::instrument(fields(proc_mesh=name.to_string()))]
     async fn allocate_inner(
         cx: &impl context::Actor,
         mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
@@ -328,7 +328,7 @@ impl ProcMesh {
             .instrument(tracing::info_span!(
                 "ProcMeshStatus::Allocate::Initialize",
                 alloc_id,
-                mesh_name = name.to_string()
+                proc_mesh = %name
             ))
             .await?;
 
@@ -348,7 +348,7 @@ impl ProcMesh {
             tracing::info!(
                 name = "ProcMeshStatus",
                 status = "Allocate::ChannelServe",
-                mesh_name = name.to_string(),
+                proc_mesh = %name,
                 %addr,
                 "proc started listening on addr: {addr}"
             );
@@ -516,7 +516,7 @@ impl ProcMesh {
                 stop.notify_one();
                 tracing::info!(
                     name = "ProcMeshStatus",
-                    mesh_name = %self.name,
+                    proc_mesh = %self.name,
                     alloc_name,
                     status = "StoppingAlloc",
                     "sending stop to alloc {alloc_name}; check its log for stop status",
@@ -551,7 +551,7 @@ impl Drop for ProcMesh {
     fn drop(&mut self) {
         tracing::info!(
             name = "ProcMeshStatus",
-            mesh_name = %self.name,
+            proc_mesh = %self.name,
             status = "Dropped",
         );
     }
