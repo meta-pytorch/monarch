@@ -688,6 +688,10 @@ impl ProcMeshRef {
         &self.name
     }
 
+    fn host_mesh_name(&self) -> Option<&Name> {
+        self.host_mesh.as_ref().map(|h| h.name())
+    }
+
     /// Returns the HostMeshRef that this ProcMeshRef might be backed by.
     /// Returns None if this ProcMeshRef is backed by an Alloc instead of a host mesh.
     pub fn hosts(&self) -> Option<&HostMeshRef> {
@@ -875,7 +879,43 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
+    #[hyperactor::instrument(fields(
+        host_mesh=self.host_mesh_name().map(|n| n.to_string()),
+        proc_mesh=self.name.to_string(),
+        actor_mesh=name.to_string(),
+    ))]
     pub(crate) async fn spawn_with_name<A: Actor + Referable>(
+        &self,
+        cx: &impl context::Actor,
+        name: Name,
+        params: &A::Params,
+    ) -> v1::Result<ActorMesh<A>>
+    where
+        A::Params: RemoteMessage,
+    {
+        tracing::info!(
+            name = "ProcMeshStatus",
+            status = "ActorMesh::Spawn::Attempt",
+        );
+        tracing::info!(name = "ActorMeshStatus", status = "Spawn::Attempt");
+        let result = self.spawn_with_name_inner(cx, name, params).await;
+        match &result {
+            Ok(_) => {
+                tracing::info!(
+                    name = "ProcMeshStatus",
+                    status = "ActorMesh::Spawn::Success",
+                );
+                tracing::info!(name = "ActorMeshStatus", status = "Spawn::Success");
+            }
+            Err(error) => {
+                tracing::error!(name = "ProcMeshStatus", status = "ActorMesh::Spawn::Failed", %error);
+                tracing::error!(name = "ActorMeshStatus", status = "Spawn::Failed", %error);
+            }
+        }
+        result
+    }
+
+    async fn spawn_with_name_inner<A: Actor + Referable>(
         &self,
         cx: &impl context::Actor,
         name: Name,
@@ -998,7 +1038,33 @@ impl ProcMeshRef {
     }
 
     /// Send stop actors message to all mesh agents for a specific mesh name
+    #[hyperactor::instrument(fields(
+        host_mesh = self.host_mesh_name().map(|n| n.to_string()),
+        proc_mesh = self.name.to_string(),
+        actor_mesh = mesh_name.to_string(),
+    ))]
     pub(crate) async fn stop_actor_by_name(
+        &self,
+        cx: &impl context::Actor,
+        mesh_name: Name,
+    ) -> v1::Result<()> {
+        tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Attempt");
+        tracing::info!(name = "ActorMeshStatus", status = "Stop::Attempt");
+        let result = self.stop_actor_by_name_inner(cx, mesh_name).await;
+        match &result {
+            Ok(_) => {
+                tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Success");
+                tracing::info!(name = "ActorMeshStatus", status = "Stop::Success");
+            }
+            Err(error) => {
+                tracing::error!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Failed", %error);
+                tracing::error!(name = "ActorMeshStatus", status = "Stop::Failed", %error);
+            }
+        }
+        result
+    }
+
+    async fn stop_actor_by_name_inner(
         &self,
         cx: &impl context::Actor,
         mesh_name: Name,
