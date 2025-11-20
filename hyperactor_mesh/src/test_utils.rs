@@ -12,6 +12,7 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Named;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,8 +21,9 @@ use serde::Serialize;
 #[derive(Serialize, Deserialize, Debug, Named, Clone, Bind, Unbind)]
 pub struct EmptyMessage();
 
-#[derive(Debug, PartialEq, Default, Actor)]
+#[derive(Debug, PartialEq, Default)]
 #[hyperactor::export(
+    spawn = true,
     handlers = [
         EmptyMessage { cast = true },
     ],
@@ -29,9 +31,19 @@ pub struct EmptyMessage();
 pub struct EmptyActor();
 
 #[async_trait]
+impl RemoteSpawn for EmptyActor {
+    type Params = ();
+
+    async fn new(_: ()) -> anyhow::Result<Self> {
+        Ok(EmptyActor::default())
+    }
+}
+
+impl Actor for EmptyActor {}
+
+#[async_trait]
 impl Handler<EmptyMessage> for EmptyActor {
     async fn handle(&mut self, _: &Context<Self>, _: EmptyMessage) -> Result<(), anyhow::Error> {
         Ok(())
     }
 }
-hyperactor::remote!(EmptyActor);

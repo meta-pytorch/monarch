@@ -259,10 +259,9 @@ impl HostMesh {
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
         let (host, _handle) = Host::serve(manager, addr).await?;
         let addr = host.addr().clone();
-        let host_mesh_agent = host
-            .system_proc()
-            .clone()
-            .spawn::<HostMeshAgent>("agent", HostAgentMode::Process(host))
+        let system_proc = host.system_proc().clone();
+        let host_mesh_agent = system_proc
+            .spawn::<HostMeshAgent>("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .await
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();

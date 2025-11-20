@@ -28,6 +28,7 @@ use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
@@ -341,14 +342,16 @@ pub struct RsyncParams {
     //pub workspace: WorkspaceLocation,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
 pub struct RsyncActor {
     //workspace: WorkspaceLocation,
 }
 
+impl Actor for RsyncActor {}
+
 #[async_trait]
-impl Actor for RsyncActor {
+impl RemoteSpawn for RsyncActor {
     type Params = RsyncParams;
 
     async fn new(RsyncParams {}: Self::Params) -> Result<Self> {

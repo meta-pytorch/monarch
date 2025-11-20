@@ -99,6 +99,7 @@ pub use actor::Actor;
 pub use actor::ActorHandle;
 pub use actor::Handler;
 pub use actor::RemoteHandles;
+pub use actor::RemoteSpawn;
 // Re-export public dependencies of hyperactor_macros codegen.
 #[doc(hidden)]
 pub use anyhow;
@@ -111,8 +112,6 @@ pub use cityhasher;
 #[doc(hidden)]
 pub use dashmap; // For intern_typename!
 pub use data::Named;
-#[doc(hidden)]
-pub use hyperactor_macros::Actor;
 #[doc(inline)]
 pub use hyperactor_macros::AttrValue;
 #[doc(inline)]

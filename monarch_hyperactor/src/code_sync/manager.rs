@@ -30,6 +30,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::forward;
@@ -62,15 +63,12 @@ use tokio::net::TcpStream;
 use crate::code_sync::WorkspaceLocation;
 use crate::code_sync::auto_reload::AutoReloadActor;
 use crate::code_sync::auto_reload::AutoReloadMessage;
-use crate::code_sync::auto_reload::AutoReloadParams;
 use crate::code_sync::conda_sync::CondaSyncActor;
 use crate::code_sync::conda_sync::CondaSyncMessage;
-use crate::code_sync::conda_sync::CondaSyncParams;
 use crate::code_sync::conda_sync::CondaSyncResult;
 use crate::code_sync::rsync::RsyncActor;
 use crate::code_sync::rsync::RsyncDaemon;
 use crate::code_sync::rsync::RsyncMessage;
-use crate::code_sync::rsync::RsyncParams;
 use crate::code_sync::rsync::RsyncResult;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -212,8 +210,10 @@ pub struct CodeSyncManager {
     rank: once_cell::sync::OnceCell<usize>,
 }
 
+impl Actor for CodeSyncManager {}
+
 #[async_trait]
-impl Actor for CodeSyncManager {
+impl RemoteSpawn for CodeSyncManager {
     type Params = CodeSyncManagerParams;
 
     async fn new(CodeSyncManagerParams {}: Self::Params) -> Result<Self> {
@@ -233,7 +233,7 @@ impl CodeSyncManager {
         cx: &Context<'a, Self>,
     ) -> Result<&'a ActorHandle<RsyncActor>> {
         self.rsync
-            .get_or_try_init(RsyncActor::spawn(cx, RsyncParams {}))
+            .get_or_try_init(RsyncActor::default().spawn(cx))
             .await
     }
 
@@ -242,7 +242,7 @@ impl CodeSyncManager {
         cx: &Context<'a, Self>,
     ) -> Result<&'a ActorHandle<AutoReloadActor>> {
         self.auto_reload
-            .get_or_try_init(AutoReloadActor::spawn(cx, AutoReloadParams {}))
+            .get_or_try_init(async move { AutoReloadActor::new().await?.spawn(cx).await })
             .await
     }
 
@@ -251,7 +251,7 @@ impl CodeSyncManager {
         cx: &Context<'a, Self>,
     ) -> Result<&'a ActorHandle<CondaSyncActor>> {
         self.conda_sync
-            .get_or_try_init(CondaSyncActor::spawn(cx, CondaSyncParams {}))
+            .get_or_try_init(CondaSyncActor::default().spawn(cx))
             .await
     }
 }

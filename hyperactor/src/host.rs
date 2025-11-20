@@ -1182,12 +1182,23 @@ pub mod testing {
     use crate::Context;
     use crate::Handler;
     use crate::OncePortRef;
+    use crate::RemoteSpawn;
 
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[hyperactor::export(handlers = [OncePortRef<ActorId>])]
     pub struct EchoActor;
+
+    impl Actor for EchoActor {}
+
+    #[async_trait]
+    impl RemoteSpawn for EchoActor {
+        type Params = ();
+        async fn new(_: ()) -> anyhow::Result<Self> {
+            Ok(Self)
+        }
+    }
 
     #[async_trait]
     impl Handler<OncePortRef<ActorId>> for EchoActor {

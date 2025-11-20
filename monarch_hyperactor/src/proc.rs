@@ -26,6 +26,7 @@ use std::time::SystemTime;
 use anyhow::Result;
 use hyperactor::ActorRef;
 use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::actor::Signal;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -61,6 +62,7 @@ use pyo3::types::PyType;
 use tokio::sync::OnceCell;
 use tokio::sync::watch;
 
+use crate::actor::PythonActor;
 use crate::actor::PythonActorHandle;
 use crate::mailbox::PyMailbox;
 use crate::runtime::get_tokio_runtime;
@@ -146,7 +148,10 @@ impl PyProc {
         crate::runtime::future_into_py(py, async move {
             Ok(PythonActorHandle {
                 inner: proc
-                    .spawn(name.as_deref().unwrap_or("anon"), pickled_type)
+                    .spawn(
+                        name.as_deref().unwrap_or("anon"),
+                        PythonActor::new(pickled_type).await?,
+                    )
                     .await?,
             })
         })
@@ -163,8 +168,11 @@ impl PyProc {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         Ok(PythonActorHandle {
             inner: signal_safe_block_on(py, async move {
-                proc.spawn(name.as_deref().unwrap_or("anon"), pickled_type)
-                    .await
+                proc.spawn(
+                    name.as_deref().unwrap_or("anon"),
+                    PythonActor::new(pickled_type).await?,
+                )
+                .await
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,
         })

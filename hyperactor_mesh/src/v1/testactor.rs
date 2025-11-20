@@ -28,6 +28,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 #[cfg(test)]
 use hyperactor::clock::Clock as _;
@@ -53,7 +54,7 @@ use crate::v1::ActorMeshRef;
 use crate::v1::testing;
 
 /// A simple test actor used by various unit tests.
-#[derive(Actor, Default, Debug)]
+#[derive(Default, Debug)]
 #[hyperactor::export(
     spawn = true,
     handlers = [
@@ -66,6 +67,17 @@ use crate::v1::testing;
     ]
 )]
 pub struct TestActor;
+
+impl Actor for TestActor {}
+
+#[async_trait]
+impl RemoteSpawn for TestActor {
+    type Params = ();
+
+    async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
+        Ok(Self)
+    }
+}
 
 /// A message that returns the recipient actor's id.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
@@ -131,12 +143,6 @@ pub struct TestActorWithSupervisionHandling;
 
 #[async_trait]
 impl Actor for TestActorWithSupervisionHandling {
-    type Params = ();
-
-    async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
-        Ok(Self {})
-    }
-
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
@@ -145,6 +151,15 @@ impl Actor for TestActorWithSupervisionHandling {
         tracing::error!("supervision event: {:?}", event);
         // Swallow the supervision error to avoid crashing the process.
         Ok(true)
+    }
+}
+
+#[async_trait]
+impl RemoteSpawn for TestActorWithSupervisionHandling {
+    type Params = ();
+
+    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+        Ok(Self)
     }
 }
 
@@ -224,7 +239,10 @@ impl Handler<GetCastInfo> for TestActor {
 pub struct FailingCreateTestActor;
 
 #[async_trait]
-impl Actor for FailingCreateTestActor {
+impl Actor for FailingCreateTestActor {}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for FailingCreateTestActor {
     type Params = ();
 
     async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {

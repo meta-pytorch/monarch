@@ -106,9 +106,20 @@ struct ProcCreationState {
         ShutdownHost
     ]
 )]
+#[derive(Default)]
 pub struct HostMeshAgent {
     host: Option<HostAgentMode>,
     created: HashMap<Name, ProcCreationState>,
+}
+
+impl HostMeshAgent {
+    /// Create a new host mesh agent running in the provided mode.
+    pub fn new(mode: HostAgentMode) -> Self {
+        Self {
+            host: Some(mode),
+            created: HashMap::new(),
+        }
+    }
 }
 
 impl fmt::Debug for HostMeshAgent {
@@ -121,27 +132,7 @@ impl fmt::Debug for HostMeshAgent {
 }
 
 #[async_trait]
-impl Actor for HostMeshAgent {
-    type Params = HostAgentMode;
-
-    async fn new(host: HostAgentMode) -> anyhow::Result<Self> {
-        if let HostAgentMode::Process(_) = host {
-            let (directory, file) = hyperactor_telemetry::log_file_path(
-                hyperactor_telemetry::env::Env::current(),
-                None,
-            )
-            .unwrap();
-            eprintln!(
-                "Monarch internal logs are being written to {}/{}.log",
-                directory, file
-            );
-        }
-        Ok(Self {
-            host: Some(host),
-            created: HashMap::new(),
-        })
-    }
-}
+impl Actor for HostMeshAgent {}
 
 #[async_trait]
 impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
@@ -438,6 +429,14 @@ pub(crate) struct HostMeshAgentProcMeshTrampoline {
 
 #[async_trait]
 impl Actor for HostMeshAgentProcMeshTrampoline {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        self.reply_port.send(this, self.host_mesh_agent.bind())?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
     type Params = (
         ChannelTransport,
         PortRef<ActorRef<HostMeshAgent>>,
@@ -462,21 +461,30 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
             HostAgentMode::Process(host)
         };
 
-        let host_mesh_agent = host
-            .system_proc()
-            .clone()
-            .spawn::<HostMeshAgent>("agent", host)
-            .await?;
+        if let HostAgentMode::Process(_) = &host {
+            let (directory, file) = hyperactor_telemetry::log_file_path(
+                hyperactor_telemetry::env::Env::current(),
+                None,
+            )
+            .unwrap();
+            eprintln!(
+                "Monarch internal logs are being written to {}/{}.log",
+                directory, file
+            );
+        }
+
+        let system_proc = host.system_proc().clone();
+        let actor = HostMeshAgent {
+            host: Some(host),
+            created: HashMap::new(),
+        };
+
+        let host_mesh_agent = system_proc.spawn::<HostMeshAgent>("agent", actor).await?;
 
         Ok(Self {
             host_mesh_agent,
             reply_port,
         })
-    }
-
-    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        self.reply_port.send(this, self.host_mesh_agent.bind())?;
-        Ok(())
     }
 }
 
@@ -525,7 +533,13 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn::<HostMeshAgent>("agent", HostAgentMode::Process(host))
+            .spawn::<HostMeshAgent>(
+                "agent",
+                HostMeshAgent {
+                    host: Some(HostAgentMode::Process(host)),
+                    created: HashMap::new(),
+                },
+            )
             .await
             .unwrap();
 

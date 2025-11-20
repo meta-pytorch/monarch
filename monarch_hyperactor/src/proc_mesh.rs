@@ -12,9 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use hyperactor::Actor;
-use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
-use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::context::Mailbox as _;
 use hyperactor::proc::Instance;
@@ -89,15 +88,12 @@ impl From<ProcMesh> for TrackedProcMesh {
 }
 
 impl TrackedProcMesh {
-    pub async fn spawn<A: Actor + Referable>(
+    pub async fn spawn<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error>
-    where
-        A::Params: RemoteMessage,
-    {
+    ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error> {
         let mesh = self.cell.borrow()?;
         let actor = mesh.spawn(cx, actor_name, params).await?;
         Ok(self.children.insert(actor))

@@ -18,12 +18,12 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
@@ -822,7 +822,7 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
-    pub async fn spawn<A: Actor + Referable>(
+    pub async fn spawn<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -841,7 +841,7 @@ impl ProcMeshRef {
     ///
     /// Note: avoid using service actors if possible; the mechanism will
     /// be replaced by an actor registry.
-    pub async fn spawn_service<A: Actor + Referable>(
+    pub async fn spawn_service<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -867,7 +867,7 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
-    pub(crate) async fn spawn_with_name<A: Actor + Referable>(
+    pub(crate) async fn spawn_with_name<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: Name,

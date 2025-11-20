@@ -628,6 +628,7 @@ pub(crate) mod test_util {
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::PortRef;
+    use hyperactor::RemoteSpawn;
     use ndslice::extent;
 
     use super::*;
@@ -637,7 +638,7 @@ pub(crate) mod test_util {
     // be an entry in the spawnable actor registry in the executable
     // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
     // mesh test suite.
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -649,6 +650,17 @@ pub(crate) mod test_util {
         ],
     )]
     pub struct TestActor;
+
+    impl Actor for TestActor {}
+
+    #[async_trait]
+    impl RemoteSpawn for TestActor {
+        type Params = ();
+
+        async fn new(_: ()) -> anyhow::Result<Self> {
+            Ok(Self)
+        }
+    }
 
     /// Request message to retrieve the actor's rank.
     ///
@@ -764,6 +776,14 @@ pub(crate) mod test_util {
 
     #[async_trait]
     impl Actor for ProxyActor {
+        async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+            self.actor_mesh = Some(self.proc_mesh.spawn(this, "echo", &()).await?);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl RemoteSpawn for ProxyActor {
         type Params = ();
 
         async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
@@ -776,8 +796,7 @@ pub(crate) mod test_util {
             use crate::alloc::Allocator;
             use crate::alloc::LocalAllocator;
 
-            let mut allocator = LocalAllocator;
-            let alloc = allocator
+            let alloc = LocalAllocator
                 .allocate(AllocSpec {
                     extent: extent! { replica = 1 },
                     constraints: Default::default(),
@@ -787,17 +806,13 @@ pub(crate) mod test_util {
                 })
                 .await
                 .unwrap();
+
             let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
             let leaked: &'static Arc<ProcMesh> = Box::leak(Box::new(proc_mesh));
             Ok(Self {
                 proc_mesh: leaked,
                 actor_mesh: None,
             })
-        }
-
-        async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-            self.actor_mesh = Some(self.proc_mesh.spawn(this, "echo", &()).await?);
-            Ok(())
         }
     }
 
@@ -847,6 +862,7 @@ mod tests {
     use hyperactor::ActorId;
     use hyperactor::PortRef;
     use hyperactor::ProcId;
+    use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
     use hyperactor::attrs::Attrs;
     use hyperactor::data::Encoding;
@@ -937,7 +953,6 @@ mod tests {
             async fn test_ping_pong() {
                 use hyperactor::test_utils::pingpong::PingPongActor;
                 use hyperactor::test_utils::pingpong::PingPongMessage;
-                use hyperactor::test_utils::pingpong::PingPongActorParams;
 
                 let alloc = $allocator
                     .allocate(AllocSpec {
@@ -953,9 +968,8 @@ mod tests {
                 let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
                 let (undeliverable_msg_tx, _) = mesh.client().open_port();
-                let ping_pong_actor_params = PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), None);
                 let actor_mesh: RootActorMesh<PingPongActor> = mesh
-                    .spawn::<PingPongActor>(&instance, "ping-pong", &ping_pong_actor_params)
+                    .spawn::<PingPongActor>(&instance, "ping-pong", &(Some(undeliverable_msg_tx.bind()), None, None))
                     .await
                     .unwrap();
 
@@ -970,7 +984,6 @@ mod tests {
             #[tokio::test]
             async fn test_pingpong_full_mesh() {
                 use hyperactor::test_utils::pingpong::PingPongActor;
-                use hyperactor::test_utils::pingpong::PingPongActorParams;
                 use hyperactor::test_utils::pingpong::PingPongMessage;
 
                 use futures::future::join_all;
@@ -992,8 +1005,7 @@ mod tests {
                 let instance = $crate::v1::testing::instance().await;
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (undeliverable_tx, _undeliverable_rx) = proc_mesh.client().open_port();
-                let params = PingPongActorParams::new(Some(undeliverable_tx.bind()), None);
-                let actor_mesh = proc_mesh.spawn::<PingPongActor>(&instance, "pingpong", &params).await.unwrap();
+                let actor_mesh = proc_mesh.spawn::<PingPongActor>(&instance, "pingpong", &(Some(undeliverable_tx.bind()), None, None)).await.unwrap();
                 let slice = actor_mesh.shape().slice();
 
                 let mut futures = Vec::new();
@@ -1275,7 +1287,6 @@ mod tests {
             hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
             use hyperactor::test_utils::pingpong::PingPongActor;
-            use hyperactor::test_utils::pingpong::PingPongActorParams;
             use hyperactor::test_utils::pingpong::PingPongMessage;
 
             use crate::alloc::ProcStopReason;
@@ -1302,12 +1313,16 @@ mod tests {
             let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
             let mut events = mesh.events().unwrap();
 
-            let ping_pong_actor_params = PingPongActorParams::new(
-                Some(PortRef::attest_message_port(mesh.client().self_id())),
-                None,
-            );
             let actor_mesh: RootActorMesh<PingPongActor> = mesh
-                .spawn::<PingPongActor>(&instance, "ping-pong", &ping_pong_actor_params)
+                .spawn::<PingPongActor>(
+                    &instance,
+                    "ping-pong",
+                    &(
+                        Some(PortRef::attest_message_port(mesh.client().self_id())),
+                        None,
+                        None,
+                    ),
+                )
                 .await
                 .unwrap();
 
@@ -1419,7 +1434,6 @@ mod tests {
         #[tokio::test]
         async fn test_stop_actor_mesh() {
             use hyperactor::test_utils::pingpong::PingPongActor;
-            use hyperactor::test_utils::pingpong::PingPongActorParams;
             use hyperactor::test_utils::pingpong::PingPongMessage;
 
             let config = hyperactor::config::global::lock();
@@ -1441,17 +1455,29 @@ mod tests {
             let instance = crate::v1::testing::instance().await;
             let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
-            let ping_pong_actor_params = PingPongActorParams::new(
-                Some(PortRef::attest_message_port(mesh.client().self_id())),
-                None,
-            );
             let mesh_one: RootActorMesh<PingPongActor> = mesh
-                .spawn::<PingPongActor>(&instance, "mesh_one", &ping_pong_actor_params)
+                .spawn::<PingPongActor>(
+                    &instance,
+                    "mesh_one",
+                    &(
+                        Some(PortRef::attest_message_port(mesh.client().self_id())),
+                        None,
+                        None,
+                    ),
+                )
                 .await
                 .unwrap();
 
             let mesh_two: RootActorMesh<PingPongActor> = mesh
-                .spawn::<PingPongActor>(&instance, "mesh_two", &ping_pong_actor_params)
+                .spawn::<PingPongActor>(
+                    &instance,
+                    "mesh_two",
+                    &(
+                        Some(PortRef::attest_message_port(mesh.client().self_id())),
+                        None,
+                        None,
+                    ),
+                )
                 .await
                 .unwrap();
 
@@ -1688,6 +1714,7 @@ mod tests {
         use hyperactor::Actor;
         use hyperactor::Context;
         use hyperactor::Handler;
+        use hyperactor::RemoteSpawn;
         use hyperactor::channel::ChannelAddr;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::channel::ChannelTx;
@@ -1716,7 +1743,10 @@ mod tests {
         struct EchoActor(ChannelTx<usize>);
 
         #[async_trait]
-        impl Actor for EchoActor {
+        impl Actor for EchoActor {}
+
+        #[async_trait]
+        impl RemoteSpawn for EchoActor {
             type Params = ChannelAddr;
 
             async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {

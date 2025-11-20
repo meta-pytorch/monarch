@@ -287,12 +287,6 @@ impl ProcMeshAgent {
 
 #[async_trait]
 impl Actor for ProcMeshAgent {
-    type Params = Self;
-
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(params)
-    }
-
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         self.proc.set_supervision_coordinator(this.port())?;
         Ok(())
