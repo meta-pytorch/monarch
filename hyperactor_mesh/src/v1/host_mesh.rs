@@ -261,8 +261,7 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn::<HostMeshAgent>("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
-            .await
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 

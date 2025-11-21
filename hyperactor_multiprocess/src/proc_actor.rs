@@ -422,25 +422,21 @@ impl ProcActor {
         let mailbox_handle = proc.clone().serve(rx);
         let (state_tx, mut state_rx) = watch::channel(ProcState::AwaitingJoin);
 
-        let handle = match proc
-            .clone()
-            .spawn(
-                "proc",
-                ProcActor::new(ProcActorParams {
-                    proc: proc.clone(),
-                    world_id: world_id.clone(),
-                    system_actor_ref: SYSTEM_ACTOR_REF.clone(),
-                    bootstrap_channel_addr: bootstrap_addr,
-                    local_addr,
-                    state_watch: state_tx,
-                    supervisor_actor_ref,
-                    supervision_update_interval,
-                    labels,
-                    lifecycle_mode,
-                }),
-            )
-            .await
-        {
+        let handle = match proc.clone().spawn(
+            "proc",
+            ProcActor::new(ProcActorParams {
+                proc: proc.clone(),
+                world_id: world_id.clone(),
+                system_actor_ref: SYSTEM_ACTOR_REF.clone(),
+                bootstrap_channel_addr: bootstrap_addr,
+                local_addr,
+                state_watch: state_tx,
+                supervisor_actor_ref,
+                supervision_update_interval,
+                labels,
+                lifecycle_mode,
+            }),
+        ) {
             Ok(handle) => handle,
             Err(e) => {
                 Self::failed_proc_bootstrap_cleanup(mailbox_handle).await;
@@ -448,7 +444,7 @@ impl ProcActor {
             }
         };
 
-        let comm_actor = match proc.clone().spawn("comm", CommActor::default()).await {
+        let comm_actor = match proc.clone().spawn("comm", CommActor::default()) {
             Ok(handle) => handle,
             Err(e) => {
                 Self::failed_proc_bootstrap_cleanup(mailbox_handle).await;
@@ -971,15 +967,6 @@ mod tests {
 
     impl Actor for TestActor {}
 
-    #[async_trait]
-    impl RemoteSpawn for TestActor {
-        type Params = ();
-
-        async fn new(_: ()) -> anyhow::Result<Self> {
-            Ok(Self)
-        }
-    }
-
     #[derive(Handler, HandleClient, RefClient, Serialize, Deserialize, Debug, Named)]
     enum TestActorMessage {
         Increment(u64, #[reply] OncePortRef<u64>),
@@ -1042,15 +1029,6 @@ mod tests {
     struct SleepActor {}
 
     impl Actor for SleepActor {}
-
-    #[async_trait]
-    impl RemoteSpawn for SleepActor {
-        type Params = ();
-
-        async fn new(_: ()) -> anyhow::Result<Self> {
-            Ok(Default::default())
-        }
-    }
 
     #[async_trait]
     impl Handler<u64> for SleepActor {
@@ -1464,14 +1442,12 @@ mod tests {
                 "ping",
                 PingPongActor::new(Some(proc_0_undeliverable_tx.bind()), None, None),
             )
-            .await
             .unwrap();
         let pong_handle = proc_1
             .spawn(
                 "pong",
                 PingPongActor::new(Some(proc_1_undeliverable_tx.bind()), None, None),
             )
-            .await
             .unwrap();
 
         // Now kill the system server making message delivery between
@@ -1592,14 +1568,12 @@ mod tests {
                 "ping",
                 PingPongActor::new(Some(proc_0_undeliverable_tx.bind()), None, None),
             )
-            .await
             .unwrap();
         let pong_handle = proc_1
             .spawn(
                 "pong",
                 PingPongActor::new(Some(proc_1_undeliverable_tx.bind()), None, None),
             )
-            .await
             .unwrap();
 
         // Have 'ping' send 'pong' a message.
