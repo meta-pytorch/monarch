@@ -12,6 +12,7 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Named;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,13 +21,16 @@ use serde::Serialize;
 #[derive(Serialize, Deserialize, Debug, Named, Clone, Bind, Unbind)]
 pub struct EmptyMessage();
 
-#[derive(Debug, PartialEq, Default, Actor)]
+#[derive(Debug, PartialEq, Default)]
 #[hyperactor::export(
+    spawn = true,
     handlers = [
         EmptyMessage { cast = true },
     ],
 )]
 pub struct EmptyActor();
+
+impl Actor for EmptyActor {}
 
 #[async_trait]
 impl Handler<EmptyMessage> for EmptyActor {
@@ -34,4 +38,3 @@ impl Handler<EmptyMessage> for EmptyActor {
         Ok(())
     }
 }
-hyperactor::remote!(EmptyActor);

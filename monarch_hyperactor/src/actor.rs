@@ -22,6 +22,7 @@ use hyperactor::Named;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 use hyperactor::ProcId;
+use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
@@ -556,25 +557,6 @@ fn update_undeliverable_envelope_for_casting(
 
 #[async_trait]
 impl Actor for PythonActor {
-    type Params = PickledPyObject;
-
-    async fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
-        Ok(Python::with_gil(|py| -> Result<Self, SerializablePyErr> {
-            let unpickled = actor_type.unpickle(py)?;
-            let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
-            let actor: PyObject = class_type.call0()?.into_py_any(py)?;
-
-            // Only create per-actor TaskLocals if not using shared runtime
-            let task_locals = (!hyperactor::config::global::get(SHARED_ASYNCIO_RUNTIME))
-                .then(|| Python::allow_threads(py, create_task_locals));
-            Ok(Self {
-                actor,
-                task_locals,
-                instance: None,
-            })
-        })?)
-    }
-
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
@@ -706,6 +688,28 @@ impl Actor for PythonActor {
         } else {
             Ok(())
         }
+    }
+}
+
+#[async_trait]
+impl RemoteSpawn for PythonActor {
+    type Params = PickledPyObject;
+
+    async fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
+        Ok(Python::with_gil(|py| -> Result<Self, SerializablePyErr> {
+            let unpickled = actor_type.unpickle(py)?;
+            let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
+            let actor: PyObject = class_type.call0()?.into_py_any(py)?;
+
+            // Only create per-actor TaskLocals if not using shared runtime
+            let task_locals = (!hyperactor::config::global::get(SHARED_ASYNCIO_RUNTIME))
+                .then(|| Python::allow_threads(py, create_task_locals));
+            Ok(Self {
+                actor,
+                task_locals,
+                instance: None,
+            })
+        })?)
     }
 }
 

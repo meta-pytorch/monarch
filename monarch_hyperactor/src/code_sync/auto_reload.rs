@@ -15,6 +15,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use monarch_types::SerializablePyErr;
 use pyo3::prelude::*;
 use serde::Deserialize;
@@ -37,11 +38,19 @@ pub struct AutoReloadActor {
     state: Result<(Arc<PyObject>, PyObject), SerializablePyErr>,
 }
 
+impl Actor for AutoReloadActor {}
+
 #[async_trait]
-impl Actor for AutoReloadActor {
+impl RemoteSpawn for AutoReloadActor {
     type Params = AutoReloadParams;
 
     async fn new(Self::Params {}: Self::Params) -> Result<Self> {
+        AutoReloadActor::new().await
+    }
+}
+
+impl AutoReloadActor {
+    pub(crate) async fn new() -> Result<Self, anyhow::Error> {
         Ok(Self {
             state: tokio::task::spawn_blocking(move || {
                 Python::with_gil(|py| {
@@ -51,9 +60,7 @@ impl Actor for AutoReloadActor {
             .await?,
         })
     }
-}
 
-impl AutoReloadActor {
     fn create_state(py: Python) -> PyResult<(Arc<PyObject>, PyObject)> {
         // Import the Python AutoReloader class
         let auto_reload_module = py.import("monarch._src.actor.code_sync.auto_reload")?;
