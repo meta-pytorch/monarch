@@ -757,7 +757,6 @@ impl HostMeshRef {
         proc_mesh_name: Name,
         per_host: Extent,
     ) -> v1::Result<ProcMesh> {
-        eprintln!("spawning proc mesh {}", mesh_name);
         let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
         let host_labels = self.region.labels().iter().collect::<HashSet<_>>();
         if !per_host_labels
