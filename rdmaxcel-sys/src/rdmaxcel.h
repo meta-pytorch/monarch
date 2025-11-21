@@ -13,9 +13,15 @@
 #include <cuda_runtime.h>
 #include <infiniband/mlx5dv.h>
 #include <infiniband/verbs.h>
+#include "driver_api.h"
 
+// Handle atomics for both C and C++
 #ifdef __cplusplus
+#include <atomic>
+#define _Atomic(T) std::atomic<T>
 extern "C" {
+#else
+#include <stdatomic.h>
 #endif
 
 typedef enum {
@@ -135,7 +141,9 @@ typedef enum {
       -12, // Failed to get CUDA device attribute
   RDMAXCEL_CUDA_GET_DEVICE_FAILED = -13, // Failed to get CUDA device handle
   RDMAXCEL_BUFFER_TOO_SMALL = -14, // Output buffer too small
-  RDMAXCEL_QUERY_DEVICE_FAILED = -15 // Failed to query device attributes
+  RDMAXCEL_QUERY_DEVICE_FAILED = -15, // Failed to query device attributes
+  RDMAXCEL_CQ_POLL_FAILED = -16, // CQ polling failed
+  RDMAXCEL_COMPLETION_FAILED = -17 // Completion status not successful
 } rdmaxcel_error_code_t;
 
 // Error/Debugging functions
@@ -146,7 +154,6 @@ const char* rdmaxcel_error_string(int error_code);
 int rdma_get_active_segment_count();
 int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count);
 bool pt_cuda_allocator_compatibility();
-int register_segments(struct ibv_pd* pd, struct ibv_qp* qp);
 int deregister_segments();
 
 // CUDA utility functions
@@ -154,6 +161,127 @@ int get_cuda_pci_address_from_ptr(
     CUdeviceptr cuda_ptr,
     char* pci_addr_out,
     size_t pci_addr_size);
+
+cudaError_t register_host_mem(void** buf, size_t size);
+
+// Forward declarations
+typedef struct completion_cache completion_cache_t;
+
+// RDMA Queue Pair wrapper with atomic counters and completion caches
+typedef struct rdmaxcel_qp {
+  struct ibv_qp* ibv_qp; // Underlying ibverbs QP
+  struct ibv_cq* send_cq; // Send completion queue
+  struct ibv_cq* recv_cq; // Receive completion queue
+
+  // Atomic counters
+  _Atomic(uint64_t) send_wqe_idx;
+  _Atomic(uint64_t) send_db_idx;
+  _Atomic(uint64_t) send_cq_idx;
+  _Atomic(uint64_t) recv_wqe_idx;
+  _Atomic(uint64_t) recv_db_idx;
+  _Atomic(uint64_t) recv_cq_idx;
+  _Atomic(uint64_t) rts_timestamp;
+
+  // Completion caches
+  completion_cache_t* send_completion_cache;
+  completion_cache_t* recv_completion_cache;
+} rdmaxcel_qp_t;
+
+// Create and initialize an rdmaxcel QP (wraps create_qp + initializes
+// counters/caches)
+rdmaxcel_qp_t* rdmaxcel_qp_create(
+    struct ibv_context* context,
+    struct ibv_pd* pd,
+    int cq_entries,
+    int max_send_wr,
+    int max_recv_wr,
+    int max_send_sge,
+    int max_recv_sge,
+    rdma_qp_type_t qp_type);
+
+// Destroy rdmaxcel QP and clean up resources
+void rdmaxcel_qp_destroy(rdmaxcel_qp_t* qp);
+
+// Get underlying ibv_qp pointer (for compatibility with existing ibverbs calls)
+struct ibv_qp* rdmaxcel_qp_get_ibv_qp(rdmaxcel_qp_t* qp);
+
+// Atomic fetch_add operations
+uint64_t rdmaxcel_qp_fetch_add_send_wqe_idx(rdmaxcel_qp_t* qp);
+uint64_t rdmaxcel_qp_fetch_add_send_db_idx(rdmaxcel_qp_t* qp);
+uint64_t rdmaxcel_qp_fetch_add_send_cq_idx(rdmaxcel_qp_t* qp);
+uint64_t rdmaxcel_qp_fetch_add_recv_wqe_idx(rdmaxcel_qp_t* qp);
+uint64_t rdmaxcel_qp_fetch_add_recv_db_idx(rdmaxcel_qp_t* qp);
+uint64_t rdmaxcel_qp_fetch_add_recv_cq_idx(rdmaxcel_qp_t* qp);
+
+// Atomic load operations (minimal API surface)
+// Send side: needed for doorbell ring iteration [db_idx, wqe_idx)
+uint64_t rdmaxcel_qp_load_send_wqe_idx(rdmaxcel_qp_t* qp);
+uint64_t rdmaxcel_qp_load_send_db_idx(rdmaxcel_qp_t* qp);
+// Receive side: needed for receive operations
+uint64_t rdmaxcel_qp_load_recv_wqe_idx(rdmaxcel_qp_t* qp);
+// Completion queue indices: needed for polling without modifying
+uint64_t rdmaxcel_qp_load_send_cq_idx(rdmaxcel_qp_t* qp);
+uint64_t rdmaxcel_qp_load_recv_cq_idx(rdmaxcel_qp_t* qp);
+// Connection state validation
+uint64_t rdmaxcel_qp_load_rts_timestamp(rdmaxcel_qp_t* qp);
+
+// Atomic store operations
+void rdmaxcel_qp_store_send_db_idx(rdmaxcel_qp_t* qp, uint64_t value);
+void rdmaxcel_qp_store_rts_timestamp(rdmaxcel_qp_t* qp, uint64_t value);
+
+// Get completion caches
+completion_cache_t* rdmaxcel_qp_get_send_cache(rdmaxcel_qp_t* qp);
+completion_cache_t* rdmaxcel_qp_get_recv_cache(rdmaxcel_qp_t* qp);
+
+// Segment registration (uses rdmaxcel_qp_t, so must come after type definition)
+int register_segments(struct ibv_pd* pd, rdmaxcel_qp_t* qp);
+
+// Completion Cache Structures and Functions
+#define MAX_CACHED_COMPLETIONS 128
+
+// Linked list node for cached completions
+typedef struct completion_node {
+  struct ibv_wc wc;
+  int next; // Index of next node, or -1 for end of list
+} completion_node_t;
+
+// Cache for "unmatched" completions using embedded linked list
+typedef struct completion_cache {
+  completion_node_t nodes[MAX_CACHED_COMPLETIONS];
+  int head; // Index of first used node, or -1 if empty
+  int tail; // Index of last used node
+  int free_head; // Index of first free node, or -1 if full
+  size_t count;
+  pthread_mutex_t lock;
+} completion_cache_t;
+
+// Context for polling with cache
+typedef struct poll_context {
+  uint64_t expected_wr_id; // What wr_id am I looking for?
+  uint32_t expected_qp_num; // What QP am I expecting?
+  completion_cache_t* cache; // Shared completion cache
+  struct ibv_cq* cq; // The CQ to poll
+} poll_context_t;
+
+// Initialize completion cache
+void completion_cache_init(completion_cache_t* cache);
+
+// Destroy completion cache
+void completion_cache_destroy(completion_cache_t* cache);
+
+// Add completion to cache
+int completion_cache_add(completion_cache_t* cache, struct ibv_wc* wc);
+
+// Find and remove completion from cache
+int completion_cache_find(
+    completion_cache_t* cache,
+    uint64_t wr_id,
+    uint32_t qp_num,
+    struct ibv_wc* out_wc);
+
+// Poll with cache support
+// Returns: 1 = found, 0 = not found, -1 = error
+int poll_cq_with_cache(poll_context_t* ctx, struct ibv_wc* out_wc);
 
 #ifdef __cplusplus
 }

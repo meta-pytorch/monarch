@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "build_utils",
-    "controller",
     "cuda-sys",
     "erased_lifetime",
     "hyper",
@@ -18,7 +17,6 @@ members = [
     "monarch_messages",
     "monarch_perfetto_trace",
     "monarch_rdma",
-    "monarch_simulator",
     "monarch_tensor_worker",
     "monarch_types",
     "nccl-sys",
