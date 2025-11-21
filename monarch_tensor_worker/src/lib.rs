@@ -27,7 +27,6 @@
 //! - debugger support
 //! - general drift in exisitng messages
 
-pub mod bootstrap;
 mod borrow;
 mod comm;
 pub mod device_mesh;
