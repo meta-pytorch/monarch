@@ -82,7 +82,6 @@ use crate::comm::CommBackend;
 use crate::comm::CommMessage;
 use crate::comm::CommMessageClient;
 use crate::comm::NcclCommActor;
-use crate::pipe::PipeMessage;
 
 pub type TensorCellResult = Result<TensorCell, Arc<SeqError>>;
 
@@ -221,13 +220,6 @@ pub enum StreamMessage {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
         device_meshes: HashMap<Ref, DeviceMesh>,
-        pipe: Option<PortHandle<PipeMessage>>,
-    },
-
-    SetValue {
-        seq: Seq,
-        results: Vec<Option<Ref>>,
-        pipe: PortHandle<PipeMessage>,
     },
 
     DefineRecording {
@@ -365,11 +357,6 @@ impl StreamMessage {
                 factory: factory.clone(),
                 comm: comm.clone(),
             },
-            StreamMessage::SetValue { seq, results, pipe } => StreamMessage::SetValue {
-                seq: seq.clone(),
-                results: results.clone(),
-                pipe: pipe.clone(),
-            },
             other => panic!(
                 "StreamMessage variant not supported in recording: {:?}",
                 other
@@ -394,9 +381,6 @@ impl StreamMessage {
                 } else {
                     HashSet::new()
                 }
-            }
-            StreamMessage::SetValue { results, .. } => {
-                results.iter().filter_map(|&ref_| ref_).collect()
             }
             // TODO(slurye): Add SendValue eventually.
             _ => HashSet::new(),
@@ -1570,9 +1554,8 @@ impl StreamMessageHandler for StreamActor {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
         device_meshes: HashMap<Ref, DeviceMesh>,
-        pipe: Option<PortHandle<PipeMessage>>,
     ) -> Result<()> {
-        if self.respond_with_python_message && pipe.is_none() {
+        if self.respond_with_python_message {
             return self
                 .send_value_python_message(cx, seq, mutates, function, args, kwargs, device_meshes)
                 .await;
@@ -1682,15 +1665,11 @@ impl StreamMessageHandler for StreamActor {
         };
 
         // Actually send the value.
-        if let Some(pipe) = pipe {
-            pipe.send(PipeMessage::SendValue(value))?;
-        } else {
-            let result = match value {
-                Ok(value) => Ok(Serialized::serialize(&value).map_err(anyhow::Error::from)?),
-                Err(e) => Err(e),
-            };
-            self.controller_actor.fetch_result(cx, seq, result).await?;
-        }
+        let result = match value {
+            Ok(value) => Ok(Serialized::serialize(&value).map_err(anyhow::Error::from)?),
+            Err(e) => Err(e),
+        };
+        self.controller_actor.fetch_result(cx, seq, result).await?;
 
         Ok(())
     }
@@ -1729,31 +1708,6 @@ impl StreamMessageHandler for StreamActor {
                     .map_err(SerializablePyErr::from_fn(py))
             })?;
             Ok(result.into_leaves())
-        })
-        .await
-    }
-
-    async fn set_value(
-        &mut self,
-        cx: &Context<Self>,
-        seq: Seq,
-        results: Vec<Option<Ref>>,
-        pipe: PortHandle<PipeMessage>,
-    ) -> Result<()> {
-        if let Some((recording, _)) = self.get_defining_recording() {
-            recording
-                .messages
-                .push(StreamMessage::SetValue { seq, results, pipe });
-            return Ok(());
-        }
-
-        self.try_define(cx, seq, results, &vec![], async |self| {
-            let (tx, rx) = cx.open_once_port();
-            pipe.send(PipeMessage::RecvValue(tx))
-                .map_err(anyhow::Error::from)
-                .map_err(CallFunctionError::from)?;
-            let value = rx.recv().await.map_err(anyhow::Error::from)?;
-            Ok(value.into_leaves())
         })
         .await
     }
@@ -3932,112 +3886,6 @@ mod tests {
             &mut test_setup.controller_rx,
         )
         .await;
-
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_set_value_in_recording_valid_pipe() -> Result<()> {
-        let mut test_setup = TestSetup::new().await?;
-
-        let (pipe_tx, mut pipe_rx) = test_setup.client.open_port();
-
-        let recording_ref = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .define_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let result_ref_0 = test_setup.next_ref();
-
-        test_setup
-            .stream_actor
-            .set_value(
-                &test_setup.client,
-                0.into(),
-                vec![Some(result_ref_0)],
-                pipe_tx,
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .recording_result(&test_setup.client, result_ref_0, 0)
-            .await?;
-
-        test_setup
-            .stream_actor
-            .finalize_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let real_result_ref = test_setup.next_ref();
-        let recording_fut = test_setup.stream_actor.call_recording(
-            &test_setup.client,
-            0.into(),
-            recording_ref,
-            vec![real_result_ref],
-            vec![],
-        );
-
-        let pipe_fut = async {
-            let msg = pipe_rx.recv().await.unwrap();
-            match msg {
-                PipeMessage::RecvValue(tx) => {
-                    tx.send(PyTree::from(RValue::Tensor(TensorCell::new(
-                        factory_float_tensor(&[1.0, 2.0, 3.0], "cuda".try_into().unwrap()),
-                    ))))
-                    .unwrap();
-                }
-                _ => panic!("Unexpected message"),
-            }
-            Ok(())
-        };
-
-        tokio::try_join!(recording_fut, pipe_fut)?;
-
-        assert!(test_setup.allclose(real_result_ref, &[1.0, 2.0, 3.0]).await);
-
-        // This will cause the next call to set_value to fail.
-        drop(pipe_rx);
-
-        let real_result_ref = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                1.into(),
-                recording_ref,
-                vec![real_result_ref],
-                vec![],
-            )
-            .await?;
-
-        let real_result_err = test_setup
-            .stream_actor
-            .get_tensor_ref_unit_tests_only(&test_setup.client, real_result_ref)
-            .await?
-            .unwrap()
-            .unwrap_err();
-        // Check that the error contains the expected string
-        let error_str = real_result_err.to_string();
-        assert!(
-            error_str.contains("send error"),
-            "Error should contain 'send error': {}",
-            error_str
-        );
-
-        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
-        match controller_msg {
-            ControllerMessage::RemoteFunctionFailed { seq, error } => {
-                assert_eq!(seq, 1.into());
-                assert!(
-                    error.backtrace.contains("send error"),
-                    "Unexpected WorkerError: {:?}",
-                    error
-                );
-            }
-            _ => panic!("Unexpected controller message: {:?}", controller_msg),
-        };
 
         Ok(())
     }
