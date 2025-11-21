@@ -2217,7 +2217,6 @@ mod tests {
                 vec![WireValue::PyObject(ref_to_send)],
                 HashMap::new(),
                 HashMap::new(),
-                None,
             )
             .await
             .unwrap()
