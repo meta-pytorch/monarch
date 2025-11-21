@@ -188,17 +188,6 @@ rust_extensions.append(
     )
 )
 
-# Legacy controller bin (kept for tests that still depend on it)
-if USE_TENSOR_ENGINE and not SKIP_LEGACY_BUILDS:
-    rust_extensions.append(
-        RustExtension(
-            {"controller_bin": "monarch.monarch_controller"},
-            binding=Binding.Exec,
-            path="controller/Cargo.toml",
-            debug=False,
-        )
-    )
-
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "monarch")
 package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
 

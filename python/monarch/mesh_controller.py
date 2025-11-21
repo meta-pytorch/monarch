@@ -67,7 +67,6 @@ from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.future import Future as OldFuture
 from monarch.common.invocation import DeviceException, RemoteException
-from monarch.rust_local_mesh import _get_worker_exec_info
 
 logger: Logger = logging.getLogger(__name__)
 
@@ -116,8 +115,6 @@ class Controller(_Controller):
 def _initialize_env(worker_point: Point, proc_id: str) -> None:
     worker_rank = worker_point.rank
     try:
-        _, worker_env = _get_worker_exec_info()
-
         if "gpus" in worker_point:
             local_rank = worker_point["gpus"]
             gpus_per_host = worker_point.size("gpus")
@@ -130,7 +127,6 @@ def _initialize_env(worker_point: Point, proc_id: str) -> None:
 
         num_worker_procs = worker_point.extent.nelements
         process_env = {
-            **worker_env,
             "CUDA_VISIBLE_DEVICES": str(local_rank),
             "NCCL_HOSTID": f"{proc_id}_host_{worker_rank // gpus_per_host}",
             # This is needed to avoid a hard failure in ncclx when we do not

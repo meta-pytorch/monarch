@@ -12,6 +12,7 @@
 
 pub mod actor_mesh;
 pub mod host_mesh;
+pub mod mesh_controller;
 pub mod proc_mesh;
 pub mod testactor;
 pub mod testing;
@@ -143,6 +144,9 @@ pub enum Error {
 
     #[error("error spawning actor: {0}")]
     SingletonActorSpawnError(anyhow::Error),
+
+    #[error("error spawning controller actor for mesh {0}: {1}")]
+    ControllerActorSpawnError(Name, anyhow::Error),
 
     #[error("error: {0} does not exist")]
     NotExist(Name),
