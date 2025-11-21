@@ -97,7 +97,7 @@ fn set_global_config<T: AttrValue + Debug>(key: &'static dyn ErasedKey, value: T
     let key = key.downcast_ref().expect("cannot fail");
     let mut attrs = Attrs::new();
     attrs.set(key.clone(), value);
-    hyperactor::config::global::set(Source::Runtime, attrs);
+    hyperactor::config::global::create_or_merge(Source::Runtime, attrs);
     Ok(())
 }
 

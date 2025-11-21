@@ -39,3 +39,14 @@ def test_get_set_transport() -> None:
 def test_nonexistent_config_key() -> None:
     with pytest.raises(ValueError):
         configure(does_not_exist=42)  # type: ignore
+
+
+def test_get_set_multiple() -> None:
+    configure(default_transport=ChannelTransport.TcpWithLocalhost)
+    configure(enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100)
+    config = get_configuration()
+
+    assert config["enable_log_forwarding"]
+    assert config["enable_file_capture"]
+    assert config["tail_log_lines"] == 100
+    assert config["default_transport"] == ChannelTransport.TcpWithLocalhost
