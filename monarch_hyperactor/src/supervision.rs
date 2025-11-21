@@ -10,17 +10,52 @@ use hyperactor::Bind;
 use hyperactor::Named;
 use hyperactor::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
-use pyo3::create_exception;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 
-create_exception!(
-    monarch._rust_bindings.monarch_hyperactor.supervision,
-    SupervisionError,
-    PyRuntimeError
-);
+#[pyclass(
+    name = "SupervisionError",
+    module = "monarch._rust_bindings.monarch_hyperactor.supervision",
+    extends = PyRuntimeError
+)]
+#[derive(Clone, Debug)]
+pub struct SupervisionError {
+    #[pyo3(set)]
+    pub endpoint: Option<String>,
+    pub message: String,
+}
+
+#[pymethods]
+impl SupervisionError {
+    #[new]
+    #[pyo3(signature = (message, endpoint=None))]
+    fn new(message: String, endpoint: Option<String>) -> Self {
+        SupervisionError { endpoint, message }
+    }
+
+    #[staticmethod]
+    pub fn new_err(message: String) -> PyErr {
+        PyRuntimeError::new_err(message)
+    }
+
+    fn __str__(&self) -> String {
+        if let Some(ep) = &self.endpoint {
+            format!("Endpoint call {} failed, {}", ep, self.message)
+        } else {
+            self.message.clone()
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        if let Some(ep) = &self.endpoint {
+            format!("SupervisionError(endpoint='{}', '{}')", ep, self.message)
+        } else {
+            format!("SupervisionError('{}')", self.message)
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
 pub struct SupervisionFailureMessage {
