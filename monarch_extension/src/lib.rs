@@ -21,7 +21,6 @@ mod logging;
 #[cfg(feature = "tensor_engine")]
 mod mesh_controller;
 mod simulation_tools;
-mod simulator_client;
 #[cfg(feature = "tensor_engine")]
 mod tensor_worker;
 
@@ -120,14 +119,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         monarch_messages::debugger::register_python_bindings(&get_or_add_new_module(
             module,
             "monarch_messages.debugger",
-        )?)?;
-        simulator_client::register_python_bindings(&get_or_add_new_module(
-            module,
-            "monarch_extension.simulator_client",
-        )?)?;
-        ::controller::bootstrap::register_python_bindings(&get_or_add_new_module(
-            module,
-            "controller.bootstrap",
         )?)?;
         ::monarch_tensor_worker::bootstrap::register_python_bindings(&get_or_add_new_module(
             module,

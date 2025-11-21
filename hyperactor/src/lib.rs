@@ -66,6 +66,7 @@
 #![feature(panic_update_hook)]
 #![feature(type_alias_impl_trait)]
 #![feature(trait_alias)]
+#![feature(panic_payload_as_str)]
 #![deny(missing_docs)]
 
 pub mod accum;

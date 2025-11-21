@@ -556,6 +556,15 @@ impl Attrs {
     pub(crate) fn get_value_by_name(&self, name: &'static str) -> Option<&dyn SerializableValue> {
         self.values.get(name).map(|b| b.as_ref())
     }
+
+    /// Merge all attributes from `other` into this set, consuming
+    /// `other`.
+    ///
+    /// For each key in `other`, moves its value into `self`,
+    /// overwriting any existing value for the same key.
+    pub(crate) fn merge(&mut self, other: Attrs) {
+        self.values.extend(other.values);
+    }
 }
 
 impl Clone for Attrs {
