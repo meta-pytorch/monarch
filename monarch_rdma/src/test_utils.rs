@@ -307,26 +307,47 @@ pub mod test_utils {
         }
     }
 
-    // Waits for the completion of an RDMA operation.
-
-    // This function polls for the completion of an RDMA operation by repeatedly
-    // sending a `PollCompletion` message to the specified actor mesh and checking
-    // the returned work completion status. It continues polling until the operation
-    // completes or the specified timeout is reached.
-
+    /// Waits for the completion of RDMA operations.
+    ///
+    /// This function polls for the completion of RDMA operations by repeatedly
+    /// checking the completion queue until all expected work requests complete
+    /// or the specified timeout is reached.
+    ///
+    /// # Arguments
+    /// * `qp` - The RDMA Queue Pair to poll for completion
+    /// * `poll_target` - Which CQ to poll (Send or Recv)
+    /// * `expected_wr_ids` - Slice of work request IDs to wait for
+    /// * `timeout_secs` - Timeout in seconds
+    ///
+    /// # Returns
+    /// `Ok(true)` if all operations complete successfully within the timeout,
+    /// or an error if the timeout is reached
     pub async fn wait_for_completion(
         qp: &mut RdmaQueuePair,
         poll_target: PollTarget,
+        expected_wr_ids: &[u64],
         timeout_secs: u64,
     ) -> Result<bool, anyhow::Error> {
         let timeout = Duration::from_secs(timeout_secs);
         let start_time = Instant::now();
+
+        let mut remaining: std::collections::HashSet<u64> =
+            expected_wr_ids.iter().copied().collect();
+
         while start_time.elapsed() < timeout {
-            match qp.poll_completion_target(poll_target) {
-                Ok(Some(_wc)) => {
-                    return Ok(true);
-                }
-                Ok(None) => {
+            if remaining.is_empty() {
+                return Ok(true);
+            }
+
+            let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
+            match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+                Ok(completions) => {
+                    for (wr_id, _wc) in completions {
+                        remaining.remove(&wr_id);
+                    }
+                    if remaining.is_empty() {
+                        return Ok(true);
+                    }
                     RealClock.sleep(Duration::from_millis(1)).await;
                 }
                 Err(e) => {
@@ -334,7 +355,10 @@ pub mod test_utils {
                 }
             }
         }
-        Err(anyhow::Error::msg("Timeout while waiting for completion"))
+        Err(anyhow::Error::msg(format!(
+            "Timeout while waiting for completion of wr_ids: {:?}",
+            remaining
+        )))
     }
 
     /// Posts a work request to the send queue of the given RDMA queue pair.
@@ -345,25 +369,26 @@ pub mod test_utils {
         op_type: u32,
     ) -> Result<(), anyhow::Error> {
         unsafe {
-            let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+            let ibv_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let send_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(ibv_qp);
             let params = rdmaxcel_sys::wqe_params_t {
                 laddr: lhandle.addr,
                 length: lhandle.size,
                 lkey: lhandle.lkey,
-                wr_id: qp.send_wqe_idx,
+                wr_id: send_wqe_idx,
                 signaled: true,
                 op_type,
                 raddr: rhandle.addr,
                 rkey: rhandle.rkey,
-                qp_num: (*ibv_qp).qp_num,
+                qp_num: (*(*ibv_qp).ibv_qp).qp_num,
                 buf: (*dv_qp).sq.buf as *mut u8,
                 wqe_cnt: (*dv_qp).sq.wqe_cnt,
                 dbrec: (*dv_qp).dbrec,
                 ..Default::default()
             };
             rdmaxcel_sys::launch_send_wqe(params);
-            qp.send_wqe_idx += 1;
+            rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(ibv_qp);
         }
         Ok(())
     }
@@ -377,43 +402,53 @@ pub mod test_utils {
     ) -> Result<(), anyhow::Error> {
         // Populate params using lhandle and rhandle
         unsafe {
-            let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+            let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let recv_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_recv_wqe_idx(rdmaxcel_qp);
             let params = rdmaxcel_sys::wqe_params_t {
                 laddr: lhandle.addr,
                 length: lhandle.size,
                 lkey: lhandle.lkey,
-                wr_id: qp.recv_wqe_idx,
+                wr_id: recv_wqe_idx,
                 op_type,
                 signaled: true,
-                qp_num: (*ibv_qp).qp_num,
+                qp_num: (*(*rdmaxcel_qp).ibv_qp).qp_num,
                 buf: (*dv_qp).rq.buf as *mut u8,
                 wqe_cnt: (*dv_qp).rq.wqe_cnt,
                 dbrec: (*dv_qp).dbrec,
                 ..Default::default()
             };
             rdmaxcel_sys::launch_recv_wqe(params);
-            qp.recv_wqe_idx += 1;
-            qp.recv_db_idx += 1;
+            rdmaxcel_sys::rdmaxcel_qp_fetch_add_recv_wqe_idx(rdmaxcel_qp);
+            rdmaxcel_sys::rdmaxcel_qp_fetch_add_recv_db_idx(rdmaxcel_qp);
         }
         Ok(())
     }
 
-    pub async fn ring_db_gpu(qp: &mut RdmaQueuePair) -> Result<(), anyhow::Error> {
+    pub async fn ring_db_gpu(qp: &RdmaQueuePair) -> Result<(), anyhow::Error> {
         RealClock.sleep(Duration::from_millis(2)).await;
         unsafe {
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
             let base_ptr = (*dv_qp).sq.buf as *mut u8;
             let wqe_cnt = (*dv_qp).sq.wqe_cnt;
             let stride = (*dv_qp).sq.stride;
-            if (wqe_cnt as u64) < (qp.send_wqe_idx - qp.send_db_idx) {
+            let send_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(
+                qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp,
+            );
+            let mut send_db_idx =
+                rdmaxcel_sys::rdmaxcel_qp_load_send_db_idx(qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp);
+            if (wqe_cnt as u64) < (send_wqe_idx - send_db_idx) {
                 return Err(anyhow::anyhow!("Overflow of WQE, possible data loss"));
             }
-            while qp.send_db_idx < qp.send_wqe_idx {
-                let offset = (qp.send_db_idx % wqe_cnt as u64) * stride as u64;
+            while send_db_idx < send_wqe_idx {
+                let offset = (send_db_idx % wqe_cnt as u64) * stride as u64;
                 let src_ptr = (base_ptr as *mut u8).wrapping_add(offset as usize);
                 rdmaxcel_sys::launch_db_ring((*dv_qp).bf.reg, src_ptr as *mut std::ffi::c_void);
-                qp.send_db_idx += 1;
+                send_db_idx += 1;
+                rdmaxcel_sys::rdmaxcel_qp_store_send_db_idx(
+                    qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp,
+                    send_db_idx,
+                );
             }
         }
         Ok(())
@@ -425,48 +460,54 @@ pub mod test_utils {
         poll_target: PollTarget,
         timeout_secs: u64,
     ) -> Result<bool, anyhow::Error> {
-        let timeout = Duration::from_secs(timeout_secs);
-        let start_time = Instant::now();
+        unsafe {
+            let start_time = Instant::now();
+            let timeout = Duration::from_secs(timeout_secs);
+            let ibv_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
 
-        while start_time.elapsed() < timeout {
-            // Get the appropriate completion queue and index based on the poll target
-            let (cq, idx, cq_type_str) = match poll_target {
-                PollTarget::Send => (
-                    qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq,
-                    qp.send_cq_idx,
-                    "send",
-                ),
-                PollTarget::Recv => (
-                    qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq,
-                    qp.recv_cq_idx,
-                    "receive",
-                ),
-            };
+            while start_time.elapsed() < timeout {
+                // Get the appropriate completion queue and index based on the poll target
+                let (cq, idx, cq_type_str) = match poll_target {
+                    PollTarget::Send => (
+                        qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq,
+                        rdmaxcel_sys::rdmaxcel_qp_load_send_cq_idx(ibv_qp),
+                        "send",
+                    ),
+                    PollTarget::Recv => (
+                        qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq,
+                        rdmaxcel_sys::rdmaxcel_qp_load_recv_cq_idx(ibv_qp),
+                        "receive",
+                    ),
+                };
 
-            // Poll the completion queue
-            let result =
-                unsafe { rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx as i32) };
+                // Poll the completion queue
+                let result = rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx as i32);
 
-            match result {
-                rdmaxcel_sys::CQE_POLL_TRUE => {
-                    // Update the appropriate index based on the poll target
-                    match poll_target {
-                        PollTarget::Send => qp.send_cq_idx += 1,
-                        PollTarget::Recv => qp.recv_cq_idx += 1,
+                match result {
+                    rdmaxcel_sys::CQE_POLL_TRUE => {
+                        // Update the appropriate index based on the poll target
+                        match poll_target {
+                            PollTarget::Send => {
+                                rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_cq_idx(ibv_qp);
+                            }
+                            PollTarget::Recv => {
+                                rdmaxcel_sys::rdmaxcel_qp_fetch_add_recv_cq_idx(ibv_qp);
+                            }
+                        }
+                        return Ok(true);
                     }
-                    return Ok(true);
-                }
-                rdmaxcel_sys::CQE_POLL_ERROR => {
-                    return Err(anyhow::anyhow!("Error polling {} completion", cq_type_str));
-                }
-                _ => {
-                    // No completion yet, sleep and try again
-                    RealClock.sleep(Duration::from_millis(1)).await;
+                    rdmaxcel_sys::CQE_POLL_ERROR => {
+                        return Err(anyhow::anyhow!("Error polling {} completion", cq_type_str));
+                    }
+                    _ => {
+                        // No completion yet, sleep and try again
+                        RealClock.sleep(Duration::from_millis(1)).await;
+                    }
                 }
             }
-        }
 
-        Err(anyhow::Error::msg("Timeout while waiting for completion"))
+            Err(anyhow::Error::msg("Timeout while waiting for completion"))
+        }
     }
 
     pub struct RdmaManagerTestEnv<'a> {
@@ -498,6 +539,7 @@ pub mod test_utils {
 
         if backend == "cuda" {
             config.use_gpu_direct = validate_execution_context().await.is_ok();
+            eprintln!("Using GPU Direct: {}", config.use_gpu_direct);
         }
 
         (backend.to_string(), parsed_idx)
@@ -716,7 +758,11 @@ pub mod test_utils {
             .await
         }
 
-        pub async fn verify_buffers(&self, size: usize) -> Result<(), anyhow::Error> {
+        pub async fn verify_buffers(
+            &self,
+            size: usize,
+            offset: usize,
+        ) -> Result<(), anyhow::Error> {
             let mut temp_buffer_1 = vec![0u8; size];
             let mut temp_buffer_2 = vec![0u8; size];
 
@@ -726,14 +772,14 @@ pub mod test_utils {
                     .verify_buffer(
                         self.client_1,
                         temp_buffer_1.as_mut_ptr() as usize,
-                        self.device_ptr_1.unwrap(),
+                        self.device_ptr_1.unwrap() + offset,
                         size,
                     )
                     .await?;
             } else {
                 unsafe {
                     std::ptr::copy_nonoverlapping(
-                        self.buffer_1.ptr as *const u8,
+                        (self.buffer_1.ptr + offset as u64) as *const u8,
                         temp_buffer_1.as_mut_ptr(),
                         size,
                     );
@@ -746,14 +792,14 @@ pub mod test_utils {
                     .verify_buffer(
                         self.client_2,
                         temp_buffer_2.as_mut_ptr() as usize,
-                        self.device_ptr_2.unwrap(),
+                        self.device_ptr_2.unwrap() + offset,
                         size,
                     )
                     .await?;
             } else {
                 unsafe {
                     std::ptr::copy_nonoverlapping(
-                        self.buffer_2.ptr as *const u8,
+                        (self.buffer_2.ptr + offset as u64) as *const u8,
                         temp_buffer_2.as_mut_ptr(),
                         size,
                     );
@@ -763,7 +809,10 @@ pub mod test_utils {
             // Compare buffers
             for i in 0..size {
                 if temp_buffer_1[i] != temp_buffer_2[i] {
-                    return Err(anyhow::anyhow!("Buffers are not equal at index {}", i));
+                    return Err(anyhow::anyhow!(
+                        "Buffers are not equal at index {}",
+                        offset + i
+                    ));
                 }
             }
             Ok(())
