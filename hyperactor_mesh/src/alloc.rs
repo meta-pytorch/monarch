@@ -700,15 +700,6 @@ pub mod test_utils {
 
     impl Actor for TestActor {}
 
-    #[async_trait]
-    impl RemoteSpawn for TestActor {
-        type Params = ();
-
-        async fn new(_: ()) -> anyhow::Result<Self> {
-            Ok(Self)
-        }
-    }
-
     #[derive(Debug, Serialize, Deserialize, Named, Clone)]
     pub struct Wait;
 

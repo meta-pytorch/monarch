@@ -474,10 +474,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         }
 
         let system_proc = host.system_proc().clone();
-        let actor = HostMeshAgent {
-            host: Some(host),
-            created: HashMap::new(),
-        };
+        let actor = HostMeshAgent::new(host);
 
         let host_mesh_agent = system_proc.spawn::<HostMeshAgent>("agent", actor).await?;
 

@@ -282,6 +282,17 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     }
 }
 
+/// If an actor implements Default, we use this as the
+/// `RemoteSpawn` implementation, too.
+#[async_trait]
+impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
+    type Params = ();
+
+    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
+        Ok(Default::default())
+    }
+}
+
 #[async_trait]
 impl<T> Checkpointable for T
 where

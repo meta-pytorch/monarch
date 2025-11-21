@@ -653,15 +653,6 @@ pub(crate) mod test_util {
 
     impl Actor for TestActor {}
 
-    #[async_trait]
-    impl RemoteSpawn for TestActor {
-        type Params = ();
-
-        async fn new(_: ()) -> anyhow::Result<Self> {
-            Ok(Self)
-        }
-    }
-
     /// Request message to retrieve the actor's rank.
     ///
     /// The `bool` in the tuple controls the outcome of the handler:

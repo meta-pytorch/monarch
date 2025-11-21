@@ -2198,9 +2198,11 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[export]
     struct TestActor;
+
+    impl Actor for TestActor {}
 
     #[derive(Handler, HandleClient, Debug)]
     enum TestActorMessage {
@@ -2290,10 +2292,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
         let proc = Proc::local();
-        let handle = proc
-            .spawn::<TestActor>("test", TestActor::default())
-            .await
-            .unwrap();
+        let handle = proc.spawn("test", TestActor::default()).await.unwrap();
 
         // Check on the join handle.
         assert!(logs_contain(
@@ -2335,7 +2334,7 @@ mod tests {
             .unwrap();
 
         handle.drain_and_stop().unwrap();
-        handle;
+        handle.await;
         assert_matches!(*state.borrow(), ActorStatus::Stopped);
     }
 
@@ -2359,6 +2358,7 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    #[export]
     struct LookupTestActor;
 
     impl Actor for LookupTestActor {}
@@ -2389,7 +2389,7 @@ mod tests {
             .spawn::<TestActor>("target", TestActor::default())
             .await
             .unwrap();
-        let target_actor_ref = actor::ActorHandle<proc::tests::TestActor>::bind();
+        let target_actor_ref = target_actor.bind();
         let lookup_actor = proc
             .spawn::<LookupTestActor>("lookup", LookupTestActor::default())
             .await
@@ -2421,7 +2421,7 @@ mod tests {
         );
 
         target_actor.drain_and_stop().unwrap();
-        target_actor;
+        target_actor.await;
 
         assert!(
             !lookup_actor
@@ -2501,20 +2501,20 @@ mod tests {
         // Once each actor is stopped, it should have no linked children.
         let third_cell = third.cell().clone();
         third.drain_and_stop().unwrap();
-        third;
+        third.await;
         assert!(third_cell.inner.children.is_empty());
         drop(third_cell);
         validate_link(second.cell(), first.cell());
 
         let second_cell = second.cell().clone();
         second.drain_and_stop().unwrap();
-        second;
+        second.await;
         assert!(second_cell.inner.children.is_empty());
         drop(second_cell);
 
         let first_cell = first.cell().clone();
         first.drain_and_stop().unwrap();
-        first;
+        first.await;
         assert!(first_cell.inner.children.is_empty());
     }
 
@@ -2531,11 +2531,11 @@ mod tests {
         let root_2_1 = TestActor::spawn_child(&root_2).await;
 
         root.drain_and_stop().unwrap();
-        root;
+        root.await;
 
         for actor in [root_1, root_2, root_2_1] {
             assert!(actor.send(TestActorMessage::Noop()).is_err());
-            assert_matches!(actor, ActorStatus::Stopped);
+            assert_matches!(actor.await, ActorStatus::Stopped);
         }
     }
 
@@ -2561,7 +2561,7 @@ mod tests {
             .unwrap();
         let _root_2_actor_id = root_2.actor_id().clone();
         assert_matches!(
-            root_2,
+            root_2.await,
             ActorStatus::Failed(err) if err.to_string() == "some random failure"
         );
 
@@ -2569,11 +2569,11 @@ mod tests {
         // stopped by a parent failure?
         // Currently the parent fails with an error related to the child's failure.
         assert_matches!(
-            root,
+            root.await,
             ActorStatus::Failed(err) if err.to_string().contains("some random failure")
         );
-        assert_eq!(root_2_1, ActorStatus::Stopped);
-        assert_eq!(root_1, ActorStatus::Stopped);
+        assert_eq!(root_2_1.await, ActorStatus::Stopped);
+        assert_eq!(root_1.await, ActorStatus::Stopped);
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -2627,7 +2627,7 @@ mod tests {
         // Stop the 2nd root. It should be excluded from the snapshot after it
         // is stopped.
         another_root.drain_and_stop().unwrap();
-        another_root;
+        another_root.await;
         {
             let snapshot = proc.state().ledger.snapshot();
             assert_eq!(
@@ -2765,7 +2765,7 @@ mod tests {
 
         // Stop root_1. This should remove it, and its child, from snapshot.
         root_1.drain_and_stop().unwrap();
-        root_1;
+        root_1.await;
         {
             let snapshot = proc.state().ledger.snapshot();
             assert_eq!(
@@ -2799,7 +2799,7 @@ mod tests {
 
         // Finally stop root. No roots should be left in snapshot.
         root.drain_and_stop().unwrap();
-        root;
+        root.await;
         {
             let snapshot = proc.state().ledger.snapshot();
             assert_eq!(snapshot.roots, hashmap! {});
@@ -2876,7 +2876,7 @@ mod tests {
             .panic(&client, "some random failure".to_string())
             .await
             .unwrap();
-        let actor_status = actor_handle;
+        let actor_status = actor_handle.await;
 
         // Note: even when the test passes, the panic stacktrace will still be
         // printed to stderr because that is the behavior controlled by the panic

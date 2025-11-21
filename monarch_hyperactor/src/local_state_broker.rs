@@ -41,15 +41,6 @@ pub struct LocalStateBrokerActor {
 impl Actor for LocalStateBrokerActor {}
 
 #[async_trait]
-impl RemoteSpawn for LocalStateBrokerActor {
-    type Params = ();
-
-    async fn new(_: ()) -> anyhow::Result<Self> {
-        Ok(Default::default())
-    }
-}
-
-#[async_trait]
 impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
     async fn handle(
         &mut self,

@@ -11,7 +11,6 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use hyperactor::Actor;
 use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
 use hyperactor::context;

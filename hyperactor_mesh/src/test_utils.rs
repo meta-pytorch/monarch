@@ -30,15 +30,6 @@ pub struct EmptyMessage();
 )]
 pub struct EmptyActor();
 
-#[async_trait]
-impl RemoteSpawn for EmptyActor {
-    type Params = ();
-
-    async fn new(_: ()) -> anyhow::Result<Self> {
-        Ok(EmptyActor::default())
-    }
-}
-
 impl Actor for EmptyActor {}
 
 #[async_trait]

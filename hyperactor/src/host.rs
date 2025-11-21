@@ -1193,14 +1193,6 @@ pub mod testing {
     impl Actor for EchoActor {}
 
     #[async_trait]
-    impl RemoteSpawn for EchoActor {
-        type Params = ();
-        async fn new(_: ()) -> anyhow::Result<Self> {
-            Ok(Self)
-        }
-    }
-
-    #[async_trait]
     impl Handler<OncePortRef<ActorId>> for EchoActor {
         async fn handle(
             &mut self,

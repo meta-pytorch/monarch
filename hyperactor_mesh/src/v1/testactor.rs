@@ -70,15 +70,6 @@ pub struct TestActor;
 
 impl Actor for TestActor {}
 
-#[async_trait]
-impl RemoteSpawn for TestActor {
-    type Params = ();
-
-    async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
-        Ok(Self)
-    }
-}
-
 /// A message that returns the recipient actor's id.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
 pub struct GetActorId(#[binding(include)] pub PortRef<ActorId>);
@@ -155,15 +146,6 @@ impl Actor for TestActorWithSupervisionHandling {
 }
 
 #[async_trait]
-impl RemoteSpawn for TestActorWithSupervisionHandling {
-    type Params = ();
-
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(Self)
-    }
-}
-
-#[async_trait]
 impl Handler<ActorSupervisionEvent> for TestActorWithSupervisionHandling {
     async fn handle(
         &mut self,
@@ -234,7 +216,7 @@ impl Handler<GetCastInfo> for TestActor {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 #[hyperactor::export(spawn = true)]
 pub struct FailingCreateTestActor;
 

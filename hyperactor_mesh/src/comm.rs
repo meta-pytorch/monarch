@@ -232,19 +232,6 @@ impl Actor for CommActor {
     }
 }
 
-#[async_trait]
-impl hyperactor::RemoteSpawn for CommActor {
-    type Params = CommActorParams;
-
-    async fn new(_params: Self::Params) -> Result<Self> {
-        Ok(Self {
-            send_seq: HashMap::new(),
-            recv_state: HashMap::new(),
-            mode: Default::default(),
-        })
-    }
-}
-
 impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
     fn forward(

@@ -1246,16 +1246,6 @@ impl LogClientActor {
 #[async_trait]
 impl Actor for LogClientActor {}
 
-#[async_trait]
-impl hyperactor::RemoteSpawn for LogClientActor {
-    /// The aggregation window in seconds.
-    type Params = ();
-
-    async fn new(_: ()) -> Result<Self, anyhow::Error> {
-        Ok(LogClientActor::default())
-    }
-}
-
 impl Drop for LogClientActor {
     fn drop(&mut self) {
         // Flush the remaining logs before shutting down

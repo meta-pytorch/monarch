@@ -69,15 +69,6 @@ pub struct CondaSyncActor {}
 impl Actor for CondaSyncActor {}
 
 #[async_trait]
-impl RemoteSpawn for CondaSyncActor {
-    type Params = CondaSyncParams;
-
-    async fn new(CondaSyncParams {}: Self::Params) -> Result<Self> {
-        Ok(Self {})
-    }
-}
-
-#[async_trait]
 impl Handler<CondaSyncMessage> for CondaSyncActor {
     async fn handle(
         &mut self,
