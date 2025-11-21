@@ -23,11 +23,13 @@ use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Actor, Default)]
+#[derive(Debug, Default)]
 struct CounterActor {
     subscribers: Vec<PortRef<u64>>,
     n: u64,
 }
+
+impl Actor for CounterActor {}
 
 #[derive(Serialize, Deserialize, Debug, Named)]
 struct Subscribe(PortRef<u64>);
@@ -53,6 +55,12 @@ struct CountClient {
     counter: PortRef<Subscribe>,
 }
 
+impl CountClient {
+    fn new(counter: PortRef<Subscribe>) -> Self {
+        Self { counter }
+    }
+}
+
 #[async_trait]
 impl Actor for CountClient {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
@@ -60,16 +68,6 @@ impl Actor for CountClient {
         // messages back to.
         self.counter.send(this, Subscribe(this.port().bind()))?;
         Ok(())
-    }
-}
-
-#[async_trait]
-impl RemoteableActor for CountClient {
-    // Where to send subscribe messages.
-    type Params = PortRef<Subscribe>;
-
-    async fn new(counter: PortRef<Subscribe>) -> Result<Self, anyhow::Error> {
-        Ok(Self { counter })
     }
 }
 
@@ -96,7 +94,7 @@ async fn main() {
         let _countee_actor: ActorHandle<CountClient> = proc
             .spawn(
                 &format!("countee_{}", i),
-                CountClient::new(counter_actor.port().bind()).unwrap(),
+                CountClient::new(counter_actor.port().bind()),
             )
             .await
             .unwrap();
