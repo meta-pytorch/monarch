@@ -435,10 +435,11 @@ impl HostMesh {
 
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
-        let _controller: ActorHandle<HostMeshController> =
-            HostMeshController::spawn(cx, mesh.deref().clone())
-                .await
-                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        let controller = HostMeshController::new(mesh.deref().clone());
+        controller
+            .spawn(cx)
+            .await
+            .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
@@ -941,10 +942,11 @@ impl HostMeshRef {
         if let Ok(ref mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
-            let _controller: ActorHandle<ProcMeshController> =
-                ProcMeshController::spawn(cx, mesh.deref().clone())
-                    .await
-                    .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            let controller = ProcMeshController::new(mesh.deref().clone());
+            controller
+                .spawn(cx)
+                .await
+                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         }
         mesh
     }

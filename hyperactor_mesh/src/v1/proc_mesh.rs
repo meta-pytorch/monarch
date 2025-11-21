@@ -916,15 +916,12 @@ impl ProcMeshRef {
         result
     }
 
-    async fn spawn_with_name_inner<A: Actor + Referable>(
+    async fn spawn_with_name_inner<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: Name,
         params: &A::Params,
-    ) -> v1::Result<ActorMesh<A>>
-    where
-        A::Params: RemoteMessage,
-    {
+    ) -> v1::Result<ActorMesh<A>> {
         let remote = Remote::collect();
         // `Referable` ensures the type `A` is registered with
         // `Remote`.
@@ -1031,10 +1028,11 @@ impl ProcMeshRef {
         }?;
         // Spawn a unique mesh manager for each actor mesh, so the type of the
         // mesh can be preserved.
-        let _controller: ActorHandle<ActorMeshController<A>> =
-            ActorMeshController::<A>::spawn(cx, mesh.deref().clone())
-                .await
-                .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        let controller = ActorMeshController::<A>::new(mesh.deref().clone());
+        controller
+            .spawn(cx)
+            .await
+            .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         Ok(mesh)
     }
 
