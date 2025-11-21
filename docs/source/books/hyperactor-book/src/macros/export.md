@@ -18,7 +18,7 @@ The macro expands to include:
  - A `Binds<Self>` implementation that registers supported message types
  - Implementations of `RemoteHandles<T>` for each type in the `handlers = [...]` list
  - A `Referable` marker implementation
- - If `spawn = true`, a `RemotableActor` implementation and an inventory registration of the `spawn` function.
+ - If `spawn = true`, the actor's `RemoteSpawn` implementation is registered in the remote actor inventory.
 
 This enables the actor to be:
  - Spawned dynamically by name
@@ -46,7 +46,7 @@ impl Named for ShoppingListActor {
 ```
 If `spawn = true`, the macro also emits:
 ```rust
-impl RemotableActor for ShoppingListActor {}
+impl RemoteSpawn for ShoppingListActor {}
 ```
 This enables remote spawning via the default `gspawn` provided by a blanket implementation.
 
