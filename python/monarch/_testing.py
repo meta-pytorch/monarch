@@ -12,7 +12,6 @@ import time
 from contextlib import contextmanager, ExitStack
 from typing import Any, Callable, Dict, Generator, Literal, Optional
 
-import monarch_supervisor
 from monarch._src.actor.endpoint import Extent
 from monarch._src.actor.host_mesh import create_local_host_mesh
 from monarch._src.actor.proc_mesh import proc_mesh, ProcMesh
@@ -21,10 +20,7 @@ from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch.common.client import Client
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.invocation import DeviceException, RemoteException
-from monarch.controller.backend import ProcessBackend
 from monarch.mesh_controller import spawn_tensor_engine
-from monarch.python_local_mesh import PythonLocalContext
-from monarch.rust_local_mesh import LoggingLocation, ProcessCache
 from monarch.simulator.mock_controller import MockController
 
 
@@ -48,30 +44,7 @@ class TestingContext:
     def __init__(self):
         self.cleanup = ExitStack()
         self._py_process_cache = {}
-        self._rust_process_cache = None
         self._proc_mesh_cache: Dict[Any, ProcMesh] = {}
-
-    @contextmanager
-    def _get_context(self, num_hosts, gpu_per_host):
-        # since we are local, there isn't a lot of latency involved.
-        # Make the host managers exit if they go 0.5 seconds without
-        # hearing from supervisor.
-        monarch_supervisor.HEARTBEAT_INTERVAL = 1
-        ctx = PythonLocalContext(N=num_hosts)
-        store = ProcessBackend._create_store()
-        processes = ProcessBackend._create_pg(
-            ctx.ctx, ctx.hosts, gpu_per_host, store, _restartable=True
-        )
-        yield ctx.ctx, ctx.hosts, processes
-        ctx.shutdown()
-
-    def _processes(self, num_hosts, gpu_per_host):
-        key = (num_hosts, gpu_per_host)
-        if key not in self._py_process_cache:
-            self._py_process_cache[key] = self.cleanup.enter_context(
-                self._get_context(num_hosts, gpu_per_host)
-            )
-        return self._py_process_cache[key]
 
     @contextmanager
     def local_engine_on_proc_mesh(
@@ -128,12 +101,6 @@ class TestingContext:
         start = time.time()
         self._log_dir = self.cleanup.enter_context(
             tempfile.TemporaryDirectory(prefix="rust_cached_workers.")
-        )
-        self._rust_process_cache = self.cleanup.enter_context(
-            ProcessCache(
-                logging_location=LoggingLocation.DEFAULT,
-                logging_dir=self._log_dir,
-            )
         )
         end = time.time()
         logging.info("started process caches in {:.2f}s".format(end - start))

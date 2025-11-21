@@ -45,6 +45,7 @@ use hyperactor::clock::RealClock;
 use hyperactor::config::CONFIG;
 use hyperactor::config::ConfigAttr;
 use hyperactor::config::global as config;
+use hyperactor::config::global::override_or_global;
 use hyperactor::context;
 use hyperactor::declare_attrs;
 use hyperactor::host::Host;
@@ -96,7 +97,7 @@ declare_attrs! {
     /// piping) or via [`StreamFwder`] when piping is active.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_ENABLE_LOG_FORWARDING".to_string()),
-        py_name: None,
+        py_name: Some("enable_log_forwarding".to_string()),
     })
     pub attr MESH_ENABLE_LOG_FORWARDING: bool = false;
 
@@ -121,7 +122,7 @@ declare_attrs! {
     ///   buffer used for peeking—independent of file capture.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_ENABLE_FILE_CAPTURE".to_string()),
-        py_name: None,
+        py_name: Some("enable_file_capture".to_string()),
     })
     pub attr MESH_ENABLE_FILE_CAPTURE: bool = false;
 
@@ -130,7 +131,7 @@ declare_attrs! {
     /// pipes. Default: 100
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_TAIL_LOG_LINES".to_string()),
-        py_name: None,
+        py_name: Some("tail_log_lines".to_string()),
     })
     pub attr MESH_TAIL_LOG_LINES: usize = 0;
 
@@ -1721,67 +1722,71 @@ impl BootstrapProcManager {
                 let (_lines, _bytes) = t.abort().await;
             }
 
+            let tail_str = if stderr_tail.is_empty() {
+                None
+            } else {
+                Some(stderr_tail.join("\n"))
+            };
+
+            let remove_from_pid_table = || {
+                let pid = if let Ok(mut table) = pid_table.lock() {
+                    table.remove(&proc_id)
+                } else {
+                    None
+                };
+
+                pid.map_or_else(|| "not available".to_string(), |i| format!("{i}"))
+            };
+
             match wait_res {
                 Ok(status) => {
                     if let Some(sig) = status.signal() {
                         let _ = handle.mark_killed(sig, status.core_dumped());
-                        if let Ok(mut table) = pid_table.lock() {
-                            table.remove(&proc_id);
-                        }
-                        if stderr_tail.is_empty() {
-                            tracing::debug!("proc {proc_id} killed by signal {sig}");
-                        } else {
-                            let tail = stderr_tail.join("\n");
-                            tracing::debug!(
-                                "proc {proc_id} killed by signal {sig}; stderr tail:\n{tail}"
-                            );
-                        }
+                        let pid_str = remove_from_pid_table();
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::KilledBySignal",
+                            %proc_id,
+                            tail = tail_str,
+                            "killed by signal {sig}; proc's pid: {pid_str}"
+                        );
                     } else if let Some(code) = status.code() {
-                        let _ = handle.mark_stopped(code, stderr_tail.clone());
-                        if let Ok(mut table) = pid_table.lock() {
-                            table.remove(&proc_id);
-                        }
-                        let tail_str = if stderr_tail.is_empty() {
-                            None
-                        } else {
-                            Some(stderr_tail.join("\n"))
-                        };
-                        if code == 0 {
-                            tracing::debug!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited");
-                        } else {
-                            tracing::info!(%proc_id, exit_code = code, tail = tail_str.as_deref(), "proc exited");
-                        }
+                        let _ = handle.mark_stopped(code, stderr_tail);
+                        let pid_str = remove_from_pid_table();
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::ExitWithCode",
+                            %proc_id,
+                            exit_code = code,
+                            tail = tail_str,
+                            "proc exited; proc's pid: {pid_str}"
+                        );
                     } else {
                         debug_assert!(
                             false,
                             "unreachable: process terminated with neither signal nor exit code"
                         );
-                        tracing::error!(
-                            "proc {proc_id}: unreachable exit status (no code, no signal)"
-                        );
                         let _ = handle.mark_failed("process exited with unknown status");
-                        if let Ok(mut table) = pid_table.lock() {
-                            table.remove(&proc_id);
-                        }
-                        if stderr_tail.is_empty() {
-                            tracing::warn!("proc {proc_id} unknown exit");
-                        } else {
-                            let tail = stderr_tail.join("\n");
-                            tracing::warn!("proc {proc_id} unknown exit; stderr tail:\n{tail}");
-                        }
+                        let pid_str = remove_from_pid_table();
+                        tracing::info!(
+                            name = "ProcStatus",
+                            status = "Exited::Unknown",
+                            %proc_id,
+                            tail = tail_str,
+                            "unknown exit: unreachable exit status (no code, no signal); proc's pid: {pid_str}"
+                        );
                     }
                 }
                 Err(e) => {
                     let _ = handle.mark_failed(format!("wait_inner() failed: {e}"));
-                    if let Ok(mut table) = pid_table.lock() {
-                        table.remove(&proc_id);
-                    }
-                    if stderr_tail.is_empty() {
-                        tracing::info!("proc {proc_id} wait failed");
-                    } else {
-                        let tail = stderr_tail.join("\n");
-                        tracing::info!("proc {proc_id} wait failed; stderr tail:\n{tail}");
-                    }
+                    let pid_str = remove_from_pid_table();
+                    tracing::info!(
+                        name = "ProcStatus",
+                        status = "Exited::WaitFailed",
+                        %proc_id,
+                        tail = tail_str,
+                        "proc {proc_id} wait failed; proc's pid: {pid_str}"
+                    );
                 }
             }
         });
@@ -1850,6 +1855,13 @@ impl ProcManager for BootstrapProcManager {
         let (callback_addr, mut callback_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
 
+        // Decide whether we need to capture stdio.
+        let overrides = &config.client_config_override;
+        let enable_forwarding = override_or_global(overrides, MESH_ENABLE_LOG_FORWARDING);
+        let enable_file_capture = override_or_global(overrides, MESH_ENABLE_FILE_CAPTURE);
+        let tail_size = override_or_global(overrides, MESH_TAIL_LOG_LINES);
+        let need_stdio = enable_forwarding || enable_file_capture || tail_size > 0;
+
         let mode = Bootstrap::Proc {
             proc_id: proc_id.clone(),
             backend_addr,
@@ -1863,12 +1875,6 @@ impl ProcManager for BootstrapProcManager {
             mode.to_env_safe_string()
                 .map_err(|e| HostError::ProcessConfigurationFailure(proc_id.clone(), e.into()))?,
         );
-
-        // Decide whether we need to capture stdio.
-        let enable_forwarding = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
-        let enable_file_capture = hyperactor::config::global::get(MESH_ENABLE_FILE_CAPTURE);
-        let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
-        let need_stdio = enable_forwarding || enable_file_capture || tail_size > 0;
 
         if need_stdio {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());

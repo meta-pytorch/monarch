@@ -903,9 +903,13 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                         // TODO: We also don't want to deliver multiple supervision
                         // events from the same mesh if an earlier one is handled.
                         tracing::info!(
-                            "__supervise__ on {} handled a supervision event, not reporting any further: {}",
+                            name = "ActorMeshStatus",
+                            status = "SupervisionError::Handled",
+                            // only care about the event sender when the message is handled
+                            actor_name = message.actor_mesh_name,
+                            event = %message.event,
+                            "__supervise__ on {} handled a supervision event, not reporting any further",
                             cx.self_id(),
-                            message.event
                         );
                         Ok(())
                     } else {
@@ -917,6 +921,22 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
 
                         // False -- we propagate the event onward, but update it with the fact that
                         // this actor is now the event creator.
+                        for (actor_name, status) in [
+                            (
+                                message.actor_mesh_name.as_str(),
+                                "SupervisionError::Unhandled",
+                            ),
+                            (cx.self_id().name(), "UnhandledSupervisionEvent"),
+                        ] {
+                            tracing::info!(
+                                name = "ActorMeshStatus",
+                                status,
+                                actor_name,
+                                event = %message.event,
+                                "__supervise__ on {} did not handle a supervision event, reporting to the next next owner",
+                                cx.self_id(),
+                            );
+                        }
                         let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                             ActorSupervisionEvent::new(
                                 cx.self_id().clone(),
@@ -936,6 +956,22 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                     // Include the event it was handling in the error message.
 
                     // Add to caused_by chain.
+                    for (actor_name, status) in [
+                        (
+                            message.actor_mesh_name.as_str(),
+                            "SupervisionError::__supervise__::exception",
+                        ),
+                        (cx.self_id().name(), "UnhandledSupervisionEvent"),
+                    ] {
+                        tracing::info!(
+                            name = "ActorMeshStatus",
+                            status,
+                            actor_name,
+                            event = %message.event,
+                            "__supervise__ on {} threw an exception",
+                            cx.self_id(),
+                        );
+                    }
                     let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                         ActorSupervisionEvent::new(
                             cx.self_id().clone(),

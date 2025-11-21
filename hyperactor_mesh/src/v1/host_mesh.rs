@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
@@ -62,6 +64,8 @@ pub use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
 use crate::v1::host_mesh::mesh_agent::ProcState;
 use crate::v1::host_mesh::mesh_agent::ShutdownHostClient;
+use crate::v1::mesh_controller::HostMeshController;
+use crate::v1::mesh_controller::ProcMeshController;
 use crate::v1::proc_mesh::ProcRef;
 
 declare_attrs! {
@@ -126,7 +130,10 @@ impl HostRef {
     /// This call returns `Ok(()))` only after the agent has finished
     /// the termination pass and released the host, so the host is no
     /// longer reachable when this returns.
-    async fn shutdown(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+    pub(crate) async fn shutdown(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+    ) -> anyhow::Result<()> {
         let agent = self.mesh_agent();
         let terminate_timeout =
             hyperactor::config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
@@ -363,7 +370,7 @@ impl HostMesh {
     }
 
     // Use allocate_inner to set field mesh_name in span
-    #[hyperactor::instrument(fields(mesh_name=name.to_string()))]
+    #[hyperactor::instrument(fields(host_mesh=name.to_string()))]
     async fn allocate_inner(
         cx: &impl context::Actor,
         alloc: Box<dyn Alloc + Send + Sync>,
@@ -425,6 +432,14 @@ impl HostMesh {
             },
             current_ref: HostMeshRef::new(name, extent.into(), hosts).unwrap(),
         };
+
+        // Spawn a unique mesh controller for each proc mesh, so the type of the
+        // mesh can be preserved.
+        let _controller: ActorHandle<HostMeshController> =
+            HostMeshController::spawn(cx, mesh.deref().clone())
+                .await
+                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
     }
@@ -459,18 +474,32 @@ impl HostMesh {
     /// `BootstrapProcManager`. On drop, the manager walks its PID
     /// table and sends SIGKILL to any procs it spawned—tying proc
     /// lifetimes to their hosts and preventing leaks.
+    #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
     pub async fn shutdown(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
-        let mut attempted = 0;
-        let mut ok = 0;
+        tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
+        let mut failed_hosts = vec![];
         for host in self.current_ref.values() {
-            attempted += 1;
             if let Err(e) = host.shutdown(cx).await {
-                tracing::warn!(host = %host, error = %e, "host shutdown failed");
-            } else {
-                ok += 1;
+                tracing::warn!(
+                    name = "HostMeshStatus",
+                    status = "Shutdown::Host::Failed",
+                    host = %host,
+                    error = %e,
+                    "host shutdown failed"
+                );
+                failed_hosts.push(host);
             }
         }
-        tracing::info!(attempted, ok, "hostmesh shutdown summary");
+        if failed_hosts.is_empty() {
+            tracing::info!(name = "HostMeshStatus", status = "Shutdown::Success");
+        } else {
+            tracing::error!(
+                name = "HostMeshStatus",
+                status = "Shutdown::Failed",
+                "host mesh shutdown failed; check the logs of the failed hosts for details: {:?}",
+                failed_hosts
+            );
+        }
         Ok(())
     }
 }
@@ -504,7 +533,7 @@ impl Drop for HostMesh {
     fn drop(&mut self) {
         tracing::info!(
             name = "HostMeshStatus",
-            mesh_name = %self.name,
+            host_mesh = %self.name,
             status = "Dropping",
         );
         // Snapshot the owned hosts we're responsible for.
@@ -526,7 +555,7 @@ impl Drop for HostMesh {
             handle.spawn(async move {
                 let span = tracing::info_span!(
                     "hostmesh_drop_cleanup",
-                    %mesh_name,
+                    host_mesh = %mesh_name,
                     allocation = %allocation_label,
                     hosts = hosts.len(),
                 );
@@ -589,7 +618,7 @@ impl Drop for HostMesh {
             // No runtime here; PDEATHSIG and manager Drop remain the
             // last-resort safety net.
             tracing::warn!(
-                mesh_name = %self.name,
+                host_mesh = %self.name,
                 hosts = hosts.len(),
                 "HostMesh dropped without a tokio runtime; skipping best-effort shutdown"
             );
@@ -597,7 +626,7 @@ impl Drop for HostMesh {
 
         tracing::info!(
             name = "HostMeshStatus",
-            mesh_name = %self.name,
+            host_mesh = %self.name,
             status = "Dropped",
         );
     }
@@ -698,11 +727,33 @@ impl HostMeshRef {
         self.spawn_inner(cx, Name::new(name), per_host).await
     }
 
-    #[hyperactor::instrument(fields(mesh_name=mesh_name.to_string()))]
+    #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
     async fn spawn_inner(
         &self,
         cx: &impl context::Actor,
-        mesh_name: Name,
+        proc_mesh_name: Name,
+        per_host: Extent,
+    ) -> v1::Result<ProcMesh> {
+        tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
+        tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
+        let result = self.spawn_inner_inner(cx, proc_mesh_name, per_host).await;
+        match &result {
+            Ok(_) => {
+                tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Success");
+                tracing::info!(name = "ProcMeshStatus", status = "Spawn::Success");
+            }
+            Err(error) => {
+                tracing::error!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Failed", %error);
+                tracing::error!(name = "ProcMeshStatus", status = "Spawn::Failed", %error);
+            }
+        }
+        result
+    }
+
+    async fn spawn_inner_inner(
+        &self,
+        cx: &impl context::Actor,
+        proc_mesh_name: Name,
         per_host: Extent,
     ) -> v1::Result<ProcMesh> {
         let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
@@ -754,7 +805,7 @@ impl HostMeshRef {
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
-                let proc_name = Name::new(format!("{}_{}", mesh_name.name(), per_host_rank));
+                let proc_name = Name::new(format!("{}_{}", proc_mesh_name.name(), per_host_rank));
                 proc_names.push(proc_name.clone());
                 host.mesh_agent()
                     .create_or_update(
@@ -886,8 +937,15 @@ impl HostMeshRef {
         }
 
         let mesh =
-            ProcMesh::create_owned_unchecked(cx, mesh_name, extent, self.clone(), procs).await;
-        tracing::info!(name = "ProcMeshStatus", status = "Spawn::Created",);
+            ProcMesh::create_owned_unchecked(cx, proc_mesh_name, extent, self.clone(), procs).await;
+        if let Ok(ref mesh) = mesh {
+            // Spawn a unique mesh controller for each proc mesh, so the type of the
+            // mesh can be preserved.
+            let _controller: ActorHandle<ProcMeshController> =
+                ProcMeshController::spawn(cx, mesh.deref().clone())
+                    .await
+                    .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        }
         mesh
     }
 
@@ -896,6 +954,7 @@ impl HostMeshRef {
         &self.name
     }
 
+    #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
     pub(crate) async fn stop_proc_mesh(
         &self,
         cx: &impl hyperactor::context::Actor,
@@ -943,18 +1002,20 @@ impl HostMeshRef {
 
             tracing::info!(
                 name = "ProcMeshStatus",
-                mesh_name = %proc_mesh_name,
                 %proc_id,
                 status = "Stop::Sent",
             );
         }
         tracing::info!(
-            mesh_name = %self.name,
             name = "HostMeshStatus",
             status = "ProcMesh::Stop::Sent",
-            "Sending Stop to host mesh {} for {:?} procs",
-            self.name,
+            "sending Stop to proc mesh for {} procs: {}",
+            proc_names.len(),
             proc_names
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
 
         let start_time = RealClock.now();
@@ -968,11 +1029,10 @@ impl HostMeshRef {
         .await
         {
             Ok(statuses) => {
-                let failed = statuses.values().any(|s| s.is_failure());
-                if failed {
+                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                if !all_stopped {
                     tracing::error!(
                         name = "ProcMeshStatus",
-                        mesh_name = %proc_mesh_name,
                         status = "FailedToStop",
                         "failed to terminate proc mesh: {:?}",
                         statuses,
@@ -982,11 +1042,7 @@ impl HostMeshRef {
                         statuses,
                     ));
                 }
-                tracing::info!(
-                    name = "ProcMeshStatus",
-                    mesh_name = %proc_mesh_name,
-                    status = "Stopped",
-                );
+                tracing::info!(name = "ProcMeshStatus", status = "Stopped");
             }
             Err(complete) => {
                 // Fill remaining ranks with a timeout status via the
@@ -999,7 +1055,6 @@ impl HostMeshRef {
                 );
                 tracing::error!(
                     name = "ProcMeshStatus",
-                    mesh_name = %proc_mesh_name,
                     status = "StoppingTimeout",
                     "failed to terminate proc mesh before timeout: {:?}",
                     legacy,
