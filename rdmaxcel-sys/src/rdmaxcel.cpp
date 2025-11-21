@@ -260,8 +260,8 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
 }
 
 // Register memory region for a specific segment address, assume cuda
-int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
-  if (!pd) {
+int register_segments(struct ibv_pd* pd, rdmaxcel_qp_t* qp) {
+  if (!pd || !qp) {
     return RDMAXCEL_INVALID_PARAMS; // Invalid parameter
   }
   scan_existing_segments();
@@ -334,7 +334,7 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
       seg.mr_size = seg.phys_size;
 
       // Create vector of GPU addresses for bind_mrs
-      auto err = bind_mrs(pd, qp, access_flags, seg);
+      auto err = bind_mrs(pd, qp->ibv_qp, access_flags, seg);
       if (err != 0) {
         return err; // Bind MR's failed
       }
@@ -535,6 +535,10 @@ const char* rdmaxcel_error_string(int error_code) {
       return "[RdmaXcel] Output buffer too small";
     case RDMAXCEL_QUERY_DEVICE_FAILED:
       return "[RdmaXcel] Failed to query device attributes";
+    case RDMAXCEL_CQ_POLL_FAILED:
+      return "[RdmaXcel] CQ polling failed";
+    case RDMAXCEL_COMPLETION_FAILED:
+      return "[RdmaXcel] Completion status not successful";
     default:
       return "[RdmaXcel] Unknown error code";
   }
