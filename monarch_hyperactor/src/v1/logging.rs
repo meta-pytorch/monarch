@@ -24,6 +24,7 @@ use ndslice::View;
 use pyo3::Bound;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
+use pyo3::types::PyString;
 
 use crate::context::PyInstance;
 use crate::instance_dispatch;
@@ -419,6 +420,40 @@ impl Drop for LoggingMeshClient {
     }
 }
 
+/// Turns a python exception into a string with a traceback. If the traceback doesn't
+/// exist or can't be formatted, returns just the exception message.
+fn format_traceback<'py>(py: Python<'py>, err: PyErr) -> String {
+    let traceback = err.traceback(py);
+    if traceback.is_some() {
+        let inner = || -> PyResult<String> {
+            let formatted = py
+                .import("traceback")?
+                .call_method1("format_exception", (err.clone_ref(py),))?;
+            Ok(PyString::new(py, "")
+                .call_method1("join", (formatted,))?
+                .to_string())
+        };
+        match inner() {
+            Ok(s) => s,
+            Err(e) => format!("{}: no traceback {}", err, e),
+        }
+    } else {
+        err.to_string()
+    }
+}
+
+#[pyfunction]
+fn log_endpoint_exception<'py>(py: Python<'py>, e: PyObject, endpoint: PyObject) {
+    let pyerr = PyErr::from_value(e.into_bound(py));
+    let exception_str = format_traceback(py, pyerr);
+    let endpoint = endpoint.into_bound(py).to_string();
+    tracing::info!(
+        %endpoint,
+        "exception occurred in endpoint: {}",
+        exception_str,
+    );
+}
+
 /// Register the Python-facing types for this module.
 ///
 /// `pyo3` calls this when building `monarch._rust_bindings...`. We
@@ -426,6 +461,12 @@ impl Drop for LoggingMeshClient {
 /// call its methods (`spawn`, `set_mode`, `flush`, ...).
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<LoggingMeshClient>()?;
+    let log_endpoint_exception = wrap_pyfunction!(log_endpoint_exception, module.py())?;
+    log_endpoint_exception.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.v1.logging",
+    )?;
+    module.add_function(log_endpoint_exception)?;
     Ok(())
 }
 
