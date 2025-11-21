@@ -147,12 +147,10 @@ impl PyProc {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         crate::runtime::future_into_py(py, async move {
             Ok(PythonActorHandle {
-                inner: proc
-                    .spawn(
-                        name.as_deref().unwrap_or("anon"),
-                        PythonActor::new(pickled_type).await?,
-                    )
-                    .await?,
+                inner: proc.spawn(
+                    name.as_deref().unwrap_or("anon"),
+                    PythonActor::new(pickled_type).await?,
+                )?,
             })
         })
     }
@@ -172,7 +170,6 @@ impl PyProc {
                     name.as_deref().unwrap_or("anon"),
                     PythonActor::new(pickled_type).await?,
                 )
-                .await
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,
         })
