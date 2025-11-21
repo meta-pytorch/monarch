@@ -98,8 +98,8 @@ pub trait Actor: Sized + Send + Debug + 'static {
 
     /// Spawn a child actor, given a spawning capability (usually given by [`Instance`]).
     /// The spawned actor will be supervised by the parent (spawning) actor.
-    async fn spawn(self, cx: &impl context::Actor) -> anyhow::Result<ActorHandle<Self>> {
-        cx.instance().spawn(self).await
+    fn spawn(self, cx: &impl context::Actor) -> anyhow::Result<ActorHandle<Self>> {
+        cx.instance().spawn(self)
     }
 
     /// Spawns this actor in a detached state, handling its messages
@@ -108,8 +108,8 @@ pub trait Actor: Sized + Send + Debug + 'static {
     ///
     /// Actors spawned through `spawn_detached` are not attached to a supervision
     /// hierarchy, and not managed by a [`Proc`].
-    async fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::local().spawn("anon", self).await
+    fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
+        Proc::local().spawn("anon", self)
     }
 
     /// This method is used by the runtime to spawn the actor server. It can be
@@ -260,7 +260,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         Box::pin(async move {
             let params = bincode::deserialize(&serialized_params)?;
             let actor = Self::new(params).await?;
-            let handle = proc.spawn(&name, actor).await?;
+            let handle = proc.spawn(&name, actor)?;
             // We return only the ActorId, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
             // only via the serialized/opaque messaging path, which
@@ -792,7 +792,7 @@ mod tests {
         let client = proc.attach("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo", actor).await.unwrap();
+        let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
         handle.send(123u64).unwrap();
         handle.drain_and_stop().unwrap();
         handle.await;
@@ -808,14 +808,8 @@ mod tests {
 
         let ping_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
         let pong_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
-        let ping_handle = proc
-            .spawn::<PingPongActor>("ping", ping_actor)
-            .await
-            .unwrap();
-        let pong_handle = proc
-            .spawn::<PingPongActor>("pong", pong_actor)
-            .await
-            .unwrap();
+        let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
+        let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
 
         let (local_port, local_receiver) = client.open_once_port();
 
@@ -842,14 +836,8 @@ mod tests {
             PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
         let pong_actor =
             PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
-        let ping_handle = proc
-            .spawn::<PingPongActor>("ping", ping_actor)
-            .await
-            .unwrap();
-        let pong_handle = proc
-            .spawn::<PingPongActor>("pong", pong_actor)
-            .await
-            .unwrap();
+        let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
+        let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
 
         let (local_port, local_receiver) = client.open_once_port();
 
@@ -895,7 +883,7 @@ mod tests {
     async fn test_init() {
         let proc = Proc::local();
         let actor = InitActor(false);
-        let handle = proc.spawn::<InitActor>("init", actor).await.unwrap();
+        let handle = proc.spawn::<InitActor>("init", actor).unwrap();
         let client = proc.attach("client").unwrap();
 
         let (port, receiver) = client.open_once_port();
@@ -954,7 +942,7 @@ mod tests {
             let proc = Proc::local();
             let values: MultiValues = Arc::new(Mutex::new((0, "".to_string())));
             let actor = MultiActor(values.clone());
-            let handle = proc.spawn::<MultiActor>("myactor", actor).await.unwrap();
+            let handle = proc.spawn::<MultiActor>("myactor", actor).unwrap();
             let (client, client_handle) = proc.instance("client").unwrap();
             Self {
                 proc,
@@ -1072,7 +1060,7 @@ mod tests {
         // Just test that we can round-trip the handle through a downcast.
 
         let proc = Proc::local();
-        let handle = proc.spawn("nothing", NothingActor).await.unwrap();
+        let handle = proc.spawn("nothing", NothingActor).unwrap();
         let cell = handle.cell();
 
         // Invalid actor doesn't succeed.

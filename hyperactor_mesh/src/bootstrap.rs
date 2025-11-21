@@ -491,12 +491,10 @@ impl Bootstrap {
                 let (host, _handle) = ok!(Host::serve(manager, addr).await);
                 let addr = host.addr().clone();
                 let system_proc = host.system_proc().clone();
-                let host_mesh_agent = ok!(system_proc
-                    .spawn::<HostMeshAgent>(
-                        "agent",
-                        HostMeshAgent::new(HostAgentMode::Process(host)),
-                    )
-                    .await);
+                let host_mesh_agent = ok!(system_proc.spawn::<HostMeshAgent>(
+                    "agent",
+                    HostMeshAgent::new(HostAgentMode::Process(host)),
+                ));
 
                 tracing::info!(
                     "serving host at {}, agent: {}",
@@ -2618,11 +2616,8 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new(()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> = proc
-            .spawn("log_client", log_client_actor)
-            .await
-            .unwrap()
-            .bind();
+        let log_client: ActorRef<LogClientActor> =
+            proc.spawn("log_client", log_client_actor).unwrap().bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
@@ -2630,7 +2625,6 @@ mod tests {
         let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
-            .await
             .unwrap()
             .bind();
 
