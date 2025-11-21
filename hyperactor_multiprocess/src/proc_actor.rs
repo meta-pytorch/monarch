@@ -971,15 +971,6 @@ mod tests {
 
     impl Actor for TestActor {}
 
-    #[async_trait]
-    impl RemoteSpawn for TestActor {
-        type Params = ();
-
-        async fn new(_: ()) -> anyhow::Result<Self> {
-            Ok(Self)
-        }
-    }
-
     #[derive(Handler, HandleClient, RefClient, Serialize, Deserialize, Debug, Named)]
     enum TestActorMessage {
         Increment(u64, #[reply] OncePortRef<u64>),
@@ -1042,15 +1033,6 @@ mod tests {
     struct SleepActor {}
 
     impl Actor for SleepActor {}
-
-    #[async_trait]
-    impl RemoteSpawn for SleepActor {
-        type Params = ();
-
-        async fn new(_: ()) -> anyhow::Result<Self> {
-            Ok(Default::default())
-        }
-    }
 
     #[async_trait]
     impl Handler<u64> for SleepActor {
