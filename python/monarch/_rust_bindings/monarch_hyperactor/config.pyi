@@ -25,5 +25,8 @@ def reload_config_from_env() -> None:
 
 def configure(
     default_transport: ChannelTransport = ChannelTransport.Unix,
+    enable_log_forwarding: bool = False,
+    enable_file_capture: bool = False,
+    tail_log_lines: int = 0,
 ) -> None: ...
 def get_configuration() -> Dict[str, Any]: ...

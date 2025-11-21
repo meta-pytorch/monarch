@@ -413,6 +413,16 @@ pub fn get<T: AttrValue + Copy>(key: Key<T>) -> T {
     *key.default().expect("key must have a default")
 }
 
+/// Return the override value for `key` if it is explicitly present in
+/// `overrides`, otherwise fall back to the global value for that key.
+pub fn override_or_global<T: AttrValue + Copy>(overrides: &Attrs, key: Key<T>) -> T {
+    if overrides.contains_key(key) {
+        *overrides.get(key).unwrap()
+    } else {
+        get(key)
+    }
+}
+
 /// Get a key by cloning the value.
 ///
 /// Resolution order: TestOverride -> Runtime -> Env -> File ->
@@ -440,6 +450,24 @@ pub fn try_get_cloned<T: AttrValue>(key: Key<T>) -> Option<T> {
     key.default().cloned()
 }
 
+/// Construct a [`Layer`] for the given [`Source`] using the provided
+/// `attrs`.
+///
+/// Used by [`set`] and [`create_or_merge`] when installing a new
+/// configuration layer.
+fn make_layer(source: Source, attrs: Attrs) -> Layer {
+    match source {
+        Source::File => Layer::File(attrs),
+        Source::Env => Layer::Env(attrs),
+        Source::Runtime => Layer::Runtime(attrs),
+        Source::TestOverride => Layer::TestOverride {
+            attrs,
+            stacks: HashMap::new(),
+        },
+        Source::ClientOverride => Layer::ClientOverride(attrs),
+    }
+}
+
 /// Insert or replace a configuration layer for the given source.
 ///
 /// If a layer with the same [`Source`] already exists, its
@@ -457,16 +485,34 @@ pub fn set(source: Source, attrs: Attrs) {
     if let Some(l) = g.ordered.iter_mut().find(|l| layer_source(l) == source) {
         *layer_attrs_mut(l) = attrs;
     } else {
-        g.ordered.push(match source {
-            Source::File => Layer::File(attrs),
-            Source::Env => Layer::Env(attrs),
-            Source::Runtime => Layer::Runtime(attrs),
-            Source::TestOverride => Layer::TestOverride {
-                attrs,
-                stacks: HashMap::new(),
-            },
-            Source::ClientOverride => Layer::ClientOverride(attrs),
-        });
+        g.ordered.push(make_layer(source, attrs));
+    }
+    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Runtime < Env < File < ClientOverride
+}
+
+/// Insert or update a configuration layer for the given [`Source`].
+///
+/// If a layer with the same [`Source`] already exists, its attributes
+/// are **updated in place**: all keys present in `attrs` are absorbed
+/// into the existing layer, overwriting any previous values for those
+/// keys while leaving all other keys in that layer unchanged.
+///
+/// If no layer for `source` exists yet, this behaves like [`set`]: a
+/// new layer is created with the provided `attrs`.
+///
+/// This is useful for incremental / additive updates (for example,
+/// runtime configuration driven by a Python API), where callers want
+/// to change a subset of keys without discarding previously installed
+/// values in the same layer.
+///
+/// By contrast, [`set`] replaces the entire layer for `source` with
+/// `attrs`, discarding any existing values in that layer.
+pub fn create_or_merge(source: Source, attrs: Attrs) {
+    let mut g = LAYERS.write().unwrap();
+    if let Some(layer) = g.ordered.iter_mut().find(|l| layer_source(l) == source) {
+        layer_attrs_mut(layer).merge(attrs);
+    } else {
+        g.ordered.push(make_layer(source, attrs));
     }
     g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Runtime < Env < File < ClientOverride
 }
@@ -1205,5 +1251,38 @@ mod tests {
         assert!(priority(Runtime) < priority(Env));
         assert!(priority(Env) < priority(File));
         assert!(priority(File) < priority(ClientOverride));
+    }
+
+    #[test]
+    fn test_create_or_merge_runtime_merges_keys() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Seed Runtime with one key.
+        let mut rt = Attrs::new();
+        rt[MESSAGE_TTL_DEFAULT] = 10;
+        set(Source::Runtime, rt);
+
+        // Now update Runtime with a different key via
+        // `create_or_merge`.
+        let mut update = Attrs::new();
+        update[MESSAGE_ACK_EVERY_N_MESSAGES] = 123;
+        create_or_merge(Source::Runtime, update);
+
+        // Both keys should now be visible from Runtime.
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 10);
+        assert_eq!(get(MESSAGE_ACK_EVERY_N_MESSAGES), 123);
+    }
+
+    #[test]
+    fn test_create_or_merge_runtime_creates_layer_if_missing() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        let mut rt = Attrs::new();
+        rt[MESSAGE_TTL_DEFAULT] = 42;
+        create_or_merge(Source::Runtime, rt);
+
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 42);
     }
 }

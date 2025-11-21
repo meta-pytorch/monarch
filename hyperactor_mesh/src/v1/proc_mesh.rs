@@ -18,6 +18,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -75,6 +77,7 @@ use crate::v1::Name;
 use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_agent::ProcState;
 use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
+use crate::v1::mesh_controller::ActorMeshController;
 
 declare_attrs! {
     /// The maximum idle time between updates while spawning actor
@@ -304,7 +307,7 @@ impl ProcMesh {
     }
 
     // Use allocate_inner to set field mesh_name in span
-    #[hyperactor::instrument(fields(mesh_name=name.to_string()))]
+    #[hyperactor::instrument(fields(proc_mesh=name.to_string()))]
     async fn allocate_inner(
         cx: &impl context::Actor,
         mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
@@ -326,7 +329,7 @@ impl ProcMesh {
             .instrument(tracing::info_span!(
                 "ProcMeshStatus::Allocate::Initialize",
                 alloc_id,
-                mesh_name = name.to_string()
+                proc_mesh = %name
             ))
             .await?;
 
@@ -346,7 +349,7 @@ impl ProcMesh {
             tracing::info!(
                 name = "ProcMeshStatus",
                 status = "Allocate::ChannelServe",
-                mesh_name = name.to_string(),
+                proc_mesh = %name,
                 %addr,
                 "proc started listening on addr: {addr}"
             );
@@ -514,7 +517,7 @@ impl ProcMesh {
                 stop.notify_one();
                 tracing::info!(
                     name = "ProcMeshStatus",
-                    mesh_name = %self.name,
+                    proc_mesh = %self.name,
                     alloc_name,
                     status = "StoppingAlloc",
                     "sending stop to alloc {alloc_name}; check its log for stop status",
@@ -549,7 +552,7 @@ impl Drop for ProcMesh {
     fn drop(&mut self) {
         tracing::info!(
             name = "ProcMeshStatus",
-            mesh_name = %self.name,
+            proc_mesh = %self.name,
             status = "Dropped",
         );
     }
@@ -686,6 +689,16 @@ impl ProcMeshRef {
         &self.name
     }
 
+    pub fn host_mesh_name(&self) -> Option<&Name> {
+        self.host_mesh.as_ref().map(|h| h.name())
+    }
+
+    /// Returns the HostMeshRef that this ProcMeshRef might be backed by.
+    /// Returns None if this ProcMeshRef is backed by an Alloc instead of a host mesh.
+    pub fn hosts(&self) -> Option<&HostMeshRef> {
+        self.host_mesh.as_ref()
+    }
+
     /// The current statuses of procs in this mesh.
     pub async fn status(&self, cx: &impl context::Actor) -> v1::Result<ValueMesh<bool>> {
         let vm: ValueMesh<_> = self.map_into(|proc_ref| {
@@ -809,7 +822,7 @@ impl ProcMeshRef {
     }
 
     /// Returns an iterator over the proc ids in this mesh.
-    fn proc_ids(&self) -> impl Iterator<Item = ProcId> {
+    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = ProcId> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
     }
 
@@ -867,7 +880,43 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
+    #[hyperactor::instrument(fields(
+        host_mesh=self.host_mesh_name().map(|n| n.to_string()),
+        proc_mesh=self.name.to_string(),
+        actor_name=name.to_string(),
+    ))]
     pub(crate) async fn spawn_with_name<A: RemoteSpawn>(
+        &self,
+        cx: &impl context::Actor,
+        name: Name,
+        params: &A::Params,
+    ) -> v1::Result<ActorMesh<A>>
+    where
+        A::Params: RemoteMessage,
+    {
+        tracing::info!(
+            name = "ProcMeshStatus",
+            status = "ActorMesh::Spawn::Attempt",
+        );
+        tracing::info!(name = "ActorMeshStatus", status = "Spawn::Attempt");
+        let result = self.spawn_with_name_inner(cx, name, params).await;
+        match &result {
+            Ok(_) => {
+                tracing::info!(
+                    name = "ProcMeshStatus",
+                    status = "ActorMesh::Spawn::Success",
+                );
+                tracing::info!(name = "ActorMeshStatus", status = "Spawn::Success");
+            }
+            Err(error) => {
+                tracing::error!(name = "ProcMeshStatus", status = "ActorMesh::Spawn::Failed", %error);
+                tracing::error!(name = "ActorMeshStatus", status = "Spawn::Failed", %error);
+            }
+        }
+        result
+    }
+
+    async fn spawn_with_name_inner<A: Actor + Referable>(
         &self,
         cx: &impl context::Actor,
         name: Name,
@@ -942,7 +991,7 @@ impl ProcMeshRef {
         // overlays are applied, it emits a new StatusMesh snapshot.
         // `wait()` loops on it, deciding when the stream is
         // "complete" (no more NotExist) or times out.
-        match GetRankStatus::wait(
+        let mesh = match GetRankStatus::wait(
             rx,
             self.ranks.len(),
             config::global::get(ACTOR_SPAWN_MAX_IDLE),
@@ -979,11 +1028,44 @@ impl ProcMeshRef {
                 );
                 Err(Error::ActorSpawnError { statuses: legacy })
             }
-        }
+        }?;
+        // Spawn a unique mesh manager for each actor mesh, so the type of the
+        // mesh can be preserved.
+        let _controller: ActorHandle<ActorMeshController<A>> =
+            ActorMeshController::<A>::spawn(cx, mesh.deref().clone())
+                .await
+                .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        Ok(mesh)
     }
 
     /// Send stop actors message to all mesh agents for a specific mesh name
+    #[hyperactor::instrument(fields(
+        host_mesh = self.host_mesh_name().map(|n| n.to_string()),
+        proc_mesh = self.name.to_string(),
+        actor_mesh = mesh_name.to_string(),
+    ))]
     pub(crate) async fn stop_actor_by_name(
+        &self,
+        cx: &impl context::Actor,
+        mesh_name: Name,
+    ) -> v1::Result<()> {
+        tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Attempt");
+        tracing::info!(name = "ActorMeshStatus", status = "Stop::Attempt");
+        let result = self.stop_actor_by_name_inner(cx, mesh_name).await;
+        match &result {
+            Ok(_) => {
+                tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Success");
+                tracing::info!(name = "ActorMeshStatus", status = "Stop::Success");
+            }
+            Err(error) => {
+                tracing::error!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Failed", %error);
+                tracing::error!(name = "ActorMeshStatus", status = "Stop::Failed", %error);
+            }
+        }
+        result
+    }
+
+    async fn stop_actor_by_name_inner(
         &self,
         cx: &impl context::Actor,
         mesh_name: Name,
@@ -1034,10 +1116,11 @@ impl ProcMeshRef {
         .await
         {
             Ok(statuses) => {
-                let has_failed = statuses
-                    .values()
-                    .any(|s| matches!(s, Status::Failed(_) | Status::Timeout(_)));
-                if !has_failed {
+                // Check that all actors are in some terminal state.
+                // Failed is ok, because one of these actors may have failed earlier
+                // and we're trying to stop the others.
+                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                if all_stopped {
                     Ok(())
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(

@@ -24,7 +24,7 @@ create_exception!(
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
 pub struct SupervisionFailureMessage {
-    pub mesh_name: String,
+    pub actor_mesh_name: String,
     pub rank: usize,
     pub event: ActorSupervisionEvent,
 }
@@ -54,7 +54,7 @@ impl MeshFailure {
 impl From<SupervisionFailureMessage> for MeshFailure {
     fn from(message: SupervisionFailureMessage) -> Self {
         Self {
-            mesh_name: message.mesh_name,
+            mesh_name: message.actor_mesh_name,
             rank: message.rank,
             event: message.event,
         }
