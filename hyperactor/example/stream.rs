@@ -83,10 +83,8 @@ impl Handler<u64> for CountClient {
 async fn main() {
     let proc = Proc::local();
 
-    let counter_actor: ActorHandle<CounterActor> = proc
-        .spawn("counter", CounterActor::default())
-        .await
-        .unwrap();
+    let counter_actor: ActorHandle<CounterActor> =
+        proc.spawn("counter", CounterActor::default()).unwrap();
 
     for i in 0..10 {
         // Spawn new "countees". Every time each subscribes, the counter broadcasts
@@ -96,7 +94,6 @@ async fn main() {
                 &format!("countee_{}", i),
                 CountClient::new(counter_actor.port().bind()),
             )
-            .await
             .unwrap();
         #[allow(clippy::disallowed_methods)]
         tokio::time::sleep(Duration::from_millis(100)).await;
