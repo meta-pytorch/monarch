@@ -18,7 +18,6 @@ anyhow = "1.0.98"
 async-trait = "0.1.86"
 bincode = "1.3.3"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-controller = { version = "0.0.0", path = "../controller", optional = true }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
@@ -29,7 +28,6 @@ libc = "0.2.139"
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true }
 monarch_rdma_extension = { version = "0.0.0", path = "../monarch_rdma/extension", optional = true }
-monarch_simulator_lib = { version = "0.0.0", path = "../monarch_simulator", optional = true }
 monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker", optional = true }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 nccl-sys = { path = "../nccl-sys", optional = true }
@@ -44,4 +42,4 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]
 default = ["tensor_engine"]
-tensor_engine = ["dep:controller", "dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_simulator_lib", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys", "dep:torch-sys-cuda"]
+tensor_engine = ["dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys", "dep:torch-sys-cuda"]

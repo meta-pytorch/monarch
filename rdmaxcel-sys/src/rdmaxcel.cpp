@@ -14,6 +14,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include "driver_api.h"
 
 // MR size must be a multiple of 2MB
 const size_t MR_ALIGNMENT = 2ULL * 1024 * 1024;
@@ -235,7 +236,7 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
 
   // Get dmabuf handle for the entire segment
   int fd = -1;
-  CUresult cu_result = cuMemGetHandleForAddressRange(
+  CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
       &fd,
       static_cast<CUdeviceptr>(start_addr),
       total_size,
@@ -259,8 +260,8 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
 }
 
 // Register memory region for a specific segment address, assume cuda
-int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
-  if (!pd) {
+int register_segments(struct ibv_pd* pd, rdmaxcel_qp_t* qp) {
+  if (!pd || !qp) {
     return RDMAXCEL_INVALID_PARAMS; // Invalid parameter
   }
   scan_existing_segments();
@@ -297,7 +298,7 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
         }
 
         int fd = -1;
-        CUresult cu_result = cuMemGetHandleForAddressRange(
+        CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
             &fd,
             static_cast<CUdeviceptr>(chunk_start),
             chunk_size,
@@ -333,7 +334,7 @@ int register_segments(struct ibv_pd* pd, struct ibv_qp* qp) {
       seg.mr_size = seg.phys_size;
 
       // Create vector of GPU addresses for bind_mrs
-      auto err = bind_mrs(pd, qp, access_flags, seg);
+      auto err = bind_mrs(pd, qp->ibv_qp, access_flags, seg);
       if (err != 0) {
         return err; // Bind MR's failed
       }
@@ -352,7 +353,7 @@ int get_cuda_pci_address_from_ptr(
   }
 
   int device_ordinal = -1;
-  CUresult err = cuPointerGetAttribute(
+  CUresult err = rdmaxcel_cuPointerGetAttribute(
       &device_ordinal, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL, cuda_ptr);
 
   if (err != CUDA_SUCCESS) {
@@ -360,7 +361,7 @@ int get_cuda_pci_address_from_ptr(
   }
 
   CUdevice device;
-  err = cuDeviceGet(&device, device_ordinal);
+  err = rdmaxcel_cuDeviceGet(&device, device_ordinal);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_DEVICE_FAILED;
   }
@@ -370,21 +371,21 @@ int get_cuda_pci_address_from_ptr(
   int pci_domain_id = -1;
 
   // Get PCI bus ID
-  err =
-      cuDeviceGetAttribute(&pci_bus_id, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device);
+  err = rdmaxcel_cuDeviceGetAttribute(
+      &pci_bus_id, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
   }
 
   // Get PCI device ID
-  err = cuDeviceGetAttribute(
+  err = rdmaxcel_cuDeviceGetAttribute(
       &pci_device_id, CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID, device);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
   }
 
   // Get PCI domain ID
-  err = cuDeviceGetAttribute(
+  err = rdmaxcel_cuDeviceGetAttribute(
       &pci_domain_id, CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID, device);
   if (err != CUDA_SUCCESS) {
     return RDMAXCEL_CUDA_GET_ATTRIBUTE_FAILED;
@@ -534,6 +535,10 @@ const char* rdmaxcel_error_string(int error_code) {
       return "[RdmaXcel] Output buffer too small";
     case RDMAXCEL_QUERY_DEVICE_FAILED:
       return "[RdmaXcel] Failed to query device attributes";
+    case RDMAXCEL_CQ_POLL_FAILED:
+      return "[RdmaXcel] CQ polling failed";
+    case RDMAXCEL_COMPLETION_FAILED:
+      return "[RdmaXcel] Completion status not successful";
     default:
       return "[RdmaXcel] Unknown error code";
   }

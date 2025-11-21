@@ -28,8 +28,13 @@
 //!
 //! See test examples: `test_rdma_write_loopback` and `test_rdma_read_loopback`.
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
+use futures::lock::Mutex;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
@@ -40,6 +45,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
+use hyperactor::clock::Clock;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
@@ -48,19 +54,13 @@ use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaQpInfo;
 use crate::ibverbs_primitives::ibverbs_supported;
+use crate::ibverbs_primitives::mlx5dv_supported;
 use crate::ibverbs_primitives::resolve_qp_type;
 use crate::rdma_components::RdmaBuffer;
 use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::validate_execution_context;
-
-/// Represents the state of a queue pair in the manager, either available or checked out.
-#[derive(Debug, Clone)]
-pub enum QueuePairState {
-    Available(RdmaQueuePair),
-    CheckedOut,
-}
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
 pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
@@ -128,6 +128,14 @@ pub enum RdmaManagerMessage {
         /// `qp` - The queue pair to return (ownership transferred back)
         qp: RdmaQueuePair,
     },
+    GetQpState {
+        other: ActorRef<RdmaManagerActor>,
+        self_device: String,
+        other_device: String,
+        #[reply]
+        /// `reply` - Reply channel to return the QP state
+        reply: OncePortRef<u32>,
+    },
 }
 
 #[derive(Debug)]
@@ -138,12 +146,16 @@ pub enum RdmaManagerMessage {
     ],
 )]
 pub struct RdmaManagerActor {
-    // Nested map: local_device -> (ActorId, remote_device) -> QueuePairState
-    device_qps: HashMap<String, HashMap<(ActorId, String), QueuePairState>>,
+    // Nested map: local_device -> (ActorId, remote_device) -> RdmaQueuePair
+    device_qps: HashMap<String, HashMap<(ActorId, String), RdmaQueuePair>>,
+
+    // Track QPs currently being created to prevent duplicate creation
+    // Wrapped in Arc<Mutex> to allow safe concurrent access
+    pending_qp_creation: Arc<Mutex<HashSet<(String, ActorId, String)>>>,
 
     // Map of RDMA device names to their domains and loopback QPs
     // Created lazily when memory is registered for a specific device
-    device_domains: HashMap<String, (RdmaDomain, RdmaQueuePair)>,
+    device_domains: HashMap<String, (RdmaDomain, Option<RdmaQueuePair>)>,
 
     config: IbverbsConfig,
 
@@ -171,14 +183,8 @@ impl Drop for RdmaManagerActor {
         fn destroy_queue_pair(qp: &RdmaQueuePair, context: &str) {
             unsafe {
                 if qp.qp != 0 {
-                    let result = rdmaxcel_sys::ibv_destroy_qp(qp.qp as *mut rdmaxcel_sys::ibv_qp);
-                    if result != 0 {
-                        tracing::debug!(
-                            "ibv_destroy_qp returned {} for {} (may be busy during shutdown)",
-                            result,
-                            context
-                        );
-                    }
+                    let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+                    rdmaxcel_sys::rdmaxcel_qp_destroy(rdmaxcel_qp);
                 }
                 if qp.send_cq != 0 {
                     let result =
@@ -206,30 +212,17 @@ impl Drop for RdmaManagerActor {
         }
 
         // 1. Clean up all queue pairs (both regular and loopback)
-        for (device_name, device_map) in self.device_qps.drain() {
-            for ((actor_id, remote_device), qp_state) in device_map {
-                match qp_state {
-                    QueuePairState::Available(qp) => {
-                        destroy_queue_pair(&qp, &format!("actor {:?}", actor_id));
-                    }
-                    QueuePairState::CheckedOut => {
-                        tracing::warn!(
-                            "QP for actor {:?} (device {} -> {}) was checked out during cleanup",
-                            actor_id,
-                            device_name,
-                            remote_device
-                        );
-                    }
-                }
+        for (_device_name, device_map) in self.device_qps.drain() {
+            for ((actor_id, _remote_device), qp) in device_map {
+                destroy_queue_pair(&qp, &format!("actor {:?}", actor_id));
             }
         }
 
         // 2. Clean up device domains (which contain PDs and loopback QPs)
-        for (device_name, (domain, loopback_qp)) in self.device_domains.drain() {
-            destroy_queue_pair(
-                &loopback_qp,
-                &format!("loopback QP on device {}", device_name),
-            );
+        for (device_name, (domain, qp)) in self.device_domains.drain() {
+            if let Some(qp) = qp {
+                destroy_queue_pair(&qp, &format!("loopback QP on device {}", device_name));
+            }
             drop(domain);
         }
 
@@ -278,10 +271,10 @@ impl RdmaManagerActor {
         &mut self,
         device_name: &str,
         rdma_device: &crate::ibverbs_primitives::RdmaDevice,
-    ) -> Result<(*mut rdmaxcel_sys::ibv_pd, *mut rdmaxcel_sys::ibv_qp), anyhow::Error> {
+    ) -> Result<(RdmaDomain, Option<RdmaQueuePair>), anyhow::Error> {
         // Check if we already have a domain for this device
         if let Some((domain, qp)) = self.device_domains.get(device_name) {
-            return Ok((domain.pd, qp.qp as *mut rdmaxcel_sys::ibv_qp));
+            return Ok((domain.clone(), qp.clone()));
         }
 
         // Create new domain for this device
@@ -292,43 +285,38 @@ impl RdmaManagerActor {
         // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
         crate::print_device_info_if_debug_enabled(domain.context);
 
-        // Create loopback QP for this domain
-        let mut loopback_qp = RdmaQueuePair::new(domain.context, domain.pd, self.config.clone())
-            .map_err(|e| {
+        // Create loopback QP for this domain if mlx5dv is supported
+        let qp = if mlx5dv_supported() {
+            let mut qp = RdmaQueuePair::new(domain.context, domain.pd, self.config.clone())
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "could not create loopback QP for device {}: {}",
+                        device_name,
+                        e
+                    )
+                })?;
+
+            // Get connection info and connect to itself
+            let endpoint = qp.get_qp_info().map_err(|e| {
+                anyhow::anyhow!("could not get QP info for device {}: {}", device_name, e)
+            })?;
+
+            qp.connect(&endpoint).map_err(|e| {
                 anyhow::anyhow!(
-                    "could not create loopback QP for device {}: {}",
+                    "could not connect loopback QP for device {}: {}",
                     device_name,
                     e
                 )
             })?;
 
-        // Get connection info and connect to itself
-        let endpoint = loopback_qp.get_qp_info().map_err(|e| {
-            anyhow::anyhow!("could not get QP info for device {}: {}", device_name, e)
-        })?;
+            Some(qp)
+        } else {
+            None
+        };
 
-        loopback_qp.connect(&endpoint).map_err(|e| {
-            anyhow::anyhow!(
-                "could not connect loopback QP for device {}: {}",
-                device_name,
-                e
-            )
-        })?;
-
-        tracing::debug!(
-            "Created domain and loopback QP for RDMA device: {}",
-            device_name
-        );
-
-        // Store PD and QP pointers before inserting
-        let pd = domain.pd;
-        let qp = loopback_qp.qp as *mut rdmaxcel_sys::ibv_qp;
-
-        // Store the domain and QP
         self.device_domains
-            .insert(device_name.to_string(), (domain, loopback_qp));
-
-        Ok((pd, qp))
+            .insert(device_name.to_string(), (domain.clone(), qp.clone()));
+        Ok((domain, qp))
     }
 
     fn find_cuda_segment_for_address(
@@ -366,13 +354,13 @@ impl RdmaManagerActor {
     ) -> Result<(RdmaMemoryRegionView, String), anyhow::Error> {
         unsafe {
             let mut mem_type: i32 = 0;
-            let ptr = addr as cuda_sys::CUdeviceptr;
-            let err = cuda_sys::cuPointerGetAttribute(
+            let ptr = addr as rdmaxcel_sys::CUdeviceptr;
+            let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
                 &mut mem_type as *mut _ as *mut std::ffi::c_void,
-                cuda_sys::CUpointer_attribute_enum::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                rdmaxcel_sys::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
                 ptr,
             );
-            let is_cuda = err == cuda_sys::CUresult::CUDA_SUCCESS;
+            let is_cuda = err == rdmaxcel_sys::CUDA_SUCCESS;
 
             let mut selected_rdma_device = None;
 
@@ -417,8 +405,7 @@ impl RdmaManagerActor {
             );
 
             // Get or create domain and loopback QP for this device
-            let (domain_pd, loopback_qp_ptr) =
-                self.get_or_create_device_domain(&device_name, &rdma_device)?;
+            let (domain, qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
 
             let access = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
                 | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
@@ -433,7 +420,10 @@ impl RdmaManagerActor {
                 let mut maybe_mrv = self.find_cuda_segment_for_address(addr, size);
                 // not found, lets re-sync with caching allocator  and retry
                 if maybe_mrv.is_none() {
-                    let err = rdmaxcel_sys::register_segments(domain_pd, loopback_qp_ptr);
+                    let err = rdmaxcel_sys::register_segments(
+                        domain.pd,
+                        qp.unwrap().qp as *mut rdmaxcel_sys::rdmaxcel_qp_t,
+                    );
                     if err != 0 {
                         let error_msg = get_rdmaxcel_error_message(err);
                         return Err(anyhow::anyhow!(
@@ -457,14 +447,14 @@ impl RdmaManagerActor {
                 mrv = maybe_mrv.unwrap();
             } else if is_cuda {
                 let mut fd: i32 = -1;
-                cuda_sys::cuMemGetHandleForAddressRange(
-                    &mut fd as *mut i32 as *mut std::ffi::c_void,
-                    addr as cuda_sys::CUdeviceptr,
+                rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
+                    &mut fd,
+                    addr as rdmaxcel_sys::CUdeviceptr,
                     size,
-                    cuda_sys::CUmemRangeHandleType::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+                    rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                     0,
                 );
-                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(domain_pd, 0, size, 0, fd, access.0 as i32);
+                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
                 if mr.is_null() {
                     return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
                 }
@@ -480,7 +470,7 @@ impl RdmaManagerActor {
             } else {
                 // CPU memory path
                 mr = rdmaxcel_sys::ibv_reg_mr(
-                    domain_pd,
+                    domain.pd,
                     addr as *mut std::ffi::c_void,
                     size,
                     access.0 as i32,
@@ -561,6 +551,7 @@ impl Actor for RdmaManagerActor {
 
         Ok(Self {
             device_qps: HashMap::new(),
+            pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
             device_domains: HashMap::new(),
             config,
             pt_cuda_alloc,
@@ -664,121 +655,170 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         &mut self,
         cx: &Context<Self>,
         other: ActorRef<RdmaManagerActor>,
-
         self_device: String,
         other_device: String,
     ) -> Result<RdmaQueuePair, anyhow::Error> {
         let other_id = other.actor_id().clone();
 
-        // Use the nested map structure: local_device -> (actor_id, remote_device) -> QueuePairState
+        // Use the nested map structure: local_device -> (actor_id, remote_device) -> RdmaQueuePair
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if queue pair exists in map
         if let Some(device_map) = self.device_qps.get(&self_device) {
-            if let Some(qp_state) = device_map.get(&inner_key).cloned() {
-                match qp_state {
-                    QueuePairState::Available(qp) => {
-                        // Queue pair exists and is available - return it
-                        self.device_qps
-                            .get_mut(&self_device)
-                            .unwrap()
-                            .insert(inner_key, QueuePairState::CheckedOut);
-                        return Ok(qp);
-                    }
-                    QueuePairState::CheckedOut => {
-                        return Err(anyhow::anyhow!(
-                            "queue pair for actor {} on device {} is already checked out",
-                            other_id,
-                            other_device
-                        ));
-                    }
-                }
+            if let Some(qp) = device_map.get(&inner_key) {
+                return Ok(qp.clone());
             }
         }
 
-        // Queue pair doesn't exist - need to create connection
-        let is_loopback = other_id == cx.bind::<RdmaManagerActor>().actor_id().clone()
-            && self_device == other_device;
+        // Try to acquire lock and mark as pending (hold lock only once!)
+        let pending_key = (self_device.clone(), other_id.clone(), other_device.clone());
+        let mut pending = self.pending_qp_creation.lock().await;
 
-        if is_loopback {
-            // Loopback connection setup
-            self.initialize_qp(cx, other.clone(), self_device.clone(), other_device.clone())
-                .await?;
-            let endpoint = self
-                .connection_info(cx, other.clone(), other_device.clone(), self_device.clone())
-                .await?;
-            self.connect(
-                cx,
-                other.clone(),
-                self_device.clone(),
-                other_device.clone(),
-                endpoint,
-            )
-            .await?;
+        if pending.contains(&pending_key) {
+            // Another task is creating this QP, release lock and wait
+            drop(pending);
+
+            // Loop checking device_qps until QP is created (no more locks needed)
+            // Timeout after 1 second
+            let start = Instant::now();
+            let timeout = Duration::from_secs(1);
+
+            loop {
+                cx.clock().sleep(Duration::from_micros(200)).await;
+
+                // Check if QP was created while we waited
+                if let Some(device_map) = self.device_qps.get(&self_device) {
+                    if let Some(qp) = device_map.get(&inner_key) {
+                        return Ok(qp.clone());
+                    }
+                }
+
+                // Check for timeout
+                if start.elapsed() >= timeout {
+                    return Err(anyhow::anyhow!(
+                        "Timeout waiting for QP creation (device {} -> actor {} device {}). \
+                         Another task is creating it but hasn't completed in 1 second",
+                        self_device,
+                        other_id,
+                        other_device
+                    ));
+                }
+            }
         } else {
-            // Remote connection setup
-            self.initialize_qp(cx, other.clone(), self_device.clone(), other_device.clone())
-                .await?;
-            other
-                .initialize_qp(
-                    cx,
-                    cx.bind().clone(),
-                    other_device.clone(),
-                    self_device.clone(),
-                )
-                .await?;
-            let other_endpoint: RdmaQpInfo = other
-                .connection_info(
-                    cx,
-                    cx.bind().clone(),
-                    other_device.clone(),
-                    self_device.clone(),
-                )
-                .await?;
-            self.connect(
-                cx,
-                other.clone(),
-                self_device.clone(),
-                other_device.clone(),
-                other_endpoint,
-            )
-            .await?;
-            let local_endpoint = self
-                .connection_info(cx, other.clone(), self_device.clone(), other_device.clone())
-                .await?;
-            other
-                .connect(
-                    cx,
-                    cx.bind().clone(),
-                    other_device.clone(),
-                    self_device.clone(),
-                    local_endpoint,
-                )
-                .await?;
+            // Not pending, add to set and proceed with creation
+            pending.insert(pending_key.clone());
+            drop(pending);
+            // Fall through to create QP
         }
 
-        // Now that connection is established, get the queue pair
-        if let Some(device_map) = self.device_qps.get(&self_device) {
-            if let Some(QueuePairState::Available(qp)) = device_map.get(&inner_key).cloned() {
-                self.device_qps
-                    .get_mut(&self_device)
-                    .unwrap()
-                    .insert(inner_key, QueuePairState::CheckedOut);
-                Ok(qp)
+        // Queue pair doesn't exist - need to create connection
+        let result = async {
+            let is_loopback = other_id == cx.bind::<RdmaManagerActor>().actor_id().clone()
+                && self_device == other_device;
+
+            if is_loopback {
+                // Loopback connection setup
+                self.initialize_qp(cx, other.clone(), self_device.clone(), other_device.clone())
+                    .await?;
+                let endpoint = self
+                    .connection_info(cx, other.clone(), other_device.clone(), self_device.clone())
+                    .await?;
+                self.connect(
+                    cx,
+                    other.clone(),
+                    self_device.clone(),
+                    other_device.clone(),
+                    endpoint,
+                )
+                .await?;
+            } else {
+                // Remote connection setup
+                self.initialize_qp(cx, other.clone(), self_device.clone(), other_device.clone())
+                    .await?;
+                other
+                    .initialize_qp(
+                        cx,
+                        cx.bind().clone(),
+                        other_device.clone(),
+                        self_device.clone(),
+                    )
+                    .await?;
+                let other_endpoint: RdmaQpInfo = other
+                    .connection_info(
+                        cx,
+                        cx.bind().clone(),
+                        other_device.clone(),
+                        self_device.clone(),
+                    )
+                    .await?;
+                self.connect(
+                    cx,
+                    other.clone(),
+                    self_device.clone(),
+                    other_device.clone(),
+                    other_endpoint,
+                )
+                .await?;
+                let local_endpoint = self
+                    .connection_info(cx, other.clone(), self_device.clone(), other_device.clone())
+                    .await?;
+                other
+                    .connect(
+                        cx,
+                        cx.bind().clone(),
+                        other_device.clone(),
+                        self_device.clone(),
+                        local_endpoint,
+                    )
+                    .await?;
+
+                // BARRIER: Ensure remote side has completed its connection and is ready
+                let remote_state = other
+                    .get_qp_state(
+                        cx,
+                        cx.bind().clone(),
+                        other_device.clone(),
+                        self_device.clone(),
+                    )
+                    .await?;
+
+                if remote_state != rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS {
+                    return Err(anyhow::anyhow!(
+                        "Remote QP not in RTS state after connection setup. \
+                         Local is ready but remote is in state {}. \
+                         This indicates a synchronization issue in connection setup.",
+                        remote_state
+                    ));
+                }
+            }
+
+            // Now that connection is established, get and clone the queue pair
+            if let Some(device_map) = self.device_qps.get(&self_device) {
+                if let Some(qp) = device_map.get(&inner_key) {
+                    Ok(qp.clone())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Failed to create connection for actor {} on device {}",
+                        other_id,
+                        other_device
+                    ))
+                }
             } else {
                 Err(anyhow::anyhow!(
-                    "Failed to create connection for actor {} on device {}",
+                    "Failed to create connection for actor {} on device {} - no device map",
                     other_id,
                     other_device
                 ))
             }
-        } else {
-            Err(anyhow::anyhow!(
-                "Failed to create connection for actor {} on device {} - no device map",
-                other_id,
-                other_device
-            ))
         }
+        .await;
+
+        // Always remove from pending set when done (success or failure)
+        let mut pending = self.pending_qp_creation.lock().await;
+        pending.remove(&pending_key);
+        drop(pending);
+
+        result
     }
 
     async fn initialize_qp(
@@ -813,13 +853,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         // Get or create domain and extract pointers to avoid borrowing issues
         let (domain_context, domain_pd) = {
             // Check if we already have a domain for the device
-            if !self.device_domains.contains_key(&self_device) {
-                // Create domain first if it doesn't exist
-                self.get_or_create_device_domain(&self_device, &rdma_device)?;
-            }
-
-            // Now get the domain context and PD safely
-            let (domain, _qp) = self.device_domains.get(&self_device).unwrap();
+            let (domain, _) = self.get_or_create_device_domain(&self_device, &rdma_device)?;
             (domain.context, domain.pd)
         };
 
@@ -830,7 +864,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self.device_qps
             .entry(self_device.clone())
             .or_insert_with(HashMap::new)
-            .insert(inner_key, QueuePairState::Available(qp));
+            .insert(inner_key, qp);
 
         tracing::debug!(
             "successfully created a connection with {:?} for local device {} -> remote device {}",
@@ -858,21 +892,16 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         tracing::debug!("connecting with {:?}", other);
         let other_id = other.actor_id().clone();
 
-        // For backward compatibility, use default device
         let inner_key = (other_id.clone(), other_device.clone());
 
         if let Some(device_map) = self.device_qps.get_mut(&self_device) {
             match device_map.get_mut(&inner_key) {
-                Some(QueuePairState::Available(qp)) => {
+                Some(qp) => {
                     qp.connect(&endpoint).map_err(|e| {
                         anyhow::anyhow!("could not connect to RDMA endpoint: {}", e)
                     })?;
                     Ok(())
                 }
-                Some(QueuePairState::CheckedOut) => Err(anyhow::anyhow!(
-                    "Cannot connect: queue pair for actor {} is checked out",
-                    other_id
-                )),
                 None => Err(anyhow::anyhow!(
                     "No connection found for actor {}",
                     other_id
@@ -907,14 +936,10 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
         if let Some(device_map) = self.device_qps.get_mut(&self_device) {
             match device_map.get_mut(&inner_key) {
-                Some(QueuePairState::Available(qp)) => {
+                Some(qp) => {
                     let connection_info = qp.get_qp_info()?;
                     Ok(connection_info)
                 }
-                Some(QueuePairState::CheckedOut) => Err(anyhow::anyhow!(
-                    "Cannot get connection info: queue pair for actor {} is checked out",
-                    other_id
-                )),
                 None => Err(anyhow::anyhow!(
                     "No connection found for actor {}",
                     other_id
@@ -930,47 +955,59 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
     /// Releases a queue pair back to the HashMap
     ///
-    /// This method returns a queue pair to the HashMap after the caller has finished
-    /// using it. This completes the request/release cycle, similar to RdmaBuffer.
+    /// This method is now a no-op since RdmaQueuePair is Clone and can be safely shared.
+    /// The queue pair is not actually checked out, so there's nothing to release.
+    /// This method is kept for API compatibility.
     ///
     /// # Arguments
     /// * `remote` - The ActorRef of the remote actor to return the queue pair for
-    /// * `qp` - The queue pair to release
+    /// * `qp` - The queue pair to release (ignored)
     async fn release_queue_pair(
+        &mut self,
+        _cx: &Context<Self>,
+        _other: ActorRef<RdmaManagerActor>,
+        _self_device: String,
+        _other_device: String,
+        _qp: RdmaQueuePair,
+    ) -> Result<(), anyhow::Error> {
+        // No-op: Queue pairs are now cloned and shared via atomic counters
+        // Nothing needs to be released
+        Ok(())
+    }
+
+    /// Gets the state of a queue pair
+    ///
+    /// # Arguments
+    /// * `other` - The ActorRef to get the QP state for
+    /// * `self_device` - Local device name
+    /// * `other_device` - Remote device name
+    ///
+    /// # Returns
+    /// * `u32` - The QP state (e.g., IBV_QPS_RTS = Ready To Send)
+    async fn get_qp_state(
         &mut self,
         _cx: &Context<Self>,
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
-        qp: RdmaQueuePair,
-    ) -> Result<(), anyhow::Error> {
-        let inner_key = (other.actor_id().clone(), other_device.clone());
+    ) -> Result<u32, anyhow::Error> {
+        let other_id = other.actor_id().clone();
+        let inner_key = (other_id.clone(), other_device.clone());
 
-        match self
-            .device_qps
-            .get_mut(&self_device)
-            .unwrap()
-            .get_mut(&inner_key)
-        {
-            Some(QueuePairState::CheckedOut) => {
-                self.device_qps
-                    .get_mut(&self_device)
-                    .unwrap()
-                    .insert(inner_key, QueuePairState::Available(qp));
-                Ok(())
+        if let Some(device_map) = self.device_qps.get_mut(&self_device) {
+            match device_map.get_mut(&inner_key) {
+                Some(qp) => qp.state(),
+                None => Err(anyhow::anyhow!(
+                    "No connection found for actor {} on device {}",
+                    other_id,
+                    other_device
+                )),
             }
-            Some(QueuePairState::Available(_)) => Err(anyhow::anyhow!(
-                "Cannot release queue pair: queue pair for actor {} is already available between devices {} and {}",
-                other.actor_id(),
-                self_device,
-                other_device,
-            )),
-            None => Err(anyhow::anyhow!(
-                "No queue pair found for actor {}, between devices {} and {}",
-                other.actor_id(),
-                self_device,
-                other_device,
-            )),
+        } else {
+            Err(anyhow::anyhow!(
+                "No device map found for self device {}",
+                self_device
+            ))
         }
     }
 }

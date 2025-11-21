@@ -35,8 +35,7 @@ import sys
 modules = [
     'monarch.fetch',
     'monarch.gradient_generator',
-    'monarch.notebook',
-    'monarch.rust_local_mesh'
+    'monarch.notebook'
 ]
 
 failed_modules = []
