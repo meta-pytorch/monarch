@@ -1031,7 +1031,6 @@ impl ProcMeshRef {
         let controller = ActorMeshController::<A>::new(mesh.deref().clone());
         controller
             .spawn(cx)
-            .await
             .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         Ok(mesh)
     }

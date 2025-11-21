@@ -437,7 +437,6 @@ impl HostMesh {
         let controller = HostMeshController::new(mesh.deref().clone());
         controller
             .spawn(cx)
-            .await
             .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
@@ -944,7 +943,6 @@ impl HostMeshRef {
             let controller = ProcMeshController::new(mesh.deref().clone());
             controller
                 .spawn(cx)
-                .await
                 .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         }
         mesh
