@@ -24,7 +24,6 @@ from monarch.builtins.random import set_manual_seed_remote
 from monarch.cached_remote_function import remote_autograd_function
 from monarch.common import remote as remote_module
 from monarch.common.device_mesh import DeviceMesh, no_mesh
-from monarch.common.pipe import Pipe, remote_generator
 from monarch.common.remote import call_on_shard_and_fetch, Remote
 from monarch.mesh_controller import RemoteException
 
@@ -79,27 +78,6 @@ do_bogus_tensor_work = remote(
     "monarch.worker._testing_function.do_bogus_tensor_work",
     propagate=_do_bogus_tensor_work,
 )
-
-
-@remote_generator("monarch.worker._testing_function.example_echo_add")
-def example_echo_add(p: "Pipe"):
-    while True:
-        yield p.recv() + 1
-
-
-@remote_generator("monarch.worker._testing_function.example_data_loader")
-def example_data_loader(p: "Pipe", x, y):
-    for _i in range(x, y):
-        yield torch.zeros(())
-
-
-@remote_generator(
-    "monarch.worker._testing_function.example_data_loader_small_pipe",
-    max_messages=1,
-)
-def example_data_loader_small_pipe(p: "Pipe", iters: int, shape: Tuple[int, int]):
-    for _i in range(iters):
-        yield torch.zeros(shape)
 
 
 sleep = remote("monarch.worker._testing_function.remote_sleep", propagate="inspect")
@@ -524,38 +502,6 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             # however, we should still be able to compute and get a result back
             # from host 1, signaling that the reduction didn't get cuda compute stuck.
             fetch_shard(2 * x, gpu=1, host=0).result()
-
-    def test_pipe(self):
-        with self.local_device_mesh(2, 2):
-            p = example_echo_add()
-            for _i in range(10):
-                x = torch.rand(3, 4)
-                p.send(x)
-                y = p.recv()
-                x, y = fetch_shard((x, y)).result()
-                with no_mesh.activate():
-                    assert torch.allclose(x + 1, y)
-
-    def test_loader(self):
-        with self.local_device_mesh(2, 2):
-            p = example_data_loader(3, 7)
-            for i in range(3, 7):
-                x = fetch_shard(p.recv()).result()
-                with no_mesh.activate():
-                    assert x.item() == i
-
-    def test_loader_blocks_with_small_pipe(self):
-        with self.local_device_mesh(2, 2):
-            iters = 10
-            p = example_data_loader_small_pipe(iters, (1000, 1000))
-            # timeout should proc on pipe process
-            sleep(0.6)
-            # it takes a few iters of reasonably sized tensors to fill up OS buffer
-            # max_messages (SNDHWM) only affects the zmq buffer
-            for _ in range(iters - 1):
-                p.recv()
-            t = fetch_shard(p.recv()).result()
-        assert t[0][0].item() == -1.0
 
     def test_streams_run_parallel(self):
         with self.local_device_mesh(2, 2):

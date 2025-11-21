@@ -41,10 +41,10 @@ mod tests {
                 env.rdma_handle_2.device_name.clone(),
             )
             .await?;
-        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
         // Poll for completion
-        wait_for_completion(&mut qp_1, PollTarget::Send, 2).await?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
         env.actor_1
             .release_queue_pair(
@@ -56,7 +56,7 @@ mod tests {
             )
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -79,9 +79,9 @@ mod tests {
                 env.rdma_handle_2.device_name.clone(),
             )
             .await?;
-        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
-        wait_for_completion(&mut qp_1, PollTarget::Send, 2).await?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
         env.actor_1
             .release_queue_pair(
@@ -93,7 +93,7 @@ mod tests {
             )
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -118,12 +118,12 @@ mod tests {
                 env.rdma_handle_2.device_name.clone(),
             )
             .await?;
-        qp_1.get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
         // Poll for completion
-        wait_for_completion(&mut qp_1, PollTarget::Send, 2).await?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -148,10 +148,10 @@ mod tests {
                 env.rdma_handle_2.device_name.clone(),
             )
             .await?;
-        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
-        wait_for_completion(&mut qp_1, PollTarget::Send, 2).await?;
+        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -185,10 +185,10 @@ mod tests {
                 env.rdma_handle_1.device_name.clone(),
             )
             .await?;
-        qp_2.put_with_recv(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
         qp_1.recv(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
-        wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
-        env.verify_buffers(BSIZE).await?;
+        let wr_id = qp_2.put_with_recv(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
+        wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -214,12 +214,12 @@ mod tests {
                 env.rdma_handle_2.device_name.clone(),
             )
             .await?;
-        qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
         qp_1.ring_doorbell()?;
         // Poll for completion
-        wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -244,12 +244,12 @@ mod tests {
                 env.rdma_handle_1.device_name.clone(),
             )
             .await?;
-        qp_2.enqueue_get(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
+        let wr_id = qp_2.enqueue_get(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
         qp_2.ring_doorbell()?;
         // Poll for completion
-        wait_for_completion(&mut qp_2, PollTarget::Send, 5).await?;
+        wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -270,7 +270,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -289,10 +289,10 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
         rdma_handle_1
-            .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
+            .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -342,7 +342,7 @@ mod tests {
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -377,11 +377,11 @@ mod tests {
             )
             .await?;
         qp_1.enqueue_get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
-        ring_db_gpu(&mut qp_1).await?;
+        ring_db_gpu(&qp_1).await?;
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 
@@ -438,9 +438,9 @@ mod tests {
         )
         .await?;
         ring_db_gpu(&mut qp_2).await?;
-        wait_for_completion_gpu(&mut qp_1, PollTarget::Recv, 10).await?;
+        wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 10).await?;
         wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -471,11 +471,11 @@ mod tests {
                 env.rdma_handle_2.device_name.clone(),
             )
             .await?;
-        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
-        wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -506,11 +506,11 @@ mod tests {
                 env.rdma_handle_2.device_name.clone(),
             )
             .await?;
-        qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
 
-        wait_for_completion(&mut qp_1, PollTarget::Send, 5).await?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -538,7 +538,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -564,12 +564,12 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_rdma_read_into_cuda_vs_cuda() -> Result<(), anyhow::Error> {
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
@@ -590,7 +590,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -616,7 +616,53 @@ mod tests {
             .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_concurrent_send_to_same_target() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 2 * 1024 * 1024;
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+
+        let rdma_handle_1 = env.rdma_handle_1.clone();
+        let rdma_handle_2 = env.rdma_handle_2.clone();
+        let rdma_handle_3 = env.rdma_handle_1.clone();
+        let rdma_handle_4 = env.rdma_handle_2.clone();
+        let rdma_handle_5 = env.rdma_handle_1.clone();
+        let rdma_handle_6 = env.rdma_handle_2.clone();
+        let client = env.client_1;
+
+        let task1 = async {
+            let result = rdma_handle_1
+                .write_from(client, rdma_handle_2.clone(), 2)
+                .await;
+            result
+        };
+
+        let task2 = async {
+            let result = rdma_handle_3
+                .write_from(client, rdma_handle_4.clone(), 2)
+                .await;
+            result
+        };
+
+        let task3 = async {
+            let result = rdma_handle_5
+                .write_from(client, rdma_handle_6.clone(), 2)
+                .await;
+            result
+        };
+        let (result1, result2, result3) = tokio::join!(task1, task2, task3);
+
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -644,7 +690,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -672,7 +718,7 @@ mod tests {
             .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -704,7 +750,7 @@ mod tests {
             .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
         Ok(())
     }
@@ -736,8 +782,88 @@ mod tests {
             .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
-        env.verify_buffers(BSIZE).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 120)]
+    async fn test_rdma_read_chunk() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        // 2GB tensor size
+        const BSIZE: usize = 2 * 1024 * 1024 * 1024;
+        const CHUNK_SIZE: usize = 2 * 1024 * 1024; // 2MB
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "Skipping test: requires H100 nodes with backend network (found {} devices)",
+                devices.len()
+            );
+            return Ok(());
+        }
+
+        println!("Setting up 2GB CUDA tensors for RDMA read test...");
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+
+        println!("Performing RDMA read operation on 2GB tensor...");
+        let rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .read_into(env.client_1, env.rdma_handle_2.clone(), 30)
+            .await?;
+
+        println!("Verifying first 2MB...");
+        env.verify_buffers(CHUNK_SIZE, 0).await?;
+
+        println!("Verifying last 2MB...");
+        env.verify_buffers(CHUNK_SIZE, BSIZE - CHUNK_SIZE).await?;
+
+        println!("Cleaning up...");
+        env.cleanup().await?;
+
+        println!("2GB RDMA read test completed successfully");
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_chunk() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        // 2GB tensor size
+        const BSIZE: usize = 2 * 1024 * 1024 * 1024;
+        const CHUNK_SIZE: usize = 2 * 1024 * 1024; // 2MB
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "Skipping test: requires H100 nodes with backend network (found {} devices)",
+                devices.len()
+            );
+            return Ok(());
+        }
+
+        println!("Setting up 2GB CUDA tensors for RDMA write test...");
+        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+
+        println!("Performing RDMA write operation on 2GB tensor...");
+        let rdma_handle_1 = env.rdma_handle_1.clone();
+        rdma_handle_1
+            .write_from(env.client_1, env.rdma_handle_2.clone(), 30)
+            .await?;
+
+        println!("Verifying first 2MB...");
+        env.verify_buffers(CHUNK_SIZE, 0).await?;
+
+        println!("Verifying last 2MB...");
+        env.verify_buffers(CHUNK_SIZE, BSIZE - CHUNK_SIZE).await?;
+
+        println!("Cleaning up...");
+        env.cleanup().await?;
+
+        println!("2GB RDMA write test completed successfully");
         Ok(())
     }
 }
