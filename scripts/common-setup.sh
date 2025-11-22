@@ -179,6 +179,8 @@ run_test_groups() {
   # sustainable/most robust solution.
   export CONDA_LIBSTDCPP="${CONDA_PREFIX}/lib/libstdc++.so.6"
   export LD_PRELOAD="${CONDA_LIBSTDCPP}${LD_PRELOAD:+:$LD_PRELOAD}"
+  # Backtraces help with debugging remotely.
+  export RUST_BACKTRACE=1
   local FAILED_GROUPS=()
   for GROUP in $(seq 1 10); do
     echo "Running test group $GROUP of 10..."
