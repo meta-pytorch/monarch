@@ -151,7 +151,11 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
     }
 
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        tracing::trace!(name = "post", "sending message to {}", self.dest);
+        tracing::trace!(
+            name = "post",
+            dest = %self.dest,
+            "sending message"
+        );
 
         let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
         if let Err(mpsc::error::SendError((message, return_channel, _))) =
@@ -168,7 +172,11 @@ pub struct NetRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr, ServerHandle)
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for NetRx<M> {
     async fn recv(&mut self) -> Result<M, ChannelError> {
-        tracing::trace!(name = "recv", "receiving message from {}", self.1);
+        tracing::trace!(
+            name = "recv",
+            source = %self.1,
+            "receiving message"
+        );
         self.0.recv().await.ok_or(ChannelError::Closed)
     }
 
