@@ -120,10 +120,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
             module,
             "monarch_messages.debugger",
         )?)?;
-        ::monarch_tensor_worker::bootstrap::register_python_bindings(&get_or_add_new_module(
-            module,
-            "monarch_tensor_worker.bootstrap",
-        )?)?;
         crate::convert::register_python_bindings(&get_or_add_new_module(
             module,
             "monarch_extension.convert",
