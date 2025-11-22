@@ -56,6 +56,12 @@ if __name__ == "__main__":
         default=10,
         help="Number of warmup iterations (default: 5)",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Number of concurrent RDMA operations (default: 1)",
+    )
 
     args = parser.parse_args()
 
@@ -85,13 +91,38 @@ class RDMATest(Actor):
         # Timing data storage
         self.timing_data = []
         self.size_data = []
+        self.batch_timing_data = []
+        self.batch_size_data = []
 
     @endpoint
     async def set_other_actor(self, other_actor):
         self.other_actor = other_actor
 
     @endpoint
-    async def send(self, is_warmup=False) -> None:
+    async def send(self, is_warmup=False, concurrency: int = 1) -> None:
+        # Track wall-clock time for the entire concurrent batch
+        batch_start = time.time()
+
+        tasks = []
+        for _ in range(concurrency):
+            tasks.append(self._send_single(is_warmup))
+        await asyncio.gather(*tasks)
+
+        batch_end = time.time()
+        batch_elapsed = batch_end - batch_start
+
+        if not is_warmup:
+            batch_size = (
+                sum(self.size_data[-concurrency:])
+                if len(self.size_data) >= concurrency
+                else 0
+            )
+            self.batch_timing_data.append(batch_elapsed)
+            self.batch_size_data.append(batch_size)
+
+        self.i += 1
+
+    async def _send_single(self, is_warmup=False) -> None:
         shape = int(
             1024 * 1024 * self.size_mb / 4 * (0.5 * random.randint(1, 3))
         )  # Random size with +/- 50% variation based on user size
@@ -104,7 +135,7 @@ class RDMATest(Actor):
         # Critical validation - this should catch the null pointer issue
         assert (
             tensor_addr != 0
-        ), f"CRITICAL: Tensor has null pointer! Device: {device}, Shape: {shape}"
+        ), f"CRITICAL: Tensor has null pointer! Device: {self.device}, Shape: {shape}"
         assert size_elem > 0, f"CRITICAL: Tensor has zero size! Size: {size_elem}"
 
         byte_view = tensor.view(torch.uint8).flatten()
@@ -136,8 +167,6 @@ class RDMATest(Actor):
         # cleanup
         await buffer.drop()
 
-        self.i += 1
-
     @endpoint
     async def recv(self, rdma_buffer, shape, dtype, is_warmup):
         # Create receiving tensor on the same device
@@ -167,7 +196,7 @@ class RDMATest(Actor):
 
     @endpoint
     async def print_statistics(self, calc_bwd: bool = False):
-        """Calculate and print timing statistics"""
+        """Calculate and print timing statistics for individual operations"""
         if not self.timing_data:
             print("No timing data collected!")
             return
@@ -175,7 +204,7 @@ class RDMATest(Actor):
         timings = self.timing_data
         sizes = self.size_data
 
-        # Calculate statistics
+        # Calculate statistics for individual operations
         avg_time = statistics.mean(timings)
         min_time = min(timings)
         max_time = max(timings)
@@ -184,7 +213,12 @@ class RDMATest(Actor):
         avg_size = statistics.mean(sizes)
         total_data = sum(sizes)
 
-        print("TIMING RESULTS:")
+        device_type = self.device.upper() if self.device != "cpu" else "CPU"
+        print("\n" + "=" * 60)
+        print(f"RDMA {self.operation.upper()} LOAD TEST RESULTS ({device_type})")
+        print("=" * 60)
+
+        print("INDIVIDUAL OPERATION TIMING:")
         print(f"  Average time per operation: {avg_time * 1000:.3f} ms")
         print(f"  Minimum time per operation: {min_time * 1000:.3f} ms")
         print(f"  Maximum time per operation: {max_time * 1000:.3f} ms")
@@ -202,23 +236,69 @@ class RDMATest(Actor):
             max_bandwidth = calc_bandwidth_gbps(avg_size, min_time)
             min_bandwidth = calc_bandwidth_gbps(avg_size, max_time)
 
-            device_type = self.device.upper() if self.device != "cpu" else "CPU"
-
             # Print results
-            print("\n" + "=" * 60)
-            print(f"RDMA {self.operation.upper()} LOAD TEST RESULTS ({device_type})")
-            print("=" * 60)
             print(f"Total iterations completed: {len(timings)}")
             print(f"Average data per operation: {avg_size / (1024*1024):.1f} MB")
             print(f"Total data transferred: {total_data / (1024*1024):.1f} MB")
             print()
 
-            print()
-            print("BANDWIDTH RESULTS:")
+            print("INDIVIDUAL OPERATION BANDWIDTH:")
             print(f"  Average bandwidth: {avg_bandwidth:.2f} Gbps")
             print(f"  Maximum bandwidth: {max_bandwidth:.2f} Gbps")
             print(f"  Minimum bandwidth: {min_bandwidth:.2f} Gbps")
             print("=" * 60)
+
+    @endpoint
+    async def print_batch_statistics(
+        self, concurrency: int = 1, total_elapsed_time: float = 0.0
+    ):
+        """Calculate and print batch-level statistics for concurrent operations"""
+        if not self.batch_timing_data:
+            print("No batch timing data collected!")
+            return
+
+        batch_timings = self.batch_timing_data
+        batch_sizes = self.batch_size_data
+        total_data = sum(self.size_data)
+
+        avg_batch_time = statistics.mean(batch_timings)
+        min_batch_time = min(batch_timings)
+        max_batch_time = max(batch_timings)
+        std_batch_time = (
+            statistics.stdev(batch_timings) if len(batch_timings) > 1 else 0.0
+        )
+        avg_batch_size = statistics.mean(batch_sizes)
+
+        print("\nCONCURRENT BATCH TIMING (wall-clock for all concurrent ops):")
+        print(f"  Average batch time: {avg_batch_time * 1000:.3f} ms")
+        print(f"  Minimum batch time: {min_batch_time * 1000:.3f} ms")
+        print(f"  Maximum batch time: {max_batch_time * 1000:.3f} ms")
+        print(f"  Standard deviation: {std_batch_time * 1000:.3f} ms")
+        print(f"  Average data per batch: {avg_batch_size / (1024*1024):.1f} MB")
+
+        # Calculate bandwidth (Gbps)
+        def calc_bandwidth_gbps(size_bytes: int, time_seconds: float) -> float:
+            if time_seconds == 0:
+                return 0.0
+            bits_transferred = size_bytes * 8
+            return bits_transferred / (time_seconds * 1e9)
+
+        avg_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, avg_batch_time)
+        max_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, min_batch_time)
+        min_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, max_batch_time)
+
+        print(f"\nAGGREGATE BANDWIDTH (concurrency={concurrency}):")
+        print(f"  Average aggregate bandwidth: {avg_aggregate_bw:.2f} Gbps")
+        print(f"  Maximum aggregate bandwidth: {max_aggregate_bw:.2f} Gbps")
+        print(f"  Minimum aggregate bandwidth: {min_aggregate_bw:.2f} Gbps")
+
+        total_throughput = calc_bandwidth_gbps(total_data, total_elapsed_time)
+        print("\nTOTAL SUSTAINED THROUGHPUT:")
+        print(f"  Total wall-clock time: {total_elapsed_time:.3f} s")
+        print(f"  Total data transferred: {total_data / (1024*1024):.1f} MB")
+        print(f"  Sustained throughput: {total_throughput:.2f} Gbps")
+        if concurrency > 1:
+            print(f"  (Accounts for {concurrency}x concurrent overlapping operations)")
 
 
 async def main(
@@ -227,6 +307,7 @@ async def main(
     operation: str = "write",
     size_mb: int = 64,
     warmup_iterations: int = 10,
+    concurrency: int = 1,
 ):
     # Adjust GPU allocation based on the device types
     device_0, device_1 = devices[0], devices[1]
@@ -245,16 +326,20 @@ async def main(
     await actor_0.set_other_actor.call(actor_1)
 
     for i in range(warmup_iterations):
-        await actor_0.send.call(is_warmup=True)
+        await actor_0.send.call(is_warmup=True, concurrency=concurrency)
 
+    total_start_time = time.time()
     for i in range(iterations):
-        await actor_0.send.call()
+        await actor_0.send.call(concurrency=concurrency)
+    total_end_time = time.time()
+    total_elapsed_time = total_end_time - total_start_time
 
-    # Have both actors print their statistics
-    print("\n=== ACTOR 0 (Create Buffer) STATISTICS ===")
-    await actor_0.print_statistics.call()
+    # Actor 0: Print batch statistics (concurrency orchestration)
+    await actor_0.print_batch_statistics.call(
+        concurrency=concurrency, total_elapsed_time=total_elapsed_time
+    )
 
-    print("\n=== ACTOR 1 (Create Buffer+Transmit) STATISTICS ===")
+    # Actor 1: Print individual RDMA transfer statistics
     await actor_1.print_statistics.call(calc_bwd=True)
 
     await mesh_0.stop()
@@ -313,5 +398,6 @@ if __name__ == "__main__":
             args.operation,
             args.size,
             args.warmup_iterations,
+            args.concurrency,
         )
     )

@@ -14,14 +14,9 @@
 /// + support for constructor specialization will help avoid duplication here.
 ///   TODO: Potentially too many clones of slice objects, might need to refactor to avoid that.
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufReader;
 use std::ops::DerefMut;
-use std::os::fd::FromRawFd;
-use std::os::fd::OwnedFd;
 
 use anyhow::Result;
-use clap::Parser;
 use hyperactor::data::Serialized;
 use hyperactor::reference::ActorId;
 use monarch_hyperactor::ndslice::PySlice;
@@ -30,10 +25,6 @@ use monarch_hyperactor::runtime::get_tokio_runtime;
 use monarch_messages::wire_value::WireValue;
 use monarch_messages::wire_value::func_call_args_to_wire_values;
 use monarch_messages::worker::*;
-use monarch_tensor_worker::bootstrap::BinaryArgs;
-use monarch_tensor_worker::bootstrap::bootstrap_pipe;
-use monarch_tensor_worker::bootstrap::bootstrap_worker_proc;
-use monarch_tensor_worker::bootstrap::worker_server;
 use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyRuntimeError;
@@ -1377,33 +1368,6 @@ pub(crate) fn worker_message_to_py(py: Python<'_>, message: &WorkerMessage) -> P
     }
 }
 
-/// The Python main entry point of the monarch worker from Python. It allows to bundle Python dependencies
-/// during packaging.
-#[pyfunction]
-fn worker_main(py: Python<'_>) -> PyResult<()> {
-    let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
-    Python::allow_threads(py, move || {
-        let args = BinaryArgs::parse_from(argv);
-
-        match args {
-            BinaryArgs::Pipe => bootstrap_pipe(),
-            BinaryArgs::WorkerServer { rd, wr } => {
-                worker_server(
-                    // SAFETY: Raw FD passed in from parent.
-                    BufReader::new(File::from(unsafe { OwnedFd::from_raw_fd(rd) })),
-                    // SAFETY: Raw FD passed in from parent.
-                    File::from(unsafe { OwnedFd::from_raw_fd(wr) }),
-                )
-            }
-            BinaryArgs::Worker(args) => get_tokio_runtime().block_on(async move {
-                let _ = bootstrap_worker_proc(args).await?.await;
-                Ok(())
-            }),
-        }
-        .map_err(|err: anyhow::Error| PyRuntimeError::new_err(err.to_string()))
-    })
-}
-
 pub(crate) fn register_python_bindings(worker_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     worker_mod.add_class::<PyWorkerMessage>()?;
     worker_mod.add_class::<BackendNetworkInit>()?;
@@ -1438,12 +1402,6 @@ pub(crate) fn register_python_bindings(worker_mod: &Bound<'_, PyModule>) -> PyRe
     worker_mod.add_class::<RecordingFormal>()?;
     worker_mod.add_class::<RecordingResult>()?;
     worker_mod.add_class::<CallRecording>()?;
-    let f = wrap_pyfunction!(worker_main, worker_mod)?;
-    f.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_extension.tensor_worker",
-    )?;
-    worker_mod.add_function(f)?;
 
     Ok(())
 }
