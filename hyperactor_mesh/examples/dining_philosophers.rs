@@ -21,6 +21,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -83,8 +84,10 @@ struct PhilosopherActorParams {
     size: usize,
 }
 
+impl Actor for PhilosopherActor {}
+
 #[async_trait]
-impl Actor for PhilosopherActor {
+impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
     async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
