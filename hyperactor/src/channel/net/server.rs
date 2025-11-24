@@ -124,7 +124,12 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     }
                     Err((writer, e)) => {
                         debug_assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-                        tracing::error!("failed to create ack frame (should be tiny): {e}");
+                        tracing::error!(
+                            source = %self.source,
+                            dest = %self.dest,
+                            error = %e,
+                            "failed to create ack frame"
+                        );
                         self.write_state = WriteState::Idle(writer);
                     }
                 }
@@ -165,7 +170,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     let bytes = match bytes_result {
                         Ok(Some(bytes)) => bytes,
                         Ok(None) => {
-                            tracing::debug!("{log_id}: EOF");
+                            tracing::debug!(
+                                source = %self.source,
+                                dest = %self.dest,
+                                "received EOF from client"
+                            );
                             break (next, Ok(()), false);
                         }
                         Err(err) => break (
@@ -217,9 +226,12 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                         // Ignore retransmits.
                         Ok(Frame::Message(seq, _)) if seq < next.seq => {
                             tracing::debug!(
-                                "{log_id}: ignoring retransmit; retransmit seq: {}; expected next seq: {}",
+                                source = %self.source,
+                                dest = %self.dest,
+                                seq = seq,
+                                "ignoring retransmit; retransmit seq: {}; expected next seq: {}",
                                 seq,
-                                next.seq,
+                                next.seq
                             );
                         },
                         // The following segment ensures exactly-once semantics.
@@ -227,11 +239,16 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                         Ok(Frame::Message(seq, message)) => {
                             // received seq should be equal to next seq. Else error out!
                             if seq > next.seq {
-                                let msg = format!("{log_id}: out-of-sequence message, expected seq {}, got {}", next.seq, seq);
-                                tracing::error!(msg);
-                                break (next, Err(anyhow::anyhow!(msg)), true)
+                                let error_msg = format!("out-of-sequence message, expected seq {}, got {}", next.seq, seq);
+                                tracing::error!(
+                                    source = %self.source,
+                                    dest = %self.dest,
+                                    seq = seq,
+                                    "{}", error_msg
+                                );
+                                break (next, Err(anyhow::anyhow!(format!("{log_id}: {error_msg}"))), true)
                             }
-                            match self.send_with_buffer_metric(&log_id, &tx, message).await {
+                            match self.send_with_buffer_metric(session_id, &tx, message).await {
                                 Ok(()) => {
                                     // Track throughput for this channel pair
                                     metrics::CHANNEL_THROUGHPUT_BYTES.add(
@@ -297,12 +314,18 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         //   1. processed seq/ack is Next-1;
         //   2. rcv_raw_frame_count contains the last frame which might not be
         //      desrializable, e.g. EOF, error, etc.
-        tracing::debug!(
-            "{log_id}: NetRx::process exited its loop with states: initial Next \
+        let debug_msg = format!(
+            "NetRx::process exited its loop with states: initial Next \
             was {initial_next}; final Next is {final_next}; since acked: {}sec; \
             rcv raw frame count is {rcv_raw_frame_count}; final result: {:?}",
             last_ack_time.elapsed().as_secs(),
             final_result,
+        );
+        tracing::info!(
+            source = %self.source,
+            dest = %self.dest,
+            session_id,
+            "{}", debug_msg
         );
 
         let mut final_ack = final_next.ack;
@@ -336,11 +359,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 }
                 Err(e) => {
                     tracing::debug!(
-                        "{log_id}: failed to flush acks due to error : {e}. \
-                        Normally, this is okay because Tx will reconnect, and \
-                        acks will be resent in the next connection. However, if \
-                        either Tx or Rx is dropped, the reconnection will not \
-                        happen, and subsequently the pending ack will never be sent out.",
+                        session_id,
+                        source = %self.source,
+                        dest = %self.dest,
+                        error = %e,
+                        "failed to flush acks during cleanup"
                     );
                 }
             }
@@ -362,7 +385,13 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     }
                     Err((w, e)) => {
                         debug_assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-                        tracing::debug!("failed to create reject frame (should be tiny): {e}");
+                        tracing::debug!(
+                            source = %self.source,
+                            dest = %self.dest,
+                            session_id = session_id,
+                            error = %e,
+                            "failed to create reject frame"
+                        );
                         self.write_state = WriteState::Idle(w);
                         // drop the reject; we're closing anyway
                     }
@@ -382,7 +411,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
     // occurences.
     async fn send_with_buffer_metric<M: RemoteMessage>(
         &mut self,
-        log_id: &str,
+        session_id: u64,
         tx: &mpsc::Sender<M>,
         message: M,
     ) -> anyhow::Result<()> {
@@ -401,12 +430,16 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                         hyperactor_telemetry::kv_pairs!(
                             "dest" => self.dest.to_string(),
                             "source" => self.source.to_string(),
+                            "session_id" => session_id.to_string(),
                         ),
                     );
                     // Full buffer should happen rarely. So we also add a log
                     // here to make debugging easy.
-                    tracing::debug!(
-                        "{log_id}: encountered full mpsc channel for {} secs",
+                     tracing::debug!(
+                        source = %self.source,
+                        dest = %self.dest,
+                        session_id = session_id,
+                        "encountered full mpsc channel for {} secs",
                         start.elapsed().as_secs(),
                     );
                 }
@@ -474,7 +507,13 @@ impl SessionManager {
         session_var.put(next).await;
 
         if let Err(ref err) = res {
-            tracing::info!("process encountered an error: {:#}", err);
+            tracing::info!(
+                source = %conn.source,
+                dest = %conn.dest,
+                error = ?err,
+                session_id = session_id,
+                "process encountered an error"
+            );
         }
 
         res
@@ -507,7 +546,11 @@ where
                 match result {
                     Ok((stream, addr)) => {
                         let source : ChannelAddr = addr.into();
-                        tracing::debug!("listen {}: new connection from {}", listener_channel_addr, source);
+                        tracing::debug!(
+                            source = %source,
+                            addr = %listener_channel_addr,
+                            "new connection accepted"
+                        );
                         metrics::CHANNEL_CONNECTIONS.add(
                             1,
                             hyperactor_telemetry::kv_pairs!(
@@ -547,9 +590,12 @@ where
                                     ChannelAddr::Tcp(source_addr) if source_addr.ip().is_loopback() => {},
                                     _ => {
                                         tracing::info!(
-                                            "serve: error processing peer connection {} <- {}: {:?}",
-                                            dest, source, err
-                                            );
+                                            source = %source,
+                                            dest = %dest,
+                                            error = ?err,
+                                            "error processing peer connection"
+                                        );
+
                                     }
                                 }
                             }
@@ -567,19 +613,30 @@ where
                             ),
                         );
 
-                        tracing::info!("serve {}: accept error: {}", listener_channel_addr, err)
+                        tracing::info!(
+                            addr = %listener_channel_addr,
+                            error = %err,
+                            "accept error"
+                        );
                     }
                 }
             }
 
             _ = parent_cancel_token.cancelled() => {
-                tracing::info!("serve {}: received parent token cancellation", listener_channel_addr);
+                tracing::info!(
+                    addr = %listener_channel_addr,
+                    "received parent token cancellation"
+                );
                 break Ok(());
             }
 
             result = join_nonempty(&mut connections) => {
                 if let Err(err) = result {
-                    tracing::info!("connection error: {}: {}", listener_channel_addr, err);
+                    tracing::info!(
+                        addr = %listener_channel_addr,
+                        error = %err,
+                        "connection task join error"
+                    );
                 }
             }
         }
@@ -624,7 +681,13 @@ impl ServerHandle {
     /// on active connections. After draining is completed, the
     /// connections are closed.
     pub(crate) fn stop(&self, reason: &str) {
-        tracing::info!("stopping server: {}; reason: {}", self, reason);
+        tracing::info!(
+            name = "ChannelServerStatus",
+            addr = %self.channel_addr,
+            status = "Stop::Sent",
+            reason,
+            "sent Stop signal; check server logs for the stop progress"
+        );
         self.cancel_token.cancel();
     }
 

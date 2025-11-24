@@ -275,11 +275,10 @@ pub struct PipeParams {
     pub kwargs: HashMap<String, PyTree<RValue>>,
 }
 
-#[async_trait]
-impl Actor for PipeActor {
-    type Params = PipeParams;
+impl Actor for PipeActor {}
 
-    async fn new(params: Self::Params) -> Result<Self> {
+impl PipeActor {
+    pub async fn new(params: PipeParams) -> Result<Self> {
         let mut command = Command::new(
             std::env::var("MONARCH_TENSOR_WORKER_EXE")
                 .map_err(|e| anyhow!("could not get var MONARCH_TENSOR_WORKER_EXE: {}", e))?,
