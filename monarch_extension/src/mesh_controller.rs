@@ -46,7 +46,6 @@ use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
 use monarch_hyperactor::buffers::FrozenBuffer;
 use monarch_hyperactor::context::PyInstance;
-use monarch_hyperactor::instance_dispatch;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::ndslice::PySlice;
@@ -140,17 +139,14 @@ impl _Controller {
         let id = NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed);
         let controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>> =
             signal_safe_block_on(py, async move {
-                let controller_handle = instance_dispatch!(client, |instance| {
-                    instance.proc().spawn(
-                        &Name::new("mesh_controller").to_string(),
-                        MeshControllerActor::new(MeshControllerActorParams {
-                            proc_mesh,
-                            id,
-                            rank_map,
-                        })
-                        .await,
-                    )?
-                });
+                let controller_handle = client.spawn(
+                    MeshControllerActor::new(MeshControllerActorParams {
+                        proc_mesh,
+                        id,
+                        rank_map,
+                    })
+                    .await,
+                )?;
                 Ok::<_, anyhow::Error>(Arc::new(Mutex::new(controller_handle)))
             })??;
 
@@ -231,8 +227,7 @@ impl _Controller {
     }
 
     fn _drain_and_stop(&mut self, py: Python<'_>, instance: &PyInstance) -> PyResult<()> {
-        let (stop_worker_port, stop_worker_receiver) =
-            instance_dispatch!(instance, |cx_instance| { cx_instance.open_once_port() });
+        let (stop_worker_port, stop_worker_receiver) = instance.open_once_port();
 
         self.controller_handle
             .blocking_lock()
@@ -816,6 +811,10 @@ impl Actor for MeshControllerActor {
             .await?;
         self.brokers = Some(brokers);
         Ok(())
+    }
+
+    fn display_name(&self) -> Option<String> {
+        Some(format!("mesh_controller_{}", self.id))
     }
 }
 

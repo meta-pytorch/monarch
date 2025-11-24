@@ -28,7 +28,6 @@ use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
-use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
@@ -462,13 +461,13 @@ mod tests {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
     use hyperactor_mesh::proc_mesh::ProcMesh;
-    use hyperactor_mesh::proc_mesh::global_root_client;
     use ndslice::extent;
     use tempfile::TempDir;
     use tokio::fs;
     use tokio::net::TcpListener;
 
     use super::*;
+    use crate::actor::root_client_actor;
 
     #[tokio::test]
     // TODO: OSS: Cannot assign requested address (os error 99)
@@ -520,7 +519,7 @@ mod tests {
 
         // TODO: thread through context, or access the actual python context;
         // for now this is basically equivalent (arguably better) to using the proc mesh client.
-        let instance = global_root_client();
+        let instance = root_client_actor();
 
         // Spawn actor mesh with RsyncActors
         let actor_mesh = proc_mesh

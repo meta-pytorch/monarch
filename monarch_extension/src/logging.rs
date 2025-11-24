@@ -8,6 +8,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::ops::Deref;
 use std::time::Duration;
 
 use hyperactor::ActorHandle;
@@ -22,7 +23,6 @@ use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::selection::Selection;
 use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_hyperactor::context::PyInstance;
-use monarch_hyperactor::instance_dispatch;
 use monarch_hyperactor::logging::LoggerRuntimeActor;
 use monarch_hyperactor::logging::LoggerRuntimeMessage;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
@@ -94,13 +94,10 @@ impl LoggingMeshClient {
                 .client_proc()
                 .spawn("log_client", LogClientActor::default())?;
             let client_actor_ref = client_actor.bind();
-            let forwarder_mesh = instance_dispatch!(instance, |cx| {
-                proc_mesh
-                    .spawn(cx, "log_forwarder", &client_actor_ref)
-                    .await?
-            });
-            let logger_mesh =
-                instance_dispatch!(instance, |cx| { proc_mesh.spawn(cx, "logger", &()).await? });
+            let forwarder_mesh = proc_mesh
+                .spawn(instance.deref(), "log_forwarder", &client_actor_ref)
+                .await?;
+            let logger_mesh = proc_mesh.spawn(instance.deref(), "logger", &()).await?;
 
             // Register flush_internal as a on-stop callback
             let client_actor_for_callback = client_actor.clone();
