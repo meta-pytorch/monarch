@@ -50,7 +50,7 @@ impl Handler<TestMessage> for TestActor {
         self.forward_port.send(cx, msg.0)?;
         Ok(())
     }
-}170
+}
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Bind, Unbind, Named)]
 struct MyGeneric<T>(T);
