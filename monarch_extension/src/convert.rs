@@ -330,21 +330,6 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
             to_stream: p.parseStreamRef("to_stream")?,
         })
     });
-    m.insert(key("CreatePipe"), |p| {
-        let function = p.parseFunction("function")?;
-        let args = p.parse("args")?;
-        let kwargs = p.parse("kwargs")?;
-        let (args, kwargs) = func_call_args_to_wire_values(Some(&function), &args, &kwargs)?;
-        Ok(WorkerMessage::CreatePipe {
-            result: p.parseRef("result")?,
-            key: p.parse("key")?,
-            function,
-            max_messages: p.parse("max_messages")?,
-            mesh: p.parseRef("device_mesh")?,
-            args,
-            kwargs,
-        })
-    });
     m.insert(key("SendValue"), |p|  {
             let function = p.parseOptionalFunction("function")?;
             let args: Bound<'_, PyTuple> = p.parse("args")?;
