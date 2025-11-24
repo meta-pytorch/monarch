@@ -253,7 +253,6 @@ impl CommMessageHandler for NcclCommActor {
         NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm))))
             .await?
             .spawn(cx)
-            .await
     }
 
     async fn split_from(
@@ -272,8 +271,7 @@ impl CommMessageHandler for NcclCommActor {
             Some(split_comm) => Ok(Some(
                 NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm))))
                     .await?
-                    .spawn(cx)
-                    .await?,
+                    .spawn(cx)?,
             )),
             None => Ok(None),
         }
@@ -1087,7 +1085,6 @@ mod tests {
             .await
             .unwrap(),
         );
-        let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
@@ -1156,7 +1153,6 @@ mod tests {
         .await
         .unwrap()
         .spawn_detached();
-        let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
@@ -1237,7 +1233,6 @@ mod tests {
             .await
             .unwrap(),
         );
-        let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
@@ -1298,7 +1293,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
         }))
         .await?;
 
@@ -1474,7 +1468,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         let handle2 = proc
             .spawn(
@@ -1488,7 +1481,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
 
         let unique_id = UniqueId::new().unwrap();
@@ -1646,7 +1638,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
 
         let unique_id = UniqueId::new().unwrap();
@@ -1783,7 +1774,6 @@ mod tests {
         .await
         .unwrap()
         .spawn_detached();
-        let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0?, handle1?);
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
