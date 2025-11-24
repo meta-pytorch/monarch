@@ -54,7 +54,6 @@ use monarch_types::PyTree;
 use monarch_types::SerializablePyErr;
 use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -740,34 +739,6 @@ impl StreamActor {
         Ok(())
     }
 
-    fn call_torch_op(
-        &self,
-        op: String,
-        overload: String,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
-    ) -> Result<Vec<RValue>, CallFunctionError> {
-        let args = args
-            .into_iter()
-            .map(|arg| self.wire_to_rvalue(arg))
-            .collect::<Result<Vec<_>, _>>()?;
-        let kwargs = kwargs
-            .into_iter()
-            .map(|(k, v)| self.wire_to_rvalue(v).map(|rvalue| (k, rvalue)))
-            .collect::<Result<HashMap<_, _>, CallFunctionError>>()?;
-
-        let results = torch_sys::call_op::call_op(op, overload, &args, &kwargs, true)?;
-
-        // Handle the case where the op returns nothing and convert it to a list of None.
-        // This is to ensure handle results does not error out as the client will call
-        // such a function with expected results of size 1.
-        Ok(if results.is_empty() {
-            vec![RValue::None]
-        } else {
-            results
-        })
-    }
-
     fn call_python_fn<'py>(
         &mut self,
         py: Python<'py>,
@@ -1118,21 +1089,17 @@ impl StreamMessageHandler for StreamActor {
             params.results,
             &params.mutates,
             async |self| {
-                tokio::task::block_in_place(|| match params.function.as_torch_op() {
-                    Some((op, overload)) => {
-                        self.call_torch_op(op, overload, params.args, params.kwargs)
-                    }
-                    _ => self
-                        .call_python_fn_pytree(
-                            cx,
-                            params.function,
-                            params.args,
-                            params.kwargs,
-                            &params.mutates,
-                            device_meshes,
-                            remote_process_groups,
-                        )
-                        .map(|results| results.into_leaves()),
+                tokio::task::block_in_place(|| {
+                    self.call_python_fn_pytree(
+                        cx,
+                        params.function,
+                        params.args,
+                        params.kwargs,
+                        &params.mutates,
+                        device_meshes,
+                        remote_process_groups,
+                    )
+                    .map(|results| results.into_leaves())
                 })
             },
         )
@@ -1562,44 +1529,17 @@ impl StreamMessageHandler for StreamActor {
         }
         let result = if let Some(function) = function {
             // If a function was provided, use that to resolve the value.
-            match function.as_torch_op() {
-                Some((op, overload)) => {
-                    self.call_torch_op(op, overload, args, kwargs)
-                        .map(|rvalues| {
-                            if rvalues.len() == 1 {
-                                Ok(rvalues[0].clone().into())
-                            } else {
-                                // TODO: Replace with native pytrees when possible
-                                Python::with_gil(|py| {
-                                    Ok((|| {
-                                        let py_rvalues = rvalues
-                                            .into_iter()
-                                            // SAFETY: This inherits the unsafety of `try_to_object_unsafe`.
-                                            .map(|rvalue| unsafe {
-                                                rvalue.try_to_object_unsafe(py)
-                                            })
-                                            .collect::<Result<Vec<_>, _>>()?;
-                                        PyTuple::new(py, &py_rvalues)?.extract::<PyTree<RValue>>()
-                                    })()
-                                    .map_err(SerializablePyErr::from_fn(py))?)
-                                })
-                            }
-                        })?
-                }
-                // Use block-in-place to allow nested callbacks to re-enter the
-                // runtime to run async code.
-                _ => tokio::task::block_in_place(|| {
-                    self.call_python_fn_pytree(
-                        cx,
-                        function,
-                        args,
-                        kwargs,
-                        &mutates,
-                        device_meshes,
-                        HashMap::new(),
-                    )
-                }),
-            }
+            tokio::task::block_in_place(|| {
+                self.call_python_fn_pytree(
+                    cx,
+                    function,
+                    args,
+                    kwargs,
+                    &mutates,
+                    device_meshes,
+                    HashMap::new(),
+                )
+            })
         } else {
             // If there's no function provided, there should be exactly one arg
             // and no kwargs.
