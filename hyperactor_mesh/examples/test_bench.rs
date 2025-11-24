@@ -34,7 +34,7 @@ use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Actor, Default, Debug)]
+#[derive(Default, Debug)]
 #[hyperactor::export(
     spawn = true,
     handlers = [
@@ -42,6 +42,8 @@ use serde::Serialize;
     ],
 )]
 struct TestActor {}
+
+impl Actor for TestActor {}
 
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 enum TestMessage {

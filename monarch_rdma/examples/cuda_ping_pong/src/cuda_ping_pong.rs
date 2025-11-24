@@ -67,6 +67,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::Proc;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -258,6 +259,19 @@ pub struct CudaRdmaActor {
 
 #[async_trait]
 impl Actor for CudaRdmaActor {
+    async fn handle_supervision_event(
+        &mut self,
+        _cx: &Instance<Self>,
+        _event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        tracing::error!("CudaRdmaActor supervision event: {:?}", _event);
+        tracing::error!("CudaRdmaActor error occurred, stop the worker process, exit code: 1");
+        std::process::exit(1);
+    }
+}
+
+#[async_trait]
+impl RemoteSpawn for CudaRdmaActor {
     type Params = (ActorRef<RdmaManagerActor>, usize, usize);
 
     async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
@@ -353,16 +367,6 @@ impl Actor for CudaRdmaActor {
                 rdma_manager,
             })
         }
-    }
-
-    async fn handle_supervision_event(
-        &mut self,
-        _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        tracing::error!("CudaRdmaActor supervision event: {:?}", _event);
-        tracing::error!("CudaRdmaActor error occurred, stop the worker process, exit code: 1");
-        std::process::exit(1);
     }
 }
 

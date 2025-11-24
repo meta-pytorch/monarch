@@ -16,6 +16,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use serde::Deserialize;
@@ -40,8 +41,10 @@ pub struct BenchActor {
     processing_time: Duration,
 }
 
+impl Actor for BenchActor {}
+
 #[async_trait]
-impl Actor for BenchActor {
+impl RemoteSpawn for BenchActor {
     type Params = Duration;
     async fn new(params: Duration) -> Result<Self, anyhow::Error> {
         Ok(Self {

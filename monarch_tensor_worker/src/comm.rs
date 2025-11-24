@@ -163,6 +163,8 @@ impl NcclCommActor {
     }
 }
 
+impl Actor for NcclCommActor {}
+
 /// Initialization parameters for `NcclCommActor`.
 #[derive(Debug, Clone)]
 pub enum CommParams {
@@ -186,11 +188,8 @@ pub enum CommParams {
     FromComm(Arc<Mutex<Communicator>>),
 }
 
-#[async_trait]
-impl Actor for NcclCommActor {
-    type Params = CommParams;
-
-    async fn new(params: Self::Params) -> Result<Self> {
+impl NcclCommActor {
+    pub async fn new(params: CommParams) -> Result<Self> {
         match params {
             CommParams::New {
                 device,
@@ -251,7 +250,10 @@ impl CommMessageHandler for NcclCommActor {
             .await
             .unwrap()?;
 
-        NcclCommActor::spawn(cx, CommParams::FromComm(Arc::new(Mutex::new(split_comm)))).await
+        NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm))))
+            .await?
+            .spawn(cx)
+            .await
     }
 
     async fn split_from(
@@ -268,7 +270,9 @@ impl CommMessageHandler for NcclCommActor {
 
         match split_comm {
             Some(split_comm) => Ok(Some(
-                NcclCommActor::spawn(cx, CommParams::FromComm(Arc::new(Mutex::new(split_comm))))
+                NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm))))
+                    .await?
+                    .spawn(cx)
                     .await?,
             )),
             None => Ok(None),
@@ -1029,6 +1033,7 @@ mod tests {
 
     use anyhow::Result;
     use futures::future::try_join_all;
+    use hyperactor::RemoteSpawn;
     use hyperactor::actor::ActorStatus;
     use hyperactor::proc::Proc;
     use monarch_messages::worker::WorkerMessageClient;
@@ -1058,25 +1063,29 @@ mod tests {
 
         let unique_id = UniqueId::new().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = proc.spawn::<NcclCommActor>(
+        let handle0 = proc.spawn(
             "comm0",
-            CommParams::New {
+            NcclCommActor::new(CommParams::New {
                 device: device0,
                 unique_id: unique_id.clone(),
                 world_size: 2,
                 rank: 0,
-            },
+            })
+            .await
+            .unwrap(),
         );
 
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = proc.spawn::<NcclCommActor>(
+        let handle1 = proc.spawn(
             "comm1",
-            CommParams::New {
+            NcclCommActor::new(CommParams::New {
                 device: device1,
                 unique_id,
                 world_size: 2,
                 rank: 1,
-            },
+            })
+            .await
+            .unwrap(),
         );
         let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
@@ -1127,20 +1136,26 @@ mod tests {
 
         let unique_id = UniqueId::new().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = NcclCommActor::spawn_detached(CommParams::New {
+        let handle0 = NcclCommActor::new(CommParams::New {
             device: device0,
             unique_id: unique_id.clone(),
             world_size: 2,
             rank: 0,
-        });
+        })
+        .await
+        .unwrap()
+        .spawn_detached();
 
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = NcclCommActor::spawn_detached(CommParams::New {
+        let handle1 = NcclCommActor::new(CommParams::New {
             device: device1,
             unique_id,
             world_size: 2,
             rank: 1,
-        });
+        })
+        .await
+        .unwrap()
+        .spawn_detached();
         let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
 
@@ -1198,25 +1213,29 @@ mod tests {
 
         let unique_id = UniqueId::new()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = proc.spawn::<NcclCommActor>(
+        let handle0 = proc.spawn(
             "comm0",
-            CommParams::New {
+            NcclCommActor::new(CommParams::New {
                 device: device0,
                 unique_id: unique_id.clone(),
                 world_size: 2,
                 rank: 0,
-            },
+            })
+            .await
+            .unwrap(),
         );
 
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = proc.spawn::<NcclCommActor>(
+        let handle1 = proc.spawn(
             "comm1",
-            CommParams::New {
+            NcclCommActor::new(CommParams::New {
                 device: device1,
                 unique_id,
                 world_size: 2,
                 rank: 1,
-            },
+            })
+            .await
+            .unwrap(),
         );
         let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
@@ -1268,14 +1287,16 @@ mod tests {
 
         let world_size = 4;
         let workers = try_join_all((0..world_size).map(async |rank| {
-            proc.spawn::<WorkerActor>(
+            proc.spawn(
                 &format!("worker{}", rank),
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size,
                     rank,
                     device_index: Some(rank.try_into()?),
                     controller_actor: controller_ref.clone(),
-                },
+                })
+                .await
+                .unwrap(),
             )
             .await
         }))
@@ -1442,26 +1463,30 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let handle1 = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker1",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 2,
                     rank: 0,
                     device_index: Some(0),
                     controller_actor: controller_ref.clone(),
-                },
+                })
+                .await
+                .unwrap(),
             )
             .await
             .unwrap();
         let handle2 = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker2",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 2,
                     rank: 1,
                     device_index: Some(1),
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -1610,14 +1635,16 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: Some(0),
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -1736,20 +1763,26 @@ mod tests {
 
         let unique_id = UniqueId::new()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = NcclCommActor::spawn_detached(CommParams::New {
+        let handle0 = NcclCommActor::new(CommParams::New {
             device: device0,
             unique_id: unique_id.clone(),
             world_size: 2,
             rank: 0,
-        });
+        })
+        .await
+        .unwrap()
+        .spawn_detached();
 
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = NcclCommActor::spawn_detached(CommParams::New {
+        let handle1 = NcclCommActor::new(CommParams::New {
             device: device1,
             unique_id,
             world_size: 2,
             rank: 1,
-        });
+        })
+        .await
+        .unwrap()
+        .spawn_detached();
         let (handle0, handle1) = tokio::join!(handle0, handle1);
         let (handle0, handle1) = (handle0?, handle1?);
 

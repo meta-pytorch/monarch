@@ -671,6 +671,7 @@ pub mod test_utils {
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::Named;
+    use hyperactor::RemoteSpawn;
     use libc::atexit;
     use tokio::sync::broadcast::Receiver;
     use tokio::sync::broadcast::Sender;
@@ -688,7 +689,7 @@ pub mod test_utils {
     // be an entry in the spawnable actor registry in the executable
     // 'hyperactor_mesh_test_bootstrap' for the `tests::process` actor
     // mesh test suite.
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -696,6 +697,8 @@ pub mod test_utils {
         ],
     )]
     pub struct TestActor;
+
+    impl Actor for TestActor {}
 
     #[derive(Debug, Serialize, Deserialize, Named, Clone)]
     pub struct Wait;

@@ -289,7 +289,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl Actor for MeshPingPongActor {
+    impl Actor for MeshPingPongActor {}
+
+    #[async_trait]
+    impl hyperactor::RemoteSpawn for MeshPingPongActor {
         type Params = MeshPingPongActorParams;
 
         async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {

@@ -21,12 +21,19 @@ use crate::v1::actor_mesh::ActorMeshRef;
 use crate::v1::host_mesh::HostMeshRef;
 use crate::v1::proc_mesh::ProcMeshRef;
 
-#[hyperactor::export(spawn = false)]
+#[hyperactor::export]
 pub(crate) struct ActorMeshController<A>
 where
     A: Referable,
 {
     mesh: ActorMeshRef<A>,
+}
+
+impl<A: Referable> ActorMeshController<A> {
+    /// Create a new mesh controller based on the provided reference.
+    pub(crate) fn new(mesh: ActorMeshRef<A>) -> Self {
+        Self { mesh }
+    }
 }
 
 impl<A: Referable> Debug for ActorMeshController<A> {
@@ -39,11 +46,6 @@ impl<A: Referable> Debug for ActorMeshController<A> {
 
 #[async_trait]
 impl<A: Referable> Actor for ActorMeshController<A> {
-    type Params = ActorMeshRef<A>;
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(Self { mesh: params })
-    }
-
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
@@ -59,18 +61,20 @@ impl<A: Referable> Actor for ActorMeshController<A> {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(spawn = true)]
+#[hyperactor::export]
 pub(crate) struct ProcMeshController {
     mesh: ProcMeshRef,
 }
 
+impl ProcMeshController {
+    /// Create a new proc controller based on the provided reference.
+    pub(crate) fn new(mesh: ProcMeshRef) -> Self {
+        Self { mesh }
+    }
+}
+
 #[async_trait]
 impl Actor for ProcMeshController {
-    type Params = ProcMeshRef;
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(Self { mesh: params })
-    }
-
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
@@ -90,18 +94,20 @@ impl Actor for ProcMeshController {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(spawn = true)]
+#[hyperactor::export]
 pub(crate) struct HostMeshController {
     mesh: HostMeshRef,
 }
 
+impl HostMeshController {
+    /// Create a new host controller based on the provided reference.
+    pub(crate) fn new(mesh: HostMeshRef) -> Self {
+        Self { mesh }
+    }
+}
+
 #[async_trait]
 impl Actor for HostMeshController {
-    type Params = HostMeshRef;
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(Self { mesh: params })
-    }
-
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
