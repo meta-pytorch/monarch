@@ -111,6 +111,7 @@ class Indirect(Actor):
 
 @pytest.mark.timeout(60)
 async def test_choose():
+    print(f"THIS PID {os.getpid()}")
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     v = proc.spawn("counter", Counter, 3)
     i = proc.spawn("indirect", Indirect)

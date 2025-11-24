@@ -558,13 +558,13 @@ mod tests {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
     use hyperactor_mesh::proc_mesh::ProcMesh;
-    use hyperactor_mesh::proc_mesh::global_root_client;
     use ndslice::extent;
     use ndslice::shape;
     use tempfile::TempDir;
     use tokio::fs;
 
     use super::*;
+    use crate::actor::root_client_actor;
 
     #[test]
     fn test_workspace_shape_owners() {
@@ -663,7 +663,7 @@ mod tests {
 
         // TODO: thread through context, or access the actual python context;
         // for now this is basically equivalent (arguably better) to using the proc mesh client.
-        let instance = global_root_client();
+        let instance = root_client_actor();
 
         // Spawn actor mesh with CodeSyncManager actors
         let actor_mesh = proc_mesh
