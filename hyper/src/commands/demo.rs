@@ -17,6 +17,7 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::forward;
 use hyperactor::id;
@@ -210,7 +211,7 @@ enum DemoMessage {
     Error(String, #[reply] OncePortRef<()>),
 }
 
-#[derive(Debug, Default, Actor)]
+#[derive(Debug, Default)]
 #[hyperactor::export(
     spawn = true,
     handlers = [
@@ -218,6 +219,8 @@ enum DemoMessage {
     ],
 )]
 struct DemoActor;
+
+impl Actor for DemoActor {}
 
 #[async_trait]
 #[forward(DemoMessage)]
@@ -243,7 +246,7 @@ impl DemoMessageHandler for DemoActor {
 
     async fn spawn_child(&mut self, cx: &Context<Self>) -> Result<ActorRef<Self>, anyhow::Error> {
         tracing::info!("demo: spawn child");
-        Ok(Self::spawn(cx, ()).await?.bind())
+        Ok(Self.spawn(cx).await?.bind())
     }
 
     async fn error(&mut self, _cx: &Context<Self>, message: String) -> Result<(), anyhow::Error> {

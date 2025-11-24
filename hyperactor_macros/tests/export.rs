@@ -13,6 +13,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
@@ -32,20 +33,13 @@ struct TestActor {
     forward_port: PortRef<String>,
 }
 
-#[derive(Debug, Clone, Named, Serialize, Deserialize)]
-struct TestActorParams {
-    forward_port: PortRef<String>,
-}
-
-#[async_trait]
-impl Actor for TestActor {
-    type Params = TestActorParams;
-
-    async fn new(params: Self::Params) -> anyhow::Result<Self> {
-        let Self::Params { forward_port } = params;
-        Ok(Self { forward_port })
+impl TestActor {
+    fn new(forward_port: PortRef<String>) -> Self {
+        Self { forward_port }
     }
 }
+
+impl Actor for TestActor {}
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 struct TestMessage(String);
@@ -56,7 +50,7 @@ impl Handler<TestMessage> for TestActor {
         self.forward_port.send(cx, msg.0)?;
         Ok(())
     }
-}
+}170
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Bind, Unbind, Named)]
 struct MyGeneric<T>(T);
@@ -113,10 +107,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
-        let params = TestActorParams {
-            forward_port: tx.bind(),
-        };
-        let actor_handle = proc.spawn::<TestActor>("foo", params).await.unwrap();
+        let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).await.unwrap();
         //  This will call binds
         actor_handle.bind::<TestActor>();
         // Verify that the ports can be gotten successfully.
@@ -194,10 +185,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
-        let params = TestActorParams {
-            forward_port: tx.bind(),
-        };
-        let actor_handle = proc.spawn::<TestActor>("actor", params).await.unwrap();
+        let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).await.unwrap();
 
         actor_handle.send(123u64).unwrap();
         actor_handle.send(TestMessage("foo".to_string())).unwrap();
