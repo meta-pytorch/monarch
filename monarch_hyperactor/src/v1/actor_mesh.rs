@@ -406,7 +406,7 @@ fn actor_state_to_supervision_events(
 fn send_state_change<F>(
     rank: usize,
     event: ActorSupervisionEvent,
-    mesh_name: &Name,
+    actor_mesh_name: &Name,
     owner: &Option<ActorHandle<PythonActor>>,
     is_owned: bool,
     is_proc_stopped: bool,
@@ -416,7 +416,7 @@ fn send_state_change<F>(
 ) where
     F: Fn(MeshFailure),
 {
-    let failure = MeshFailure::new(mesh_name, rank, event.clone());
+    let failure = MeshFailure::new(actor_mesh_name, rank, event.clone());
     // Any supervision event that is not a failure should not generate
     // call "unhandled".
     // This includes the Stopped status, which is a state that occurs when the
@@ -426,30 +426,30 @@ fn send_state_change<F>(
     let is_failed = event.is_error();
     if is_failed {
         tracing::warn!(
-            name = "SupervisionEvent",
-            %mesh_name,
+            name = "ActorMeshStatus",
+            status = "SupervisionError",
             %event,
-            "detected supervision error on monitored mesh: name={mesh_name}",
+            "detected supervision error on monitored mesh: name={actor_mesh_name}",
         );
     } else {
         tracing::debug!(
-            name = "SupervisionEvent",
-            %mesh_name,
+            name = "ActorMeshStatus",
+            status = "SupervisionEvent",
             %event,
-            "detected non-error supervision event on monitored mesh: name={mesh_name}",
+            "detected non-error supervision event on monitored mesh: name={actor_mesh_name}",
         );
     }
 
     // Send a notification to the owning actor of this mesh, if there is one.
     if let Some(owner) = owner {
         if let Err(error) = owner.send(SupervisionFailureMessage {
-            mesh_name: mesh_name.to_string(),
+            actor_mesh_name: actor_mesh_name.to_string(),
             rank,
             event: event.clone(),
         }) {
             tracing::warn!(
-                name = "SupervisionEvent",
-                %mesh_name,
+                name = "ActorMeshStatus",
+                status = "SupervisionError",
                 %event,
                 %error,
                 "failed to send supervision event to owner {}: {}. dropping event",
@@ -497,9 +497,14 @@ fn send_state_change<F>(
 ///   a message will be sent to "owner" if it is not None. If owner is None,
 ///   then a panic will be raised instead to crash the client.
 /// * time_between_tasks 1trols how frequently to poll.
+#[hyperactor::instrument_infallible(fields(
+    host_mesh=actor_mesh.proc_mesh().host_mesh_name().map(|n| n.to_string()),
+    proc_mesh=actor_mesh.proc_mesh().name().to_string(),
+    actor_name=actor_mesh.name().to_string(),
+))]
 async fn actor_states_monitor<A, F>(
     cx: &impl context::Actor,
-    mesh: ActorMeshRef<A>,
+    actor_mesh: ActorMeshRef<A>,
     owner: Option<ActorHandle<PythonActor>>,
     is_owned: bool,
     unhandled: F,
@@ -526,7 +531,7 @@ async fn actor_states_monitor<A, F>(
             _ = canceled.cancelled() => break,
         }
         // First check if the proc mesh is dead before trying to query their agents.
-        let proc_states = mesh.proc_mesh().proc_states(cx).await;
+        let proc_states = actor_mesh.proc_mesh().proc_states(cx).await;
         if let Err(e) = proc_states {
             send_state_change(
                 0,
@@ -539,7 +544,7 @@ async fn actor_states_monitor<A, F>(
                     )),
                     None,
                 ),
-                mesh.name(),
+                actor_mesh.name(),
                 &owner,
                 is_owned,
                 false,
@@ -590,12 +595,12 @@ async fn actor_states_monitor<A, F>(
                     ActorSupervisionEvent::new(
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
-                        mesh.get(point.rank()).unwrap().actor_id().clone(),
+                        actor_mesh.get(point.rank()).unwrap().actor_id().clone(),
                         Some(display_name),
                         actor_status,
                         None,
                     ),
-                    mesh.name(),
+                    actor_mesh.name(),
                     &owner,
                     is_owned,
                     true,
@@ -608,7 +613,7 @@ async fn actor_states_monitor<A, F>(
         }
 
         // Now that we know the proc mesh is alive, check for actor state changes.
-        let events = mesh.actor_states(cx).await;
+        let events = actor_mesh.actor_states(cx).await;
         if let Err(e) = events {
             send_state_change(
                 0,
@@ -621,7 +626,7 @@ async fn actor_states_monitor<A, F>(
                     )),
                     None,
                 ),
-                mesh.name(),
+                actor_mesh.name(),
                 &owner,
                 is_owned,
                 false,
@@ -649,7 +654,7 @@ async fn actor_states_monitor<A, F>(
                 send_state_change(
                     rank,
                     events[0].clone(),
-                    mesh.name(),
+                    actor_mesh.name(),
                     &owner,
                     is_owned,
                     false,
@@ -673,7 +678,7 @@ async fn actor_states_monitor<A, F>(
                 send_state_change(
                     rank,
                     events[0].clone(),
-                    mesh.name(),
+                    actor_mesh.name(),
                     &owner,
                     is_owned,
                     false,

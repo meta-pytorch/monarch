@@ -24,6 +24,7 @@
   _(cuMemRelease)                   \
   _(cuMemcpyHtoD_v2)                \
   _(cuMemcpyDtoH_v2)                \
+  _(cuMemsetD8_v2)                  \
   _(cuPointerGetAttribute)          \
   _(cuInit)                         \
   _(cuDeviceGet)                    \
@@ -167,6 +168,11 @@ CUresult rdmaxcel_cuMemcpyDtoH_v2(
     size_t ByteCount) {
   return rdmaxcel::DriverAPI::get()->cuMemcpyDtoH_v2_(
       dstHost, srcDevice, ByteCount);
+}
+
+CUresult
+rdmaxcel_cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N) {
+  return rdmaxcel::DriverAPI::get()->cuMemsetD8_v2_(dstDevice, uc, N);
 }
 
 // Pointer queries
