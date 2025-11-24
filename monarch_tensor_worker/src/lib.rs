@@ -79,7 +79,6 @@ use monarch_messages::worker::StreamRef;
 use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerMessageHandler;
 use monarch_messages::worker::WorkerParams;
-use monarch_types::PyTree;
 use ndslice::Slice;
 use pyo3::Python;
 use pyo3::types::PyAnyMethods;
@@ -92,7 +91,6 @@ use stream::StreamParams;
 use torch_sys::CudaDevice;
 use torch_sys::DeviceIndex;
 use torch_sys::Layout;
-use torch_sys::RValue;
 use torch_sys::ScalarType;
 use torch_sys::TensorCell;
 use torch_sys::factory_zeros;
@@ -383,14 +381,11 @@ impl WorkerMessageHandler for WorkerActor {
         self.maybe_add_stream_to_recording(cx, params.stream)
             .await?;
 
-        let device_meshes = if params.function.as_torch_op().is_some() {
-            HashMap::new()
-        } else {
-            self.device_meshes
-                .iter()
-                .map(|(k, v)| (k.clone(), v.0.clone()))
-                .collect()
-        };
+        let device_meshes = self
+            .device_meshes
+            .iter()
+            .map(|(k, v)| (k.clone(), v.0.clone()))
+            .collect();
 
         let mut remote_process_groups = HashMap::new();
         for remote_process_group_ref in &params.remote_process_groups {
@@ -638,22 +633,6 @@ impl WorkerMessageHandler for WorkerActor {
         Ok(())
     }
 
-    async fn create_pipe(
-        &mut self,
-        _cx: &hyperactor::Context<Self>,
-        _result: Ref,
-        // TODO(agallagher): This is used in the python impl to name the socket
-        // path to use for comms, but we don't currently use a named socket.
-        _key: String,
-        _function: ResolvableFunction,
-        _max_messages: i64,
-        _device_mesh: Ref,
-        _args: Vec<WireValue>,
-        _kwargs: HashMap<String, WireValue>,
-    ) -> Result<()> {
-        panic!("create_pipe is no longer implemented")
-    }
-
     async fn send_tensor(
         &mut self,
         cx: &hyperactor::Context<Self>,
@@ -772,7 +751,7 @@ impl WorkerMessageHandler for WorkerActor {
         // Resolve the stream.
         let stream = self.try_get_stream(stream)?;
 
-        let device_meshes = if function.as_ref().is_none_or(|f| f.as_torch_op().is_some()) {
+        let device_meshes = if function.is_none() {
             HashMap::new()
         } else {
             self.device_meshes
