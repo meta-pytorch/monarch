@@ -23,6 +23,7 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Proc;
+use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -82,8 +83,13 @@ impl Handler<NextNumber> for SieveActor {
                 }
                 None => {
                     msg.prime_collector.send(cx, msg.number)?;
-                    self.next =
-                        Some(SieveActor::spawn(cx, SieveParams { prime: msg.number }).await?);
+
+                    self.next = Some(
+                        SieveActor::new(SieveParams { prime: msg.number })
+                            .await?
+                            .spawn(cx)
+                            .await?,
+                    );
                 }
             }
         }
@@ -91,8 +97,10 @@ impl Handler<NextNumber> for SieveActor {
     }
 }
 
+impl Actor for SieveActor {}
+
 #[async_trait]
-impl Actor for SieveActor {
+impl RemoteSpawn for SieveActor {
     type Params = SieveParams;
 
     /// Creates a sieve actor for `prime`.
