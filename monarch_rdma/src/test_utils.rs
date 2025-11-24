@@ -77,9 +77,14 @@ pub mod test_utils {
     use std::time::Duration;
     use std::time::Instant;
 
+    use hyperactor::Actor;
     use hyperactor::ActorRef;
+    use hyperactor::Context;
+    use hyperactor::HandleClient;
+    use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::Proc;
+    use hyperactor::RefClient;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
@@ -99,26 +104,250 @@ pub mod test_utils {
     use crate::rdma_manager_actor::RdmaManagerActor;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
     use crate::validate_execution_context;
-    // Waits for the completion of an RDMA operation.
 
-    // This function polls for the completion of an RDMA operation by repeatedly
-    // sending a `PollCompletion` message to the specified actor mesh and checking
-    // the returned work completion status. It continues polling until the operation
-    // completes or the specified timeout is reached.
+    #[derive(Debug)]
+    struct SendSyncCudaContext(rdmaxcel_sys::CUcontext);
+    unsafe impl Send for SendSyncCudaContext {}
+    unsafe impl Sync for SendSyncCudaContext {}
 
+    /// Actor responsible for CUDA initialization and buffer management within its own process context.  
+    /// This is important because you preform CUDA operations within the same process as the RDMA operations.  
+    #[hyperactor::export(
+        spawn = true,
+        handlers = [
+            CudaActorMessage,
+        ],
+    )]
+    #[derive(Debug)]
+    pub struct CudaActor {
+        device: Option<i32>,
+        context: SendSyncCudaContext,
+    }
+
+    #[async_trait::async_trait]
+    impl Actor for CudaActor {
+        type Params = i32;
+
+        async fn new(device_id: i32) -> Result<Self, anyhow::Error> {
+            unsafe {
+                cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
+                let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();
+                cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut device, device_id));
+                let mut context: rdmaxcel_sys::CUcontext = std::mem::zeroed();
+                cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(
+                    &mut context,
+                    0,
+                    device_id
+                ));
+
+                Ok(Self {
+                    device: Some(device),
+                    context: SendSyncCudaContext(context),
+                })
+            }
+        }
+    }
+
+    #[derive(
+        Handler,
+        HandleClient,
+        RefClient,
+        hyperactor::Named,
+        serde::Serialize,
+        serde::Deserialize,
+        Debug
+    )]
+    pub enum CudaActorMessage {
+        CreateBuffer {
+            size: usize,
+            rdma_actor: ActorRef<RdmaManagerActor>,
+            #[reply]
+            reply: hyperactor::OncePortRef<(RdmaBuffer, usize)>,
+        },
+        FillBuffer {
+            device_ptr: usize,
+            size: usize,
+            value: u8,
+            #[reply]
+            reply: hyperactor::OncePortRef<()>,
+        },
+        VerifyBuffer {
+            cpu_buffer_ptr: usize,
+            device_ptr: usize,
+            size: usize,
+            #[reply]
+            reply: hyperactor::OncePortRef<()>,
+        },
+    }
+
+    #[async_trait::async_trait]
+    impl Handler<CudaActorMessage> for CudaActor {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            msg: CudaActorMessage,
+        ) -> Result<(), anyhow::Error> {
+            match msg {
+                CudaActorMessage::CreateBuffer {
+                    size,
+                    rdma_actor,
+                    reply,
+                } => {
+                    let device = self
+                        .device
+                        .ok_or_else(|| anyhow::anyhow!("Device not initialized"))?;
+
+                    let (dptr, padded_size) = unsafe {
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(self.context.0));
+
+                        let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
+                        let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle =
+                            std::mem::zeroed();
+
+                        let mut granularity: usize = 0;
+                        let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
+                        prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
+                        prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
+                        prop.location.id = device;
+                        prop.allocFlags.gpuDirectRDMACapable = 1;
+                        prop.requestedHandleTypes =
+                            rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
+                            &mut granularity as *mut usize,
+                            &prop,
+                            rdmaxcel_sys::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
+                        ));
+
+                        let padded_size: usize = ((size - 1) / granularity + 1) * granularity;
+
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuMemCreate(
+                            &mut handle,
+                            padded_size,
+                            &prop,
+                            0
+                        ));
+
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(
+                            &mut dptr,
+                            padded_size,
+                            0,
+                            0,
+                            0,
+                        ));
+
+                        assert!((dptr as usize).is_multiple_of(granularity));
+                        assert!(padded_size.is_multiple_of(granularity));
+
+                        let err = rdmaxcel_sys::rdmaxcel_cuMemMap(dptr, padded_size, 0, handle, 0);
+                        if err != rdmaxcel_sys::CUDA_SUCCESS {
+                            return Err(anyhow::anyhow!("Failed to map CUDA memory: {:?}", err));
+                        }
+
+                        let mut access_desc: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
+                        access_desc.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
+                        access_desc.location.id = device;
+                        access_desc.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
+                            dptr,
+                            padded_size,
+                            &access_desc,
+                            1
+                        ));
+
+                        (dptr, padded_size)
+                    };
+
+                    let rdma_handle = rdma_actor
+                        .request_buffer(cx, dptr as usize, padded_size)
+                        .await?;
+
+                    reply.send(cx, (rdma_handle, dptr as usize))?;
+                    Ok(())
+                }
+                CudaActorMessage::FillBuffer {
+                    device_ptr,
+                    size,
+                    value,
+                    reply,
+                } => {
+                    unsafe {
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(self.context.0));
+
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuMemsetD8_v2(
+                            device_ptr as rdmaxcel_sys::CUdeviceptr,
+                            value,
+                            size
+                        ));
+                    }
+
+                    reply.send(cx, ())?;
+                    Ok(())
+                }
+                CudaActorMessage::VerifyBuffer {
+                    cpu_buffer_ptr,
+                    device_ptr,
+                    size,
+                    reply,
+                } => {
+                    unsafe {
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(self.context.0));
+
+                        cu_check!(rdmaxcel_sys::rdmaxcel_cuMemcpyDtoH_v2(
+                            cpu_buffer_ptr as *mut std::ffi::c_void,
+                            device_ptr as rdmaxcel_sys::CUdeviceptr,
+                            size
+                        ));
+                    }
+
+                    reply.send(cx, ())?;
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Waits for the completion of RDMA operations.
+    ///
+    /// This function polls for the completion of RDMA operations by repeatedly
+    /// checking the completion queue until all expected work requests complete
+    /// or the specified timeout is reached.
+    ///
+    /// # Arguments
+    /// * `qp` - The RDMA Queue Pair to poll for completion
+    /// * `poll_target` - Which CQ to poll (Send or Recv)
+    /// * `expected_wr_ids` - Slice of work request IDs to wait for
+    /// * `timeout_secs` - Timeout in seconds
+    ///
+    /// # Returns
+    /// `Ok(true)` if all operations complete successfully within the timeout,
+    /// or an error if the timeout is reached
     pub async fn wait_for_completion(
         qp: &mut RdmaQueuePair,
         poll_target: PollTarget,
+        expected_wr_ids: &[u64],
         timeout_secs: u64,
     ) -> Result<bool, anyhow::Error> {
         let timeout = Duration::from_secs(timeout_secs);
         let start_time = Instant::now();
+
+        let mut remaining: std::collections::HashSet<u64> =
+            expected_wr_ids.iter().copied().collect();
+
         while start_time.elapsed() < timeout {
-            match qp.poll_completion_target(poll_target) {
-                Ok(Some(_wc)) => {
-                    return Ok(true);
-                }
-                Ok(None) => {
+            if remaining.is_empty() {
+                return Ok(true);
+            }
+
+            let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
+            match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+                Ok(completions) => {
+                    for (wr_id, _wc) in completions {
+                        remaining.remove(&wr_id);
+                    }
+                    if remaining.is_empty() {
+                        return Ok(true);
+                    }
                     RealClock.sleep(Duration::from_millis(1)).await;
                 }
                 Err(e) => {
@@ -126,7 +355,10 @@ pub mod test_utils {
                 }
             }
         }
-        Err(anyhow::Error::msg("Timeout while waiting for completion"))
+        Err(anyhow::Error::msg(format!(
+            "Timeout while waiting for completion of wr_ids: {:?}",
+            remaining
+        )))
     }
 
     /// Posts a work request to the send queue of the given RDMA queue pair.
@@ -137,25 +369,26 @@ pub mod test_utils {
         op_type: u32,
     ) -> Result<(), anyhow::Error> {
         unsafe {
-            let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+            let ibv_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let send_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(ibv_qp);
             let params = rdmaxcel_sys::wqe_params_t {
                 laddr: lhandle.addr,
                 length: lhandle.size,
                 lkey: lhandle.lkey,
-                wr_id: qp.send_wqe_idx,
+                wr_id: send_wqe_idx,
                 signaled: true,
                 op_type,
                 raddr: rhandle.addr,
                 rkey: rhandle.rkey,
-                qp_num: (*ibv_qp).qp_num,
+                qp_num: (*(*ibv_qp).ibv_qp).qp_num,
                 buf: (*dv_qp).sq.buf as *mut u8,
                 wqe_cnt: (*dv_qp).sq.wqe_cnt,
                 dbrec: (*dv_qp).dbrec,
                 ..Default::default()
             };
             rdmaxcel_sys::launch_send_wqe(params);
-            qp.send_wqe_idx += 1;
+            rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(ibv_qp);
         }
         Ok(())
     }
@@ -169,43 +402,53 @@ pub mod test_utils {
     ) -> Result<(), anyhow::Error> {
         // Populate params using lhandle and rhandle
         unsafe {
-            let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+            let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
+            let recv_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_recv_wqe_idx(rdmaxcel_qp);
             let params = rdmaxcel_sys::wqe_params_t {
                 laddr: lhandle.addr,
                 length: lhandle.size,
                 lkey: lhandle.lkey,
-                wr_id: qp.recv_wqe_idx,
+                wr_id: recv_wqe_idx,
                 op_type,
                 signaled: true,
-                qp_num: (*ibv_qp).qp_num,
+                qp_num: (*(*rdmaxcel_qp).ibv_qp).qp_num,
                 buf: (*dv_qp).rq.buf as *mut u8,
                 wqe_cnt: (*dv_qp).rq.wqe_cnt,
                 dbrec: (*dv_qp).dbrec,
                 ..Default::default()
             };
             rdmaxcel_sys::launch_recv_wqe(params);
-            qp.recv_wqe_idx += 1;
-            qp.recv_db_idx += 1;
+            rdmaxcel_sys::rdmaxcel_qp_fetch_add_recv_wqe_idx(rdmaxcel_qp);
+            rdmaxcel_sys::rdmaxcel_qp_fetch_add_recv_db_idx(rdmaxcel_qp);
         }
         Ok(())
     }
 
-    pub async fn ring_db_gpu(qp: &mut RdmaQueuePair) -> Result<(), anyhow::Error> {
+    pub async fn ring_db_gpu(qp: &RdmaQueuePair) -> Result<(), anyhow::Error> {
         RealClock.sleep(Duration::from_millis(2)).await;
         unsafe {
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
             let base_ptr = (*dv_qp).sq.buf as *mut u8;
             let wqe_cnt = (*dv_qp).sq.wqe_cnt;
             let stride = (*dv_qp).sq.stride;
-            if (wqe_cnt as u64) < (qp.send_wqe_idx - qp.send_db_idx) {
+            let send_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(
+                qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp,
+            );
+            let mut send_db_idx =
+                rdmaxcel_sys::rdmaxcel_qp_load_send_db_idx(qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp);
+            if (wqe_cnt as u64) < (send_wqe_idx - send_db_idx) {
                 return Err(anyhow::anyhow!("Overflow of WQE, possible data loss"));
             }
-            while qp.send_db_idx < qp.send_wqe_idx {
-                let offset = (qp.send_db_idx % wqe_cnt as u64) * stride as u64;
+            while send_db_idx < send_wqe_idx {
+                let offset = (send_db_idx % wqe_cnt as u64) * stride as u64;
                 let src_ptr = (base_ptr as *mut u8).wrapping_add(offset as usize);
                 rdmaxcel_sys::launch_db_ring((*dv_qp).bf.reg, src_ptr as *mut std::ffi::c_void);
-                qp.send_db_idx += 1;
+                send_db_idx += 1;
+                rdmaxcel_sys::rdmaxcel_qp_store_send_db_idx(
+                    qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp,
+                    send_db_idx,
+                );
             }
         }
         Ok(())
@@ -217,48 +460,54 @@ pub mod test_utils {
         poll_target: PollTarget,
         timeout_secs: u64,
     ) -> Result<bool, anyhow::Error> {
-        let timeout = Duration::from_secs(timeout_secs);
-        let start_time = Instant::now();
+        unsafe {
+            let start_time = Instant::now();
+            let timeout = Duration::from_secs(timeout_secs);
+            let ibv_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
 
-        while start_time.elapsed() < timeout {
-            // Get the appropriate completion queue and index based on the poll target
-            let (cq, idx, cq_type_str) = match poll_target {
-                PollTarget::Send => (
-                    qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq,
-                    qp.send_cq_idx,
-                    "send",
-                ),
-                PollTarget::Recv => (
-                    qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq,
-                    qp.recv_cq_idx,
-                    "receive",
-                ),
-            };
+            while start_time.elapsed() < timeout {
+                // Get the appropriate completion queue and index based on the poll target
+                let (cq, idx, cq_type_str) = match poll_target {
+                    PollTarget::Send => (
+                        qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq,
+                        rdmaxcel_sys::rdmaxcel_qp_load_send_cq_idx(ibv_qp),
+                        "send",
+                    ),
+                    PollTarget::Recv => (
+                        qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq,
+                        rdmaxcel_sys::rdmaxcel_qp_load_recv_cq_idx(ibv_qp),
+                        "receive",
+                    ),
+                };
 
-            // Poll the completion queue
-            let result =
-                unsafe { rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx as i32) };
+                // Poll the completion queue
+                let result = rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx as i32);
 
-            match result {
-                rdmaxcel_sys::CQE_POLL_TRUE => {
-                    // Update the appropriate index based on the poll target
-                    match poll_target {
-                        PollTarget::Send => qp.send_cq_idx += 1,
-                        PollTarget::Recv => qp.recv_cq_idx += 1,
+                match result {
+                    rdmaxcel_sys::CQE_POLL_TRUE => {
+                        // Update the appropriate index based on the poll target
+                        match poll_target {
+                            PollTarget::Send => {
+                                rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_cq_idx(ibv_qp);
+                            }
+                            PollTarget::Recv => {
+                                rdmaxcel_sys::rdmaxcel_qp_fetch_add_recv_cq_idx(ibv_qp);
+                            }
+                        }
+                        return Ok(true);
                     }
-                    return Ok(true);
-                }
-                rdmaxcel_sys::CQE_POLL_ERROR => {
-                    return Err(anyhow::anyhow!("Error polling {} completion", cq_type_str));
-                }
-                _ => {
-                    // No completion yet, sleep and try again
-                    RealClock.sleep(Duration::from_millis(1)).await;
+                    rdmaxcel_sys::CQE_POLL_ERROR => {
+                        return Err(anyhow::anyhow!("Error polling {} completion", cq_type_str));
+                    }
+                    _ => {
+                        // No completion yet, sleep and try again
+                        RealClock.sleep(Duration::from_millis(1)).await;
+                    }
                 }
             }
-        }
 
-        Err(anyhow::Error::msg("Timeout while waiting for completion"))
+            Err(anyhow::Error::msg("Timeout while waiting for completion"))
+        }
     }
 
     pub struct RdmaManagerTestEnv<'a> {
@@ -270,8 +519,10 @@ pub mod test_utils {
         pub actor_2: ActorRef<RdmaManagerActor>,
         pub rdma_handle_1: RdmaBuffer,
         pub rdma_handle_2: RdmaBuffer,
-        cuda_context_1: Option<rdmaxcel_sys::CUcontext>,
-        cuda_context_2: Option<rdmaxcel_sys::CUcontext>,
+        cuda_actor_1: Option<ActorRef<CudaActor>>,
+        cuda_actor_2: Option<ActorRef<CudaActor>>,
+        device_ptr_1: Option<usize>,
+        device_ptr_2: Option<usize>,
     }
 
     #[derive(Debug, Clone)]
@@ -288,6 +539,7 @@ pub mod test_utils {
 
         if backend == "cuda" {
             config.use_gpu_direct = validate_execution_context().await.is_ok();
+            eprintln!("Using GPU Direct: {}", config.use_gpu_direct);
         }
 
         (backend.to_string(), parsed_idx)
@@ -359,148 +611,101 @@ pub mod test_utils {
                 .await
                 .unwrap();
 
+            let actor_1 = actor_mesh_1.get(0).unwrap();
+            let actor_2 = actor_mesh_2.get(0).unwrap();
+
             let mut buf_vec = Vec::new();
-            let mut cuda_contexts = Vec::new();
+            let mut cuda_actor_1 = None;
+            let mut cuda_actor_2 = None;
+            let mut device_ptr_1: Option<usize> = None;
+            let mut device_ptr_2: Option<usize> = None;
 
-            for accel in [parsed_accel1.clone(), parsed_accel2.clone()] {
-                if accel.0 == "cpu" {
-                    let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
-                    buf_vec.push(Buffer {
-                        ptr: buffer.as_mut_ptr() as u64,
-                        len: buffer.len(),
-                        cpu_ref: Some(buffer),
-                    });
-                    cuda_contexts.push(None);
-                    continue;
-                }
-                // CUDA case
-                unsafe {
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
+            let rdma_handle_1;
+            let rdma_handle_2;
 
-                    let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
-                    let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
+            // Process first accelerator
+            if parsed_accel1.0 == "cpu" {
+                let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
+                buf_vec.push(Buffer {
+                    ptr: buffer.as_mut_ptr() as u64,
+                    len: buffer.len(),
+                    cpu_ref: Some(buffer),
+                });
+                rdma_handle_1 = actor_1
+                    .request_buffer(proc_mesh_1.client(), buf_vec[0].ptr as usize, buffer_size)
+                    .await?;
+            } else {
+                // CUDA case - spawn CudaActor in the same process mesh
+                let cuda_actor_mesh_1: RootActorMesh<'_, CudaActor> = proc_mesh_1
+                    .spawn(&instance, "cuda_init", &(parsed_accel1.1 as i32))
+                    .await?;
+                let cuda_actor_ref_1 = cuda_actor_mesh_1.get(0).unwrap();
 
-                    let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(
-                        &mut device,
-                        accel.1 as i32
-                    ));
+                let (rdma_buf, dev_ptr) = cuda_actor_ref_1
+                    .create_buffer(proc_mesh_1.client(), buffer_size, actor_1.clone())
+                    .await?;
+                rdma_handle_1 = rdma_buf;
+                device_ptr_1 = Some(dev_ptr);
 
-                    let mut context: rdmaxcel_sys::CUcontext = std::mem::zeroed();
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(
-                        &mut context,
-                        0,
-                        accel.1 as i32
-                    ));
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
+                buf_vec.push(Buffer {
+                    ptr: rdma_handle_1.addr as u64,
+                    len: buffer_size,
+                    cpu_ref: None,
+                });
+                cuda_actor_1 = Some(cuda_actor_ref_1);
+            }
 
-                    let mut granularity: usize = 0;
-                    let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
-                    prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
-                    prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-                    prop.location.id = device;
-                    prop.allocFlags.gpuDirectRDMACapable = 1;
-                    prop.requestedHandleTypes =
-                        rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+            // Process second accelerator
+            if parsed_accel2.0 == "cpu" {
+                let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
+                buf_vec.push(Buffer {
+                    ptr: buffer.as_mut_ptr() as u64,
+                    len: buffer.len(),
+                    cpu_ref: Some(buffer),
+                });
+                rdma_handle_2 = actor_2
+                    .request_buffer(proc_mesh_2.client(), buf_vec[1].ptr as usize, buffer_size)
+                    .await?;
+            } else {
+                // CUDA case - spawn CudaActor in the same process mesh
+                let cuda_actor_mesh_2: RootActorMesh<'_, CudaActor> = proc_mesh_2
+                    .spawn(&instance, "cuda_init", &(parsed_accel2.1 as i32))
+                    .await?;
+                let cuda_actor_ref_2 = cuda_actor_mesh_2.get(0).unwrap();
 
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
-                        &mut granularity as *mut usize,
-                        &prop,
-                        rdmaxcel_sys::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
-                    ));
+                let (rdma_buf, dev_ptr) = cuda_actor_ref_2
+                    .create_buffer(proc_mesh_2.client(), buffer_size, actor_2.clone())
+                    .await?;
+                rdma_handle_2 = rdma_buf;
+                device_ptr_2 = Some(dev_ptr);
 
-                    // ensure our size is aligned
-                    let /*mut*/ padded_size: usize = ((buffer_size - 1) / granularity + 1) * granularity;
-                    assert!(padded_size == buffer_size);
-
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemCreate(
-                        &mut handle as *mut rdmaxcel_sys::CUmemGenericAllocationHandle,
-                        padded_size,
-                        &prop,
-                        0
-                    ));
-                    // reserve and map the memory
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(
-                        &mut dptr as *mut rdmaxcel_sys::CUdeviceptr,
-                        padded_size,
-                        0,
-                        0,
-                        0,
-                    ));
-                    assert!((dptr as usize).is_multiple_of(granularity));
-                    assert!(padded_size.is_multiple_of(granularity));
-
-                    // fails if a add cu_check macro; but passes if we don't
-                    let err = rdmaxcel_sys::rdmaxcel_cuMemMap(
-                        dptr as rdmaxcel_sys::CUdeviceptr,
-                        padded_size,
-                        0,
-                        handle as rdmaxcel_sys::CUmemGenericAllocationHandle,
-                        0,
-                    );
-                    if err != rdmaxcel_sys::CUDA_SUCCESS {
-                        panic!("failed reserving and mapping memory {:?}", err);
-                    }
-
-                    // set access
-                    let mut access_desc: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
-                    access_desc.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-                    access_desc.location.id = device;
-                    access_desc.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
-                        dptr,
-                        padded_size,
-                        &access_desc,
-                        1
-                    ));
-                    buf_vec.push(Buffer {
-                        ptr: dptr,
-                        len: padded_size,
-                        cpu_ref: None,
-                    });
-                    cuda_contexts.push(Some(context));
-                }
+                buf_vec.push(Buffer {
+                    ptr: rdma_handle_2.addr as u64,
+                    len: buffer_size,
+                    cpu_ref: None,
+                });
+                cuda_actor_2 = Some(cuda_actor_ref_2);
             }
 
             // Fill buffer1 with test data
             if parsed_accel1.0 == "cuda" {
-                let mut temp_buffer = vec![0u8; buffer_size].into_boxed_slice();
-                for (i, val) in temp_buffer.iter_mut().enumerate() {
-                    *val = (i % 256) as u8;
-                }
-                unsafe {
-                    // Use the CUDA context that was created for the first buffer
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(
-                        cuda_contexts[0].expect("No CUDA context found")
-                    ));
-
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemcpyHtoD_v2(
-                        buf_vec[0].ptr,
-                        temp_buffer.as_ptr() as *const std::ffi::c_void,
-                        temp_buffer.len()
-                    ));
-                }
+                cuda_actor_1
+                    .clone()
+                    .unwrap()
+                    .fill_buffer(proc_mesh_1.client(), device_ptr_1.unwrap(), buffer_size, 42)
+                    .await?;
             } else {
                 unsafe {
-                    let ptr = buf_vec[0].ptr as *mut u8; // or *const u8
+                    let ptr = buf_vec[0].ptr as *mut u8;
                     for i in 0..buf_vec[0].len {
-                        *ptr.add(i) = (i % 256) as u8;
+                        *ptr.add(i) = 42_u8;
                     }
                 }
             }
-            let actor_1 = actor_mesh_1.get(0).unwrap();
-            let actor_2 = actor_mesh_2.get(0).unwrap();
-
-            let rdma_handle_1 = actor_1
-                .request_buffer(proc_mesh_1.client(), buf_vec[0].ptr as usize, buffer_size)
-                .await?;
-            let rdma_handle_2 = actor_2
-                .request_buffer(proc_mesh_2.client(), buf_vec[1].ptr as usize, buffer_size)
-                .await?;
-            // Get keys from both actors.
 
             let buffer_2 = buf_vec.remove(1);
             let buffer_1 = buf_vec.remove(0);
+
             Ok(Self {
                 buffer_1,
                 buffer_2,
@@ -510,48 +715,22 @@ pub mod test_utils {
                 actor_2,
                 rdma_handle_1,
                 rdma_handle_2,
-                cuda_context_1: cuda_contexts.first().cloned().flatten(),
-                cuda_context_2: cuda_contexts.get(1).cloned().flatten(),
+                cuda_actor_1,
+                cuda_actor_2,
+                device_ptr_1,
+                device_ptr_2,
             })
         }
 
         pub async fn cleanup(self) -> Result<(), anyhow::Error> {
+            // Just release buffers from RDMA manager - CUDA cleanup happens automatically
             self.actor_1
                 .release_buffer(self.client_1, self.rdma_handle_1.clone())
                 .await?;
+
             self.actor_2
                 .release_buffer(self.client_2, self.rdma_handle_2.clone())
                 .await?;
-            if self.cuda_context_1.is_some() {
-                unsafe {
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(
-                        self.cuda_context_1.expect("No CUDA context found")
-                    ));
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemUnmap(
-                        self.buffer_1.ptr as rdmaxcel_sys::CUdeviceptr,
-                        self.buffer_1.len
-                    ));
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressFree(
-                        self.buffer_1.ptr as rdmaxcel_sys::CUdeviceptr,
-                        self.buffer_1.len
-                    ));
-                }
-            }
-            if self.cuda_context_2.is_some() {
-                unsafe {
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(
-                        self.cuda_context_2.expect("No CUDA context found")
-                    ));
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemUnmap(
-                        self.buffer_2.ptr as rdmaxcel_sys::CUdeviceptr,
-                        self.buffer_2.len
-                    ));
-                    cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressFree(
-                        self.buffer_2.ptr as rdmaxcel_sys::CUdeviceptr,
-                        self.buffer_2.len
-                    ));
-                }
-            }
             Ok(())
         }
 
@@ -579,46 +758,61 @@ pub mod test_utils {
             .await
         }
 
-        pub async fn verify_buffers(&self, size: usize) -> Result<(), anyhow::Error> {
-            let mut buf_vec = Vec::new();
-            for (virtual_addr, cuda_context) in [
-                (self.buffer_1.ptr, self.cuda_context_1),
-                (self.buffer_2.ptr, self.cuda_context_2),
-            ] {
-                if cuda_context.is_some() {
-                    let mut temp_buffer = vec![0u8; size].into_boxed_slice();
-                    // SAFETY: The buffer is allocated with the correct size and the pointer is valid.
-                    unsafe {
-                        cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(
-                            cuda_context.expect("No CUDA context found")
-                        ));
-                        cu_check!(rdmaxcel_sys::rdmaxcel_cuMemcpyDtoH_v2(
-                            temp_buffer.as_mut_ptr() as *mut std::ffi::c_void,
-                            virtual_addr as rdmaxcel_sys::CUdeviceptr,
-                            size
-                        ));
-                    }
-                    buf_vec.push(Buffer {
-                        ptr: temp_buffer.as_mut_ptr() as u64,
-                        len: size,
-                        cpu_ref: Some(temp_buffer),
-                    });
-                } else {
-                    buf_vec.push(Buffer {
-                        ptr: virtual_addr,
-                        len: size,
-                        cpu_ref: None,
-                    });
+        pub async fn verify_buffers(
+            &self,
+            size: usize,
+            offset: usize,
+        ) -> Result<(), anyhow::Error> {
+            let mut temp_buffer_1 = vec![0u8; size];
+            let mut temp_buffer_2 = vec![0u8; size];
+
+            // Read buffer 1
+            if let Some(cuda_actor) = &self.cuda_actor_1 {
+                cuda_actor
+                    .verify_buffer(
+                        self.client_1,
+                        temp_buffer_1.as_mut_ptr() as usize,
+                        self.device_ptr_1.unwrap() + offset,
+                        size,
+                    )
+                    .await?;
+            } else {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        (self.buffer_1.ptr + offset as u64) as *const u8,
+                        temp_buffer_1.as_mut_ptr(),
+                        size,
+                    );
                 }
             }
-            // SAFETY: The pointers are valid and the buffers have the same length.
-            unsafe {
-                let ptr1 = buf_vec[0].ptr as *mut u8;
-                let ptr2: *mut u8 = buf_vec[1].ptr as *mut u8;
-                for i in 0..buf_vec[0].len {
-                    if *ptr1.add(i) != *ptr2.add(i) {
-                        return Err(anyhow::anyhow!("Buffers are not equal at index {}", i));
-                    }
+
+            // Read buffer 2
+            if let Some(cuda_actor) = &self.cuda_actor_2 {
+                cuda_actor
+                    .verify_buffer(
+                        self.client_2,
+                        temp_buffer_2.as_mut_ptr() as usize,
+                        self.device_ptr_2.unwrap() + offset,
+                        size,
+                    )
+                    .await?;
+            } else {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        (self.buffer_2.ptr + offset as u64) as *const u8,
+                        temp_buffer_2.as_mut_ptr(),
+                        size,
+                    );
+                }
+            }
+
+            // Compare buffers
+            for i in 0..size {
+                if temp_buffer_1[i] != temp_buffer_2[i] {
+                    return Err(anyhow::anyhow!(
+                        "Buffers are not equal at index {}",
+                        offset + i
+                    ));
                 }
             }
             Ok(())

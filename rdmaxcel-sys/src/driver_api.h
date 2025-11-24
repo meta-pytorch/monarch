@@ -71,6 +71,9 @@ CUresult rdmaxcel_cuMemcpyDtoH_v2(
     CUdeviceptr srcDevice,
     size_t ByteCount);
 
+CUresult
+rdmaxcel_cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N);
+
 // Pointer queries
 CUresult rdmaxcel_cuPointerGetAttribute(
     void* data,

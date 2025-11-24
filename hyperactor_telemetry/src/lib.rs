@@ -649,7 +649,7 @@ pub fn initialize_logging_with_log_prefix(
             "logging_initialized"
         );
 
-        if is_layer_enabled(DISABLE_OTEL_METRICS) {
+        if !is_layer_disabled(DISABLE_OTEL_METRICS) {
             otel::init_metrics();
         }
     }
