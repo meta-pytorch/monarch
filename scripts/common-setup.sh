@@ -70,7 +70,7 @@ setup_tensor_engine() {
 # Install PyTorch with C++ development headers (libtorch) for Rust compilation
 setup_pytorch_with_headers() {
     local gpu_arch_version=${1:-"12.6"}
-    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126"}
+    local torch_spec=${2:-"torch"}
 
     echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
 
