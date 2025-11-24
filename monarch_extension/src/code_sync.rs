@@ -18,6 +18,7 @@ use hyperactor::context;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
+use monarch_hyperactor;
 use monarch_hyperactor::code_sync::WorkspaceLocation;
 use monarch_hyperactor::code_sync::manager::CodeSyncManager;
 use monarch_hyperactor::code_sync::manager::CodeSyncManagerParams;
@@ -27,8 +28,6 @@ use monarch_hyperactor::code_sync::manager::WorkspaceConfig;
 use monarch_hyperactor::code_sync::manager::WorkspaceShape;
 use monarch_hyperactor::code_sync::manager::code_sync_mesh;
 use monarch_hyperactor::context::PyInstance;
-use monarch_hyperactor::instance_dispatch;
-use monarch_hyperactor::instance_into_dispatch;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_hyperactor::v1::proc_mesh::PyProcMesh as PyProcMeshV1;
@@ -279,32 +278,34 @@ impl CodeSyncMeshClient {
         if let Ok(v0) = proc_mesh.downcast::<PyProcMesh>() {
             let proc_mesh = v0.borrow().try_inner()?;
             signal_safe_block_on(py, async move {
-                let actor_mesh = instance_dispatch!(client, |cx| {
-                    proc_mesh
-                        .spawn(cx, "code_sync_manager", &CodeSyncManagerParams {})
-                        .await?
-                });
+                let actor_mesh = proc_mesh
+                    .spawn(
+                        client.deref(),
+                        "code_sync_manager",
+                        &CodeSyncManagerParams {},
+                    )
+                    .await?;
                 Ok(Self { actor_mesh })
             })?
         } else {
             let proc_mesh = proc_mesh.downcast::<PyProcMeshV1>()?.borrow().mesh_ref()?;
             signal_safe_block_on(py, async move {
-                let actor_mesh = instance_dispatch!(client, |cx| {
-                    proc_mesh
-                        .spawn_service(cx, "code_sync_manager", &CodeSyncManagerParams {})
-                        .await
-                        .map_err(|err| PyException::new_err(err.to_string()))?
-                });
-                instance_dispatch!(client, |cx| {
-                    actor_mesh
-                        .cast(
-                            cx,
-                            SetActorMeshMessage {
-                                actor_mesh: actor_mesh.deref().clone(),
-                            },
-                        )
-                        .map_err(|err| PyException::new_err(err.to_string()))?
-                });
+                let actor_mesh = proc_mesh
+                    .spawn_service(
+                        client.deref(),
+                        "code_sync_manager",
+                        &CodeSyncManagerParams {},
+                    )
+                    .await
+                    .map_err(|err| PyException::new_err(err.to_string()))?;
+                actor_mesh
+                    .cast(
+                        client.deref(),
+                        SetActorMeshMessage {
+                            actor_mesh: actor_mesh.deref().clone(),
+                        },
+                    )
+                    .map_err(|err| PyException::new_err(err.to_string()))?;
                 Ok(Self {
                     actor_mesh: SharedCell::from(RootActorMesh::from(actor_mesh)),
                 })
@@ -324,19 +325,17 @@ impl CodeSyncMeshClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let instance = instance.clone();
         let actor_mesh = self.actor_mesh.clone();
-        instance_into_dispatch!(instance, |cx| {
-            monarch_hyperactor::runtime::future_into_py(py, async move {
-                CodeSyncMeshClient::sync_workspace_(
-                    &cx,
-                    actor_mesh,
-                    local,
-                    remote,
-                    method.into(),
-                    auto_reload,
-                )
-                .err_into()
-                .await
-            })
+        monarch_hyperactor::runtime::future_into_py(py, async move {
+            CodeSyncMeshClient::sync_workspace_(
+                instance.deref(),
+                actor_mesh,
+                local,
+                remote,
+                method.into(),
+                auto_reload,
+            )
+            .err_into()
+            .await
         })
     }
 
@@ -354,17 +353,15 @@ impl CodeSyncMeshClient {
             py,
             async move {
                 for workspace in workspaces.into_iter() {
-                    instance_dispatch!(instance, async |cx| {
-                        CodeSyncMeshClient::sync_workspace_(
-                            cx,
-                            actor_mesh.clone(),
-                            workspace.local,
-                            workspace.remote,
-                            workspace.method.into(),
-                            auto_reload,
-                        )
-                        .await
-                    })?;
+                    CodeSyncMeshClient::sync_workspace_(
+                        instance.deref(),
+                        actor_mesh.clone(),
+                        workspace.local,
+                        workspace.remote,
+                        workspace.method.into(),
+                        auto_reload,
+                    )
+                    .await?;
                 }
                 anyhow::Ok(())
             }

@@ -411,7 +411,9 @@ impl Proc {
             .map_err(|existing| anyhow::anyhow!("coordinator port is already set to {existing}"))
     }
 
-    fn handle_supervision_event(&self, event: ActorSupervisionEvent) {
+    /// Handle a supervision event received by the proc. Attempt to forward it to the
+    /// supervision coordinator port if one is set, otherwise crash the process.
+    pub fn handle_supervision_event(&self, event: ActorSupervisionEvent) {
         let result = match self.state().supervision_coordinator_port.get() {
             Some(port) => port.send(event.clone()).map_err(anyhow::Error::from),
             None => Err(anyhow::anyhow!(
@@ -530,26 +532,46 @@ impl Proc {
         Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
     }
 
-    /// Create and return an actor instance and its corresponding handle. This allows actors to be
-    /// "inverted": the caller can use the returned [`Instance`] to send and receive messages,
-    /// launch child actors, etc. The actor itself does not handle any messages, and supervision events
-    /// are always forwarded to the proc. Otherwise the instance acts as a normal actor, and can be
-    /// referenced and stopped.
+    /// Wrapper for [`Proc::actor_instance::<()>`].
     pub fn instance(&self, name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id = self.allocate_root_id(name)?;
-        let _ = tracing::debug_span!(
-            "actor_instance",
-            actor_name = name,
-            actor_type = std::any::type_name::<()>(),
-            actor_id = actor_id.to_string(),
-        );
-
-        let (instance, _, _) = Instance::new(self.clone(), actor_id.clone(), true, None);
-        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
-
-        instance.change_status(ActorStatus::Client);
+        let (instance, handle, ..) = self.actor_instance(name)?;
 
         Ok((instance, handle))
+    }
+
+    /// Create and return an actor instance, its corresponding handle, its signal port receiver,
+    /// its supervision port receiver, and its message receiver. This allows actors to be
+    /// "inverted": the caller can use the returned [`Instance`] to send and receive messages,
+    /// launch child actors, etc. The actor itself does not handle any messages unless driven by
+    /// the caller. Otherwise the instance acts as a normal actor, and can be referenced and
+    /// stopped.
+    pub fn actor_instance<A: Actor>(
+        &self,
+        name: &str,
+    ) -> Result<
+        (
+            Instance<A>,
+            ActorHandle<A>,
+            PortReceiver<ActorSupervisionEvent>,
+            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<WorkCell<A>>,
+        ),
+        anyhow::Error,
+    > {
+        let actor_id = self.allocate_root_id(name)?;
+        let span = tracing::debug_span!(
+            "actor_instance",
+            actor_name = name,
+            actor_type = std::any::type_name::<A>(),
+            actor_id = actor_id.to_string(),
+        );
+        let _guard = span.enter();
+        let (instance, actor_loop_receivers, work_rx) =
+            Instance::new(self.clone(), actor_id.clone(), false, None);
+        let (signal_rx, supervision_rx) = actor_loop_receivers.unwrap();
+        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
+        instance.change_status(ActorStatus::Client);
+        Ok((instance, handle, supervision_rx, signal_rx, work_rx))
     }
 
     /// Create a child instance. Called from `Instance`.
@@ -874,11 +896,11 @@ impl MailboxSender for WeakProc {
 
 /// Represents a single work item used by the instance to dispatch to
 /// actor handles. Specifically, this enables handler polymorphism.
-struct WorkCell<A: Actor + Send>(
+pub struct WorkCell<A: Actor + Send>(
     Box<
         dyn for<'a> FnOnce(
                 &'a mut A,
-                &'a mut Instance<A>,
+                &'a Instance<A>,
             )
                 -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + 'a + Send>>
             + Send
@@ -891,7 +913,7 @@ impl<A: Actor + Send> WorkCell<A> {
     fn new(
         f: impl for<'a> FnOnce(
             &'a mut A,
-            &'a mut Instance<A>,
+            &'a Instance<A>,
         )
             -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + 'a + Send>>
         + Send
@@ -902,10 +924,10 @@ impl<A: Actor + Send> WorkCell<A> {
     }
 
     /// Handle the message represented by this work cell.
-    fn handle<'a>(
+    pub fn handle<'a>(
         self,
         actor: &'a mut A,
-        instance: &'a mut Instance<A>,
+        instance: &'a Instance<A>,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
         (self.0)(actor, instance)
     }
@@ -1451,7 +1473,8 @@ impl<A: Actor> Instance<A> {
         Ok(())
     }
 
-    async fn handle_supervision_event(
+    /// Handle a supervision event using the provided actor.
+    pub async fn handle_supervision_event(
         &self,
         actor: &mut A,
         supervision_event: ActorSupervisionEvent,
@@ -1483,7 +1506,7 @@ impl<A: Actor> Instance<A> {
 
     #[hyperactor::instrument(fields(actor_id = self.self_id().to_string(), actor_name = self.self_id().name()))]
     async unsafe fn handle_message<M: Message>(
-        &mut self,
+        &self,
         actor: &mut A,
         type_info: Option<&'static TypeInfo>,
         headers: Attrs,
@@ -1519,8 +1542,8 @@ impl<A: Actor> Instance<A> {
         actor.handle(&context, message).await
     }
 
-    /// Spawn on child on this instance. Currently used only by cap::CanSpawn.
-    pub(crate) fn spawn<C: Actor>(&self, actor: C) -> anyhow::Result<ActorHandle<C>> {
+    /// Spawn on child on this instance.
+    pub fn spawn<C: Actor>(&self, actor: C) -> anyhow::Result<ActorHandle<C>> {
         self.inner.proc.spawn_child(self.inner.cell.clone(), actor)
     }
 
@@ -2041,7 +2064,7 @@ impl<A: Actor> Ports<A> {
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
                     let seq_info = headers.get(SEQ_INFO).cloned();
 
-                    let work = WorkCell::new(move |actor: &mut A, instance: &mut Instance<A>| {
+                    let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
                         Box::pin(async move {
                             // SAFETY: we guarantee that the passed type_info is for type M.
                             unsafe {

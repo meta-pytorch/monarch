@@ -9,6 +9,7 @@
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use hyperactor::Mailbox;
@@ -48,7 +49,6 @@ use serde::Serialize;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::instance_dispatch;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
@@ -289,11 +289,9 @@ impl PythonPortRef {
     }
 
     fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
-        instance_dispatch!(instance, |cx_instance| {
-            self.inner
-                .send(cx_instance, message)
-                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
-        });
+        self.inner
+            .send(instance.deref(), message)
+            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
         Ok(())
     }
 
@@ -467,11 +465,9 @@ impl PythonOncePortRef {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
         };
 
-        instance_dispatch!(instance, |cx_instance| {
-            port_ref
-                .send(cx_instance, message)
-                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
-        });
+        port_ref
+            .send(instance.deref(), message)
+            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
         Ok(())
     }
 

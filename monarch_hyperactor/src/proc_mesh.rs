@@ -44,7 +44,6 @@ use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
 use crate::alloc::PyAlloc;
-use crate::context::PyInstance;
 use crate::mailbox::PyMailbox;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
@@ -398,11 +397,6 @@ impl PyProcMesh {
             Ok(PyProcMeshMonitor { receiver })
         })?
         .into())
-    }
-
-    #[getter]
-    fn client(&self) -> PyResult<PyInstance> {
-        Ok(self.try_inner()?.client().into())
     }
 
     fn __repr__(&self) -> PyResult<String> {
