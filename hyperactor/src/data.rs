@@ -398,12 +398,7 @@ impl std::fmt::Debug for Encoded {
             Encoded::Bincode(data) => write!(f, "Encoded::Bincode({})", HexFmt(data)),
             Encoded::Json(data) => write!(f, "Encoded::Json({})", HexFmt(data)),
             Encoded::Multipart(message) => {
-                write!(
-                    f,
-                    "Encoded::Multipart(illegal?={} body={}",
-                    message.is_illegal(),
-                    HexFmt(message.body())
-                )?;
+                write!(f, "Encoded::Multipart(body={}", HexFmt(message.body()))?;
                 for (index, part) in message.parts().iter().enumerate() {
                     write!(f, ", part[{}]={}", index, HexFmt(part))?;
                 }

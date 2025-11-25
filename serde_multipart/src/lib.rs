@@ -57,17 +57,12 @@ use serde::Serialize;
 pub struct Message {
     body: Part,
     parts: Vec<Part>,
-    is_illegal: bool,
 }
 
 impl Message {
     /// Returns a new message with the given body and parts.
     pub fn from_body_and_parts(body: Part, parts: Vec<Part>) -> Self {
-        Self {
-            body,
-            parts,
-            is_illegal: false,
-        }
+        Self { body, parts }
     }
 
     /// The body of the message.
@@ -118,16 +113,7 @@ impl Message {
     ///                                                                                      each part
     /// ```
     pub fn framed(self) -> Frame {
-        let is_illegal = self.is_illegal;
         let (body, parts) = self.into_inner();
-
-        if is_illegal {
-            assert!(parts.is_empty(), "illegal illegal message");
-            return Frame::from_buffers(vec![
-                Bytes::from_owner(u64::MAX.to_be_bytes()),
-                body.into_inner(),
-            ]);
-        }
 
         let mut buffers = Vec::with_capacity(2 + 2 * parts.len());
 
@@ -150,14 +136,6 @@ impl Message {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
         let body_len = buf.get_u64();
-        if body_len == u64::MAX {
-            return Ok(Self {
-                body: buf.into(),
-                parts: vec![],
-                is_illegal: true,
-            });
-        }
-
         let body = buf.split_to(body_len as usize);
         let mut parts = Vec::new();
         while !buf.is_empty() {
@@ -166,7 +144,6 @@ impl Message {
         Ok(Self {
             body: body.into(),
             parts,
-            is_illegal: false,
         })
     }
 
@@ -179,10 +156,6 @@ impl Message {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
         Ok(buf.split_to(at))
-    }
-
-    pub fn is_illegal(&self) -> bool {
-        self.is_illegal
     }
 }
 
@@ -325,7 +298,6 @@ pub fn serialize_bincode<S: ?Sized + serde::Serialize>(
     Ok(Message {
         body: Part(buffer.into_inner().freeze()),
         parts: serializer.into_parts(),
-        is_illegal: false,
     })
 }
 
@@ -335,14 +307,6 @@ pub fn deserialize_bincode<T>(message: Message) -> Result<T, bincode::Error>
 where
     T: serde::de::DeserializeOwned,
 {
-    if message.is_illegal {
-        let (body, parts) = message.into_inner();
-        if !parts.is_empty() {
-            return Err(bincode::ErrorKind::Custom("illegal illegal message".to_string()).into());
-        }
-        return bincode::deserialize_from(body.into_inner().reader());
-    }
-
     let (body, parts) = message.into_inner();
     let mut deserializer = part::BincodeDeserializer::new(
         bincode::Deserializer::with_reader(body.into_inner().reader(), options()),
@@ -352,22 +316,6 @@ where
     // Check that all parts were consumed:
     deserializer.end()?;
     Ok(value)
-}
-
-/// Serializes the provided value into an "illegal" Message that acts as an ordinary
-/// bincode-encoded buffer (bypassing multipart extraction and encoding). This is
-/// only used to support hyperactor's transition to multipart encoding, and will be
-/// removed after it is complete.
-///
-/// **YOU SHOULD NOT USE THIS**
-pub fn serialize_illegal_bincode<S: ?Sized + serde::Serialize>(
-    value: &S,
-) -> Result<Message, bincode::Error> {
-    Ok(Message {
-        body: Part::from(bincode::serialize(value)?),
-        parts: vec![],
-        is_illegal: true,
-    })
 }
 
 /// Construct the set of options used by the specialized serializer and deserializer.
@@ -412,16 +360,6 @@ mod tests {
         let bincode_serialized = bincode::serialize(&value).unwrap();
         let bincode_deserialized = bincode::deserialize(&bincode_serialized).unwrap();
         assert_eq!(value, bincode_deserialized);
-
-        // Illegal encoding:
-        let bincode_illegal = serialize_illegal_bincode(&value).unwrap();
-        let mut bincode_illegal_framed = bincode_illegal.clone().framed();
-        let bincode_illegal_framed =
-            bincode_illegal_framed.copy_to_bytes(bincode_illegal_framed.remaining());
-        let bincode_illegal_unframed = Message::from_framed(bincode_illegal_framed).unwrap();
-        let bincode_illegal_deserialized_value =
-            deserialize_bincode(bincode_illegal_unframed.clone()).unwrap();
-        assert_eq!(value, bincode_illegal_deserialized_value);
     }
 
     #[test]
@@ -507,7 +445,6 @@ mod tests {
         let message = Message {
             body: Part::from("hello"),
             parts: vec![Part::from("world")],
-            is_illegal: false,
         };
         let err = deserialize_bincode::<String>(message).unwrap_err();
 
@@ -565,7 +502,6 @@ mod tests {
                 Part::from("xyz"),
                 Part::from("xyzd"),
             ],
-            is_illegal: false,
         };
 
         let mut framed = message.clone().framed();
