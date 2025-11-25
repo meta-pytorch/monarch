@@ -751,7 +751,8 @@ impl StreamActor {
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
     ) -> Result<Bound<'py, PyAny>, CallFunctionError> {
-        let (args_tuple, kwargs_dict) = args_kwargs.to_python(py)
+        let (args_tuple, kwargs_dict) = args_kwargs
+            .to_python(py)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
         let function = function
             .map(|function| {
@@ -833,12 +834,13 @@ impl StreamActor {
         let py_kwargs: HashMap<String, PyTree<PyArg>> = kwargs_dict
             .iter()
             .map(|(k, v)| {
-                let key = k.extract::<String>().map_err(SerializablePyErr::from_fn(py))?;
+                let key = k
+                    .extract::<String>()
+                    .map_err(SerializablePyErr::from_fn(py))?;
                 let value = resolve(v)?;
                 Ok((key, value))
             })
             .collect::<Result<_, CallFunctionError>>()?;
-
 
         // Add a shared-borrow for each rvalue reference.
         py_args
