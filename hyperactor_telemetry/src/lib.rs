@@ -7,6 +7,7 @@
  */
 
 #![allow(internal_features)]
+#![allow(clippy::disallowed_methods)] // hyperactor_telemetry can't use hyperactor::clock::Clock (circular dependency)
 #![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
@@ -33,8 +34,14 @@ pub const ENABLE_SQLITE_TRACING: &str = "ENABLE_SQLITE_TRACING";
 /// Environment variable constants
 // Log level (debug, info, warn, error, critical) to capture for Monarch traces on dedicated log file (changes based on environment, see `log_file_path`).
 const MONARCH_FILE_LOG_ENV: &str = "MONARCH_FILE_LOG";
+// Suffix to append to log filenames for test isolation
+pub const MONARCH_LOG_SUFFIX_ENV: &str = "MONARCH_LOG_SUFFIX";
 
 pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
+
+/// Environment variable to enable the unified layer.
+/// Set to "1" to enable.
+pub const USE_UNIFIED_LAYER: &str = "USE_UNIFIED_LAYER";
 
 // Log level constants
 const LOG_LEVEL_INFO: &str = "info";
@@ -59,10 +66,12 @@ mod meta;
 mod otel;
 mod pool;
 pub mod recorder;
+pub mod sinks;
 mod spool;
 pub mod sqlite;
 pub mod task;
 pub mod trace;
+pub mod trace_dispatcher;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -170,7 +179,8 @@ fn writer() -> Box<dyn Write + Send> {
     match env::Env::current() {
         env::Env::Test => Box::new(std::io::stderr()),
         env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
-            let (path, filename) = log_file_path(env::Env::current(), None).unwrap();
+            let suffix = std::env::var(MONARCH_LOG_SUFFIX_ENV).ok();
+            let (path, filename) = log_file_path(env::Env::current(), suffix.as_deref()).unwrap();
             match try_create_appender(&path, &filename, true) {
                 Ok(file_appender) => Box::new(file_appender),
                 Err(e) => {
@@ -549,6 +559,13 @@ pub fn initialize_logging_for_test() {
     initialize_logging(DefaultTelemetryClock {});
 }
 
+fn is_layer_enabled(env_var: &str) -> bool {
+    std::env::var(env_var).unwrap_or_default() == "1"
+}
+fn is_layer_disabled(env_var: &str) -> bool {
+    std::env::var(env_var).unwrap_or_default() == "1"
+}
+
 /// Set up logging based on the given execution environment. We specialize logging based on how the
 /// logs are consumed. The destination scuba table is specialized based on the execution environment.
 /// mast -> monarch_tracing/prod
@@ -567,6 +584,8 @@ pub fn initialize_logging_with_log_prefix(
     clock: impl TelemetryClock + Send + 'static,
     prefix_env_var: Option<String>,
 ) {
+    let use_unified = std::env::var(USE_UNIFIED_LAYER).unwrap_or_default() == "1";
+
     swap_telemetry_clock(clock);
     let file_log_level = match env::Env::current() {
         env::Env::Local => LOG_LEVEL_INFO,
@@ -574,27 +593,6 @@ pub fn initialize_logging_with_log_prefix(
         env::Env::Mast => LOG_LEVEL_INFO,
         env::Env::Test => LOG_LEVEL_DEBUG,
     };
-    let (non_blocking, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
-        .lossy(false)
-        .finish(writer());
-    let writer_guard = Arc::new((non_blocking, guard));
-    let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
-
-    let file_layer = fmt::Layer::default()
-        .with_writer(writer_guard.0.clone())
-        .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
-        .fmt_fields(GlogFields::default().compact())
-        .with_ansi(false)
-        .with_filter(
-            Targets::new()
-                .with_default(LevelFilter::from_level(
-                    tracing::Level::from_str(
-                        &std::env::var(MONARCH_FILE_LOG_ENV).unwrap_or(file_log_level.to_string()),
-                    )
-                    .expect("Invalid log level"),
-                ))
-                .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
-        );
 
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
@@ -603,50 +601,100 @@ pub fn initialize_logging_with_log_prefix(
     #[cfg(fbcode_build)]
     {
         use crate::env::Env;
-        fn is_layer_enabled(env_var: &str) -> bool {
-            std::env::var(env_var).unwrap_or_default() == "1"
-        }
-        fn is_layer_disabled(env_var: &str) -> bool {
-            std::env::var(env_var).unwrap_or_default() == "1"
-        }
-        if let Err(err) = Registry::default()
-            .with(if is_layer_enabled(ENABLE_SQLITE_TRACING) {
-                // TODO: get_reloadable_sqlite_layer currently still returns None,
-                // and some additional work is required to make it work.
-                Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
-            } else {
-                None
-            })
-            .with(if !is_layer_disabled(DISABLE_OTEL_TRACING) {
-                Some(otel::tracing_layer())
-            } else {
-                None
-            })
-            .with(file_layer)
-            .with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
-                Some(recorder().layer())
-            } else {
-                None
-            })
-            .try_init()
-        {
-            tracing::debug!("logging already initialized for this process: {}", err);
+        if use_unified {
+            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+            sinks.push(Box::new(sinks::glog::GlogSink::new(
+                writer(),
+                prefix_env_var.clone(),
+                file_log_level,
+            )));
+
+            if let Err(err) = Registry::default()
+                .with(if is_layer_enabled(ENABLE_SQLITE_TRACING) {
+                    // TODO: get_reloadable_sqlite_layer currently still returns None,
+                    // and some additional work is required to make it work.
+                    Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
+                } else {
+                    None
+                })
+                .with(if !is_layer_disabled(DISABLE_OTEL_TRACING) {
+                    Some(otel::tracing_layer())
+                } else {
+                    None
+                })
+                .with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
+                    Some(recorder().layer())
+                } else {
+                    None
+                })
+                .with(trace_dispatcher::TraceEventDispatcher::new(sinks, None))
+                .try_init()
+            {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
+        } else {
+            // For file_layer, use NonBlocking
+            let (non_blocking, guard) =
+                tracing_appender::non_blocking::NonBlockingBuilder::default()
+                    .lossy(false)
+                    .finish(writer());
+            let writer_guard = Arc::new((non_blocking, guard));
+            let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
+
+            let file_layer = fmt::Layer::default()
+                .with_writer(writer_guard.0.clone())
+                .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
+                .fmt_fields(GlogFields::default().compact())
+                .with_ansi(false)
+                .with_filter(
+                    Targets::new()
+                        .with_default(LevelFilter::from_level(
+                            tracing::Level::from_str(
+                                &std::env::var(MONARCH_FILE_LOG_ENV)
+                                    .unwrap_or(file_log_level.to_string()),
+                            )
+                            .expect("Invalid log level"),
+                        ))
+                        .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+                );
+
+            if let Err(err) = Registry::default()
+                .with(if is_layer_enabled(ENABLE_SQLITE_TRACING) {
+                    // TODO: get_reloadable_sqlite_layer currently still returns None,
+                    // and some additional work is required to make it work.
+                    Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
+                } else {
+                    None
+                })
+                .with(if !is_layer_disabled(DISABLE_OTEL_TRACING) {
+                    Some(otel::tracing_layer())
+                } else {
+                    None
+                })
+                .with(file_layer)
+                .with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
+                    Some(recorder().layer())
+                } else {
+                    None
+                })
+                .try_init()
+            {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
         }
         let exec_id = env::execution_id();
-        tracing::info!(
-            target: "execution",
-            execution_id = exec_id,
-            environment = %Env::current(),
-            args = ?std::env::args(),
-            build_mode = build_info::BuildInfo::get_build_mode(),
-            compiler = build_info::BuildInfo::get_compiler(),
-            compiler_version = build_info::BuildInfo::get_compiler_version(),
-            buck_rule = build_info::BuildInfo::get_rule(),
-            package_name = build_info::BuildInfo::get_package_name(),
-            package_release = build_info::BuildInfo::get_package_release(),
-            upstream_revision = build_info::BuildInfo::get_upstream_revision(),
-            revision = build_info::BuildInfo::get_revision(),
-            "logging_initialized"
+        meta::log_execution_event(
+            &exec_id,
+            &Env::current().to_string(),
+            std::env::args().collect(),
+            build_info::BuildInfo::get_build_mode(),
+            build_info::BuildInfo::get_compiler(),
+            build_info::BuildInfo::get_compiler_version(),
+            build_info::BuildInfo::get_rule(),
+            build_info::BuildInfo::get_package_name(),
+            build_info::BuildInfo::get_package_release(),
+            build_info::BuildInfo::get_upstream_revision(),
+            build_info::BuildInfo::get_revision(),
         );
 
         if !is_layer_disabled(DISABLE_OTEL_METRICS) {
@@ -655,18 +703,54 @@ pub fn initialize_logging_with_log_prefix(
     }
     #[cfg(not(fbcode_build))]
     {
-        if let Err(err) = Registry::default()
-            .with(file_layer)
-            .with(
-                if std::env::var(DISABLE_RECORDER_TRACING).unwrap_or_default() != "1" {
-                    Some(recorder().layer())
-                } else {
-                    None
-                },
-            )
-            .try_init()
-        {
-            tracing::debug!("logging already initialized for this process: {}", err);
+        let registry = Registry::default().with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
+            Some(recorder().layer())
+        } else {
+            None
+        });
+
+        if use_unified {
+            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+            sinks.push(Box::new(sinks::glog::GlogSink::new(
+                writer(),
+                prefix_env_var.clone(),
+                file_log_level,
+            )));
+
+            if let Err(err) = registry
+                .with(trace_dispatcher::TraceEventDispatcher::new(sinks, None))
+                .try_init()
+            {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
+        } else {
+            let (non_blocking, guard) =
+                tracing_appender::non_blocking::NonBlockingBuilder::default()
+                    .lossy(false)
+                    .finish(writer());
+            let writer_guard = Arc::new((non_blocking, guard));
+            let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
+
+            let file_layer = fmt::Layer::default()
+                .with_writer(writer_guard.0.clone())
+                .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
+                .fmt_fields(GlogFields::default().compact())
+                .with_ansi(false)
+                .with_filter(
+                    Targets::new()
+                        .with_default(LevelFilter::from_level(
+                            tracing::Level::from_str(
+                                &std::env::var(MONARCH_FILE_LOG_ENV)
+                                    .unwrap_or(file_log_level.to_string()),
+                            )
+                            .expect("Invalid log level"),
+                        ))
+                        .with_target("opentelemetry", LevelFilter::OFF),
+                );
+
+            if let Err(err) = registry.with(file_layer).try_init() {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
         }
     }
 }
