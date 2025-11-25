@@ -58,10 +58,8 @@ use pyo3::prelude::*;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use torch_sys::BorrowType;
+use torch_sys::CloneUnsafe;
 use torch_sys::CudaDevice;
-use torch_sys::MultiBorrow;
-use torch_sys::RValue;
 use torch_sys::TensorCell;
 use torch_sys::deep_clone;
 use torch_sys::factory_empty;
@@ -425,7 +423,7 @@ pub struct StreamActor {
     /// Mapping of refs in the controller environment to TensorIndex in this
     /// stream's local environment.
     // TODO(agallagher): Use `ValueError` as the error type.
-    env: HashMap<Ref, Result<RValue, Arc<SeqError>>>,
+    env: HashMap<Ref, Result<PyObject, Arc<SeqError>>>,
     /// How to create the stream.
     creation_mode: StreamCreationMode,
     /// CUDA stream that this actor will enqueue operations on. None if "device"
@@ -574,26 +572,44 @@ impl Actor for StreamActor {
 
 /// The arguments we accept as inputs to Python function calls.
 #[derive(Debug)]
-enum PyArg<'a> {
-    RValue(RValue),
-    DeviceMesh(&'a DeviceMesh),
+enum PyArg {
     PyObject(PyObject),
 }
 
 /// Serialize into a `PyObject`.
-impl<'a, 'py> TryIntoPyObjectUnsafe<'py, PyAny> for &PyArg<'a> {
+impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for &PyArg {
     unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         match self {
-            // SAFETY: This inherits the unsafety of `rvalue_to_ivalue` (see comment
-            // above).
-            PyArg::RValue(rval) => unsafe { rval.try_to_object_unsafe(py) },
-            PyArg::DeviceMesh(mesh) => Ok(Py::new(py, (*mesh).clone())?.into_bound(py).into_any()),
             PyArg::PyObject(obj) => Ok(obj.clone_ref(py).into_bound(py)),
         }
     }
 }
 
 impl StreamActor {
+    fn tensor_to_pyobject(tensor_cell: TensorCell) -> PyObject {
+        use torch_sys::IValue;
+        Python::with_gil(|py| {
+            // SAFETY: We have the GIL and tensor_cell is a valid TensorCell.
+            // TensorCell will be refactored later, so this temporary unsafe usage is acceptable.
+            let tensor = unsafe {
+                // Get the owned tensor by calling clone_unsafe on the reference
+                tensor_cell.get_unchecked().clone_unsafe()
+            };
+            let ivalue = IValue::from(tensor);
+            ivalue.into_pyobject(py).unwrap().unbind()
+        })
+    }
+
+    /// Extract a TensorCell from a PyObject.
+    /// SAFETY: Uses new to create the TensorCell. Caller must ensure the PyObject
+    /// contains a valid tensor.
+    fn pyobject_to_tensor(py: Python<'_>, pyobj: &PyObject) -> PyResult<TensorCell> {
+        use torch_sys::Tensor;
+        let tensor = pyobj.bind(py).extract::<Tensor>()?;
+        // Create a new TensorCell from the extracted tensor
+        Ok(TensorCell::new(tensor))
+    }
+
     fn cuda_stream(&self) -> Option<&Stream> {
         self.cuda_stream
             .get_or_init(|| {
@@ -607,52 +623,15 @@ impl StreamActor {
             .as_ref()
     }
 
-    fn ref_to_rvalue(&self, ref_: &Ref) -> Result<RValue, CallFunctionError> {
-        let rvalue = self
+    fn ref_to_pyobject(&self, ref_: &Ref) -> Result<PyObject, CallFunctionError> {
+        let pyobject = self
             .env
             .get(ref_)
             .ok_or_else(|| CallFunctionError::RefNotFound(*ref_))?;
-        match rvalue {
+        match pyobject {
             Ok(val) => Ok(val.clone()),
             Err(err) => Err(CallFunctionError::DependentError(err.clone())),
         }
-    }
-
-    fn wire_to_rvalue(&self, value: WireValue) -> Result<RValue, CallFunctionError> {
-        let ret = match value {
-            WireValue::Ref(val) => self.ref_to_rvalue(&val)?,
-            // TODO: We might want to support GenericList / GenericDict etc.
-            WireValue::RefList(val) => {
-                let mut ret = Vec::with_capacity(val.len());
-                for v in val {
-                    match self.ref_to_rvalue(&v) {
-                        Ok(RValue::Tensor(t)) => ret.push(t),
-                        Err(err) => {
-                            return Err(err);
-                        }
-                        Ok(val) => {
-                            return Err(CallFunctionError::UnsupportedArgType(
-                                "wire_to_rvalue".into(),
-                                format!("RefList([{:?}])", val),
-                            ));
-                        }
-                    }
-                }
-                RValue::TensorList(ret)
-            }
-            WireValue::Int(val) => RValue::Int(val),
-            WireValue::IntList(val) => RValue::IntList(val),
-            WireValue::Double(val) => RValue::Double(val),
-            WireValue::Bool(val) => RValue::Bool(val),
-            WireValue::String(val) => RValue::String(val),
-            WireValue::Device(val) => RValue::Device(val),
-            WireValue::Layout(val) => RValue::Layout(val),
-            WireValue::ScalarType(val) => RValue::ScalarType(val),
-            WireValue::MemoryFormat(val) => RValue::MemoryFormat(val),
-            WireValue::PyObject(val) => RValue::PyObject(val),
-            WireValue::None(()) => RValue::None,
-        };
-        Ok(ret)
     }
 
     async fn report_seq_error(
@@ -690,7 +669,7 @@ impl StreamActor {
         f: F,
     ) -> Result<()>
     where
-        F: AsyncFnOnce(&mut Self) -> Result<Vec<RValue>, CallFunctionError>,
+        F: AsyncFnOnce(&mut Self) -> Result<Vec<PyObject>, CallFunctionError>,
     {
         let actual_results = f(self).await;
         // Check if the expected number of returns is correct, otherwise convert
@@ -701,7 +680,7 @@ impl StreamActor {
                     .into_iter()
                     .zip(result_refs.iter())
                     .filter_map(|(result, ref_)| ref_.map(|ref_| (ref_, result)))
-                    .collect::<Vec<(Ref, RValue)>>())
+                    .collect::<Vec<(Ref, PyObject)>>())
             } else {
                 Err(CallFunctionError::UnexpectedNumberOfReturns(
                     result_refs.len(),
@@ -714,8 +693,8 @@ impl StreamActor {
         // right entries in the global env mapping.
         match op_results {
             Ok(op_results) => {
-                for (ref_, rvalue) in op_results.into_iter() {
-                    let prev = self.env.insert(ref_, Ok(rvalue));
+                for (ref_, pyobject) in op_results.into_iter() {
+                    let prev = self.env.insert(ref_, Ok(pyobject));
                     assert!(prev.is_none(), "Duplicate write to reference: {:?}", ref_);
                 }
             }
@@ -744,14 +723,15 @@ impl StreamActor {
         cx: &Context<Self>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
-        mutates: &[Ref],
+        _mutates: &[Ref],
         device_meshes: HashMap<Ref, DeviceMesh>,
         remote_process_groups: HashMap<
             Ref,
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
     ) -> Result<Bound<'py, PyAny>, CallFunctionError> {
-        let (args_tuple, kwargs_dict) = args_kwargs.to_python(py)
+        let (args_tuple, kwargs_dict) = args_kwargs
+            .to_python(py)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
         let function = function
             .map(|function| {
@@ -800,23 +780,22 @@ impl StreamActor {
             .collect::<Result<HashMap<_, _>, _>>()
             .map_err(SerializablePyErr::from_fn(py))?;
 
-        // SAFETY: We will be making an unchecked clone of each tensor to pass to to
-        // C++, so we need to hold a borrow of each input tensor for the duration of
-        // this function.
-        let mut multiborrow = MultiBorrow::new();
-
         let resolve = |val: Bound<'py, PyAny>| {
             val.extract::<PyTree<PyObject>>()
                 .map_err(SerializablePyErr::from_fn(py))?
                 .try_into_map(|obj| {
                     Ok(if let Ok(ref_) = Ref::from_py_object(obj.bind(py)) {
                         if let Some(mesh) = device_meshes.get(&ref_) {
-                            PyArg::DeviceMesh(mesh)
+                            PyArg::PyObject(
+                                Py::new(py, mesh.clone())
+                                    .map_err(SerializablePyErr::from_fn(py))?
+                                    .into(),
+                            )
                         } else if let Some(pg) = remote_process_groups.get(&ref_) {
                             PyArg::PyObject(pg.clone_ref(py))
                         } else {
-                            let rval = self.ref_to_rvalue(&ref_)?;
-                            PyArg::RValue(rval)
+                            let pyobj = self.ref_to_pyobject(&ref_)?;
+                            PyArg::PyObject(pyobj)
                         }
                     } else {
                         PyArg::PyObject(obj)
@@ -833,52 +812,25 @@ impl StreamActor {
         let py_kwargs: HashMap<String, PyTree<PyArg>> = kwargs_dict
             .iter()
             .map(|(k, v)| {
-                let key = k.extract::<String>().map_err(SerializablePyErr::from_fn(py))?;
+                let key = k
+                    .extract::<String>()
+                    .map_err(SerializablePyErr::from_fn(py))?;
                 let value = resolve(v)?;
                 Ok((key, value))
             })
             .collect::<Result<_, CallFunctionError>>()?;
-
-
-        // Add a shared-borrow for each rvalue reference.
-        py_args
-            .iter()
-            .chain(py_kwargs.values())
-            .flat_map(|o| o.iter())
-            .for_each(|arg| {
-                if let PyArg::RValue(rval) = arg {
-                    multiborrow.add(&rval, BorrowType::Shared);
-                }
-            });
-
-        // Add mutable borrows for params we're mutating.
-        let mutates: Vec<_> = mutates
-            .iter()
-            .map(|r| self.ref_to_rvalue(r))
-            .collect::<Result<_, CallFunctionError>>()?;
-        mutates
-            .iter()
-            .for_each(|rval| multiborrow.add(rval, BorrowType::Mutable));
-
-        // Execute the borrow.
-        let _borrow = multiborrow.borrow()?;
 
         // Call function.
         // Use custom subscriber to route Worker messages to stdout.
         let scoped_subscriber = Subscriber::builder().with_writer(std::io::stdout).finish();
         let result: Bound<'_, PyAny> =
             tracing::subscriber::with_default(scoped_subscriber, || {
-                // SAFETY: The borrows above guard the unchecked clones done by
-                // `rvalue_to_ivalue`. This may result in multiple mutable
-                // references to tensor data, but the Python side is responsible
-                // for making sure that is safe
                 // TODO(agallagher): The args/kwargs conversion traits generate
                 // the appropriate types here, but they get casted to `PyAny`.
                 // It'd be nice to make `TryToPyObjectUnsafe` take a template
                 // arg for the converted py object to avoid this downcast.
                 let args = unsafe { py_args.try_to_object_unsafe(py) }
                     .map_err(SerializablePyErr::from_fn(py))?;
-                // SAFETY: above
                 let kwargs = &unsafe { py_kwargs.try_to_object_unsafe(py) }
                     .map_err(SerializablePyErr::from_fn(py))?;
 
@@ -904,7 +856,7 @@ impl StreamActor {
             Ref,
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
-    ) -> Result<PyTree<RValue>, CallFunctionError> {
+    ) -> Result<PyTree<PyObject>, CallFunctionError> {
         Python::with_gil(|py| {
             let result = self.call_python_fn(
                 py,
@@ -915,7 +867,8 @@ impl StreamActor {
                 device_meshes,
                 remote_process_groups,
             )?;
-            Ok(PyTree::<RValue>::extract_bound(&result).map_err(SerializablePyErr::from_fn(py))?)
+            Ok(PyTree::<PyObject>::extract_bound(&result)
+                .map_err(SerializablePyErr::from_fn(py))?)
         })
     }
     /// Retrieve `ref_` or create a fake value with the provided factory if it
@@ -926,13 +879,16 @@ impl StreamActor {
     /// of the upstream failure and will know to ignore everything dependent on
     /// it.
     fn get_or_fake_on_err(&self, ref_: Ref, factory: &Factory) -> Result<TensorCell> {
-        let rvalue = self
+        let pyobject = self
             .env
             .get(&ref_)
             .ok_or_else(|| anyhow!("tensor not found in stream: {ref_:#?}"))?;
 
-        match rvalue {
-            Ok(val) => Ok(val.clone().try_into().map_err(|e| anyhow!("{}", e))?),
+        match pyobject {
+            Ok(val) => Python::with_gil(|py| {
+                Self::pyobject_to_tensor(py, val)
+                    .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))
+            }),
             Err(_) => {
                 let t = factory_zeros(&factory.size, factory.dtype, factory.layout, factory.device);
                 Ok(TensorCell::new(t))
@@ -1018,16 +974,13 @@ impl StreamActor {
         cx: &Context<'_, Self>,
         params: ActorCallParams,
     ) -> Result<PyObject, CallFunctionError> {
-        let local_state: Result<Vec<PyObject>> = Python::with_gil(|py| {
+        let local_state: Result<Vec<PyObject>> = Python::with_gil(|_py| {
             params
                 .local_state
                 .into_iter()
                 .map(|elem| {
-                    // SAFETY: python is gonna make unsafe copies of this stuff anyway
-                    unsafe {
-                        let x = self.ref_to_rvalue(&elem)?.try_to_object_unsafe(py)?.into();
-                        Ok(x)
-                    }
+                    let pyobj = self.ref_to_pyobject(&elem)?;
+                    Ok(pyobj.into_any())
                 })
                 .collect()
         });
@@ -1119,13 +1072,13 @@ impl StreamMessageHandler for StreamActor {
             return Ok(());
         }
 
-        let rvalue_result = self
+        let pyobj_result = self
             .env
             .get(&tensor)
             .ok_or_else(|| anyhow!("invalid reference for borrow_create: {:#?}", tensor))?;
 
-        let result = match rvalue_result {
-            Ok(rvalue) => Ok(rvalue.clone().try_into().map_err(|e| anyhow!("{}", e))?),
+        let result = match pyobj_result {
+            Ok(pyobj) => Python::with_gil(|py| Ok(Self::pyobject_to_tensor(py, pyobj).unwrap())),
             Err(e) => Err(e.clone()),
         };
 
@@ -1176,7 +1129,8 @@ impl StreamMessageHandler for StreamActor {
         }
         match cell {
             Ok(cell) => {
-                self.env.insert(result, Ok(cell.into()));
+                let pyobj = Self::tensor_to_pyobject(cell);
+                self.env.insert(result, Ok(pyobj));
             }
             Err(err) => {
                 self.env.insert(result, Err(err.clone()));
@@ -1202,13 +1156,14 @@ impl StreamMessageHandler for StreamActor {
         }
 
         let event = self.cuda_stream().map(|stream| stream.record_event(None));
-        let rvalue_or_err = self.env.remove(&result).ok_or(anyhow!(
+        let pyobj_or_err = self.env.remove(&result).ok_or(anyhow!(
             "Invalid reference for borrow_last_use: {result:#?}"
         ))?;
-        let tensor = match rvalue_or_err {
-            Ok(RValue::Tensor(t)) => Ok(t),
+        let tensor = match pyobj_or_err {
+            Ok(pyobj) => Ok(Python::with_gil(|py| {
+                Self::pyobject_to_tensor(py, &pyobj).unwrap()
+            })),
             Err(e) => Err(e),
-            _ => bail!("invalid rvalue type for borrow_last_use"),
         };
 
         last_use_sender.send((event, tensor)).map_err(|err| {
@@ -1407,7 +1362,8 @@ impl StreamMessageHandler for StreamActor {
             }
         };
 
-        self.env.insert(result, Ok(output_cell.into()));
+        let pyobj = Self::tensor_to_pyobject(output_cell);
+        self.env.insert(result, Ok(pyobj));
         Ok(())
     }
 
@@ -1439,21 +1395,24 @@ impl StreamMessageHandler for StreamActor {
 
         // Value is local, so we do not have to actually send it.
         if from_rank == to_rank {
-            let input_cell: &std::result::Result<RValue, Arc<SeqError>> = self
-                .env
-                .get(&tensor)
-                .ok_or_else(|| anyhow!("tensor not found in stream: {tensor:#?}"))?;
-            let output_cell = match input_cell {
-                Ok(RValue::Tensor(input_cell)) => {
-                    // We create a defensive copy here to prevent mutations on
-                    // the input tensor from affecting output tensor.
-                    // Should we copy if input ref == output ref?
-                    // Should we support copy-on-write to avoid unnecessary copy?
-                    let borrow = input_cell.try_borrow().map_err(|e| anyhow!("{e:?}"))?;
-                    let cloned = deep_clone(&borrow);
-                    Ok(RValue::Tensor(TensorCell::new(cloned)))
+            let input_cell: &std::result::Result<PyObject, Arc<SeqError>> =
+                self.env
+                    .get(&tensor)
+                    .ok_or_else(|| anyhow!("tensor not found in stream: {tensor:#?}"))?;
+            let output_cell: Result<PyObject, Arc<SeqError>> = match input_cell {
+                Ok(pyobj) => {
+                    Python::with_gil(|py| -> Result<PyObject, Arc<SeqError>> {
+                        let input_tensor = Self::pyobject_to_tensor(py, pyobj).unwrap();
+                        // We create a defensive copy here to prevent mutations on
+                        // the input tensor from affecting output tensor.
+                        // Should we copy if input ref == output ref?
+                        // Should we support copy-on-write to avoid unnecessary copy?
+                        let borrow = input_tensor.try_borrow().unwrap();
+                        let cloned = deep_clone(&borrow);
+                        let cloned_cell = TensorCell::new(cloned);
+                        Ok(Self::tensor_to_pyobject(cloned_cell))
+                    })
                 }
-                Ok(rval) => bail!("tensor ref is not a tensor: {:?}", rval),
                 Err(err) => Err(err.clone()),
             };
             self.env.insert(result, output_cell);
@@ -1489,7 +1448,8 @@ impl StreamMessageHandler for StreamActor {
                     .clone(),
                 cx.open_once_port().0,
             ));
-            self.env.insert(result, Ok(output_cell.into()));
+            let pyobj = Self::tensor_to_pyobject(output_cell);
+            self.env.insert(result, Ok(pyobj));
         }
 
         comm.group(
@@ -1519,7 +1479,7 @@ impl StreamMessageHandler for StreamActor {
                 .await;
         }
 
-        let result = (|| -> Result<PyTree<RValue>, CallFunctionError> {
+        let result = (|| -> Result<PyTree<PyObject>, CallFunctionError> {
             if let Some(function) = function {
                 // If a function was provided, use that to resolve the value.
                 tokio::task::block_in_place(|| {
@@ -1547,11 +1507,9 @@ impl StreamMessageHandler for StreamActor {
                                 .try_into_map(|obj| {
                                     let bound_obj = obj.bind(py);
                                     if let Ok(ref_) = Ref::from_py_object(bound_obj) {
-                                        self.ref_to_rvalue(&ref_)
+                                        self.ref_to_pyobject(&ref_)
                                     } else {
-                                        Ok(bound_obj
-                                            .extract::<RValue>()
-                                            .map_err(SerializablePyErr::from_fn(py))?)
+                                        Ok(obj)
                                     }
                                 })
                         }
@@ -1565,22 +1523,7 @@ impl StreamMessageHandler for StreamActor {
         })();
 
         let value = match result {
-            Ok(rvalue) => {
-                // When returning a tensor, we copy out to decouple from the GPU,
-                // as the worker will either serialize and send this to the controller
-                // or to a pipe and we see hangs if it tries to pull from the GPU
-                // in its thread.
-                Ok(rvalue.into_map(|rval| match rval {
-                    RValue::Tensor(tensor) => RValue::Tensor(tensor.try_cpu().unwrap()),
-                    RValue::TensorList(tensors) => RValue::TensorList(
-                        tensors
-                            .into_iter()
-                            .map(|tensor| tensor.try_cpu().unwrap())
-                            .collect(),
-                    ),
-                    rval => rval,
-                }))
-            }
+            Ok(pyobject) => Ok(pyobject),
             Err(err) => {
                 let err = self.report_seq_error(cx, seq, err).await?;
                 for ref_ in mutates {
@@ -1594,8 +1537,15 @@ impl StreamMessageHandler for StreamActor {
         };
 
         // Actually send the value.
+        // NOTE: respond_with_python_message is always true, so serialization is not needed
+        // The controller will receive the value through send_value_python_message instead
         let result = match value {
-            Ok(value) => Ok(Serialized::serialize(&value).map_err(anyhow::Error::from)?),
+            Ok(_value) => {
+                // This code path is never executed since respond_with_python_message is true
+                unreachable!(
+                    "send_value should return early when respond_with_python_message is true"
+                )
+            }
             Err(e) => Err(e),
         };
         self.controller_actor.fetch_result(cx, seq, result).await?;
@@ -1633,7 +1583,7 @@ impl StreamMessageHandler for StreamActor {
         self.try_define(cx, seq, params.results, &mutates, async |self| {
             let result = self.call_actor(cx, params.call).await?;
             let result = Python::with_gil(|py| {
-                PyTree::<RValue>::extract_bound(&result.into_bound(py))
+                PyTree::<PyObject>::extract_bound(&result.into_bound(py))
                     .map_err(SerializablePyErr::from_fn(py))
             })?;
             Ok(result.into_leaves())
@@ -1904,8 +1854,10 @@ impl StreamMessageHandler for StreamActor {
         reference: Ref,
         value: WireValue,
     ) -> Result<()> {
-        self.env
-            .insert(reference, Ok(self.wire_to_rvalue(value).unwrap()));
+        let pyobj = Python::with_gil(|py| -> PyResult<PyObject> {
+            Ok(value.into_pyobject(py)?.unbind().into())
+        })?;
+        self.env.insert(reference, Ok(pyobj));
         Ok(())
     }
 
@@ -1917,7 +1869,8 @@ impl StreamMessageHandler for StreamActor {
     ) -> Result<()> {
         match tensor_result {
             Ok(tensor_cell) => {
-                self.env.insert(reference, Ok(RValue::Tensor(tensor_cell)));
+                let pyobj = Self::tensor_to_pyobject(tensor_cell);
+                self.env.insert(reference, Ok(pyobj));
             }
             Err(err) => {
                 self.env.insert(reference, Err(err));
@@ -1932,27 +1885,36 @@ impl StreamMessageHandler for StreamActor {
         reference: Ref,
     ) -> Result<Option<Result<WireValue, String>>> {
         /// For testing only, doesn't support Tensor or TensorList.
-        fn rvalue_to_wire(
-            value: Result<RValue, Arc<SeqError>>,
+        fn pyobject_to_wire(
+            value: Result<PyObject, Arc<SeqError>>,
         ) -> Result<WireValue, Arc<SeqError>> {
-            Ok(match value? {
-                RValue::Int(val) => WireValue::Int(val),
-                RValue::IntList(val) => WireValue::IntList(val),
-                RValue::Double(val) => WireValue::Double(val),
-                RValue::Bool(val) => WireValue::Bool(val),
-                RValue::String(val) => WireValue::String(val),
-                RValue::Layout(val) => WireValue::Layout(val),
-                RValue::Device(val) => WireValue::Device(val),
-                RValue::ScalarType(val) => WireValue::ScalarType(val),
-                RValue::MemoryFormat(val) => WireValue::MemoryFormat(val),
-                RValue::None => WireValue::None(()),
-                other => WireValue::String(format!("unsupported rvalue type: {:?}", other)),
+            let pyobj = value?;
+            Python::with_gil(|py| {
+                let bound = pyobj.bind(py);
+                if let Ok(val) = bound.extract::<i64>() {
+                    Ok(WireValue::Int(val))
+                } else if let Ok(val) = bound.extract::<Vec<i64>>() {
+                    Ok(WireValue::IntList(val))
+                } else if let Ok(val) = bound.extract::<f64>() {
+                    Ok(WireValue::Double(val))
+                } else if let Ok(val) = bound.extract::<bool>() {
+                    Ok(WireValue::Bool(val))
+                } else if let Ok(val) = bound.extract::<String>() {
+                    Ok(WireValue::String(val))
+                } else if bound.is_none() {
+                    Ok(WireValue::None(()))
+                } else {
+                    Ok(WireValue::String(format!(
+                        "unsupported pyobject type: {:?}",
+                        bound
+                    )))
+                }
             })
         }
         Ok(self
             .env
             .get(&reference)
-            .map(|rvalue| rvalue_to_wire(rvalue.clone()).map_err(|err| err.to_string())))
+            .map(|pyobj| pyobject_to_wire(pyobj.clone()).map_err(|err| err.to_string())))
     }
 
     async fn get_tensor_ref_unit_tests_only(
@@ -1961,10 +1923,10 @@ impl StreamMessageHandler for StreamActor {
         reference: Ref,
     ) -> Result<Option<TensorCellResult>> {
         match self.env.get(&reference) {
-            Some(Ok(rvalue)) => match rvalue {
-                RValue::Tensor(tensor) => Ok(Some(Ok(tensor.clone().try_cpu().unwrap()))),
-                other => bail!("expected tensor, got {:?}", other),
-            },
+            Some(Ok(pyobj)) => Python::with_gil(|py| match Self::pyobject_to_tensor(py, pyobj) {
+                Ok(tensor) => Ok(Some(Ok(tensor.try_cpu().unwrap()))),
+                Err(e) => bail!("expected tensor, got extraction error: {:?}", e),
+            }),
             Some(Err(err)) => Ok(Some(Err(err.clone()))),
             None => Ok(None),
         }
