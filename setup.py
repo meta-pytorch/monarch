@@ -154,6 +154,10 @@ if sys.platform.startswith("linux"):
         "link-arg=-Wl,-rpath,$ORIGIN/../../..",
         "-C",
         "link-arg=-Wl,-rpath," + conda_lib,
+        # Add the conda lib to the search path for the linker, as libraries like
+        # libunwind may be installed there.
+        "-L",
+        conda_lib,
     ]
     if py_lib:
         flags += ["-C", "link-arg=-Wl,-rpath," + py_lib]
