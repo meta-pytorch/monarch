@@ -99,7 +99,34 @@ where
     val.map(|v| v.into_py_any(py)).transpose()
 }
 
-fn set_global_config<T: AttrValue + Debug>(key: &'static dyn ErasedKey, value: T) -> PyResult<()> {
+/// Fetch a config value from the **Runtime** layer only and convert
+/// it to Python.
+///
+/// This mirrors [`get_global_config`] but restricts the lookup to the
+/// `Source::Runtime` layer (ignoring TestOverride/Env/File/defaults).
+/// If the key has a runtime override, it is cloned as `T`, converted
+/// to `P`, then to a `PyObject`; otherwise `Ok(None)` is returned.
+fn get_runtime_config<'py, P, T>(
+    py: Python<'py>,
+    key: &'static dyn ErasedKey,
+) -> PyResult<Option<PyObject>>
+where
+    T: AttrValue + TryInto<P>,
+    P: IntoPyObjectExt<'py>,
+    PyErr: From<<T as TryInto<P>>::Error>,
+{
+    let key = key.downcast_ref::<T>().expect("cannot fail");
+    let runtime = hyperactor::config::global::runtime_attrs();
+    let val: Option<P> = runtime
+        .get(key.clone())
+        .cloned()
+        .map(|v| v.try_into())
+        .transpose()?;
+    val.map(|v| v.into_py_any(py)).transpose()
+}
+
+/// Note that this function writes strictly into the `Runtime` layer.
+fn set_runtime_config<T: AttrValue + Debug>(key: &'static dyn ErasedKey, value: T) -> PyResult<()> {
     // Again, can't fail unless there's a bug in the code in this file.
     let key = key.downcast_ref().expect("cannot fail");
     let mut attrs = Attrs::new();
@@ -108,7 +135,7 @@ fn set_global_config<T: AttrValue + Debug>(key: &'static dyn ErasedKey, value: T
     Ok(())
 }
 
-fn set_global_config_from_py_obj(py: Python<'_>, name: &str, val: PyObject) -> PyResult<()> {
+fn set_runtime_config_from_py_obj(py: Python<'_>, name: &str, val: PyObject) -> PyResult<()> {
     // Get the `ErasedKey` from the kwarg `name` passed to `monarch.configure(...)`.
     let key = match KEY_BY_NAME.get(name) {
         None => {
@@ -128,7 +155,7 @@ fn set_global_config_from_py_obj(py: Python<'_>, name: &str, val: PyObject) -> P
             name,
             key.typename()
         ))),
-        Some(info) => (info.set_global_config)(py, key, val),
+        Some(info) => (info.set_runtime_config)(py, key, val),
     }
 }
 
@@ -137,9 +164,14 @@ fn set_global_config_from_py_obj(py: Python<'_>, name: &str, val: PyObject) -> P
 /// `T::typehash() == PythonConfigTypeInfo::typehash()`.
 struct PythonConfigTypeInfo {
     typehash: fn() -> u64,
-    set_global_config:
-        fn(py: Python<'_>, key: &'static dyn ErasedKey, val: PyObject) -> PyResult<()>,
+
     get_global_config:
+        fn(py: Python<'_>, key: &'static dyn ErasedKey) -> PyResult<Option<PyObject>>,
+
+    set_runtime_config:
+        fn(py: Python<'_>, key: &'static dyn ErasedKey, val: PyObject) -> PyResult<()>,
+
+    get_runtime_config:
         fn(py: Python<'_>, key: &'static dyn ErasedKey) -> PyResult<Option<PyObject>>,
 }
 
@@ -160,15 +192,18 @@ macro_rules! declare_py_config_type {
                 hyperactor::submit! {
                     PythonConfigTypeInfo {
                         typehash: $ty::typehash,
-                        set_global_config: |py, key, val| {
+                        set_runtime_config: |py, key, val| {
                             let val: $ty = val.extract::<$ty>(py).map_err(|err| PyTypeError::new_err(format!(
                                 "invalid value `{}` for configuration key `{}` ({})",
                                 val, key.name(), err
                             )))?;
-                            set_global_config(key, val)
+                            set_runtime_config(key, val)
                         },
                         get_global_config: |py, key| {
                             get_global_config::<$ty, $ty>(py, key)
+                        },
+                        get_runtime_config: |py, key| {
+                            get_runtime_config::<$ty, $ty>(py, key)
                         }
                     }
                 }
@@ -180,15 +215,18 @@ macro_rules! declare_py_config_type {
             hyperactor::submit! {
                 PythonConfigTypeInfo {
                     typehash: $ty::typehash,
-                    set_global_config: |py, key, val| {
+                    set_runtime_config: |py, key, val| {
                         let val: $ty = val.extract::<$py_ty>(py).map_err(|err| PyTypeError::new_err(format!(
                             "invalid value `{}` for configuration key `{}` ({})",
                             val, key.name(), err
                         )))?.into();
-                        set_global_config(key, val)
+                        set_runtime_config(key, val)
                     },
                     get_global_config: |py, key| {
                         get_global_config::<$py_ty, $ty>(py, key)
+                    },
+                    get_runtime_config: |py, key| {
+                        get_runtime_config::<$py_ty, $ty>(py, key)
                     }
                 }
             }
@@ -212,7 +250,7 @@ fn configure(py: Python<'_>, kwargs: Option<HashMap<String, PyObject>>) -> PyRes
         .map(|kwargs| {
             kwargs
                 .into_iter()
-                .try_for_each(|(key, val)| set_global_config_from_py_obj(py, &key, val))
+                .try_for_each(|(key, val)| set_runtime_config_from_py_obj(py, &key, val))
         })
         .transpose()?;
     Ok(())
@@ -234,6 +272,62 @@ fn get_configuration(py: Python<'_>) -> PyResult<HashMap<String, PyObject>> {
             },
         })
         .collect()
+}
+
+/// Get only the Runtime layer configuration (Python-exposed keys).
+///
+/// The Runtime layer is effectively the "Python configuration layer",
+/// populated exclusively via `configure(**kwargs)` from Python. This
+/// function returns only the Python-exposed keys (those with
+/// `@meta(CONFIG = ConfigAttr { py_name: Some(...), .. })`) that are
+/// currently set in the Runtime layer.
+///
+/// This is used by Python's `configured()` context manager to
+/// snapshot and restore the Runtime layer for composable, nested
+/// configuration overrides:
+///
+/// ```python
+/// prev = get_runtime_configuration()
+/// try:
+///     configure(**overrides)
+///     yield get_configuration()
+/// finally:
+///     clear_runtime_configuration()
+///     configure(**prev)
+/// ```
+///
+/// Unlike `get_configuration()`, which returns the merged view across
+/// all layers (File, Env, Runtime, TestOverride), this returns only
+/// what's explicitly set in the Runtime layer.
+#[pyfunction]
+fn get_runtime_configuration(py: Python<'_>) -> PyResult<HashMap<String, PyObject>> {
+    KEY_BY_NAME
+        .iter()
+        .filter_map(|(name, key)| match TYPEHASH_TO_INFO.get(&key.typehash()) {
+            None => None,
+            Some(info) => match (info.get_runtime_config)(py, *key) {
+                Err(err) => Some(Err(err)),
+                Ok(val) => val.map(|val| Ok(((*name).into(), val))),
+            },
+        })
+        .collect()
+}
+
+/// Clear runtime configuration overrides.
+///
+/// This removes all entries from the Runtime config layer for this
+/// process. The Runtime layer is exclusively populated via Python's
+/// `configure(**kwargs)`, so clearing it is SAFE — it will not
+/// destroy configuration from other sources (environment variables,
+/// config files, or built-in defaults).
+///
+/// This is primarily used by Python's `configured()` context manager
+/// to restore configuration state after applying temporary overrides.
+/// Other layers (Env, File, TestOverride, defaults) are unaffected.
+#[pyfunction]
+fn clear_runtime_configuration(_py: Python<'_>) -> PyResult<()> {
+    hyperactor::config::global::clear(Source::Runtime);
+    Ok(())
 }
 
 /// Register Python bindings for the config module
@@ -265,6 +359,20 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_hyperactor.config",
     )?;
     module.add_function(get_configuration)?;
+
+    let get_runtime_configuration = wrap_pyfunction!(get_runtime_configuration, module)?;
+    get_runtime_configuration.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.config",
+    )?;
+    module.add_function(get_runtime_configuration)?;
+
+    let clear_runtime_configuration = wrap_pyfunction!(clear_runtime_configuration, module)?;
+    clear_runtime_configuration.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.config",
+    )?;
+    module.add_function(clear_runtime_configuration)?;
 
     Ok(())
 }
