@@ -382,9 +382,13 @@ impl Encoded {
             Encoded::Json(data) => crc32fast::hash(data),
             Encoded::Multipart(message) => {
                 let mut hasher = crc32fast::Hasher::new();
-                hasher.update(message.body().as_ref());
+                for fragment in message.body().iter() {
+                    hasher.update(fragment);
+                }
                 for part in message.parts() {
-                    hasher.update(part.as_ref());
+                    for fragment in part.iter() {
+                        hasher.update(fragment);
+                    }
                 }
                 hasher.finalize()
             }
@@ -402,10 +406,10 @@ impl std::fmt::Debug for Encoded {
                     f,
                     "Encoded::Multipart(illegal?={} body={}",
                     message.is_illegal(),
-                    HexFmt(message.body())
+                    HexFmt(&message.body().to_bytes())
                 )?;
                 for (index, part) in message.parts().iter().enumerate() {
-                    write!(f, ", part[{}]={}", index, HexFmt(part))?;
+                    write!(f, ", part[{}]={}", index, HexFmt(&part.to_bytes()))?;
                 }
                 write!(f, ")")
             }
