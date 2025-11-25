@@ -660,7 +660,7 @@ mod tests {
                 .await;
             result
         };
-        let (result1, result2, result3) = tokio::join!(task1, task2, task3);
+        let (_result1, _result2, _result3) = tokio::join!(task1, task2, task3);
 
         env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
