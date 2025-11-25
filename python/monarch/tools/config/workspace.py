@@ -35,7 +35,7 @@ class Workspace:
     This effectively one-time mirrors the local codebase and environment on the remote machines.
 
     Workspaces can also be sync'ed interactively on-demand (post job launch) by using
-    `monarch.actor.proc_mesh.ProcMesh.syncWorkspace(Workspace)`.
+    `monarch.actor.HostMesh.sync_workspace(Workspace)`.
 
     Usage:
 
@@ -90,7 +90,7 @@ class Workspace:
 
         # 4. disable project and environment sync
         config = Config(
-            workspace=Workspace(env=None),
+            workspace=Workspace.null(),
         )
     """
 

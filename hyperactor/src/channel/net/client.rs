@@ -645,29 +645,39 @@ async fn run<M: RemoteMessage>(
         );
     }
 
-    if let Conn::Connected {
-        write_state: WriteState::Writing(mut frame_writer, ()),
-        ..
-    } = conn
-    {
-        if let Err(err) = frame_writer.send().await {
-            tracing::info!(
-                parent: &span,
-                dest = %dest,
-                error = %err,
-                session_id = session_id,
-                "write error during cleanup"
-            );
-        } else if let Err(err) = frame_writer.complete().flush().await {
-            tracing::info!(
-                parent: &span,
-                dest = %dest,
-                error = %err,
-                session_id = session_id,
-                "flush error during cleanup"
-            );
+    match conn {
+        Conn::Connected { write_state, .. } => {
+            let write_half = match write_state {
+                WriteState::Writing(mut frame_writer, ()) => {
+                    if let Err(err) = frame_writer.send().await {
+                        tracing::info!(
+                            parent: &span,
+                            dest = %dest,
+                            error = %err,
+                            session_id = session_id,
+                            "write error during cleanup"
+                        );
+                    }
+                    Some(frame_writer.complete())
+                }
+                WriteState::Idle(writer) => Some(writer),
+                WriteState::Broken => None,
+            };
+
+            if let Some(mut w) = write_half {
+                if let Err(err) = w.shutdown().await {
+                    tracing::info!(
+                        parent: &span,
+                        dest = %dest,
+                        error = %err,
+                        session_id = session_id,
+                        "failed to shutdown NetTx write stream during cleanup"
+                    );
+                }
+            }
         }
-    }
+        Conn::Disconnected(_) => (),
+    };
 
     tracing::info!(
         parent: &span,
