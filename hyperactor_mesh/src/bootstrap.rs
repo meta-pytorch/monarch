@@ -3622,7 +3622,7 @@ mod tests {
         // stored `BootstrapProcManager`, which does a
         // `Command::spawn()` to launch a new OS child process for
         // that proc.
-        let host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
+        let mut host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
             .await
             .unwrap();
 
