@@ -12,6 +12,8 @@
 mod client;
 pub mod code_sync;
 #[cfg(feature = "tensor_engine")]
+mod controller;
+#[cfg(feature = "tensor_engine")]
 pub mod convert;
 #[cfg(feature = "tensor_engine")]
 mod debugger;
@@ -105,6 +107,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         tensor_worker::register_python_bindings(&get_or_add_new_module(
             module,
             "monarch_extension.tensor_worker",
+        )?)?;
+        controller::register_python_bindings(&get_or_add_new_module(
+            module,
+            "monarch_extension.controller",
         )?)?;
         debugger::register_python_bindings(&get_or_add_new_module(
             module,
