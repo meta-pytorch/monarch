@@ -141,7 +141,7 @@ fn benchmark_no_sqlite(iterations: usize) -> Vec<(&'static str, std::time::Durat
 }
 
 fn benchmark_with_sqlite(iterations: usize) -> Vec<(&'static str, std::time::Duration)> {
-    initialize_logging_with_log_prefix(DefaultTelemetryClock {}, None);
+    initialize_logging_with_log_prefix_mock_scuba(DefaultTelemetryClock {}, None);
 
     let _sqlite_tracing =
         hyperactor_telemetry::sqlite::SqliteTracing::new().expect("Failed to create SqliteTracing");

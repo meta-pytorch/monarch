@@ -32,7 +32,6 @@ const QUEUE_CAPACITY: usize = 100_000;
 /// This is captured once on the application thread, then sent to the background
 /// worker for fan-out to multiple exporters.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum TraceEvent {
     /// A new span was created (on_new_span)
     NewSpan {
@@ -71,7 +70,6 @@ pub(crate) enum TraceEvent {
 
 /// Simplified field value representation for trace events
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum FieldValue {
     Bool(bool),
     I64(i64),
