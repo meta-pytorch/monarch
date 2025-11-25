@@ -609,14 +609,23 @@ pub fn initialize_logging_with_log_prefix(
                 file_log_level,
             )));
 
+            let mut max_level = None;
+
+            let sqlite_enabled = std::env::var(ENABLE_SQLITE_TRACING).unwrap_or_default() == "1";
+
+            if sqlite_enabled {
+                match create_sqlite_sink() {
+                    Ok(sink) => {
+                        max_level = Some(tracing::level_filters::LevelFilter::TRACE);
+                        sinks.push(Box::new(sink));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create SqliteSink: {}", e);
+                    }
+                }
+            }
+
             if let Err(err) = Registry::default()
-                .with(if is_layer_enabled(ENABLE_SQLITE_TRACING) {
-                    // TODO: get_reloadable_sqlite_layer currently still returns None,
-                    // and some additional work is required to make it work.
-                    Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
-                } else {
-                    None
-                })
                 .with(if !is_layer_disabled(DISABLE_OTEL_TRACING) {
                     Some(otel::tracing_layer())
                 } else {
@@ -627,7 +636,9 @@ pub fn initialize_logging_with_log_prefix(
                 } else {
                     None
                 })
-                .with(trace_dispatcher::TraceEventDispatcher::new(sinks, None))
+                .with(trace_dispatcher::TraceEventDispatcher::new(
+                    sinks, max_level,
+                ))
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
@@ -753,6 +764,14 @@ pub fn initialize_logging_with_log_prefix(
             }
         }
     }
+}
+
+fn create_sqlite_sink() -> anyhow::Result<sinks::sqlite::SqliteSink> {
+    let (db_path, _) = log_file_path(env::Env::current(), Some("traces"))
+        .expect("failed to determine trace db path");
+    let db_file = format!("{}/hyperactor_trace_{}.db", db_path, std::process::id());
+
+    Ok(sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)?)
 }
 
 pub mod env {
