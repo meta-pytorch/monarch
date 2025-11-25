@@ -20,13 +20,26 @@ def reload_config_from_env() -> None:
 
     This reads all HYPERACTOR_* environment variables and updates
     the global configuration.
+    For any configuration setting not present in environment variables,
+    this function will not change its value.
+    """
+    ...
+
+def reset_config_to_defaults() -> None:
+    """Reset all configuration to default values, ignoring environment variables.
+    Call reload_config_from_env() to reload the environment variables.
     """
     ...
 
 def configure(
-    default_transport: ChannelTransport = ChannelTransport.Unix,
-    enable_log_forwarding: bool = False,
-    enable_file_capture: bool = False,
-    tail_log_lines: int = 0,
-) -> None: ...
+    default_transport: ChannelTransport = ...,
+    enable_log_forwarding: bool = ...,
+    enable_file_capture: bool = ...,
+    tail_log_lines: int = ...,
+    **kwargs: object,
+) -> None:
+    """Change a configuration value in the global configuration. If called with
+    no arguments, makes no changes. Does not reset any configuration"""
+    ...
+
 def get_configuration() -> Dict[str, Any]: ...

@@ -476,7 +476,7 @@ impl HostMesh {
     /// table and sends SIGKILL to any procs it spawned—tying proc
     /// lifetimes to their hosts and preventing leaks.
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
-    pub async fn shutdown(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+    pub async fn shutdown(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
         let mut failed_hosts = vec![];
         for host in self.current_ref.values() {
@@ -500,6 +500,13 @@ impl HostMesh {
                 "host mesh shutdown failed; check the logs of the failed hosts for details: {:?}",
                 failed_hosts
             );
+        }
+
+        match &mut self.allocation {
+            HostMeshAllocation::ProcMesh { proc_mesh, .. } => {
+                proc_mesh.stop(cx).await?;
+            }
+            HostMeshAllocation::Owned { .. } => {}
         }
         Ok(())
     }
@@ -1326,7 +1333,7 @@ mod tests {
         let instance = testing::instance().await;
 
         for alloc in testing::allocs(extent!(replicas = 4)).await {
-            let host_mesh = HostMesh::allocate(instance, alloc, "test", None)
+            let mut host_mesh = HostMesh::allocate(instance, alloc, "test", None)
                 .await
                 .unwrap();
 
