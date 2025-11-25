@@ -47,6 +47,13 @@ pub fn reload_config_from_env() -> PyResult<()> {
     Ok(())
 }
 
+#[pyfunction()]
+pub fn reset_config_to_defaults() -> PyResult<()> {
+    // Set all config values to defaults, ignoring even environment variables.
+    hyperactor::config::global::reset_to_defaults();
+    Ok(())
+}
+
 /// Map from the kwarg name passed to `monarch.configure(...)` to the
 /// `Key<T>` associated with that kwarg. This contains all attribute
 /// keys whose `@meta(CONFIG = ConfigAttr { py_name: Some(...), .. })`
@@ -237,6 +244,13 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_hyperactor.config",
     )?;
     module.add_function(reload)?;
+
+    let reset = wrap_pyfunction!(reset_config_to_defaults, module)?;
+    reset.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.config",
+    )?;
+    module.add_function(reset)?;
 
     let configure = wrap_pyfunction!(configure, module)?;
     configure.setattr(
