@@ -20,7 +20,6 @@ use hyperactor_multiprocess::system_actor::SystemMessageClient;
 use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
 use hyperactor_multiprocess::system_actor::WorldSnapshot;
 use hyperactor_multiprocess::system_actor::WorldSnapshotProcInfo;
-use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::ControllerError;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyActorId;
@@ -52,13 +51,8 @@ use pyo3::types::PyNone;
 use tokio::sync::Mutex;
 use torch_sys::RValue;
 
+use crate::controller::PyRanks;
 use crate::convert::convert;
-
-#[derive(Clone, FromPyObject)]
-pub enum PyRanks {
-    Slice(PySlice),
-    SliceList(Vec<PySlice>),
-}
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.client")]
 pub struct WorkerResponse {
