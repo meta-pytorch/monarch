@@ -823,4 +823,119 @@ mod tests {
 
         let _ = host_mesh.shutdown(&instance).await;
     }
+
+    /// Test that undeliverable messages are properly returned to the
+    /// sender when communication to a proc is broken.
+    ///
+    /// This is the V1 version of the test from
+    /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_undeliverable_message_return() {
+        use hyperactor::mailbox::MessageEnvelope;
+        use hyperactor::mailbox::Undeliverable;
+        use hyperactor::test_utils::pingpong::PingPongActor;
+        use hyperactor::test_utils::pingpong::PingPongActorParams;
+        use hyperactor::test_utils::pingpong::PingPongMessage;
+
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        // Set message delivery timeout for faster test
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+            std::time::Duration::from_secs(1),
+        );
+
+        let instance = testing::instance().await;
+
+        // Create a proc mesh with 2 replicas.
+        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+        let proc_mesh = &meshes[1]; // Use the ProcessAllocator version
+
+        // Set up undeliverable message port for collecting undeliverables
+        let (undeliverable_port, mut undeliverable_rx) =
+            instance.open_port::<Undeliverable<MessageEnvelope>>();
+
+        // Spawn PingPongActors across both replicas.
+        // Only actors on replica 0 will forward undeliverable messages.
+        let ping_params = PingPongActorParams::new(Some(undeliverable_port.bind()), None);
+        let pong_params = PingPongActorParams::new(None, None);
+
+        // Spawn actors individually on each replica by spawning separate actor meshes
+        // with specific proc selections.
+        let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
+        let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
+
+        let ping_mesh = ping_proc_mesh
+            .spawn::<PingPongActor>(instance, "ping", &ping_params)
+            .await
+            .unwrap();
+
+        let pong_mesh = pong_proc_mesh
+            .spawn::<PingPongActor>(instance, "pong", &pong_params)
+            .await
+            .unwrap();
+
+        // Get individual actor refs
+        let ping_handle = ping_mesh.values().next().unwrap();
+        let pong_handle = pong_mesh.values().next().unwrap();
+
+        // Verify ping-pong works initially
+        let (done_tx, done_rx) = instance.open_once_port();
+        ping_handle
+            .send(
+                instance,
+                PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
+            )
+            .unwrap();
+        assert!(
+            done_rx.recv().await.unwrap(),
+            "Initial ping-pong should work"
+        );
+
+        // Now stop the pong actor mesh to break communication
+        pong_mesh.stop(instance).await.unwrap();
+
+        // Give it a moment to fully stop
+        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+
+        // Send multiple messages that will all fail to be delivered
+        let n = 100usize;
+        for i in 1..=n {
+            let ttl = 66 + i as u64; // Avoid ttl = 66 (which would cause other test behavior)
+            let (once_tx, _once_rx) = instance.open_once_port();
+            ping_handle
+                .send(
+                    instance,
+                    PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
+                )
+                .unwrap();
+        }
+
+        // Collect all undeliverable messages.
+        // The fact that we successfully collect them proves the ping actor
+        // is still running and handling undeliverables correctly (not crashing).
+        let mut count = 0;
+        let deadline = RealClock.now() + std::time::Duration::from_secs(5);
+        while count < n && RealClock.now() < deadline {
+            match RealClock
+                .timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
+                .await
+            {
+                Ok(Ok(Undeliverable(envelope))) => {
+                    let _: PingPongMessage = envelope.deserialized().unwrap();
+                    count += 1;
+                }
+                Ok(Err(_)) => break, // Channel closed
+                Err(_) => break,     // Timeout
+            }
+        }
+
+        assert_eq!(
+            count, n,
+            "Expected {} undeliverable messages, got {}",
+            n, count
+        );
+    }
 }
