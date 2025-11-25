@@ -1089,22 +1089,14 @@ impl WorkerMessageHandler for WorkerActor {
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
-    use std::process::Stdio;
 
     use anyhow::Result;
     use hyperactor::Instance;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::id;
-    use hyperactor::mailbox::open_port;
     use hyperactor::proc::Proc;
-    use hyperactor_multiprocess::System;
-    use hyperactor_multiprocess::proc_actor::Environment;
-    use hyperactor_multiprocess::proc_actor::ProcActor;
-    use hyperactor_multiprocess::proc_actor::ProcMessageClient;
     use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
-    use hyperactor_multiprocess::system_actor::Shape;
     use hyperactor_multiprocess::system_actor::SystemMessageClient;
     use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
     use hyperactor_multiprocess::system_actor::WorldStatus;
@@ -1121,8 +1113,6 @@ mod tests {
     use rand::Rng;
     use rand::distributions::Alphanumeric;
     use timed_test::async_timed_test;
-    use tokio::io::BufReader;
-    use tokio::process::Command;
     use tokio_retry::Retry;
     use tokio_retry::strategy::FixedInterval;
     use torch_sys::Device;
@@ -2164,6 +2154,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn get_random_channel_addr() -> ChannelAddr {
         let random_string = rand::thread_rng()
             .sample_iter(&Alphanumeric)
@@ -2173,6 +2164,7 @@ mod tests {
         format!("unix!@{random_string}").parse().unwrap()
     }
 
+    #[allow(dead_code)]
     async fn ensure_world_ready(client: &Instance<()>, world: WorldId) -> Result<()> {
         tracing::info!("checking whether world {world} is ready");
         let retry_strategy = FixedInterval::from_millis(1000).take(100);
