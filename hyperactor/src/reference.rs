@@ -72,6 +72,21 @@ use parse::ParseError;
 use parse::Token;
 use parse::parse;
 
+/// The kinds of references.
+#[derive(strum::Display)]
+pub enum ReferenceKind {
+    /// World references.
+    World,
+    /// Proc references.
+    Proc,
+    /// Actor references.
+    Actor,
+    /// Port references.
+    Port,
+    /// Gang references.
+    Gang,
+}
+
 /// A universal reference to hierarchical identifiers in Hyperactor.
 ///
 /// References implement a concrete syntax which can be parsed via
@@ -191,6 +206,17 @@ impl Reference {
             Self::Actor(_) => None,
             Self::Port(port_id) => Some(port_id.index()),
             Self::Gang(_) => None,
+        }
+    }
+
+    /// Returns the kind of the reference.
+    pub fn kind(&self) -> ReferenceKind {
+        match self {
+            Self::World(_) => ReferenceKind::World,
+            Self::Proc(_) => ReferenceKind::Proc,
+            Self::Actor(_) => ReferenceKind::Actor,
+            Self::Port(_) => ReferenceKind::Port,
+            Self::Gang(_) => ReferenceKind::Gang,
         }
     }
 }
