@@ -58,7 +58,7 @@ humantime = "2.1"
 hyperactor_macros = { version = "0.0.0", path = "../hyperactor_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 indenter = "0.3.3"
-inventory = "0.3.8"
+inventory = "0.3.21"
 lazy_static = "1.5"
 local-ip-address = "0.5.3"
 ndslice = { version = "0.0.0", path = "../ndslice" }
