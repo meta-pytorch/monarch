@@ -7,6 +7,7 @@
  */
 
 #![allow(internal_features)]
+#![allow(clippy::disallowed_methods)] // hyperactor_telemetry can't use hyperactor::clock::Clock (circular dependency)
 #![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
@@ -633,20 +634,18 @@ pub fn initialize_logging_with_log_prefix(
             tracing::debug!("logging already initialized for this process: {}", err);
         }
         let exec_id = env::execution_id();
-        tracing::info!(
-            target: "execution",
-            execution_id = exec_id,
-            environment = %Env::current(),
-            args = ?std::env::args(),
-            build_mode = build_info::BuildInfo::get_build_mode(),
-            compiler = build_info::BuildInfo::get_compiler(),
-            compiler_version = build_info::BuildInfo::get_compiler_version(),
-            buck_rule = build_info::BuildInfo::get_rule(),
-            package_name = build_info::BuildInfo::get_package_name(),
-            package_release = build_info::BuildInfo::get_package_release(),
-            upstream_revision = build_info::BuildInfo::get_upstream_revision(),
-            revision = build_info::BuildInfo::get_revision(),
-            "logging_initialized"
+        meta::log_execution_event(
+            &exec_id,
+            &Env::current().to_string(),
+            std::env::args().collect(),
+            build_info::BuildInfo::get_build_mode(),
+            build_info::BuildInfo::get_compiler(),
+            build_info::BuildInfo::get_compiler_version(),
+            build_info::BuildInfo::get_rule(),
+            build_info::BuildInfo::get_package_name(),
+            build_info::BuildInfo::get_package_release(),
+            build_info::BuildInfo::get_upstream_revision(),
+            build_info::BuildInfo::get_revision(),
         );
 
         if !is_layer_disabled(DISABLE_OTEL_METRICS) {
