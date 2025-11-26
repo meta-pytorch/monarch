@@ -177,9 +177,11 @@ mod tests {
     use anyhow::Result;
     use hyperactor::proc::Proc;
     use monarch_messages::controller::ControllerMessage;
+    use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessage;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
+    use pyo3::Python;
     use timed_test::async_timed_test;
     use torch_sys::Device;
     use torch_sys::DeviceType;
@@ -225,8 +227,11 @@ mod tests {
                         results: vec![Some(Ref { id: 1 })],
                         mutates: vec![],
                         function: "torch.ops.aten.ones.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::from([("device".into(), WireValue::Device(device))]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3])],
+                            HashMap::from([("device".into(), WireValue::Device(device))]),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -241,8 +246,11 @@ mod tests {
                         results: vec![Some(Ref { id: 4 })],
                         mutates: vec![],
                         function: "torch.ops.aten.ones.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::from([("device".into(), WireValue::Device(device))]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3])],
+                            HashMap::from([("device".into(), WireValue::Device(device))]),
+                        )
+                        .unwrap(),
                         stream: 3.into(),
                         remote_process_groups: vec![],
                     }),
@@ -261,8 +269,11 @@ mod tests {
                         results: vec![Some(Ref { id: 6 })],
                         mutates: vec![],
                         function: "torch.ops.aten.sub_.Tensor".into(),
-                        args: vec![WireValue::Ref(Ref { id: 5 }), WireValue::Ref(Ref { id: 1 })],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(Ref { id: 5 }), WireValue::Ref(Ref { id: 1 })],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -274,8 +285,11 @@ mod tests {
                         results: vec![Some(Ref { id: 7 })],
                         mutates: vec![],
                         function: "torch.ops.aten.zeros.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::from([("device".into(), WireValue::Device(device))]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3])],
+                            HashMap::from([("device".into(), WireValue::Device(device))]),
+                        )
+                        .unwrap(),
                         stream: 3.into(),
                         remote_process_groups: vec![],
                     }),
@@ -285,8 +299,11 @@ mod tests {
                         results: vec![Some(Ref { id: 8 })],
                         mutates: vec![],
                         function: "torch.ops.aten.allclose.default".into(),
-                        args: vec![WireValue::Ref(Ref { id: 4 }), WireValue::Ref(Ref { id: 7 })],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(Ref { id: 4 }), WireValue::Ref(Ref { id: 7 })],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 3.into(),
                         remote_process_groups: vec![],
                     }),
@@ -362,8 +379,7 @@ mod tests {
                         results: vec![Some(Ref { id: 1 })],
                         mutates: vec![],
                         function: "torch.ops.aten.idont.exist".into(),
-                        args: vec![],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(vec![], HashMap::new()).unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -387,8 +403,11 @@ mod tests {
                         results: vec![Some(Ref { id: 4 })],
                         mutates: vec![],
                         function: "torch.ops.aten.sub_.Scalar".into(),
-                        args: vec![WireValue::Ref(3.into()), WireValue::Int(1)],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(3.into()), WireValue::Int(1)],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 2.into(),
                         remote_process_groups: vec![],
                     }),
@@ -397,8 +416,11 @@ mod tests {
                         results: vec![Some(Ref { id: 5 })],
                         mutates: vec![],
                         function: "torch.ops.aten.allclose.default".into(),
-                        args: vec![WireValue::Ref(Ref { id: 4 }), WireValue::Ref(Ref { id: 4 })],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(Ref { id: 4 }), WireValue::Ref(Ref { id: 4 })],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 2.into(),
                         remote_process_groups: vec![],
                     }),
