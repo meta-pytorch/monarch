@@ -46,4 +46,5 @@ jobs:
         setup_tensor_engine
 
         # Build monarch (ROCm version)
+        # TODO TEMPORARY: Use USE_TENSOR_ENGINE=0 to avoid Rust build errors with cuda-sys, nccl-sys etc.
         USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
