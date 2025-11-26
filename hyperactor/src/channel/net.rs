@@ -1086,11 +1086,12 @@ mod tests {
         assert!(rx.await.is_err());
     }
 
-    #[tracing_test::traced_test]
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 60)]
     // TODO: OSS: failed to retrieve ipv6 address
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_meta_tls_basic() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
         let addr = ChannelAddr::any(ChannelTransport::MetaTls(TlsMode::IpV6));
         let meta_addr = match addr {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,

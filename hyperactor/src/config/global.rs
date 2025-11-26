@@ -524,8 +524,7 @@ pub fn create_or_merge(source: Source, attrs: Attrs) {
 /// contribute to resolution in [`get`], [`get_cloned`], or
 /// [`attrs`]. Defaults and any remaining layers continue to apply
 /// in their normal priority order.
-#[allow(dead_code)]
-pub(crate) fn clear(source: Source) {
+pub fn clear(source: Source) {
     let mut g = LAYERS.write().unwrap();
     g.ordered.retain(|l| layer_source(l) != source);
 }
@@ -584,6 +583,34 @@ pub fn attrs() -> Attrs {
     }
 
     merged
+}
+
+/// Return a snapshot of the attributes for a specific configuration
+/// source.
+///
+/// If a layer with the given [`Source`] exists, this clones and
+/// returns its [`Attrs`]. Otherwise an empty [`Attrs`] is returned.
+/// The returned map is detached from the global store – mutating it
+/// does **not** affect the underlying layer; use [`set`] or
+/// [`create_or_merge`] to modify layers.
+fn layer_attrs_for(source: Source) -> Attrs {
+    let layers = LAYERS.read().unwrap();
+    if let Some(layer) = layers.ordered.iter().find(|l| layer_source(l) == source) {
+        layer_attrs(layer).clone()
+    } else {
+        Attrs::new()
+    }
+}
+
+/// Snapshot the current attributes in the **Runtime** configuration
+/// layer.
+///
+/// This returns a cloned [`Attrs`] containing only values explicitly
+/// set in the [`Source::Runtime`] layer (no merging with
+/// Env/File/Defaults). If no Runtime layer is present, an empty
+/// [`Attrs`] is returned.
+pub fn runtime_attrs() -> Attrs {
+    layer_attrs_for(Source::Runtime)
 }
 
 /// Reset the global configuration to only Defaults (for testing).
