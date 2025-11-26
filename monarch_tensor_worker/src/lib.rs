@@ -1499,7 +1499,7 @@ mod tests {
                         mutates: vec![],
                         function: "os.path.split".into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![split_arg.into()],
+                            vec![WireValue::PyObject(split_arg)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1512,7 +1512,7 @@ mod tests {
                         mutates: vec![],
                         function: "builtins.sorted".into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![sort_list.into()],
+                            vec![WireValue::PyObject(sort_list)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1530,7 +1530,7 @@ mod tests {
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.mesh_rank".into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![mesh_ref.into(), dim.into()],
+                            vec![WireValue::PyObject(mesh_ref), WireValue::PyObject(dim)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1544,7 +1544,7 @@ mod tests {
                         function: "monarch.monarch_tensor_worker.test_utils.test_scalar_type"
                             .into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![scalar.into()],
+                            vec![WireValue::PyObject(scalar)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1557,7 +1557,7 @@ mod tests {
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_layout".into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![layout.into()],
+                            vec![WireValue::PyObject(layout)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1570,7 +1570,7 @@ mod tests {
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_none".into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![none.into()],
+                            vec![WireValue::PyObject(none)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1594,7 +1594,7 @@ mod tests {
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_device".into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![device.into()],
+                            vec![WireValue::PyObject(device)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1608,7 +1608,7 @@ mod tests {
                         function: "monarch.monarch_tensor_worker.test_utils.test_memory_format"
                             .into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![memory_format.into()],
+                            vec![WireValue::PyObject(memory_format)],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1655,6 +1655,7 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
+
         let result2: String = worker_handle
             .get_ref_unit_tests_only(&client, 2.into(), 1.into())
             .await
@@ -1663,6 +1664,7 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
+
         let result3: i64 = worker_handle
             .get_ref_unit_tests_only(&client, 4.into(), 1.into())
             .await
@@ -1671,6 +1673,7 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
+
         let result4: i64 = worker_handle
             .get_ref_unit_tests_only(&client, 6.into(), 1.into())
             .await
@@ -1679,28 +1682,26 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
-        assert_eq!(
-            ScalarType::Float,
-            worker_handle
-                .get_ref_unit_tests_only(&client, 7.into(), 1.into())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .try_into()
-                .unwrap()
-        );
-        assert_eq!(
-            Layout::Strided,
-            worker_handle
-                .get_ref_unit_tests_only(&client, 8.into(), 1.into())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .try_into()
-                .unwrap()
-        );
+        let result7: ScalarType = worker_handle
+            .get_ref_unit_tests_only(&client, 7.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(ScalarType::Float, result7);
+
+        let result8: Layout = worker_handle
+            .get_ref_unit_tests_only(&client, 8.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(Layout::Strided, result8);
+
         assert_matches!(
             worker_handle
                 .get_ref_unit_tests_only(&client, 9.into(), 1.into())
@@ -1711,17 +1712,16 @@ mod tests {
             WireValue::None(()),
         );
         let device: Device = CudaDevice::new(DeviceIndex(1)).into();
-        assert_eq!(
-            device,
-            worker_handle
-                .get_ref_unit_tests_only(&client, 10.into(), 1.into())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .try_into()
-                .unwrap()
-        );
+        let result10: Device = worker_handle
+            .get_ref_unit_tests_only(&client, 10.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(device, result10);
+
         assert_matches!(
             worker_handle
                 .get_ref_unit_tests_only(&client, 11.into(), 1.into())
@@ -2103,7 +2103,7 @@ mod tests {
                         mutates: vec![],
                         function: None,
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![ref_arg.into()],
+                            vec![WireValue::PyObject(ref_arg)],
                             HashMap::new(),
                         )
                         .unwrap(),
