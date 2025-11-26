@@ -2145,8 +2145,7 @@ mod tests {
                 stream_actor.actor_id().clone(),
                 Vec::new(),
                 None,
-                vec![WireValue::PyObject(ref_to_send)],
-                HashMap::new(),
+                ArgsKwargs::from_wire_values(vec![WireValue::PyObject(ref_to_send)], HashMap::new()).unwrap(),
                 HashMap::new(),
             )
             .await
@@ -2577,8 +2576,10 @@ mod tests {
                 CallFunctionParams {
                     seq: 100.into(),
                     function: add_tensors_function.clone(),
-                    args: vec![WireValue::Ref(formal0_ref), WireValue::Ref(formal1_ref)],
-                    kwargs: HashMap::new(),
+                    args_kwargs: ArgsKwargs::from_wire_values(
+                        vec![WireValue::Ref(formal0_ref), WireValue::Ref(formal1_ref)],
+                        HashMap::new(),
+                    ).unwrap(),
                     results: vec![Some(add_result_ref_0)],
                     mutates: vec![],
                     stream: 0.into(),
@@ -2596,8 +2597,10 @@ mod tests {
                 CallFunctionParams {
                     seq: 101.into(),
                     function: add_one_function,
-                    args: vec![WireValue::Ref(captured_ref), WireValue::Double(1.0)],
-                    kwargs: HashMap::new(),
+                    args_kwargs: ArgsKwargs::from_wire_values(
+                        vec![WireValue::Ref(captured_ref), WireValue::Double(1.0)],
+                        HashMap::new(),
+                    ).unwrap(),
                     results: vec![Some(result_captured_ref)],
                     mutates: vec![captured_ref],
                     stream: 0.into(),
@@ -2616,11 +2619,13 @@ mod tests {
                 CallFunctionParams {
                     seq: 102.into(),
                     function: add_tensors_function,
-                    args: vec![
-                        WireValue::Ref(add_result_ref_0),
-                        WireValue::Ref(captured_ref),
-                    ],
-                    kwargs: HashMap::new(),
+                    args_kwargs: ArgsKwargs::from_wire_values(
+                        vec![
+                            WireValue::Ref(add_result_ref_0),
+                            WireValue::Ref(captured_ref),
+                        ],
+                        HashMap::new(),
+                    ).unwrap(),
                     results: vec![Some(add_result_ref_1)],
                     mutates: vec![],
                     stream: 0.into(),
@@ -2985,11 +2990,13 @@ mod tests {
                 CallFunctionParams {
                     seq: 100.into(),
                     function: ResolvableFunction::FunctionPath("torch.ops.aten.add.Tensor".into()),
-                    args: vec![
-                        WireValue::Ref(borrowed_ref),
-                        WireValue::Ref(borrower_tensor_ref),
-                    ],
-                    kwargs: HashMap::new(),
+                    args_kwargs: ArgsKwargs::from_wire_values(
+                        vec![
+                            WireValue::Ref(borrowed_ref),
+                            WireValue::Ref(borrower_tensor_ref),
+                        ],
+                        HashMap::new(),
+                    ).unwrap(),
                     results: vec![Some(result_ref)],
                     mutates: vec![],
                     stream: 1.into(),

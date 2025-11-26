@@ -7,6 +7,8 @@
  */
 
 use derive_more::From;
+use derive_more::TryInto;
+use enum_as_inner::EnumAsInner;
 use hyperactor::Named;
 use monarch_types::PickledPyObject;
 use pyo3::IntoPyObjectExt;
@@ -26,7 +28,16 @@ use crate::worker::Ref;
 // out for refs. And IValue is the same as RValue, but with real tensors and
 // C++ types. I wonder if there is a nicer way to express this relationship.
 // TODO extend this to support other types of values, like bytes, dicts etc.
-#[derive(Serialize, Deserialize, Debug, Clone, Named)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    TryInto,
+    Named,
+    From,
+    EnumAsInner
+)]
 pub enum WireValue {
     // Make sure boolean goes ealier than int as bool is a subclass of int.
     // Otherwise, bool will be converted to int.
