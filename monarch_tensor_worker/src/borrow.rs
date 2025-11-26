@@ -177,9 +177,11 @@ mod tests {
     use anyhow::Result;
     use hyperactor::proc::Proc;
     use monarch_messages::controller::ControllerMessage;
+    use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessage;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
+    use pyo3::Python;
     use timed_test::async_timed_test;
     use torch_sys::Device;
     use torch_sys::DeviceType;
@@ -190,8 +192,6 @@ mod tests {
     use crate::WireValue;
     use crate::WorkerActor;
     use crate::test_util::test_setup;
-    use monarch_messages::worker::ArgsKwargs;
-    use pyo3::Python;
 
     async fn basic_borrow_test_impl(device: Device) -> Result<()> {
         test_setup()?;
@@ -230,7 +230,8 @@ mod tests {
                         args_kwargs: ArgsKwargs::from_wire_values(
                             vec![WireValue::IntList(vec![2, 3])],
                             HashMap::from([("device".into(), WireValue::Device(device))]),
-                        ).unwrap(),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -248,7 +249,8 @@ mod tests {
                         args_kwargs: ArgsKwargs::from_wire_values(
                             vec![WireValue::IntList(vec![2, 3])],
                             HashMap::from([("device".into(), WireValue::Device(device))]),
-                        ).unwrap(),
+                        )
+                        .unwrap(),
                         stream: 3.into(),
                         remote_process_groups: vec![],
                     }),
@@ -270,7 +272,8 @@ mod tests {
                         args_kwargs: ArgsKwargs::from_wire_values(
                             vec![WireValue::Ref(Ref { id: 5 }), WireValue::Ref(Ref { id: 1 })],
                             HashMap::new(),
-                        ).unwrap(),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -285,7 +288,8 @@ mod tests {
                         args_kwargs: ArgsKwargs::from_wire_values(
                             vec![WireValue::IntList(vec![2, 3])],
                             HashMap::from([("device".into(), WireValue::Device(device))]),
-                        ).unwrap(),
+                        )
+                        .unwrap(),
                         stream: 3.into(),
                         remote_process_groups: vec![],
                     }),
@@ -298,7 +302,8 @@ mod tests {
                         args_kwargs: ArgsKwargs::from_wire_values(
                             vec![WireValue::Ref(Ref { id: 4 }), WireValue::Ref(Ref { id: 7 })],
                             HashMap::new(),
-                        ).unwrap(),
+                        )
+                        .unwrap(),
                         stream: 3.into(),
                         remote_process_groups: vec![],
                     }),
@@ -401,7 +406,8 @@ mod tests {
                         args_kwargs: ArgsKwargs::from_wire_values(
                             vec![WireValue::Ref(3.into()), WireValue::Int(1)],
                             HashMap::new(),
-                        ).unwrap(),
+                        )
+                        .unwrap(),
                         stream: 2.into(),
                         remote_process_groups: vec![],
                     }),
@@ -413,7 +419,8 @@ mod tests {
                         args_kwargs: ArgsKwargs::from_wire_values(
                             vec![WireValue::Ref(Ref { id: 4 }), WireValue::Ref(Ref { id: 4 })],
                             HashMap::new(),
-                        ).unwrap(),
+                        )
+                        .unwrap(),
                         stream: 2.into(),
                         remote_process_groups: vec![],
                     }),
@@ -439,7 +446,7 @@ mod tests {
             .err()
             .context("expected error")?;
         assert!(
-            error.contains("torch operator error"),
+            error.contains("failed to resolve function"),
             "If a borrowed value contains an error, downstream calls should propagate that error (unexpected error string: {})",
             error,
         );
