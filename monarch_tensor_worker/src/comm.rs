@@ -197,6 +197,7 @@ impl NcclCommActor {
                 world_size,
                 rank,
             } => {
+                // TODO: this should probalby be done in the actor's 'init'
                 let comm =
                     spawn_blocking(move || Communicator::new(device, world_size, unique_id, rank))
                         .await
@@ -1061,31 +1062,26 @@ mod tests {
 
         let unique_id = UniqueId::new().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = proc.spawn(
-            "comm0",
-            NcclCommActor::new(CommParams::New {
-                device: device0,
-                unique_id: unique_id.clone(),
-                world_size: 2,
-                rank: 0,
-            })
-            .await
-            .unwrap(),
-        );
+        let actor0 = NcclCommActor::new(CommParams::New {
+            device: device0,
+            unique_id: unique_id.clone(),
+            world_size: 2,
+            rank: 0,
+        });
 
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = proc.spawn(
-            "comm1",
-            NcclCommActor::new(CommParams::New {
-                device: device1,
-                unique_id,
-                world_size: 2,
-                rank: 1,
-            })
-            .await
-            .unwrap(),
-        );
-        let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
+        let actor1 = NcclCommActor::new(CommParams::New {
+            device: device1,
+            unique_id,
+            world_size: 2,
+            rank: 1,
+        });
+
+        let (actor0, actor1) = tokio::join!(actor0, actor1);
+        let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
+
+        let handle0 = actor0.spawn_detached().unwrap();
+        let handle1 = actor1.spawn_detached().unwrap();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
 
@@ -1133,27 +1129,26 @@ mod tests {
 
         let unique_id = UniqueId::new().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = NcclCommActor::new(CommParams::New {
+        let actor0 = NcclCommActor::new(CommParams::New {
             device: device0,
             unique_id: unique_id.clone(),
             world_size: 2,
             rank: 0,
-        })
-        .await
-        .unwrap()
-        .spawn_detached();
+        });
 
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = NcclCommActor::new(CommParams::New {
+        let actor1 = NcclCommActor::new(CommParams::New {
             device: device1,
             unique_id,
             world_size: 2,
             rank: 1,
-        })
-        .await
-        .unwrap()
-        .spawn_detached();
-        let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
+        });
+
+        let (actor0, actor1) = tokio::join!(actor0, actor1);
+        let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
+
+        let handle0 = actor0.spawn_detached().unwrap();
+        let handle1 = actor1.spawn_detached().unwrap();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
 
@@ -1209,31 +1204,24 @@ mod tests {
 
         let unique_id = UniqueId::new()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = proc.spawn(
-            "comm0",
-            NcclCommActor::new(CommParams::New {
-                device: device0,
-                unique_id: unique_id.clone(),
-                world_size: 2,
-                rank: 0,
-            })
-            .await
-            .unwrap(),
-        );
-
+        let actor0 = NcclCommActor::new(CommParams::New {
+            device: device0,
+            unique_id: unique_id.clone(),
+            world_size: 2,
+            rank: 0,
+        });
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = proc.spawn(
-            "comm1",
-            NcclCommActor::new(CommParams::New {
-                device: device1,
-                unique_id,
-                world_size: 2,
-                rank: 1,
-            })
-            .await
-            .unwrap(),
-        );
-        let (handle0, handle1) = (handle0.unwrap(), handle1.unwrap());
+        let actor1 = NcclCommActor::new(CommParams::New {
+            device: device1,
+            unique_id,
+            world_size: 2,
+            rank: 1,
+        });
+        let (actor0, actor1) = tokio::join!(actor0, actor1);
+        let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
+
+        let handle0 = proc.spawn("comm0", actor0).unwrap();
+        let handle1 = proc.spawn("comm1", actor1).unwrap();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
         let dest_rank = 0;
@@ -1754,27 +1742,26 @@ mod tests {
 
         let unique_id = UniqueId::new()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
-        let handle0 = NcclCommActor::new(CommParams::New {
+        let actor0 = NcclCommActor::new(CommParams::New {
             device: device0,
             unique_id: unique_id.clone(),
             world_size: 2,
             rank: 0,
-        })
-        .await
-        .unwrap()
-        .spawn_detached();
+        });
 
         let device1 = CudaDevice::new(DeviceIndex(1));
-        let handle1 = NcclCommActor::new(CommParams::New {
+        let actor1 = NcclCommActor::new(CommParams::New {
             device: device1,
             unique_id,
             world_size: 2,
             rank: 1,
-        })
-        .await
-        .unwrap()
-        .spawn_detached();
-        let (handle0, handle1) = (handle0?, handle1?);
+        });
+
+        let (actor0, actor1) = tokio::join!(actor0, actor1);
+        let (actor0, actor1) = (actor0?, actor1?);
+
+        let handle0 = actor0.spawn_detached().unwrap();
+        let handle1 = actor1.spawn_detached().unwrap();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
         let port0 = client.open_once_port();
@@ -1793,11 +1780,11 @@ mod tests {
             Stream::get_current_stream_on_device(device1),
             port1.0,
         ))?;
-        let (work0, work1) = tokio::join!(
+        let (work0, work1) = tokio::try_join!(
             CommWork::from(vec![cell0.clone()], port0.1),
             CommWork::from(vec![cell1.clone()], port1.1)
-        );
-        let (work0, work1) = (work0?, work1?);
+        )
+        .unwrap();
         // Wait for the work to enqueue onto the stream.
         work0.wait().await?;
         work1.wait().await?;
@@ -1807,11 +1794,9 @@ mod tests {
         while !work0.is_completed().await? {
             // No need to sleep or yield, because the await on each iteration
             // will give other tasks a chance to make progress.
-            tracing::debug!("waiting for work0...");
         }
         while !work1.is_completed().await? {
             // Same as above.
-            tracing::debug!("waiting for work1...");
         }
 
         // Check that the tensors are correct after the work completes.
