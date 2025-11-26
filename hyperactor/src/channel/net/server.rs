@@ -21,6 +21,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
+use tokio::io::AsyncWriteExt as _;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
 use tokio::sync::mpsc;
@@ -80,7 +81,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
     /// Handles a server side stream created during the `listen` loop.
     async fn process<M: RemoteMessage>(
-        &mut self,
+        mut self,
         session_id: u64,
         tx: mpsc::Sender<M>,
         cancel_token: CancellationToken,
@@ -421,6 +422,12 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
             };
         }
 
+        if let Some(mut w) = self.write_state.into_writer() {
+            // Try to shutdown the connection gracefully. This is a best effort
+            // operation, and we don't care if it fails.
+            let _ = w.shutdown().await;
+        }
+
         (final_next, final_result)
     }
 
@@ -524,14 +531,17 @@ impl SessionManager {
             }
         };
 
+        let source = conn.source.clone();
+        let dest = conn.dest.clone();
+
         let next = session_var.take().await;
         let (next, res) = conn.process(session_id, tx, cancel_token, next).await;
         session_var.put(next).await;
 
         if let Err(ref err) = res {
             tracing::info!(
-                source = %conn.source,
-                dest = %conn.dest,
+                source = %source,
+                dest = %dest,
                 error = ?err,
                 session_id = session_id,
                 "process encountered an error"
