@@ -45,6 +45,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::clock::Clock;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
@@ -508,7 +509,7 @@ impl RdmaManagerActor {
 }
 
 #[async_trait]
-impl Actor for RdmaManagerActor {
+impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbverbsConfig>;
 
     async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
@@ -561,7 +562,10 @@ impl Actor for RdmaManagerActor {
             pci_to_device,
         })
     }
+}
 
+#[async_trait]
+impl Actor for RdmaManagerActor {
     async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
         tracing::debug!("RdmaManagerActor initialized with lazy domain/QP creation");
         Ok(())

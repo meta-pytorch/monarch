@@ -18,7 +18,8 @@ async fn main() {
 
     let proc =
         ProcessProcManager::<hyperactor::host::testing::EchoActor>::boot_proc(|proc| async move {
-            proc.spawn("echo", ()).await
+            proc.spawn("echo", hyperactor::host::testing::EchoActor)
+                .await
         })
         .await
         .unwrap();

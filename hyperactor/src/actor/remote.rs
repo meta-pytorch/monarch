@@ -42,8 +42,8 @@ macro_rules! remote {
             $crate::submit! {
                 $crate::actor::remote::SpawnableActor {
                     name: &[<$actor:snake:upper _NAME>],
-                    gspawn: <$actor as $crate::actor::RemotableActor>::gspawn,
-                    get_type_id: <$actor as $crate::actor::RemotableActor>::get_type_id,
+                    gspawn: <$actor as $crate::actor::RemoteSpawn>::gspawn,
+                    get_type_id: <$actor as $crate::actor::RemoteSpawn>::get_type_id,
                 }
             }
         }
@@ -141,13 +141,17 @@ mod tests {
     use crate as hyperactor; // for macros
     use crate::Context;
     use crate::Handler;
+    use crate::RemoteSpawn;
 
     #[derive(Debug)]
     #[hyperactor::export(handlers = [()])]
     struct MyActor;
 
     #[async_trait]
-    impl Actor for MyActor {
+    impl Actor for MyActor {}
+
+    #[async_trait]
+    impl RemoteSpawn for MyActor {
         type Params = bool;
 
         async fn new(params: bool) -> Result<Self, anyhow::Error> {

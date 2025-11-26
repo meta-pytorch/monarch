@@ -266,10 +266,9 @@ impl HostMesh {
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
         let (host, _handle) = Host::serve(manager, addr).await?;
         let addr = host.addr().clone();
-        let host_mesh_agent = host
-            .system_proc()
-            .clone()
-            .spawn::<HostMeshAgent>("agent", HostAgentMode::Process(host))
+        let system_proc = host.system_proc().clone();
+        let host_mesh_agent = system_proc
+            .spawn::<HostMeshAgent>("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .await
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
@@ -436,10 +435,11 @@ impl HostMesh {
 
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
-        let _controller: ActorHandle<HostMeshController> =
-            HostMeshController::spawn(cx, mesh.deref().clone())
-                .await
-                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        let controller = HostMeshController::new(mesh.deref().clone());
+        controller
+            .spawn(cx)
+            .await
+            .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
@@ -949,10 +949,11 @@ impl HostMeshRef {
         if let Ok(ref mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
-            let _controller: ActorHandle<ProcMeshController> =
-                ProcMeshController::spawn(cx, mesh.deref().clone())
-                    .await
-                    .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            let controller = ProcMeshController::new(mesh.deref().clone());
+            controller
+                .spawn(cx)
+                .await
+                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         }
         mesh
     }

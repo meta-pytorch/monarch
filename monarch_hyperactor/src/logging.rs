@@ -19,6 +19,7 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use monarch_types::SerializablePyErr;
 use pyo3::prelude::*;
@@ -63,9 +64,10 @@ impl LoggerRuntimeActor {
         Ok(())
     }
 }
+impl Actor for LoggerRuntimeActor {}
 
 #[async_trait]
-impl Actor for LoggerRuntimeActor {
+impl RemoteSpawn for LoggerRuntimeActor {
     type Params = ();
 
     async fn new(_: ()) -> Result<Self, anyhow::Error> {
