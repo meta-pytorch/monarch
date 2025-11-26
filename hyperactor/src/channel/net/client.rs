@@ -635,15 +635,9 @@ async fn run<M: RemoteMessage>(
         _ => (),
     }
 
-    // Notify senders that this link is no longer usable
-    if let Err(err) = notify.send(TxStatus::Closed) {
-        tracing::debug!(
-            dest = %dest,
-            error = %err,
-            session_id = session_id,
-            "tx status update error"
-        );
-    }
+    // Notify senders that this link is no longer usable. It is okay if the notify
+    // channel is closed because that means no one is listening for the notification.
+    let _ = notify.send(TxStatus::Closed);
 
     match conn {
         Conn::Connected { write_state, .. } => {
