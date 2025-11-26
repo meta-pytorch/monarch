@@ -23,9 +23,9 @@ use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Instance;
 use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
-use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -501,7 +501,7 @@ impl ProcMesh {
     ///   Referable`.
     /// - `A::Params: RemoteMessage` - params must serialize for
     ///   cross-proc spawn.
-    async fn spawn_on_procs<A: Actor + Referable>(
+    async fn spawn_on_procs<A: RemoteSpawn>(
         cx: &impl context::Actor,
         agents: impl IntoIterator<Item = ActorRef<ProcMeshAgent>> + '_,
         actor_name: &str,
@@ -608,7 +608,7 @@ impl ProcMesh {
     ///   Referable`.
     /// - `A::Params: RemoteMessage` — params must be serializable to
     ///   cross proc boundaries when launching each actor.
-    pub async fn spawn<A: Actor + Referable>(
+    pub async fn spawn<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         actor_name: &str,
@@ -958,7 +958,7 @@ impl ProcEvents {
 pub trait SharedSpawnable {
     // `Actor`: the type actually runs in the mesh;
     // `Referable`: so we can hand back ActorRef<A> in RootActorMesh
-    async fn spawn<A: Actor + Referable>(
+    async fn spawn<A: RemoteSpawn>(
         self,
         cx: &impl context::Actor,
         actor_name: &str,
@@ -972,7 +972,7 @@ pub trait SharedSpawnable {
 impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D {
     // `Actor`: the type actually runs in the mesh;
     // `Referable`: so we can hand back ActorRef<A> in RootActorMesh
-    async fn spawn<A: Actor + Referable>(
+    async fn spawn<A: RemoteSpawn>(
         self,
         cx: &impl context::Actor,
         actor_name: &str,

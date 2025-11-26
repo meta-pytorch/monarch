@@ -18,7 +18,7 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
-use hyperactor::actor::RemotableActor;
+use hyperactor::actor::RemoteSpawn;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
@@ -529,7 +529,7 @@ async fn actor_states_monitor<A, F>(
     canceled: CancellationToken,
     supervision_display_name: String,
 ) where
-    A: Actor + RemotableActor + Referable,
+    A: Actor + RemoteSpawn + Referable,
     A::Params: RemoteMessage,
     F: Fn(MeshFailure),
 {

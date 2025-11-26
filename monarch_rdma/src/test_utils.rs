@@ -85,6 +85,7 @@ pub mod test_utils {
     use hyperactor::Instance;
     use hyperactor::Proc;
     use hyperactor::RefClient;
+    use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
@@ -124,8 +125,10 @@ pub mod test_utils {
         context: SendSyncCudaContext,
     }
 
+    impl Actor for CudaActor {}
+
     #[async_trait::async_trait]
-    impl Actor for CudaActor {
+    impl RemoteSpawn for CudaActor {
         type Params = i32;
 
         async fn new(device_id: i32) -> Result<Self, anyhow::Error> {
