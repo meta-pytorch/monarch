@@ -1002,13 +1002,15 @@ mod tests {
         }
     }
 
-    // V0 test - V1 needs equivalent coverage. Tests graceful stop
+    // V0 test - V1 has equivalent coverage. Tests graceful stop
     // behavior where responsive actors stop cleanly within timeout.
     // Spawns 4 TestActors, calls stop() with 1-second timeout,
     // verifies all actors stop gracefully (5 stopped, 1 aborted). V1
-    // uses the same underlying mechanism (Proc::destroy_and_wait) but
-    // ActorMesh::stop() currently has no test coverage verifying stop
-    // succeeds and actors reach terminal state.
+    // equivalent:
+    // hyperactor_mesh/src/v1/actor_mesh.rs::test_actor_mesh_stop_graceful.
+    // Both use the same underlying mechanism (Proc::destroy_and_wait),
+    // but V1 returns Ok() for clean stop vs V0's ProcStopResult with
+    // counts.
     #[tokio::test]
     async fn test_stop() {
         // Show here that the proc actors are stopped when the proc
@@ -1063,16 +1065,14 @@ mod tests {
         }
     }
 
-    // V0 test - V1 needs equivalent coverage. Tests that actors not
+    // V0 test - V1 has equivalent coverage. Tests that actors not
     // responding within stop timeout are forcibly aborted
     // (JoinHandle::abort). Spawns SleepActors that block for 5
     // seconds, calls stop() with 1-second timeout, verifies abort
-    // counts and "aborting JoinHandle" logs. V1 uses the same
-    // underlying mechanism (Proc::destroy_and_wait) but lacks test
-    // coverage. V1's ActorMesh::stop() uses global config timeout
-    // (ACTOR_SPAWN_MAX_IDLE) and doesn't expose stopped/aborted
-    // counts, but equivalent tests should verify timeout and abort
-    // behavior work correctly.
+    // counts and "aborting JoinHandle" logs. V1 equivalent:
+    // hyperactor_mesh/src/v1/actor_mesh.rs::test_actor_mesh_stop_timeout.
+    // Both use the same underlying mechanism (Proc::destroy_and_wait),
+    // but V1 returns Err(Timeout) instead of Ok with abort counts.
     #[tracing_test::traced_test]
     #[tokio::test]
     #[cfg_attr(not(fbcode_build), ignore)]

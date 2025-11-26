@@ -469,6 +469,7 @@ mod tests {
     use crate::v1::ActorMeshRef;
     use crate::v1::Name;
     use crate::v1::ProcMesh;
+    use crate::v1::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
     use crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
     use crate::v1::testactor;
     use crate::v1::testing;
@@ -936,6 +937,156 @@ mod tests {
             count, n,
             "Expected {} undeliverable messages, got {}",
             n, count
+        );
+    }
+
+    /// Test that actors not responding within stop timeout are
+    /// forcibly aborted. This is the V1 equivalent of
+    /// hyperactor_multiprocess/src/proc_actor.rs::test_stop_timeout.
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_actor_mesh_stop_timeout() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        // Override ACTOR_SPAWN_MAX_IDLE to make test fast and
+        // deterministic. ACTOR_SPAWN_MAX_IDLE is the maximum idle
+        // time between status updates during mesh operations
+        // (spawn/stop). When stop() is called, it waits for actors to
+        // report they've stopped. If actors don't respond within this
+        // timeout, they're forcibly aborted via JoinHandle::abort().
+        // We set this to 1 second (instead of default 30s) so hung
+        // actors (sleeping 5s in this test) get aborted quickly,
+        // making the test fast.
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
+
+        let instance = testing::instance().await;
+
+        // Create proc mesh with 2 replicas
+        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+        let proc_mesh = &meshes[1]; // Use ProcessAllocator version
+
+        // Spawn SleepActors across the mesh that will block longer
+        // than timeout
+        let sleep_mesh = proc_mesh
+            .spawn::<testactor::SleepActor>(instance, "sleepers", &())
+            .await
+            .unwrap();
+
+        // Send each actor a message to sleep for 5 seconds (longer
+        // than 1-second timeout)
+        for actor_ref in sleep_mesh.values() {
+            actor_ref
+                .send(instance, std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+
+        // Give actors time to start sleeping
+        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+
+        // Count how many actors we spawned (for verification later)
+        let expected_actors = sleep_mesh.values().count();
+
+        // Now stop the mesh - actors won't respond in time, should be
+        // aborted. Time this operation to verify abort behavior.
+        let stop_start = RealClock.now();
+        let result = sleep_mesh.stop(instance).await;
+        let stop_duration = RealClock.now().duration_since(stop_start);
+
+        // Stop will return an error because actors didn't stop within
+        // the timeout. This is expected - the actors were forcibly
+        // aborted, and V1 reports this as an error.
+        match result {
+            Ok(_) => {
+                // It's possible actors stopped in time, but unlikely
+                // given 5-second sleep vs 1-second timeout
+                tracing::warn!("Actors stopped gracefully (unexpected but ok)");
+            }
+            Err(ref e) => {
+                // Expected: timeout error indicating actors were aborted
+                let err_str = format!("{:?}", e);
+                assert!(
+                    err_str.contains("Timeout"),
+                    "Expected Timeout error, got: {:?}",
+                    e
+                );
+                tracing::info!(
+                    "Stop timed out as expected for {} actors, they were aborted",
+                    expected_actors
+                );
+            }
+        }
+
+        // Verify that stop completed quickly (~1-2 seconds for
+        // timeout + abort) rather than waiting the full 5 seconds for
+        // actors to finish sleeping. This proves actors were aborted,
+        // not waited for.
+        assert!(
+            stop_duration < std::time::Duration::from_secs(3),
+            "Stop took {:?}, expected < 3s (actors should have been aborted, not waited for)",
+            stop_duration
+        );
+        assert!(
+            stop_duration >= std::time::Duration::from_millis(900),
+            "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
+            stop_duration
+        );
+    }
+
+    /// Test that actors stop gracefully when they respond to stop
+    /// signals within the timeout. Complementary to
+    /// test_actor_mesh_stop_timeout which tests abort behavior. V1
+    /// equivalent of
+    /// hyperactor_multiprocess/src/proc_actor.rs::test_stop
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_actor_mesh_stop_graceful() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let instance = testing::instance().await;
+
+        // Create proc mesh with 2 replicas
+        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+        let proc_mesh = &meshes[1];
+
+        // Spawn TestActors - these stop cleanly (no blocking
+        // operations)
+        let actor_mesh = proc_mesh
+            .spawn::<testactor::TestActor>(instance, "test_actors", &())
+            .await
+            .unwrap();
+
+        let expected_actors = actor_mesh.values().count();
+        assert!(expected_actors > 0, "Should have spawned some actors");
+
+        // Give actors time to initialize
+        RealClock.sleep(std::time::Duration::from_millis(100)).await;
+
+        // Time the stop operation
+        let stop_start = RealClock.now();
+        let result = actor_mesh.stop(instance).await;
+        let stop_duration = RealClock.now().duration_since(stop_start);
+
+        // Graceful stop should succeed (return Ok)
+        assert!(
+            result.is_ok(),
+            "Stop should succeed for responsive actors, got: {:?}",
+            result.err()
+        );
+
+        // Verify stop completed quickly (< 2 seconds). Responsive
+        // actors should stop almost immediately, not wait for
+        // timeout.
+        assert!(
+            stop_duration < std::time::Duration::from_secs(2),
+            "Graceful stop took {:?}, expected < 2s (actors should stop quickly)",
+            stop_duration
+        );
+
+        tracing::info!(
+            "Successfully stopped {} actors in {:?}",
+            expected_actors,
+            stop_duration
         );
     }
 }
