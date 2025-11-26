@@ -40,16 +40,7 @@ use crate::worker::ResolvableFunction;
 // out for refs. And IValue is the same as RValue, but with real tensors and
 // C++ types. I wonder if there is a nicer way to express this relationship.
 // TODO extend this to support other types of values, like bytes, dicts etc.
-#[derive(
-    Serialize,
-    Deserialize,
-    Debug,
-    Clone,
-    TryInto,
-    Named,
-    From,
-    EnumAsInner
-)]
+#[derive(Serialize, Deserialize, Debug, Clone, TryInto, Named, From)]
 pub enum WireValue {
     // Make sure boolean goes ealier than int as bool is a subclass of int.
     // Otherwise, bool will be converted to int.
@@ -162,6 +153,16 @@ impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for WireValue {
             // on the client side only.
             WireValue::IValue(val) => unsafe { val.try_to_object_unsafe(py) },
         }
+    }
+}
+
+impl<'py> IntoPyObject<'py> for WireValue {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        unsafe { self.try_to_object_unsafe(py) }
     }
 }
 
