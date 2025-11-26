@@ -941,8 +941,8 @@ where
                                             unacked.prune(ack, RealClock.now(), &link.dest(), session_id);
                                             (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                         }
-                                        NetRxResponse::Reject => {
-                                            let error_msg = "server rejected connection";
+                                        NetRxResponse::Reject(reason) => {
+                                            let error_msg = format!("server rejected connection due to: {reason}");
                                             tracing::error!(
                                                         dest = %link.dest(),
                                                         session_id = session_id,
