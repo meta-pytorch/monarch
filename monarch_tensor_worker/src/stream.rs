@@ -3572,29 +3572,25 @@ mod tests {
         let recording_ref = test_setup.next_ref();
 
         let unique_id = UniqueId::new()?;
-        let comm0 = test_setup.proc.spawn(
-            "comm0",
-            NcclCommActor::new(CommParams::New {
-                device: CudaDevice::new(0.into()),
-                unique_id: unique_id.clone(),
-                world_size: 2,
-                rank: 0,
-            })
-            .await
-            .unwrap(),
-        );
-        let comm1 = test_setup.proc.spawn(
-            "comm1",
-            NcclCommActor::new(CommParams::New {
-                device: CudaDevice::new(1.into()),
-                unique_id,
-                world_size: 2,
-                rank: 1,
-            })
-            .await
-            .unwrap(),
-        );
-        let (comm0, comm1) = tokio::try_join!(comm0, comm1)?;
+        let device0 = CudaDevice::new(0.into());
+        let actor0 = NcclCommActor::new(CommParams::New {
+            device: device0,
+            unique_id: unique_id.clone(),
+            world_size: 2,
+            rank: 0,
+        });
+        let device1 = CudaDevice::new(1.into());
+        let actor1 = NcclCommActor::new(CommParams::New {
+            device: device1,
+            unique_id,
+            world_size: 2,
+            rank: 1,
+        });
+        let (actor0, actor1) = tokio::join!(actor0, actor1);
+        let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
+
+        let comm0 = test_setup.proc.spawn("comm0", actor0).await.unwrap();
+        let comm1 = test_setup.proc.spawn("comm1", actor1).await.unwrap();
         let comm0 = Arc::new(comm0);
         let comm1 = Arc::new(comm1);
 
