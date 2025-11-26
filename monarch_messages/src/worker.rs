@@ -340,21 +340,6 @@ impl ResolvableFunction {
         }
     }
 
-    pub fn as_torch_op<'a>(&'a self) -> Option<(String, String)> {
-        match self {
-            Self::FunctionPath(func) => match func.path.split(".").collect::<Vec<_>>().as_slice() {
-                ["torch", "ops", namespace, op_name, "default"] => {
-                    Some((format!("{}::{}", namespace, op_name), String::new()))
-                }
-                ["torch", "ops", namespace, op_name, overload] => {
-                    Some((format!("{}::{}", namespace, op_name), overload.to_string()))
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// For testing: this is a special remote function path that induces a panic
     /// when called.
     pub fn panic_if_requested(&self) {
@@ -365,13 +350,6 @@ impl ResolvableFunction {
                 }
             }
             _ => (),
-        }
-    }
-
-    pub fn supports_pytree_args(&self) -> bool {
-        match self {
-            Self::Cloudpickle(_) => true,
-            Self::FunctionPath(_) => self.as_torch_op().is_none(),
         }
     }
 }
@@ -798,16 +776,6 @@ pub enum WorkerMessage {
         factory: Factory,
         from_stream: StreamRef,
         to_stream: StreamRef,
-    },
-
-    CreatePipe {
-        result: Ref,
-        key: String,
-        function: ResolvableFunction,
-        max_messages: i64,
-        mesh: Ref,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
     },
 
     SendValue {
