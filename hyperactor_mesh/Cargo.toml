@@ -59,6 +59,8 @@ futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"
 humantime = "2.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
+hyperactor_macros = { version = "0.0.0", path = "../hyperactor_macros" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.139"
@@ -85,6 +87,7 @@ zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io
 
 [dev-dependencies]
 bytes = { version = "1.10", features = ["serde"] }
+config = "0.14.0"
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 itertools = "0.14.0"
 maplit = "1.0"

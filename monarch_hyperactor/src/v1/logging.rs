@@ -212,7 +212,7 @@ impl LoggingMeshClient {
 
             // Read config to decide if we stand up per-proc
             // stdout/stderr forwarding.
-            let forwarding_enabled = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
+            let forwarding_enabled = hyperactor_config::global::get(MESH_ENABLE_LOG_FORWARDING);
 
             // 2. Optionally spawn per-proc `LogForwardActor` mesh
             // (stdout/stderr forwarders).
@@ -538,7 +538,7 @@ mod tests {
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh` should be `None`.
         {
@@ -595,7 +595,7 @@ mod tests {
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh.is_none()`.
         {
@@ -710,7 +710,7 @@ mod tests {
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh.is_none()`.
         {

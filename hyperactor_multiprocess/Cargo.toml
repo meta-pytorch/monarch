@@ -18,6 +18,7 @@ dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.0"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 remoteprocess = { git = "https://github.com/technicianted/remoteprocess", rev = "72505594a19d80c07df6f1dc4a80556b7e462148" }

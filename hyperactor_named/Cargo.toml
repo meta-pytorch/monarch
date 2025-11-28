@@ -16,4 +16,3 @@ edition = "2024"
 bytes = { version = "1.10", features = ["serde"] }
 cityhasher = "0.1.0"
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
-ndslice = { version = "0.0.0", path = "../ndslice" }

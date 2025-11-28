@@ -71,7 +71,6 @@
 
 pub mod accum;
 pub mod actor;
-pub mod attrs;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
@@ -105,7 +104,6 @@ pub use actor::RemoteHandles;
 pub use anyhow;
 #[doc(hidden)]
 pub use async_trait;
-pub use attrs::AttrValue;
 // Re-exported to use in Named derive macro.
 #[doc(hidden)]
 pub use cityhasher;
@@ -114,8 +112,6 @@ pub use dashmap; // For intern_typename!
 pub use data::Named;
 #[doc(hidden)]
 pub use hyperactor_macros::Actor;
-#[doc(inline)]
-pub use hyperactor_macros::AttrValue;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]
@@ -140,6 +136,8 @@ pub use hyperactor_macros::instrument;
 pub use hyperactor_macros::instrument_infallible;
 pub use hyperactor_macros::observe_async;
 pub use hyperactor_macros::observe_result;
+#[doc(hidden)]
+pub use hyperactor_named; // For declare_attrs! macro
 pub use hyperactor_telemetry::declare_static_counter;
 pub use hyperactor_telemetry::declare_static_gauge;
 pub use hyperactor_telemetry::declare_static_histogram;

@@ -22,6 +22,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
+use hyperactor_config::attrs::AttrValue;
 use lazy_static::lazy_static;
 use local_ip_address::local_ipv6;
 use serde::Deserialize;
@@ -33,7 +34,6 @@ use tokio::sync::watch;
 use crate as hyperactor;
 use crate::Named;
 use crate::RemoteMessage;
-use crate::attrs::AttrValue;
 use crate::channel::sim::SimAddr;
 use crate::simnet::SimNetError;
 
@@ -1158,7 +1158,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Server(Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }))
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_send() {
-        let config = crate::config::global::lock();
+        let config = hyperactor_config::global::lock();
 
         // Use temporary config for this test
         let _guard1 = config.override_key(

@@ -32,6 +32,7 @@ fastrand = "2.1.1"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
