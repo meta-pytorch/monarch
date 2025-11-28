@@ -12,11 +12,10 @@ use hyperactor::accum::ReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
-use hyperactor::declare_attrs;
 use hyperactor::host::Host;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
 
 pub mod mesh_agent;
@@ -136,9 +135,9 @@ impl HostRef {
     ) -> anyhow::Result<()> {
         let agent = self.mesh_agent();
         let terminate_timeout =
-            hyperactor::config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
         let max_in_flight =
-            hyperactor::config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
         agent
             .shutdown_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
             .await?;
@@ -261,7 +260,7 @@ impl HostMesh {
             std::process::exit(1);
         }
 
-        let addr = config::global::get_cloned(DEFAULT_TRANSPORT).any();
+        let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).any();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
         let (host, _handle) = Host::serve(manager, addr).await?;
@@ -297,7 +296,7 @@ impl HostMesh {
             std::process::exit(1);
         }
 
-        let transport = config::global::get_cloned(DEFAULT_TRANSPORT);
+        let transport = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT);
         let mut hosts = Vec::with_capacity(extent.num_ranks());
         for _ in 0..extent.num_ranks() {
             // Note: this can be racy. Possibly we should have a callback channel.
@@ -305,7 +304,7 @@ impl HostMesh {
             let bootstrap = Bootstrap::Host {
                 addr: addr.clone(),
                 command: Some(command.clone()),
-                config: Some(config::global::attrs()),
+                config: Some(hyperactor_config::global::attrs()),
             };
 
             let mut cmd = command.new();
@@ -809,7 +808,7 @@ impl HostMeshRef {
         // would allow buffering in the host-level muxer to eliminate
         // the need for this synchronization step.
         let mut proc_names = Vec::new();
-        let client_config_override = config::global::attrs();
+        let client_config_override = hyperactor_config::global::attrs();
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
@@ -865,7 +864,7 @@ impl HostMeshRef {
         match GetRankStatus::wait(
             rx,
             num_ranks,
-            config::global::get(PROC_SPAWN_MAX_IDLE),
+            hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
             region.clone(), // fallback mesh if nothing arrives
         )
         .await
@@ -898,7 +897,10 @@ impl HostMeshRef {
                             v1::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
                         })?;
                     let state = match RealClock
-                        .timeout(config::global::get(PROC_SPAWN_MAX_IDLE), reply_rx.recv())
+                        .timeout(
+                            hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
+                            reply_rx.recv(),
+                        )
                         .await
                     {
                         Ok(Ok(state)) => state,
@@ -930,7 +932,7 @@ impl HostMeshRef {
                     name = "ProcMeshStatus",
                     status = "Spawn::GetRankStatus",
                     "timeout after {:?} when waiting for procs being created",
-                    config::global::get(PROC_SPAWN_MAX_IDLE),
+                    hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
                 );
                 // Fill remaining ranks with a timeout status via the
                 // legacy shim.
@@ -1031,7 +1033,7 @@ impl HostMeshRef {
         match GetRankStatus::wait(
             rx,
             num_ranks,
-            config::global::get(PROC_STOP_MAX_IDLE),
+            hyperactor_config::global::get(PROC_STOP_MAX_IDLE),
             region.clone(), // fallback mesh if nothing arrives
         )
         .await
@@ -1123,7 +1125,7 @@ impl HostMeshRef {
         }
 
         let mut states = Vec::with_capacity(num_ranks);
-        let timeout = config::global::get(GET_PROC_STATE_MAX_IDLE);
+        let timeout = hyperactor_config::global::get(GET_PROC_STATE_MAX_IDLE);
         for _ in 0..num_ranks {
             // The agent runs on the same process as the running actor, so if some
             // fatal event caused the process to crash (e.g. OOM, signal, process exit),
@@ -1275,8 +1277,8 @@ mod tests {
     use std::collections::HashSet;
     use std::collections::VecDeque;
 
-    use hyperactor::attrs::Attrs;
     use hyperactor::context::Mailbox as _;
+    use hyperactor_config::attrs::Attrs;
     use itertools::Itertools;
     use ndslice::ViewExt;
     use ndslice::extent;
@@ -1326,7 +1328,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_allocate() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance().await;
@@ -1437,7 +1439,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_extrinsic_allocation() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -1481,7 +1483,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_failing_proc_allocation() {
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
         let _guard = lock.override_key(MESH_TAIL_LOG_LINES, 100);
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -1518,7 +1520,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_halting_proc_allocation() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(5));
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -1563,12 +1565,16 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_client_config_override() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
-        let _guard2 =
-            config.override_key(config::HOST_SPAWN_READY_TIMEOUT, Duration::from_secs(120));
-        let _guard3 =
-            config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(60));
+        let _guard2 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(120),
+        );
+        let _guard3 = config.override_key(
+            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance().await;
 
@@ -1579,7 +1585,10 @@ mod tests {
             proc_mesh.spawn(instance, "test", &()).await.unwrap();
 
         let mut attrs_override = Attrs::new();
-        attrs_override.set(config::HOST_SPAWN_READY_TIMEOUT, Duration::from_secs(180));
+        attrs_override.set(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(180),
+        );
         actor_mesh
             .cast(
                 instance,
@@ -1595,11 +1604,15 @@ mod tests {
         let actual_attrs = bincode::deserialize::<Attrs>(&actual_attrs).unwrap();
 
         assert_eq!(
-            *actual_attrs.get(config::HOST_SPAWN_READY_TIMEOUT).unwrap(),
+            *actual_attrs
+                .get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT)
+                .unwrap(),
             Duration::from_secs(180)
         );
         assert_eq!(
-            *actual_attrs.get(config::MESSAGE_DELIVERY_TIMEOUT).unwrap(),
+            *actual_attrs
+                .get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT)
+                .unwrap(),
             Duration::from_secs(60)
         );
     }

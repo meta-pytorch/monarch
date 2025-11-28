@@ -2464,7 +2464,7 @@ pub fn derive_attr_value(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     TokenStream::from(quote! {
-        impl #impl_generics hyperactor::attrs::AttrValue for #name #ty_generics #where_clause {
+        impl #impl_generics hyperactor_config::attrs::AttrValue for #name #ty_generics #where_clause {
             fn display(&self) -> String {
                 self.to_string()
             }
