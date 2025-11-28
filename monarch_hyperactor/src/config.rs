@@ -19,16 +19,16 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use hyperactor::AttrValue;
 use hyperactor::Named;
-use hyperactor::attrs::AttrKeyInfo;
-use hyperactor::attrs::Attrs;
-use hyperactor::attrs::ErasedKey;
-use hyperactor::attrs::declare_attrs;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
-use hyperactor::config::global::Source;
+use hyperactor_config::AttrValue;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::AttrKeyInfo;
+use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::ErasedKey;
+use hyperactor_config::attrs::declare_attrs;
+use hyperactor_config::global::Source;
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
@@ -48,14 +48,14 @@ declare_attrs! {
 #[pyfunction()]
 pub fn reload_config_from_env() -> PyResult<()> {
     // Reload the hyperactor global configuration from environment variables
-    hyperactor::config::global::init_from_env();
+    hyperactor_config::global::init_from_env();
     Ok(())
 }
 
 #[pyfunction()]
 pub fn reset_config_to_defaults() -> PyResult<()> {
     // Set all config values to defaults, ignoring even environment variables.
-    hyperactor::config::global::reset_to_defaults();
+    hyperactor_config::global::reset_to_defaults();
     Ok(())
 }
 
@@ -109,7 +109,7 @@ where
             key.name(),
         ))
     })?;
-    let val: Option<P> = hyperactor::config::global::try_get_cloned(key.clone())
+    let val: Option<P> = hyperactor_config::global::try_get_cloned(key.clone())
         .map(|v| v.try_into())
         .transpose()?;
     val.map(|v| v.into_py_any(py)).transpose()
@@ -133,7 +133,7 @@ where
     PyErr: From<<T as TryInto<P>>::Error>,
 {
     let key = key.downcast_ref::<T>().expect("cannot fail");
-    let runtime = hyperactor::config::global::runtime_attrs();
+    let runtime = hyperactor_config::global::runtime_attrs();
     let val: Option<P> = runtime
         .get(key.clone())
         .cloned()
@@ -156,7 +156,7 @@ fn set_runtime_config_py<T: AttrValue + Debug>(
     let key = key.downcast_ref().expect("cannot fail");
     let mut attrs = Attrs::new();
     attrs.set(key.clone(), value);
-    hyperactor::config::global::create_or_merge(Source::Runtime, attrs);
+    hyperactor_config::global::create_or_merge(Source::Runtime, attrs);
     Ok(())
 }
 
@@ -410,7 +410,7 @@ fn get_runtime_config(py: Python<'_>) -> PyResult<HashMap<String, PyObject>> {
 /// Other layers (Env, File, TestOverride, defaults) are unaffected.
 #[pyfunction]
 fn clear_runtime_config(_py: Python<'_>) -> PyResult<()> {
-    hyperactor::config::global::clear(Source::Runtime);
+    hyperactor_config::global::clear(Source::Runtime);
     Ok(())
 }
 

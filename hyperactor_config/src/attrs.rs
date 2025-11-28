@@ -20,8 +20,8 @@
 //! ```
 //! use std::time::Duration;
 //!
-//! use hyperactor::attrs::Attrs;
-//! use hyperactor::attrs::declare_attrs;
+//! use hyperactor_config::attrs::Attrs;
+//! use hyperactor_config::attrs::declare_attrs;
 //!
 //! // Declare keys with their associated types
 //! declare_attrs! {
@@ -46,8 +46,8 @@
 //! ```
 //! use std::time::Duration;
 //!
-//! use hyperactor::attrs::Attrs;
-//! use hyperactor::attrs::declare_attrs;
+//! use hyperactor_config::attrs::Attrs;
+//! use hyperactor_config::attrs::declare_attrs;
 //!
 //! declare_attrs! {
 //!   /// Request timeout
@@ -75,8 +75,8 @@
 //! ```
 //! use std::time::Duration;
 //!
-//! use hyperactor::attrs::Attrs;
-//! use hyperactor::attrs::declare_attrs;
+//! use hyperactor_config::attrs::Attrs;
+//! use hyperactor_config::attrs::declare_attrs;
 //!
 //! declare_attrs! {
 //!   /// Is experimental?
@@ -106,6 +106,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use erased_serde::Deserializer as ErasedDeserializer;
 use erased_serde::Serialize as ErasedSerialize;
+use hyperactor_named::Named;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -114,8 +115,6 @@ use serde::de::DeserializeOwned;
 use serde::de::MapAccess;
 use serde::de::Visitor;
 use serde::ser::SerializeMap;
-
-use crate::data::Named;
 
 // Information about an attribute key, used for automatic registration.
 // This needs to be public to be accessible from other crates, but it is
@@ -329,9 +328,6 @@ impl_attrvalue!(
     std::net::IpAddr,
     std::net::Ipv4Addr,
     std::net::Ipv6Addr,
-    crate::ActorId,
-    ndslice::Shape,
-    ndslice::Point,
 );
 
 impl AttrValue for std::time::Duration {
@@ -526,24 +522,17 @@ impl Attrs {
 
     // Internal methods for config guard support
     /// Take a value by key name, returning the boxed value if present
-    pub(crate) fn remove_value<T: 'static>(
-        &mut self,
-        key: Key<T>,
-    ) -> Option<Box<dyn SerializableValue>> {
+    pub fn remove_value<T: 'static>(&mut self, key: Key<T>) -> Option<Box<dyn SerializableValue>> {
         self.values.remove(key.name)
     }
 
     /// Restore a value by key name
-    pub(crate) fn insert_value<T: 'static>(
-        &mut self,
-        key: Key<T>,
-        value: Box<dyn SerializableValue>,
-    ) {
+    pub fn insert_value<T: 'static>(&mut self, key: Key<T>, value: Box<dyn SerializableValue>) {
         self.values.insert(key.name, value);
     }
 
     /// Restore a value by key name
-    pub(crate) fn insert_value_by_name_unchecked(
+    pub fn insert_value_by_name_unchecked(
         &mut self,
         name: &'static str,
         value: Box<dyn SerializableValue>,
@@ -553,7 +542,7 @@ impl Attrs {
 
     /// Internal getter by key name for explicitly-set values (no
     /// defaults).
-    pub(crate) fn get_value_by_name(&self, name: &'static str) -> Option<&dyn SerializableValue> {
+    pub fn get_value_by_name(&self, name: &'static str) -> Option<&dyn SerializableValue> {
         self.values.get(name).map(|b| b.as_ref())
     }
 
@@ -562,7 +551,7 @@ impl Attrs {
     ///
     /// For each key in `other`, moves its value into `self`,
     /// overwriting any existing value for the same key.
-    pub(crate) fn merge(&mut self, other: Attrs) {
+    pub fn merge(&mut self, other: Attrs) {
         self.values.extend(other.values);
     }
 }
@@ -812,8 +801,8 @@ macro_rules! assert_impl {
 /// ```
 /// use std::time::Duration;
 ///
-/// use hyperactor::attrs::Attrs;
-/// use hyperactor::attrs::declare_attrs;
+/// use hyperactor_config::attrs::Attrs;
+/// use hyperactor_config::attrs::declare_attrs;
 ///
 /// declare_attrs! {
 ///     /// Timeout for RPC operations
@@ -885,7 +874,7 @@ macro_rules! declare_attrs {
                     const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
                     $crate::const_ascii_lowercase!(FULL_NAME)
                 },
-                typehash: <$type as $crate::data::Named>::typehash,
+                typehash: <$type as $crate::hyperactor_named::Named>::typehash,
                 deserialize_erased: |deserializer| {
                     let value: $type = erased_serde::deserialize(deserializer)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
@@ -938,7 +927,7 @@ macro_rules! declare_attrs {
                     const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
                     $crate::const_ascii_lowercase!(FULL_NAME)
                 },
-                typehash: <$type as $crate::data::Named>::typehash,
+                typehash: <$type as $crate::hyperactor_named::Named>::typehash,
                 deserialize_erased: |deserializer| {
                     let value: $type = erased_serde::deserialize(deserializer)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
@@ -1038,7 +1027,7 @@ mod tests {
     fn test_key_properties() {
         assert_eq!(
             TEST_TIMEOUT.name(),
-            "hyperactor::attrs::tests::test_timeout"
+            "hyperactor_config::attrs::tests::test_timeout"
         );
     }
 
@@ -1053,9 +1042,9 @@ mod tests {
         let serialized = serde_json::to_string(&attrs).expect("Failed to serialize");
 
         // The serialized string should contain the key names and their values
-        assert!(serialized.contains("hyperactor::attrs::tests::test_timeout"));
-        assert!(serialized.contains("hyperactor::attrs::tests::test_count"));
-        assert!(serialized.contains("hyperactor::attrs::tests::test_name"));
+        assert!(serialized.contains("hyperactor_config::attrs::tests::test_timeout"));
+        assert!(serialized.contains("hyperactor_config::attrs::tests::test_count"));
+        assert!(serialized.contains("hyperactor_config::attrs::tests::test_name"));
     }
 
     #[test]
@@ -1207,8 +1196,8 @@ mod tests {
         assert!(debug_output.contains("42"));
 
         // Should contain the key names
-        assert!(debug_output.contains("hyperactor::attrs::tests::test_count"));
-        assert!(debug_output.contains("hyperactor::attrs::tests::test_name"));
+        assert!(debug_output.contains("hyperactor_config::attrs::tests::test_count"));
+        assert!(debug_output.contains("hyperactor_config::attrs::tests::test_name"));
 
         // For strings, the JSON representation should be the escaped version
         // Let's check that the test string is actually present in some form

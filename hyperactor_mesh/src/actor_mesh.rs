@@ -26,8 +26,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
 use hyperactor::WorldId;
 use hyperactor::actor::Referable;
-use hyperactor::attrs::Attrs;
-use hyperactor::attrs::declare_attrs;
 use hyperactor::config;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
@@ -35,6 +33,8 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::declare_attrs;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -121,7 +121,7 @@ where
 
     let slice_of_root = root_mesh_shape.slice();
 
-    let max_cast_dimension_size = config::global::get(MAX_CAST_DIMENSION_SIZE);
+    let max_cast_dimension_size = hyperactor_config::global::get(MAX_CAST_DIMENSION_SIZE);
 
     let slice_of_cast = slice_of_root.reshape_with_limit(Limit::from(max_cast_dimension_size));
 
@@ -848,8 +848,8 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
-    use hyperactor::attrs::Attrs;
     use hyperactor::data::Encoding;
+    use hyperactor_config::attrs::Attrs;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -1281,9 +1281,9 @@ mod tests {
             use crate::alloc::ProcStopReason;
             use crate::proc_mesh::ProcEvent;
 
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             let _guard = config.override_key(
-                hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+                config::MESSAGE_DELIVERY_TIMEOUT,
                 tokio::time::Duration::from_secs(1),
             );
 
@@ -1422,9 +1422,9 @@ mod tests {
             use hyperactor::test_utils::pingpong::PingPongActorParams;
             use hyperactor::test_utils::pingpong::PingPongMessage;
 
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             let _guard = config.override_key(
-                hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+                config::MESSAGE_DELIVERY_TIMEOUT,
                 tokio::time::Duration::from_secs(1),
             );
 
@@ -1531,18 +1531,16 @@ mod tests {
             }
 
             // This process: short delivery timeout.
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             // This process (write): max frame len for frame writes.
-            let _guard2 =
-                config.override_key(hyperactor::config::CODEC_MAX_FRAME_LENGTH, 1024usize);
+            let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, 1024usize);
             // Remote process (read): max frame len for frame reads.
             // SAFETY: Ok here but not safe for concurrent access.
             unsafe {
                 std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024");
             };
-            let _guard3 =
-                config.override_key(hyperactor::config::DEFAULT_ENCODING, Encoding::Bincode);
-            let _guard4 = config.override_key(hyperactor::config::CHANNEL_MULTIPART, false);
+            let _guard3 = config.override_key(config::DEFAULT_ENCODING, Encoding::Bincode);
+            let _guard4 = config.override_key(config::CHANNEL_MULTIPART, false);
 
             let alloc = process_allocator()
                 .allocate(AllocSpec {
@@ -1745,7 +1743,7 @@ mod tests {
         ) where
             A: ActorMesh<Actor = EchoActor>,
         {
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             let _guard = config.override_key(MAX_CAST_DIMENSION_SIZE, 2);
 
             let (_, mut rx) = serve::<usize>(addr).unwrap();

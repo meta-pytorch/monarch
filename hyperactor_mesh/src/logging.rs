@@ -41,10 +41,10 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
 use hyperactor::data::Serialized;
-use hyperactor::declare_attrs;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use hyperactor_telemetry::env;
 use hyperactor_telemetry::log_file_path;
 use serde::Deserialize;
@@ -615,7 +615,7 @@ fn get_unique_local_log_destination(
     output_target: OutputTarget,
 ) -> Option<(PathBuf, Box<dyn io::AsyncWrite + Send + Unpin + 'static>)> {
     let env: env::Env = env::Env::current();
-    if env == env::Env::Local && !hyperactor::config::global::get(FORCE_FILE_LOG) {
+    if env == env::Env::Local && !hyperactor_config::global::get(FORCE_FILE_LOG) {
         tracing::debug!("not creating log file because of env type");
         None
     } else {
@@ -855,7 +855,7 @@ impl StreamFwder {
         pid: u32,
         local_rank: usize,
     ) -> Self {
-        let prefix = match hyperactor::config::global::get(PREFIX_WITH_RANK) {
+        let prefix = match hyperactor_config::global::get(PREFIX_WITH_RANK) {
             true => Some(local_rank.to_string()),
             false => None,
         };
