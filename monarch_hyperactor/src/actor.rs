@@ -57,6 +57,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
+use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
@@ -341,7 +342,7 @@ impl PythonMessage {
                     Ok(ResolvedCallMethod {
                         method: name,
                         bytes: FrozenBuffer {
-                            inner: self.message.into_inner(),
+                            inner: self.message.into_bytes(),
                         },
                         local_state,
                         response_port,
@@ -380,7 +381,7 @@ impl PythonMessage {
                 Ok(ResolvedCallMethod {
                     method: name,
                     bytes: FrozenBuffer {
-                        inner: self.message.into_inner(),
+                        inner: self.message.into_bytes(),
                     },
                     local_state,
                     response_port,
@@ -399,7 +400,7 @@ impl std::fmt::Debug for PythonMessage {
             .field("kind", &self.kind)
             .field(
                 "message",
-                &hyperactor::data::HexFmt(&(*self.message)[..]).to_string(),
+                &hyperactor::data::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
             )
             .finish()
     }
@@ -428,9 +429,8 @@ impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
     pub fn new<'py>(kind: PythonMessageKind, message: Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(buff) = message.extract::<Bound<'py, FrozenBuffer>>() {
-            let frozen = buff.borrow_mut();
-            return Ok(PythonMessage::new_from_buf(kind, frozen.inner.clone()));
+        if let Ok(mut buff) = message.extract::<PyRefMut<'py, Buffer>>() {
+            return Ok(PythonMessage::new_from_buf(kind, buff.into_part()));
         } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
             return Ok(PythonMessage::new_from_buf(
                 kind,
@@ -451,7 +451,7 @@ impl PythonMessage {
     #[getter]
     fn message(&self) -> FrozenBuffer {
         FrozenBuffer {
-            inner: self.message.clone().into_inner(),
+            inner: self.message.to_bytes(),
         }
     }
 }

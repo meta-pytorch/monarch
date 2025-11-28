@@ -10,7 +10,7 @@
 //!
 //! Using [`serialize`] / [`deserialize`], fields typed [`Part`] are extracted
 //! from the main payload and appended to a list of `parts`. Each part is backed by
-//! [`bytes::Bytes`] for cheap, zero-copy sharing.
+//! [`Vec<bytes::Bytes>`] for cheap, zero-copy sharing.
 //!
 //! On decode, the body and its parts are reassembled into the original value
 //! without copying.
@@ -103,7 +103,14 @@ impl Message {
 
     /// Returns the total size (in bytes) of the message when it is framed.
     pub fn frame_len(&self) -> usize {
-        8 * (1 + self.num_parts()) + self.len()
+        if self.is_illegal {
+            // Illegal messages use a simplified frame format: u64::MAX marker + body
+            return 8 + self.body.len();
+        }
+
+        8 + self.body.len()
+            + (8 * self.parts.len())
+            + self.parts.iter().map(|p| p.len()).sum::<usize>()
     }
 
     /// Efficiently frames a message containing the body and all of its parts
@@ -123,22 +130,30 @@ impl Message {
 
         if is_illegal {
             assert!(parts.is_empty(), "illegal illegal message");
-            return Frame::from_buffers(vec![
-                Bytes::from_owner(u64::MAX.to_be_bytes()),
-                body.into_inner(),
-            ]);
+            let mut buffers = Vec::with_capacity(1 + body.num_fragments());
+            buffers.push(Bytes::from_owner(u64::MAX.to_be_bytes()));
+            for fragment in body.into_inner() {
+                buffers.push(fragment);
+            }
+            return Frame::from_buffers(buffers);
         }
 
-        let mut buffers = Vec::with_capacity(2 + 2 * parts.len());
+        let mut buffers = Vec::with_capacity(
+            1 + body.num_fragments()
+                + parts.len()
+                + parts.iter().map(|part| part.num_fragments()).sum::<usize>(),
+        );
 
-        let body = body.into_inner();
         buffers.push(Bytes::from_owner(body.len().to_be_bytes()));
-        buffers.push(body);
+        for fragment in body.into_inner() {
+            buffers.push(fragment);
+        }
 
         for part in parts {
-            let part = part.into_inner();
             buffers.push(Bytes::from_owner(part.len().to_be_bytes()));
-            buffers.push(part);
+            for fragment in part.into_inner() {
+                buffers.push(fragment);
+            }
         }
 
         Frame::from_buffers(buffers)
@@ -323,7 +338,7 @@ pub fn serialize_bincode<S: ?Sized + serde::Serialize>(
         ser::bincode::Serializer::new(bincode::Serializer::new(buffer_borrow.writer(), options()));
     value.serialize(&mut serializer)?;
     Ok(Message {
-        body: Part(buffer.into_inner().freeze()),
+        body: Part(vec![buffer.into_inner().freeze()]),
         parts: serializer.into_parts(),
         is_illegal: false,
     })
@@ -340,12 +355,12 @@ where
         if !parts.is_empty() {
             return Err(bincode::ErrorKind::Custom("illegal illegal message".to_string()).into());
         }
-        return bincode::deserialize_from(body.into_inner().reader());
+        return bincode::deserialize_from(body.into_bytes().reader());
     }
 
     let (body, parts) = message.into_inner();
     let mut deserializer = part::BincodeDeserializer::new(
-        bincode::Deserializer::with_reader(body.into_inner().reader(), options()),
+        bincode::Deserializer::with_reader(body.into_bytes().reader(), options()),
         parts.into(),
     );
     let value = T::deserialize(&mut deserializer)?;
