@@ -14,11 +14,12 @@
 use std::any::type_name;
 use std::time::SystemTime;
 
-use crate::attrs::Attrs;
-use crate::attrs::declare_attrs;
+use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::declare_attrs;
+use hyperactor_config::global;
+
 use crate::clock::Clock;
 use crate::clock::RealClock;
-use crate::config::global;
 use crate::metrics::MESSAGE_LATENCY_MICROS;
 
 declare_attrs! {

@@ -42,12 +42,11 @@ use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 
-use hyperactor::attrs::declare_attrs;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use monarch_types::SerializablePyErr;
 use monarch_types::py_global;
 use pyo3::IntoPyObjectExt;
@@ -82,7 +81,7 @@ py_global!(context, "monarch._src.actor.actor_mesh", "context");
 py_global!(actor_mesh_module, "monarch._src.actor", "actor_mesh");
 
 fn current_traceback() -> PyResult<Option<PyObject>> {
-    if config::global::get(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK) {
+    if hyperactor_config::global::get(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK) {
         Python::with_gil(|py| {
             Ok(Some(
                 py.import("traceback")?

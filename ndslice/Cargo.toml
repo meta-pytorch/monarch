@@ -18,8 +18,11 @@ path = "tests/fuzz_reshape_selection.rs"
 
 [dependencies]
 anyhow = "1.0.98"
+cityhasher = "0.1.0"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 enum-as-inner = "0.6.0"
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
+hyperactor_named = { version = "0.0.0", path = "../hyperactor_named" }
 itertools = "0.14.0"
 nom = "8"
 proc-macro2 = { version = "1.0.70", features = ["span-locations"] }
