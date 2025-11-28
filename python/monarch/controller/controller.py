@@ -11,7 +11,7 @@ from collections import deque
 from typing import Generator, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
-    DebuggerMessage,
+    DebuggerMessage as RustDebuggerMessage,
     WorldState,
 )
 
@@ -79,7 +79,7 @@ class Controller:
         for rank, value in self._backend.recvready(timeout):
             yield from self._handle_message(rank, value)
 
-    def drain_and_stop(self) -> List[MessageResult | LogMessage | DebuggerMessage]:
+    def drain_and_stop(self) -> List[MessageResult | LogMessage | RustDebuggerMessage]:
         messages = []
         while self._messages:
             messages.append(self._messages.popleft())
