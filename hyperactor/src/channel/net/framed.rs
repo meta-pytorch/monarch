@@ -373,6 +373,15 @@ impl<W: AsyncWrite + Unpin, F: Buf, T> WriteState<W, F, T> {
             Self::Broken => panic!("illegal state"),
         }
     }
+
+    /// Consume the state, returning the underlying writer if it is not broken.
+    pub fn into_writer(self) -> Option<W> {
+        match self {
+            Self::Idle(w) => Some(w),
+            Self::Writing(w, _) => Some(w.complete()),
+            Self::Broken => None,
+        }
+    }
 }
 
 #[cfg(test)]
