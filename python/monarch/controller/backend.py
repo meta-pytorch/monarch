@@ -101,7 +101,7 @@ class ProcessBackend(Backend):
 
     def CreatePipe(self, ranks: Ranks, msg: messages.CreatePipe):
         pipe_ranks = list(enumerate(iter_ranks(ranks)))
-        for i, rank in pipe_ranks:
+        for _, rank in pipe_ranks:
             # In general, pipes on different workers may need to have different behavior.
             # For example, two data loader pipes operating on the same dataset should
             # load different shards of the dataset. In order to do this, each pipe process
