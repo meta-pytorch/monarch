@@ -79,7 +79,6 @@ use monarch_messages::worker::StreamRef;
 use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerMessageHandler;
 use monarch_messages::worker::WorkerParams;
-use monarch_types::PyTree;
 use ndslice::Slice;
 use pyo3::Python;
 use pyo3::types::PyAnyMethods;
@@ -92,7 +91,6 @@ use stream::StreamParams;
 use torch_sys::CudaDevice;
 use torch_sys::DeviceIndex;
 use torch_sys::Layout;
-use torch_sys::RValue;
 use torch_sys::ScalarType;
 use torch_sys::TensorCell;
 use torch_sys::factory_zeros;
@@ -1111,22 +1109,14 @@ impl WorkerMessageHandler for WorkerActor {
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
-    use std::process::Stdio;
 
     use anyhow::Result;
     use hyperactor::Instance;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::id;
-    use hyperactor::mailbox::open_port;
     use hyperactor::proc::Proc;
-    use hyperactor_multiprocess::System;
-    use hyperactor_multiprocess::proc_actor::Environment;
-    use hyperactor_multiprocess::proc_actor::ProcActor;
-    use hyperactor_multiprocess::proc_actor::ProcMessageClient;
     use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
-    use hyperactor_multiprocess::system_actor::Shape;
     use hyperactor_multiprocess::system_actor::SystemMessageClient;
     use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
     use hyperactor_multiprocess::system_actor::WorldStatus;
@@ -1143,13 +1133,12 @@ mod tests {
     use rand::Rng;
     use rand::distributions::Alphanumeric;
     use timed_test::async_timed_test;
-    use tokio::io::BufReader;
-    use tokio::process::Command;
     use tokio_retry::Retry;
     use tokio_retry::strategy::FixedInterval;
     use torch_sys::Device;
     use torch_sys::DeviceIndex;
     use torch_sys::MemoryFormat;
+    use torch_sys::RValue;
 
     use super::*;
     use crate::test_util::test_setup;
@@ -2130,6 +2119,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn get_random_channel_addr() -> ChannelAddr {
         let random_string = rand::thread_rng()
             .sample_iter(&Alphanumeric)
@@ -2139,6 +2129,7 @@ mod tests {
         format!("unix!@{random_string}").parse().unwrap()
     }
 
+    #[allow(dead_code)]
     async fn ensure_world_ready(client: &Instance<()>, world: WorldId) -> Result<()> {
         tracing::info!("checking whether world {world} is ready");
         let retry_strategy = FixedInterval::from_millis(1000).take(100);
