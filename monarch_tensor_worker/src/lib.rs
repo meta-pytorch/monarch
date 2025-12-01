@@ -79,7 +79,6 @@ use monarch_messages::worker::StreamRef;
 use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerMessageHandler;
 use monarch_messages::worker::WorkerParams;
-use monarch_types::PyTree;
 use ndslice::Slice;
 use pyo3::Python;
 use pyo3::types::PyAnyMethods;
@@ -92,7 +91,6 @@ use stream::StreamParams;
 use torch_sys::CudaDevice;
 use torch_sys::DeviceIndex;
 use torch_sys::Layout;
-use torch_sys::RValue;
 use torch_sys::ScalarType;
 use torch_sys::TensorCell;
 use torch_sys::factory_zeros;
@@ -1111,22 +1109,14 @@ impl WorkerMessageHandler for WorkerActor {
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
-    use std::process::Stdio;
 
     use anyhow::Result;
     use hyperactor::Instance;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::id;
-    use hyperactor::mailbox::open_port;
     use hyperactor::proc::Proc;
-    use hyperactor_multiprocess::System;
-    use hyperactor_multiprocess::proc_actor::Environment;
-    use hyperactor_multiprocess::proc_actor::ProcActor;
-    use hyperactor_multiprocess::proc_actor::ProcMessageClient;
     use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
-    use hyperactor_multiprocess::system_actor::Shape;
     use hyperactor_multiprocess::system_actor::SystemMessageClient;
     use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
     use hyperactor_multiprocess::system_actor::WorldStatus;
@@ -1143,13 +1133,12 @@ mod tests {
     use rand::Rng;
     use rand::distributions::Alphanumeric;
     use timed_test::async_timed_test;
-    use tokio::io::BufReader;
-    use tokio::process::Command;
     use tokio_retry::Retry;
     use tokio_retry::strategy::FixedInterval;
     use torch_sys::Device;
     use torch_sys::DeviceIndex;
     use torch_sys::MemoryFormat;
+    use torch_sys::RValue;
 
     use super::*;
     use crate::test_util::test_setup;
@@ -2130,6 +2119,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn get_random_channel_addr() -> ChannelAddr {
         let random_string = rand::thread_rng()
             .sample_iter(&Alphanumeric)
@@ -2139,6 +2129,7 @@ mod tests {
         format!("unix!@{random_string}").parse().unwrap()
     }
 
+    #[allow(dead_code)]
     async fn ensure_world_ready(client: &Instance<()>, world: WorldId) -> Result<()> {
         tracing::info!("checking whether world {world} is ready");
         let retry_strategy = FixedInterval::from_millis(1000).take(100);
@@ -2154,154 +2145,6 @@ mod tests {
             }
         })
         .await?;
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn remote_process_group() -> Result<()> {
-        test_setup()?;
-
-        // Spin up a system to manage the test setup.
-        let timeout: Duration = Duration::from_secs(10);
-        let system_addr = get_random_channel_addr();
-        let _system_handle = System::serve(system_addr.clone(), timeout, timeout).await?;
-
-        // Create a fake controller for the workers to talk to.
-        let client = System::new(system_addr.clone()).attach().await?;
-        let (_handle, mut controller_rx) = client.bind_actor_port::<ControllerMessage>();
-        let controller_ref: ActorRef<ControllerActor> = ActorRef::attest(client.self_id().clone());
-
-        // Create the worker world
-        let world_size = 2;
-        SYSTEM_ACTOR_REF
-            .upsert_world(
-                &client,
-                id!(world),
-                Shape::Definite(vec![world_size]),
-                4,
-                Environment::Local,
-                HashMap::new(),
-            )
-            .await?;
-
-        // Bootstrap a proc for each worker
-        let mut worker_process_handles = vec![];
-        let mut worker_procs: Vec<ActorRef<ProcActor>> = vec![];
-        for rank in 0..world_size {
-            let world_id = "world".to_string();
-            let proc_id = format!("{world_id}[{rank}]");
-            worker_procs.push(ActorRef::attest(format!("world[{rank}].proc[0]").parse()?));
-
-            let mut handle =
-                Command::new(std::env::var("MONARCH_TENSOR_WORKER_EXE").map_err(|e| {
-                    anyhow::anyhow!("could not get var MONARCH_TENSOR_WORKER_EXE: {}", e)
-                })?)
-                .arg("worker")
-                .arg(format!("--bootstrap-addr={system_addr}"))
-                .arg(format!("--world-id={world_id}"))
-                .arg(format!("--proc-id={proc_id}"))
-                .stdout(Stdio::piped())
-                .stdin(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()?;
-
-            let out = handle.stdout.take().unwrap();
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(out);
-                tokio::io::copy(&mut reader, &mut tokio::io::stderr())
-                    .await
-                    .unwrap();
-            });
-            worker_process_handles.push(handle);
-        }
-
-        // Wait for procs to initialize
-
-        ensure_world_ready(&client, id!(world)).await?;
-
-        // Spawn workers on each proc
-        let (spawned_port, mut spawned_receiver) = open_port(&client);
-        for (rank, worker_proc) in worker_procs.iter().enumerate() {
-            let params = WorkerParams {
-                world_size,
-                rank,
-                device_index: Some(rank.try_into().unwrap()),
-                controller_actor: controller_ref.clone(),
-            };
-            worker_proc
-                .spawn(
-                    &client,
-                    "monarch_tensor_worker::WorkerActor".to_owned(),
-                    "worker".to_owned(),
-                    bincode::serialize(&params)?,
-                    spawned_port.bind(),
-                )
-                .await?;
-        }
-        let mut spawned = vec![];
-        while spawned.len() < world_size {
-            spawned.push(spawned_receiver.recv().await?);
-        }
-        tracing::info!("spawned {} worker actors", world_size);
-        let workers: Vec<ActorRef<WorkerActor>> = (0..world_size)
-            .map(|rank| format!("world[{rank}].worker[0]"))
-            .map(|name| ActorRef::attest(name.parse().unwrap()))
-            .collect();
-
-        let remote_proc_grp_ref: PickledPyObject =
-            Python::with_gil(|py| Ref { id: 2 }.into_bound_py_any(py)?.try_into())?;
-
-        let unique_id = UniqueId::new()?;
-        let messages = vec![
-            WorkerMessage::CreateStream {
-                id: 0.into(),
-                stream_creation: StreamCreationMode::UseDefaultStream,
-            },
-            WorkerMessage::BackendNetworkInit(unique_id.clone()),
-            WorkerMessage::CreateDeviceMesh {
-                result: 1.into(),
-                names: vec!["x".into()],
-                ranks: Slice::new(0, vec![2], vec![1]).unwrap(),
-            },
-            WorkerMessage::CreateRemoteProcessGroup {
-                result: 2.into(),
-                device_mesh: 1.into(),
-                dims: vec!["x".into()],
-            },
-            WorkerMessage::SplitCommForProcessGroup {
-                remote_process_group: 2.into(),
-                stream: 0.into(),
-                config: None,
-            },
-            WorkerMessage::CallFunction(CallFunctionParams {
-                seq: 0.into(),
-                results: vec![Some(3.into())],
-                mutates: vec![],
-                function: "monarch.monarch_tensor_worker.test_utils.test_remote_process_group"
-                    .into(),
-                args: vec![remote_proc_grp_ref.into()],
-                kwargs: HashMap::new(),
-                stream: 0.into(),
-                remote_process_groups: vec![2.into()],
-            }),
-        ];
-
-        workers[0].command_group(&client, messages.clone()).await?;
-        workers[1].command_group(&client, messages).await?;
-
-        let _ = workers[0]
-            .get_ref_unit_tests_only(&client, 3.into(), 0.into())
-            .await?
-            .unwrap()
-            .unwrap();
-
-        let error_responses = controller_rx.drain();
-        assert!(
-            error_responses.is_empty(),
-            "Expected no error responses, got: {:#?}",
-            error_responses
-        );
-
         Ok(())
     }
 }

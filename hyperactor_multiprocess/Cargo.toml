@@ -30,7 +30,7 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 [dev-dependencies]
 maplit = "1.0"
 rand = { version = "0.8", features = ["small_rng"] }
-regex = "1.11.1"
+regex = "1.12.2"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
