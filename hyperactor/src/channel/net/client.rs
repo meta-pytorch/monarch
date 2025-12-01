@@ -943,7 +943,19 @@ where
                                                     );
                                             (State::Closing {
                                                 deliveries: Deliveries{outbox, unacked},
-                                                reason: format!("{log_id}: {error_msg}"),
+                                                reason: error_msg,
+                                            }, Conn::reconnect_with_default())
+                                        }
+                                        NetRxResponse::Closed => {
+                                            let msg = "server closed the channel".to_string();
+                                            tracing::info!(
+                                                        dest = %link.dest(),
+                                                        session_id = session_id,
+                                                        "{}", msg
+                                                    );
+                                            (State::Closing {
+                                                deliveries: Deliveries{outbox, unacked},
+                                                reason: msg,
                                             }, Conn::reconnect_with_default())
                                         }
                                     }

@@ -89,7 +89,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
     ) -> (Next, Result<(), anyhow::Error>) {
         #[derive(Debug)]
         enum RejectConn {
-            Yes(String),
+            /// Reject the connection due to the given error.
+            EncounterError(String),
+            /// The server is being closed.
+            ServerClosing,
+            /// Do not reject the connection.
             No,
         }
 
@@ -170,7 +174,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 // Have a tick to abort select! call to make sure the ack for the last message can get the chance
                 // to be sent as a result of time interval being reached.
                 _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-                _ = cancel_token.cancelled() => break (next, Ok(()), RejectConn::No),
+                _ = cancel_token.cancelled() => break (next, Ok(()), RejectConn::ServerClosing),
                 bytes_result = self.reader.next() => {
                     rcv_raw_frame_count += 1;
                     // First handle transport-level I/O errors, and EOFs.
@@ -231,7 +235,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             break (
                                 next,
                                 Err(anyhow::anyhow!("{log_id}: unexpected init frame")),
-                                RejectConn::Yes("expect Frame::Message; got Frame::Int".to_string()),
+                                RejectConn::EncounterError("expect Frame::Message; got Frame::Int".to_string()),
                             )
                         },
                         // Ignore retransmits.
@@ -260,7 +264,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 break (
                                     next,
                                     Err(anyhow::anyhow!(format!("{log_id}: {error_msg}"))),
-                                    RejectConn::Yes(error_msg),
+                                    RejectConn::EncounterError(error_msg),
                                 )
                             }
                             match self.send_with_buffer_metric(session_id, &tx, message).await {
@@ -391,12 +395,20 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         }
 
         if self.write_state.is_idle()
-            && let RejectConn::Yes(reason) = reject_conn
+            && matches!(
+                reject_conn,
+                RejectConn::EncounterError(_) | RejectConn::ServerClosing
+            )
         {
             let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
                 panic!("illegal state");
             };
-            if let Ok(data) = serialize_response(NetRxResponse::Reject(reason)) {
+            let rsp = match reject_conn {
+                RejectConn::EncounterError(reason) => NetRxResponse::Reject(reason),
+                RejectConn::ServerClosing => NetRxResponse::Closed,
+                RejectConn::No => panic!("illegal state"),
+            };
+            if let Ok(data) = serialize_response(rsp) {
                 match FrameWrite::new(
                     writer,
                     data,

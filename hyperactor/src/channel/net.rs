@@ -106,8 +106,10 @@ enum Frame<M> {
 #[derive(Debug, Serialize, Deserialize, EnumAsInner)]
 enum NetRxResponse {
     Ack(u64),
-    /// This channel is closed with the given reason. NetTx should stop reconnecting.
+    /// This session is rejected with the given reason. NetTx should stop reconnecting.
     Reject(String),
+    /// This channel is closed.
+    Closed,
 }
 
 fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
@@ -1612,6 +1614,9 @@ mod tests {
             handle.await.unwrap().unwrap();
             // mpsc is closed too and there should be no unread message left.
             assert!(rx.recv().await.is_none());
+            // should send NetRxResponse::Closed before stopping server.
+            let bytes = reader.next().await.unwrap().unwrap();
+            assert!(deserialize_response(bytes).unwrap().is_closed());
             // No more acks from server.
             assert!(reader.next().await.unwrap().is_none());
         };
@@ -1646,6 +1651,9 @@ mod tests {
         handle.await.unwrap().unwrap();
         // mpsc is closed too and there should be no unread message left.
         assert!(rx.recv().await.is_none());
+        // should send NetRxResponse::Closed before stopping server.
+        let bytes = reader.next().await.unwrap().unwrap();
+        assert!(deserialize_response(bytes).unwrap().is_closed());
         // No more acks from server.
         assert!(reader.next().await.unwrap().is_none());
     }
@@ -2384,5 +2392,42 @@ mod tests {
         assert_eq!(acked, 1);
         let bytes = reader.next().await.unwrap().unwrap();
         assert!(deserialize_response(bytes).unwrap().is_reject());
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_stop_net_tx_after_stopping_net_rx() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let config = config::global::lock();
+        let _guard =
+            config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
+        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let socket_addr = match addr {
+            ChannelAddr::Tcp(a) => a,
+            _ => panic!("unexpected channel type"),
+        };
+        let tx = tcp::dial::<u64>(socket_addr);
+        // NetTx will not establish a connection until it sends the 1st message.
+        // Without a live connection, NetTx cannot received the Closed message
+        // from NetRx. Therefore, we need to send a message to establish the
+        //connection.
+        tx.send(100).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 100);
+        // Drop rx will close the NetRx server.
+        rx.2.stop("testing");
+        assert!(rx.recv().await.is_err());
+
+        // NetTx will only read from the stream when it needs to send a message
+        // or wait for an ack. Therefore we need to send a message to trigger that.
+        tx.post(101);
+        let mut watcher = tx.status().clone();
+        // When NetRx exits, it should notify NetTx to exit as well.
+        let _ = watcher.wait_for(|val| *val == TxStatus::Closed).await;
+        // wait_for could return Err due to race between when watch's sender was
+        // dropped and when wait_for was called. So we still need to do an
+        // equality check.
+        assert_eq!(*watcher.borrow(), TxStatus::Closed);
     }
 }
