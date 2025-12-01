@@ -108,7 +108,8 @@ enum Frame<M> {
 #[derive(Debug, Serialize, Deserialize, EnumAsInner)]
 enum NetRxResponse {
     Ack(u64),
-    Reject,
+    /// This channel is closed with the given reason. NetTx should stop reconnecting.
+    Reject(String),
 }
 
 fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
@@ -2357,7 +2358,7 @@ mod tests {
             let (_reader, writer) = take_receiver(&receiver_storage).await;
             let _ = FrameWrite::write_frame(
                 writer,
-                serialize_response(NetRxResponse::Reject).unwrap(),
+                serialize_response(NetRxResponse::Reject("testing".to_string())).unwrap(),
                 1024,
             )
             .await

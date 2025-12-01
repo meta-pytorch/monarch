@@ -28,6 +28,24 @@ mod tests {
     use crate::proc_actor::spawn;
     use crate::system_actor::ProcLifecycleMode;
 
+    // V0-specific test - no V1 equivalent (but could be valuable).
+    // Tests V0's multiprocess infrastructure (SystemActor, ProcActor,
+    // System::attach) with simulated networking (simnet). Spawns 2
+    // ProcActors, spawns PingPongActors on them, verifies cross-proc
+    // message passing through simulated network channels.
+    //
+    // V1 port considerations:
+    // - Simnet is available in hyperactor crate (not V0-specific)
+    // - V1 port would test ProcMesh/ActorMesh with simulated channels
+    // - Could validate mesh coordination, fault tolerance, network
+    //   delays
+    // - Would be a *new* test capability, not equivalent coverage
+    // - V1 already has real-process integration tests (adequate for
+    //   basic correctness)
+    // - Main value would be deterministic fault injection testing
+    //   (network partitions, message loss, etc.)
+    // - Decision: Not porting for coverage parity. Could revisit for
+    //   advanced fault scenario testing if needed.
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_sim_ping_pong() {

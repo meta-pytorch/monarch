@@ -35,7 +35,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
-inventory = "0.3.8"
+inventory = "0.3.21"
 lazy_errors = "0.10.1"
 lazy_static = "1.5"
 libc = "0.2.139"
