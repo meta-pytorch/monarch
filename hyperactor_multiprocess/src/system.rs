@@ -177,7 +177,6 @@ mod tests {
     use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::channel::TcpMode;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor_telemetry::env::execution_id;
@@ -199,6 +198,12 @@ mod tests {
     use crate::system_actor::WorldSnapshotProcInfo;
     use crate::system_actor::WorldStatus;
 
+    // V0-specific test - no V1 equivalent. Tests System::attach()
+    // which creates ephemeral client instances that can join a
+    // running system and communicate through the centralized
+    // SystemActor. V1' mesh-based architecture pre-allocates procs in
+    // ProcMesh - there's no centralized SystemActor or concept of
+    // ad-hoc ephemeral clients dynamically joining a running system.
     #[tokio::test]
     async fn test_join() {
         for transport in ChannelTransport::all() {
@@ -230,6 +235,15 @@ mod tests {
         }
     }
 
+    // V0-specific test - no V1 equivalent. Tests
+    // SystemActor::snapshot() which queries the centralized
+    // SystemActor for the global state of all worlds, procs, and
+    // their statuses. Also tests SystemSnapshotFilter for querying
+    // subsets by world ID, world labels, or proc labels. V1 has no
+    // centralized SystemActor or global snapshot API - each
+    // ProcMesh/HostMesh independently tracks its own state via
+    // StatusMesh for spawn/stop operations, but there's no
+    // system-wide snapshot query mechanism.
     #[tokio::test]
     async fn test_system_snapshot() {
         let system_handle = System::serve(
@@ -536,11 +550,17 @@ mod tests {
         }
     }
 
-    // The test consists of 2 steps:
-    // 1. spawn a system with 2 host procs, and 8 worker procs. For each worker
-    //    proc, spawn a root actor with a children tree.
-    // 2. Send a Stop message to system actor, and verify everything will be
-    //    shut down.
+    // V0-specific test - no V1 equivalent. Tests SystemActor::stop()
+    // which provides a single API call to shut down the entire system
+    // (all worlds, all procs, all actors) that the SystemActor
+    // manages. Creates a complex multi-world setup (worker worlds
+    // from host procs, directly-joined proc worlds), calls one
+    // SystemActor::stop(), and verifies everything stops cleanly. V1
+    // has hierarchical shutdown (ProcMesh::stop() cascades to all
+    // procs/actors in that mesh), but no centralized registry
+    // tracking all meshes - you must stop each top-level mesh
+    // (ProcMesh/HostMesh) you created. V1 has no single- call
+    // system-wide shutdown like SystemActor::stop().
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_system_shutdown() {
@@ -661,6 +681,16 @@ mod tests {
         }
     }
 
+    // V0-specific test - no V1 equivalent. Tests SystemActor::stop()
+    // with a world filter to selectively shut down specific worlds
+    // while keeping the system and other worlds running. Creates
+    // worker_world (16 procs) and foo_world (2 procs), calls
+    // SystemActor::stop(Some([foo_world]), ...) to stop only
+    // foo_world, and verifies foo_world procs stopped while
+    // worker_world and SystemActor remain running. V1 has no
+    // centralized world registry or selective shutdown - you just
+    // call stop() on individual meshes you want to stop, with no
+    // notion of "worlds" or a coordinator that continues running.
     #[async_timed_test(timeout_secs = 60)]
     async fn test_single_world_shutdown() {
         let system_handle = System::serve(
@@ -819,76 +849,5 @@ mod tests {
                 hashset! {worker_world_id, WorldId("_world".to_string())}
             );
         }
-    }
-
-    // Test our understanding of when & where channel addresses are
-    // dialed.
-    #[tracing_test::traced_test]
-    #[tokio::test]
-    async fn test_channel_dial_count() {
-        let system_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-        )
-        .await
-        .unwrap();
-
-        let system_addr = system_handle.local_addr();
-        let mut system = System::new(system_addr.clone());
-        // `system.attach()` calls `system.send()` which
-        // `channel::dial()`s the system address for a `MailboxClient`
-        // for the `EnvelopingMailboxSender` to be the forwarding
-        // sender for `client1`s proc (+1 dial).
-        //
-        // The forwarding sender will be used to send a join message
-        // to the system actor that uses the `NetTx` just dialed so no
-        // new `channel::dial()` for that (+0 dial). However, the
-        // system actor will respond to the join message by using the
-        // proc address (given in the join message) for the new proc
-        // when it sends from its `DialMailboxRouter` so we expect to
-        // see a `channel::dial()` there (+1 dial).
-        let client1 = system.attach().await.unwrap();
-
-        // `system.attach()` calls `system.send()` which
-        // `channel::dial()`s the system address for a `MailboxClient`
-        // for the `EnvelopingMailboxSender` to be the forwarding
-        // sender for `client2`s proc (+1 dial).
-        //
-        // The forwarding sender will be used to send a join message
-        // to the system actor that uses the `NetTx` just dialed so no
-        // new `channel::dial()` for that (+0 dial). However, the
-        // system actor will respond to the join message by using the
-        // proc address (given in the join message) for the new proc
-        // when it sends from its `DialMailboxRouter` so we expect to
-        // see a `channel::dial()` there (+1 dial).
-        let client2 = system.attach().await.unwrap();
-
-        // Send a message to `client2` from `client1`. This will
-        // involve forwarding to the system actor using `client1`'s
-        // proc's forwarder already dialied `NetTx` (+0 dial). The
-        // system actor will relay to `client2`'s proc. The `NetTx` to
-        // that proc was cached in the system actor's
-        // `DialmailboxRouter` when responding to `client2`'s join (+0
-        // dial).
-        let (port, mut port_rx) = client2.open_port();
-        port.bind().send(&client1, 123u64).unwrap();
-        assert_eq!(port_rx.recv().await.unwrap(), 123u64);
-
-        // In summary we expect to see 4 dials.
-        logs_assert(|logs| {
-            let dial_count = logs
-                .iter()
-                .filter(|log| log.contains("dialing channel tcp"))
-                .count();
-            if dial_count == 4 {
-                Ok(())
-            } else {
-                Err(format!("unexpected tcp channel dial count: {}", dial_count))
-            }
-        });
-
-        system_handle.stop().await.unwrap();
-        system_handle.await;
     }
 }

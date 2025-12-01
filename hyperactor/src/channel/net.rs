@@ -108,7 +108,8 @@ enum Frame<M> {
 #[derive(Debug, Serialize, Deserialize, EnumAsInner)]
 enum NetRxResponse {
     Ack(u64),
-    Reject,
+    /// This channel is closed with the given reason. NetTx should stop reconnecting.
+    Reject(String),
 }
 
 fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
@@ -1086,11 +1087,12 @@ mod tests {
         assert!(rx.await.is_err());
     }
 
-    #[tracing_test::traced_test]
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 60)]
     // TODO: OSS: failed to retrieve ipv6 address
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_meta_tls_basic() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
         let addr = ChannelAddr::any(ChannelTransport::MetaTls(TlsMode::IpV6));
         let meta_addr = match addr {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,
@@ -2356,7 +2358,7 @@ mod tests {
             let (_reader, writer) = take_receiver(&receiver_storage).await;
             let _ = FrameWrite::write_frame(
                 writer,
-                serialize_response(NetRxResponse::Reject).unwrap(),
+                serialize_response(NetRxResponse::Reject("testing".to_string())).unwrap(),
                 1024,
             )
             .await
