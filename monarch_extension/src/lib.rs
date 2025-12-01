@@ -122,6 +122,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
             module,
             "monarch_extension.mesh_controller",
         )?)?;
+    }
+
+    #[cfg(feature = "rdma")]
+    {
         monarch_rdma_extension::register_python_bindings(&get_or_add_new_module(module, "rdma")?)?;
     }
     simulation_tools::register_python_bindings(&get_or_add_new_module(

@@ -43,5 +43,5 @@ jobs:
 
         export CUDA_LIB_DIR=/usr/lib64
 
-        # Build monarch (CUDA version)
-        python setup.py bdist_wheel
+        # Build monarch (CUDA version with all features)
+        MONARCH_FEATURES=full python setup.py bdist_wheel -v

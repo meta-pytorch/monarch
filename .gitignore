@@ -9,7 +9,7 @@ python/monarch.egg-info/*
 *.egg
 build/*
 dist/*
-monarch.egg-info/*
+torchmonarch.egg-info/*
 
 .ipynb_checkpoints
 .monarch
