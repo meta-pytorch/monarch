@@ -332,7 +332,8 @@ class ProcMesh(MeshTrait):
 
         if not _has_tensor_engine():
             raise RuntimeError(
-                "DeviceMesh is not available because tensor_engine was not compiled (USE_TENSOR_ENGINE=0)"
+                "DeviceMesh is not available because tensor_engine was not compiled.\n"
+                "Build with: MONARCH_FEATURES=tensor_engine pip install ."
             )
 
         # type: ignore[21]

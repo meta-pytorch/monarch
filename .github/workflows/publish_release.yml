@@ -50,7 +50,7 @@ jobs:
         export MONARCH_PACKAGE_NAME="torchmonarch"
         export CUDA_LIB_DIR=/usr/lib64
         export MONARCH_VERSION="${{ github.event.inputs.version }}"
-        python setup.py bdist_wheel
+        MONARCH_FEATURES=full python setup.py bdist_wheel -v
 
         # hacky until the right distribution wheel can be made...
         find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;

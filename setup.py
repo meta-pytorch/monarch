@@ -25,61 +25,92 @@ from torch.utils.cpp_extension import (
 )
 
 USE_CUDA = CUDA_HOME is not None
-USE_TENSOR_ENGINE = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
-
-monarch_cpp_src = ["python/monarch/common/init.cpp"]
-
-if USE_CUDA:
-    monarch_cpp_src.append("python/monarch/common/mock_cuda.cpp")
-
-common_C = CppExtension(
-    "monarch.common._C",
-    monarch_cpp_src,
-    extra_compile_args=["-g", "-O3"],
-    libraries=["dl"],
-    include_dirs=[
-        os.path.dirname(os.path.abspath(__file__)),
-        sysconfig.get_config_var("INCLUDEDIR"),
-    ],
-)
 
 
-controller_C = CppExtension(
-    "monarch.gradient._gradient_generator",
-    ["python/monarch/gradient/_gradient_generator.cpp"],
-    extra_compile_args=["-g", "-O3"],
-    include_dirs=[
-        os.path.dirname(os.path.abspath(__file__)),
-        sysconfig.get_config_var("INCLUDEDIR"),
-    ],
-)
+# Feature detection for building torchmonarch-* variants.
+def get_rust_features():
+    """
+    Determine which Rust features to build.
 
-ENABLE_MSG_LOGGING = (
-    "--cfg=enable_hyperactor_message_logging"
-    if os.environ.get("ENABLE_MESSAGE_LOGGING")
-    else ""
-)
+    Environment variable:
+    - MONARCH_FEATURES: "core", "tensor_engine", "rdma", "full" (comma-separated)
+    - Default: "full" (all features)
 
-ENABLE_TRACING_UNSTABLE = "--cfg=tracing_unstable"
+    Returns:
+        list: features to enable
+    """
+    features_str = os.environ.get("MONARCH_FEATURES", "").strip()
 
-os.environ.update(
-    {
+    if features_str:
+        return [f.strip() for f in features_str.split(",") if f.strip()]
+    else:
+        # Use the full build by default.
+        return ["full"]
+
+
+# Get features for this build
+RUST_FEATURES = get_rust_features()
+
+
+def has_feature(feature):
+    """
+    Check if a feature is enabled.
+
+    Args:
+        feature: Feature name to check (e.g., "rdma", "tensor_engine", "core")
+
+    Returns:
+        bool: True if the feature is explicitly listed or "full" is enabled
+    """
+    return feature in RUST_FEATURES or "full" in RUST_FEATURES
+
+
+# Print build configuration
+package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
+package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
+print(f"Building {package_name} v{package_version} with features: {RUST_FEATURES}")
+
+
+def setup_build_environment():
+    """
+    Configure environment variables for Rust and C++ builds.
+
+    Sets up compiler flags, PyTorch library paths, and feature-specific configuration.
+    """
+    enable_msg_logging = (
+        "--cfg=enable_hyperactor_message_logging"
+        if os.environ.get("ENABLE_MESSAGE_LOGGING")
+        else ""
+    )
+    enable_tracing_unstable = "--cfg=tracing_unstable"
+
+    # RDMA requires PyTorch CUDA libraries (torch_cuda, c10_cuda) for GPUDirect support
+    # So we only enable TORCH_SYS_USE_PYTORCH_APIS when building with RDMA
+    use_pytorch_apis = "1" if has_feature("rdma") else "0"
+
+    env_updates = {
         "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}",
         "RUSTFLAGS": " ".join(
-            ["-Zthreads=16", ENABLE_MSG_LOGGING, ENABLE_TRACING_UNSTABLE]
+            ["-Zthreads=16", enable_msg_logging, enable_tracing_unstable]
         ),
         "LIBTORCH_LIB": TORCH_LIB_PATH,
         "LIBTORCH_INCLUDE": ":".join(torch_include_paths()),
         "_GLIBCXX_USE_CXX11_ABI": str(int(torch._C._GLIBCXX_USE_CXX11_ABI)),
-        "TORCH_SYS_USE_PYTORCH_APIS": "0",
+        "TORCH_SYS_USE_PYTORCH_APIS": use_pytorch_apis,
     }
-)
-if USE_CUDA:
-    os.environ.update(
-        {
-            "CUDA_HOME": CUDA_HOME,
-        }
-    )
+
+    if USE_CUDA:
+        env_updates["CUDA_HOME"] = CUDA_HOME
+
+    print("Setting environment variables:")
+    for k, v in env_updates.items():
+        print(f"  {k}={v}")
+
+    os.environ.update(env_updates)
+
+
+# Setup build environment
+setup_build_environment()
 
 
 class Clean(Command):
@@ -181,19 +212,60 @@ if not SKIP_LEGACY_BUILDS:
     )
 
 # Main extension (always built)
-rust_extensions.append(
-    RustExtension(
-        "monarch._rust_bindings",
-        binding=Binding.PyO3,
-        path="monarch_extension/Cargo.toml",
-        debug=False,
-        features=["tensor_engine"] if USE_TENSOR_ENGINE else [],
-        args=[] if USE_TENSOR_ENGINE else ["--no-default-features"],
-    )
+rust_ext = RustExtension(
+    "monarch._rust_bindings",
+    binding=Binding.PyO3,
+    path="monarch_extension/Cargo.toml",
+    debug=False,
+    features=RUST_FEATURES,
+    args=["--no-default-features"],
 )
 
-package_name = os.environ.get("MONARCH_PACKAGE_NAME", "monarch")
-package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
+print(f"   Rust extension features: {RUST_FEATURES}")
+print(f"   Rust extension args: {rust_ext.args}")
+
+rust_extensions.append(rust_ext)
+
+# Build C++ extensions conditionally based on features
+cpp_ext_modules = []
+
+# common_C is always needed
+monarch_cpp_src = ["python/monarch/common/init.cpp"]
+if USE_CUDA:
+    monarch_cpp_src.append("python/monarch/common/mock_cuda.cpp")
+
+cpp_ext_modules.append(
+    CppExtension(
+        "monarch.common._C",
+        monarch_cpp_src,
+        extra_compile_args=["-g", "-O3"],
+        libraries=["dl"],
+        include_dirs=[
+            os.path.dirname(os.path.abspath(__file__)),
+            sysconfig.get_config_var("INCLUDEDIR"),
+        ],
+    )
+)
+print("   Building common._C C++ extension")
+
+# Only build gradient_generator if tensor_engine is enabled
+if has_feature("tensor_engine"):
+    cpp_ext_modules.append(
+        CppExtension(
+            "monarch.gradient._gradient_generator",
+            ["python/monarch/gradient/_gradient_generator.cpp"],
+            extra_compile_args=["-g", "-O3"],
+            include_dirs=[
+                os.path.dirname(os.path.abspath(__file__)),
+                sysconfig.get_config_var("INCLUDEDIR"),
+            ],
+        )
+    )
+    print("   Building gradient_generator C++ extension")
+else:
+    print("   Skipping gradient_generator C++ extension (tensor_engine not enabled)")
+
+print(f"   C++ extensions: {[ext.name for ext in cpp_ext_modules]}")
 
 setup(
     name=package_name,
@@ -217,10 +289,7 @@ setup(
     description="Monarch: Single controller library",
     long_description=readme,
     long_description_content_type="text/markdown",
-    ext_modules=[
-        controller_C,
-        common_C,
-    ],
+    ext_modules=cpp_ext_modules,
     entry_points={
         "console_scripts": [
             "monarch=monarch.tools.cli:main",

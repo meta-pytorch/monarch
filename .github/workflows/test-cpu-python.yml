@@ -28,9 +28,6 @@ jobs:
         # Setup test environment
         setup_conda_environment
 
-        # Disable tensor engine
-        export USE_TENSOR_ENGINE=0
-
         # Install PyTorch nightly
         pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
 
