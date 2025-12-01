@@ -635,39 +635,43 @@ async fn run<M: RemoteMessage>(
         _ => (),
     }
 
-    // Notify senders that this link is no longer usable
-    if let Err(err) = notify.send(TxStatus::Closed) {
-        tracing::debug!(
-            dest = %dest,
-            error = %err,
-            session_id = session_id,
-            "tx status update error"
-        );
-    }
+    // Notify senders that this link is no longer usable. It is okay if the notify
+    // channel is closed because that means no one is listening for the notification.
+    let _ = notify.send(TxStatus::Closed);
 
-    if let Conn::Connected {
-        write_state: WriteState::Writing(mut frame_writer, ()),
-        ..
-    } = conn
-    {
-        if let Err(err) = frame_writer.send().await {
-            tracing::info!(
-                parent: &span,
-                dest = %dest,
-                error = %err,
-                session_id = session_id,
-                "write error during cleanup"
-            );
-        } else if let Err(err) = frame_writer.complete().flush().await {
-            tracing::info!(
-                parent: &span,
-                dest = %dest,
-                error = %err,
-                session_id = session_id,
-                "flush error during cleanup"
-            );
+    match conn {
+        Conn::Connected { write_state, .. } => {
+            let write_half = match write_state {
+                WriteState::Writing(mut frame_writer, ()) => {
+                    if let Err(err) = frame_writer.send().await {
+                        tracing::info!(
+                            parent: &span,
+                            dest = %dest,
+                            error = %err,
+                            session_id = session_id,
+                            "write error during cleanup"
+                        );
+                    }
+                    Some(frame_writer.complete())
+                }
+                WriteState::Idle(writer) => Some(writer),
+                WriteState::Broken => None,
+            };
+
+            if let Some(mut w) = write_half {
+                if let Err(err) = w.shutdown().await {
+                    tracing::info!(
+                        parent: &span,
+                        dest = %dest,
+                        error = %err,
+                        session_id = session_id,
+                        "failed to shutdown NetTx write stream during cleanup"
+                    );
+                }
+            }
         }
-    }
+        Conn::Disconnected(_) => (),
+    };
 
     tracing::info!(
         parent: &span,
@@ -940,8 +944,8 @@ where
                                             unacked.prune(ack, RealClock.now(), &link.dest(), session_id);
                                             (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                         }
-                                        NetRxResponse::Reject => {
-                                            let error_msg = "server rejected connection";
+                                        NetRxResponse::Reject(reason) => {
+                                            let error_msg = format!("server rejected connection due to: {reason}");
                                             tracing::error!(
                                                         dest = %link.dest(),
                                                         session_id = session_id,
