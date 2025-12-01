@@ -232,7 +232,7 @@ impl Waiter {
 
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
-    hyperactor_telemetry::initialize_logging_for_test();
+    hyperactor::initialize_with_current_runtime();
 
     // Option: run as a local process mesh
     // let host_mesh = HostMesh::process(extent!(hosts = 1), BootstrapCommand::current().unwrap())

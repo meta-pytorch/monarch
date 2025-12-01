@@ -53,6 +53,21 @@ const ENV_VALUE_TEST: &str = "test";
 #[allow(dead_code)]
 const ENV_VALUE_LOCAL_MAST_SIMULATOR: &str = "local_mast_simulator";
 
+/// A marker field used to indicate that a span should not be recorded as
+/// individual start/end span events; rather the span is purely used to
+/// provide context for child events.
+///
+/// Note that the mechanism for skipping span recording uses the precise
+/// name "skip_record", thus it must be used as a naked identifier:
+/// ```ignore
+/// use hyperactor_telemetry::skip_record;
+///
+/// tracing::span!(..., skip_record);
+/// ```
+#[allow(non_upper_case_globals)]
+// pub const skip_record: tracing::field::Empty = tracing::field::Empty;
+pub const skip_record: bool = true;
+
 pub mod in_memory_reader;
 #[cfg(fbcode_build)]
 mod meta;
