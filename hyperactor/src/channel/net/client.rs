@@ -635,15 +635,9 @@ async fn run<M: RemoteMessage>(
         _ => (),
     }
 
-    // Notify senders that this link is no longer usable
-    if let Err(err) = notify.send(TxStatus::Closed) {
-        tracing::debug!(
-            dest = %dest,
-            error = %err,
-            session_id = session_id,
-            "tx status update error"
-        );
-    }
+    // Notify senders that this link is no longer usable. It is okay if the notify
+    // channel is closed because that means no one is listening for the notification.
+    let _ = notify.send(TxStatus::Closed);
 
     match conn {
         Conn::Connected { write_state, .. } => {
@@ -947,8 +941,8 @@ where
                                             unacked.prune(ack, RealClock.now(), &link.dest(), session_id);
                                             (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                         }
-                                        NetRxResponse::Reject => {
-                                            let error_msg = "server rejected connection";
+                                        NetRxResponse::Reject(reason) => {
+                                            let error_msg = format!("server rejected connection due to: {reason}");
                                             tracing::error!(
                                                         dest = %link.dest(),
                                                         session_id = session_id,

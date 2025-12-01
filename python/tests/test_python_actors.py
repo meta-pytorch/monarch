@@ -35,10 +35,10 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.config import (
-    clear_runtime_configuration,
+    clear_runtime_config,
     configure,
-    get_configuration,
-    get_runtime_configuration,
+    get_global_config,
+    get_runtime_config,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
@@ -463,17 +463,36 @@ class Printer(Actor):
 
 @contextlib.contextmanager
 def configured(**overrides) -> Iterator[Dict[str, Any]]:
+    """Temporarily apply Python-side config overrides for this
+    process.
+
+    This context manager:
+      * snapshots the current **Runtime** configuration layer
+        (`get_runtime_config()`),
+      * applies the given `overrides` via `configure(**overrides)`,
+        and
+      * yields the **merged** view of config (`get_global_config()`),
+        including defaults, env, file, and Runtime.
+
+    On exit it restores the previous Runtime layer by:
+      * clearing all Runtime entries, and
+      * re-applying the saved snapshot.
+
+    This is intended for tests, so per-test overrides do not leak into
+    other tests.
+
+    """
     # Retrieve runtime
-    prev = get_runtime_configuration()
+    prev = get_runtime_config()
     try:
         # Merge overrides into runtime
         configure(**overrides)
 
-        # Snapshot of merged config (global - all layers)
-        yield get_configuration()
+        # Snapshot of merged config (all layers)
+        yield get_global_config()
     finally:
         # Restore previous runtime
-        clear_runtime_configuration()
+        clear_runtime_config()
         configure(**prev)
 
 

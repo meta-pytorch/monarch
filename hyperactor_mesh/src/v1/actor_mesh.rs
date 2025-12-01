@@ -469,6 +469,7 @@ mod tests {
     use crate::v1::ActorMeshRef;
     use crate::v1::Name;
     use crate::v1::ProcMesh;
+    use crate::v1::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
     use crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
     use crate::v1::testactor;
     use crate::v1::testing;
@@ -822,5 +823,213 @@ mod tests {
         }
 
         let _ = host_mesh.shutdown(&instance).await;
+    }
+
+    /// Test that undeliverable messages are properly returned to the
+    /// sender when communication to a proc is broken.
+    ///
+    /// This is the V1 version of the test from
+    /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_undeliverable_message_return() {
+        use hyperactor::mailbox::MessageEnvelope;
+        use hyperactor::mailbox::Undeliverable;
+        use hyperactor::test_utils::pingpong::PingPongActor;
+        use hyperactor::test_utils::pingpong::PingPongActorParams;
+        use hyperactor::test_utils::pingpong::PingPongMessage;
+
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        // Set message delivery timeout for faster test
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+            std::time::Duration::from_secs(1),
+        );
+
+        let instance = testing::instance().await;
+
+        // Create a proc mesh with 2 replicas.
+        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+        let proc_mesh = &meshes[1]; // Use the ProcessAllocator version
+
+        // Set up undeliverable message port for collecting undeliverables
+        let (undeliverable_port, mut undeliverable_rx) =
+            instance.open_port::<Undeliverable<MessageEnvelope>>();
+
+        // Spawn PingPongActors across both replicas.
+        // Only actors on replica 0 will forward undeliverable messages.
+        let ping_params = PingPongActorParams::new(Some(undeliverable_port.bind()), None);
+        let pong_params = PingPongActorParams::new(None, None);
+
+        // Spawn actors individually on each replica by spawning separate actor meshes
+        // with specific proc selections.
+        let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
+        let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
+
+        let ping_mesh = ping_proc_mesh
+            .spawn::<PingPongActor>(instance, "ping", &ping_params)
+            .await
+            .unwrap();
+
+        let pong_mesh = pong_proc_mesh
+            .spawn::<PingPongActor>(instance, "pong", &pong_params)
+            .await
+            .unwrap();
+
+        // Get individual actor refs
+        let ping_handle = ping_mesh.values().next().unwrap();
+        let pong_handle = pong_mesh.values().next().unwrap();
+
+        // Verify ping-pong works initially
+        let (done_tx, done_rx) = instance.open_once_port();
+        ping_handle
+            .send(
+                instance,
+                PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
+            )
+            .unwrap();
+        assert!(
+            done_rx.recv().await.unwrap(),
+            "Initial ping-pong should work"
+        );
+
+        // Now stop the pong actor mesh to break communication
+        pong_mesh.stop(instance).await.unwrap();
+
+        // Give it a moment to fully stop
+        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+
+        // Send multiple messages that will all fail to be delivered
+        let n = 100usize;
+        for i in 1..=n {
+            let ttl = 66 + i as u64; // Avoid ttl = 66 (which would cause other test behavior)
+            let (once_tx, _once_rx) = instance.open_once_port();
+            ping_handle
+                .send(
+                    instance,
+                    PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
+                )
+                .unwrap();
+        }
+
+        // Collect all undeliverable messages.
+        // The fact that we successfully collect them proves the ping actor
+        // is still running and handling undeliverables correctly (not crashing).
+        let mut count = 0;
+        let deadline = RealClock.now() + std::time::Duration::from_secs(5);
+        while count < n && RealClock.now() < deadline {
+            match RealClock
+                .timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
+                .await
+            {
+                Ok(Ok(Undeliverable(envelope))) => {
+                    let _: PingPongMessage = envelope.deserialized().unwrap();
+                    count += 1;
+                }
+                Ok(Err(_)) => break, // Channel closed
+                Err(_) => break,     // Timeout
+            }
+        }
+
+        assert_eq!(
+            count, n,
+            "Expected {} undeliverable messages, got {}",
+            n, count
+        );
+    }
+
+    /// Test that actors not responding within stop timeout are
+    /// forcibly aborted. This is the V1 equivalent of
+    /// hyperactor_multiprocess/src/proc_actor.rs::test_stop_timeout.
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_actor_mesh_stop_timeout() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        // Override ACTOR_SPAWN_MAX_IDLE to make test fast and
+        // deterministic. ACTOR_SPAWN_MAX_IDLE is the maximum idle
+        // time between status updates during mesh operations
+        // (spawn/stop). When stop() is called, it waits for actors to
+        // report they've stopped. If actors don't respond within this
+        // timeout, they're forcibly aborted via JoinHandle::abort().
+        // We set this to 1 second (instead of default 30s) so hung
+        // actors (sleeping 5s in this test) get aborted quickly,
+        // making the test fast.
+        let config = hyperactor::config::global::lock();
+        let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
+
+        let instance = testing::instance().await;
+
+        // Create proc mesh with 2 replicas
+        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+        let proc_mesh = &meshes[1]; // Use ProcessAllocator version
+
+        // Spawn SleepActors across the mesh that will block longer
+        // than timeout
+        let sleep_mesh = proc_mesh
+            .spawn::<testactor::SleepActor>(instance, "sleepers", &())
+            .await
+            .unwrap();
+
+        // Send each actor a message to sleep for 5 seconds (longer
+        // than 1-second timeout)
+        for actor_ref in sleep_mesh.values() {
+            actor_ref
+                .send(instance, std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+
+        // Give actors time to start sleeping
+        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+
+        // Count how many actors we spawned (for verification later)
+        let expected_actors = sleep_mesh.values().count();
+
+        // Now stop the mesh - actors won't respond in time, should be
+        // aborted. Time this operation to verify abort behavior.
+        let stop_start = RealClock.now();
+        let result = sleep_mesh.stop(instance).await;
+        let stop_duration = RealClock.now().duration_since(stop_start);
+
+        // Stop will return an error because actors didn't stop within
+        // the timeout. This is expected - the actors were forcibly
+        // aborted, and V1 reports this as an error.
+        match result {
+            Ok(_) => {
+                // It's possible actors stopped in time, but unlikely
+                // given 5-second sleep vs 1-second timeout
+                tracing::warn!("Actors stopped gracefully (unexpected but ok)");
+            }
+            Err(ref e) => {
+                // Expected: timeout error indicating actors were aborted
+                let err_str = format!("{:?}", e);
+                assert!(
+                    err_str.contains("Timeout"),
+                    "Expected Timeout error, got: {:?}",
+                    e
+                );
+                tracing::info!(
+                    "Stop timed out as expected for {} actors, they were aborted",
+                    expected_actors
+                );
+            }
+        }
+
+        // Verify that stop completed quickly (~1-2 seconds for
+        // timeout + abort) rather than waiting the full 5 seconds for
+        // actors to finish sleeping. This proves actors were aborted,
+        // not waited for.
+        assert!(
+            stop_duration < std::time::Duration::from_secs(3),
+            "Stop took {:?}, expected < 3s (actors should have been aborted, not waited for)",
+            stop_duration
+        );
+        assert!(
+            stop_duration >= std::time::Duration::from_millis(900),
+            "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
+            stop_duration
+        );
     }
 }
