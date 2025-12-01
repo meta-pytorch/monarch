@@ -58,7 +58,7 @@ humantime = "2.1"
 hyperactor_macros = { version = "0.0.0", path = "../hyperactor_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 indenter = "0.3.3"
-inventory = "0.3.8"
+inventory = "0.3.21"
 lazy_static = "1.5"
 local-ip-address = "0.5.3"
 ndslice = { version = "0.0.0", path = "../ndslice" }
@@ -67,7 +67,7 @@ opentelemetry = "0.29"
 paste = "1.0.14"
 rand = { version = "0.8", features = ["small_rng"] }
 rand_distr = "0.4"
-regex = "1.11.1"
+regex = "1.12.2"
 rustls-pemfile = "1.0.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }

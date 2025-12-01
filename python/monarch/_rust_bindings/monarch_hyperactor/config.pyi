@@ -38,8 +38,46 @@ def configure(
     tail_log_lines: int = ...,
     **kwargs: object,
 ) -> None:
-    """Change a configuration value in the global configuration. If called with
-    no arguments, makes no changes. Does not reset any configuration"""
+    """Configure Hyperactor runtime defaults for this process.
+
+    This updates the **runtime** configuration layer from Python,
+    setting the default channel transport and optional logging
+    behaviour (forwarding, file capture, and how many lines to tail),
+    plus any additional CONFIG-marked keys passed via **kwargs.
+
+    Historically this API is named ``configure(...)``; conceptually it
+    acts as "set runtime config for this process".
+    """
     ...
 
-def get_configuration() -> Dict[str, Any]: ...
+def get_global_config() -> Dict[str, Any]:
+    """Return a snapshot of the current Hyperactor configuration.
+
+    The result is a plain dictionary view of the merged configuration
+    (defaults plus any overrides from environment or Python), useful
+    for debugging and tests.
+    """
+    ...
+
+def get_runtime_config() -> Dict[str, Any]:
+    """Return a snapshot of the Runtime layer configuration.
+
+    The Runtime layer contains only configuration values set from
+    Python via configure(). This returns only those Python-exposed
+    keys currently in the Runtime layer (not merged across all layers
+    like `get_global_config()`).
+
+    This can be used to snapshot/restore Runtime state.
+    """
+    ...
+
+def clear_runtime_config() -> None:
+    """Clear all Runtime layer configuration overrides.
+
+    Safely removes all entries from the Runtime config layer. Since
+    the Runtime layer is exclusively populated via Python's
+    `configure()`, this will not affect configuration from environment
+    variables, config files, or built-in defaults.
+    """
+
+    ...
