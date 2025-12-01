@@ -640,34 +640,24 @@ async fn run<M: RemoteMessage>(
     let _ = notify.send(TxStatus::Closed);
 
     match conn {
-        Conn::Connected { write_state, .. } => {
-            let write_half = match write_state {
-                WriteState::Writing(mut frame_writer, ()) => {
-                    if let Err(err) = frame_writer.send().await {
-                        tracing::info!(
-                            parent: &span,
-                            dest = %dest,
-                            error = %err,
-                            session_id = session_id,
-                            "write error during cleanup"
-                        );
-                    }
-                    Some(frame_writer.complete())
-                }
-                WriteState::Idle(writer) => Some(writer),
-                WriteState::Broken => None,
-            };
-
-            if let Some(mut w) = write_half {
-                if let Err(err) = w.shutdown().await {
+        Conn::Connected {
+            mut write_state, ..
+        } => {
+            if let WriteState::Writing(frame_writer, ()) = &mut write_state {
+                if let Err(err) = frame_writer.send().await {
                     tracing::info!(
                         parent: &span,
                         dest = %dest,
                         error = %err,
                         session_id = session_id,
-                        "failed to shutdown NetTx write stream during cleanup"
+                        "write error during cleanup"
                     );
                 }
+            };
+            if let Some(mut w) = write_state.into_writer() {
+                // Try to shutdown the connection gracefully. This is a best effort
+                // operation, and we don't care if it fails.
+                let _ = w.shutdown().await;
             }
         }
         Conn::Disconnected(_) => (),
