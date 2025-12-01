@@ -1107,12 +1107,12 @@ mod tests {
         reset_to_defaults();
 
         let mut env = Attrs::new();
-        env[CHANNEL_MULTIPART] = false;
+        env[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_secs(120);
         set(Source::Env, env);
 
-        assert!(!get(CHANNEL_MULTIPART));
-        let v = get_cloned(CHANNEL_MULTIPART);
-        assert!(!v);
+        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(120));
+        let v = get_cloned(MESSAGE_DELIVERY_TIMEOUT);
+        assert_eq!(v, Duration::from_secs(120));
     }
 
     #[test]

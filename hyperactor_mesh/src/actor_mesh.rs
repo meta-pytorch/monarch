@@ -1526,7 +1526,7 @@ mod tests {
                 hyperactor::mailbox::headers::set_rust_message_type::<Payload>(&mut headers);
                 let envelope = MessageEnvelope::new(src.clone(), dst.clone(), serialized, headers);
                 let frame = Frame::Message(0u64, envelope);
-                let message = serde_multipart::serialize_illegal_bincode(&frame).unwrap();
+                let message = serde_multipart::serialize_bincode(&frame).unwrap();
                 message.frame_len()
             }
 
@@ -1542,7 +1542,6 @@ mod tests {
             };
             let _guard3 =
                 config.override_key(hyperactor::config::DEFAULT_ENCODING, Encoding::Bincode);
-            let _guard4 = config.override_key(hyperactor::config::CHANNEL_MULTIPART, false);
 
             let alloc = process_allocator()
                 .allocate(AllocSpec {

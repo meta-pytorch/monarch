@@ -43,7 +43,6 @@ use crate::channel::net::NetRxResponse;
 use crate::channel::net::NetTx;
 use crate::channel::net::Stream;
 use crate::channel::net::deserialize_response;
-use crate::channel::net::serialize_bincode;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
@@ -265,7 +264,8 @@ impl<'a, M: RemoteMessage> Outbox<'a, M> {
         );
 
         let frame = Frame::Message(self.next_seq, message);
-        let message = serialize_bincode(&frame).map_err(|e| format!("serialization error: {e}"))?;
+        let message = serde_multipart::serialize_bincode(&frame)
+            .map_err(|e| format!("serialization error: {e}"))?;
         let message_size = message.frame_len();
         metrics::REMOTE_MESSAGE_SEND_SIZE.record(message_size as f64, &[]);
 
@@ -1128,7 +1128,9 @@ where
             } else {
                 match link.connect().await {
                     Ok(stream) => {
-                        let message = serialize_bincode(&Frame::<M>::Init(session_id)).unwrap();
+                        let message =
+                            serde_multipart::serialize_bincode(&Frame::<M>::Init(session_id))
+                                .unwrap();
 
                         let mut write = FrameWrite::new(
                             stream,

@@ -64,8 +64,6 @@ use super::*;
 use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
-use crate::config;
-use crate::config::CHANNEL_MULTIPART;
 
 mod client;
 mod framed;
@@ -118,18 +116,6 @@ fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> 
 
 fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
     bincode::deserialize(&data)
-}
-
-/// Serializes using the "illegal" multipart encoding whenever multipart
-/// is not enabled.
-fn serialize_bincode<S: ?Sized + serde::Serialize>(
-    value: &S,
-) -> Result<serde_multipart::Message, bincode::Error> {
-    if config::global::get(CHANNEL_MULTIPART) {
-        serde_multipart::serialize_bincode(value)
-    } else {
-        serde_multipart::serialize_illegal_bincode(value)
-    }
 }
 
 /// A Tx implemented on top of a Link. The Tx manages the link state,
@@ -914,6 +900,7 @@ mod tests {
     use crate::channel::net::framed::FrameWrite;
     use crate::channel::net::server::ServerConn;
     use crate::channel::net::server::SessionManager;
+    use crate::config;
     use crate::metrics;
     use crate::sync::mvar::MVar;
 
