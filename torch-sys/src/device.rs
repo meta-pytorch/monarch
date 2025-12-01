@@ -305,7 +305,7 @@ impl TryFrom<&str> for Device {
             .captures(val)
             .ok_or_else(|| DeviceParseError::ParserFailure(val.to_string()))?;
 
-        if captures.get(0).unwrap().len() != val.len() {
+        if captures.get_match().len() != val.len() {
             return Err(DeviceParseError::ParserFailure(val.to_string()));
         }
 

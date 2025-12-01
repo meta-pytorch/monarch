@@ -86,6 +86,12 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         cancel_token: CancellationToken,
         mut next: Next,
     ) -> (Next, Result<(), anyhow::Error>) {
+        #[derive(Debug)]
+        enum RejectConn {
+            Yes(String),
+            No,
+        }
+
         let log_id = format!("session {}.{}<-{}", self.dest, session_id, self.source);
         let initial_next: Next = next.clone();
         let mut rcv_raw_frame_count = 0u64;
@@ -110,7 +116,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             next,
                             Err::<(), anyhow::Error>(err.into())
                                 .context(format!("{log_id}: serializing ack")),
-                            false,
+                            RejectConn::No,
                         );
                     }
                 };
@@ -155,7 +161,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 next,
                                 Err::<(), anyhow::Error>(err.into())
                                     .context(format!("{log_id}: acking peer message: {v:?}")),
-                                false
+                                RejectConn::No,
                             );
                         }
                     }
@@ -163,7 +169,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 // Have a tick to abort select! call to make sure the ack for the last message can get the chance
                 // to be sent as a result of time interval being reached.
                 _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-                _ = cancel_token.cancelled() => break (next, Ok(()), false),
+                _ = cancel_token.cancelled() => break (next, Ok(()), RejectConn::No),
                 bytes_result = self.reader.next() => {
                     rcv_raw_frame_count += 1;
                     // First handle transport-level I/O errors, and EOFs.
@@ -175,7 +181,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 dest = %self.dest,
                                 "received EOF from client"
                             );
-                            break (next, Ok(()), false);
+                            break (next, Ok(()), RejectConn::No);
                         }
                         Err(err) => break (
                             next,
@@ -185,7 +191,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     type_name::<M>(),
                                 )
                             ),
-                            false
+                            RejectConn::No,
                         ),
                     };
 
@@ -212,7 +218,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     type_name::<M>(),
                                 )
                             ),
-                            false
+                            RejectConn::No,
                         )
                     },
                     };
@@ -221,7 +227,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     // from its constituent parts.
                     match serde_multipart::deserialize_bincode(message) {
                         Ok(Frame::Init(_)) => {
-                            break (next, Err(anyhow::anyhow!("{log_id}: unexpected init frame")), true)
+                            break (
+                                next,
+                                Err(anyhow::anyhow!("{log_id}: unexpected init frame")),
+                                RejectConn::Yes("expect Frame::Message; got Frame::Int".to_string()),
+                            )
                         },
                         // Ignore retransmits.
                         Ok(Frame::Message(seq, _)) if seq < next.seq => {
@@ -246,7 +256,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     seq = seq,
                                     "{}", error_msg
                                 );
-                                break (next, Err(anyhow::anyhow!(format!("{log_id}: {error_msg}"))), true)
+                                break (
+                                    next,
+                                    Err(anyhow::anyhow!(format!("{log_id}: {error_msg}"))),
+                                    RejectConn::Yes(error_msg),
+                                )
                             }
                             match self.send_with_buffer_metric(session_id, &tx, message).await {
                                 Ok(()) => {
@@ -279,7 +293,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                     next.seq = seq+1;
                                 }
                                 Err(err) => {
-                                    break (next, Err::<(), anyhow::Error>(err).context(format!("{log_id}: relaying message to mpsc channel")), false)
+                                    break (
+                                        next,
+                                        Err::<(), anyhow::Error>(err).context(format!("{log_id}: relaying message to mpsc channel")),
+                                        RejectConn::No,
+                                    )
                                 }
                             }
                         },
@@ -302,7 +320,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                         type_name::<M>(),
                                     )
                                 ),
-                                false
+                                RejectConn::No,
                             )
                         },
                     }
@@ -317,9 +335,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let debug_msg = format!(
             "NetRx::process exited its loop with states: initial Next \
             was {initial_next}; final Next is {final_next}; since acked: {}sec; \
-            rcv raw frame count is {rcv_raw_frame_count}; final result: {:?}",
+            rcv raw frame count is {rcv_raw_frame_count}; final result: {:?}; \
+            reject_conn is {:?}",
             last_ack_time.elapsed().as_secs(),
             final_result,
+            reject_conn,
         );
         tracing::info!(
             source = %self.source,
@@ -369,11 +389,13 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
             }
         }
 
-        if self.write_state.is_idle() && reject_conn {
+        if self.write_state.is_idle()
+            && let RejectConn::Yes(reason) = reject_conn
+        {
             let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
                 panic!("illegal state");
             };
-            if let Ok(data) = serialize_response(NetRxResponse::Reject) {
+            if let Ok(data) = serialize_response(NetRxResponse::Reject(reason)) {
                 match FrameWrite::new(
                     writer,
                     data,

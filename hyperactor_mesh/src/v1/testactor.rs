@@ -29,9 +29,7 @@ use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-#[cfg(test)]
 use hyperactor::clock::Clock as _;
-#[cfg(test)]
 use hyperactor::clock::RealClock;
 use hyperactor::config;
 use hyperactor::config::global::Source;
@@ -155,6 +153,27 @@ impl Handler<ActorSupervisionEvent> for TestActorWithSupervisionHandling {
         _cx: &Context<Self>,
         _msg: ActorSupervisionEvent,
     ) -> Result<(), anyhow::Error> {
+        Ok(())
+    }
+}
+
+/// A test actor that sleeps when it receives a Duration message.
+/// Used for testing timeout and abort behavior.
+#[derive(Actor, Default, Debug)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [std::time::Duration],
+)]
+pub struct SleepActor;
+
+#[async_trait]
+impl Handler<std::time::Duration> for SleepActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        duration: std::time::Duration,
+    ) -> Result<(), anyhow::Error> {
+        RealClock.sleep(duration).await;
         Ok(())
     }
 }

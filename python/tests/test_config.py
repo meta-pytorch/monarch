@@ -6,31 +6,52 @@
 
 # pyre-unsafe
 
-from contextlib import contextmanager
+import contextlib
+from typing import Any, Dict, Iterator
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import (
+    clear_runtime_config,
     configure,
-    get_configuration,
-    reload_config_from_env,
-    reset_config_to_defaults,
+    get_global_config,
+    get_runtime_config,
 )
 
 
-@contextmanager
-def configure_temporary(*args, **kwargs):
-    """Call configure, and then reset the configuration to the default values after
-    exiting. Always use this when testing so that other tests are not affected by any
-    changes made."""
+@contextlib.contextmanager
+def configured(**overrides) -> Iterator[Dict[str, Any]]:
+    """Temporarily apply Python-side config overrides for this
+    process.
 
+    This context manager:
+      * snapshots the current **Runtime** configuration layer
+        (`get_runtime_configuration()`),
+      * applies the given `overrides` via `configure(**overrides)`,
+        and
+      * yields the **merged** view of config (`get_configuration()`),
+        including defaults, env, file, and Runtime.
+
+    On exit it restores the previous Runtime layer by:
+      * clearing all Runtime entries, and
+      * re-applying the saved snapshot.
+
+    This is intended for tests, so per-test overrides do not leak into
+    other tests.
+
+    """
+    # Retrieve runtime
+    prev = get_runtime_config()
     try:
-        configure(*args, **kwargs)
-        yield
+        # Merge overrides into runtime
+        configure(**overrides)
+
+        # Snapshot of merged config (all layers)
+        yield get_global_config()
     finally:
-        reset_config_to_defaults()
-        # Re-apply any environment variables that were set for this test.
-        reload_config_from_env()
+        # Restore previous runtime
+        clear_runtime_config()
+        configure(**prev)
 
 
 def test_get_set_transport() -> None:
@@ -40,41 +61,40 @@ def test_get_set_transport() -> None:
         ChannelTransport.TcpWithHostname,
         ChannelTransport.MetaTlsWithHostname,
     ):
-        with configure_temporary(default_transport=transport):
-            assert get_configuration()["default_transport"] == transport
+        with configured(default_transport=transport) as config:
+            assert config["default_transport"] == transport
     # Succeed even if we don't specify the transport, but does not change the
     # previous value.
-    with configure_temporary():
-        assert get_configuration()["default_transport"] == ChannelTransport.Unix
+    with configured() as config:
+        assert config["default_transport"] == ChannelTransport.Unix
     with pytest.raises(TypeError):
-        with configure_temporary(default_transport="unix"):  # type: ignore
+        with configured(default_transport="unix"):  # type: ignore
             pass
     with pytest.raises(TypeError):
-        with configure_temporary(default_transport=42):  # type: ignore
+        with configured(default_transport=42):  # type: ignore
             pass
     with pytest.raises(TypeError):
-        with configure_temporary(default_transport={}):  # type: ignore
+        with configured(default_transport={}):  # type: ignore
             pass
 
 
 def test_nonexistent_config_key() -> None:
     with pytest.raises(ValueError):
-        with configure_temporary(does_not_exist=42):  # type: ignore
+        with configured(does_not_exist=42):  # type: ignore
             pass
 
 
 def test_get_set_multiple() -> None:
-    with configure_temporary(default_transport=ChannelTransport.TcpWithLocalhost):
-        with configure_temporary(
+    with configured(default_transport=ChannelTransport.TcpWithLocalhost):
+        with configured(
             enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-        ):
-            config = get_configuration()
+        ) as config:
             assert config["enable_log_forwarding"]
             assert config["enable_file_capture"]
             assert config["tail_log_lines"] == 100
             assert config["default_transport"] == ChannelTransport.TcpWithLocalhost
     # Make sure the previous values are restored.
-    config = get_configuration()
+    config = get_global_config()
     assert not config["enable_log_forwarding"]
     assert not config["enable_file_capture"]
     assert config["tail_log_lines"] == 0
