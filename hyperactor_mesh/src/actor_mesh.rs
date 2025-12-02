@@ -76,6 +76,7 @@ declare_attrs! {
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
 /// an `M`-typed message
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
+#[hyperactor::instrument]
 pub(crate) fn actor_mesh_cast<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,

@@ -17,6 +17,7 @@ use std::ops::DerefMut;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use enum_as_inner::EnumAsInner;
+use hyperactor_telemetry::skip_record;
 use tokio::io::AsyncWriteExt;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
@@ -789,8 +790,6 @@ where
         .as_ref()
         .map(|acked_seq| AckedSeqValue(acked_seq.clone()));
 
-    use hyperactor_telemetry::skip_record;
-
     tracing::span!(
         Level::ERROR,
         "net i/o loop",
@@ -926,7 +925,7 @@ where
             tokio::select! {
                 biased;
 
-                ack_result = reader.next() => {
+                ack_result = reader.next().instrument(tracing::span!(Level::ERROR, "read ack", skip_record)) => {
                     match ack_result {
                         Ok(Some(buffer)) => {
                             match deserialize_response(buffer) {
@@ -1018,7 +1017,7 @@ where
 
                 // We have to be careful to manage outgoing write states, so that we never write
                 // partial frames in the presence cancellation.
-                send_result = write_state.send() => {
+                send_result = write_state.send().instrument(tracing::span!(Level::ERROR, "write bytes", skip_record)) => {
                     match send_result {
                         Ok(()) => {
                             let mut message = outbox.pop_front().expect("outbox should not be empty");

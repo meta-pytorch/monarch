@@ -1185,6 +1185,7 @@ impl MailboxClient {
 }
 
 impl MailboxSender for MailboxClient {
+    #[hyperactor::instrument_infallible]
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,

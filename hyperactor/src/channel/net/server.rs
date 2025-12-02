@@ -19,6 +19,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use hyperactor_telemetry::skip_record;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt as _;
@@ -28,8 +29,12 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
+use tokio::time::Duration;
 use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
+use tracing::Level;
+use tracing::Span;
 
 use super::serialize_response;
 use crate::RemoteMessage;
@@ -47,6 +52,37 @@ use crate::clock::RealClock;
 use crate::config;
 use crate::metrics;
 use crate::sync::mvar::MVar;
+
+fn process_state_span(
+    source: &ChannelAddr,
+    dest: &ChannelAddr,
+    session_id: u64,
+    next: &Next,
+    rcv_raw_frame_count: u64,
+    last_ack_time: tokio::time::Instant,
+) -> Span {
+    let since_last_ack_str = humantime::format_duration(last_ack_time.elapsed()).to_string();
+
+    let pending_ack_count = if next.seq > next.ack {
+        next.seq - next.ack - 1
+    } else {
+        0
+    };
+
+    tracing::span!(
+        Level::ERROR,
+        "net i/o loop",
+        session_id = format!("{}.{}", dest, session_id),
+        source = source.to_string(),
+        next_seq = next.seq,
+        last_ack = next.ack,
+        pending_ack_count = pending_ack_count,
+        rcv_raw_frame_count = rcv_raw_frame_count,
+        since_last_ack = since_last_ack_str.as_str(),
+        skip_record,
+    )
+}
+
 pub(super) struct ServerConn<S> {
     reader: FrameReader<ReadHalf<S>>,
     write_state: WriteState<WriteHalf<S>, Bytes, u64>,
@@ -69,9 +105,24 @@ impl<S: AsyncRead + AsyncWrite> ServerConn<S> {
     }
 }
 
+#[derive(Debug)]
+enum RejectConn {
+    /// Reject the connection due to the given error.
+    EncounterError(String),
+    /// The server is being closed.
+    ServerClosing,
+    /// Do not reject the connection.
+    No,
+}
+
 impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
     async fn handshake<M: RemoteMessage>(&mut self) -> Result<u64, anyhow::Error> {
-        let Some(frame) = self.reader.next().await? else {
+        let Some(frame) = self
+            .reader
+            .next()
+            .instrument(tracing::span!(Level::ERROR, "read handshake", skip_record))
+            .await?
+        else {
             anyhow::bail!("end of stream before first frame from {}", self.source);
         };
         let message = serde_multipart::Message::from_framed(frame)?;
@@ -82,24 +133,278 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         Ok(session_id)
     }
 
+    async fn process_step<M: RemoteMessage>(
+        &mut self,
+        session_id: u64,
+        tx: &mpsc::Sender<M>,
+        cancel_token: &CancellationToken,
+        next: &Next,
+        last_ack_time: &mut tokio::time::Instant,
+        rcv_raw_frame_count: &mut u64,
+        ack_time_interval: Duration,
+        ack_msg_interval: u64,
+        log_id: &str,
+    ) -> (Next, Option<(Result<(), anyhow::Error>, RejectConn)>) {
+        let mut next = next.clone();
+        if self.write_state.is_idle()
+            && (next.ack + ack_msg_interval <= next.seq
+                || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval))
+        {
+            let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
+                panic!("illegal state");
+            };
+            let ack = match serialize_response(NetRxResponse::Ack(next.seq - 1)) {
+                Ok(ack) => ack,
+                Err(err) => {
+                    return (
+                        next,
+                        Some((
+                            Err::<(), anyhow::Error>(err.into())
+                                .context(format!("{log_id}: serializing ack")),
+                            RejectConn::No,
+                        )),
+                    );
+                }
+            };
+            match FrameWrite::new(
+                writer,
+                ack,
+                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+            ) {
+                Ok(fw) => {
+                    self.write_state = WriteState::Writing(fw, next.seq);
+                }
+                Err((writer, e)) => {
+                    debug_assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+                    tracing::error!(
+                        source = %self.source,
+                        dest = %self.dest,
+                        error = %e,
+                        "failed to create ack frame"
+                    );
+                    self.write_state = WriteState::Idle(writer);
+                }
+            }
+        }
+
+        tokio::select! {
+            // Prioritize ack, and then shutdown. Leave read last because
+            // there could be a large volume of messages to read, which
+            // subsequently starves the other select! branches.
+            biased;
+
+            // We have to be careful to manage the ack write state here, so that we do not
+            // write partial acks in the presence of cancellation.
+            ack_result = self.write_state.send().instrument(tracing::span!(Level::ERROR, "write ack", skip_record)) => {
+                match ack_result {
+                    Ok(acked_seq) => {
+                        tracing::info!("sent ack {acked_seq}");
+                        *last_ack_time = RealClock.now();
+                        next.ack = acked_seq;
+                    }
+                    Err(err) => {
+                        let v = self.write_state.value();
+                        return (
+                            next,
+                            Some((
+                                Err::<(), anyhow::Error>(err.into())
+                                    .context(format!("{log_id}: acking peer message: {v:?}")),
+                                RejectConn::No,
+                            )),
+                        );
+                    }
+                }
+            },
+            // Have a tick to abort select! call to make sure the ack for the last message can get the chance
+            // to be sent as a result of time interval being reached.
+            _ = RealClock.sleep_until(*last_ack_time + ack_time_interval), if next.ack < next.seq => {},
+
+            _ = cancel_token.cancelled() => return (next, Some((Ok(()), RejectConn::ServerClosing))),
+
+            bytes_result = self.reader.next().instrument(tracing::span!(Level::ERROR, "read bytes", skip_record)) => {
+                *rcv_raw_frame_count += 1;
+                // First handle transport-level I/O errors, and EOFs.
+                let bytes = match bytes_result {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => {
+                        tracing::debug!(
+                                source = %self.source,
+                                dest = %self.dest,
+                                "received EOF from client"
+                            );
+                        return (next, Some((Ok(()), RejectConn::No)));
+                    }
+                    Err(err) => {
+                        return (
+                            next,
+                            Some((
+                                Err::<(), anyhow::Error>(err.into()).context(format!(
+                                    "{log_id}: reading into Frame with M = {}",
+                                    type_name::<M>(),
+                                )),
+                                RejectConn::No,
+                            )),
+                        )
+                    }
+                };
+
+                // De-frame the multi-part message.
+                let bytes_len = bytes.len();
+                let message = match serde_multipart::Message::from_framed(bytes) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        // Track deframing error for this channel pair
+                        metrics::CHANNEL_ERRORS.add(
+                            1,
+                            hyperactor_telemetry::kv_pairs!(
+                                "source" => self.source.to_string(),
+                                "dest" => self.dest.to_string(),
+                                "session_id" => session_id.to_string(),
+                                "error_type" => metrics::ChannelErrorType::DeframeError.as_str(),
+                            ),
+                        );
+                        return (
+                            next,
+                            Some((
+                                Err::<(), anyhow::Error>(err.into()).context(format!(
+                                    "{log_id}: de-frame message with M = {}",
+                                    type_name::<M>(),
+                                )),
+                                RejectConn::No,
+                            )),
+                        )
+                    }
+                };
+
+                // Finally decode the message. This assembles the M-typed message
+                // from its constituent parts.
+                match serde_multipart::deserialize_bincode(message) {
+                    Ok(Frame::Init(_)) => {
+                        return (
+                            next,
+                            Some((
+                                Err(anyhow::anyhow!("{log_id}: unexpected init frame")),
+                                RejectConn::EncounterError("expect Frame::Message; got Frame::Int".to_string())
+                            )),
+                        )
+                    },
+                    // Ignore retransmits.
+                    Ok(Frame::Message(seq, _)) if seq < next.seq => {
+                        tracing::debug!(
+                            source = %self.source,
+                            dest = %self.dest,
+                            seq = seq,
+                            "ignoring retransmit; retransmit seq: {}; expected next seq: {}",
+                            seq,
+                            next.seq
+                        );
+                    },
+                    // The following segment ensures exactly-once semantics.
+                    // That means No out-of-order delivery and no duplicate delivery.
+                    Ok(Frame::Message(seq, message)) => {
+                        // received seq should be equal to next seq. Else error out!
+                        if seq > next.seq {
+                            let error_msg = format!("out-of-sequence message, expected seq {}, got {}", next.seq, seq);
+                            tracing::error!(
+                                source = %self.source,
+                                dest = %self.dest,
+                                seq = seq,
+                                "{}", error_msg
+                            );
+                            return (
+                                next,
+                                Some((
+                                    Err(anyhow::anyhow!(format!("{log_id}: {error_msg}"))),
+                                    RejectConn::EncounterError(error_msg)
+                                ))
+                            )
+                        }
+                        match self.send_with_buffer_metric(session_id, tx, message)
+                            .instrument(tracing::info_span!(
+                                "send_with_buffer_metric",
+                                seq = seq,
+                                skip_record,
+                            ))
+                            .await
+                        {
+                            Ok(()) => {
+                                // Track throughput for this channel pair
+                                metrics::CHANNEL_THROUGHPUT_BYTES.add(
+                                    bytes_len as u64,
+                                    hyperactor_telemetry::kv_pairs!(
+                                        "source" => self.source.to_string(),
+                                        "dest" => self.dest.to_string(),
+                                        "session_id" => session_id.to_string(),
+                                    ),
+                                );
+                                metrics::CHANNEL_THROUGHPUT_MESSAGES.add(
+                                    1,
+                                    hyperactor_telemetry::kv_pairs!(
+                                        "source" => self.source.to_string(),
+                                        "dest" => self.dest.to_string(),
+                                        "session_id" => session_id.to_string(),
+                                    ),
+                                );
+                                // In channel's contract, "delivered" means the message
+                                // is sent to the NetRx object. Therefore, we could bump
+                                // `next_seq` as far as the message is put on the mpsc
+                                // channel.
+                                //
+                                // Note that when/how the messages in NetRx are processed
+                                // is not covered by channel's contract. For example,
+                                // the message might never be taken out of netRx, but
+                                // channel still considers those messages delivered.
+                                next.seq = seq+1;
+                            }
+                            Err(err) => {
+                                return (
+                                    next,
+                                    Some((
+                                        Err::<(), anyhow::Error>(err)
+                                            .context(format!("{log_id}: relaying message to mpsc channel")),
+                                        RejectConn::No,
+                                    )),
+                                )
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        // Track deserialization error for this channel pair
+                        metrics::CHANNEL_ERRORS.add(
+                            1,
+                            hyperactor_telemetry::kv_pairs!(
+                                "source" => self.source.to_string(),
+                                "dest" => self.dest.to_string(),
+                                "session_id" => session_id.to_string(),
+                                "error_type" => metrics::ChannelErrorType::DeserializeError.as_str(),
+                            ),
+                        );
+                        return (
+                           next,
+                            Some((
+                                Err::<(), anyhow::Error>(err.into()).context(format!(
+                                    "{log_id}: deserialize message with M = {}",
+                                    type_name::<M>(),
+                                )),
+                                RejectConn::No,
+                            )),
+                        )
+                    }
+                }
+            },
+        }
+
+        (next, None)
+    }
+
     /// Handles a server side stream created during the `listen` loop.
     async fn process<M: RemoteMessage>(
-        mut self,
+        &mut self,
         session_id: u64,
         tx: mpsc::Sender<M>,
         cancel_token: CancellationToken,
         mut next: Next,
     ) -> (Next, Result<(), anyhow::Error>) {
-        #[derive(Debug)]
-        enum RejectConn {
-            /// Reject the connection due to the given error.
-            EncounterError(String),
-            /// The server is being closed.
-            ServerClosing,
-            /// Do not reject the connection.
-            No,
-        }
-
         let log_id = format!("session {}.{}<-{}", self.dest, session_id, self.source);
         let initial_next: Next = next.clone();
         let mut rcv_raw_frame_count = 0u64;
@@ -109,230 +414,34 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let ack_msg_interval = hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
         let (mut final_next, final_result, reject_conn) = loop {
-            if self.write_state.is_idle()
-                && (next.ack + ack_msg_interval <= next.seq
-                    || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval))
-            {
-                let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle()
-                else {
-                    panic!("illegal state");
-                };
-                let ack = match serialize_response(NetRxResponse::Ack(next.seq - 1)) {
-                    Ok(ack) => ack,
-                    Err(err) => {
-                        break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into())
-                                .context(format!("{log_id}: serializing ack")),
-                            RejectConn::No,
-                        );
-                    }
-                };
-                match FrameWrite::new(
-                    writer,
-                    ack,
-                    hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-                ) {
-                    Ok(fw) => {
-                        self.write_state = WriteState::Writing(fw, next.seq);
-                    }
-                    Err((writer, e)) => {
-                        debug_assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-                        tracing::error!(
-                            source = %self.source,
-                            dest = %self.dest,
-                            error = %e,
-                            "failed to create ack frame"
-                        );
-                        self.write_state = WriteState::Idle(writer);
-                    }
-                }
-            }
+            let span = process_state_span(
+                &self.source,
+                &self.dest,
+                session_id,
+                &next,
+                rcv_raw_frame_count,
+                last_ack_time,
+            );
 
-            tokio::select! {
-                // Prioritize ack, and then shutdown. Leave read last because
-                // there could be a large volume of messages to read, which
-                // subsequently starves the other select! branches.
-                biased;
+            let (new_next, break_info) = self
+                .process_step(
+                    session_id,
+                    &tx,
+                    &cancel_token,
+                    &next,
+                    &mut last_ack_time,
+                    &mut rcv_raw_frame_count,
+                    ack_time_interval,
+                    ack_msg_interval,
+                    &log_id,
+                )
+                .instrument(span)
+                .await;
 
-                // We have to be careful to manage the ack write state here, so that we do not
-                // write partial acks in the presence of cancellation.
-                ack_result = self.write_state.send() => {
-                    match ack_result {
-                        Ok(acked_seq) => {
-                            last_ack_time = RealClock.now();
-                            next.ack = acked_seq;
-                        }
-                        Err(err) => {
-                            let v = self.write_state.value();
-                            break (
-                                next,
-                                Err::<(), anyhow::Error>(err.into())
-                                    .context(format!("{log_id}: acking peer message: {v:?}")),
-                                RejectConn::No,
-                            );
-                        }
-                    }
-                },
-                // Have a tick to abort select! call to make sure the ack for the last message can get the chance
-                // to be sent as a result of time interval being reached.
-                _ = RealClock.sleep_until(last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-                _ = cancel_token.cancelled() => break (next, Ok(()), RejectConn::ServerClosing),
-                bytes_result = self.reader.next() => {
-                    rcv_raw_frame_count += 1;
-                    // First handle transport-level I/O errors, and EOFs.
-                    let bytes = match bytes_result {
-                        Ok(Some(bytes)) => bytes,
-                        Ok(None) => {
-                            tracing::debug!(
-                                source = %self.source,
-                                dest = %self.dest,
-                                "received EOF from client"
-                            );
-                            break (next, Ok(()), RejectConn::No);
-                        }
-                        Err(err) => break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: reading into Frame with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            RejectConn::No,
-                        ),
-                    };
+            next = new_next;
 
-                    // De-frame the multi-part message.
-                    let bytes_len = bytes.len();
-                    let message = match serde_multipart::Message::from_framed(bytes) {
-                        Ok(message) => message,
-                        Err(err) => {
-                            // Track deframing error for this channel pair
-                            metrics::CHANNEL_ERRORS.add(
-                                1,
-                                hyperactor_telemetry::kv_pairs!(
-                                    "source" => self.source.to_string(),
-                                    "dest" => self.dest.to_string(),
-                                    "session_id" => session_id.to_string(),
-                                    "error_type" => metrics::ChannelErrorType::DeframeError.as_str(),
-                                ),
-                            );
-                            break (
-                            next,
-                            Err::<(), anyhow::Error>(err.into()).context(
-                                format!(
-                                    "{log_id}: de-frame message with M = {}",
-                                    type_name::<M>(),
-                                )
-                            ),
-                            RejectConn::No,
-                        )
-                    },
-                    };
-
-                    // Finally decode the message. This assembles the M-typed message
-                    // from its constituent parts.
-                    match serde_multipart::deserialize_bincode(message) {
-                        Ok(Frame::Init(_)) => {
-                            break (
-                                next,
-                                Err(anyhow::anyhow!("{log_id}: unexpected init frame")),
-                                RejectConn::EncounterError("expect Frame::Message; got Frame::Int".to_string()),
-                            )
-                        },
-                        // Ignore retransmits.
-                        Ok(Frame::Message(seq, _)) if seq < next.seq => {
-                            tracing::debug!(
-                                source = %self.source,
-                                dest = %self.dest,
-                                seq = seq,
-                                "ignoring retransmit; retransmit seq: {}; expected next seq: {}",
-                                seq,
-                                next.seq
-                            );
-                        },
-                        // The following segment ensures exactly-once semantics.
-                        // That means No out-of-order delivery and no duplicate delivery.
-                        Ok(Frame::Message(seq, message)) => {
-                            // received seq should be equal to next seq. Else error out!
-                            if seq > next.seq {
-                                let error_msg = format!("out-of-sequence message, expected seq {}, got {}", next.seq, seq);
-                                tracing::error!(
-                                    source = %self.source,
-                                    dest = %self.dest,
-                                    seq = seq,
-                                    "{}", error_msg
-                                );
-                                break (
-                                    next,
-                                    Err(anyhow::anyhow!(format!("{log_id}: {error_msg}"))),
-                                    RejectConn::EncounterError(error_msg),
-                                )
-                            }
-                            match self.send_with_buffer_metric(session_id, &tx, message).await {
-                                Ok(()) => {
-                                    // Track throughput for this channel pair
-                                    metrics::CHANNEL_THROUGHPUT_BYTES.add(
-                                        bytes_len as u64,
-                                        hyperactor_telemetry::kv_pairs!(
-                                            "source" => self.source.to_string(),
-                                            "dest" => self.dest.to_string(),
-                                            "session_id" => session_id.to_string(),
-                                        ),
-                                    );
-                                    metrics::CHANNEL_THROUGHPUT_MESSAGES.add(
-                                        1,
-                                        hyperactor_telemetry::kv_pairs!(
-                                            "source" => self.source.to_string(),
-                                            "dest" => self.dest.to_string(),
-                                            "session_id" => session_id.to_string(),
-                                        ),
-                                    );
-                                    // In channel's contract, "delivered" means the message
-                                    // is sent to the NetRx object. Therefore, we could bump
-                                    // `next_seq` as far as the message is put on the mpsc
-                                    // channel.
-                                    //
-                                    // Note that when/how the messages in NetRx are processed
-                                    // is not covered by channel's contract. For example,
-                                    // the message might never be taken out of netRx, but
-                                    // channel still considers those messages delivered.
-                                    next.seq = seq+1;
-                                }
-                                Err(err) => {
-                                    break (
-                                        next,
-                                        Err::<(), anyhow::Error>(err).context(format!("{log_id}: relaying message to mpsc channel")),
-                                        RejectConn::No,
-                                    )
-                                }
-                            }
-                        },
-                        Err(err) => {
-                            // Track deserialization error for this channel pair
-                            metrics::CHANNEL_ERRORS.add(
-                                1,
-                                hyperactor_telemetry::kv_pairs!(
-                                    "source" => self.source.to_string(),
-                                    "dest" => self.dest.to_string(),
-                                    "session_id" => session_id.to_string(),
-                                    "error_type" => metrics::ChannelErrorType::DeserializeError.as_str(),
-                                ),
-                            );
-                            break (
-                                next,
-                                Err::<(), anyhow::Error>(err.into()).context(
-                                    format!(
-                                        "{log_id}: deserialize message with M = {}",
-                                        type_name::<M>(),
-                                    )
-                                ),
-                                RejectConn::No,
-                            )
-                        },
-                    }
-                },
+            if let Some((result, reject_conn)) = break_info {
+                break (next, result, reject_conn);
             }
         };
 
@@ -437,7 +546,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
             };
         }
 
-        if let Some(mut w) = self.write_state.into_writer() {
+        if let Some(mut w) = replace(&mut self.write_state, WriteState::Broken).into_writer() {
             // Try to shutdown the connection gracefully. This is a best effort
             // operation, and we don't care if it fails.
             let _ = w.shutdown().await;
