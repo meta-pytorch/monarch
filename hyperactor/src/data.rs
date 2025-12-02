@@ -382,9 +382,13 @@ impl Encoded {
             Encoded::Json(data) => crc32fast::hash(data),
             Encoded::Multipart(message) => {
                 let mut hasher = crc32fast::Hasher::new();
-                hasher.update(message.body().as_ref());
+                for fragment in message.body().iter() {
+                    hasher.update(fragment);
+                }
                 for part in message.parts() {
-                    hasher.update(part.as_ref());
+                    for fragment in part.iter() {
+                        hasher.update(fragment);
+                    }
                 }
                 hasher.finalize()
             }
@@ -398,9 +402,13 @@ impl std::fmt::Debug for Encoded {
             Encoded::Bincode(data) => write!(f, "Encoded::Bincode({})", HexFmt(data)),
             Encoded::Json(data) => write!(f, "Encoded::Json({})", HexFmt(data)),
             Encoded::Multipart(message) => {
-                write!(f, "Encoded::Multipart(body={}", HexFmt(message.body()))?;
+                write!(
+                    f,
+                    "Encoded::Multipart(body={}",
+                    HexFmt(&message.body().to_bytes())
+                )?;
                 for (index, part) in message.parts().iter().enumerate() {
-                    write!(f, ", part[{}]={}", index, HexFmt(part))?;
+                    write!(f, ", part[{}]={}", index, HexFmt(&part.to_bytes()))?;
                 }
                 write!(f, ")")
             }
