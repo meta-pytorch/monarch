@@ -65,7 +65,7 @@ async fn main() {
     assert_eq!(addresses.len(), (hosts_per_proc_mesh * num_proc_meshes));
     let mut addresses = addresses.into_iter();
 
-    let config = hyperactor::config::global::lock();
+    let config = hyperactor_config::global::lock();
     let _guard = config.override_key(
         hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
         Duration::from_secs(5),

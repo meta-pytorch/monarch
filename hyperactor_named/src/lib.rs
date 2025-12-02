@@ -10,8 +10,8 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::sync::LazyLock;
 
+// Re-export dashmap so that the intern_typename macro can use $crate::dashmap
 pub use dashmap;
 
 /// A [`Named`] type is a type that has a globally unique name.
@@ -87,10 +87,6 @@ impl_basic!(std::net::Ipv6Addr);
 impl_basic!(std::time::Duration);
 impl_basic!(std::time::SystemTime);
 impl_basic!(bytes::Bytes);
-// This is somewhat unfortunate. We should separate this module out into
-// its own crate, and just derive(Named) in `ndslice`. As it is, this would
-// create a circular (and heavy!) dependency for `ndslice`.
-impl_basic!(ndslice::Point);
 
 impl Named for &'static str {
     fn typename() -> &'static str {
@@ -170,19 +166,6 @@ impl<T: Named + 'static, E: Named + 'static> Named for Result<T, E> {
 impl<T: Named + 'static> Named for std::ops::Range<T> {
     fn typename() -> &'static str {
         intern_typename!(Self, "std::ops::Range<{}>", T)
-    }
-}
-
-static SHAPE_CACHED_TYPEHASH: LazyLock<u64> =
-    LazyLock::new(|| cityhasher::hash(<ndslice::shape::Shape as Named>::typename()));
-
-impl Named for ndslice::shape::Shape {
-    fn typename() -> &'static str {
-        "ndslice::shape::Shape"
-    }
-
-    fn typehash() -> u64 {
-        *SHAPE_CACHED_TYPEHASH
     }
 }
 

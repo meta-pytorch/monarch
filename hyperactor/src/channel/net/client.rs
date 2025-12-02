@@ -228,7 +228,8 @@ impl<'a, M: RemoteMessage> Outbox<'a, M> {
         match self.deque.front() {
             None => false,
             Some(msg) => {
-                msg.received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+                msg.received_at.elapsed()
+                    > hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
             }
         }
     }
@@ -436,7 +437,7 @@ impl<'a, M: RemoteMessage> Unacked<'a, M> {
     fn is_expired(&self) -> bool {
         matches!(
             self.deque.front(),
-            Some(msg) if msg.received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+            Some(msg) if msg.received_at.elapsed() > hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
         )
     }
 
@@ -448,7 +449,8 @@ impl<'a, M: RemoteMessage> Unacked<'a, M> {
             Some(msg) => {
                 RealClock
                     .sleep_until(
-                        msg.received_at + config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                        msg.received_at
+                            + hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
                     )
                     .await
             }
@@ -866,7 +868,7 @@ where
                 ..
             },
         ) if !outbox.is_empty() => {
-            let max = config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+            let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
             let len = outbox.front_size().expect("not empty");
             let message = outbox.front_message().expect("not empty");
 
@@ -1000,7 +1002,7 @@ where
                 _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
                     let error_msg = format!(
                         "failed to receive ack within timeout {:?}; link is currently connected",
-                        config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                        hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
                     );
                     tracing::error!(
                                 dest = %link.dest(),
@@ -1099,7 +1101,7 @@ where
             if outbox.is_expired() {
                 let error_msg = format!(
                     "failed to deliver message within timeout {:?}",
-                    config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+                    hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
                 );
                 tracing::error!(
                     dest = %link.dest(),
@@ -1116,7 +1118,7 @@ where
             } else if unacked.is_expired() {
                 let error_msg = format!(
                     "failed to receive ack within timeout {:?}; link is currently broken",
-                    config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                    hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
                 );
                 tracing::error!(
                     dest = %link.dest(),
@@ -1140,7 +1142,7 @@ where
                         let mut write = FrameWrite::new(
                             stream,
                             message.framed(),
-                            config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
                         )
                         .expect("enough length");
                         let initialized = write.send().await.is_ok();
@@ -1183,7 +1185,9 @@ where
                                 Conn::Connected {
                                     reader: FrameReader::new(
                                         reader,
-                                        config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                                        hyperactor_config::global::get(
+                                            config::CODEC_MAX_FRAME_LENGTH,
+                                        ),
                                     ),
                                     write_state: WriteState::Idle(writer),
                                 }

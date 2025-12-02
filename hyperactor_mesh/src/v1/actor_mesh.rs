@@ -17,11 +17,11 @@ use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
-use hyperactor::attrs::Attrs;
 use hyperactor::context;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
+use hyperactor_config::attrs::Attrs;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
@@ -646,7 +646,7 @@ mod tests {
     async fn test_actor_states_with_process_exit() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
 
         let instance = testing::instance().await;
@@ -786,7 +786,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
     async fn test_cast() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance().await;
@@ -842,7 +842,7 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         // Set message delivery timeout for faster test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             std::time::Duration::from_secs(1),
@@ -957,7 +957,7 @@ mod tests {
         // We set this to 1 second (instead of default 30s) so hung
         // actors (sleeping 5s in this test) get aborted quickly,
         // making the test fast.
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
 
         let instance = testing::instance().await;
