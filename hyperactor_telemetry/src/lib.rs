@@ -7,6 +7,7 @@
  */
 
 #![allow(internal_features)]
+#![allow(clippy::disallowed_methods)] // hyperactor_telemetry can't use hyperactor::clock::Clock (circular dependency)
 #![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
