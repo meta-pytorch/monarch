@@ -264,7 +264,7 @@ impl HostMesh {
         let addr = config::global::get_cloned(DEFAULT_TRANSPORT).any();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
-        let (host, _handle) = Host::serve(manager, addr).await?;
+        let host = Host::new(manager, addr).await?;
         let addr = host.addr().clone();
         let host_mesh_agent = host
             .system_proc()
@@ -1519,7 +1519,7 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_halting_proc_allocation() {
         let config = config::global::lock();
-        let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(5));
+        let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(10));
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
