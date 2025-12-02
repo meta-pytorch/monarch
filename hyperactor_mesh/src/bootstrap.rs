@@ -488,7 +488,7 @@ impl Bootstrap {
                 };
                 let manager = BootstrapProcManager::new(command).unwrap();
 
-                let (host, _handle) = ok!(Host::serve(manager, addr).await);
+                let host = ok!(Host::new(manager, addr).await);
                 let addr = host.addr().clone();
                 let system_proc = host.system_proc().clone();
                 let host_mesh_agent = ok!(system_proc.spawn::<HostMeshAgent>(

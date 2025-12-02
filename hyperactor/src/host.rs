@@ -67,6 +67,7 @@ use crate::actor::Referable;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::ChannelRx;
 use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::Tx;
@@ -125,6 +126,7 @@ pub struct Host<M> {
     router: DialMailboxRouter,
     manager: M,
     service_proc: Proc,
+    frontend_rx: Option<ChannelRx<MessageEnvelope>>,
 }
 
 impl<M: ProcManager> Host<M> {
@@ -132,10 +134,7 @@ impl<M: ProcManager> Host<M> {
     /// On success, the host will multiplex messages for procs on the host
     /// on the address of the host.
     #[tracing::instrument(skip(manager))]
-    pub async fn serve(
-        manager: M,
-        addr: ChannelAddr,
-    ) -> Result<(Self, MailboxServerHandle), HostError> {
+    pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
         let (frontend_addr, frontend_rx) = channel::serve(addr)?;
 
         // We set up a cascade of routers: first, the outer router supports
@@ -162,21 +161,22 @@ impl<M: ProcManager> Host<M> {
             procs: HashMap::new(),
             frontend_addr,
             backend_addr,
-            router: router.clone(),
-            manager,
-            service_proc: service_proc.clone(),
-        };
-
-        let router = ProcOrDial {
-            proc: service_proc,
             router,
+            manager,
+            service_proc,
+            frontend_rx: Some(frontend_rx),
         };
 
-        // Serve the same router on both frontend and backend addresses.
-        let _backend_handle = router.clone().serve(backend_rx);
-        let frontend_handle = router.serve(frontend_rx);
+        // We the same router on both frontend and backend addresses.
+        let _backend_handle = host.forwarder().serve(backend_rx);
 
-        Ok((host, frontend_handle))
+        Ok(host)
+    }
+
+    /// Start serving this host's mailbox on its frontend address.
+    /// Returns the server handle on first invocation; afterwards None.
+    pub fn serve(&mut self) -> Option<MailboxServerHandle> {
+        Some(self.forwarder().serve(self.frontend_rx.take()?))
     }
 
     /// The underlying proc manager.
@@ -253,6 +253,13 @@ impl<M: ProcManager> Host<M> {
 
         Ok((proc_id, agent_ref))
     }
+
+    fn forwarder(&self) -> ProcOrDial {
+        ProcOrDial {
+            proc: self.service_proc.clone(),
+            dialer: self.router.clone(),
+        }
+    }
 }
 
 /// A router used to route to the system proc, or else fall back to
@@ -260,7 +267,7 @@ impl<M: ProcManager> Host<M> {
 #[derive(Debug, Clone)]
 struct ProcOrDial {
     proc: Proc,
-    router: DialMailboxRouter,
+    dialer: DialMailboxRouter,
 }
 
 impl MailboxSender for ProcOrDial {
@@ -272,7 +279,7 @@ impl MailboxSender for ProcOrDial {
         if envelope.dest().actor_id().proc_id() == self.proc.proc_id() {
             self.proc.post_unchecked(envelope, return_handle);
         } else {
-            self.router.post_unchecked(envelope, return_handle)
+            self.dialer.post_unchecked(envelope, return_handle)
         }
     }
 }
@@ -1222,10 +1229,9 @@ mod tests {
         let proc_manager =
             LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()) });
         let procs = Arc::clone(&proc_manager.procs);
-        let (mut host, _handle) =
-            Host::serve(proc_manager, ChannelAddr::any(ChannelTransport::Local))
-                .await
-                .unwrap();
+        let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Local))
+            .await
+            .unwrap();
 
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
         assert_eq!(
@@ -1291,10 +1297,9 @@ mod tests {
         let process_manager = ProcessProcManager::<EchoActor>::new(
             buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
         );
-        let (mut host, _handle) =
-            Host::serve(process_manager, ChannelAddr::any(ChannelTransport::Unix))
-                .await
-                .unwrap();
+        let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
+            .await
+            .unwrap();
 
         // (1) Spawn and check invariants.
         assert!(matches!(host.addr().transport(), ChannelTransport::Unix));
@@ -1517,7 +1522,7 @@ mod tests {
             Duration::from_millis(10),
         );
 
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::from_millis(50))),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1536,7 +1541,7 @@ mod tests {
             Duration::from_secs(0),
         );
 
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::from_millis(20))),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1550,7 +1555,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_maps_channel_closed_ready_error_to_config_failure() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::ErrChannelClosed),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1563,7 +1568,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_maps_terminal_ready_error_to_config_failure() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::ErrTerminal),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1576,7 +1581,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_addr() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(true, false),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1592,7 +1597,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_agent() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(false, true),
             ChannelAddr::any(ChannelTransport::Local),
         )
