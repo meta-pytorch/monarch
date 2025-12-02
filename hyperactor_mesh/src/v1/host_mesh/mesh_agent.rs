@@ -132,20 +132,27 @@ impl Actor for HostMeshAgent {
             )
             .unwrap();
             eprintln!(
-                "Monarch internal logs are being written to {}/{}.log; execution id {}{}",
+                "Monarch internal logs are being written to {}/{}.log; execution id {}",
                 directory,
                 file,
                 hyperactor_telemetry::env::execution_id(),
-                hyperactor_telemetry::env::execution_url()
-                    .await
-                    .unwrap_or_else(|e| Some(format!(": <error generating URL: {}>", e)))
-                    .map_or_else(|| "".to_string(), |url| format!(": {}", url))
             );
         }
         Ok(Self {
             host: Some(host),
             created: HashMap::new(),
         })
+    }
+
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Serve the host now that the agent is initialized. Make sure our port is
+        // bound before serving.
+        this.bind::<Self>();
+        match self.host.as_mut().unwrap() {
+            HostAgentMode::Process(host) => host.serve(),
+            HostAgentMode::Local(host) => host.serve(),
+        };
+        Ok(())
     }
 }
 
@@ -455,7 +462,7 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
         let host = if local {
             let spawn: ProcManagerSpawnFn = Box::new(|proc| Box::pin(ProcMeshAgent::boot_v1(proc)));
             let manager = LocalProcManager::new(spawn);
-            let (host, _) = Host::serve(manager, transport.any()).await?;
+            let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Local(host)
         } else {
             let command = match command {
@@ -464,7 +471,7 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
             };
             tracing::info!("booting host with proc command {:?}", command);
             let manager = BootstrapProcManager::new(command).unwrap();
-            let (host, _) = Host::serve(manager, transport.any()).await?;
+            let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Process(host)
         };
 
@@ -521,7 +528,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_basic() {
-        let (host, _handle) = Host::serve(
+        let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
             ChannelTransport::Unix.any(),
         )
