@@ -1029,7 +1029,7 @@ mod tests {
     async fn test_tcp_message_size() {
         let default_size_in_bytes = 100 * 1024 * 1024;
         // Use temporary config for this test
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
@@ -1057,7 +1057,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_flush() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         // Set a large value to effectively prevent acks from being sent except
         // during shutdown flush.
         let _guard_message_ack =
@@ -1340,7 +1340,7 @@ mod tests {
                                     }
                                 }
                             }
-                            let mut fw  = FrameWrite::new(writer, data, config::global::get(config::CODEC_MAX_FRAME_LENGTH)).unwrap();
+                            let mut fw  = FrameWrite::new(writer, data, hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH)).unwrap();
                             if fw.send().await.is_err() {
                                 break;
                             }
@@ -1365,7 +1365,7 @@ mod tests {
             let (server_r, server_writer) = tokio::io::split(server_relay);
             let (client_r, client_writer) = tokio::io::split(client_relay);
 
-            let max_len = config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+            let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
             let server_reader = FrameReader::new(server_r, max_len);
             let client_reader = FrameReader::new(client_r, max_len);
 
@@ -1469,7 +1469,10 @@ mod tests {
         let join_handle =
             tokio::spawn(async move { manager1.serve(conn, tx, cancel_token_1).await });
         let (r, writer) = tokio::io::split(sender);
-        let reader = FrameReader::new(r, config::global::get(config::CODEC_MAX_FRAME_LENGTH));
+        let reader = FrameReader::new(
+            r,
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+        );
         (join_handle, reader, writer, rx, cancel_token)
     }
 
@@ -1489,7 +1492,7 @@ mod tests {
             let mut fw = FrameWrite::new(
                 writer,
                 message.framed(),
-                config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
             )
             .map_err(|(_w, e)| e)
             .unwrap();
@@ -1504,7 +1507,7 @@ mod tests {
             let mut fw = FrameWrite::new(
                 writer,
                 message.framed(),
-                config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
             )
             .map_err(|(_w, e)| e)
             .unwrap();
@@ -1518,7 +1521,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_persistent_server_session() {
         // Use temporary config for this test
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
 
         async fn verify_ack(reader: &mut FrameReader<ReadHalf<DuplexStream>>, expected_last: u64) {
@@ -1624,7 +1627,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_from_server_session() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let manager = SessionManager::new();
         let session_id = 123u64;
@@ -1689,7 +1692,7 @@ mod tests {
         let link = MockLink::<u64>::fail_connects();
         let tx = super::dial::<u64>(link);
         // Override the default (1m) for the purposes of this test.
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let mut tx_receiver = tx.status().clone();
         let (return_channel, _return_receiver) = oneshot::channel();
@@ -1702,7 +1705,10 @@ mod tests {
     ) -> (FrameReader<ReadHalf<DuplexStream>>, WriteHalf<DuplexStream>) {
         let receiver = receiver_storage.take().await;
         let (r, writer) = tokio::io::split(receiver);
-        let reader = FrameReader::new(r, config::global::get(config::CODEC_MAX_FRAME_LENGTH));
+        let reader = FrameReader::new(
+            r,
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+        );
         (reader, writer)
     }
 
@@ -2057,7 +2063,7 @@ mod tests {
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
         // Use temporary config for this test
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(2));
 
         let link: MockLink<u64> = MockLink::<u64>::new();
@@ -2075,7 +2081,7 @@ mod tests {
         let _ = FrameWrite::write_frame(
             writer,
             serialize_response(NetRxResponse::Ack(0)).unwrap(),
-            config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
         )
         .await
         .map_err(|(_, e)| e)
@@ -2192,7 +2198,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_every_n_messages() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard_message_ack = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 600);
         let _guard_time_interval =
             config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(1000));
@@ -2201,7 +2207,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_every_time_interval() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard_message_ack =
             config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 100000000);
         let _guard_time_interval = config.override_key(
@@ -2292,7 +2298,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_throughput() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
 
@@ -2369,7 +2375,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_server_rejects_conn_on_out_of_sequence_message() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let manager = SessionManager::new();
         let session_id = 123u64;
@@ -2400,7 +2406,7 @@ mod tests {
     async fn test_stop_net_tx_after_stopping_net_rx() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
         let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();

@@ -16,6 +16,7 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 
 use enum_as_inner::EnumAsInner;
+use hyperactor_macros::AttrValue;
 pub use hyperactor_named::Named;
 pub use hyperactor_named::intern_typename;
 use serde::Deserialize;
@@ -149,7 +150,7 @@ macro_rules! register_type {
     Deserialize,
     PartialEq,
     Eq,
-    crate::AttrValue,
+    AttrValue,
     crate::Named,
     strum::EnumIter,
     strum::Display,
@@ -296,7 +297,10 @@ impl Serialized {
     /// [`config::DEFAULT_ENCODING`] in the global configuration; use [`serialize_with_encoding`]
     /// to serialize values with a specific encoding.
     pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self, Error> {
-        Self::serialize_with_encoding(config::global::get(config::DEFAULT_ENCODING), value)
+        Self::serialize_with_encoding(
+            hyperactor_config::global::get(config::DEFAULT_ENCODING),
+            value,
+        )
     }
 
     /// Serialize U-typed value as a T-typed value. This should be used with care
@@ -304,7 +308,7 @@ impl Serialized {
     /// coerced.
     pub fn serialize_as<T: Named, U: Serialize>(value: &U) -> Result<Self, Error> {
         Self::serialize_with_encoding_as::<T, U>(
-            config::global::get(config::DEFAULT_ENCODING),
+            hyperactor_config::global::get(config::DEFAULT_ENCODING),
             value,
         )
     }
@@ -665,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_emplace_prefix() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::DEFAULT_ENCODING, Encoding::Bincode);
         let data = TestDumpStruct {
             a: "hello".to_string(),

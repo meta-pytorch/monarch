@@ -110,12 +110,12 @@ mod tests {
     use hyperactor::ActorId;
     use hyperactor::Mailbox;
     use hyperactor::PortId;
-    use hyperactor::attrs::Attrs;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
     use hyperactor::data::Serialized;
     use hyperactor::id;
+    use hyperactor_config::attrs::Attrs;
 
     use super::*;
     use crate::v1::Name;

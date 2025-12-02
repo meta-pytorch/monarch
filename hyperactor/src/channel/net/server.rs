@@ -58,7 +58,10 @@ impl<S: AsyncRead + AsyncWrite> ServerConn<S> {
     pub(super) fn new(stream: S, source: ChannelAddr, dest: ChannelAddr) -> Self {
         let (reader, writer) = tokio::io::split(stream);
         Self {
-            reader: FrameReader::new(reader, config::global::get(config::CODEC_MAX_FRAME_LENGTH)),
+            reader: FrameReader::new(
+                reader,
+                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+            ),
             write_state: WriteState::Idle(writer),
             source,
             dest,
@@ -102,8 +105,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let mut rcv_raw_frame_count = 0u64;
         let mut last_ack_time = RealClock.now();
 
-        let ack_time_interval = config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
-        let ack_msg_interval = config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
+        let ack_time_interval = hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
+        let ack_msg_interval = hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
         let (mut final_next, final_result, reject_conn) = loop {
             if self.write_state.is_idle()
@@ -128,7 +131,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 match FrameWrite::new(
                     writer,
                     ack,
-                    config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                    hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
                 ) {
                     Ok(fw) => {
                         self.write_state = WriteState::Writing(fw, next.seq);
@@ -371,7 +374,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 let ack = serialize_response(NetRxResponse::Ack(final_next.seq - 1))
                     .map_err(anyhow::Error::from)?;
 
-                let max = config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+                let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
                 let fw =
                     FrameWrite::new(writer, ack, max).map_err(|(_, e)| anyhow::Error::from(e))?;
                 self.write_state = WriteState::Writing(fw, final_next.seq);
@@ -412,7 +415,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 match FrameWrite::new(
                     writer,
                     data,
-                    config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                    hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
                 ) {
                     Ok(fw) => {
                         self.write_state = WriteState::Writing(fw, 0);
@@ -464,7 +467,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     permit_result?.send(message);
                     return Ok(())
                 }
-                _ = RealClock.sleep(config::global::get(config::CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL)) => {
+                _ = RealClock.sleep(hyperactor_config::global::get(config::CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL)) => {
                     // When buffer is full too long, we log it.
                     metrics::CHANNEL_NET_RX_BUFFER_FULL.add(
                         1,
