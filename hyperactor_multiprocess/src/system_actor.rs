@@ -1191,9 +1191,7 @@ impl SystemActor {
             BoxedMailboxSender::new(params.mailbox_router.clone()),
             clock,
         );
-        let actor_handle = system_proc
-            .spawn(SYSTEM_ACTOR_ID.name(), SystemActor::new(params))
-            .await?;
+        let actor_handle = system_proc.spawn(SYSTEM_ACTOR_ID.name(), SystemActor::new(params))?;
 
         Ok((actor_handle, system_proc))
     }
@@ -2333,14 +2331,12 @@ mod tests {
                 "ping",
                 PingPongActor::new(Some(proc_0_undeliverable_tx.bind()), None, None),
             )
-            .await
             .unwrap();
         let pong_handle = proc_1
             .spawn(
                 "pong",
                 PingPongActor::new(Some(proc_1_undeliverable_tx.bind()), None, None),
             )
-            .await
             .unwrap();
 
         // Now kill pong's mailbox server making message delivery

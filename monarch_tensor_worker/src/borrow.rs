@@ -209,7 +209,6 @@ mod tests {
                 })
                 .await?,
             )
-            .await
             .unwrap();
 
         worker_handle
@@ -348,7 +347,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
 
         worker_handle

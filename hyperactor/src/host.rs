@@ -1227,7 +1227,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic() {
         let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()).await });
+            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()) });
         let procs = Arc::clone(&proc_manager.procs);
         let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Local))
             .await

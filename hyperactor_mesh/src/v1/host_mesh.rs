@@ -267,8 +267,7 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn::<HostMeshAgent>("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
-            .await
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 
@@ -437,7 +436,6 @@ impl HostMesh {
         let controller = HostMeshController::new(mesh.deref().clone());
         controller
             .spawn(cx)
-            .await
             .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
@@ -954,7 +952,6 @@ impl HostMeshRef {
             let controller = ProcMeshController::new(mesh.deref().clone());
             controller
                 .spawn(cx)
-                .await
                 .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         }
         mesh

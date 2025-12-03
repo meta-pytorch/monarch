@@ -246,7 +246,7 @@ impl DemoMessageHandler for DemoActor {
 
     async fn spawn_child(&mut self, cx: &Context<Self>) -> Result<ActorRef<Self>, anyhow::Error> {
         tracing::info!("demo: spawn child");
-        Ok(Self.spawn(cx).await?.bind())
+        Ok(Self.spawn(cx)?.bind())
     }
 
     async fn error(&mut self, _cx: &Context<Self>, message: String) -> Result<(), anyhow::Error> {

@@ -258,7 +258,7 @@ impl ProcMeshAgent {
             record_supervision_events: false,
             supervision_events: HashMap::new(),
         };
-        let handle = proc.spawn::<Self>("mesh", agent).await?;
+        let handle = proc.spawn::<Self>("mesh", agent)?;
         Ok((proc, handle))
     }
 
@@ -271,7 +271,7 @@ impl ProcMeshAgent {
             record_supervision_events: true,
             supervision_events: HashMap::new(),
         };
-        proc.spawn::<Self>("agent", agent).await
+        proc.spawn::<Self>("agent", agent)
     }
 
     async fn destroy_and_wait_except_current<'a>(

@@ -43,9 +43,7 @@ impl ProcSupervisionCoordinator {
     pub async fn set(proc: &Proc) -> Result<ReportedEvent, anyhow::Error> {
         let state = ReportedEvent::new();
         let actor = ProcSupervisionCoordinator(state.clone());
-        let coordinator = proc
-            .spawn::<ProcSupervisionCoordinator>("coordinator", actor)
-            .await?;
+        let coordinator = proc.spawn::<ProcSupervisionCoordinator>("coordinator", actor)?;
         proc.set_supervision_coordinator(coordinator.port())?;
         Ok(state)
     }

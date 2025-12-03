@@ -3126,7 +3126,7 @@ mod tests {
         let mut proc = Proc::new(proc_id.clone(), proc_forwarder);
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let foo = proc.spawn("foo", Foo).await.unwrap();
+        let foo = proc.spawn("foo", Foo).unwrap();
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
         let message = MessageEnvelope::new(
             foo.actor_id().clone(),

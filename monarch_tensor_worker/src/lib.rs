@@ -305,8 +305,7 @@ impl WorkerMessageHandler for WorkerActor {
             rank: self.rank.try_into().unwrap(),
         })
         .await?
-        .spawn(cx)
-        .await?;
+        .spawn(cx)?;
 
         let tensor = factory_zeros(&[1], ScalarType::Float, Layout::Strided, device.into());
         let cell = TensorCell::new(tensor);
@@ -449,8 +448,7 @@ impl WorkerMessageHandler for WorkerActor {
             controller_actor: self.controller_actor.clone(),
             respond_with_python_message: self.respond_with_python_message,
         })
-        .spawn(cx)
-        .await?;
+        .spawn(cx)?;
         self.streams.insert(result, Arc::new(handle));
         Ok(())
     }
@@ -1163,7 +1161,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1258,7 +1255,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1309,7 +1305,7 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
                 WorkerActor::new(WorkerParams {
                     world_size: 1,
@@ -1320,7 +1316,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1393,7 +1388,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1468,7 +1462,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         let (split_arg, sort_list, mesh_ref, dim, layout, none, scalar, device, memory_format) =
             Python::with_gil(|py| {
@@ -1758,7 +1751,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1834,7 +1826,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1917,7 +1908,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         let worker_handle2 = proc
             .spawn(
@@ -1931,7 +1921,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
 
         let unique_id = UniqueId::new().unwrap();
@@ -1969,7 +1958,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -2060,7 +2048,6 @@ mod tests {
                 .await
                 .unwrap(),
             )
-            .await
             .unwrap();
 
         let ref_arg: PickledPyObject =

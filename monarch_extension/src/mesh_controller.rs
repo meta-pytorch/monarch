@@ -141,18 +141,15 @@ impl _Controller {
         let controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>> =
             signal_safe_block_on(py, async move {
                 let controller_handle = instance_dispatch!(client, |instance| {
-                    instance
-                        .proc()
-                        .spawn(
-                            &Name::new("mesh_controller").to_string(),
-                            MeshControllerActor::new(MeshControllerActorParams {
-                                proc_mesh,
-                                id,
-                                rank_map,
-                            })
-                            .await,
-                        )
-                        .await?
+                    instance.proc().spawn(
+                        &Name::new("mesh_controller").to_string(),
+                        MeshControllerActor::new(MeshControllerActorParams {
+                            proc_mesh,
+                            id,
+                            rank_map,
+                        })
+                        .await,
+                    )?
                 });
                 Ok::<_, anyhow::Error>(Arc::new(Mutex::new(controller_handle)))
             })??;

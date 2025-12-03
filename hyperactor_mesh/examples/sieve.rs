@@ -87,8 +87,7 @@ impl Handler<NextNumber> for SieveActor {
                     self.next = Some(
                         SieveActor::new(SieveParams { prime: msg.number })
                             .await?
-                            .spawn(cx)
-                            .await?,
+                            .spawn(cx)?,
                     );
                 }
             }

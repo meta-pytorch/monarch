@@ -487,7 +487,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         };
 
         let system_proc = host.system_proc().clone();
-        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host)).await?;
+        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host))?;
 
         Ok(Self {
             host_mesh_agent,
@@ -542,7 +542,6 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
             .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
-            .await
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string())
