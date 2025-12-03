@@ -174,7 +174,7 @@ impl RemoteProcessAllocator {
     /// Start a remote process allocator with given allocator listening for
     /// RemoteProcessAllocatorMessage on serve_addr.
     /// Used for testing.
-    #[tracing::instrument(skip(self, process_allocator))]
+    #[hyperactor::instrument(fields(addr=serve_addr.to_string()))]
     pub async fn start_with_allocator<A: Allocator + Send + Sync + 'static>(
         &self,
         serve_addr: ChannelAddr,

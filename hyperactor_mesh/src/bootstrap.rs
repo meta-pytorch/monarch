@@ -1848,7 +1848,7 @@ impl ProcManager for BootstrapProcManager {
     /// Returns a [`BootstrapProcHandle`] that exposes the child
     /// process's lifecycle (status, wait/ready, termination). Errors
     /// are surfaced as [`HostError`].
-    #[tracing::instrument(skip(self, config))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
