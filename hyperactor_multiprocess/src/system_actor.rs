@@ -35,6 +35,7 @@ use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
 use hyperactor::actor::Handler;
 use hyperactor::channel::ChannelAddr;
@@ -1135,6 +1136,17 @@ pub static SYSTEM_ACTOR_REF: LazyLock<ActorRef<SystemActor>> =
     LazyLock::new(|| ActorRef::attest(id!(system[0].root)));
 
 impl SystemActor {
+    fn new(params: SystemActorParams) -> Self {
+        let supervision_update_timeout = params.supervision_update_timeout.clone();
+        Self {
+            params,
+            supervision_state: SystemSupervisionState::new(supervision_update_timeout),
+            worlds: HashMap::new(),
+            worlds_to_stop: HashMap::new(),
+            shutting_down: false,
+        }
+    }
+
     /// Adds a new world that's awaiting creation to the worlds.
     fn add_new_world(&mut self, world_id: WorldId) -> Result<(), anyhow::Error> {
         let world_state = WorldState {
@@ -1180,7 +1192,7 @@ impl SystemActor {
             clock,
         );
         let actor_handle = system_proc
-            .spawn::<SystemActor>(SYSTEM_ACTOR_ID.name(), params)
+            .spawn(SYSTEM_ACTOR_ID.name(), SystemActor::new(params))
             .await?;
 
         Ok((actor_handle, system_proc))
@@ -1200,19 +1212,6 @@ impl SystemActor {
 
 #[async_trait]
 impl Actor for SystemActor {
-    type Params = SystemActorParams;
-
-    async fn new(params: SystemActorParams) -> Result<Self, anyhow::Error> {
-        let supervision_update_timeout = params.supervision_update_timeout.clone();
-        Ok(Self {
-            params,
-            supervision_state: SystemSupervisionState::new(supervision_update_timeout),
-            worlds: HashMap::new(),
-            worlds_to_stop: HashMap::new(),
-            shutting_down: false,
-        })
-    }
-
     async fn init(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Start to periodically check the unhealthy worlds.
         cx.self_message_with_delay(MaintainWorldHealth {}, Duration::from_secs(0))?;
@@ -1858,7 +1857,6 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::simnet;
-    use hyperactor::test_utils::pingpong::PingPongActorParams;
     use hyperactor_config::Attrs;
 
     use super::*;
@@ -2330,14 +2328,18 @@ mod tests {
         // Spawn two actors 'ping' and 'pong' where 'ping' runs on
         // 'world[0]' and 'pong' on 'world[1]' (that is, not on the
         // same proc).
-        let ping_params = PingPongActorParams::new(Some(proc_0_undeliverable_tx.bind()), None);
         let ping_handle = proc_0
-            .spawn::<PingPongActor>("ping", ping_params)
+            .spawn(
+                "ping",
+                PingPongActor::new(Some(proc_0_undeliverable_tx.bind()), None, None),
+            )
             .await
             .unwrap();
-        let pong_params = PingPongActorParams::new(Some(proc_1_undeliverable_tx.bind()), None);
         let pong_handle = proc_1
-            .spawn::<PingPongActor>("pong", pong_params)
+            .spawn(
+                "pong",
+                PingPongActor::new(Some(proc_1_undeliverable_tx.bind()), None, None),
+            )
             .await
             .unwrap();
 

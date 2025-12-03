@@ -18,15 +18,18 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Actor, Default)]
+#[derive(Debug, Default)]
 struct CounterActor {
     subscribers: Vec<PortRef<u64>>,
     n: u64,
 }
+
+impl Actor for CounterActor {}
 
 #[derive(Serialize, Deserialize, Debug, Named)]
 struct Subscribe(PortRef<u64>);
@@ -52,15 +55,14 @@ struct CountClient {
     counter: PortRef<Subscribe>,
 }
 
+impl CountClient {
+    fn new(counter: PortRef<Subscribe>) -> Self {
+        Self { counter }
+    }
+}
+
 #[async_trait]
 impl Actor for CountClient {
-    // Where to send subscribe messages.
-    type Params = PortRef<Subscribe>;
-
-    async fn new(counter: PortRef<Subscribe>) -> Result<Self, anyhow::Error> {
-        Ok(Self { counter })
-    }
-
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Subscribe to the counter on initialization. We give it our u64 port to report
         // messages back to.
@@ -81,13 +83,19 @@ impl Handler<u64> for CountClient {
 async fn main() {
     let proc = Proc::local();
 
-    let counter_actor: ActorHandle<CounterActor> = proc.spawn("counter", ()).await.unwrap();
+    let counter_actor: ActorHandle<CounterActor> = proc
+        .spawn("counter", CounterActor::default())
+        .await
+        .unwrap();
 
     for i in 0..10 {
         // Spawn new "countees". Every time each subscribes, the counter broadcasts
         // the count to everyone.
         let _countee_actor: ActorHandle<CountClient> = proc
-            .spawn(&format!("countee_{}", i), counter_actor.port().bind())
+            .spawn(
+                &format!("countee_{}", i),
+                CountClient::new(counter_actor.port().bind()),
+            )
             .await
             .unwrap();
         #[allow(clippy::disallowed_methods)]

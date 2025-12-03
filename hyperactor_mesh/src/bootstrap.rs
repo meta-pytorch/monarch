@@ -495,10 +495,12 @@ impl Bootstrap {
 
                 let host = ok!(Host::new(manager, addr).await);
                 let addr = host.addr().clone();
-                let host_mesh_agent = ok!(host
-                    .system_proc()
-                    .clone()
-                    .spawn::<HostMeshAgent>("agent", HostAgentMode::Process(host))
+                let system_proc = host.system_proc().clone();
+                let host_mesh_agent = ok!(system_proc
+                    .spawn::<HostMeshAgent>(
+                        "agent",
+                        HostMeshAgent::new(HostAgentMode::Process(host)),
+                    )
                     .await);
 
                 tracing::info!(
@@ -2357,6 +2359,7 @@ mod tests {
     use hyperactor::ActorId;
     use hyperactor::ActorRef;
     use hyperactor::ProcId;
+    use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
@@ -2619,14 +2622,19 @@ mod tests {
 
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
-        let log_client: ActorRef<LogClientActor> =
-            proc.spawn("log_client", ()).await.unwrap().bind();
+        let log_client_actor = LogClientActor::new(()).await.unwrap();
+        let log_client: ActorRef<LogClientActor> = proc
+            .spawn("log_client", log_client_actor)
+            .await
+            .unwrap()
+            .bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
         // BOOTSTRAP_LOG_CHANNEL).
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn("log_forwarder", log_client.clone())
+            .spawn("log_forwarder", log_forwarder_actor)
             .await
             .unwrap()
             .bind();

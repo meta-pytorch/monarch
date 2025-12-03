@@ -741,14 +741,8 @@ pub mod env {
     /// Returns a URL for the execution trace, if available.
     #[cfg(fbcode_build)]
     pub async fn execution_url() -> anyhow::Result<Option<String>> {
-        let fb = if fbinit::was_performed() {
-            fbinit::expect_init()
-        } else {
-            // Safety: This is going to be embedded in a python library, so we can't be sure when fbinit has been called.
-            unsafe { fbinit::perform_init() }
-        };
         Ok(Some(
-            crate::meta::scuba_tracing::url::get_samples_shorturl(fb, &execution_id()).await?,
+            crate::meta::scuba_tracing::url::get_samples_shorturl(&execution_id()).await?,
         ))
     }
     #[cfg(not(fbcode_build))]

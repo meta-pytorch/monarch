@@ -205,7 +205,10 @@ impl LoggingMeshClient {
                 instance_dispatch!(instance, async move |cx_instance| {
                     cx_instance
                         .proc()
-                        .spawn(&Name::new("log_client").to_string(), ())
+                        .spawn(
+                            &Name::new("log_client").to_string(),
+                            LogClientActor::default(),
+                        )
                         .await
                 })?;
             let client_actor_ref = client_actor.bind();
