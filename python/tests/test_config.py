@@ -6,52 +6,10 @@
 
 # pyre-unsafe
 
-import contextlib
-from typing import Any, Dict, Iterator
-
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import (
-    clear_runtime_config,
-    configure,
-    get_global_config,
-    get_runtime_config,
-)
-
-
-@contextlib.contextmanager
-def configured(**overrides) -> Iterator[Dict[str, Any]]:
-    """Temporarily apply Python-side config overrides for this
-    process.
-
-    This context manager:
-      * snapshots the current **Runtime** configuration layer
-        (`get_runtime_configuration()`),
-      * applies the given `overrides` via `configure(**overrides)`,
-        and
-      * yields the **merged** view of config (`get_configuration()`),
-        including defaults, env, file, and Runtime.
-
-    On exit it restores the previous Runtime layer by:
-      * clearing all Runtime entries, and
-      * re-applying the saved snapshot.
-
-    This is intended for tests, so per-test overrides do not leak into
-    other tests.
-
-    """
-    # Retrieve runtime
-    prev = get_runtime_config()
-    try:
-        # Merge overrides into runtime
-        configure(**overrides)
-
-        # Snapshot of merged config (all layers)
-        yield get_global_config()
-    finally:
-        # Restore previous runtime
-        clear_runtime_config()
-        configure(**prev)
+from monarch._rust_bindings.monarch_hyperactor.config import get_global_config
+from monarch.config import configured
 
 
 def test_get_set_transport() -> None:

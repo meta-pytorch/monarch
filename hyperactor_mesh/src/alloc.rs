@@ -34,15 +34,14 @@ use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
-use hyperactor::attrs::declare_attrs;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::MetaTlsAddr;
-use hyperactor::config;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 pub use local::LocalAlloc;
 pub use local::LocalAllocator;
 use mockall::predicate::*;
@@ -575,7 +574,7 @@ pub(crate) fn serve_with_config<M: RemoteMessage>(
         original.set_ip(inaddr_any);
     }
 
-    let use_inaddr_any = config::global::get(REMOTE_ALLOC_BIND_TO_INADDR_ANY);
+    let use_inaddr_any = hyperactor_config::global::get(REMOTE_ALLOC_BIND_TO_INADDR_ANY);
     let mut original_ip: Option<IpAddr> = None;
     match &mut serve_addr {
         ChannelAddr::Tcp(socket) => {
@@ -652,7 +651,8 @@ impl AllowedPorts {
 static ALLOWED_PORTS: OnceLock<Mutex<AllowedPorts>> = OnceLock::new();
 fn next_allowed_port(ip: IpAddr) -> anyhow::Result<u16> {
     let mutex = ALLOWED_PORTS.get_or_init(|| {
-        let ports = match config::global::try_get_cloned(REMOTE_ALLOC_ALLOWED_PORT_RANGE) {
+        let ports = match hyperactor_config::global::try_get_cloned(REMOTE_ALLOC_ALLOWED_PORT_RANGE)
+        {
             Some(range) => AllowedPorts::Config {
                 range: range.into_iter().collect(),
                 next: AtomicUsize::new(0),
@@ -967,7 +967,7 @@ pub(crate) mod testing {
     async fn test_allocator_stuck_task() {
         // Override config.
         // Use temporary config for this test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::PROCESS_EXIT_TIMEOUT,
             Duration::from_secs(1),

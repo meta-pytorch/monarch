@@ -10,7 +10,7 @@
 Monarch Actor API
 """
 
-from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch.config import configure
 
 # Detect if we're running in IPython/Jupyter
 _in_ipython = False

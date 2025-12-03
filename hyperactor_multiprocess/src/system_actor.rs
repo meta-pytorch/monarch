@@ -1844,7 +1844,6 @@ mod tests {
     use anyhow::Result;
     use hyperactor::PortId;
     use hyperactor::actor::ActorStatus;
-    use hyperactor::attrs::Attrs;
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
@@ -1858,6 +1857,7 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::simnet;
+    use hyperactor_config::Attrs;
 
     use super::*;
     use crate::System;
@@ -2226,7 +2226,7 @@ mod tests {
         use crate::supervision::ProcSupervisor;
 
         // Use temporary config for this test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_secs(1),
