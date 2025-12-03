@@ -1948,14 +1948,17 @@ mod tests {
         let slice_0d = Slice::new(1, vec![], vec![]).unwrap();
         // Let s be a slice with dim(s) = 0. Then: ∃! x ∈ s :
         // coordsₛ(x) = ().
-        assert_eq!(slice_0d.coordinates(1).unwrap(), vec![]);
+        assert_eq!(slice_0d.coordinates(1).unwrap(), Vec::<usize>::new());
 
         assert_eq!(eval(true_(), &slice_0d), vec![1]);
-        assert_eq!(eval(false_(), &slice_0d), vec![]);
+        assert_eq!(eval(false_(), &slice_0d), Vec::<usize>::new());
         assert_eq!(eval(all(true_()), &slice_0d), vec![1]);
-        assert_eq!(eval(all(false_()), &slice_0d), vec![]);
+        assert_eq!(eval(all(false_()), &slice_0d), Vec::<usize>::new());
         assert_eq!(eval(union(true_(), true_()), &slice_0d), vec![1]);
-        assert_eq!(eval(intersection(true_(), false_()), &slice_0d), vec![]);
+        assert_eq!(
+            eval(intersection(true_(), false_()), &slice_0d),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]
@@ -2098,7 +2101,7 @@ mod tests {
                 )
                 .unwrap()
                 .collect::<Vec<_>>(),
-            vec![]
+            Vec::<usize>::new()
         );
     }
 
@@ -2144,7 +2147,7 @@ mod tests {
                 .eval(&EvalOpts::strict(), &slice)
                 .unwrap()
                 .collect::<Vec<_>>(),
-            vec![]
+            Vec::<usize>::new()
         )
     }
 
@@ -2215,7 +2218,7 @@ mod tests {
                 .eval(&EvalOpts::lenient(), &slice)
                 .unwrap()
                 .collect::<Vec<_>>(),
-            vec![]
+            Vec::<usize>::new()
         );
     }
 
@@ -2369,7 +2372,7 @@ mod tests {
             sel.eval(&EvalOpts::strict(), &base)
                 .unwrap()
                 .collect::<Vec<_>>(),
-            vec![]
+            Vec::<usize>::new()
         );
     }
 

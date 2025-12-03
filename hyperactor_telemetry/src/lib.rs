@@ -7,11 +7,13 @@
  */
 
 #![allow(internal_features)]
+#![allow(clippy::disallowed_methods)] // hyperactor_telemetry can't use hyperactor::clock::Clock (circular dependency)
 #![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
 #![feature(cfg_version)]
 #![feature(formatting_options)]
+#![recursion_limit = "256"]
 
 // TODO:ehedeman Remove or replace with better config once telemetry perf issues are solved
 /// Environment variable to disable the OpenTelemetry logging layer.
@@ -52,6 +54,21 @@ const ENV_VALUE_MAST: &str = "mast";
 const ENV_VALUE_TEST: &str = "test";
 #[allow(dead_code)]
 const ENV_VALUE_LOCAL_MAST_SIMULATOR: &str = "local_mast_simulator";
+
+/// A marker field used to indicate that a span should not be recorded as
+/// individual start/end span events; rather the span is purely used to
+/// provide context for child events.
+///
+/// Note that the mechanism for skipping span recording uses the precise
+/// name "skip_record", thus it must be used as a naked identifier:
+/// ```ignore
+/// use hyperactor_telemetry::skip_record;
+///
+/// tracing::span!(..., skip_record);
+/// ```
+#[allow(non_upper_case_globals)]
+// pub const skip_record: tracing::field::Empty = tracing::field::Empty;
+pub const skip_record: bool = true;
 
 pub mod in_memory_reader;
 #[cfg(fbcode_build)]
@@ -633,6 +650,7 @@ pub fn initialize_logging_with_log_prefix(
             tracing::debug!("logging already initialized for this process: {}", err);
         }
         let exec_id = env::execution_id();
+        // setting target to "execution" will prevent the monarch_tracing scuba client from logging this
         tracing::info!(
             target: "execution",
             execution_id = exec_id,
@@ -647,6 +665,20 @@ pub fn initialize_logging_with_log_prefix(
             upstream_revision = build_info::BuildInfo::get_upstream_revision(),
             revision = build_info::BuildInfo::get_revision(),
             "logging_initialized"
+        );
+        // here we have the monarch_executions scuba client log
+        meta::log_execution_event(
+            &exec_id,
+            &Env::current().to_string(),
+            std::env::args().collect(),
+            build_info::BuildInfo::get_build_mode(),
+            build_info::BuildInfo::get_compiler(),
+            build_info::BuildInfo::get_compiler_version(),
+            build_info::BuildInfo::get_rule(),
+            build_info::BuildInfo::get_package_name(),
+            build_info::BuildInfo::get_package_release(),
+            build_info::BuildInfo::get_upstream_revision(),
+            build_info::BuildInfo::get_revision(),
         );
 
         if !is_layer_disabled(DISABLE_OTEL_METRICS) {
@@ -704,6 +736,24 @@ pub mod env {
             std::env::set_var(HYPERACTOR_EXECUTION_ID_ENV, id.clone());
         }
         id
+    }
+
+    /// Returns a URL for the execution trace, if available.
+    #[cfg(fbcode_build)]
+    pub async fn execution_url() -> anyhow::Result<Option<String>> {
+        let fb = if fbinit::was_performed() {
+            fbinit::expect_init()
+        } else {
+            // Safety: This is going to be embedded in a python library, so we can't be sure when fbinit has been called.
+            unsafe { fbinit::perform_init() }
+        };
+        Ok(Some(
+            crate::meta::scuba_tracing::url::get_samples_shorturl(fb, &execution_id()).await?,
+        ))
+    }
+    #[cfg(not(fbcode_build))]
+    pub async fn execution_url() -> anyhow::Result<Option<String>> {
+        Ok(None)
     }
 
     #[derive(PartialEq)]

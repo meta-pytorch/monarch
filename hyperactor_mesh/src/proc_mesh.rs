@@ -30,11 +30,7 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::config;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
 use hyperactor::context;
-use hyperactor::declare_attrs;
 use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -48,6 +44,10 @@ use hyperactor::metrics;
 use hyperactor::proc::Proc;
 use hyperactor::reference::ProcId;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
+use hyperactor_config::global;
 use ndslice::Range;
 use ndslice::Shape;
 use ndslice::ShapeError;
@@ -98,7 +98,7 @@ declare_attrs! {
 
 /// Get the default transport type to use across the application.
 pub fn default_transport() -> ChannelTransport {
-    config::global::get_cloned(DEFAULT_TRANSPORT)
+    global::get_cloned(DEFAULT_TRANSPORT)
 }
 
 /// Single, process-wide supervision sink storage.
@@ -718,7 +718,7 @@ impl ProcMesh {
         match &self.inner {
             ProcMeshKind::V0 { client, .. } => {
                 let timeout =
-                    hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+                    hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
                 let results = join_all(self.agents().map(|agent| async move {
                     let actor_id =
                         ActorId(agent.actor_id().proc_id().clone(), mesh_name.to_string(), 0);
