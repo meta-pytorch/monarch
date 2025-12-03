@@ -265,7 +265,6 @@ impl Name {
         if !reference::is_valid_ident(&name) {
             return Err(NameParseError::InvalidName(name));
         }
-        // TODO:
         if let Some(uuid) = uuid {
             Ok(Self::Suffixed(name, uuid))
         } else {
@@ -334,8 +333,9 @@ impl FromStr for Name {
     type Err = NameParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        // Split from the last in case the name has underscores in it.
-        if let Some((name, uuid)) = s.rsplit_once(NAME_SUFFIX_DELIMITER) {
+        // The delimiter ('-') is allowable in elements, but not identifiers;
+        // thus splitting on this unambiguously parses suffixed and reserved names.
+        if let Some((name, uuid)) = s.split_once(NAME_SUFFIX_DELIMITER) {
             if name.is_empty() {
                 return Err(NameParseError::MissingName);
             }
