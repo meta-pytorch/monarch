@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use dashmap::DashSet;
+use hyperactor_config::attrs::Attrs;
 
 use crate::ActorId;
 use crate::Instance;
@@ -29,7 +30,6 @@ use crate::accum;
 use crate::accum::ErasedCommReducer;
 use crate::accum::ReducerOpts;
 use crate::accum::ReducerSpec;
-use crate::attrs::Attrs;
 use crate::config;
 use crate::data::Serialized;
 use crate::mailbox;
@@ -254,7 +254,7 @@ impl UpdateBuffer {
     /// Push a new item to the buffer, and optionally return any items that should
     /// be flushed.
     fn push(&mut self, serialized: Serialized) -> Option<anyhow::Result<Serialized>> {
-        let limit = config::global::get(config::SPLIT_MAX_BUFFER_SIZE);
+        let limit = hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_SIZE);
 
         self.buffered.push(serialized);
         if self.buffered.len() >= limit {

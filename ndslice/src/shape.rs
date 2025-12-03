@@ -355,6 +355,21 @@ impl FromStr for Shape {
     }
 }
 
+static SHAPE_CACHED_TYPEHASH: std::sync::LazyLock<u64> =
+    std::sync::LazyLock::new(|| cityhasher::hash(<Shape as hyperactor_named::Named>::typename()));
+
+impl hyperactor_named::Named for Shape {
+    fn typename() -> &'static str {
+        "ndslice::shape::Shape"
+    }
+
+    fn typehash() -> u64 {
+        *SHAPE_CACHED_TYPEHASH
+    }
+}
+
+hyperactor_config::impl_attrvalue!(Shape);
+
 /// Construct a new shape with the given set of dimension-size pairs in row-major
 /// order.
 ///
