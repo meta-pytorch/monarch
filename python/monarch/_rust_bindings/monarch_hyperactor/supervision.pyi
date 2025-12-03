@@ -6,7 +6,7 @@
 
 # pyre-unsafe
 
-from typing import final
+from typing import final, Optional
 
 @final
 class SupervisionError(RuntimeError):
@@ -14,7 +14,7 @@ class SupervisionError(RuntimeError):
     Custom exception for supervision-related errors in monarch_hyperactor.
     """
 
-    ...
+    endpoint: str | None  # Settable attribute
 
 # TODO: Make this an exception subclass
 @final

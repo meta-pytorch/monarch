@@ -212,7 +212,7 @@ impl LoggingMeshClient {
 
             // Read config to decide if we stand up per-proc
             // stdout/stderr forwarding.
-            let forwarding_enabled = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
+            let forwarding_enabled = hyperactor_config::global::get(MESH_ENABLE_LOG_FORWARDING);
 
             // 2. Optionally spawn per-proc `LogForwardActor` mesh
             // (stdout/stderr forwarders).
@@ -511,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_world_smoke() {
-        let (proc, instance, host_mesh, proc_mesh) = test_world().await.expect("world failed");
+        let (proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
 
         assert_eq!(
             host_mesh.region().num_ranks(),
@@ -534,11 +534,11 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_respects_forwarding_flag() {
-        let (_, instance, host_mesh, proc_mesh) = test_world().await.expect("world failed");
+        let (_, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh` should be `None`.
         {
@@ -591,11 +591,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_mode_behaviors() {
-        let (_proc, instance, host_mesh, proc_mesh) = test_world().await.expect("world failed");
+        let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh.is_none()`.
         {
@@ -706,11 +706,11 @@ mod tests {
 
     #[tokio::test]
     async fn flush_behaviors() {
-        let (_proc, instance, host_mesh, proc_mesh) = test_world().await.expect("world failed");
+        let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh.is_none()`.
         {

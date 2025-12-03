@@ -11,9 +11,9 @@
 //! This module provides hyperactor_mesh-specific configuration attributes that extend
 //! the base hyperactor configuration system.
 
-use hyperactor::attrs::declare_attrs;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 
 // Declare hyperactor_mesh-specific configuration keys
 declare_attrs! {

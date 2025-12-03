@@ -91,6 +91,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use futures::Sink;
 use futures::Stream;
+use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -109,7 +110,6 @@ use crate::accum::ReducerOpts;
 use crate::accum::ReducerSpec;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
-use crate::attrs::Attrs;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -229,7 +229,7 @@ impl MessageEnvelope {
             data,
             errors: Vec::new(),
             headers,
-            ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
             return_undeliverable: true,
         }
@@ -253,7 +253,7 @@ impl MessageEnvelope {
             sender: source,
             dest,
             errors: Vec::new(),
-            ttl: crate::config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
+            ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
             return_undeliverable: true,
         })
@@ -1185,6 +1185,7 @@ impl MailboxClient {
 }
 
 impl MailboxSender for MailboxClient {
+    #[hyperactor::instrument_infallible]
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
@@ -3450,7 +3451,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_id_sum_reducer() {
-        let config = crate::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let sum_accumulator = accum::sum::<u64>();
@@ -3487,7 +3488,7 @@ mod tests {
     // TODO: OSS: this test is flaky in OSS. Need to repo and fix it.
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_every_n_messages() {
-        let config = crate::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _config_guard = config.override_key(
             crate::config::SPLIT_MAX_BUFFER_AGE,
             Duration::from_secs(600),
@@ -3520,7 +3521,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_timeout_flush() {
-        let config = crate::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 100);
 
         let Setup {
@@ -3563,7 +3564,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_timeout_and_size_flush() {
-        let config = crate::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _config_guard = config.override_key(crate::config::SPLIT_MAX_BUFFER_SIZE, 3);
 
         let Setup {

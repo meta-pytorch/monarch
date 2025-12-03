@@ -24,7 +24,7 @@ import unittest
 import unittest.mock
 from tempfile import TemporaryDirectory
 from types import ModuleType
-from typing import Any, cast, Iterator, NamedTuple, Tuple
+from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 
 import monarch.actor
 import pytest
@@ -34,10 +34,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
-from monarch._rust_bindings.monarch_hyperactor.config import (
-    configure,
-    get_configuration,
-)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     PortRef,
@@ -72,6 +68,7 @@ from monarch.actor import (
     endpoint,
     ProcMesh,
 )
+from monarch.config import configured
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
@@ -460,22 +457,38 @@ class Printer(Actor):
 
 
 class RedirectedPaths(NamedTuple):
+    """Filesystem paths for captured stdio from redirected_stdio().
+
+    `stdout` is the path to the temporary file holding captured
+    stdout.
+
+    `stderr` is the path to the temporary file holding captured
+    stderr, or None if stderr capture was disabled.
+
+    """
+
     stdout: str
     stderr: str | None
 
 
 @contextlib.contextmanager
-def configured(**overrides):
-    prev = get_configuration().copy()
-    configure(**overrides)
-    try:
-        yield get_configuration().copy()
-    finally:
-        configure(**prev)
-
-
-@contextlib.contextmanager
 def redirected_stdio(capture_stderr: bool = True) -> Iterator[RedirectedPaths]:
+    """Temporarily redirect process stdout (and optionally stderr) to
+    temp files.
+
+    This is a context manager / generator that:
+      * dup()s the original OS-level stdout/stderr FDs,
+      * points fd 1 (and optionally fd 2) at temporary files,
+      * swaps sys.stdout/sys.stderr to those files,
+      * yields the on-disk paths of the capture files, and
+      * on exit, flushes/fsyncs, restores the original FDs and
+        sys.std*, and closes the temp files.
+
+    It is primarily intended for tests that need to assert on what a
+    subprocess or library printed to stdout/stderr at the OS FD level.
+
+    """
+
     # Save original OS-level FDs
     original_stdout_fd = os.dup(1)
     original_stderr_fd = os.dup(2) if capture_stderr else None
@@ -554,112 +567,127 @@ def redirected_stdio(capture_stderr: bool = True) -> Iterator[RedirectedPaths]:
             pass
 
 
+@contextlib.contextmanager
+def configured_with_redirected_stdio(
+    capture_stderr: bool = True,
+    **config_overrides: Any,
+) -> Iterator[tuple[Dict[str, Any], RedirectedPaths]]:
+    """Apply config overrides and capture stdio for the duration of
+    the block."""
+    with configured(**config_overrides) as config, redirected_stdio(
+        capture_stderr
+    ) as paths:
+        yield (config, paths)
+
+
 # oss_skip: pytest keeps complaining about mocking get_ipython module
 @pytest.mark.oss_skip
 async def test_actor_log_streaming() -> None:
-    with configured(
-        enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-    ):
-        with redirected_stdio(capture_stderr=True) as paths:
-            pm = this_host().spawn_procs(per_host={"gpus": 2})
-            am = pm.spawn("printer", Printer)
+    with configured_with_redirected_stdio(
+        capture_stderr=True,
+        enable_log_forwarding=True,
+        enable_file_capture=True,
+        tail_log_lines=100,
+    ) as (_, paths):
+        pm = this_host().spawn_procs(per_host={"gpus": 2})
+        am = pm.spawn("printer", Printer)
 
-            # Disable streaming logs to client
-            await pm.logging_option(stream_to_client=False, aggregate_window_sec=None)
+        # Disable streaming logs to client
+        await pm.logging_option(stream_to_client=False, aggregate_window_sec=None)
+        await asyncio.sleep(1)
+
+        # These should not be streamed to client initially
+        for _ in range(5):
+            await am.print.call("no print streaming")
+            await am.log.call("no log streaming")
             await asyncio.sleep(1)
 
-            # These should not be streamed to client initially
-            for _ in range(5):
-                await am.print.call("no print streaming")
-                await am.log.call("no log streaming")
+        # Enable streaming logs to client
+        await pm.logging_option(
+            stream_to_client=True,
+            aggregate_window_sec=1,
+            level=logging.FATAL,
+        )
+        # Give it some time to reflect
+        await asyncio.sleep(1)
+
+        # These should be streamed to client
+        for _ in range(5):
+            await am.print.call("has print streaming")
+            await am.log.call("no log streaming due to level mismatch")
             await asyncio.sleep(1)
 
-            # Enable streaming logs to client
-            await pm.logging_option(
-                stream_to_client=True,
-                aggregate_window_sec=1,
-                level=logging.FATAL,
-            )
-            # Give it some time to reflect
-            await asyncio.sleep(1)
+        # Enable streaming logs to client
+        await pm.logging_option(
+            stream_to_client=True,
+            aggregate_window_sec=1,
+            level=logging.ERROR,
+        )
+        # Give it some time to reflect
+        await asyncio.sleep(1)
 
-            # These should be streamed to client
-            for _ in range(5):
-                await am.print.call("has print streaming")
-                await am.log.call("no log streaming due to level mismatch")
-            await asyncio.sleep(1)
+        # These should be streamed to client
+        for _ in range(5):
+            await am.print.call("has print streaming too")
+            await am.log.call("has log streaming as level matched")
 
-            # Enable streaming logs to client
-            await pm.logging_option(
-                stream_to_client=True,
-                aggregate_window_sec=1,
-                level=logging.ERROR,
-            )
-            # Give it some time to reflect
-            await asyncio.sleep(1)
+        await asyncio.sleep(1)
 
-            # These should be streamed to client
-            for _ in range(5):
-                await am.print.call("has print streaming too")
-                await am.log.call("has log streaming as level matched")
+        # Flush to ensure all output is written before reading
+        sys.stdout.flush()
+        sys.stderr.flush()
 
-            await asyncio.sleep(1)
+        # Read the captured output
+        with open(paths.stdout, "r") as f:
+            stdout_content = f.read()
 
-            # Flush to ensure all output is written before reading
-            sys.stdout.flush()
-            sys.stderr.flush()
+        assert paths.stderr is not None
+        with open(paths.stderr, "r") as f:
+            stderr_content = f.read()
 
-            # Read the captured output
-            with open(paths.stdout, "r") as f:
-                stdout_content = f.read()
+        # Assertions on the captured output
+        # Has a leading context so we can distinguish between streamed log and
+        # the log directly printed by the child processes as they share the same stdout/stderr
+        assert not re.search(
+            r"similar log lines.*no print streaming", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"similar log lines.*no print streaming", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"similar log lines.*no log streaming", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"similar log lines.*no log streaming", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"similar log lines.*no log streaming due to level mismatch",
+            stdout_content,
+        ), stdout_content
+        assert not re.search(
+            r"similar log lines.*no log streaming due to level mismatch",
+            stderr_content,
+        ), stderr_content
 
-            assert paths.stderr is not None
-            with open(paths.stderr, "r") as f:
-                stderr_content = f.read()
-
-            # Assertions on the captured output
-            # Has a leading context so we can distinguish between streamed log and
-            # the log directly printed by the child processes as they share the same stdout/stderr
-            assert not re.search(
-                r"similar log lines.*no print streaming", stdout_content
-            ), stdout_content
-            assert not re.search(
-                r"similar log lines.*no print streaming", stderr_content
-            ), stderr_content
-            assert not re.search(
-                r"similar log lines.*no log streaming", stdout_content
-            ), stdout_content
-            assert not re.search(
-                r"similar log lines.*no log streaming", stderr_content
-            ), stderr_content
-            assert not re.search(
-                r"similar log lines.*no log streaming due to level mismatch",
-                stdout_content,
-            ), stdout_content
-            assert not re.search(
-                r"similar log lines.*no log streaming due to level mismatch",
-                stderr_content,
-            ), stderr_content
-
-            assert re.search(
-                r"similar log lines.*has print streaming", stdout_content
-            ), stdout_content
-            assert not re.search(
-                r"similar log lines.*has print streaming", stderr_content
-            ), stderr_content
-            assert re.search(
-                r"similar log lines.*has print streaming too", stdout_content
-            ), stdout_content
-            assert not re.search(
-                r"similar log lines.*has print streaming too", stderr_content
-            ), stderr_content
-            assert not re.search(
-                r"similar log lines.*log streaming as level matched", stdout_content
-            ), stdout_content
-            assert re.search(
-                r"similar log lines.*log streaming as level matched",
-                stderr_content,
-            ), stderr_content
+        assert re.search(
+            r"similar log lines.*has print streaming", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"similar log lines.*has print streaming", stderr_content
+        ), stderr_content
+        assert re.search(
+            r"similar log lines.*has print streaming too", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"similar log lines.*has print streaming too", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"similar log lines.*log streaming as level matched", stdout_content
+        ), stdout_content
+        assert re.search(
+            r"similar log lines.*log streaming as level matched",
+            stderr_content,
+        ), stderr_content
 
 
 # oss_skip: pytest keeps complaining about mocking get_ipython module
@@ -669,66 +697,66 @@ async def test_alloc_based_log_streaming() -> None:
     """Test both AllocHandle.stream_logs = False and True cases."""
 
     async def test_stream_logs_case(stream_logs: bool, test_name: str) -> None:
-        with configured(
-            enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-        ):
-            with redirected_stdio(capture_stderr=False) as paths:
-                # Create proc mesh with custom stream_logs setting
-                class ProcessAllocatorStreamLogs(ProcessAllocator):
-                    def allocate_nonblocking(
-                        self, spec: AllocSpec
-                    ) -> PythonTask[Alloc]:
-                        return super().allocate_nonblocking(spec)
+        with configured_with_redirected_stdio(
+            capture_stderr=False,
+            enable_log_forwarding=True,
+            enable_file_capture=True,
+            tail_log_lines=100,
+        ) as (_, paths):
+            # Create proc mesh with custom stream_logs setting
+            class ProcessAllocatorStreamLogs(ProcessAllocator):
+                def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
+                    return super().allocate_nonblocking(spec)
 
-                    def _stream_logs(self) -> bool:
-                        return stream_logs
+                def _stream_logs(self) -> bool:
+                    return stream_logs
 
-                alloc = ProcessAllocatorStreamLogs(*_get_bootstrap_args())
+            alloc = ProcessAllocatorStreamLogs(*_get_bootstrap_args())
 
-                host_mesh = HostMesh.allocate_nonblocking(
-                    "host",
-                    Extent(["hosts"], [1]),
-                    alloc,
-                    bootstrap_cmd=_bootstrap_cmd(),
-                )
+            host_mesh = HostMesh.allocate_nonblocking(
+                "host",
+                Extent(["hosts"], [1]),
+                alloc,
+                bootstrap_cmd=_bootstrap_cmd(),
+            )
 
-                pm = host_mesh.spawn_procs(name="proc", per_host={"gpus": 2})
+            pm = host_mesh.spawn_procs(name="proc", per_host={"gpus": 2})
 
-                am = pm.spawn("printer", Printer)
+            am = pm.spawn("printer", Printer)
 
-                await pm.initialized
+            await pm.initialized
 
-                for _ in range(5):
-                    await am.print.call(f"{test_name} print streaming")
+            for _ in range(5):
+                await am.print.call(f"{test_name} print streaming")
 
-                # Wait for at least the aggregation window (3 seconds)
-                await asyncio.sleep(5)
+            # Wait for at least the aggregation window (3 seconds)
+            await asyncio.sleep(5)
 
-                # Flush to ensure all output is written before reading
-                sys.stdout.flush()
+            # Flush to ensure all output is written before reading
+            sys.stdout.flush()
 
-                # Read the captured output
-                with open(paths.stdout, "r") as f:
-                    stdout_content = f.read()
+            # Read the captured output
+            with open(paths.stdout, "r") as f:
+                stdout_content = f.read()
 
-                if not stream_logs:
-                    # When stream_logs=False, logs should not be streamed to client
-                    assert not re.search(
-                        rf"similar log lines.*{test_name} print streaming",
-                        stdout_content,
-                    ), f"stream_logs=False case: {stdout_content}"
-                    assert re.search(
-                        rf"{test_name} print streaming", stdout_content
-                    ), f"stream_logs=False case: {stdout_content}"
-                else:
-                    # When stream_logs=True, logs should be streamed to client (no aggregation by default)
-                    assert re.search(
-                        rf"similar log lines.*{test_name} print streaming",
-                        stdout_content,
-                    ), f"stream_logs=True case: {stdout_content}"
-                    assert not re.search(
-                        rf"\[[0-9]\]{test_name} print streaming", stdout_content
-                    ), f"stream_logs=True case: {stdout_content}"
+            if not stream_logs:
+                # When stream_logs=False, logs should not be streamed to client
+                assert not re.search(
+                    rf"similar log lines.*{test_name} print streaming",
+                    stdout_content,
+                ), f"stream_logs=False case: {stdout_content}"
+                assert re.search(
+                    rf"{test_name} print streaming", stdout_content
+                ), f"stream_logs=False case: {stdout_content}"
+            else:
+                # When stream_logs=True, logs should be streamed to client (no aggregation by default)
+                assert re.search(
+                    rf"similar log lines.*{test_name} print streaming",
+                    stdout_content,
+                ), f"stream_logs=True case: {stdout_content}"
+                assert not re.search(
+                    rf"\[[0-9]\]{test_name} print streaming", stdout_content
+                ), f"stream_logs=True case: {stdout_content}"
 
     # Test both cases
     await test_stream_logs_case(False, "stream_logs_false")
@@ -738,46 +766,48 @@ async def test_alloc_based_log_streaming() -> None:
 # oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
 @pytest.mark.oss_skip
 async def test_logging_option_defaults() -> None:
-    with configured(
-        enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-    ):
-        with redirected_stdio(capture_stderr=True) as paths:
-            pm = this_host().spawn_procs(per_host={"gpus": 2})
-            am = pm.spawn("printer", Printer)
+    with configured_with_redirected_stdio(
+        capture_stderr=True,
+        enable_log_forwarding=True,
+        enable_file_capture=True,
+        tail_log_lines=100,
+    ) as (_, paths):
+        pm = this_host().spawn_procs(per_host={"gpus": 2})
+        am = pm.spawn("printer", Printer)
 
-            for _ in range(5):
-                await am.print.call("print streaming")
-                await am.log.call("log streaming")
+        for _ in range(5):
+            await am.print.call("print streaming")
+            await am.log.call("log streaming")
 
-            # Wait for > default aggregation window (3 seconds)
-            await asyncio.sleep(5)
+        # Wait for > default aggregation window (3 seconds)
+        await asyncio.sleep(5)
 
-            # Flush to ensure all output is written before reading
-            sys.stdout.flush()
-            sys.stderr.flush()
+        # Flush to ensure all output is written before reading
+        sys.stdout.flush()
+        sys.stderr.flush()
 
-            # Read the captured output
-            with open(paths.stdout, "r") as f:
-                stdout_content = f.read()
+        # Read the captured output
+        with open(paths.stdout, "r") as f:
+            stdout_content = f.read()
 
-            assert paths.stderr is not None
-            with open(paths.stderr, "r") as f:
-                stderr_content = f.read()
+        assert paths.stderr is not None
+        with open(paths.stderr, "r") as f:
+            stderr_content = f.read()
 
-            # Assertions on the captured output
-            assert not re.search(
-                r"similar log lines.*print streaming", stdout_content
-            ), stdout_content
-            assert re.search(r"print streaming", stdout_content), stdout_content
-            assert not re.search(
-                r"similar log lines.*print streaming", stderr_content
-            ), stderr_content
-            assert not re.search(
-                r"similar log lines.*log streaming", stdout_content
-            ), stdout_content
-            assert not re.search(
-                r"similar log lines.*log streaming", stderr_content
-            ), stderr_content
+        # Assertions on the captured output
+        assert not re.search(
+            r"similar log lines.*print streaming", stdout_content
+        ), stdout_content
+        assert re.search(r"print streaming", stdout_content), stdout_content
+        assert not re.search(
+            r"similar log lines.*print streaming", stderr_content
+        ), stderr_content
+        assert not re.search(
+            r"similar log lines.*log streaming", stdout_content
+        ), stdout_content
+        assert not re.search(
+            r"similar log lines.*log streaming", stderr_content
+        ), stderr_content
 
 
 class MockEvents:
@@ -838,61 +868,61 @@ async def test_flush_called_only_once() -> None:
 @pytest.mark.timeout(180)
 async def test_flush_logs_ipython() -> None:
     """Test that logs are flushed when get_ipython is available and post_run_cell event is triggered."""
-    with configured(
-        enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-    ):
-        with redirected_stdio(capture_stderr=False) as paths:
-            mock_ipython = MockIPython()
+    with configured_with_redirected_stdio(
+        capture_stderr=False,
+        enable_log_forwarding=True,
+        enable_file_capture=True,
+        tail_log_lines=100,
+    ) as (_, paths):
+        mock_ipython = MockIPython()
 
-            with unittest.mock.patch(
-                "monarch._src.actor.logging.get_ipython",
-                lambda: mock_ipython,
-            ), unittest.mock.patch("monarch._src.actor.logging.IN_IPYTHON", True):
-                # Make sure we can register and unregister callbacks
-                for _ in range(3):
-                    pm1 = this_host().spawn_procs(per_host={"gpus": 2})
-                    pm2 = this_host().spawn_procs(per_host={"gpus": 2})
-                    am1 = pm1.spawn("printer", Printer)
-                    am2 = pm2.spawn("printer", Printer)
+        with unittest.mock.patch(
+            "monarch._src.actor.logging.get_ipython",
+            lambda: mock_ipython,
+        ), unittest.mock.patch("monarch._src.actor.logging.IN_IPYTHON", True):
+            # Make sure we can register and unregister callbacks
+            for _ in range(3):
+                pm1 = this_host().spawn_procs(per_host={"gpus": 2})
+                pm2 = this_host().spawn_procs(per_host={"gpus": 2})
+                am1 = pm1.spawn("printer", Printer)
+                am2 = pm2.spawn("printer", Printer)
 
-                    # Set aggregation window to ensure logs are buffered
-                    await pm1.logging_option(
-                        stream_to_client=True, aggregate_window_sec=600
-                    )
-                    await pm2.logging_option(
-                        stream_to_client=True, aggregate_window_sec=600
-                    )
+                # Set aggregation window to ensure logs are buffered
+                await pm1.logging_option(
+                    stream_to_client=True, aggregate_window_sec=600
+                )
+                await pm2.logging_option(
+                    stream_to_client=True, aggregate_window_sec=600
+                )
 
-                    # Generate some logs that will be aggregated
-                    for _ in range(5):
-                        await am1.print.call("ipython1 test log")
-                        await am2.print.call("ipython2 test log")
+                # Generate some logs that will be aggregated
+                for _ in range(5):
+                    await am1.print.call("ipython1 test log")
+                    await am2.print.call("ipython2 test log")
 
-                    # Trigger the post_run_cell event which should flush logs
-                    mock_ipython.events.trigger(
-                        "post_run_cell", unittest.mock.MagicMock()
-                    )
+                # Trigger the post_run_cell event which should flush logs
+                mock_ipython.events.trigger("post_run_cell", unittest.mock.MagicMock())
 
-            # We expect to register post_run_cell hook only once per notebook/ipython session
-            assert mock_ipython.events.registers == 1
-            assert len(mock_ipython.events.callbacks["post_run_cell"]) == 1
+        # We expect to register post_run_cell hook only once per notebook/ipython session
+        assert mock_ipython.events.registers == 1
+        assert len(mock_ipython.events.callbacks["post_run_cell"]) == 1
 
-            # Flush to ensure all output is written before reading
-            sys.stdout.flush()
+        # Flush to ensure all output is written before reading
+        sys.stdout.flush()
 
-            # Read the captured output
-            with open(paths.stdout, "r") as f:
-                stdout_content = f.read()
+        # Read the captured output
+        with open(paths.stdout, "r") as f:
+            stdout_content = f.read()
 
-            # We triggered post_run_cell three times; in the current
-            # implementation that yields three aggregated groups per
-            # message type (though the counts may be 10, 10, 8 rather than
-            # all 10).
-            pattern1 = r"\[\d+ similar log lines\].*ipython1 test log"
-            pattern2 = r"\[\d+ similar log lines\].*ipython2 test log"
+        # We triggered post_run_cell three times; in the current
+        # implementation that yields three aggregated groups per
+        # message type (though the counts may be 10, 10, 8 rather than
+        # all 10).
+        pattern1 = r"\[\d+ similar log lines\].*ipython1 test log"
+        pattern2 = r"\[\d+ similar log lines\].*ipython2 test log"
 
-            assert len(re.findall(pattern1, stdout_content)) >= 3, stdout_content
-            assert len(re.findall(pattern2, stdout_content)) >= 3, stdout_content
+        assert len(re.findall(pattern1, stdout_content)) >= 3, stdout_content
+        assert len(re.findall(pattern2, stdout_content)) >= 3, stdout_content
 
 
 # oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
@@ -935,60 +965,60 @@ async def test_flush_on_disable_aggregation() -> None:
 
     This tests the corner case: "Make sure we flush whatever in the aggregators before disabling aggregation."
     """
-    with configured(
-        enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-    ):
-        with redirected_stdio(capture_stderr=False) as paths:
-            pm = this_host().spawn_procs(per_host={"gpus": 2})
-            am = pm.spawn("printer", Printer)
+    with configured_with_redirected_stdio(
+        capture_stderr=False,
+        enable_log_forwarding=True,
+        enable_file_capture=True,
+        tail_log_lines=100,
+    ) as (_, paths):
+        pm = this_host().spawn_procs(per_host={"gpus": 2})
+        am = pm.spawn("printer", Printer)
 
-            # Set a long aggregation window to ensure logs aren't flushed immediately
-            await pm.logging_option(stream_to_client=True, aggregate_window_sec=60)
+        # Set a long aggregation window to ensure logs aren't flushed immediately
+        await pm.logging_option(stream_to_client=True, aggregate_window_sec=60)
 
-            # Generate some logs that will be aggregated but not flushed immediately
-            for _ in range(5):
-                await am.print.call("aggregated log line")
-            await asyncio.sleep(1)
+        # Generate some logs that will be aggregated but not flushed immediately
+        for _ in range(5):
+            await am.print.call("aggregated log line")
+        await asyncio.sleep(1)
 
-            # Now disable aggregation - this should trigger an immediate flush
-            await pm.logging_option(stream_to_client=True, aggregate_window_sec=None)
+        # Now disable aggregation - this should trigger an immediate flush
+        await pm.logging_option(stream_to_client=True, aggregate_window_sec=None)
 
-            # Wait a bit to ensure logs are collected
-            await asyncio.sleep(1)
-            for _ in range(5):
-                await am.print.call("single log line")
+        # Wait a bit to ensure logs are collected
+        await asyncio.sleep(1)
+        for _ in range(5):
+            await am.print.call("single log line")
 
-            # Wait for > default aggregation window (3 secs)
-            await asyncio.sleep(5)
+        # Wait for > default aggregation window (3 secs)
+        await asyncio.sleep(5)
 
-            # Flush to ensure all output is written before reading
-            sys.stdout.flush()
+        # Flush to ensure all output is written before reading
+        sys.stdout.flush()
 
-            # Read the captured output
-            with open(paths.stdout, "r") as f:
-                stdout_content = f.read()
+        # Read the captured output
+        with open(paths.stdout, "r") as f:
+            stdout_content = f.read()
 
-            # Verify that logs were flushed when aggregation was disabled
-            # We should see the aggregated logs in the output
-            # 10 = 5 log lines * 2 procs
-            assert re.search(
-                r"\[10 similar log lines\].*aggregated log line", stdout_content
-            ), stdout_content
+        # Verify that logs were flushed when aggregation was disabled
+        # We should see the aggregated logs in the output
+        # 10 = 5 log lines * 2 procs
+        assert re.search(
+            r"\[10 similar log lines\].*aggregated log line", stdout_content
+        ), stdout_content
 
-            # No aggregated single log lines
-            assert not re.search(
-                r"similar log lines.*single log line", stdout_content
-            ), stdout_content
+        # No aggregated single log lines
+        assert not re.search(
+            r"similar log lines.*single log line", stdout_content
+        ), stdout_content
 
-            # 10 = 5 log lines * 2 procs
-            total_single = len(
-                re.findall(
-                    r"\[.* [0-9]+\](?: \[[0-9]+\])? single log line", stdout_content
-                )
-            )
-            assert (
-                total_single == 10
-            ), f"Expected 10 single log lines, got {total_single} from {stdout_content}"
+        # 10 = 5 log lines * 2 procs
+        total_single = len(
+            re.findall(r"\[.* [0-9]+\](?: \[[0-9]+\])? single log line", stdout_content)
+        )
+        assert (
+            total_single == 10
+        ), f"Expected 10 single log lines, got {total_single} from {stdout_content}"
 
 
 @pytest.mark.timeout(120)
@@ -1033,47 +1063,49 @@ async def test_adjust_aggregation_window() -> None:
 
     This tests the corner case: "This can happen if the user has adjusted the aggregation window."
     """
-    with configured(
-        enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-    ):
-        with redirected_stdio(capture_stderr=False) as paths:
-            pm = this_host().spawn_procs(per_host={"gpus": 2})
-            am = pm.spawn("printer", Printer)
+    with configured_with_redirected_stdio(
+        capture_stderr=False,
+        enable_log_forwarding=True,
+        enable_file_capture=True,
+        tail_log_lines=100,
+    ) as (_, paths):
+        pm = this_host().spawn_procs(per_host={"gpus": 2})
+        am = pm.spawn("printer", Printer)
 
-            # Set a long aggregation window initially
-            await pm.logging_option(stream_to_client=True, aggregate_window_sec=100)
+        # Set a long aggregation window initially
+        await pm.logging_option(stream_to_client=True, aggregate_window_sec=100)
 
-            # Generate some logs that will be aggregated
-            for _ in range(3):
-                await am.print.call("first batch of logs")
-            await asyncio.sleep(1)
+        # Generate some logs that will be aggregated
+        for _ in range(3):
+            await am.print.call("first batch of logs")
+        await asyncio.sleep(1)
 
-            # Now adjust to a shorter window - this should update the flush deadline
-            await pm.logging_option(stream_to_client=True, aggregate_window_sec=2)
+        # Now adjust to a shorter window - this should update the flush deadline
+        await pm.logging_option(stream_to_client=True, aggregate_window_sec=2)
 
-            # Generate more logs
-            for _ in range(3):
-                await am.print.call("second batch of logs")
+        # Generate more logs
+        for _ in range(3):
+            await am.print.call("second batch of logs")
 
-            # Wait for > aggregation window (2 secs)
-            await asyncio.sleep(4)
+        # Wait for > aggregation window (2 secs)
+        await asyncio.sleep(4)
 
-            # Flush to ensure all output is written before reading
-            sys.stdout.flush()
+        # Flush to ensure all output is written before reading
+        sys.stdout.flush()
 
-            # Read the captured output
-            with open(paths.stdout, "r") as f:
-                stdout_content = f.read()
+        # Read the captured output
+        with open(paths.stdout, "r") as f:
+            stdout_content = f.read()
 
-            # Verify that logs were flushed when the aggregation window was adjusted
-            # We should see both batches of logs in the output
-            assert re.search(
-                r"\[6 similar log lines\].*first batch of logs", stdout_content
-            ), stdout_content
+        # Verify that logs were flushed when the aggregation window was adjusted
+        # We should see both batches of logs in the output
+        assert re.search(
+            r"\[6 similar log lines\].*first batch of logs", stdout_content
+        ), stdout_content
 
-            assert re.search(
-                r"similar log lines.*second batch of logs", stdout_content
-            ), stdout_content
+        assert re.search(
+            r"similar log lines.*second batch of logs", stdout_content
+        ), stdout_content
 
 
 class SendAlot(Actor):

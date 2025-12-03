@@ -266,6 +266,11 @@ impl PythonActorMeshImpl {
                                         .extract::<i32>()
                                         .unwrap();
                                     tracing::error!(
+                                        name = "ActorMeshStatus",
+                                        status = "SupervisionError::UnhandledFaultHook",
+                                        actor_name = failure.mesh_name,
+                                        event = %failure.event,
+                                        rank = failure.rank,
                                         "unhandled event reached unhandled_fault_hook: {}, which is exiting the process with code {}",
                                         failure,
                                         code
@@ -275,6 +280,11 @@ impl PythonActorMeshImpl {
                                     // The callback raised some other exception, and there's
                                     // no way to handle it. Just exit the process anyways
                                     tracing::error!(
+                                        name = "ActorMeshStatus",
+                                        status = "SupervisionError::UnhandledFaultHook",
+                                        actor_name = failure.mesh_name,
+                                        event = %failure.event,
+                                        rank = failure.rank,
                                         "unhandled event reached unhandled_fault_hook: {}, which raised an exception: {:?}. \
                                         Exiting the process with code 1",
                                         failure,
@@ -284,6 +294,11 @@ impl PythonActorMeshImpl {
                                 }
                             } else {
                                 tracing::warn!(
+                                    name = "ActorMeshStatus",
+                                    status = "SupervisionError::UnhandledFaultHook",
+                                    actor_name = failure.mesh_name,
+                                    event = %failure.event,
+                                    rank = failure.rank,
                                     "unhandled event reached unhandled_fault_hook: {}, but that function produced no exception or crash. Ignoring the error",
                                     failure
                                 );
@@ -711,12 +726,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             .unwrap_or_else(|e| e.into_inner())
         {
             Unhealthy::StreamClosed => {
-                return Err(SupervisionError::new_err(
+                return Err(PyErr::new::<SupervisionError, _>(
                     "actor mesh is stopped due to proc mesh shutdown".to_string(),
                 ));
             }
             Unhealthy::Crashed(event) => {
-                return Err(SupervisionError::new_err(format!(
+                return Err(PyErr::new::<SupervisionError, _>(format!(
                     "Actor {} is unhealthy with reason: {}",
                     event.actor_id, event.actor_status
                 )));
@@ -730,7 +745,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                         .get(&rank)
                         .map(|entry| entry.value().clone())
                 }) {
-                    return Err(SupervisionError::new_err(format!(
+                    return Err(PyErr::new::<SupervisionError, _>(format!(
                         "Actor {} is unhealthy with reason: {}",
                         event.actor_id, event.actor_status
                     )));

@@ -30,15 +30,12 @@ use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-#[cfg(test)]
 use hyperactor::clock::Clock as _;
-#[cfg(test)]
 use hyperactor::clock::RealClock;
-use hyperactor::config;
-use hyperactor::config::global::Source;
 #[cfg(test)]
 use hyperactor::mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::global::Source;
 use ndslice::Point;
 #[cfg(test)]
 use ndslice::ViewExt as _;
@@ -156,6 +153,29 @@ impl Handler<ActorSupervisionEvent> for TestActorWithSupervisionHandling {
     }
 }
 
+/// A test actor that sleeps when it receives a Duration message.
+/// Used for testing timeout and abort behavior.
+#[derive(Default, Debug)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [std::time::Duration],
+)]
+pub struct SleepActor;
+
+impl Actor for SleepActor {}
+
+#[async_trait]
+impl Handler<std::time::Duration> for SleepActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        duration: std::time::Duration,
+    ) -> Result<(), anyhow::Error> {
+        RealClock.sleep(duration).await;
+        Ok(())
+    }
+}
+
 /// A message to forward to a visit list of ports.
 /// Each port removes the next entry, and adds it to the
 /// 'visited' list.
@@ -243,7 +263,7 @@ impl Handler<SetConfigAttrs> for TestActor {
         SetConfigAttrs(attrs): SetConfigAttrs,
     ) -> Result<(), anyhow::Error> {
         let attrs = bincode::deserialize(&attrs)?;
-        config::global::set(Source::Runtime, attrs);
+        hyperactor_config::global::set(Source::Runtime, attrs);
         Ok(())
     }
 }
@@ -258,7 +278,7 @@ impl Handler<GetConfigAttrs> for TestActor {
         cx: &Context<Self>,
         GetConfigAttrs(reply): GetConfigAttrs,
     ) -> Result<(), anyhow::Error> {
-        let attrs = bincode::serialize(&config::global::attrs())?;
+        let attrs = bincode::serialize(&hyperactor_config::global::attrs())?;
         reply.send(cx, attrs)?;
         Ok(())
     }

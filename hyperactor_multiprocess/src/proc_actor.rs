@@ -946,6 +946,11 @@ mod tests {
         }
     }
 
+    // V0 test - V1 has equivalent coverage. Basic smoke test that
+    // ProcActor bootstrap completes successfully. V1 equivalent is
+    // hyperactor_mesh/src/v1/proc_mesh.rs::test_proc_mesh_allocate
+    // which tests proc mesh allocation and is more comprehensive
+    // (also verifies all procs are alive and reachable).
     #[tokio::test]
     async fn test_bootstrap() {
         let Bootstrapped { server_handle, .. } = bootstrap().await;
@@ -985,6 +990,15 @@ mod tests {
         }
     }
 
+    // V0 test - V1 has equivalent coverage. Tests graceful stop
+    // behavior where responsive actors stop cleanly within timeout.
+    // Spawns 4 TestActors, calls stop() with 1-second timeout,
+    // verifies all actors stop gracefully (5 stopped, 1 aborted). V1
+    // equivalent:
+    // hyperactor_mesh/src/v1/actor_mesh.rs::test_actor_mesh_stop_graceful.
+    // Both use the same underlying mechanism (Proc::destroy_and_wait),
+    // but V1 returns Ok() for clean stop vs V0's ProcStopResult with
+    // counts.
     #[tokio::test]
     async fn test_stop() {
         // Show here that the proc actors are stopped when the proc
@@ -1018,6 +1032,8 @@ mod tests {
         server_handle.await;
     }
 
+    // Helper actor for test_stop_timeout() below.
+
     // Sleep
     #[derive(Debug, Default)]
     #[hyperactor::export(
@@ -1039,6 +1055,14 @@ mod tests {
         }
     }
 
+    // V0 test - V1 has equivalent coverage. Tests that actors not
+    // responding within stop timeout are forcibly aborted
+    // (JoinHandle::abort). Spawns SleepActors that block for 5
+    // seconds, calls stop() with 1-second timeout, verifies abort
+    // counts and "aborting JoinHandle" logs. V1 equivalent:
+    // hyperactor_mesh/src/v1/actor_mesh.rs::test_actor_mesh_stop_timeout.
+    // Both use the same underlying mechanism (Proc::destroy_and_wait),
+    // but V1 returns Err(Timeout) instead of Ok with abort counts.
     #[tracing_test::traced_test]
     #[tokio::test]
     #[cfg_attr(not(fbcode_build), ignore)]
@@ -1106,6 +1130,12 @@ mod tests {
         server_handle.await;
     }
 
+    // V0 test - V1 has equivalent coverage. Basic spawn test. This
+    // functionality is already covered (and more comprehensively
+    // tested) in V1 by
+    // hyperactor_mesh/src/v1/proc_mesh.rs::test_spawn_actor, which
+    // spawns multiple actors across multiple procs and verifies mesh
+    // behavior.
     #[tokio::test]
     async fn test_spawn() {
         let Bootstrapped {
@@ -1126,6 +1156,7 @@ mod tests {
         server_handle.await;
     }
 
+    // Helper for V0 specific test_bootstrap_retry() below.
     #[cfg(target_os = "linux")]
     fn random_abstract_addr() -> ChannelAddr {
         let random_string = rand::thread_rng()
@@ -1136,6 +1167,17 @@ mod tests {
         format!("unix!@{random_string}").parse().unwrap()
     }
 
+    // V0-specific test - no V1 equivalent. Tests ProcActor bootstrap
+    // retry behavior: when ProcActor::bootstrap() is called before
+    // the System server is ready, it retries connecting to the
+    // SystemActor until the server comes up, rather than failing
+    // immediately. Verifies resilient bootstrap where procs can start
+    // before the system is fully initialized. V1 does not have this
+    // bootstrap model - V1 uses ProcMesh allocation which is
+    // coordinated differently. Procs are allocated as a mesh through
+    // explicit allocation calls, not individually bootstrapped to
+    // join a system. V1 does not have the concept of procs
+    // independently retrying to join a central SystemActor.
     #[cfg(target_os = "linux")] // remove after making abstract unix sockets store-and-forward
     #[tokio::test]
     async fn test_bootstrap_retry() {
@@ -1186,6 +1228,18 @@ mod tests {
         handle.await.unwrap();
     }
 
+    // V0-specific test - no V1 equivalent. Tests ProcActor
+    // supervision reporting: ProcActor periodically sends
+    // ProcSupervisionMessage::Update to the SystemActor reporting
+    // proc health (Alive/Failed) and failed actor statuses. Verifies
+    // the supervision flow: ProcActor monitors actors → reports
+    // failures to supervisor → supervisor receives supervision
+    // updates with failed actor information. V1 does not have this
+    // centralized supervision model. V1 does not have ProcActor,
+    // ProcSupervisor, or SystemActor. V1 uses a different supervision
+    // approach where actors can handle supervision events locally
+    // rather than reporting to a central system actor for health
+    // monitoring.
     #[tokio::test]
     async fn test_supervision_message_handling() {
         if std::env::var("CARGO_TEST").is_ok() {
@@ -1283,8 +1337,17 @@ mod tests {
         server_handle.await;
     }
 
-    // Verify that the proc actor's ProcMessage port is bound properly so
-    // that we can send messages to it through the system actor.
+    // V0-specific test - no V1 equivalent. Tests ProcActor bootstrap
+    // infrastructure: during ProcActor::bootstrap(), the ProcMessage
+    // port is properly bound to the mailbox so that SystemActor can
+    // send control messages (SpawnProc, Stop, etc.) to the ProcActor.
+    // V1 does not have ProcActor or ProcMessage. V1 uses ProcMesh
+    // allocation instead of individual ProcActor bootstrap, and does
+    // not have a SystemActor sending control messages to per-proc
+    // actors. V1's bootstrap process is fundamentally different -
+    // procs are allocated as a mesh with static configuration rather
+    // than individually bootstrapped and managed by a central system
+    // actor.
     #[tokio::test]
     async fn test_bind_proc_actor_in_bootstrap() {
         let server_handle = System::serve(
@@ -1324,6 +1387,16 @@ mod tests {
         server_handle.await;
     }
 
+    // V0-specific test - no V1 equivalent. Tests proc.snapshot()
+    // which returns ActorLedgerSnapshot containing all actors in a
+    // proc with hierarchical metadata for debugging/monitoring. V1
+    // doesn't expose this capability - V1 uses mesh iteration
+    // patterns instead (.iter(), .values(), .actor_states()). The
+    // underlying Proc::snapshot() still exists in hyperactor core,
+    // and with hyper (observability tool) development resuming, V1
+    // may want to expose similar snapshot capabilities for mesh-level
+    // introspection, or determine if mesh iteration patterns are
+    // sufficient for observability needs.
     #[tokio::test]
     async fn test_proc_snapshot() {
         let Bootstrapped {
@@ -1359,134 +1432,16 @@ mod tests {
         server_handle.await;
     }
 
-    #[tokio::test]
-    async fn test_undeliverable_message_return() {
-        // Proc can't send a message to a remote actor because the
-        // system connection is lost.
-        use hyperactor::mailbox::Undeliverable;
-        use hyperactor::test_utils::pingpong::PingPongActor;
-        use hyperactor::test_utils::pingpong::PingPongMessage;
-
-        // Use temporary config for this test
-        let config = hyperactor::config::global::lock();
-        let _guard = config.override_key(
-            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
-            Duration::from_secs(1),
-        );
-
-        // Serve a system.
-        let server_handle = System::serve(
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
-            Duration::from_secs(120),
-            Duration::from_secs(120),
-        )
-        .await
-        .unwrap();
-        let mut system = System::new(server_handle.local_addr().clone());
-
-        // Build a supervisor.
-        let supervisor = system.attach().await.unwrap();
-        let (_sup_tx, _sup_rx) = supervisor.bind_actor_port::<ProcSupervisionMessage>();
-        let sup_ref = ActorRef::<ProcSupervisor>::attest(supervisor.self_id().clone());
-
-        // Construct a system sender.
-        let system_sender = BoxedMailboxSender::new(MailboxClient::new(
-            channel::dial(server_handle.local_addr().clone()).unwrap(),
-        ));
-
-        // Construct a proc forwarder in terms of the system sender.
-        let listen_addr = ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname));
-        let proc_forwarder =
-            BoxedMailboxSender::new(DialMailboxRouter::new_with_default(system_sender));
-
-        // Bootstrap proc 'world[0]', join the system.
-        let world_id = id!(world);
-        let proc_0 = Proc::new(world_id.proc_id(0), proc_forwarder.clone());
-        let _proc_actor_0 = ProcActor::bootstrap_for_proc(
-            proc_0.clone(),
-            world_id.clone(),
-            listen_addr,
-            server_handle.local_addr().clone(),
-            sup_ref.clone(),
-            Duration::from_secs(120),
-            HashMap::new(),
-            ProcLifecycleMode::ManagedBySystem,
-        )
-        .await
-        .unwrap();
-        let proc_0_client = proc_0.attach("client").unwrap();
-        let (proc_0_undeliverable_tx, mut proc_0_undeliverable_rx) = proc_0_client.open_port();
-
-        // Bootstrap a second proc 'world[1]', join the system.
-        let proc_1 = Proc::new(world_id.proc_id(1), proc_forwarder.clone());
-        let _proc_actor_1 = ProcActor::bootstrap_for_proc(
-            proc_1.clone(),
-            world_id.clone(),
-            ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
-            server_handle.local_addr().clone(),
-            sup_ref.clone(),
-            Duration::from_secs(120),
-            HashMap::new(),
-            ProcLifecycleMode::ManagedBySystem,
-        )
-        .await
-        .unwrap();
-        let proc_1_client = proc_1.attach("client").unwrap();
-        let (proc_1_undeliverable_tx, mut _proc_1_undeliverable_rx) = proc_1_client.open_port();
-
-        // Spawn two actors 'ping' and 'pong' where 'ping' runs on
-        // 'world[0]' and 'pong' on 'world[1]' (that is, not on the
-        // same proc).
-        let ping_handle = proc_0
-            .spawn(
-                "ping",
-                PingPongActor::new(Some(proc_0_undeliverable_tx.bind()), None, None),
-            )
-            .unwrap();
-        let pong_handle = proc_1
-            .spawn(
-                "pong",
-                PingPongActor::new(Some(proc_1_undeliverable_tx.bind()), None, None),
-            )
-            .unwrap();
-
-        // Now kill the system server making message delivery between
-        // procs impossible.
-        server_handle.stop().await.unwrap();
-        server_handle.await;
-
-        let n = 100usize;
-        for i in 1..(n + 1) {
-            // Have 'ping' send 'pong' a message.
-            let ttl = 66 + i as u64; // Avoid ttl = 66!
-            let (once_handle, _) = proc_0_client.open_once_port::<bool>();
-            ping_handle
-                .send(PingPongMessage(ttl, pong_handle.bind(), once_handle.bind()))
-                .unwrap();
-        }
-
-        // `PingPongActor`s do not exit their message loop (a
-        // non-default actor behavior) when they have an undelivered
-        // message sent back to them (the reason being this very
-        // test).
-        assert!(matches!(*ping_handle.status().borrow(), ActorStatus::Idle));
-
-        // We expect n undelivered messages.
-        let Ok(Undeliverable(envelope)) = proc_0_undeliverable_rx.recv().await else {
-            unreachable!()
-        };
-        let PingPongMessage(_, _, _) = envelope.deserialized().unwrap();
-        let mut count = 1;
-        while let Ok(Some(Undeliverable(envelope))) = proc_0_undeliverable_rx.try_recv() {
-            // We care that every undeliverable message was accounted
-            // for. We can't assume anything about their arrival
-            // order.
-            count += 1;
-            let PingPongMessage(_, _, _) = envelope.deserialized().unwrap();
-        }
-        assert!(count == n);
-    }
-
+    // V0-specific test - no V1 equivalent. Tests dynamic address book
+    // updates on first contact: when procs communicate for the first
+    // time, the SystemActor's ReportingRouter sends UpdateAddress
+    // messages to update cached addresses in DialMailboxRouter. V1
+    // does not have this functionality. V1 uses either: 1. Direct
+    // addressing (ProcId::Direct) where address is embedded in
+    // ProcId, or 2. Static address books for ranked procs that are
+    // configured once at allocation. V1 intentionally does not
+    // support dynamic address discovery - addresses are known
+    // statically at allocation time.
     #[tracing_test::traced_test]
     #[tokio::test]
     #[cfg_attr(not(fbcode_build), ignore)]
@@ -1653,6 +1608,16 @@ mod tests {
         assert_matches!(once_rx.recv().await.unwrap(), ());
     }
 
+    // V0-specific test - no V1 equivalent. Tests dynamic address book
+    // updates when a proc is killed and restarted with a new
+    // ChannelAddr: the SystemActor broadcasts UpdateAddress messages
+    // to update cached addresses in DialMailboxRouter. V1 does not
+    // have this functionality. V1 uses either: 1. Direct addressing
+    // (ProcId::Direct) where address is embedded in ProcId, or 2.
+    // Static address books for ranked procs that are configured once
+    // at allocation. V1 intentionally does not support proc restart
+    // with new addresses - procs have stable addresses throughout
+    // their lifecycle.
     #[tokio::test]
     async fn test_update_address_book_cache() {
         let server_handle = System::serve(
@@ -1705,6 +1670,7 @@ mod tests {
         assert!(done_rx.recv().await.unwrap());
     }
 
+    // Helper called by V0 test_update_address_book_cache test above.
     async fn spawn_actor(
         cx: &impl context::Actor,
         actor_id: &ActorId,

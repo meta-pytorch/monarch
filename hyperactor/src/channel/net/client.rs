@@ -17,6 +17,7 @@ use std::ops::DerefMut;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use enum_as_inner::EnumAsInner;
+use hyperactor_telemetry::skip_record;
 use tokio::io::AsyncWriteExt;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
@@ -43,7 +44,6 @@ use crate::channel::net::NetRxResponse;
 use crate::channel::net::NetTx;
 use crate::channel::net::Stream;
 use crate::channel::net::deserialize_response;
-use crate::channel::net::serialize_bincode;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
@@ -229,7 +229,8 @@ impl<'a, M: RemoteMessage> Outbox<'a, M> {
         match self.deque.front() {
             None => false,
             Some(msg) => {
-                msg.received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+                msg.received_at.elapsed()
+                    > hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
             }
         }
     }
@@ -265,7 +266,8 @@ impl<'a, M: RemoteMessage> Outbox<'a, M> {
         );
 
         let frame = Frame::Message(self.next_seq, message);
-        let message = serialize_bincode(&frame).map_err(|e| format!("serialization error: {e}"))?;
+        let message = serde_multipart::serialize_bincode(&frame)
+            .map_err(|e| format!("serialization error: {e}"))?;
         let message_size = message.frame_len();
         metrics::REMOTE_MESSAGE_SEND_SIZE.record(message_size as f64, &[]);
 
@@ -436,7 +438,7 @@ impl<'a, M: RemoteMessage> Unacked<'a, M> {
     fn is_expired(&self) -> bool {
         matches!(
             self.deque.front(),
-            Some(msg) if msg.received_at.elapsed() > config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+            Some(msg) if msg.received_at.elapsed() > hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
         )
     }
 
@@ -448,7 +450,8 @@ impl<'a, M: RemoteMessage> Unacked<'a, M> {
             Some(msg) => {
                 RealClock
                     .sleep_until(
-                        msg.received_at + config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                        msg.received_at
+                            + hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
                     )
                     .await
             }
@@ -635,39 +638,33 @@ async fn run<M: RemoteMessage>(
         _ => (),
     }
 
-    // Notify senders that this link is no longer usable
-    if let Err(err) = notify.send(TxStatus::Closed) {
-        tracing::debug!(
-            dest = %dest,
-            error = %err,
-            session_id = session_id,
-            "tx status update error"
-        );
-    }
+    // Notify senders that this link is no longer usable. It is okay if the notify
+    // channel is closed because that means no one is listening for the notification.
+    let _ = notify.send(TxStatus::Closed);
 
-    if let Conn::Connected {
-        write_state: WriteState::Writing(mut frame_writer, ()),
-        ..
-    } = conn
-    {
-        if let Err(err) = frame_writer.send().await {
-            tracing::info!(
-                parent: &span,
-                dest = %dest,
-                error = %err,
-                session_id = session_id,
-                "write error during cleanup"
-            );
-        } else if let Err(err) = frame_writer.complete().flush().await {
-            tracing::info!(
-                parent: &span,
-                dest = %dest,
-                error = %err,
-                session_id = session_id,
-                "flush error during cleanup"
-            );
+    match conn {
+        Conn::Connected {
+            mut write_state, ..
+        } => {
+            if let WriteState::Writing(frame_writer, ()) = &mut write_state {
+                if let Err(err) = frame_writer.send().await {
+                    tracing::info!(
+                        parent: &span,
+                        dest = %dest,
+                        error = %err,
+                        session_id = session_id,
+                        "write error during cleanup"
+                    );
+                }
+            };
+            if let Some(mut w) = write_state.into_writer() {
+                // Try to shutdown the connection gracefully. This is a best effort
+                // operation, and we don't care if it fails.
+                let _ = w.shutdown().await;
+            }
         }
-    }
+        Conn::Disconnected(_) => (),
+    };
 
     tracing::info!(
         parent: &span,
@@ -802,6 +799,7 @@ where
         largest_acked = largest_acked.as_value(),
         outbox = QueueValue::from(&deliveries.outbox.deque).as_value(),
         unacked = QueueValue::from(&deliveries.unacked.deque).as_value(),
+        skip_record,
     )
 }
 
@@ -869,7 +867,7 @@ where
                 ..
             },
         ) if !outbox.is_empty() => {
-            let max = config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+            let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
             let len = outbox.front_size().expect("not empty");
             let message = outbox.front_message().expect("not empty");
 
@@ -927,7 +925,7 @@ where
             tokio::select! {
                 biased;
 
-                ack_result = reader.next() => {
+                ack_result = reader.next().instrument(tracing::span!(Level::ERROR, "read ack", skip_record)) => {
                     match ack_result {
                         Ok(Some(buffer)) => {
                             match deserialize_response(buffer) {
@@ -937,8 +935,8 @@ where
                                             unacked.prune(ack, RealClock.now(), &link.dest(), session_id);
                                             (State::Running(Deliveries { outbox, unacked }), Conn::Connected { reader, write_state })
                                         }
-                                        NetRxResponse::Reject => {
-                                            let error_msg = "server rejected connection";
+                                        NetRxResponse::Reject(reason) => {
+                                            let error_msg = format!("server rejected connection due to: {reason}");
                                             tracing::error!(
                                                         dest = %link.dest(),
                                                         session_id = session_id,
@@ -946,7 +944,19 @@ where
                                                     );
                                             (State::Closing {
                                                 deliveries: Deliveries{outbox, unacked},
-                                                reason: format!("{log_id}: {error_msg}"),
+                                                reason: error_msg,
+                                            }, Conn::reconnect_with_default())
+                                        }
+                                        NetRxResponse::Closed => {
+                                            let msg = "server closed the channel".to_string();
+                                            tracing::info!(
+                                                        dest = %link.dest(),
+                                                        session_id = session_id,
+                                                        "{}", msg
+                                                    );
+                                            (State::Closing {
+                                                deliveries: Deliveries{outbox, unacked},
+                                                reason: msg,
                                             }, Conn::reconnect_with_default())
                                         }
                                     }
@@ -991,7 +1001,7 @@ where
                 _ = unacked.wait_for_timeout(), if !unacked.is_empty() => {
                     let error_msg = format!(
                         "failed to receive ack within timeout {:?}; link is currently connected",
-                        config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                        hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
                     );
                     tracing::error!(
                                 dest = %link.dest(),
@@ -1007,7 +1017,7 @@ where
 
                 // We have to be careful to manage outgoing write states, so that we never write
                 // partial frames in the presence cancellation.
-                send_result = write_state.send() => {
+                send_result = write_state.send().instrument(tracing::span!(Level::ERROR, "write bytes", skip_record)) => {
                     match send_result {
                         Ok(()) => {
                             let mut message = outbox.pop_front().expect("outbox should not be empty");
@@ -1090,7 +1100,7 @@ where
             if outbox.is_expired() {
                 let error_msg = format!(
                     "failed to deliver message within timeout {:?}",
-                    config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
+                    hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
                 );
                 tracing::error!(
                     dest = %link.dest(),
@@ -1107,7 +1117,7 @@ where
             } else if unacked.is_expired() {
                 let error_msg = format!(
                     "failed to receive ack within timeout {:?}; link is currently broken",
-                    config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                    hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
                 );
                 tracing::error!(
                     dest = %link.dest(),
@@ -1124,12 +1134,14 @@ where
             } else {
                 match link.connect().await {
                     Ok(stream) => {
-                        let message = serialize_bincode(&Frame::<M>::Init(session_id)).unwrap();
+                        let message =
+                            serde_multipart::serialize_bincode(&Frame::<M>::Init(session_id))
+                                .unwrap();
 
                         let mut write = FrameWrite::new(
                             stream,
                             message.framed(),
-                            config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
                         )
                         .expect("enough length");
                         let initialized = write.send().await.is_ok();
@@ -1172,7 +1184,9 @@ where
                                 Conn::Connected {
                                     reader: FrameReader::new(
                                         reader,
-                                        config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                                        hyperactor_config::global::get(
+                                            config::CODEC_MAX_FRAME_LENGTH,
+                                        ),
                                     ),
                                     write_state: WriteState::Idle(writer),
                                 }
