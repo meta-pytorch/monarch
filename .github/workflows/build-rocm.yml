@@ -1,10 +1,10 @@
-name: Build ROCm
+trunk: Build ROCm
 
 on:
   workflow_call:
   push:
     tags:
-      - ciflow/trunk/*
+      - ciflow/rocm/*
   workflow_dispatch:
 
 concurrency:
