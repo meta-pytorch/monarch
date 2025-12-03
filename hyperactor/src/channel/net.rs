@@ -64,8 +64,6 @@ use super::*;
 use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
-use crate::config;
-use crate::config::CHANNEL_MULTIPART;
 
 mod client;
 mod framed;
@@ -108,8 +106,10 @@ enum Frame<M> {
 #[derive(Debug, Serialize, Deserialize, EnumAsInner)]
 enum NetRxResponse {
     Ack(u64),
-    /// This channel is closed with the given reason. NetTx should stop reconnecting.
+    /// This session is rejected with the given reason. NetTx should stop reconnecting.
     Reject(String),
+    /// This channel is closed.
+    Closed,
 }
 
 fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
@@ -118,18 +118,6 @@ fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> 
 
 fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
     bincode::deserialize(&data)
-}
-
-/// Serializes using the "illegal" multipart encoding whenever multipart
-/// is not enabled.
-fn serialize_bincode<S: ?Sized + serde::Serialize>(
-    value: &S,
-) -> Result<serde_multipart::Message, bincode::Error> {
-    if config::global::get(CHANNEL_MULTIPART) {
-        serde_multipart::serialize_bincode(value)
-    } else {
-        serde_multipart::serialize_illegal_bincode(value)
-    }
 }
 
 /// A Tx implemented on top of a Link. The Tx manages the link state,
@@ -914,6 +902,7 @@ mod tests {
     use crate::channel::net::framed::FrameWrite;
     use crate::channel::net::server::ServerConn;
     use crate::channel::net::server::SessionManager;
+    use crate::config;
     use crate::metrics;
     use crate::sync::mvar::MVar;
 
@@ -1040,7 +1029,7 @@ mod tests {
     async fn test_tcp_message_size() {
         let default_size_in_bytes = 100 * 1024 * 1024;
         // Use temporary config for this test
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
@@ -1068,7 +1057,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_ack_flush() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         // Set a large value to effectively prevent acks from being sent except
         // during shutdown flush.
         let _guard_message_ack =
@@ -1351,7 +1340,7 @@ mod tests {
                                     }
                                 }
                             }
-                            let mut fw  = FrameWrite::new(writer, data, config::global::get(config::CODEC_MAX_FRAME_LENGTH)).unwrap();
+                            let mut fw  = FrameWrite::new(writer, data, hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH)).unwrap();
                             if fw.send().await.is_err() {
                                 break;
                             }
@@ -1376,7 +1365,7 @@ mod tests {
             let (server_r, server_writer) = tokio::io::split(server_relay);
             let (client_r, client_writer) = tokio::io::split(client_relay);
 
-            let max_len = config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+            let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
             let server_reader = FrameReader::new(server_r, max_len);
             let client_reader = FrameReader::new(client_r, max_len);
 
@@ -1480,7 +1469,10 @@ mod tests {
         let join_handle =
             tokio::spawn(async move { manager1.serve(conn, tx, cancel_token_1).await });
         let (r, writer) = tokio::io::split(sender);
-        let reader = FrameReader::new(r, config::global::get(config::CODEC_MAX_FRAME_LENGTH));
+        let reader = FrameReader::new(
+            r,
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+        );
         (join_handle, reader, writer, rx, cancel_token)
     }
 
@@ -1500,7 +1492,7 @@ mod tests {
             let mut fw = FrameWrite::new(
                 writer,
                 message.framed(),
-                config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
             )
             .map_err(|(_w, e)| e)
             .unwrap();
@@ -1515,7 +1507,7 @@ mod tests {
             let mut fw = FrameWrite::new(
                 writer,
                 message.framed(),
-                config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
             )
             .map_err(|(_w, e)| e)
             .unwrap();
@@ -1529,7 +1521,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_persistent_server_session() {
         // Use temporary config for this test
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
 
         async fn verify_ack(reader: &mut FrameReader<ReadHalf<DuplexStream>>, expected_last: u64) {
@@ -1625,6 +1617,9 @@ mod tests {
             handle.await.unwrap().unwrap();
             // mpsc is closed too and there should be no unread message left.
             assert!(rx.recv().await.is_none());
+            // should send NetRxResponse::Closed before stopping server.
+            let bytes = reader.next().await.unwrap().unwrap();
+            assert!(deserialize_response(bytes).unwrap().is_closed());
             // No more acks from server.
             assert!(reader.next().await.unwrap().is_none());
         };
@@ -1632,7 +1627,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_from_server_session() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let manager = SessionManager::new();
         let session_id = 123u64;
@@ -1659,6 +1654,9 @@ mod tests {
         handle.await.unwrap().unwrap();
         // mpsc is closed too and there should be no unread message left.
         assert!(rx.recv().await.is_none());
+        // should send NetRxResponse::Closed before stopping server.
+        let bytes = reader.next().await.unwrap().unwrap();
+        assert!(deserialize_response(bytes).unwrap().is_closed());
         // No more acks from server.
         assert!(reader.next().await.unwrap().is_none());
     }
@@ -1694,7 +1692,7 @@ mod tests {
         let link = MockLink::<u64>::fail_connects();
         let tx = super::dial::<u64>(link);
         // Override the default (1m) for the purposes of this test.
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let mut tx_receiver = tx.status().clone();
         let (return_channel, _return_receiver) = oneshot::channel();
@@ -1707,7 +1705,10 @@ mod tests {
     ) -> (FrameReader<ReadHalf<DuplexStream>>, WriteHalf<DuplexStream>) {
         let receiver = receiver_storage.take().await;
         let (r, writer) = tokio::io::split(receiver);
-        let reader = FrameReader::new(r, config::global::get(config::CODEC_MAX_FRAME_LENGTH));
+        let reader = FrameReader::new(
+            r,
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+        );
         (reader, writer)
     }
 
@@ -2062,7 +2063,7 @@ mod tests {
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
         // Use temporary config for this test
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(2));
 
         let link: MockLink<u64> = MockLink::<u64>::new();
@@ -2080,7 +2081,7 @@ mod tests {
         let _ = FrameWrite::write_frame(
             writer,
             serialize_response(NetRxResponse::Ack(0)).unwrap(),
-            config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
         )
         .await
         .map_err(|(_, e)| e)
@@ -2197,7 +2198,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_every_n_messages() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard_message_ack = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 600);
         let _guard_time_interval =
             config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(1000));
@@ -2206,7 +2207,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_ack_every_time_interval() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard_message_ack =
             config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 100000000);
         let _guard_time_interval = config.override_key(
@@ -2297,7 +2298,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_throughput() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
 
@@ -2374,7 +2375,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_server_rejects_conn_on_out_of_sequence_message() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let manager = SessionManager::new();
         let session_id = 123u64;
@@ -2397,5 +2398,42 @@ mod tests {
         assert_eq!(acked, 1);
         let bytes = reader.next().await.unwrap().unwrap();
         assert!(deserialize_response(bytes).unwrap().is_reject());
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_stop_net_tx_after_stopping_net_rx() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let config = hyperactor_config::global::lock();
+        let _guard =
+            config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
+        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let socket_addr = match addr {
+            ChannelAddr::Tcp(a) => a,
+            _ => panic!("unexpected channel type"),
+        };
+        let tx = tcp::dial::<u64>(socket_addr);
+        // NetTx will not establish a connection until it sends the 1st message.
+        // Without a live connection, NetTx cannot received the Closed message
+        // from NetRx. Therefore, we need to send a message to establish the
+        //connection.
+        tx.send(100).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 100);
+        // Drop rx will close the NetRx server.
+        rx.2.stop("testing");
+        assert!(rx.recv().await.is_err());
+
+        // NetTx will only read from the stream when it needs to send a message
+        // or wait for an ack. Therefore we need to send a message to trigger that.
+        tx.post(101);
+        let mut watcher = tx.status().clone();
+        // When NetRx exits, it should notify NetTx to exit as well.
+        let _ = watcher.wait_for(|val| *val == TxStatus::Closed).await;
+        // wait_for could return Err due to race between when watch's sender was
+        // dropped and when wait_for was called. So we still need to do an
+        // equality check.
+        assert_eq!(*watcher.borrow(), TxStatus::Closed);
     }
 }

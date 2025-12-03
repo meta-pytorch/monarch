@@ -213,7 +213,7 @@ impl<M: ProcManager> Host<M> {
             .await?;
 
         // Await readiness (config-driven; 0s disables timeout).
-        let to: Duration = crate::config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
+        let to: Duration = hyperactor_config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
         let ready: Result<(), HostError> = if to == Duration::from_secs(0) {
             handle.ready().await.map_err(|e| {
                 HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
@@ -1508,7 +1508,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_times_out_when_configured() {
-        let cfg = crate::config::global::lock();
+        let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
             crate::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_millis(10),
@@ -1527,7 +1527,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_timeout_zero_disables_and_succeeds() {
-        let cfg = crate::config::global::lock();
+        let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
             crate::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(0),

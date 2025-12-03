@@ -132,8 +132,14 @@ impl Actor for HostMeshAgent {
             )
             .unwrap();
             eprintln!(
-                "Monarch internal logs are being written to {}/{}.log",
-                directory, file
+                "Monarch internal logs are being written to {}/{}.log; execution id {}{}",
+                directory,
+                file,
+                hyperactor_telemetry::env::execution_id(),
+                hyperactor_telemetry::env::execution_url()
+                    .await
+                    .unwrap_or_else(|e| Some(format!(": <error generating URL: {}>", e)))
+                    .map_or_else(|| "".to_string(), |url| format!(": {}", url))
             );
         }
         Ok(Self {
@@ -198,7 +204,7 @@ impl Handler<resource::Stop> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         let host = self.host.as_mut().expect("host present");
         let manager = host.as_process().map(Host::manager);
-        let timeout = hyperactor::config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+        let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
         // We don't remove the proc from the state map, instead we just store
         // its state as Stopped.
         let proc = self.created.get_mut(&message.name);
