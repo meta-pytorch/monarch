@@ -209,7 +209,7 @@ impl ProcMesh {
         spawn_comm_actor: bool,
     ) -> v1::Result<Self> {
         let comm_actor_name = if spawn_comm_actor {
-            Some(Name::new("comm"))
+            Some(Name::new("comm").unwrap())
         } else {
             None
         };
@@ -301,7 +301,7 @@ impl ProcMesh {
         name: &str,
     ) -> v1::Result<Self> {
         let caller = Location::caller();
-        Self::allocate_inner(cx, alloc, Name::new(name), caller).await
+        Self::allocate_inner(cx, alloc, Name::new(name)?, caller).await
     }
 
     // Use allocate_inner to set field mesh_name in span
@@ -709,7 +709,8 @@ impl ProcMeshRef {
     pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcMeshAgent> {
         let agent_name = self.ranks.first().unwrap().agent.actor_id().name();
         // This name must match the ProcMeshAgent name, which can change depending on the allocator.
-        ActorMeshRef::new(Name::new_reserved(agent_name), self.clone())
+        // Since we control the agent_name, it is guaranteed to be a valid mesh identifier.
+        ActorMeshRef::new(Name::new_reserved(agent_name).unwrap(), self.clone())
     }
 
     /// The supervision events of procs in this mesh.
@@ -842,7 +843,7 @@ impl ProcMeshRef {
     where
         A::Params: RemoteMessage,
     {
-        self.spawn_with_name(cx, Name::new(name), params).await
+        self.spawn_with_name(cx, Name::new(name)?, params).await
     }
 
     /// Spawn a 'service' actor. Service actors are *singletons*, using
@@ -861,7 +862,7 @@ impl ProcMeshRef {
     where
         A::Params: RemoteMessage,
     {
-        self.spawn_with_name(cx, Name::new_reserved(name), params)
+        self.spawn_with_name(cx, Name::new_reserved(name)?, params)
             .await
     }
 

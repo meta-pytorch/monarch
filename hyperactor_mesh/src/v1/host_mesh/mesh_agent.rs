@@ -540,7 +540,7 @@ mod tests {
             .unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let name = Name::new("proc1");
+        let name = Name::new("proc1").unwrap();
 
         // First, create the proc, then query its state:
 
