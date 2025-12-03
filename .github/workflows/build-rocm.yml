@@ -2,6 +2,9 @@ name: Build ROCm
 
 on:
   workflow_call:
+  push:
+    tags:
+      - ciflow/trunk/*
   workflow_dispatch:
 
 concurrency:
