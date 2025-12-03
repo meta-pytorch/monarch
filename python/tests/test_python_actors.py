@@ -34,12 +34,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
-from monarch._rust_bindings.monarch_hyperactor.config import (
-    clear_runtime_config,
-    configure,
-    get_global_config,
-    get_runtime_config,
-)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     PortRef,
@@ -74,6 +68,7 @@ from monarch.actor import (
     endpoint,
     ProcMesh,
 )
+from monarch.config import configured
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
@@ -459,41 +454,6 @@ class Printer(Actor):
         # wasn't delivered.
         self._logger.error(f"Ignoring undeliverable message: {message}")
         return True
-
-
-@contextlib.contextmanager
-def configured(**overrides) -> Iterator[Dict[str, Any]]:
-    """Temporarily apply Python-side config overrides for this
-    process.
-
-    This context manager:
-      * snapshots the current **Runtime** configuration layer
-        (`get_runtime_config()`),
-      * applies the given `overrides` via `configure(**overrides)`,
-        and
-      * yields the **merged** view of config (`get_global_config()`),
-        including defaults, env, file, and Runtime.
-
-    On exit it restores the previous Runtime layer by:
-      * clearing all Runtime entries, and
-      * re-applying the saved snapshot.
-
-    This is intended for tests, so per-test overrides do not leak into
-    other tests.
-
-    """
-    # Retrieve runtime
-    prev = get_runtime_config()
-    try:
-        # Merge overrides into runtime
-        configure(**overrides)
-
-        # Snapshot of merged config (all layers)
-        yield get_global_config()
-    finally:
-        # Restore previous runtime
-        clear_runtime_config()
-        configure(**prev)
 
 
 class RedirectedPaths(NamedTuple):

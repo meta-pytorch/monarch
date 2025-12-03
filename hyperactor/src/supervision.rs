@@ -16,6 +16,7 @@ use std::time::SystemTime;
 use derivative::Derivative;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor_config::attrs::Attrs;
 use indenter::indented;
 use serde::Deserialize;
 use serde::Serialize;
@@ -24,7 +25,6 @@ use crate as hyperactor; // for macros
 use crate::Named;
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorStatus;
-use crate::attrs::Attrs;
 use crate::reference::ActorId;
 
 /// This is the local actor supervision event. Child actor will propagate this event to its parent.

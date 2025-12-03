@@ -595,7 +595,7 @@ impl Handler<resource::Stop> for ProcMeshAgent {
             // TODO: represent unknown rank
             None => None,
         };
-        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         if let Some(actor_id) = actor_id {
             // While this function returns a Result, it never returns an Err
             // value so we can simply expect without any failure handling.
@@ -619,7 +619,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
         cx: &Context<Self>,
         _message: resource::StopAll,
     ) -> anyhow::Result<()> {
-        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         // By passing in the self context, destroy_and_wait will stop this agent
         // last, after all others are stopped.
         let stop_result = self.destroy_and_wait_except_current(cx, timeout).await;
@@ -893,7 +893,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use hyperactor::attrs::Attrs;
     use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::Mailbox;
@@ -901,6 +900,7 @@ mod tests {
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::Undeliverable;
+    use hyperactor_config::attrs::Attrs;
 
     use super::*;
 
