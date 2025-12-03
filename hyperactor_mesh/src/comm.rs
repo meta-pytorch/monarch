@@ -350,6 +350,7 @@ impl Handler<CommActorMode> for CommActor {
 // TODO(T218630526): reliable casting for mutable topology
 #[async_trait]
 impl Handler<CastMessage> for CommActor {
+    #[hyperactor::instrument]
     async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessage) -> Result<()> {
         // Always forward the message to the root rank of the slice, casting starts from there.
         let slice = cast_message.dest.slice.clone();
@@ -380,6 +381,7 @@ impl Handler<CastMessage> for CommActor {
 
 #[async_trait]
 impl Handler<ForwardMessage> for CommActor {
+    #[hyperactor::instrument]
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessage) -> Result<()> {
         let ForwardMessage {
             sender,
@@ -560,11 +562,11 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::config;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
+    use hyperactor_config;
     use hyperactor_mesh_macros::sel;
     use maplit::btreemap;
     use maplit::hashmap;
@@ -1031,9 +1033,9 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         // Use temporary config for this test
-        let _guard1 = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 1);
+        let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let MeshSetup {
             actor_mesh,
@@ -1159,9 +1161,9 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum_v1() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         // Use temporary config for this test
-        let _guard1 = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 1);
+        let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let MeshSetupV1 {
             instance,
