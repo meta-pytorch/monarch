@@ -30,6 +30,7 @@ use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
+use hyperactor::reference;
 use ndslice::view;
 pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
@@ -238,30 +239,37 @@ pub enum Name {
 }
 
 // The delimiter between the name and the uuid when a Name::Suffixed is stringified.
-// Actor names must be parseable as a Rust identifier, so this delimiter must be
-// something that is part of a valid Rust identifier.
-static NAME_SUFFIX_DELIMITER: &str = "_";
+// Actor names must be parseable as an actor identifier. We do not allow this delimiter
+// in reserved names so that these names parse unambiguously.
+static NAME_SUFFIX_DELIMITER: &str = "-";
 
 impl Name {
     /// Create a new `Name` from a user-provided base name.
-    pub fn new(name: impl Into<String>) -> Self {
-        Self::new_with_uuid(name, Some(ShortUuid::generate()))
+    pub fn new(name: impl Into<String>) -> Result<Self> {
+        Ok(Self::new_with_uuid(name, Some(ShortUuid::generate()))?)
     }
 
     /// Create a Reserved `Name` with no uuid. Only for use by system actors.
-    pub(crate) fn new_reserved(name: impl Into<String>) -> Self {
-        Self::new_with_uuid(name, None)
+    pub(crate) fn new_reserved(name: impl Into<String>) -> Result<Self> {
+        Ok(Self::new_with_uuid(name, None)?)
     }
 
-    fn new_with_uuid(name: impl Into<String>, uuid: Option<ShortUuid>) -> Self {
+    fn new_with_uuid(
+        name: impl Into<String>,
+        uuid: Option<ShortUuid>,
+    ) -> std::result::Result<Self, NameParseError> {
         let mut name = name.into();
         if name.is_empty() {
             name = "unnamed".to_string();
         }
+        if !reference::is_valid_ident(&name) {
+            return Err(NameParseError::InvalidName(name));
+        }
+        // TODO:
         if let Some(uuid) = uuid {
-            Self::Suffixed(name, uuid)
+            Ok(Self::Suffixed(name, uuid))
         } else {
-            Self::Reserved(name)
+            Ok(Self::Reserved(name))
         }
     }
 
@@ -312,6 +320,9 @@ pub enum NameParseError {
     #[error("invalid name: missing uuid")]
     MissingUuid,
 
+    #[error("invalid name '{0}'")]
+    InvalidName(String),
+
     #[error(transparent)]
     InvalidUuid(#[from] <ShortUuid as FromStr>::Err),
 
@@ -332,12 +343,12 @@ impl FromStr for Name {
                 return Err(NameParseError::MissingName);
             }
 
-            Ok(Name::new_with_uuid(name.to_string(), Some(uuid.parse()?)))
+            Name::new_with_uuid(name.to_string(), Some(uuid.parse()?))
         } else {
             if s.is_empty() {
                 return Err(NameParseError::MissingName);
             }
-            Ok(Name::new_reserved(s))
+            Name::new_with_uuid(s, None)
         }
     }
 }
@@ -360,17 +371,17 @@ mod tests {
 
     #[test]
     fn test_name_unique() {
-        assert_ne!(Name::new("foo"), Name::new("foo"));
-        let name = Name::new("foo");
+        assert_ne!(Name::new("foo").unwrap(), Name::new("foo").unwrap());
+        let name = Name::new("foo").unwrap();
         assert_eq!(name, name);
     }
 
     #[test]
     fn test_name_roundtrip() {
         let uuid = "111111111111".parse::<ShortUuid>().unwrap();
-        let name = Name::new_with_uuid("foo", Some(uuid));
+        let name = Name::new_with_uuid("foo", Some(uuid)).unwrap();
         let str = name.to_string();
-        assert_eq!(str, "foo_111111111111");
+        assert_eq!(str, "foo-111111111111");
         assert_eq!(name, Name::from_str(&str).unwrap());
     }
 
@@ -379,22 +390,22 @@ mod tests {
         // A ShortUuid may have an underscore prefix if the first character is a digit.
         // Make sure this doesn't impact parsing.
         let uuid = "_1a2b3c4d5e6f".parse::<ShortUuid>().unwrap();
-        let name = Name::new_with_uuid("foo", Some(uuid));
+        let name = Name::new_with_uuid("foo", Some(uuid)).unwrap();
         let str = name.to_string();
         // Leading underscore is stripped as not needed.
-        assert_eq!(str, "foo_1a2b3c4d5e6f");
+        assert_eq!(str, "foo-1a2b3c4d5e6f");
         assert_eq!(name, Name::from_str(&str).unwrap());
     }
 
     #[test]
     fn test_name_roundtrip_random() {
-        let name = Name::new("foo");
+        let name = Name::new("foo").unwrap();
         assert_eq!(name, Name::from_str(&name.to_string()).unwrap());
     }
 
     #[test]
     fn test_name_roundtrip_reserved() {
-        let name = Name::new_reserved("foo");
+        let name = Name::new_reserved("foo").unwrap();
         let str = name.to_string();
         assert_eq!(str, "foo");
         assert_eq!(name, Name::from_str(&str).unwrap());
@@ -406,5 +417,14 @@ mod tests {
         // the part after the last underscore.
         let name = Name::from_str("foo_bar_1a2b3c4d5e6f").unwrap();
         assert_eq!(format!("{}", name), "foo_bar_1a2b3c4d5e6f");
+    }
+
+    #[test]
+    fn test_invalid() {
+        // We assign "unnamed" to empty names.
+        assert!(Name::new("").is_ok());
+        // These are not valid identifiers:
+        assert!(Name::new("foo-").is_err());
+        assert!(Name::new("foo-bar").is_err());
     }
 }

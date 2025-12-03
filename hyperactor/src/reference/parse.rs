@@ -34,7 +34,7 @@ pub enum Token<'a> {
     GreaterThan,
     /// A decimal unsigned integer.
     Uint(usize),
-    /// An element is any valid non-raw Rust identifier.
+    /// An element is any valid name.
     Elem(&'a str),
     /// "@"
     At,
@@ -81,7 +81,7 @@ impl<'a> Iterator for Lexer<'a> {
             Some(elem) => Some({
                 if let Ok(uint) = elem.parse::<usize>() {
                     Token::Uint(uint)
-                } else if is_valid_path_ident(elem) {
+                } else if is_valid_elem(elem) {
                     Token::Elem(elem)
                 } else {
                     Token::InvalidElem(elem)
@@ -161,10 +161,7 @@ fn chop<'a>(mut s: &'a str, delims: &'a [&'a str]) -> impl Iterator<Item = &'a s
     })
 }
 
-/// Determines whether the provided token is a valid
-/// [Rust identifier](https://doc.rust-lang.org/reference/identifiers.html),
-/// excluding raw identifiers. We allow path double colons (::) in identifiers.
-fn is_valid_path_ident(token: &str) -> bool {
+pub fn is_valid(token: &str, is_continue: fn(char) -> bool) -> bool {
     // Disallow raw identifiers;
     if token.starts_with("r#") || token.is_empty() {
         return false;
@@ -177,7 +174,7 @@ fn is_valid_path_ident(token: &str) -> bool {
         } else if first {
             ch == '_' || unicode_ident::is_xid_start(ch)
         } else {
-            unicode_ident::is_xid_continue(ch)
+            is_continue(ch)
         };
         if !valid {
             return false;
@@ -185,6 +182,26 @@ fn is_valid_path_ident(token: &str) -> bool {
         first = false;
     }
     true
+}
+
+/// Determines whether the provided token is a valid hyperactor identifier.
+///
+/// Valid hyperactor identifiers are
+/// [Rust identifier](https://doc.rust-lang.org/reference/identifiers.html),
+/// excluding raw identifiers. Additionally, we allow double colon ("::")
+/// to appear anywhere.
+pub fn is_valid_ident(token: &str) -> bool {
+    is_valid(token, unicode_ident::is_xid_continue)
+}
+
+/// Determines whether the provided token is a valid hyperactor element.
+/// Like [`is_valid_ident`], but additionally allows '-' as a continuation
+/// character.
+fn is_valid_elem(token: &str) -> bool {
+    fn is_continue(ch: char) -> bool {
+        ch == '-' || unicode_ident::is_xid_continue(ch)
+    }
+    is_valid(token, is_continue)
 }
 
 #[cfg(test)]
@@ -213,7 +230,9 @@ mod tests {
 
     #[test]
     fn test_valid_idents() {
-        let idents = vec!["foo", "foo_bar", "東京", "_foo"];
+        let idents = vec![
+            "foo", "foo_bar", "東京", "_foo", "foo-bar", "::foo", "foo::bar",
+        ];
 
         for ident in idents {
             let tokens = Lexer::new(ident);
@@ -224,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_invalid_idents() {
-        let idents = vec!["foo-bar", "foo/bar", "r#true"];
+        let idents = vec!["-bar", "foo/bar", "r#true"];
 
         for ident in idents {
             let tokens = Lexer::new(ident);

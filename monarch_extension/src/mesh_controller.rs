@@ -144,7 +144,7 @@ impl _Controller {
                     instance
                         .proc()
                         .spawn(
-                            &Name::new("mesh_controller").to_string(),
+                            &Name::new("mesh_controller").unwrap().to_string(),
                             MeshControllerActorParams {
                                 proc_mesh,
                                 id,
