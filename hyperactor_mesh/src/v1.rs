@@ -156,6 +156,9 @@ pub enum Error {
 
     #[error(transparent)]
     Host(#[from] HostError),
+
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 /// Errors that occur during serialization and deserialization.

@@ -2602,10 +2602,10 @@ mod test_alloc {
         task2_allocator_handle.await.unwrap();
     }
 
-    #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_remote_process_alloc_signal_handler() {
+        hyperactor_telemetry::initialize_logging_for_test();
         let num_proc_meshes = 5;
         let hosts_per_proc_mesh = 5;
 

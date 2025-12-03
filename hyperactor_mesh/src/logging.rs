@@ -998,6 +998,21 @@ pub struct LogForwardActor {
 
 #[async_trait]
 impl Actor for LogForwardActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
+
+        // Make sure we start the flush loop periodically so the log channel will not deadlock.
+        self.flush_tx
+            .lock()
+            .await
+            .send(LogMessage::Flush { sync_version: None })
+            .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for LogForwardActor {
     type Params = ActorRef<LogClientActor>;
 
     async fn new(logging_client_ref: Self::Params) -> Result<Self> {
@@ -1044,18 +1059,6 @@ impl Actor for LogForwardActor {
             logging_client_ref,
             stream_to_client: true,
         })
-    }
-
-    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        this.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
-
-        // Make sure we start the flush loop periodically so the log channel will not deadlock.
-        self.flush_tx
-            .lock()
-            .await
-            .send(LogMessage::Flush { sync_version: None })
-            .await?;
-        Ok(())
     }
 }
 
@@ -1182,6 +1185,25 @@ pub struct LogClientActor {
     current_unflushed_procs: usize,
 }
 
+impl Default for LogClientActor {
+    fn default() -> Self {
+        // Initialize aggregators
+        let mut aggregators = HashMap::new();
+        aggregators.insert(OutputTarget::Stderr, Aggregator::new());
+        aggregators.insert(OutputTarget::Stdout, Aggregator::new());
+
+        Self {
+            aggregate_window_sec: Some(DEFAULT_AGGREGATE_WINDOW_SEC),
+            aggregators,
+            last_flush_time: RealClock.system_time_now(),
+            next_flush_deadline: None,
+            current_flush_version: 0,
+            current_flush_port: None,
+            current_unflushed_procs: 0,
+        }
+    }
+}
+
 impl LogClientActor {
     fn print_aggregators(&mut self) {
         for (output_target, aggregator) in self.aggregators.iter_mut() {
@@ -1222,27 +1244,7 @@ impl LogClientActor {
 }
 
 #[async_trait]
-impl Actor for LogClientActor {
-    /// The aggregation window in seconds.
-    type Params = ();
-
-    async fn new(_: ()) -> Result<Self, anyhow::Error> {
-        // Initialize aggregators
-        let mut aggregators = HashMap::new();
-        aggregators.insert(OutputTarget::Stderr, Aggregator::new());
-        aggregators.insert(OutputTarget::Stdout, Aggregator::new());
-
-        Ok(Self {
-            aggregate_window_sec: Some(DEFAULT_AGGREGATE_WINDOW_SEC),
-            aggregators,
-            last_flush_time: RealClock.system_time_now(),
-            next_flush_deadline: None,
-            current_flush_version: 0,
-            current_flush_port: None,
-            current_unflushed_procs: 0,
-        })
-    }
-}
+impl Actor for LogClientActor {}
 
 impl Drop for LogClientActor {
     fn drop(&mut self) {
@@ -1458,6 +1460,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
+    use hyperactor::RemoteSpawn;
     use hyperactor::channel;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTx;
@@ -1599,11 +1602,12 @@ mod tests {
         unsafe {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
+        let log_client_actor = LogClientActor::new(()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
-            proc.spawn("log_client", ()).await.unwrap().bind();
+            proc.spawn("log_client", log_client_actor).unwrap().bind();
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
         let log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn("log_forwarder", log_client)
-            .await
+            .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();
 

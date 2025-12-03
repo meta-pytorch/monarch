@@ -203,10 +203,10 @@ impl LoggingMeshClient {
             // the caller's process).
             let client_actor: ActorHandle<LogClientActor> =
                 instance_dispatch!(instance, async move |cx_instance| {
-                    cx_instance
-                        .proc()
-                        .spawn(&Name::new("log_client").unwrap().to_string(), ())
-                        .await
+                    cx_instance.proc().spawn(
+                        &Name::new("log_client").unwrap().to_string(),
+                        LogClientActor::default(),
+                    )
                 })?;
             let client_actor_ref = client_actor.bind();
 

@@ -465,10 +465,8 @@ pub struct StreamParams {
     pub respond_with_python_message: bool,
 }
 
-#[async_trait]
-impl Actor for StreamActor {
-    type Params = StreamParams;
-    async fn new(
+impl StreamActor {
+    pub fn new(
         StreamParams {
             world_size,
             rank,
@@ -477,9 +475,9 @@ impl Actor for StreamActor {
             controller_actor,
             creation_mode,
             respond_with_python_message,
-        }: Self::Params,
-    ) -> Result<Self> {
-        Ok(Self {
+        }: StreamParams,
+    ) -> Self {
+        Self {
             world_size,
             rank,
             env: HashMap::new(),
@@ -493,9 +491,12 @@ impl Actor for StreamActor {
             active_recording: None,
             respond_with_python_message,
             last_seq_error: None,
-        })
+        }
     }
+}
 
+#[async_trait]
+impl Actor for StreamActor {
     async fn init(&mut self, cx: &Instance<Self>) -> Result<()> {
         // These thread locals are exposed via python functions, so we need to set them in the
         // same thread that python will run in. That means we need to initialize them here in
@@ -2094,20 +2095,18 @@ mod tests {
             let (client, _handle) = proc.instance("client")?;
             let (supervision_tx, supervision_rx) = client.open_port();
             proc.set_supervision_coordinator(supervision_tx)?;
-            let stream_actor = proc
-                .spawn::<StreamActor>(
-                    "stream",
-                    StreamParams {
-                        world_size,
-                        rank: 0,
-                        creation_mode: StreamCreationMode::UseDefaultStream,
-                        id: 0.into(),
-                        device: Some(CudaDevice::new(0.into())),
-                        controller_actor: controller_actor.clone(),
-                        respond_with_python_message: false,
-                    },
-                )
-                .await?;
+            let stream_actor = proc.spawn(
+                "stream",
+                StreamActor::new(StreamParams {
+                    world_size,
+                    rank: 0,
+                    creation_mode: StreamCreationMode::UseDefaultStream,
+                    id: 0.into(),
+                    device: Some(CudaDevice::new(0.into())),
+                    controller_actor: controller_actor.clone(),
+                    respond_with_python_message: false,
+                }),
+            )?;
 
             Ok(Self {
                 proc,
@@ -2576,18 +2575,17 @@ mod tests {
             .define_recording(&test_setup.client, 0.into())
             .await?;
 
-        let dummy_comm = test_setup
-            .proc
-            .spawn::<NcclCommActor>(
-                "comm",
-                CommParams::New {
-                    device: CudaDevice::new(0.into()),
-                    unique_id: UniqueId::new()?,
-                    world_size: 1,
-                    rank: 0,
-                },
-            )
-            .await?;
+        let dummy_comm = test_setup.proc.spawn(
+            "comm",
+            NcclCommActor::new(CommParams::New {
+                device: CudaDevice::new(0.into()),
+                unique_id: UniqueId::new()?,
+                world_size: 1,
+                rank: 0,
+            })
+            .await
+            .unwrap(),
+        )?;
 
         test_setup
             .stream_actor
@@ -2969,21 +2967,18 @@ mod tests {
     async fn test_borrow_in_recording() -> Result<()> {
         let mut test_setup = TestSetup::new().await?;
 
-        let borrower_stream = test_setup
-            .proc
-            .spawn::<StreamActor>(
-                "stream1",
-                StreamParams {
-                    world_size: 1,
-                    rank: 0,
-                    creation_mode: StreamCreationMode::CreateNewStream,
-                    id: 1.into(),
-                    device: Some(CudaDevice::new(0.into())),
-                    controller_actor: test_setup.controller_actor.clone(),
-                    respond_with_python_message: false,
-                },
-            )
-            .await?;
+        let borrower_stream = test_setup.proc.spawn(
+            "stream1",
+            StreamActor::new(StreamParams {
+                world_size: 1,
+                rank: 0,
+                creation_mode: StreamCreationMode::CreateNewStream,
+                id: 1.into(),
+                device: Some(CudaDevice::new(0.into())),
+                controller_actor: test_setup.controller_actor.clone(),
+                respond_with_python_message: false,
+            }),
+        )?;
 
         let lender_stream = test_setup.stream_actor.clone();
 
@@ -3259,18 +3254,17 @@ mod tests {
         let recording_ref = test_setup.next_ref();
 
         let comm = Arc::new(
-            test_setup
-                .proc
-                .spawn::<NcclCommActor>(
-                    "comm",
-                    CommParams::New {
-                        device: CudaDevice::new(0.into()),
-                        unique_id: UniqueId::new()?,
-                        world_size: 1,
-                        rank: 0,
-                    },
-                )
-                .await?,
+            test_setup.proc.spawn(
+                "comm",
+                NcclCommActor::new(CommParams::New {
+                    device: CudaDevice::new(0.into()),
+                    unique_id: UniqueId::new()?,
+                    world_size: 1,
+                    rank: 0,
+                })
+                .await
+                .unwrap(),
+            )?,
         );
 
         let factory = Factory {
@@ -3567,25 +3561,25 @@ mod tests {
         let recording_ref = test_setup.next_ref();
 
         let unique_id = UniqueId::new()?;
-        let comm0 = test_setup.proc.spawn::<NcclCommActor>(
-            "comm0",
-            CommParams::New {
-                device: CudaDevice::new(0.into()),
-                unique_id: unique_id.clone(),
-                world_size: 2,
-                rank: 0,
-            },
-        );
-        let comm1 = test_setup.proc.spawn::<NcclCommActor>(
-            "comm1",
-            CommParams::New {
-                device: CudaDevice::new(1.into()),
-                unique_id,
-                world_size: 2,
-                rank: 1,
-            },
-        );
-        let (comm0, comm1) = tokio::try_join!(comm0, comm1)?;
+        let device0 = CudaDevice::new(0.into());
+        let actor0 = NcclCommActor::new(CommParams::New {
+            device: device0,
+            unique_id: unique_id.clone(),
+            world_size: 2,
+            rank: 0,
+        });
+        let device1 = CudaDevice::new(1.into());
+        let actor1 = NcclCommActor::new(CommParams::New {
+            device: device1,
+            unique_id,
+            world_size: 2,
+            rank: 1,
+        });
+        let (actor0, actor1) = tokio::join!(actor0, actor1);
+        let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
+
+        let comm0 = test_setup.proc.spawn("comm0", actor0).unwrap();
+        let comm1 = test_setup.proc.spawn("comm1", actor1).unwrap();
         let comm0 = Arc::new(comm0);
         let comm1 = Arc::new(comm1);
 
@@ -3597,21 +3591,18 @@ mod tests {
         };
 
         let send_stream = test_setup.stream_actor.clone();
-        let recv_stream = test_setup
-            .proc
-            .spawn::<StreamActor>(
-                "recv_stream",
-                StreamParams {
-                    world_size: 2,
-                    rank: 1,
-                    creation_mode: StreamCreationMode::CreateNewStream,
-                    id: 1.into(),
-                    device: Some(CudaDevice::new(1.into())),
-                    controller_actor: test_setup.controller_actor.clone(),
-                    respond_with_python_message: false,
-                },
-            )
-            .await?;
+        let recv_stream = test_setup.proc.spawn(
+            "recv_stream",
+            StreamActor::new(StreamParams {
+                world_size: 2,
+                rank: 1,
+                creation_mode: StreamCreationMode::CreateNewStream,
+                id: 1.into(),
+                device: Some(CudaDevice::new(1.into())),
+                controller_actor: test_setup.controller_actor.clone(),
+                respond_with_python_message: false,
+            }),
+        )?;
 
         send_stream
             .define_recording(&test_setup.client, recording_ref)
