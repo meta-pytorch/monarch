@@ -45,13 +45,20 @@
 //! ```
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-use super::*;
+use crate::CONFIG;
+use crate::attrs::AttrKeyInfo;
 use crate::attrs::AttrValue;
+use crate::attrs::Attrs;
 use crate::attrs::Key;
-use crate::config::CONFIG;
+use crate::from_env;
+use crate::from_yaml;
 
 /// Configuration source layers in priority order.
 ///
@@ -313,7 +320,7 @@ fn test_override_index(layers: &Layers) -> Option<usize> {
 /// child installs this snapshot as its [`Source::Runtime`] layer,
 /// ensuring the parent's values override Env/File/Defaults.
 static LAYERS: LazyLock<Arc<RwLock<Layers>>> = LazyLock::new(|| {
-    let env = super::from_env();
+    let env = from_env();
     let layers = Layers {
         ordered: vec![Layer::Env(env)],
     };
@@ -370,7 +377,7 @@ pub fn lock() -> ConfigLock {
 /// from the environment. Repeated calls replace the existing Env
 /// layer.
 pub fn init_from_env() {
-    set(Source::Env, super::from_env());
+    set(Source::Env, from_env());
 }
 
 /// Initialize the global configuration from a YAML file.
@@ -385,7 +392,7 @@ pub fn init_from_env() {
 /// baseline configuration. Repeated calls replace the existing
 /// File layer.
 pub fn init_from_yaml<P: AsRef<Path>>(path: P) -> Result<(), anyhow::Error> {
-    let file = super::from_yaml(path)?;
+    let file = from_yaml(path)?;
     set(Source::File, file);
     Ok(())
 }
@@ -524,8 +531,7 @@ pub fn create_or_merge(source: Source, attrs: Attrs) {
 /// contribute to resolution in [`get`], [`get_cloned`], or
 /// [`attrs`]. Defaults and any remaining layers continue to apply
 /// in their normal priority order.
-#[allow(dead_code)]
-pub(crate) fn clear(source: Source) {
+pub fn clear(source: Source) {
     let mut g = LAYERS.write().unwrap();
     g.ordered.retain(|l| layer_source(l) != source);
 }
@@ -584,6 +590,34 @@ pub fn attrs() -> Attrs {
     }
 
     merged
+}
+
+/// Return a snapshot of the attributes for a specific configuration
+/// source.
+///
+/// If a layer with the given [`Source`] exists, this clones and
+/// returns its [`Attrs`]. Otherwise an empty [`Attrs`] is returned.
+/// The returned map is detached from the global store – mutating it
+/// does **not** affect the underlying layer; use [`set`] or
+/// [`create_or_merge`] to modify layers.
+fn layer_attrs_for(source: Source) -> Attrs {
+    let layers = LAYERS.read().unwrap();
+    if let Some(layer) = layers.ordered.iter().find(|l| layer_source(l) == source) {
+        layer_attrs(layer).clone()
+    } else {
+        Attrs::new()
+    }
+}
+
+/// Snapshot the current attributes in the **Runtime** configuration
+/// layer.
+///
+/// This returns a cloned [`Attrs`] containing only values explicitly
+/// set in the [`Source::Runtime`] layer (no merging with
+/// Env/File/Defaults). If no Runtime layer is present, an empty
+/// [`Attrs`] is returned.
+pub fn runtime_attrs() -> Attrs {
+    layer_attrs_for(Source::Runtime)
 }
 
 /// Reset the global configuration to only Defaults (for testing).
@@ -651,7 +685,7 @@ impl ConfigLock {
         };
 
         // Compute env var (if any) for this key once.
-        let (env_var, env_str) = if let Some(cfg) = key.attrs().get(crate::config::CONFIG) {
+        let (env_var, env_str) = if let Some(cfg) = key.attrs().get(crate::CONFIG) {
             if let Some(name) = &cfg.env_name {
                 (Some(name.clone()), value.display())
             } else {
@@ -827,8 +861,59 @@ impl<T: 'static> Drop for ConfigValueGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
 
     use super::*;
+    use crate::ConfigAttr;
+    use crate::attrs::declare_attrs;
+
+    // Test configuration keys used to exercise the layered config infrastructure.
+    // These mirror hyperactor's config keys but are declared locally to keep
+    // hyperactor_config independent.
+
+    declare_attrs! {
+        /// Maximum frame length for codec
+        @meta(CONFIG = ConfigAttr {
+            env_name: Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH".to_string()),
+            py_name: None,
+        })
+        pub attr CODEC_MAX_FRAME_LENGTH: usize = 10 * 1024 * 1024 * 1024; // 10 GiB
+
+        /// Message delivery timeout
+        @meta(CONFIG = ConfigAttr {
+            env_name: Some("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT".to_string()),
+            py_name: None,
+        })
+        pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+
+        /// Number of messages after which to send an acknowledgment
+        @meta(CONFIG = ConfigAttr {
+            env_name: Some("HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES".to_string()),
+            py_name: None,
+        })
+        pub attr MESSAGE_ACK_EVERY_N_MESSAGES: u64 = 1000;
+
+        /// Maximum buffer size for split port messages
+        @meta(CONFIG = ConfigAttr {
+            env_name: Some("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE".to_string()),
+            py_name: None,
+        })
+        pub attr SPLIT_MAX_BUFFER_SIZE: usize = 5;
+
+        /// Whether to use multipart encoding for network channel communications
+        @meta(CONFIG = ConfigAttr {
+            env_name: Some("HYPERACTOR_CHANNEL_MULTIPART".to_string()),
+            py_name: None,
+        })
+        pub attr CHANNEL_MULTIPART: bool = true;
+
+        /// Default hop Time-To-Live for message envelopes
+        @meta(CONFIG = ConfigAttr {
+            env_name: Some("HYPERACTOR_MESSAGE_TTL_DEFAULT".to_string()),
+            py_name: None,
+        })
+        pub attr MESSAGE_TTL_DEFAULT: u8 = 64;
+    }
 
     #[test]
     fn test_global_config() {
@@ -1080,12 +1165,12 @@ mod tests {
         reset_to_defaults();
 
         let mut env = Attrs::new();
-        env[CHANNEL_MULTIPART] = false;
+        env[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_secs(120);
         set(Source::Env, env);
 
-        assert!(!get(CHANNEL_MULTIPART));
-        let v = get_cloned(CHANNEL_MULTIPART);
-        assert!(!v);
+        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(120));
+        let v = get_cloned(MESSAGE_DELIVERY_TIMEOUT);
+        assert_eq!(v, Duration::from_secs(120));
     }
 
     #[test]
@@ -1125,12 +1210,12 @@ mod tests {
 
         // Expect our CONFIG_KEY to be present.
         assert!(
-            json.contains("hyperactor::config::global::tests::config_key"),
+            json.contains("hyperactor_config::global::tests::config_key"),
             "attrs() should include keys with @meta(CONFIG = ...)"
         );
         // Expect our NON_CONFIG_KEY to be omitted.
         assert!(
-            !json.contains("hyperactor::config::global::tests::non_config_key"),
+            !json.contains("hyperactor_config::global::tests::non_config_key"),
             "attrs() should exclude keys without @meta(CONFIG = ...)"
         );
     }

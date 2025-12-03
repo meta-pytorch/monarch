@@ -5,6 +5,3 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-strict
-
-SIM_MESH_CLIENT_TIMEOUT = 5
-SIM_MESH_CLIENT_SUPERVISION_UPDATE_INTERVAL = 5

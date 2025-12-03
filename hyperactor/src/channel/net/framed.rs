@@ -373,6 +373,21 @@ impl<W: AsyncWrite + Unpin, F: Buf, T> WriteState<W, F, T> {
             Self::Broken => panic!("illegal state"),
         }
     }
+
+    /// Consume the state and return the underlying writer, if the
+    /// stream is not broken.
+    ///
+    /// For `Idle`, this returns the stored writer. For `Writing`,
+    /// this assumes no more frames will be sent and calls
+    /// `complete()` to recover the writer. For `Broken`, this returns
+    /// `None`.
+    pub fn into_writer(self) -> Option<W> {
+        match self {
+            Self::Idle(w) => Some(w),
+            Self::Writing(w, _) => Some(w.complete()),
+            Self::Broken => None,
+        }
+    }
 }
 
 #[cfg(test)]

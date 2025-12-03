@@ -68,7 +68,7 @@ impl PyValueMesh {
     }
 
     /// Get value by linear rank (0..num_ranks-1).
-    fn get(&self, _py: Python<'_>, rank: usize) -> PyResult<PyObject> {
+    fn get(&self, py: Python<'_>, rank: usize) -> PyResult<PyObject> {
         let n = self.inner.region().num_ranks();
         if rank >= n {
             return Err(PyValueError::new_err(format!(
@@ -76,10 +76,12 @@ impl PyValueMesh {
                 rank, n
             )));
         }
-        // ValueMesh<T: Clone>: get() returns owned T; we clone the
-        // Py<PyAny>. `unwrap` is safe because the bounds have been
-        // checked.
-        let v: Py<PyAny> = self.inner.get(rank).unwrap().clone();
+
+        // ValueMesh::get() returns &Py<PyAny>; we clone the smart
+        // pointer (incrementing the Python refcount) to return an
+        // owned Py<PyAny>. `unwrap` is safe because the bounds have
+        // been checked.
+        let v: Py<PyAny> = self.inner.get(rank).unwrap().clone_ref(py);
 
         Ok(v)
     }

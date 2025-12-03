@@ -7,6 +7,8 @@
 # pyre-unsafe
 
 import atexit
+import bdb
+import io
 import logging
 import os
 
@@ -53,7 +55,6 @@ from monarch.common.messages import SendResultOfActorCall
 from monarch.common.stream import Stream, StreamRef
 from monarch.common.tensor import dtensor_check, InputChecker, Tensor
 from monarch.common.tree import flatten
-from monarch.tensor_worker_main import _set_trace
 
 if TYPE_CHECKING:
     from monarch._src.actor.proc_mesh import HyProcMesh, ProcMesh
@@ -67,9 +68,121 @@ from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.future import Future as OldFuture
 from monarch.common.invocation import DeviceException, RemoteException
-from monarch.rust_local_mesh import _get_worker_exec_info
 
 logger: Logger = logging.getLogger(__name__)
+
+
+def _set_trace(*, header=None):
+    ds = PdbWrapper(header)
+    ds.set_trace()
+
+
+class PdbWrapper(pdb.Pdb):
+    def __init__(self, header: Optional[str]):
+        from monarch._rust_bindings.monarch_extension import debugger
+
+        self._actor = debugger.PdbActor()
+        self.header = header
+        super().__init__(
+            # pyre-ignore
+            stdout=WriteWrapper(self._actor),
+            stdin=ReadWrapper.create(self._actor),
+        )
+        self._first = True
+
+    def setup(self, *args, **kwargs):
+        r = super().setup(*args, **kwargs)
+        if self._first:
+            self._first = False
+            # when we enter the debugger, we want to present the user's stack frame
+            # not the nested one inside session.run. This means that the local
+            # variables are what gets printed, etc. To do this
+            # we first execute up 2 to get to that frame.
+            self.do_up(2)
+        return r
+
+    def set_continue(self) -> None:
+        from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
+
+        r = super().set_continue()
+        if not self.breaks:
+            # no more breakpoints so this debugger will not
+            # be used again, and we detach from the controller io.
+            self._actor.send(DebuggerAction.Detach())
+            self._actor.drain_and_stop()
+            # break cycle with itself before we exit
+            import sys
+
+            self.stdin = sys.stdin
+            self.stdout = sys.stdout
+        return r
+
+    def set_trace(self):
+        from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
+
+        self._actor.send(DebuggerAction.Paused())
+        message = self._actor.receive()
+        # we give the controller the option to ignore this request to debug
+        # by issuing a "detach" message immediately.
+        if isinstance(message, DebuggerAction.Detach):
+            return
+        elif isinstance(message, DebuggerAction.Attach):
+            pass
+        else:
+            raise RuntimeError(f"unexpected debugger message {message}")
+        if self.header:
+            self.message(self.header)
+        super().set_trace()
+
+    def set_quit(self):
+        from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
+
+        self._actor.send(DebuggerAction.Detach())
+        self._actor.drain_and_stop()
+        super().set_quit()
+
+
+class ReadWrapper(io.RawIOBase):
+    def __init__(self, actor):
+        self._actor = actor
+
+    def readinto(self, b):
+        from monarch._rust_bindings.monarch_extension import debugger
+        from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
+
+        self._actor.send(DebuggerAction.Read(len(b)))
+        response = self._actor.receive()
+        if isinstance(response, DebuggerAction.Detach):
+            raise bdb.BdbQuit
+        assert isinstance(response, DebuggerAction.Write)
+        response = cast(DebuggerAction.Write, response)
+        payload = debugger.get_bytes_from_write_action(response)
+        assert len(payload) <= len(b)
+        b[: len(payload)] = payload
+        return len(payload)
+
+    def readable(self) -> bool:
+        return True
+
+    @classmethod
+    def create(cls, actor):
+        return io.TextIOWrapper(io.BufferedReader(cls(actor)))
+
+
+class WriteWrapper:
+    def __init__(self, actor):
+        self._actor = actor
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, s: str):
+        from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
+
+        self._actor.send(DebuggerAction.Write(s.encode()))
+
+    def flush(self):
+        pass
 
 
 class Controller(_Controller):
@@ -116,8 +229,6 @@ class Controller(_Controller):
 def _initialize_env(worker_point: Point, proc_id: str) -> None:
     worker_rank = worker_point.rank
     try:
-        _, worker_env = _get_worker_exec_info()
-
         if "gpus" in worker_point:
             local_rank = worker_point["gpus"]
             gpus_per_host = worker_point.size("gpus")
@@ -130,7 +241,6 @@ def _initialize_env(worker_point: Point, proc_id: str) -> None:
 
         num_worker_procs = worker_point.extent.nelements
         process_env = {
-            **worker_env,
             "CUDA_VISIBLE_DEVICES": str(local_rank),
             "NCCL_HOSTID": f"{proc_id}_host_{worker_rank // gpus_per_host}",
             # This is needed to avoid a hard failure in ncclx when we do not

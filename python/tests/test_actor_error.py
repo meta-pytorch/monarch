@@ -725,18 +725,26 @@ async def test_supervision_with_sending_error() -> None:
 
     # The host mesh agent sends or the proc mesh agent sends might break.
     # Either case is an error that tells us that the send failed.
-    error_msg = (
-        ".*Actor .* (is unhealthy with reason|exited because of the following reason)|"
+    error_msg_regx = (
+        "Actor .* (is unhealthy with reason|exited because of the following reason)|"
         "actor mesh is stopped due to proc mesh shutdown"
     )
 
     # send a large payload to trigger send timeout error
+    error_msg = (
+        r"Endpoint call healthy\.check_with_payload\(\) failed, " + error_msg_regx
+    )
     with pytest.raises(SupervisionError, match=error_msg):
         await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # new call should fail with check of health state of actor mesh
+    error_msg = r"Endpoint call healthy\.check\(\) failed, " + error_msg_regx
     with pytest.raises(SupervisionError, match=error_msg):
         await actor_mesh.check.call()
+
+    error_msg = (
+        r"Endpoint call healthy\.check_with_payload\(\) failed, " + error_msg_regx
+    )
     with pytest.raises(SupervisionError, match=error_msg):
         await actor_mesh.check_with_payload.call(payload="a")
 

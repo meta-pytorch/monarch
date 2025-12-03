@@ -2142,96 +2142,6 @@ pub fn derive_unbind(input: TokenStream) -> TokenStream {
     TokenStream::from(expand)
 }
 
-/// Derives the `Actor` trait for a struct. By default, generates an implementation
-/// with no params (`type Params = ()` and `async fn new(_params: ()) -> Result<Self, anyhow::Error>`).
-/// This requires that the Actor implements [`Default`].
-///
-/// If the `#[actor(passthrough)]` attribute is specified, generates an implementation
-/// with where the parameter type is `Self`
-/// (`type Params = Self` and `async fn new(instance: Self) -> Result<Self, anyhow::Error>`).
-///
-/// # Examples
-///
-/// Default behavior:
-/// ```
-/// #[derive(Actor, Default)]
-/// struct MyActor(u64);
-/// ```
-///
-/// Generates:
-/// ```ignore
-/// #[async_trait]
-/// impl Actor for MyActor {
-///     type Params = ();
-///
-///     async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-///         Ok(Default::default())
-///     }
-/// }
-/// ```
-///
-/// Passthrough behavior:
-/// ```
-/// #[derive(Actor, Default)]
-/// #[actor(passthrough)]
-/// struct MyActor(u64);
-/// ```
-///
-/// Generates:
-/// ```ignore
-/// #[async_trait]
-/// impl Actor for MyActor {
-///     type Params = Self;
-///
-///     async fn new(instance: Self) -> Result<Self, anyhow::Error> {
-///         Ok(instance)
-///     }
-/// }
-/// ```
-#[proc_macro_derive(Actor, attributes(actor))]
-pub fn derive_actor(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    let is_passthrough = input.attrs.iter().any(|attr| {
-        if attr.path().is_ident("actor") {
-            if let Ok(meta) = attr.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
-            ) {
-                return meta.iter().any(|ident| ident == "passthrough");
-            }
-        }
-        false
-    });
-
-    let expanded = if is_passthrough {
-        quote! {
-            #[hyperactor::async_trait::async_trait]
-            impl #impl_generics hyperactor::Actor for #name #ty_generics #where_clause {
-                type Params = Self;
-
-                async fn new(instance: Self) -> Result<Self, hyperactor::anyhow::Error> {
-                    Ok(instance)
-                }
-            }
-        }
-    } else {
-        quote! {
-            #[hyperactor::async_trait::async_trait]
-            impl #impl_generics hyperactor::Actor for #name #ty_generics #where_clause {
-                type Params = ();
-
-                async fn new(_params: ()) -> Result<Self, hyperactor::anyhow::Error> {
-                    Ok(Default::default())
-                }
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
-}
-
 // Helper function for common parsing and validation
 fn parse_observe_function(
     attr: TokenStream,
@@ -2464,7 +2374,7 @@ pub fn derive_attr_value(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     TokenStream::from(quote! {
-        impl #impl_generics hyperactor::attrs::AttrValue for #name #ty_generics #where_clause {
+        impl #impl_generics hyperactor_config::attrs::AttrValue for #name #ty_generics #where_clause {
             fn display(&self) -> String {
                 self.to_string()
             }

@@ -10,25 +10,20 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.86"
-bincode = "1.3.3"
-clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 cxx = "1.0.119"
 derivative = "2.2"
 derive_more = { version = "1.0.0", features = ["full"] }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
-hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 itertools = "0.14.0"
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
-nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
-serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 sorted-vec = "0.8.3"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 torch-sys = { version = "0.0.0", path = "../torch-sys" }
@@ -37,7 +32,7 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 
 [dev-dependencies]
-indoc = "2.0.2"
+hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 rand = { version = "0.8", features = ["small_rng"] }
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio-retry = "0.3"

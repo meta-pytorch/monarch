@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from monarch.common.pipe import Pipe  # @manual //monarch/python/monarch/common:pipe
     from monarch.worker.worker import (  # @manual //monarch/python/monarch/worker:worker
         DeviceMesh,
     )
@@ -21,12 +20,6 @@ if TYPE_CHECKING:
 
 def resolve_value(val: object) -> object:
     return val
-
-
-def handler(pipe: Pipe) -> None:
-    arg = pipe.recv()
-    tensor = torch.ones(arg, dtype=torch.int32)
-    pipe.send(tensor)
 
 
 def mesh_rank(mesh: DeviceMesh, dim: str) -> int:

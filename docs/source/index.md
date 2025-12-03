@@ -50,6 +50,7 @@ Here are some suggested steps to get started with Monarch:
 3. **Dive Deeper**: Explore the API Documentation for more detailed information:
     - [Python API](api/index)
     - [Rust API](rust-api)
+4. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors), the foundational building blocks of Monarch.
 
 ```{toctree}
 :maxdepth: 2
@@ -60,6 +61,7 @@ installation
 ./generated/examples/index
 api/index
 rust-api
+actors
 ```
 
 ## License

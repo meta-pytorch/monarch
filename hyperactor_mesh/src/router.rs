@@ -57,7 +57,7 @@ impl Router {
     /// Servers are memoized, and we maintain only one per transport; thus
     /// subsequent calls using the same transport will return the same address.
     #[allow(dead_code)]
-    #[tracing::instrument(skip(self))]
+    #[hyperactor::instrument]
     pub async fn serve(&self, transport: &ChannelTransport) -> Result<ChannelAddr, ChannelError> {
         let mut servers = self.servers.lock().await;
         if let Some(addr) = servers.get(transport) {

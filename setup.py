@@ -154,6 +154,10 @@ if sys.platform.startswith("linux"):
         "link-arg=-Wl,-rpath,$ORIGIN/../../..",
         "-C",
         "link-arg=-Wl,-rpath," + conda_lib,
+        # Add the conda lib to the search path for the linker, as libraries like
+        # libunwind may be installed there.
+        "-L",
+        conda_lib,
     ]
     if py_lib:
         flags += ["-C", "link-arg=-Wl,-rpath," + py_lib]
@@ -187,17 +191,6 @@ rust_extensions.append(
         args=[] if USE_TENSOR_ENGINE else ["--no-default-features"],
     )
 )
-
-# Legacy controller bin (kept for tests that still depend on it)
-if USE_TENSOR_ENGINE and not SKIP_LEGACY_BUILDS:
-    rust_extensions.append(
-        RustExtension(
-            {"controller_bin": "monarch.monarch_controller"},
-            binding=Binding.Exec,
-            path="controller/Cargo.toml",
-            debug=False,
-        )
-    )
 
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "monarch")
 package_version = os.environ.get("MONARCH_VERSION", "0.0.1")

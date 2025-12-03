@@ -14,7 +14,6 @@ use std::marker::PhantomData;
 use std::str::FromStr;
 
 use hyperactor::ActorRef;
-use hyperactor::AttrValue;
 use hyperactor::Named;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
@@ -22,6 +21,7 @@ use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
+use hyperactor_macros::AttrValue;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -289,7 +289,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl Actor for MeshPingPongActor {
+    impl Actor for MeshPingPongActor {}
+
+    #[async_trait]
+    impl hyperactor::RemoteSpawn for MeshPingPongActor {
         type Params = MeshPingPongActorParams;
 
         async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {

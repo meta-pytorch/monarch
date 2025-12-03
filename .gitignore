@@ -10,7 +10,6 @@ python/monarch.egg-info/*
 build/*
 dist/*
 monarch.egg-info/*
-python/monarch/monarch_controller
 
 .ipynb_checkpoints
 .monarch

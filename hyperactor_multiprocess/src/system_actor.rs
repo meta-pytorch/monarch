@@ -35,6 +35,7 @@ use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
 use hyperactor::actor::Handler;
 use hyperactor::channel::ChannelAddr;
@@ -1135,6 +1136,17 @@ pub static SYSTEM_ACTOR_REF: LazyLock<ActorRef<SystemActor>> =
     LazyLock::new(|| ActorRef::attest(id!(system[0].root)));
 
 impl SystemActor {
+    fn new(params: SystemActorParams) -> Self {
+        let supervision_update_timeout = params.supervision_update_timeout.clone();
+        Self {
+            params,
+            supervision_state: SystemSupervisionState::new(supervision_update_timeout),
+            worlds: HashMap::new(),
+            worlds_to_stop: HashMap::new(),
+            shutting_down: false,
+        }
+    }
+
     /// Adds a new world that's awaiting creation to the worlds.
     fn add_new_world(&mut self, world_id: WorldId) -> Result<(), anyhow::Error> {
         let world_state = WorldState {
@@ -1179,9 +1191,7 @@ impl SystemActor {
             BoxedMailboxSender::new(params.mailbox_router.clone()),
             clock,
         );
-        let actor_handle = system_proc
-            .spawn::<SystemActor>(SYSTEM_ACTOR_ID.name(), params)
-            .await?;
+        let actor_handle = system_proc.spawn(SYSTEM_ACTOR_ID.name(), SystemActor::new(params))?;
 
         Ok((actor_handle, system_proc))
     }
@@ -1200,19 +1210,6 @@ impl SystemActor {
 
 #[async_trait]
 impl Actor for SystemActor {
-    type Params = SystemActorParams;
-
-    async fn new(params: SystemActorParams) -> Result<Self, anyhow::Error> {
-        let supervision_update_timeout = params.supervision_update_timeout.clone();
-        Ok(Self {
-            params,
-            supervision_state: SystemSupervisionState::new(supervision_update_timeout),
-            worlds: HashMap::new(),
-            worlds_to_stop: HashMap::new(),
-            shutting_down: false,
-        })
-    }
-
     async fn init(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Start to periodically check the unhealthy worlds.
         cx.self_message_with_delay(MaintainWorldHealth {}, Duration::from_secs(0))?;
@@ -1845,7 +1842,6 @@ mod tests {
     use anyhow::Result;
     use hyperactor::PortId;
     use hyperactor::actor::ActorStatus;
-    use hyperactor::attrs::Attrs;
     use hyperactor::channel;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
@@ -1859,7 +1855,7 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::simnet;
-    use hyperactor::test_utils::pingpong::PingPongActorParams;
+    use hyperactor_config::Attrs;
 
     use super::*;
     use crate::System;
@@ -1890,6 +1886,14 @@ mod tests {
         }
     }
 
+    // V0-specific test - no V1 equivalent. Unit test for
+    // SystemSupervisionState which tracks proc health and failed
+    // actors centrally at world level. Tests heartbeat timeout
+    // detection (marks procs expired if no heartbeat within timeout)
+    // and failed actor aggregation. V1 does not have centralized
+    // supervision state - V1 uses local supervision where actors
+    // handle ActorSupervisionEvent locally rather than reporting to a
+    // central SystemActor for world-level health monitoring.
     #[tokio::test]
     async fn test_supervision_state() {
         let mut sv = SystemSupervisionState::new(Duration::from_secs(1));
@@ -1989,6 +1993,16 @@ mod tests {
         );
     }
 
+    // V0-specific test - no V1 equivalent. Tests SystemActor world
+    // orchestration where hosts can join before world is created.
+    // Flow: hosts send Join messages → queued by SystemActor →
+    // UpsertWorld defines world topology → SystemActor sends
+    // SpawnProc messages telling each host which procs to spawn.
+    // Verifies correct proc assignment across hosts. V1 does not have
+    // this orchestration model - V1 uses coordinated ProcMesh
+    // allocation where meshes are allocated in one operation, not
+    // assembled from hosts independently joining a central
+    // SystemActor.
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_host_join_before_world() {
@@ -2064,6 +2078,14 @@ mod tests {
         }
     }
 
+    // V0-specific test - no V1 equivalent. Tests SystemActor world
+    // orchestration where world is created before hosts join (reverse
+    // order of test_host_join_before_world). Flow: UpsertWorld
+    // defines topology → hosts send Join messages → SystemActor
+    // immediately sends SpawnProc messages. Tests that join order
+    // doesn't matter. V1 does not have this orchestration model - V1
+    // uses coordinated ProcMesh allocation where meshes are allocated
+    // in one operation.
     #[tokio::test]
     async fn test_host_join_after_world() {
         // Spins up a new world with 2 hosts, with 3 procs each.
@@ -2138,6 +2160,12 @@ mod tests {
         }
     }
 
+    // V0-specific test - no V1 equivalent. Unit test for
+    // SystemSnapshotFilter which filters worlds by name and labels
+    // when querying SystemActor. Tests world_matches() and
+    // labels_match() logic. V1 does not have SystemActor or
+    // SystemSnapshot - V1 uses mesh-based iteration and state queries
+    // instead.
     #[test]
     fn test_snapshot_filter() {
         let test_world = World::new(
@@ -2176,6 +2204,13 @@ mod tests {
         ));
     }
 
+    // V0-specific test - no V1 equivalent. Tests SystemActor
+    // supervision behavior when mailbox server crashes: undeliverable
+    // messages are handled AND system supervision detects the
+    // unhealthy world state. V1 does not have SystemActor or world
+    // supervision. V1 undeliverable message handling (without
+    // supervision) is tested in
+    // hyperactor_mesh/src/v1/actor_mesh.rs::test_undeliverable_message_return.
     #[tokio::test]
     async fn test_undeliverable_message_return() {
         // System can't send a message to a remote actor because the
@@ -2189,7 +2224,7 @@ mod tests {
         use crate::supervision::ProcSupervisor;
 
         // Use temporary config for this test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_secs(1),
@@ -2291,15 +2326,17 @@ mod tests {
         // Spawn two actors 'ping' and 'pong' where 'ping' runs on
         // 'world[0]' and 'pong' on 'world[1]' (that is, not on the
         // same proc).
-        let ping_params = PingPongActorParams::new(Some(proc_0_undeliverable_tx.bind()), None);
         let ping_handle = proc_0
-            .spawn::<PingPongActor>("ping", ping_params)
-            .await
+            .spawn(
+                "ping",
+                PingPongActor::new(Some(proc_0_undeliverable_tx.bind()), None, None),
+            )
             .unwrap();
-        let pong_params = PingPongActorParams::new(Some(proc_1_undeliverable_tx.bind()), None);
         let pong_handle = proc_1
-            .spawn::<PingPongActor>("pong", pong_params)
-            .await
+            .spawn(
+                "pong",
+                PingPongActor::new(Some(proc_1_undeliverable_tx.bind()), None, None),
+            )
             .unwrap();
 
         // Now kill pong's mailbox server making message delivery
@@ -2349,6 +2386,13 @@ mod tests {
         ));
     }
 
+    // V0-specific test - no V1 equivalent. Tests SystemActor stop
+    // when system is empty (no worlds). Sends SystemMessage::Stop to
+    // central SystemActor which coordinates shutdown of all worlds.
+    // V1 does not have a central SystemActor - V1 uses mesh-level
+    // stop operations (ProcMesh::stop(), HostMesh::shutdown()) where
+    // you stop individual meshes rather than a system-wide
+    // coordinator.
     #[tokio::test]
     async fn test_stop_fast() -> Result<()> {
         let server_handle = System::serve(
@@ -2380,6 +2424,12 @@ mod tests {
         Ok(())
     }
 
+    // V0-specific test - no V1 equivalent. Tests ReportingRouter's
+    // UpdateAddress behavior in simnet mode. When messages are sent,
+    // post_update_address() sends MailboxAdminMessage::UpdateAddress
+    // to update address caches with simnet source routing info. V1
+    // does not have ReportingRouter or dynamic address updates - V1
+    // uses static/direct addressing.
     #[tokio::test]
     async fn test_update_sim_address() {
         simnet::start();

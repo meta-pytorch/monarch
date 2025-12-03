@@ -258,7 +258,7 @@ impl ProcMeshAgent {
             record_supervision_events: false,
             supervision_events: HashMap::new(),
         };
-        let handle = proc.spawn::<Self>("mesh", agent).await?;
+        let handle = proc.spawn::<Self>("mesh", agent)?;
         Ok((proc, handle))
     }
 
@@ -271,7 +271,7 @@ impl ProcMeshAgent {
             record_supervision_events: true,
             supervision_events: HashMap::new(),
         };
-        proc.spawn::<Self>("agent", agent).await
+        proc.spawn::<Self>("agent", agent)
     }
 
     async fn destroy_and_wait_except_current<'a>(
@@ -287,12 +287,6 @@ impl ProcMeshAgent {
 
 #[async_trait]
 impl Actor for ProcMeshAgent {
-    type Params = Self;
-
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(params)
-    }
-
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         self.proc.set_supervision_coordinator(this.port())?;
         Ok(())
@@ -595,7 +589,7 @@ impl Handler<resource::Stop> for ProcMeshAgent {
             // TODO: represent unknown rank
             None => None,
         };
-        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         if let Some(actor_id) = actor_id {
             // While this function returns a Result, it never returns an Err
             // value so we can simply expect without any failure handling.
@@ -619,7 +613,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
         cx: &Context<Self>,
         _message: resource::StopAll,
     ) -> anyhow::Result<()> {
-        let timeout = hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         // By passing in the self context, destroy_and_wait will stop this agent
         // last, after all others are stopped.
         let stop_result = self.destroy_and_wait_except_current(cx, timeout).await;
@@ -893,7 +887,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use hyperactor::attrs::Attrs;
     use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::Mailbox;
@@ -901,6 +894,7 @@ mod tests {
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::Undeliverable;
+    use hyperactor_config::attrs::Attrs;
 
     use super::*;
 

@@ -28,6 +28,7 @@ use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
@@ -53,6 +54,7 @@ use tokio::process::Child;
 use tokio::process::Command;
 #[cfg(feature = "packaged_rsync")]
 use tokio::sync::OnceCell;
+use tracing::warn;
 
 use crate::code_sync::WorkspaceLocation;
 
@@ -69,7 +71,7 @@ async fn get_rsync_bin_path() -> Result<&'static Path> {
         Ok(RSYNC_BIN_PATH
             .get_or_try_init(|| async {
                 tokio::task::spawn_blocking(|| {
-                    let mut tmp = tempfile::NamedTempFile::new()?;
+                    let mut tmp = tempfile::NamedTempFile::with_prefix("rsync.")?;
                     let rsync_bin = include_bytes!("rsync.bin");
                     tmp.write_all(rsync_bin)?;
                     let bin_path = tmp.into_temp_path();
@@ -239,7 +241,6 @@ pub async fn do_rsync(addr: &SocketAddr, workspace: &Path) -> Result<RsyncResult
 #[derive(Debug)]
 pub struct RsyncDaemon {
     child: Child,
-    #[allow(unused)]
     state: TempDir,
     addr: SocketAddr,
 }
@@ -284,8 +285,7 @@ impl RsyncDaemon {
             .arg(format!("--address={}", addr.ip()))
             .arg(format!("--port={}", addr.port()))
             .arg(format!("--config={}", config.display()))
-            //.arg(format!("--log-file={}/log", state.path().display()))
-            .arg("--log-file=/dev/stderr")
+            .arg(format!("--log-file={}/log", state.path().display()))
             .kill_on_drop(true)
             .spawn()?;
 
@@ -315,14 +315,15 @@ impl RsyncDaemon {
         &self.addr
     }
 
-    pub async fn shutdown(mut self) -> Result<()> {
+    pub async fn shutdown(mut self) -> Result<String> {
+        let logs = fs::read_to_string(self.state.path().join("log")).await;
         let id = self.child.id().context("missing pid")?;
         let pid = Pid::from_raw(id as i32);
         signal::kill(pid, Signal::SIGINT)?;
         let status = self.child.wait().await?;
         // rsync exists with 20 when sent SIGINT.
         ensure!(status.code() == Some(20));
-        Ok(())
+        Ok(logs?)
     }
 }
 
@@ -336,25 +337,13 @@ pub struct RsyncMessage {
     pub workspace: WorkspaceLocation,
 }
 
-#[derive(Debug, Named, Serialize, Deserialize)]
-pub struct RsyncParams {
-    //pub workspace: WorkspaceLocation,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
 pub struct RsyncActor {
     //workspace: WorkspaceLocation,
 }
 
-#[async_trait]
-impl Actor for RsyncActor {
-    type Params = RsyncParams;
-
-    async fn new(RsyncParams {}: Self::Params) -> Result<Self> {
-        Ok(Self {})
-    }
-}
+impl Actor for RsyncActor {}
 
 #[async_trait]
 impl Handler<RsyncMessage> for RsyncActor {
@@ -412,7 +401,7 @@ where
     let instance = actor_mesh.proc_mesh().client();
     let (rsync_conns_tx, rsync_conns_rx) = instance.open_port::<Connect>();
 
-    let ((), results) = try_join!(
+    let res = try_join!(
         rsync_conns_rx
             .take(actor_mesh.shape().slice().len())
             .err_into::<anyhow::Error>()
@@ -443,11 +432,25 @@ where
                 .await?;
             anyhow::Ok(res)
         },
-    )?;
+    );
 
-    daemon.shutdown().await?;
+    // Kill rsync server and attempt to grab the logs.
+    let logs = daemon.shutdown().await;
 
-    Ok(results)
+    // Return results, attaching rsync daemon logs on error.
+    match res {
+        Ok(((), results)) => {
+            let _ = logs?;
+            Ok(results)
+        }
+        Err(err) => match logs {
+            Ok(logs) => Err(err).with_context(|| format!("rsync server logs: {}", logs)),
+            Err(shutdown_err) => {
+                warn!("failed to read logs from rsync daemon: {:?}", shutdown_err);
+                Err(err)
+            }
+        },
+    }
 }
 
 #[cfg(test)]
@@ -515,16 +518,13 @@ mod tests {
 
         let proc_mesh = ProcMesh::allocate(alloc).await?;
 
-        // Create RsyncParams - all actors will use the same target workspace for this test
-        let params = RsyncParams {};
-
         // TODO: thread through context, or access the actual python context;
         // for now this is basically equivalent (arguably better) to using the proc mesh client.
         let instance = global_root_client();
 
         // Spawn actor mesh with RsyncActors
         let actor_mesh = proc_mesh
-            .spawn::<RsyncActor>(&instance, "rsync_test", &params)
+            .spawn::<RsyncActor>(&instance, "rsync_test", &())
             .await?;
 
         // Test rsync_mesh function - this coordinates rsync operations across the mesh

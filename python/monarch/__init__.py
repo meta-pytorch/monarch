@@ -53,6 +53,13 @@ if TYPE_CHECKING:
     from monarch.common.selection import Selection
     from monarch.common.stream import get_active_stream, Stream
     from monarch.common.tensor import reduce, reduce_, Tensor
+    from monarch.config import (  # noqa
+        clear_runtime_config,
+        configure,
+        configured,
+        get_global_config,
+        get_runtime_config,
+    )
     from monarch.fetch import fetch_shard, inspect, show
     from monarch.gradient_generator import grad_function, grad_generator
     from monarch.simulator.config import set_meta  # noqa
@@ -62,6 +69,11 @@ if TYPE_CHECKING:
 
 _public_api = {
     "coalescing": ("monarch.common._coalescing", "coalescing"),
+    "clear_runtime_config": ("monarch.config", "clear_runtime_config"),
+    "configure": ("monarch.config", "configure"),
+    "configured": ("monarch.config", "configured"),
+    "get_global_config": ("monarch.config", "get_global_config"),
+    "get_runtime_config": ("monarch.config", "get_runtime_config"),
     "remote": ("monarch.common.remote", "remote"),
     "get_active_mesh": ("monarch.common.device_mesh", "get_active_mesh"),
     "no_mesh": ("monarch.common.device_mesh", "no_mesh"),
@@ -117,6 +129,11 @@ except ImportError:
 # otherwise tools think the imports are unused
 __all__ = [
     "coalescing",
+    "clear_runtime_config",
+    "configure",
+    "configured",
+    "get_global_config",
+    "get_runtime_config",
     "get_active_mesh",
     "no_mesh",
     "remote",

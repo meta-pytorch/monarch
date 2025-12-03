@@ -111,35 +111,51 @@ pub struct HostMeshAgent {
     created: HashMap<Name, ProcCreationState>,
 }
 
+impl HostMeshAgent {
+    /// Create a new host mesh agent running in the provided mode.
+    pub fn new(host: HostAgentMode) -> Self {
+        Self {
+            host: Some(host),
+            created: HashMap::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl Actor for HostMeshAgent {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Serve the host now that the agent is initialized. Make sure our port is
+        // bound before serving.
+        this.bind::<Self>();
+        match self.host.as_mut().unwrap() {
+            HostAgentMode::Process(host) => {
+                host.serve();
+                let (directory, file) = hyperactor_telemetry::log_file_path(
+                    hyperactor_telemetry::env::Env::current(),
+                    None,
+                )
+                .unwrap();
+                eprintln!(
+                    "Monarch internal logs are being written to {}/{}.log; execution id {}",
+                    directory,
+                    file,
+                    hyperactor_telemetry::env::execution_id(),
+                );
+            }
+            HostAgentMode::Local(host) => {
+                host.serve();
+            }
+        };
+        Ok(())
+    }
+}
+
 impl fmt::Debug for HostMeshAgent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostMeshAgent")
             .field("host", &"..")
             .field("created", &self.created)
             .finish()
-    }
-}
-
-#[async_trait]
-impl Actor for HostMeshAgent {
-    type Params = HostAgentMode;
-
-    async fn new(host: HostAgentMode) -> anyhow::Result<Self> {
-        if let HostAgentMode::Process(_) = host {
-            let (directory, file) = hyperactor_telemetry::log_file_path(
-                hyperactor_telemetry::env::Env::current(),
-                None,
-            )
-            .unwrap();
-            eprintln!(
-                "Monarch internal logs are being written to {}/{}.log",
-                directory, file
-            );
-        }
-        Ok(Self {
-            host: Some(host),
-            created: HashMap::new(),
-        })
     }
 }
 
@@ -198,7 +214,7 @@ impl Handler<resource::Stop> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         let host = self.host.as_mut().expect("host present");
         let manager = host.as_process().map(Host::manager);
-        let timeout = hyperactor::config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+        let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
         // We don't remove the proc from the state map, instead we just store
         // its state as Stopped.
         let proc = self.created.get_mut(&message.name);
@@ -438,6 +454,14 @@ pub(crate) struct HostMeshAgentProcMeshTrampoline {
 
 #[async_trait]
 impl Actor for HostMeshAgentProcMeshTrampoline {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        self.reply_port.send(this, self.host_mesh_agent.bind())?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
     type Params = (
         ChannelTransport,
         PortRef<ActorRef<HostMeshAgent>>,
@@ -449,7 +473,7 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
         let host = if local {
             let spawn: ProcManagerSpawnFn = Box::new(|proc| Box::pin(ProcMeshAgent::boot_v1(proc)));
             let manager = LocalProcManager::new(spawn);
-            let (host, _) = Host::serve(manager, transport.any()).await?;
+            let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Local(host)
         } else {
             let command = match command {
@@ -458,25 +482,17 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
             };
             tracing::info!("booting host with proc command {:?}", command);
             let manager = BootstrapProcManager::new(command).unwrap();
-            let (host, _) = Host::serve(manager, transport.any()).await?;
+            let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Process(host)
         };
 
-        let host_mesh_agent = host
-            .system_proc()
-            .clone()
-            .spawn::<HostMeshAgent>("agent", host)
-            .await?;
+        let system_proc = host.system_proc().clone();
+        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host))?;
 
         Ok(Self {
             host_mesh_agent,
             reply_port,
         })
-    }
-
-    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        self.reply_port.send(this, self.host_mesh_agent.bind())?;
-        Ok(())
     }
 }
 
@@ -515,7 +531,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_basic() {
-        let (host, _handle) = Host::serve(
+        let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
             ChannelTransport::Unix.any(),
         )
@@ -525,8 +541,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn::<HostMeshAgent>("agent", HostAgentMode::Process(host))
-            .await
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string())
