@@ -58,7 +58,7 @@ pub struct ReducerOpts {
 impl ReducerOpts {
     pub(crate) fn max_update_interval(&self) -> Duration {
         self.max_update_interval
-            .unwrap_or(config::global::get(config::SPLIT_MAX_BUFFER_AGE))
+            .unwrap_or(hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_AGE))
     }
 }
 
