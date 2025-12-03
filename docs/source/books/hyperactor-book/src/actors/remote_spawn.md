@@ -1,4 +1,4 @@
-# The `RemoteableActor` Trait
+# The `RemoteSpawn` Trait
 
 ```rust
 pub trait RemoteSpawn: Actor + Referable + Binds<Self> {

@@ -37,6 +37,8 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
+use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::declare_attrs;
 use hyperactor_macros::AttrValue;
 use hyperactor_macros::Named;
 use hyperactor_telemetry::recorder;
@@ -66,7 +68,6 @@ use crate::actor::Binds;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
-use crate::attrs::Attrs;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -77,7 +78,6 @@ use crate::config;
 use crate::context;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
-use crate::declare_attrs;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -1031,7 +1031,7 @@ impl<A: Actor> Instance<A> {
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
         let (work_tx, work_rx) = ordered_channel(
             actor_id.to_string(),
-            config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
+            hyperactor_config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
         );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
@@ -1365,7 +1365,7 @@ impl<A: Actor> Instance<A> {
         // be in an invalid state and unable to access anything, for example
         // the GIL.
         let cleanup_result = if !did_panic {
-            let cleanup_timeout = config::global::get(config::CLEANUP_TIMEOUT);
+            let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
             match RealClock
                 .timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
                 .await

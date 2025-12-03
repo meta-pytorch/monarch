@@ -26,15 +26,14 @@ use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
 use hyperactor::WorldId;
 use hyperactor::actor::Referable;
-use hyperactor::attrs::Attrs;
-use hyperactor::attrs::declare_attrs;
-use hyperactor::config;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::declare_attrs;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -77,6 +76,7 @@ declare_attrs! {
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
 /// an `M`-typed message
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
+#[hyperactor::instrument]
 pub(crate) fn actor_mesh_cast<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
@@ -121,7 +121,7 @@ where
 
     let slice_of_root = root_mesh_shape.slice();
 
-    let max_cast_dimension_size = config::global::get(MAX_CAST_DIMENSION_SIZE);
+    let max_cast_dimension_size = hyperactor_config::global::get(MAX_CAST_DIMENSION_SIZE);
 
     let slice_of_cast = slice_of_root.reshape_with_limit(Limit::from(max_cast_dimension_size));
 
@@ -855,8 +855,8 @@ mod tests {
     use hyperactor::ProcId;
     use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
-    use hyperactor::attrs::Attrs;
     use hyperactor::data::Encoding;
+    use hyperactor_config::attrs::Attrs;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -1270,6 +1270,7 @@ mod tests {
         use hyperactor::channel::ChannelTransport;
 
         use crate::alloc::local::LocalAllocator;
+        use crate::config;
 
         actor_mesh_test_suite!(LocalAllocator);
 
@@ -1283,7 +1284,7 @@ mod tests {
             use crate::alloc::ProcStopReason;
             use crate::proc_mesh::ProcEvent;
 
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             let _guard = config.override_key(
                 hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
                 tokio::time::Duration::from_secs(1),
@@ -1427,7 +1428,7 @@ mod tests {
             use hyperactor::test_utils::pingpong::PingPongActor;
             use hyperactor::test_utils::pingpong::PingPongMessage;
 
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             let _guard = config.override_key(
                 hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
                 tokio::time::Duration::from_secs(1),
@@ -1543,12 +1544,12 @@ mod tests {
                 hyperactor::mailbox::headers::set_rust_message_type::<Payload>(&mut headers);
                 let envelope = MessageEnvelope::new(src.clone(), dst.clone(), serialized, headers);
                 let frame = Frame::Message(0u64, envelope);
-                let message = serde_multipart::serialize_illegal_bincode(&frame).unwrap();
+                let message = serde_multipart::serialize_bincode(&frame).unwrap();
                 message.frame_len()
             }
 
             // This process: short delivery timeout.
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             // This process (write): max frame len for frame writes.
             let _guard2 =
                 config.override_key(hyperactor::config::CODEC_MAX_FRAME_LENGTH, 1024usize);
@@ -1559,7 +1560,6 @@ mod tests {
             };
             let _guard3 =
                 config.override_key(hyperactor::config::DEFAULT_ENCODING, Encoding::Bincode);
-            let _guard4 = config.override_key(hyperactor::config::CHANNEL_MULTIPART, false);
 
             let alloc = process_allocator()
                 .allocate(AllocSpec {
@@ -1766,7 +1766,7 @@ mod tests {
         ) where
             A: ActorMesh<Actor = EchoActor>,
         {
-            let config = hyperactor::config::global::lock();
+            let config = hyperactor_config::global::lock();
             let _guard = config.override_key(MAX_CAST_DIMENSION_SIZE, 2);
 
             let (_, mut rx) = serve::<usize>(addr).unwrap();

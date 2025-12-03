@@ -574,12 +574,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             .unwrap_or_else(|e| e.into_inner())
         {
             Unhealthy::StreamClosed => {
-                return Err(SupervisionError::new_err(
+                return Err(PyErr::new::<SupervisionError, _>(
                     "actor mesh is stopped due to proc mesh shutdown".to_string(),
                 ));
             }
             Unhealthy::Crashed(event) => {
-                return Err(SupervisionError::new_err(format!(
+                return Err(PyErr::new::<SupervisionError, _>(format!(
                     "Actor {} is unhealthy with reason: {}",
                     event.actor_id, event.actor_status
                 )));
@@ -593,7 +593,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                         .get(&rank)
                         .map(|entry| entry.value().clone())
                 }) {
-                    return Err(SupervisionError::new_err(format!(
+                    return Err(PyErr::new::<SupervisionError, _>(format!(
                         "Actor {} is unhealthy with reason: {}",
                         event.actor_id, event.actor_status
                     )));

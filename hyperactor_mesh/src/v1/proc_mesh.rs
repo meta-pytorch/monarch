@@ -34,14 +34,13 @@ use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
 use hyperactor::context;
-use hyperactor::declare_attrs;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -733,7 +732,7 @@ impl ProcMeshRef {
         )?;
         let expected = self.ranks.len();
         let mut states = Vec::with_capacity(expected);
-        let timeout = config::global::get(GET_ACTOR_STATE_MAX_IDLE);
+        let timeout = hyperactor_config::global::get(GET_ACTOR_STATE_MAX_IDLE);
         for _ in 0..expected {
             // The agent runs on the same process as the running actor, so if some
             // fatal event caused the process to crash (e.g. OOM, signal, process exit),
@@ -991,7 +990,7 @@ impl ProcMeshRef {
         let mesh = match GetRankStatus::wait(
             rx,
             self.ranks.len(),
-            config::global::get(ACTOR_SPAWN_MAX_IDLE),
+            hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE),
             region.clone(), // fallback
         )
         .await
@@ -1103,7 +1102,7 @@ impl ProcMeshRef {
         let start_time = RealClock.now();
 
         // Reuse actor spawn idle time.
-        let max_idle_time = config::global::get(ACTOR_SPAWN_MAX_IDLE);
+        let max_idle_time = hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE);
         match GetRankStatus::wait(
             rx,
             self.ranks.len(),

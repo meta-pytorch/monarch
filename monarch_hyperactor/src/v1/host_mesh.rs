@@ -196,8 +196,21 @@ impl PyHostMesh {
         match self {
             PyHostMesh::Owned(inner) => {
                 let instance = instance.clone();
-                let mesh_borrow = inner.0.borrow().map_err(anyhow::Error::from)?;
-                let fut = async move { Ok(mesh_borrow.shutdown(instance.deref()).await?) };
+                let mesh_borrow = inner.0.clone();
+                let fut = async move {
+                    match mesh_borrow.take().await {
+                        Ok(mut mesh) => {
+                            mesh.shutdown(instance.deref()).await?;
+                            Ok(())
+                        }
+                        Err(_) => {
+                            // Don't return an exception, silently ignore the stop request
+                            // because it was already done.
+                            tracing::info!("shutdown was already called on host mesh");
+                            Ok(())
+                        }
+                    }
+                };
                 PyPythonTask::new(fut)
             }
             PyHostMesh::Ref(_) => Err(PyRuntimeError::new_err(

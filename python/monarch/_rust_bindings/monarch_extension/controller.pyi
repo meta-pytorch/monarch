@@ -9,11 +9,9 @@
 from enum import Enum
 from typing import Any, final, List, Optional, Tuple, Union
 
-from monarch._rust_bindings.monarch_extension.tensor_worker import Ref, WorkerMessage
+from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 
 from monarch._rust_bindings.monarch_hyperactor.proc import Serialized
-
-from monarch._rust_bindings.monarch_hyperactor.shape import Slice
 
 @final
 class Node:
@@ -58,37 +56,5 @@ class Node:
 
     @staticmethod
     def from_serialized(serialized: Serialized) -> Node:
-        """Deserialize the message from a Serialized object."""
-        ...
-
-@final
-class Send:
-    """
-    Send a message to the workers mapping to the ranks provided in the given slices.
-
-    Args:
-    - `ranks`: Slices of ranks of the workers to send the message to.
-    - `message`: Message to send to the workers.
-    """
-
-    def __init__(
-        self, *, ranks: Slice | List[Slice], message: WorkerMessage
-    ) -> None: ...
-    @property
-    def ranks(self) -> List[Slice]:
-        """Slices of ranks of the workers to send the message to."""
-        ...
-
-    @property
-    def message(self) -> WorkerMessage:
-        """Message to send to the workers."""
-        ...
-
-    def serialize(self) -> Serialized:
-        """Serialize the message into a Serialized object."""
-        ...
-
-    @staticmethod
-    def from_serialized(serialized: Serialized) -> Send:
         """Deserialize the message from a Serialized object."""
         ...
