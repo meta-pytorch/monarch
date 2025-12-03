@@ -131,15 +131,12 @@ impl Actor for HostMeshAgent {
                 None,
             )
             .unwrap();
+            // TODO: include execution_url here
             eprintln!(
-                "Monarch internal logs are being written to {}/{}.log; execution id {}{}",
+                "Monarch internal logs are being written to {}/{}.log; execution id {}",
                 directory,
                 file,
                 hyperactor_telemetry::env::execution_id(),
-                hyperactor_telemetry::env::execution_url()
-                    .await
-                    .unwrap_or_else(|e| Some(format!(": <error generating URL: {}>", e)))
-                    .map_or_else(|| "".to_string(), |url| format!(": {}", url))
             );
         }
         Ok(Self {
