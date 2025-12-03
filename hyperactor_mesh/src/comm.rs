@@ -1074,7 +1074,7 @@ mod tests {
             .await
             .unwrap();
 
-        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test.local")
+        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
             .await
             .unwrap();
 
