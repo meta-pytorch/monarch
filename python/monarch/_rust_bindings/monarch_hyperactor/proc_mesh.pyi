@@ -56,15 +56,6 @@ class ProcMesh:
         ...
 
     @property
-    def client(self) -> Instance:
-        """
-        A client that can be used to communicate with individual
-        actors in the mesh, and also to create ports that can be
-        broadcast across the mesh)
-        """
-        ...
-
-    @property
     def region(self) -> Region:
         """
         The region of the mesh.
