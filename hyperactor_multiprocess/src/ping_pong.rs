@@ -21,7 +21,6 @@ mod tests {
     use hyperactor::reference::WorldId;
     use hyperactor::simnet;
     use hyperactor::test_utils::pingpong::PingPongActor;
-    use hyperactor::test_utils::pingpong::PingPongActorParams;
     use hyperactor::test_utils::pingpong::PingPongMessage;
 
     use crate::System;
@@ -122,12 +121,11 @@ mod tests {
         .await
         .unwrap();
 
-        let params = PingPongActorParams::new(None, None);
         spawn::<PingPongActor>(
             cx,
             &bootstrap.proc_actor.bind(),
             actor_index.to_string().as_str(),
-            &params,
+            &(None, None, None),
         )
         .await
         .unwrap()

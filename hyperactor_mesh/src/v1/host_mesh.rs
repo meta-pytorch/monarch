@@ -263,13 +263,11 @@ impl HostMesh {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).any();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
-        let (host, _handle) = Host::serve(manager, addr).await?;
+        let host = Host::new(manager, addr).await?;
         let addr = host.addr().clone();
-        let host_mesh_agent = host
-            .system_proc()
-            .clone()
-            .spawn::<HostMeshAgent>("agent", HostAgentMode::Process(host))
-            .await
+        let system_proc = host.system_proc().clone();
+        let host_mesh_agent = system_proc
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 
@@ -435,10 +433,10 @@ impl HostMesh {
 
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
-        let _controller: ActorHandle<HostMeshController> =
-            HostMeshController::spawn(cx, mesh.deref().clone())
-                .await
-                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        let controller = HostMeshController::new(mesh.deref().clone());
+        controller
+            .spawn(cx)
+            .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
@@ -951,10 +949,10 @@ impl HostMeshRef {
         if let Ok(ref mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
-            let _controller: ActorHandle<ProcMeshController> =
-                ProcMeshController::spawn(cx, mesh.deref().clone())
-                    .await
-                    .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            let controller = ProcMeshController::new(mesh.deref().clone());
+            controller
+                .spawn(cx)
+                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         }
         mesh
     }
@@ -1521,7 +1519,7 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_halting_proc_allocation() {
         let config = hyperactor_config::global::lock();
-        let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(5));
+        let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(20));
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 

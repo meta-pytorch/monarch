@@ -25,6 +25,7 @@ use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
@@ -833,7 +834,7 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
-    pub async fn spawn<A: Actor + Referable>(
+    pub async fn spawn<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -852,7 +853,7 @@ impl ProcMeshRef {
     ///
     /// Note: avoid using service actors if possible; the mechanism will
     /// be replaced by an actor registry.
-    pub async fn spawn_service<A: Actor + Referable>(
+    pub async fn spawn_service<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -883,7 +884,7 @@ impl ProcMeshRef {
         proc_mesh=self.name.to_string(),
         actor_name=name.to_string(),
     ))]
-    pub(crate) async fn spawn_with_name<A: Actor + Referable>(
+    pub(crate) async fn spawn_with_name<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: Name,
@@ -914,15 +915,12 @@ impl ProcMeshRef {
         result
     }
 
-    async fn spawn_with_name_inner<A: Actor + Referable>(
+    async fn spawn_with_name_inner<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: Name,
         params: &A::Params,
-    ) -> v1::Result<ActorMesh<A>>
-    where
-        A::Params: RemoteMessage,
-    {
+    ) -> v1::Result<ActorMesh<A>> {
         let remote = Remote::collect();
         // `Referable` ensures the type `A` is registered with
         // `Remote`.
@@ -1029,10 +1027,10 @@ impl ProcMeshRef {
         }?;
         // Spawn a unique mesh manager for each actor mesh, so the type of the
         // mesh can be preserved.
-        let _controller: ActorHandle<ActorMeshController<A>> =
-            ActorMeshController::<A>::spawn(cx, mesh.deref().clone())
-                .await
-                .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        let controller = ActorMeshController::<A>::new(mesh.deref().clone());
+        controller
+            .spawn(cx)
+            .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         Ok(mesh)
     }
 
