@@ -101,8 +101,10 @@ mod test {
         type State = ();
     }
 
-    #[derive(Actor, Debug, Default, Named, Serialize, Deserialize)]
+    #[derive(Debug, Default, Named, Serialize, Deserialize)]
     struct TestMeshController;
+
+    impl Actor for TestMeshController {}
 
     // Ensure that TestMeshController conforms to the Controller behavior for TestMesh.
     handler! {
