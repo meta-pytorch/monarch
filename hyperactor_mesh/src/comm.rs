@@ -75,7 +75,7 @@ struct ReceiveState {
 
 /// This is the comm actor used for efficient and scalable message multicasting
 /// and result accumulation.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[hyperactor::export(
     spawn = true,
     handlers = [
@@ -162,16 +162,6 @@ impl CommActorMode {
 
 #[async_trait]
 impl Actor for CommActor {
-    type Params = CommActorParams;
-
-    async fn new(_params: Self::Params) -> Result<Self> {
-        Ok(Self {
-            send_seq: HashMap::new(),
-            recv_state: HashMap::new(),
-            mode: Default::default(),
-        })
-    }
-
     // This is an override of the default actor behavior.
     async fn handle_undeliverable_message(
         &mut self,
@@ -524,7 +514,10 @@ pub mod test_utils {
     }
 
     #[async_trait]
-    impl Actor for TestActor {
+    impl Actor for TestActor {}
+
+    #[async_trait]
+    impl hyperactor::RemoteSpawn for TestActor {
         type Params = TestActorParams;
 
         async fn new(params: Self::Params) -> Result<Self> {

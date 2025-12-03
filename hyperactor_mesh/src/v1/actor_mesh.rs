@@ -836,7 +836,6 @@ mod tests {
         use hyperactor::mailbox::MessageEnvelope;
         use hyperactor::mailbox::Undeliverable;
         use hyperactor::test_utils::pingpong::PingPongActor;
-        use hyperactor::test_utils::pingpong::PingPongActorParams;
         use hyperactor::test_utils::pingpong::PingPongMessage;
 
         hyperactor_telemetry::initialize_logging_for_test();
@@ -858,23 +857,22 @@ mod tests {
         let (undeliverable_port, mut undeliverable_rx) =
             instance.open_port::<Undeliverable<MessageEnvelope>>();
 
-        // Spawn PingPongActors across both replicas.
-        // Only actors on replica 0 will forward undeliverable messages.
-        let ping_params = PingPongActorParams::new(Some(undeliverable_port.bind()), None);
-        let pong_params = PingPongActorParams::new(None, None);
-
         // Spawn actors individually on each replica by spawning separate actor meshes
         // with specific proc selections.
         let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
         let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
 
         let ping_mesh = ping_proc_mesh
-            .spawn::<PingPongActor>(instance, "ping", &ping_params)
+            .spawn::<PingPongActor>(
+                instance,
+                "ping",
+                &(Some(undeliverable_port.bind()), None, None),
+            )
             .await
             .unwrap();
 
         let pong_mesh = pong_proc_mesh
-            .spawn::<PingPongActor>(instance, "pong", &pong_params)
+            .spawn::<PingPongActor>(instance, "pong", &(None, None, None))
             .await
             .unwrap();
 

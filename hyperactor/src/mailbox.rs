@@ -3105,8 +3105,10 @@ mod tests {
         );
     }
 
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     struct Foo;
+
+    impl Actor for Foo {}
 
     // Test that a message delivery failure causes the sending actor
     // to stop running.
@@ -3124,7 +3126,7 @@ mod tests {
         let mut proc = Proc::new(proc_id.clone(), proc_forwarder);
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let foo = proc.spawn::<Foo>("foo", ()).await.unwrap();
+        let foo = proc.spawn("foo", Foo).unwrap();
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
         let message = MessageEnvelope::new(
             foo.actor_id().clone(),
