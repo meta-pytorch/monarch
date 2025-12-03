@@ -26,7 +26,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
-use hyperactor::attrs::Attrs;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
@@ -34,6 +33,7 @@ use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor::reference::WorldId;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::attrs::Attrs;
 use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
 use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -342,7 +342,7 @@ impl PythonMessage {
                     Ok(ResolvedCallMethod {
                         method: name,
                         bytes: FrozenBuffer {
-                            inner: self.message.into_inner(),
+                            inner: self.message.into_bytes(),
                         },
                         local_state,
                         response_port,
@@ -381,7 +381,7 @@ impl PythonMessage {
                 Ok(ResolvedCallMethod {
                     method: name,
                     bytes: FrozenBuffer {
-                        inner: self.message.into_inner(),
+                        inner: self.message.into_bytes(),
                     },
                     local_state,
                     response_port,
@@ -400,7 +400,7 @@ impl std::fmt::Debug for PythonMessage {
             .field("kind", &self.kind)
             .field(
                 "message",
-                &hyperactor::data::HexFmt(&(*self.message)[..]).to_string(),
+                &hyperactor::data::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
             )
             .finish()
     }
@@ -452,7 +452,7 @@ impl PythonMessage {
     #[getter]
     fn message(&self) -> FrozenBuffer {
         FrozenBuffer {
-            inner: self.message.clone().into_inner(),
+            inner: self.message.to_bytes(),
         }
     }
 }
@@ -702,7 +702,7 @@ impl RemoteSpawn for PythonActor {
             let actor: PyObject = class_type.call0()?.into_py_any(py)?;
 
             // Only create per-actor TaskLocals if not using shared runtime
-            let task_locals = (!hyperactor::config::global::get(SHARED_ASYNCIO_RUNTIME))
+            let task_locals = (!hyperactor_config::global::get(SHARED_ASYNCIO_RUNTIME))
                 .then(|| Python::allow_threads(py, create_task_locals));
             Ok(Self {
                 actor,
@@ -784,6 +784,7 @@ impl PanicFlag {
 
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
+    #[hyperactor::instrument]
     async fn handle(
         &mut self,
         cx: &Context<PythonActor>,

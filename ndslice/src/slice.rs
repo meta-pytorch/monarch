@@ -1036,10 +1036,10 @@ mod tests {
 
         let result = slice.at(0, 3).unwrap();
         assert_eq!(result.num_dim(), 0);
-        assert_eq!(result.sizes(), &[]);
-        assert_eq!(result.strides(), &[]);
+        assert_eq!(result.sizes(), &[] as &[usize]);
+        assert_eq!(result.strides(), &[] as &[usize]);
         assert_eq!(result.offset(), 3);
-        assert_eq!(result.location(&[]).unwrap(), 3);
+        assert_eq!(result.location(&[] as &[usize]).unwrap(), 3);
     }
 
     #[test]
