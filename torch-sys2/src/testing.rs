@@ -8,8 +8,12 @@
 
 //! Testing utilities
 
-use crate::{torch_allclose, torch_full, torch_stack, Tensor};
 use pyo3::prelude::*;
+
+use crate::Tensor;
+use crate::torch_allclose;
+use crate::torch_full;
+use crate::torch_stack;
 
 pub fn allclose(a: &Tensor, b: &Tensor) -> Result<bool, String> {
     Python::with_gil(|py| {
@@ -31,7 +35,9 @@ pub fn cuda_full(size: &[i64], value: f32) -> Tensor {
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("device", "cuda").unwrap();
 
-        let result = torch_full(py).call((size_tuple, value), Some(&kwargs)).unwrap();
+        let result = torch_full(py)
+            .call((size_tuple, value), Some(&kwargs))
+            .unwrap();
 
         Tensor {
             inner: result.clone().unbind(),

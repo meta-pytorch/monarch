@@ -18,4 +18,3 @@ pub(crate) mod ffi {
         fn make_nccl_config() -> ncclConfig_t;
     }
 }
-
