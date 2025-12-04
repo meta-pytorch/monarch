@@ -182,21 +182,6 @@ impl PickledMessageClientActor {
         PyList::new(py, messages)
     }
 
-    fn world_status<'py>(&mut self, py: Python<'py>) -> PyResult<PyObject> {
-        let instance = Arc::clone(&self.instance);
-
-        let worlds = signal_safe_block_on(py, async move {
-            instance.lock().await.world_status(Default::default()).await
-        })??;
-        Python::with_gil(|py| {
-            let py_dict = PyDict::new(py);
-            for (world, status) in worlds {
-                py_dict.set_item(world.to_string(), status.to_string())?;
-            }
-            Ok(py_dict.into())
-        })
-    }
-
     #[getter]
     fn actor_id(&self) -> PyResult<PyActorId> {
         let instance = self.instance.blocking_lock();

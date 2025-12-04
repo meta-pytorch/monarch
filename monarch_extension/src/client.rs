@@ -756,33 +756,6 @@ impl ClientActor {
         PyList::new(py, messages)
     }
 
-    /// Get the status of all the worlds from the system.
-    #[pyo3(signature = (filter = None))]
-    fn world_status<'py>(
-        &mut self,
-        py: Python<'py>,
-        filter: Option<&PySystemSnapshotFilter>,
-    ) -> PyResult<PyObject> {
-        let instance = self.instance.clone();
-        let filter = filter.cloned();
-        let worlds = signal_safe_block_on(py, async move {
-            instance
-                .lock()
-                .await
-                .world_status(
-                    filter.map_or(SystemSnapshotFilter::all(), SystemSnapshotFilter::from),
-                )
-                .await
-        })??;
-        Python::with_gil(|py| {
-            let py_dict = PyDict::new(py);
-            for (world, status) in worlds {
-                py_dict.set_item(world.to_string(), status.to_string())?;
-            }
-            Ok(py_dict.into())
-        })
-    }
-
     /// Get a list of procs know to this system instance.
     /// world_filter contains a list of world names to filter on. Empty list means match all.
     /// label_filter contains list of actor labels to filter on. Empty list means match all.
