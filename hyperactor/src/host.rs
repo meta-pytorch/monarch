@@ -55,6 +55,7 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate as hyperactor;
 use crate::Actor;
 use crate::ActorHandle;
 use crate::ActorId;
@@ -133,7 +134,7 @@ impl<M: ProcManager> Host<M> {
     /// Serve a host using the provided ProcManager, on the provided `addr`.
     /// On success, the host will multiplex messages for procs on the host
     /// on the address of the host.
-    #[tracing::instrument(skip(manager))]
+    #[crate::instrument(fields(addr=addr.to_string()))]
     pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
         let (frontend_addr, frontend_rx) = channel::serve(addr)?;
 
@@ -870,7 +871,7 @@ where
         ChannelTransport::Local
     }
 
-    #[tracing::instrument(skip(self, _config))]
+    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1048,7 +1049,7 @@ where
         ChannelTransport::Unix
     }
 
-    #[tracing::instrument(skip(self, _config))]
+    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1142,7 +1143,7 @@ where
 /// forwarding messages to the provided `backend_addr`,
 /// and returning the proc's address and agent actor on
 /// the provided `callback_addr`.
-#[tracing::instrument(skip(spawn))]
+#[crate::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
 pub async fn spawn_proc<A, S, F>(
     proc_id: ProcId,
     backend_addr: ChannelAddr,

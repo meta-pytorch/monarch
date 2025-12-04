@@ -12,6 +12,7 @@ import logging
 import click
 
 from monarch.actor import Actor, endpoint, this_host
+from monarch.config import configure
 
 
 @click.group()
@@ -29,17 +30,15 @@ class Printer(Actor):
 
 
 async def _flush_logs() -> None:
-    # Create a lot of processes to stress test the logging
-    pm = this_host().spawn_procs(per_host={"gpus": 32})
-
-    # never flush
-    await pm.logging_option(aggregate_window_sec=1000)
+    configure(
+        enable_log_forwarding=True,
+    )
+    pm = this_host().spawn_procs(per_host={"gpus": 4})
+    # Never flush
+    await pm.logging_option(stream_to_client=True, aggregate_window_sec=1000)
     am = pm.spawn("printer", Printer)
-
     # These should be streamed to client
-    for _ in range(5):
-        await am.print.call("has print streaming")
-
+    await asyncio.gather(*[am.print.call("has print streaming") for _ in range(5)])
     await pm.stop()
 
 

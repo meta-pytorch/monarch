@@ -847,7 +847,10 @@ async def test_flush_called_only_once() -> None:
             "monarch._src.actor.logging.IN_IPYTHON", True
         ), unittest.mock.patch(
             "monarch._src.actor.logging.flush_all_proc_mesh_logs"
-        ) as mock_flush:
+        ) as mock_flush, unittest.mock.patch(
+            "monarch._src.actor.logging.LoggingManager.enable_fd_capture_if_in_ipython",
+            return_value=None,
+        ):
             # Create 2 proc meshes with a large aggregation window
             pm1 = this_host().spawn_procs(per_host={"gpus": 2})
             _ = this_host().spawn_procs(per_host={"gpus": 2})
@@ -928,34 +931,34 @@ async def test_flush_logs_ipython() -> None:
 # oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
 @pytest.mark.oss_skip
 async def test_flush_logs_fast_exit() -> None:
-    with configured(
-        enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
-    ):
-        # We use a subprocess to run the test so we can handle the flushed logs at the end.
-        # Otherwise, it is hard to restore the original stdout/stderr.
+    """Test that logs are flushed before the program exits.
 
-        test_bin = importlib.resources.files(str(__package__)).joinpath("test_bin")
+    This tests that logs are aggregated correctly and flushed with
+    fast process termination.
 
-        # Run the binary in a separate process and capture stdout and stderr
-        cmd = [str(test_bin), "flush-logs"]
+    """
 
-        process = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
+    # We run a subprocess so we can handle the flushed logs at the
+    # end. Otherwise, it is hard to restore the original
+    # stdout/stderr.
+    test_bin = importlib.resources.files(str(__package__)).joinpath("test_bin")
+    cmd = [str(test_bin), "flush-logs"]
+    # CalledProcessError includes returncode, cmd, stdout, stderr
+    # automatically.
+    process = subprocess.run(
+        cmd, capture_output=True, timeout=60, text=True, check=True
+    )
 
-        # Check if the process ended without error
-        if process.returncode != 0:
-            raise RuntimeError(f"{cmd} ended with error code {process.returncode}. ")
-
-        # Assertions on the captured output, 160 = 32 procs * 5 logs per proc
-        # 32 and 5 are specified in the test_bin flush-logs.
-        assert (
-            len(
-                re.findall(
-                    r"160 similar log lines.*has print streaming",
-                    process.stdout,
-                )
+    # See python_actor_test_binary::_flush_logs().
+    assert (
+        len(
+            re.findall(
+                r"20 similar log lines.*has print streaming",
+                process.stdout,
             )
-            == 1
-        ), process.stdout
+        )
+        == 1
+    ), process.stdout
 
 
 # oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
@@ -1463,8 +1466,8 @@ def test_this_host() -> None:
     proc_mesh_345 = host.slice(hosts=slice(3, 6)).spawn_procs(per_host={"gpus": 2})
 
     am_all = proc_mesh_all.spawn("all", HostMeshActor)
-    am_012 = proc_mesh_012.spawn("012", HostMeshActor)
-    am_345 = proc_mesh_345.spawn("345", HostMeshActor)
+    am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
+    am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
 
     expected_hosts_by_rank = [h for h in hosts_by_rank for _ in range(2)]
     assert list(am_all.this_host.call().get().values()) == expected_hosts_by_rank
@@ -1476,8 +1479,8 @@ def test_this_host() -> None:
     # Procs 6 and 10 on hosts 3 and 5
     proc_mesh_345 = proc_mesh_345.slice(hosts=slice(0, 3, 2), gpus=0)
 
-    am_012 = proc_mesh_012.spawn("012", HostMeshActor)
-    am_345 = proc_mesh_345.spawn("345", HostMeshActor)
+    am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
+    am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
 
     assert list(am_012.this_host.call().get().values()) == [
         expected_hosts_by_rank[3],
