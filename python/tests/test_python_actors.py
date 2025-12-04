@@ -1187,7 +1187,7 @@ async def test_actor_mesh_stop() -> None:
 
     with pytest.raises(
         SupervisionError,
-        match=r"(?s)Actor .*printer_.* exited because of the following reason:.*stopped",
+        match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
     ):
         await am_1.print.call("hello 1")
 
@@ -1466,8 +1466,8 @@ def test_this_host() -> None:
     proc_mesh_345 = host.slice(hosts=slice(3, 6)).spawn_procs(per_host={"gpus": 2})
 
     am_all = proc_mesh_all.spawn("all", HostMeshActor)
-    am_012 = proc_mesh_012.spawn("012", HostMeshActor)
-    am_345 = proc_mesh_345.spawn("345", HostMeshActor)
+    am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
+    am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
 
     expected_hosts_by_rank = [h for h in hosts_by_rank for _ in range(2)]
     assert list(am_all.this_host.call().get().values()) == expected_hosts_by_rank
@@ -1479,8 +1479,8 @@ def test_this_host() -> None:
     # Procs 6 and 10 on hosts 3 and 5
     proc_mesh_345 = proc_mesh_345.slice(hosts=slice(0, 3, 2), gpus=0)
 
-    am_012 = proc_mesh_012.spawn("012", HostMeshActor)
-    am_345 = proc_mesh_345.spawn("345", HostMeshActor)
+    am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
+    am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
 
     assert list(am_012.this_host.call().get().values()) == [
         expected_hosts_by_rank[3],
