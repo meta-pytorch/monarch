@@ -156,17 +156,18 @@ int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count);
 int deregister_segments();
 
 // Scanned segment information - minimal fields needed from external scanner
-// This is what the scanner callback fills in, separate from internal rdma_segment_info_t
+// This is what the scanner callback fills in, separate from internal
+// rdma_segment_info_t
 typedef struct {
-  size_t address;     // Physical memory address of the segment
-  size_t size;        // Size of the segment in bytes
-  int32_t device;     // CUDA device ID
-  int is_expandable;  // Boolean: 1 if expandable, 0 if not
+  size_t address; // Physical memory address of the segment
+  size_t size; // Size of the segment in bytes
+  int32_t device; // CUDA device ID
+  int is_expandable; // Boolean: 1 if expandable, 0 if not
 } rdmaxcel_scanned_segment_t;
 
 // Segment scanner callback type
-// This callback is used to scan for CUDA memory segments from an external source
-// (e.g., Python/PyTorch allocator API).
+// This callback is used to scan for CUDA memory segments from an external
+// source (e.g., Python/PyTorch allocator API).
 //
 // Parameters:
 //   segments_out: Buffer to write segment info into
@@ -180,8 +181,8 @@ typedef size_t (*rdmaxcel_segment_scanner_fn)(
     size_t max_segments);
 
 // Register a segment scanner callback.
-// The scanner will be called by scan_existing_segments() to discover CUDA segments.
-// Pass NULL to unregister the scanner.
+// The scanner will be called by scan_existing_segments() to discover CUDA
+// segments. Pass NULL to unregister the scanner.
 void rdmaxcel_register_segment_scanner(rdmaxcel_segment_scanner_fn scanner);
 
 // CUDA utility functions

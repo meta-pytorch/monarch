@@ -442,7 +442,8 @@ impl RdmaManagerActor {
                         rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                         0,
                     );
-                    mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
+                    mr =
+                        rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
                     if mr.is_null() {
                         return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
                     }

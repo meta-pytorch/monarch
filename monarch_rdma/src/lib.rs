@@ -18,16 +18,14 @@ mod rdma_manager_actor;
 mod macros;
 
 pub use ibverbs_primitives::*;
-pub use rdma_components::*;
-pub use rdma_manager_actor::*;
-pub use test_utils::is_cuda_available;
-
+pub use rdma_components::SegmentScannerFn;
 // Re-export segment scanner types for extension crate
 pub use rdma_components::register_segment_scanner;
-pub use rdma_components::SegmentScannerFn;
-
+pub use rdma_components::*;
+pub use rdma_manager_actor::*;
 // Re-export rdmaxcel_sys for extension crate to access types
 pub use rdmaxcel_sys;
+pub use test_utils::is_cuda_available;
 
 /// Print comprehensive RDMA device information for debugging.
 /// Controlled by MONARCH_DEBUG_RDMA environment variable.
