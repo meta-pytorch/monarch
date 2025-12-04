@@ -6,104 +6,23 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use hyperactor::Instance;
+use hyperactor::context;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::proc_mesh::global_root_client;
 use ndslice::Extent;
 use ndslice::Point;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
+use crate::actor::root_client_actor;
 use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
 use crate::runtime;
 use crate::shape::PyPoint;
 
-pub enum ContextInstance {
-    Client(hyperactor::Instance<()>),
-    PythonActor(hyperactor::Instance<PythonActor>),
-}
-
-impl ContextInstance {
-    fn mailbox_for_py(&self) -> &hyperactor::Mailbox {
-        match self {
-            ContextInstance::Client(ins) => ins.mailbox_for_py(),
-            ContextInstance::PythonActor(ins) => ins.mailbox_for_py(),
-        }
-    }
-
-    fn self_id(&self) -> &hyperactor::ActorId {
-        match self {
-            ContextInstance::Client(ins) => ins.self_id(),
-            ContextInstance::PythonActor(ins) => ins.self_id(),
-        }
-    }
-}
-
-impl Clone for ContextInstance {
-    fn clone(&self) -> Self {
-        match self {
-            ContextInstance::Client(ins) => ContextInstance::Client(ins.clone_for_py()),
-            ContextInstance::PythonActor(ins) => ContextInstance::PythonActor(ins.clone_for_py()),
-        }
-    }
-}
-
-#[macro_export]
-macro_rules! instance_dispatch {
-    ($ins:expr, |$cx:ident| $code:block) => {
-        match $ins.context_instance() {
-            $crate::context::ContextInstance::Client($cx) => $code,
-            $crate::context::ContextInstance::PythonActor($cx) => $code,
-        }
-    };
-    ($ins:expr, |$cx:ident| $code:block) => {
-        match $ins.into_context_instance() {
-            $crate::context::ContextInstance::Client($cx) => $code,
-            $crate::context::ContextInstance::PythonActor($cx) => $code,
-        }
-    };
-    ($ins:expr, async |$cx:ident| $code:block) => {
-        match $ins.context_instance() {
-            $crate::context::ContextInstance::Client($cx) => async $code.await,
-            $crate::context::ContextInstance::PythonActor($cx) => async $code.await,
-        }
-    };
-    ($ins:expr, async move |$cx:ident| $code:block) => {
-        match $ins.context_instance() {
-            $crate::context::ContextInstance::Client($cx) => async move $code.await,
-            $crate::context::ContextInstance::PythonActor($cx) => async move $code.await,
-        }
-    };
-}
-
-/// Similar to `instance_dispatch!`, but moves the PyInstance into an Instance<T>
-/// instead of a borrow.
-#[macro_export]
-macro_rules! instance_into_dispatch {
-    ($ins:expr, |$cx:ident| $code:block) => {
-        match $ins.into_context_instance() {
-            $crate::context::ContextInstance::Client($cx) => $code,
-            $crate::context::ContextInstance::PythonActor($cx) => $code,
-        }
-    };
-    ($ins:expr, async |$cx:ident| $code:block) => {
-        match $ins.into_context_instance() {
-            $crate::context::ContextInstance::Client($cx) => async $code.await,
-            $crate::context::ContextInstance::PythonActor($cx) => async $code.await,
-        }
-    };
-    ($ins:expr, async move |$cx:ident| $code:block) => {
-        match $ins.into_context_instance() {
-            $crate::context::ContextInstance::Client($cx) => async move $code.await,
-            $crate::context::ContextInstance::PythonActor($cx) => async move $code.await,
-        }
-    };
-}
-
-#[derive(Clone)]
 #[pyclass(name = "Instance", module = "monarch._src.actor.actor_mesh")]
 pub struct PyInstance {
-    inner: ContextInstance,
+    inner: Instance<PythonActor>,
     #[pyo3(get, set)]
     proc_mesh: Option<PyObject>,
     #[pyo3(get, set, name = "_controller_controller")]
@@ -119,6 +38,29 @@ pub struct PyInstance {
     class_name: Option<String>,
     #[pyo3(get, set, name = "creator")]
     creator: Option<PyObject>,
+}
+
+impl Clone for PyInstance {
+    fn clone(&self) -> Self {
+        PyInstance {
+            inner: self.inner.clone_for_py(),
+            proc_mesh: self.proc_mesh.clone(),
+            controller_controller: self.controller_controller.clone(),
+            rank: self.rank.clone(),
+            children: self.children.clone(),
+            name: self.name.clone(),
+            class_name: self.class_name.clone(),
+            creator: self.creator.clone(),
+        }
+    }
+}
+
+impl std::ops::Deref for PyInstance {
+    type Target = Instance<PythonActor>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 #[pymethods]
@@ -137,43 +79,15 @@ impl PyInstance {
 }
 
 impl PyInstance {
-    pub fn context_instance(&self) -> &ContextInstance {
-        &self.inner
-    }
-
-    pub fn into_context_instance(self) -> ContextInstance {
+    pub fn into_instance(self) -> Instance<PythonActor> {
         self.inner
     }
 }
 
-impl From<&hyperactor::Instance<PythonActor>> for ContextInstance {
-    fn from(ins: &hyperactor::Instance<PythonActor>) -> Self {
-        ContextInstance::PythonActor(ins.clone_for_py())
-    }
-}
-
-impl From<&hyperactor::Instance<()>> for ContextInstance {
-    fn from(ins: &hyperactor::Instance<()>) -> Self {
-        ContextInstance::Client(ins.clone_for_py())
-    }
-}
-
-impl From<&hyperactor::Context<'_, PythonActor>> for ContextInstance {
-    fn from(cx: &hyperactor::Context<'_, PythonActor>) -> Self {
-        ContextInstance::PythonActor(cx.clone_for_py())
-    }
-}
-
-impl From<&hyperactor::Context<'_, ()>> for ContextInstance {
-    fn from(cx: &hyperactor::Context<'_, ()>) -> Self {
-        ContextInstance::Client(cx.clone_for_py())
-    }
-}
-
-impl<I: Into<ContextInstance>> From<I> for PyInstance {
+impl<I: context::Actor<A = PythonActor>> From<I> for PyInstance {
     fn from(ins: I) -> Self {
         PyInstance {
-            inner: ins.into(),
+            inner: ins.instance().clone_for_py(),
             proc_mesh: None,
             controller_controller: None,
             rank: PyPoint::new(0, Extent::unity().into()),
@@ -206,7 +120,7 @@ impl PyContext {
     #[staticmethod]
     fn _root_client_context(py: Python<'_>) -> PyResult<PyContext> {
         let _guard = runtime::get_tokio_runtime().enter();
-        let instance: PyInstance = global_root_client().into();
+        let instance: PyInstance = root_client_actor().into();
         Ok(PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),
