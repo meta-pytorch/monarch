@@ -36,17 +36,7 @@ use tracing_perfetto_sdk_schema::track_event::CounterValueField;
 use tracing_perfetto_sdk_schema::track_event::Timestamp;
 use tracing_perfetto_sdk_schema::track_event::Type as TrackEventType;
 
-#[derive(
-    Deserialize,
-    Serialize,
-    Debug,
-    Clone,
-    Default,
-    PartialEq,
-    Eq,
-    Hash,
-    valuable::Valuable
-)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct RawEvent {
     pub time: u64,
     pub time_us: u64,
@@ -63,7 +53,34 @@ pub struct RawEvent {
     pub target: String,
     pub err: Option<String>,
     pub stacktrace: Option<String>,
+    pub thread_name: Option<String>,
+    #[serde(flatten)]
+    #[serde(default)]
+    pub extra_fields: HashMap<String, serde_json::Value>,
 }
+
+impl PartialEq for RawEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.time == other.time
+            && self.time_us == other.time_us
+            && self.span_id == other.span_id
+            && self.parent_span_id == other.parent_span_id
+            && self.name == other.name
+            && self.event_type == other.event_type
+            && self.message == other.message
+            && self.actor_id == other.actor_id
+            && self.file == other.file
+            && self.lineno == other.lineno
+            && self.os_pid == other.os_pid
+            && self.tokio_task_id == other.tokio_task_id
+            && self.target == other.target
+            && self.err == other.err
+            && self.stacktrace == other.stacktrace
+            && self.thread_name == other.thread_name
+    }
+}
+
+impl Eq for RawEvent {}
 
 impl PartialOrd for RawEvent {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -204,19 +221,29 @@ pub struct TimeUs(u64);
 
 impl From<TimeUs> for Timestamp {
     fn from(value: TimeUs) -> Self {
-        Timestamp::TimestampAbsoluteUs(value.0 as i64)
+        Timestamp::TimestampAbsoluteUs((value.0 * 1000) as i64)
     }
 }
 
 impl From<TimeUs> for u64 {
     fn from(value: TimeUs) -> Self {
-        value.0
+        value.0 * 1000
     }
 }
 impl From<TimeUs> for Option<u64> {
     fn from(value: TimeUs) -> Self {
-        Some(value.0)
+        Some(value.0 * 1000)
     }
+}
+
+/// Trait for types that can be named
+pub trait Nameable {
+    fn name(self, name: &str) -> Self;
+}
+
+/// Trait for types that can have annotations added
+pub trait Annotable {
+    fn add_annotation(self, key: &str, value: &serde_json::Value) -> Self;
 }
 
 pub struct Instant<'a, T: Sink> {
@@ -239,6 +266,13 @@ impl<'a, T: Sink> Instant<'a, T> {
         self
     }
 
+    pub fn add_annotation(mut self, name: &str, value: &serde_json::Value) -> Self {
+        self.event
+            .debug_annotations
+            .push(self.ctx.debug_annotation(name, value));
+        self
+    }
+
     pub fn consume(self) {
         let event = self.event;
         let tp = TracePacket {
@@ -247,6 +281,18 @@ impl<'a, T: Sink> Instant<'a, T> {
             ..Default::default()
         };
         self.ctx.consume(tp);
+    }
+}
+
+impl<'a, T: Sink> Nameable for Instant<'a, T> {
+    fn name(self, name: &str) -> Self {
+        self.name(name)
+    }
+}
+
+impl<'a, T: Sink> Annotable for Instant<'a, T> {
+    fn add_annotation(self, key: &str, value: &serde_json::Value) -> Self {
+        self.add_annotation(key, value)
     }
 }
 
@@ -315,6 +361,13 @@ impl<'a, T: Sink> StartSlice<'a, T> {
         self
     }
 
+    pub fn add_annotation(mut self, name: &str, value: &serde_json::Value) -> Self {
+        self.event
+            .debug_annotations
+            .push(self.ctx.debug_annotation(name, value));
+        self
+    }
+
     pub fn consume(self) {
         let mut event = self.event;
         event.r#type = Some(TrackEventType::SliceBegin as i32);
@@ -326,6 +379,19 @@ impl<'a, T: Sink> StartSlice<'a, T> {
         self.ctx.consume(tp);
     }
 }
+
+impl<'a, T: Sink> Nameable for StartSlice<'a, T> {
+    fn name(self, name: &str) -> Self {
+        self.name(name)
+    }
+}
+
+impl<'a, T: Sink> Annotable for StartSlice<'a, T> {
+    fn add_annotation(self, key: &str, value: &serde_json::Value) -> Self {
+        self.add_annotation(key, value)
+    }
+}
+
 pub struct EndSlice<'a, T: Sink> {
     event: TrackEvent,
     ts: TimeUs,
@@ -579,7 +645,7 @@ impl<T: Sink> Ctx<T> {
                 .debug_annotation_names
                 .push(debug_annotation_name);
         }
-        for (val, id) in self.debug_annotation_names.to_flush() {
+        for (val, id) in self.debug_annotation_strings.to_flush() {
             let ii = InternedString {
                 iid: Some(*id),
                 str: Some(val.clone().into_bytes().into()),
