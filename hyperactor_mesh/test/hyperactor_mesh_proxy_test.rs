@@ -21,6 +21,7 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Proc;
+use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -63,8 +64,10 @@ struct Args {
 )]
 pub struct TestActor;
 
+impl Actor for TestActor {}
+
 #[async_trait]
-impl Actor for TestActor {
+impl RemoteSpawn for TestActor {
     type Params = ();
 
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
@@ -108,6 +111,14 @@ impl fmt::Debug for ProxyActor {
 
 #[async_trait]
 impl Actor for ProxyActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        self.actor_mesh = Some(self.proc_mesh.spawn(this, "echo", &()).await.unwrap());
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RemoteSpawn for ProxyActor {
     type Params = String;
 
     async fn new(exe_path: Self::Params) -> anyhow::Result<Self, anyhow::Error> {
@@ -132,11 +143,6 @@ impl Actor for ProxyActor {
             proc_mesh: leaked,
             actor_mesh: None,
         })
-    }
-
-    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        self.actor_mesh = Some(self.proc_mesh.spawn(this, "echo", &()).await.unwrap());
-        Ok(())
     }
 }
 

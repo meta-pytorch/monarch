@@ -66,6 +66,7 @@ use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::Proc;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
@@ -111,6 +112,21 @@ pub struct ParameterServerActor {
 
 #[async_trait]
 impl Actor for ParameterServerActor {
+    async fn handle_supervision_event(
+        &mut self,
+        _cx: &Instance<Self>,
+        _event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        tracing::error!("parameterServerActor supervision event: {:?}", _event);
+        tracing::error!(
+            "parameterServerActor error occurred, stop the worker process, exit code: 1"
+        );
+        std::process::exit(1);
+    }
+}
+
+#[async_trait]
+impl RemoteSpawn for ParameterServerActor {
     type Params = (ActorRef<RdmaManagerActor>, usize);
 
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
@@ -128,18 +144,6 @@ impl Actor for ParameterServerActor {
             grad_buffer_handles: HashMap::new(),
             owner_ref,
         })
-    }
-
-    async fn handle_supervision_event(
-        &mut self,
-        _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        tracing::error!("parameterServerActor supervision event: {:?}", _event);
-        tracing::error!(
-            "parameterServerActor error occurred, stop the worker process, exit code: 1"
-        );
-        std::process::exit(1);
     }
 }
 
@@ -246,6 +250,19 @@ pub struct WorkerActor {
 
 #[async_trait]
 impl Actor for WorkerActor {
+    async fn handle_supervision_event(
+        &mut self,
+        _cx: &Instance<Self>,
+        _event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        tracing::error!("workerActor supervision event: {:?}", _event);
+        tracing::error!("workerActor error occurred, stop the worker process, exit code: 1");
+        std::process::exit(1);
+    }
+}
+
+#[async_trait]
+impl RemoteSpawn for WorkerActor {
     type Params = ();
 
     async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
@@ -258,16 +275,6 @@ impl Actor for WorkerActor {
             local_gradients,
             rdma_manager: None,
         })
-    }
-
-    async fn handle_supervision_event(
-        &mut self,
-        _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        tracing::error!("workerActor supervision event: {:?}", _event);
-        tracing::error!("workerActor error occurred, stop the worker process, exit code: 1");
-        std::process::exit(1);
     }
 }
 

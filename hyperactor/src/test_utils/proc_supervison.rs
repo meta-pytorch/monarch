@@ -42,9 +42,8 @@ impl ProcSupervisionCoordinator {
     /// proc.
     pub async fn set(proc: &Proc) -> Result<ReportedEvent, anyhow::Error> {
         let state = ReportedEvent::new();
-        let coordinator = proc
-            .spawn::<ProcSupervisionCoordinator>("coordinator", state.clone())
-            .await?;
+        let actor = ProcSupervisionCoordinator(state.clone());
+        let coordinator = proc.spawn::<ProcSupervisionCoordinator>("coordinator", actor)?;
         proc.set_supervision_coordinator(coordinator.port())?;
         Ok(state)
     }
@@ -69,13 +68,7 @@ impl ReportedEvent {
 }
 
 #[async_trait]
-impl Actor for ProcSupervisionCoordinator {
-    type Params = ReportedEvent;
-
-    async fn new(param: ReportedEvent) -> Result<Self, anyhow::Error> {
-        Ok(Self(param))
-    }
-}
+impl Actor for ProcSupervisionCoordinator {}
 
 #[async_trait]
 impl Handler<ActorSupervisionEvent> for ProcSupervisionCoordinator {
