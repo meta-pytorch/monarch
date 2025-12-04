@@ -1184,7 +1184,7 @@ async def test_actor_mesh_stop() -> None:
 
     with pytest.raises(
         SupervisionError,
-        match=r"(?s)Actor .*printer_.* exited because of the following reason:.*stopped",
+        match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
     ):
         await am_1.print.call("hello 1")
 
