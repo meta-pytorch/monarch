@@ -1326,7 +1326,7 @@ mod tests {
     fn to_py_error_preserves_proc_creation_message() {
         // State<ProcState> w/ `state.is_none()`
         let state: resource::State<ProcState> = resource::State {
-            name: Name::new("my_proc"),
+            name: Name::new("my_proc").unwrap(),
             status: Status::Failed("boom".into()),
             state: None,
         };

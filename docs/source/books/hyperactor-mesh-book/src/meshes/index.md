@@ -46,6 +46,7 @@ After that, it's just "send messages to the mesh."
     - **3. HostMesh from an allocation** — taking an allocation and saying "these are my hosts."
     - **4. Doing real work (hosts → procs → actors)** — actually spawning actors once procs exist.
 - **Host & agents (control plane & mux)** — deep dive on the thing the host runs (`HostMeshAgent`), how it maps `CreateOrUpdate<ProcSpec>` to `host.spawn(...)`, and why all the handlers look the same.
+- **Proc meshes & ProcMeshAgent** — deep dive on the proc-level agent: how it turns `CreateOrUpdate<ActorSpec>` and `MeshAgentMessage::Gspawn` into actor spawns via hyperactor's `Remote` registry.
 - **Process-backed hosts: BootstrapProcManager** — the "real OS child, real bootstrap command" path the host delegates to.
 - **Bootstrapping from Python** — show that `this_host().spawn_procs(...).spawn(...)` is using the same Rust v1 path, just through the Python bindings.
 - **Appendix: `bootstrap_canonical_simple`** — the Rust teaching example all of this is mirroring.

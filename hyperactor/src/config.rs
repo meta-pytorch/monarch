@@ -23,7 +23,7 @@ declare_attrs! {
     /// Maximum frame length for codec
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH".to_string()),
-        py_name: None,
+        py_name: Some("codec_max_frame_length".to_string()),
     })
     pub attr CODEC_MAX_FRAME_LENGTH: usize = 10 * 1024 * 1024 * 1024; // 10 GiB
 
