@@ -162,6 +162,7 @@ impl<'py> IntoPyObject<'py> for WireValue {
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        // SAFETY: We are going to remove this safe/unsafe distinction
         unsafe { self.try_to_object_unsafe(py) }
     }
 }
