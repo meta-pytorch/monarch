@@ -28,6 +28,7 @@ use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::reference::ActorId;
 use monarch_types::SerializablePyErr;
+use monarch_types::py_global;
 use ndslice::Slice;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -282,6 +283,8 @@ impl fmt::Display for Cloudpickle {
     }
 }
 
+py_global!(cloudpickle_dumps, "cloudpickle", "dumps");
+
 #[pyo3::pymethods]
 impl Cloudpickle {
     #[new]
@@ -301,6 +304,16 @@ impl Cloudpickle {
     }
 }
 
+impl Cloudpickle {
+    pub fn dumps<'py>(obj: Bound<'py, PyAny>) -> PyResult<Self> {
+        let py = obj.py();
+        let dumps = cloudpickle_dumps(py);
+        let bytes_obj = dumps.call1((obj,))?;
+        let bytes = bytes_obj.downcast::<PyBytes>()?.as_bytes().to_vec();
+        Ok(Self { bytes })
+    }
+}
+
 #[derive(
     PartialEq,
     Serialize,
@@ -317,6 +330,61 @@ pub enum ResolvableFunction {
     Cloudpickle(Cloudpickle),
     #[pyo3(transparent)]
     FunctionPath(FunctionPath),
+}
+
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, From)]
+pub struct ArgsKwargs {
+    payload: Cloudpickle,
+}
+
+impl ArgsKwargs {
+    pub fn from_python<'py>(args: Bound<'py, PyAny>, kwargs: Bound<'py, PyAny>) -> PyResult<Self> {
+        // Create tuple (args, kwargs), then cloudpickle it
+        let py = args.py();
+        let tuple = PyTuple::new(py, vec![args, kwargs])?;
+        let payload = Cloudpickle::dumps(tuple.into_any())?;
+        Ok(Self { payload })
+    }
+
+    pub fn from_wire_values(
+        args: Vec<WireValue>,
+        kwargs: HashMap<String, WireValue>,
+    ) -> PyResult<Self> {
+        Python::with_gil(|py| {
+            // Convert WireValue args to Python objects
+            let py_args: Vec<Bound<'_, PyAny>> = args
+                .into_iter()
+                .map(|v| v.into_pyobject(py))
+                .collect::<PyResult<_>>()?;
+            let args_tuple = PyTuple::new(py, py_args)?;
+
+            // Convert WireValue kwargs to Python dict
+            let kwargs_dict = PyDict::new(py);
+            for (k, v) in kwargs {
+                kwargs_dict.set_item(k, v.into_pyobject(py)?)?;
+            }
+
+            Self::from_python(args_tuple.into_any(), kwargs_dict.into_any())
+        })
+    }
+
+    pub fn to_python<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
+        let tuple = self.payload.resolve(py)?;
+        let tuple = tuple.downcast::<PyTuple>()?;
+
+        // Extract args (first element)
+        let args = tuple.get_item(0)?;
+        let args_tuple = args.downcast::<PyTuple>()?;
+
+        // Extract kwargs (second element)
+        let kwargs = tuple.get_item(1)?;
+        let kwargs_dict = kwargs.downcast::<PyDict>()?;
+
+        Ok((args_tuple.clone(), kwargs_dict.clone()))
+    }
 }
 
 impl<'py> IntoPyObject<'py> for ResolvableFunction {
@@ -340,21 +408,6 @@ impl ResolvableFunction {
         }
     }
 
-    pub fn as_torch_op<'a>(&'a self) -> Option<(String, String)> {
-        match self {
-            Self::FunctionPath(func) => match func.path.split(".").collect::<Vec<_>>().as_slice() {
-                ["torch", "ops", namespace, op_name, "default"] => {
-                    Some((format!("{}::{}", namespace, op_name), String::new()))
-                }
-                ["torch", "ops", namespace, op_name, overload] => {
-                    Some((format!("{}::{}", namespace, op_name), overload.to_string()))
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// For testing: this is a special remote function path that induces a panic
     /// when called.
     pub fn panic_if_requested(&self) {
@@ -365,13 +418,6 @@ impl ResolvableFunction {
                 }
             }
             _ => (),
-        }
-    }
-
-    pub fn supports_pytree_args(&self) -> bool {
-        match self {
-            Self::Cloudpickle(_) => true,
-            Self::FunctionPath(_) => self.as_torch_op().is_none(),
         }
     }
 }
@@ -392,10 +438,8 @@ pub struct CallFunctionParams {
     pub mutates: Vec<Ref>,
     /// The function to call.
     pub function: ResolvableFunction,
-    /// The arguments to the function.
-    pub args: Vec<WireValue>,
-    /// The keyword arguments to the function.
-    pub kwargs: HashMap<String, WireValue>,
+    /// The arguments and keyword arguments to the function.
+    pub args_kwargs: ArgsKwargs,
     /// The stream to call the function on.
     pub stream: StreamRef,
     /// The process groups to execute the function on.
@@ -800,27 +844,15 @@ pub enum WorkerMessage {
         to_stream: StreamRef,
     },
 
-    CreatePipe {
-        result: Ref,
-        key: String,
-        function: ResolvableFunction,
-        max_messages: i64,
-        mesh: Ref,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
-    },
-
     SendValue {
         seq: Seq,
         /// Pipe to send value to.  If `None`, value is sent to controller.
         destination: Option<Ref>,
         mutates: Vec<Ref>,
-        /// Function to resolve the value to retrieve.  If `None`, then `args`
-        /// must contain the value as its only element and `kwargs` must be
-        /// empty.
+        /// Function to resolve the value to retrieve.  If `None`, then `args_kwargs`
+        /// must contain the value as the only element in args with no kwargs.
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         /// The stream to retrieve from.
         stream: StreamRef,
     },

@@ -1027,6 +1027,14 @@ impl FromStr for Point {
     }
 }
 
+impl hyperactor_named::Named for Point {
+    fn typename() -> &'static str {
+        "ndslice::Point"
+    }
+}
+
+hyperactor_config::impl_attrvalue!(Point);
+
 /// Errors that occur while operating on views.
 #[derive(Debug, Error)]
 pub enum ViewError {
@@ -2160,7 +2168,7 @@ mod test {
 
         let points: Vec<_> = e.points().collect();
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0].coords(), &[]);
+        assert_eq!(points[0].coords(), &[] as &[usize]);
         assert_eq!(points[0].rank(), 0);
 
         // Iterator invariants for 0-D point.

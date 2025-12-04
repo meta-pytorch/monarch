@@ -102,8 +102,7 @@ conda update -n monarchenv --all -c conda-forge -y
 sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
 
 # Install build dependencies
-pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
-pip install -r build-requirements.txt
+pip install -r torch-requirements.txt -r build-requirements.txt
 # Install test dependencies
 pip install -r python/tests/requirements.txt
 
@@ -142,8 +141,7 @@ export CXX=clang++
 sudo apt install -y cuda-toolkit-12-8 cuda-12-8
 
 # Install build dependencies
-pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
-pip install -r build-requirements.txt
+pip install -r torch-requirements.txt -r build-requirements.txt
 # Install test dependencies
 pip install -r python/tests/requirements.txt
 
