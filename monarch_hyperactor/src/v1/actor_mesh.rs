@@ -18,7 +18,7 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
-use hyperactor::actor::RemotableActor;
+use hyperactor::actor::RemoteSpawn;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
@@ -529,7 +529,7 @@ async fn actor_states_monitor<A, F>(
     canceled: CancellationToken,
     supervision_display_name: String,
 ) where
-    A: Actor + RemotableActor + Referable,
+    A: Actor + RemoteSpawn + Referable,
     A::Params: RemoteMessage,
     F: Fn(MeshFailure),
 {
@@ -726,12 +726,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             .unwrap_or_else(|e| e.into_inner())
         {
             Unhealthy::StreamClosed => {
-                return Err(SupervisionError::new_err(
+                return Err(PyErr::new::<SupervisionError, _>(
                     "actor mesh is stopped due to proc mesh shutdown".to_string(),
                 ));
             }
             Unhealthy::Crashed(event) => {
-                return Err(SupervisionError::new_err(format!(
+                return Err(PyErr::new::<SupervisionError, _>(format!(
                     "Actor {} is unhealthy with reason: {}",
                     event.actor_id, event.actor_status
                 )));
@@ -745,7 +745,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                         .get(&rank)
                         .map(|entry| entry.value().clone())
                 }) {
-                    return Err(SupervisionError::new_err(format!(
+                    return Err(PyErr::new::<SupervisionError, _>(format!(
                         "Actor {} is unhealthy with reason: {}",
                         event.actor_id, event.actor_status
                     )));

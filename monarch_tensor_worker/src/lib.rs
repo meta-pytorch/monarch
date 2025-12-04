@@ -56,6 +56,7 @@ use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Named;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
@@ -214,8 +215,10 @@ impl WorkerActor {
     }
 }
 
+impl Actor for WorkerActor {}
+
 #[async_trait]
-impl Actor for WorkerActor {
+impl RemoteSpawn for WorkerActor {
     type Params = WorkerParams;
 
     async fn new(
@@ -295,16 +298,14 @@ impl WorkerMessageHandler for WorkerActor {
         let device = self
             .device
             .expect("tried to init backend network on a non-CUDA worker");
-        let comm = NcclCommActor::spawn(
-            cx,
-            CommParams::New {
-                device,
-                unique_id,
-                world_size: self.world_size.try_into().unwrap(),
-                rank: self.rank.try_into().unwrap(),
-            },
-        )
-        .await?;
+        let comm = NcclCommActor::new(CommParams::New {
+            device,
+            unique_id,
+            world_size: self.world_size.try_into().unwrap(),
+            rank: self.rank.try_into().unwrap(),
+        })
+        .await?
+        .spawn(cx)?;
 
         let tensor = factory_zeros(&[1], ScalarType::Float, Layout::Strided, device.into());
         let cell = TensorCell::new(tensor);
@@ -435,19 +436,16 @@ impl WorkerMessageHandler for WorkerActor {
         result: StreamRef,
         creation_mode: StreamCreationMode,
     ) -> Result<()> {
-        let handle: ActorHandle<StreamActor> = StreamActor::spawn(
-            cx,
-            StreamParams {
-                world_size: self.world_size,
-                rank: self.rank,
-                creation_mode,
-                id: result,
-                device: self.device,
-                controller_actor: self.controller_actor.clone(),
-                respond_with_python_message: self.respond_with_python_message,
-            },
-        )
-        .await?;
+        let handle: ActorHandle<StreamActor> = StreamActor::new(StreamParams {
+            world_size: self.world_size,
+            rank: self.rank,
+            creation_mode,
+            id: result,
+            device: self.device,
+            controller_actor: self.controller_actor.clone(),
+            respond_with_python_message: self.respond_with_python_message,
+        })
+        .spawn(cx)?;
         self.streams.insert(result, Arc::new(handle));
         Ok(())
     }
@@ -1093,6 +1091,7 @@ mod tests {
 
     use anyhow::Result;
     use hyperactor::Instance;
+    use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
@@ -1132,16 +1131,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1225,16 +1225,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1285,16 +1286,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1356,16 +1358,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1422,6 +1425,295 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 60)]
+    async fn py_remote_function_calls() -> Result<()> {
+        test_setup()?;
+
+        let proc = Proc::local();
+        let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
+
+        let worker_handle = proc
+            .spawn(
+                "worker",
+                WorkerActor::new(WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                })
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+        let (split_arg, sort_list, mesh_ref, dim, layout, none, scalar, device, memory_format) =
+            Python::with_gil(|py| {
+                let split_arg: PickledPyObject = PyString::new(py, "/fbs/fbc/foo/bar")
+                    .into_any()
+                    .try_into()?;
+                let sort_list: PickledPyObject =
+                    PyList::new(py, [65, 34, 79, 1, 5])?.into_any().try_into()?;
+                let mesh_ref: PickledPyObject = Ref { id: 5 }.into_bound_py_any(py)?.try_into()?;
+                let dim: PickledPyObject = PyString::new(py, "x").into_any().try_into()?;
+                let layout: PickledPyObject = py.import("torch")?.getattr("strided")?.try_into()?;
+                let none: PickledPyObject = py.None().into_any().into_bound(py).try_into()?;
+                let scalar: PickledPyObject = py.import("torch")?.getattr("float32")?.try_into()?;
+                let device: PickledPyObject = py
+                    .import("torch")?
+                    .getattr("device")?
+                    .call1(("cuda:1",))?
+                    .try_into()?;
+                let memory_format: PickledPyObject = py
+                    .import("torch")?
+                    .getattr("contiguous_format")?
+                    .try_into()?;
+                PyResult::Ok((
+                    split_arg,
+                    sort_list,
+                    mesh_ref,
+                    dim,
+                    layout,
+                    none,
+                    scalar,
+                    device,
+                    memory_format,
+                ))
+            })?;
+
+        worker_handle
+            .command_group(
+                &client,
+                vec![
+                    WorkerMessage::CreateStream {
+                        id: 1.into(),
+                        stream_creation: StreamCreationMode::UseDefaultStream,
+                    },
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 0.into(),
+                        results: vec![Some(0.into()), Some(Ref { id: 2 })],
+                        mutates: vec![],
+                        function: "os.path.split".into(),
+                        args: vec![split_arg.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 2.into(),
+                        results: vec![Some(4.into()), None, None, None, None],
+                        mutates: vec![],
+                        function: "builtins.sorted".into(),
+                        args: vec![sort_list.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CreateDeviceMesh {
+                        result: 5.into(),
+                        names: vec!["x".into()],
+                        ranks: Slice::new(0, vec![2], vec![1]).unwrap(),
+                    },
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 2.into(),
+                        results: vec![Some(6.into())],
+                        mutates: vec![],
+                        function: "monarch.monarch_tensor_worker.test_utils.mesh_rank".into(),
+                        args: vec![mesh_ref.into(), dim.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 4.into(),
+                        results: vec![Some(7.into())],
+                        mutates: vec![],
+                        function: "monarch.monarch_tensor_worker.test_utils.test_scalar_type"
+                            .into(),
+                        args: vec![scalar.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 5.into(),
+                        results: vec![Some(8.into())],
+                        mutates: vec![],
+                        function: "monarch.monarch_tensor_worker.test_utils.test_layout".into(),
+                        args: vec![layout.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 6.into(),
+                        results: vec![Some(9.into())],
+                        mutates: vec![],
+                        function: "monarch.monarch_tensor_worker.test_utils.test_none".into(),
+                        args: vec![none.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    // Verify that a function that returns `None` matches up with an
+                    // empty result list.
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 7.into(),
+                        results: vec![None],
+                        mutates: vec![],
+                        function: "monarch.monarch_tensor_worker.test_utils.none".into(),
+                        args: vec![],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 8.into(),
+                        results: vec![Some(10.into())],
+                        mutates: vec![],
+                        function: "monarch.monarch_tensor_worker.test_utils.test_device".into(),
+                        args: vec![device.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 9.into(),
+                        results: vec![Some(11.into())],
+                        mutates: vec![],
+                        function: "monarch.monarch_tensor_worker.test_utils.test_memory_format"
+                            .into(),
+                        args: vec![memory_format.into()],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    // Test that list of tests can be passes correctly
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 10.into(),
+                        results: vec![Some(12.into())],
+                        mutates: vec![],
+                        function: "torch.ops.aten.ones.default".into(),
+                        args: vec![WireValue::IntList(vec![2, 3])],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                    WorkerMessage::CallFunction(CallFunctionParams {
+                        seq: 11.into(),
+                        results: vec![Some(13.into())],
+                        mutates: vec![],
+                        function: "torch.ops.aten.stack.default".into(),
+                        args: vec![WireValue::RefList(vec![12.into(), 12.into()])],
+                        kwargs: HashMap::new(),
+                        stream: 1.into(),
+                        remote_process_groups: vec![],
+                    }),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let result1: String = worker_handle
+            .get_ref_unit_tests_only(&client, 0.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let result2: String = worker_handle
+            .get_ref_unit_tests_only(&client, 2.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let result3: i64 = worker_handle
+            .get_ref_unit_tests_only(&client, 4.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let result4: i64 = worker_handle
+            .get_ref_unit_tests_only(&client, 6.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            ScalarType::Float,
+            worker_handle
+                .get_ref_unit_tests_only(&client, 7.into(), 1.into())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .try_into()
+                .unwrap()
+        );
+        assert_eq!(
+            Layout::Strided,
+            worker_handle
+                .get_ref_unit_tests_only(&client, 8.into(), 1.into())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .try_into()
+                .unwrap()
+        );
+        assert_matches!(
+            worker_handle
+                .get_ref_unit_tests_only(&client, 9.into(), 1.into())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            WireValue::None(()),
+        );
+        let device: Device = CudaDevice::new(DeviceIndex(1)).into();
+        assert_eq!(
+            device,
+            worker_handle
+                .get_ref_unit_tests_only(&client, 10.into(), 1.into())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .try_into()
+                .unwrap()
+        );
+        assert_matches!(
+            worker_handle
+                .get_ref_unit_tests_only(&client, 11.into(), 1.into())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            WireValue::MemoryFormat(MemoryFormat::Contiguous),
+        );
+
+        worker_handle.drain_and_stop().unwrap();
+        worker_handle.await;
+        let error_responses = controller_rx.drain();
+        assert!(
+            error_responses.is_empty(),
+            "Expected no error responses, got: {:#?}",
+            error_responses
+        );
+
+        assert_eq!(result1, "/fbs/fbc/foo");
+        assert_eq!(result2, "bar");
+        assert_eq!(result3, 1);
+        assert_eq!(result4, 0);
+
+        Ok(())
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
     async fn delete_refs() -> Result<()> {
         test_setup()?;
 
@@ -1429,16 +1721,17 @@ mod tests {
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1503,16 +1796,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1584,28 +1878,30 @@ mod tests {
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
         let worker_handle1 = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker0",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 2,
                     rank: 0,
                     device_index: Some(0),
                     controller_actor: controller_ref.clone(),
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         let worker_handle2 = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker1",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 2,
                     rank: 1,
                     device_index: Some(1),
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
 
         let unique_id = UniqueId::new().unwrap();
