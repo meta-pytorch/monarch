@@ -59,14 +59,14 @@ use pyo3::prelude::*;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use torch_sys::CloneUnsafe;
-use torch_sys::CudaDevice;
-use torch_sys::TensorCell;
-use torch_sys::deep_clone;
-use torch_sys::factory_empty;
-use torch_sys::factory_zeros;
 use torch_sys_cuda::cuda::Event;
 use torch_sys_cuda::cuda::Stream;
+use torch_sys2::CloneUnsafe;
+use torch_sys2::CudaDevice;
+use torch_sys2::TensorCell;
+use torch_sys2::deep_clone;
+use torch_sys2::factory_empty;
+use torch_sys2::factory_zeros;
 use tracing_subscriber::fmt::Subscriber;
 
 use crate::ControllerActor;
@@ -77,7 +77,6 @@ use crate::Ref;
 use crate::ResolvableFunction;
 use crate::StreamCreationMode;
 use crate::WireValue;
-use crate::comm::CommBackend;
 use crate::comm::CommMessage;
 use crate::comm::CommMessageClient;
 use crate::comm::NcclCommActor;
@@ -589,7 +588,6 @@ impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for &PyArg {
 
 impl StreamActor {
     fn tensor_to_pyobject(tensor_cell: TensorCell) -> PyObject {
-        use torch_sys::IValue;
         Python::with_gil(|py| {
             // SAFETY: We have the GIL and tensor_cell is a valid TensorCell.
             // TensorCell will be refactored later, so this temporary unsafe usage is acceptable.
@@ -597,8 +595,7 @@ impl StreamActor {
                 // Get the owned tensor by calling clone_unsafe on the reference
                 tensor_cell.get_unchecked().clone_unsafe()
             };
-            let ivalue = IValue::from(tensor);
-            ivalue.into_pyobject(py).unwrap().unbind()
+            tensor.into_pyobject(py).unwrap().unbind()
         })
     }
 
@@ -606,7 +603,7 @@ impl StreamActor {
     /// SAFETY: Uses new to create the TensorCell. Caller must ensure the PyObject
     /// contains a valid tensor.
     fn pyobject_to_tensor(py: Python<'_>, pyobj: &PyObject) -> PyResult<TensorCell> {
-        use torch_sys::Tensor;
+        use torch_sys2::Tensor;
         let tensor = pyobj.bind(py).extract::<Tensor>()?;
         // Create a new TensorCell from the extracted tensor
         Ok(TensorCell::new(tensor))
@@ -753,28 +750,7 @@ impl StreamActor {
                 let group = match self.remote_process_groups.entry(gref) {
                     Entry::Occupied(ent) => ent.get().clone_ref(py),
                     Entry::Vacant(ent) => {
-                        // We need to run `init_process_group` before any
-                        // remote process groups can get created.
-                        torch_sys::backend::ensure_init_process_group(
-                            py,
-                            self.world_size,
-                            self.rank,
-                        )?;
-
-                        // Create a backend object to wrap the comm and use
-                        // it to create a new torch group.
-                        let ranks = mesh.get_ranks_for_dim_slice(&dims)?;
-                        let group_size = ranks.len();
-                        let (child_instance, _) = cx.child()?;
-                        let backend = CommBackend::new(
-                            child_instance,
-                            comm,
-                            self.rank,
-                            group_size,
-                            self.world_size,
-                        );
-                        ent.insert(torch_sys::backend::new_group(py, ranks, backend)?.unbind())
-                            .clone_ref(py)
+                        panic!("no longer implemented");
                     }
                 };
                 PyResult::Ok((gref, group))
@@ -1945,9 +1921,9 @@ mod tests {
     use monarch_types::PickledPyObject;
     use pyo3::IntoPyObjectExt;
     use timed_test::async_timed_test;
-    use torch_sys::factory_float_tensor;
-    use torch_sys::testing::allclose;
     use torch_sys_cuda::nccl::UniqueId;
+    use torch_sys2::factory_float_tensor;
+    use torch_sys2::testing::allclose;
 
     use super::*;
     use crate::comm::CommParams;

@@ -25,6 +25,4 @@ members = [
     "rdmaxcel-sys",
     "serde_multipart",
     "timed_test",
-    "torch-sys",
-    "torch-sys-cuda",
 ]

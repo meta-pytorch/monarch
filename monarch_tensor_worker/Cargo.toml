@@ -26,7 +26,7 @@ pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 sorted-vec = "0.8.3"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
-torch-sys = { version = "0.0.0", path = "../torch-sys" }
+torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }

@@ -18,14 +18,14 @@ use nccl_sys::*;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
-use torch_sys::CudaDevice;
-use torch_sys::DeviceType;
-use torch_sys::ScalarType;
-use torch_sys::Tensor;
-use torch_sys::TensorCell;
-use torch_sys::factory_float_tensor;
-use torch_sys::is_float8_type;
-use torch_sys::suggest_memory_format;
+use torch_sys2::CudaDevice;
+use torch_sys2::DeviceType;
+use torch_sys2::ScalarType;
+use torch_sys2::Tensor;
+use torch_sys2::TensorCell;
+use torch_sys2::factory_float_tensor;
+use torch_sys2::is_float8_type;
+use torch_sys2::suggest_memory_format;
 
 use crate::bridge::ffi::make_nccl_config;
 use crate::cuda::CudaError;
@@ -308,7 +308,7 @@ fn check_tensor(tensor: &Tensor, is_p2p: bool) -> Result<(), NcclError> {
         return Err(NcclError::InvalidSparseTensor);
     }
 
-    if !is_p2p && !tensor.is_contiguous(suggest_memory_format(tensor)) {
+    if !is_p2p && !tensor.is_contiguous() {
         return Err(NcclError::NoncontiguousTensor);
     }
 
@@ -837,12 +837,12 @@ impl Communicator {
 
 #[cfg(test)]
 mod tests {
-    use torch_sys::CudaDevice;
-    use torch_sys::DeviceIndex;
-    use torch_sys::factory_float_tensor;
-    use torch_sys::testing::allclose;
-    use torch_sys::testing::cuda_full;
-    use torch_sys::testing::stack;
+    use torch_sys2::CudaDevice;
+    use torch_sys2::DeviceIndex;
+    use torch_sys2::factory_float_tensor;
+    use torch_sys2::testing::allclose;
+    use torch_sys2::testing::cuda_full;
+    use torch_sys2::testing::stack;
 
     use super::*;
     use crate::cuda::set_device;

@@ -1,0 +1,16 @@
+[package]
+name = "torch-sys2"
+version = "0.0.0"
+authors = ["Meta"]
+edition = "2021"
+license = "BSD-3-Clause"
+
+[dependencies]
+async-trait = "0.1.86"
+serde = { version = "1.0.219", features = ["derive"] }
+thiserror = "2.0.12"
+pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+monarch_types = { version = "0.0.0", path = "../monarch_types" }
+
+[features]
+default = []

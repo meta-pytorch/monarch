@@ -35,10 +35,9 @@ pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
-torch-sys = { version = "0.0.0", path = "../torch-sys", optional = true }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]
 default = ["tensor_engine"]
-tensor_engine = ["dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys", "dep:torch-sys-cuda"]
+tensor_engine = ["dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys-cuda"]

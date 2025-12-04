@@ -184,8 +184,8 @@ mod tests {
     use monarch_messages::worker::WorkerParams;
     use pyo3::Python;
     use timed_test::async_timed_test;
-    use torch_sys::Device;
-    use torch_sys::DeviceType;
+    use torch_sys2::Device;
+    use torch_sys2::DeviceType;
 
     use super::*;
     use crate::CallFunctionParams;

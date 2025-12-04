@@ -15,7 +15,7 @@ fxhash = "0.2.1"
 nccl-sys = { path = "../nccl-sys" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.12"
-torch-sys = { version = "0.0.0", path = "../torch-sys" }
+torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
