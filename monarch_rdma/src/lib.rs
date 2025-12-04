@@ -22,6 +22,13 @@ pub use rdma_components::*;
 pub use rdma_manager_actor::*;
 pub use test_utils::is_cuda_available;
 
+// Re-export segment scanner types for extension crate
+pub use rdma_components::register_segment_scanner;
+pub use rdma_components::SegmentScannerFn;
+
+// Re-export rdmaxcel_sys for extension crate to access types
+pub use rdmaxcel_sys;
+
 /// Print comprehensive RDMA device information for debugging.
 /// Controlled by MONARCH_DEBUG_RDMA environment variable.
 pub fn print_device_info_if_debug_enabled(context: *mut rdmaxcel_sys::ibv_context) {

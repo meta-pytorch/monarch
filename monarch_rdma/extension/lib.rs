@@ -23,14 +23,98 @@ use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::rdma_supported;
+use monarch_rdma::register_segment_scanner;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 use pyo3::types::PyTuple;
 use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
+
+/// Segment scanner callback that uses PyTorch's memory snapshot API.
+///
+/// This function calls torch.cuda.memory._snapshot() to get CUDA memory segments
+/// and fills the provided buffer with segment information.
+///
+/// # Safety
+/// This function is called from C code as a callback.
+unsafe extern "C" fn pytorch_segment_scanner(
+    segments_out: *mut monarch_rdma::rdmaxcel_sys::rdmaxcel_scanned_segment_t,
+    max_segments: usize,
+) -> usize {
+    // Acquire the GIL to call Python code
+    let result = Python::with_gil(|py| -> PyResult<usize> {
+        // Check if torch is already imported - don't import it ourselves
+        let sys = py.import("sys")?;
+        let modules = sys.getattr("modules")?;
+
+        // Try to get torch from sys.modules
+        let torch = match modules.get_item("torch") {
+            Ok(torch_module) => torch_module,
+            Err(_) => {
+                // torch not imported yet, return 0 segments
+                return Ok(0);
+            }
+        };
+
+        // Check if CUDA is available
+        let cuda_available: bool = torch
+            .getattr("cuda")?
+            .getattr("is_available")?
+            .call0()?
+            .extract()?;
+
+        if !cuda_available {
+            return Ok(0);
+        }
+
+        // Call torch.cuda.memory._snapshot()
+        let snapshot = torch
+            .getattr("cuda")?
+            .getattr("memory")?
+            .getattr("_snapshot")?
+            .call0()?;
+
+        // Get the segments list from the snapshot dict
+        let segments = snapshot.get_item("segments")?;
+        let segments_list: Vec<Bound<'_, PyAny>> = segments.extract()?;
+
+        let num_segments = segments_list.len();
+
+        // Fill the output buffer with as many segments as will fit
+        let segments_to_write = num_segments.min(max_segments);
+
+        for (i, segment) in segments_list.iter().take(segments_to_write).enumerate() {
+            // Extract fields from the segment dict
+            let address: u64 = segment.get_item("address")?.extract()?;
+            let total_size: usize = segment.get_item("total_size")?.extract()?;
+            let device: i32 = segment.get_item("device")?.extract()?;
+            let is_expandable: bool = segment.get_item("is_expandable")?.extract()?;
+
+            // Write to the output buffer - only the fields the scanner needs to provide
+            let seg_info = &mut *segments_out.add(i);
+            seg_info.address = address as usize;
+            seg_info.size = total_size;
+            seg_info.device = device;
+            seg_info.is_expandable = if is_expandable { 1 } else { 0 };
+        }
+
+        // Return total number of segments found (may be > max_segments)
+        Ok(num_segments)
+    });
+
+    match result {
+        Ok(count) => count,
+        Err(e) => {
+            // Log the specific error for debugging
+            eprintln!("[monarch_rdma] pytorch_segment_scanner failed: {}", e);
+            0
+        }
+    }
+}
 
 fn setup_rdma_context(
     rdma_buffer: &PyRdmaBuffer,
@@ -114,11 +198,6 @@ impl PyRdmaBuffer {
     #[classmethod]
     fn rdma_supported<'py>(_cls: &Bound<'_, PyType>, _py: Python<'py>) -> bool {
         rdma_supported()
-    }
-
-    #[classmethod]
-    fn pt_cuda_allocator_compatibility<'py>(_cls: &Bound<'_, PyType>, _py: Python<'py>) -> bool {
-        monarch_rdma::pt_cuda_allocator_compatibility()
     }
 
     #[pyo3(name = "__repr__")]
@@ -338,6 +417,10 @@ impl PyRdmaManager {
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Register the PyTorch segment scanner callback.
+    // This calls torch.cuda.memory._snapshot() to get CUDA memory segments.
+    register_segment_scanner(Some(pytorch_segment_scanner));
+
     module.add_class::<PyRdmaBuffer>()?;
     module.add_class::<PyRdmaManager>()?;
     Ok(())

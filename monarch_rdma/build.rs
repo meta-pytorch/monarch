@@ -55,45 +55,9 @@ fn main() {
     println!("cargo:rustc-link-lib=ibverbs");
     println!("cargo:rustc-link-lib=mlx5");
 
-    // Link PyTorch libraries needed for C10 symbols used by rdmaxcel-sys
-    let use_pytorch_apis = build_utils::get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS")
-        .unwrap_or_else(|_| "1".to_owned());
-    if use_pytorch_apis == "1" {
-        // Get PyTorch library directory using build_utils
-        let python_interpreter = std::path::PathBuf::from("python");
-        if let Ok(output) = std::process::Command::new(&python_interpreter)
-            .arg("-c")
-            .arg(build_utils::PYTHON_PRINT_PYTORCH_DETAILS)
-            .output()
-        {
-            if output.status.success() {
-                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                    if let Some(path) = line.strip_prefix("LIBTORCH_LIB: ") {
-                        // Add library search path
-                        println!("cargo:rustc-link-search=native={}", path);
-                        // Set rpath so runtime linker can find the libraries
-                        println!("cargo::rustc-link-arg=-Wl,-rpath,{}", path);
-                    }
-                }
-            }
-        }
-
-        // Link core PyTorch libraries needed for C10 symbols
-        println!("cargo:rustc-link-lib=torch_cpu");
-        println!("cargo:rustc-link-lib=torch");
-        println!("cargo:rustc-link-lib=c10");
-        println!("cargo:rustc-link-lib=c10_cuda");
-    } else {
-        // Fallback to torch-sys links metadata if available
-        if let Ok(torch_lib_path) = std::env::var("DEP_TORCH_LIB_PATH") {
-            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", torch_lib_path);
-        }
-    }
-
-    // Set rpath for NCCL libraries if available
-    if let Ok(nccl_lib_path) = std::env::var("DEP_NCCL_LIB_PATH") {
-        println!("cargo::rustc-link-arg=-Wl,-rpath,{}", nccl_lib_path);
-    }
+    // Note: We no longer link against libtorch/c10 since rdmaxcel-sys
+    // now uses a callback mechanism for segment scanning instead of
+    // directly accessing PyTorch C10 APIs.
 
     // Disable new dtags, as conda envs generally use `RPATH` over `RUNPATH`
     println!("cargo::rustc-link-arg=-Wl,--disable-new-dtags");

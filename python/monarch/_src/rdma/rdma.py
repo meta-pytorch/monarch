@@ -145,20 +145,38 @@ class RdmaController(Actor):
         await self._manager_futures[proc_mesh]
 
 
+def pt_cuda_allocator_compatibility() -> bool:
+    """
+    Check if PyTorch CUDA caching allocator is compatible with RDMA.
+
+    This checks if both the CUDA caching allocator is enabled AND expandable
+    segments are enabled, which is required for RDMA operations with CUDA tensors.
+
+    Returns:
+        bool: True if both conditions are met, False otherwise
+    """
+    if not torch.cuda.is_available():
+        return False
+
+    # Get allocator snapshot which contains settings
+    snapshot = torch.cuda.memory._snapshot()
+    allocator_settings = snapshot.get("allocator_settings", {})
+
+    # Check if expandable_segments is enabled
+    return allocator_settings.get("expandable_segments", False)
+
+
 @functools.cache
 def _check_cuda_expandable_segments_enabled() -> bool:
     """
     Check if PyTorch CUDA caching allocator is using expandable segments.
 
-    Uses the Rust extension which calls the C++ implementation from rdmaxcel-sys
-    that directly accesses the PyTorch C10 CUDA allocator configuration.
-
     Returns:
         bool: True if expandable segments are enabled, False otherwise
     """
     try:
-        # Use the new Rust utility function that calls the C++ pt_cuda_allocator_compatibility()
-        pt_cuda_compat = _RdmaBuffer.pt_cuda_allocator_compatibility()
+        # Call the Python implementation of pt_cuda_allocator_compatibility
+        pt_cuda_compat = pt_cuda_allocator_compatibility()
 
         if not pt_cuda_compat:
             warnings.warn(

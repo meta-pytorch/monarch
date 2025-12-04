@@ -7,13 +7,12 @@
  */
 
 #include "rdmaxcel.h"
-#include <c10/cuda/CUDAAllocatorConfig.h>
-#include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda.h>
 #include <unistd.h>
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <vector>
 #include "driver_api.h"
 
 // MR size must be a multiple of 2MB
@@ -62,20 +61,51 @@ struct SegmentInfo {
 static std::unordered_map<size_t, SegmentInfo> activeSegments;
 static std::mutex segmentsMutex;
 
+// Segment scanner callback - set via rdmaxcel_register_segment_scanner()
+static rdmaxcel_segment_scanner_fn g_segment_scanner = nullptr;
+
+// Initial buffer size for segment scanning (will grow if needed)
+static size_t g_segment_buffer_size = 64;
+
 // Helper function to scan existing segments from allocator snapshot
 void scan_existing_segments() {
+  // If no scanner is registered, nothing to do
+  if (!g_segment_scanner) {
+    return;
+  }
+
   std::lock_guard<std::mutex> lock(segmentsMutex);
 
-  // Get current snapshot from the allocator
-  auto snapshot = c10::cuda::CUDACachingAllocator::snapshot();
+  // Allocate a buffer for the scanner to fill
+  std::vector<rdmaxcel_scanned_segment_t> scanned_segments(g_segment_buffer_size);
 
-  // Create a set to track snapshot segments
+  // Call the scanner
+  size_t segment_count =
+      g_segment_scanner(scanned_segments.data(), g_segment_buffer_size);
+
+  // If we need more space, grow the buffer and retry
+  if (segment_count > g_segment_buffer_size) {
+    // Round up to next power of 2 for efficiency
+    size_t new_size = g_segment_buffer_size;
+    while (new_size < segment_count) {
+      new_size *= 2;
+    }
+    g_segment_buffer_size = new_size;
+    scanned_segments.resize(g_segment_buffer_size);
+
+    // Retry with larger buffer
+    segment_count =
+        g_segment_scanner(scanned_segments.data(), g_segment_buffer_size);
+  }
+
+  // Create a set to track scanned segments
   std::set<std::pair<size_t, int32_t>> snapshotSegments;
 
-  // Process snapshot segments
-  for (const auto& segment : snapshot.segments) {
-    size_t segment_address = reinterpret_cast<size_t>(segment.address);
-    int32_t device = segment.device;
+  // Process scanned segments
+  for (size_t i = 0; i < segment_count; i++) {
+    const auto& scanned = scanned_segments[i];
+    size_t segment_address = scanned.address;
+    int32_t device = scanned.device;
 
     snapshotSegments.insert({segment_address, device});
 
@@ -83,13 +113,16 @@ void scan_existing_segments() {
     auto it = activeSegments.find(segment_address);
     if (it != activeSegments.end() && it->second.device == device) {
       // Existing segment found - update total_size if needed
-      if (it->second.phys_size != segment.total_size) {
-        it->second.phys_size = segment.total_size;
+      if (it->second.phys_size != scanned.size) {
+        it->second.phys_size = scanned.size;
       }
     } else {
       // New segment - add it
       SegmentInfo segInfo(
-          segment_address, segment.total_size, device, segment.is_expandable);
+          segment_address,
+          scanned.size,
+          device,
+          scanned.is_expandable != 0);
 
       activeSegments[segment_address] = segInfo;
     }
@@ -114,12 +147,9 @@ void scan_existing_segments() {
 
 extern "C" {
 
-// Simple check for PyTorch CUDA allocator compatibility
-bool pt_cuda_allocator_compatibility() {
-  return (
-      c10::cuda::CUDACachingAllocator::isEnabled() &&
-      c10::cuda::CUDACachingAllocator::CUDAAllocatorConfig::
-          expandable_segments());
+// Register a segment scanner callback
+void rdmaxcel_register_segment_scanner(rdmaxcel_segment_scanner_fn scanner) {
+  g_segment_scanner = scanner;
 }
 
 // Get count of active segments

@@ -238,6 +238,16 @@ mod inner {
 
 pub use inner::*;
 
+// Segment scanner callback type
+// The callback takes a buffer and max count, and returns the actual count found.
+// If count > max, the caller should reallocate and retry.
+pub type RdmaxcelSegmentScannerFn = Option<
+    unsafe extern "C" fn(
+        segments_out: *mut rdmaxcel_scanned_segment_t,
+        max_segments: usize,
+    ) -> usize,
+>;
+
 // RDMA error string function and CUDA utility functions
 unsafe extern "C" {
     pub fn rdmaxcel_error_string(error_code: std::os::raw::c_int) -> *const std::os::raw::c_char;
@@ -249,4 +259,9 @@ unsafe extern "C" {
 
     /// Debug: Print comprehensive device attributes
     pub fn rdmaxcel_print_device_info(context: *mut ibv_context);
+
+    /// Register a segment scanner callback.
+    /// The scanner will be called to discover CUDA segments for RDMA registration.
+    /// Pass None (null) to unregister the scanner.
+    pub fn rdmaxcel_register_segment_scanner(scanner: RdmaxcelSegmentScannerFn);
 }
