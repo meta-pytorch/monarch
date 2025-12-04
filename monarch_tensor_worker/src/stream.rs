@@ -465,10 +465,8 @@ pub struct StreamParams {
     pub respond_with_python_message: bool,
 }
 
-#[async_trait]
-impl Actor for StreamActor {
-    type Params = StreamParams;
-    async fn new(
+impl StreamActor {
+    pub fn new(
         StreamParams {
             world_size,
             rank,
@@ -477,9 +475,9 @@ impl Actor for StreamActor {
             controller_actor,
             creation_mode,
             respond_with_python_message,
-        }: Self::Params,
-    ) -> Result<Self> {
-        Ok(Self {
+        }: StreamParams,
+    ) -> Self {
+        Self {
             world_size,
             rank,
             env: HashMap::new(),
@@ -493,9 +491,12 @@ impl Actor for StreamActor {
             active_recording: None,
             respond_with_python_message,
             last_seq_error: None,
-        })
+        }
     }
+}
 
+#[async_trait]
+impl Actor for StreamActor {
     async fn init(&mut self, cx: &Instance<Self>) -> Result<()> {
         // These thread locals are exposed via python functions, so we need to set them in the
         // same thread that python will run in. That means we need to initialize them here in
@@ -2022,20 +2023,18 @@ mod tests {
             let (client, _handle) = proc.instance("client")?;
             let (supervision_tx, supervision_rx) = client.open_port();
             proc.set_supervision_coordinator(supervision_tx)?;
-            let stream_actor = proc
-                .spawn::<StreamActor>(
-                    "stream",
-                    StreamParams {
-                        world_size,
-                        rank: 0,
-                        creation_mode: StreamCreationMode::UseDefaultStream,
-                        id: 0.into(),
-                        device: Some(CudaDevice::new(0.into())),
-                        controller_actor: controller_actor.clone(),
-                        respond_with_python_message: false,
-                    },
-                )
-                .await?;
+            let stream_actor = proc.spawn(
+                "stream",
+                StreamActor::new(StreamParams {
+                    world_size,
+                    rank: 0,
+                    creation_mode: StreamCreationMode::UseDefaultStream,
+                    id: 0.into(),
+                    device: Some(CudaDevice::new(0.into())),
+                    controller_actor: controller_actor.clone(),
+                    respond_with_python_message: false,
+                }),
+            )?;
 
             Ok(Self {
                 proc,
@@ -2504,18 +2503,17 @@ mod tests {
             .define_recording(&test_setup.client, 0.into())
             .await?;
 
-        let dummy_comm = test_setup
-            .proc
-            .spawn::<NcclCommActor>(
-                "comm",
-                CommParams::New {
-                    device: CudaDevice::new(0.into()),
-                    unique_id: UniqueId::new()?,
-                    world_size: 1,
-                    rank: 0,
-                },
-            )
-            .await?;
+        let dummy_comm = test_setup.proc.spawn(
+            "comm",
+            NcclCommActor::new(CommParams::New {
+                device: CudaDevice::new(0.into()),
+                unique_id: UniqueId::new()?,
+                world_size: 1,
+                rank: 0,
+            })
+            .await
+            .unwrap(),
+        )?;
 
         test_setup
             .stream_actor
@@ -2635,3 +2633,4 @@ mod tests {
         Ok(())
     }
 }
+

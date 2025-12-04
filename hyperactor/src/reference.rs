@@ -35,6 +35,7 @@ use std::str::FromStr;
 
 use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
+use hyperactor_config::attrs::Attrs;
 use rand::Rng;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -50,7 +51,6 @@ use crate::RemoteMessage;
 use crate::accum::ReducerOpts;
 use crate::accum::ReducerSpec;
 use crate::actor::Referable;
-use crate::attrs::Attrs;
 use crate::channel::ChannelAddr;
 use crate::context;
 use crate::context::MailboxExt;
@@ -631,6 +631,8 @@ impl FromStr for ProcId {
     Named
 )]
 pub struct ActorId(pub ProcId, pub String, pub Index);
+
+hyperactor_config::impl_attrvalue!(ActorId);
 
 impl ActorId {
     /// Create a new port ID with the provided port for this actor.
