@@ -1035,9 +1035,11 @@ mod tests {
     use hyperactor::RemoteSpawn;
     use hyperactor::actor::ActorStatus;
     use hyperactor::proc::Proc;
+    use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
     use ndslice::Slice;
+    use pyo3::Python;
     use timed_test::async_timed_test;
     use torch_sys::DeviceIndex;
     use torch_sys::Layout;
@@ -1307,11 +1309,14 @@ mod tests {
                 results: vec![Some(2.into())],
                 mutates: vec![],
                 function: "torch.ops.aten.ones.default".into(),
-                args: vec![WireValue::IntList(vec![2, 3])],
-                kwargs: HashMap::from([(
-                    "device".into(),
-                    WireValue::Device("cuda".try_into().unwrap()),
-                )]),
+                args_kwargs: ArgsKwargs::from_wire_values(
+                    vec![WireValue::IntList(vec![2, 3])],
+                    HashMap::from([(
+                        "device".into(),
+                        WireValue::Device("cuda".try_into().unwrap()),
+                    )]),
+                )
+                .unwrap(),
                 stream: 0.into(),
                 remote_process_groups: vec![],
             }),
@@ -1338,11 +1343,14 @@ mod tests {
                 results: vec![Some(4.into())],
                 mutates: vec![],
                 function: "torch.ops.aten.full.default".into(),
-                args: vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
-                kwargs: HashMap::from([(
-                    "device".into(),
-                    WireValue::Device("cuda".try_into().unwrap()),
-                )]),
+                args_kwargs: ArgsKwargs::from_wire_values(
+                    vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
+                    HashMap::from([(
+                        "device".into(),
+                        WireValue::Device("cuda".try_into().unwrap()),
+                    )]),
+                )
+                .unwrap(),
                 stream: 0.into(),
                 remote_process_groups: vec![],
             }),
@@ -1351,8 +1359,11 @@ mod tests {
                 results: vec![Some(5.into())],
                 mutates: vec![],
                 function: "torch.ops.aten.allclose.default".into(),
-                args: vec![WireValue::Ref(3.into()), WireValue::Ref(4.into())],
-                kwargs: HashMap::new(),
+                args_kwargs: ArgsKwargs::from_wire_values(
+                    vec![WireValue::Ref(3.into()), WireValue::Ref(4.into())],
+                    HashMap::new(),
+                )
+                .unwrap(),
                 stream: 0.into(),
                 remote_process_groups: vec![],
             }),
@@ -1385,8 +1396,11 @@ mod tests {
                 results: vec![Some(7.into())],
                 mutates: vec![],
                 function: "torch.ops.aten.full.default".into(),
-                args: vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
-                kwargs: HashMap::from([("device".into(), WireValue::Device("cuda".try_into()?))]),
+                args_kwargs: ArgsKwargs::from_wire_values(
+                    vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
+                    HashMap::from([("device".into(), WireValue::Device("cuda".try_into()?))]),
+                )
+                .unwrap(),
                 stream: 0.into(),
                 remote_process_groups: vec![],
             }),
@@ -1395,8 +1409,11 @@ mod tests {
                 results: vec![Some(8.into())],
                 mutates: vec![],
                 function: "torch.ops.aten.allclose.default".into(),
-                args: vec![WireValue::Ref(6.into()), WireValue::Ref(7.into())],
-                kwargs: HashMap::new(),
+                args_kwargs: ArgsKwargs::from_wire_values(
+                    vec![WireValue::Ref(6.into()), WireValue::Ref(7.into())],
+                    HashMap::new(),
+                )
+                .unwrap(),
                 stream: 0.into(),
                 remote_process_groups: vec![],
             }),
@@ -1411,7 +1428,8 @@ mod tests {
             .await?
             .unwrap()
             .unwrap()
-            .try_into()?;
+            .try_into()
+            .unwrap();
         assert!(val, "allreduce sum produced unexpected value: {val}");
 
         let val: bool = workers[0]
@@ -1419,7 +1437,8 @@ mod tests {
             .await?
             .unwrap()
             .unwrap()
-            .try_into()?;
+            .try_into()
+            .unwrap();
         assert!(val, "allreduce sum produced unexpected value: {val}");
 
         for worker in workers.into_iter() {
@@ -1487,11 +1506,14 @@ mod tests {
                         results: vec![Some(1.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.full.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
-                        kwargs: HashMap::from([(
-                            "device".into(),
-                            WireValue::Device("cuda".try_into().unwrap()),
-                        )]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
+                            HashMap::from([(
+                                "device".into(),
+                                WireValue::Device("cuda".try_into().unwrap()),
+                            )]),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1559,11 +1581,14 @@ mod tests {
                         results: vec![Some(2.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.full.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
-                        kwargs: HashMap::from([(
-                            "device".into(),
-                            WireValue::Device("cuda".try_into().unwrap()),
-                        )]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
+                            HashMap::from([(
+                                "device".into(),
+                                WireValue::Device("cuda".try_into().unwrap()),
+                            )]),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1572,8 +1597,11 @@ mod tests {
                         results: vec![Some(3.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.allclose.default".into(),
-                        args: vec![WireValue::Ref(1.into()), WireValue::Ref(2.into())],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(1.into()), WireValue::Ref(2.into())],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1643,11 +1671,14 @@ mod tests {
                         results: vec![Some(1.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.full.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
-                        kwargs: HashMap::from([(
-                            "device".into(),
-                            WireValue::Device("cuda".try_into().unwrap()),
-                        )]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
+                            HashMap::from([(
+                                "device".into(),
+                                WireValue::Device("cuda".try_into().unwrap()),
+                            )]),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1656,11 +1687,14 @@ mod tests {
                         results: vec![Some(2.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.full.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
-                        kwargs: HashMap::from([(
-                            "device".into(),
-                            WireValue::Device("cuda".try_into().unwrap()),
-                        )]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
+                            HashMap::from([(
+                                "device".into(),
+                                WireValue::Device("cuda".try_into().unwrap()),
+                            )]),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1688,11 +1722,14 @@ mod tests {
                         results: vec![Some(3.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.full.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
-                        kwargs: HashMap::from([(
-                            "device".into(),
-                            WireValue::Device("cuda".try_into().unwrap()),
-                        )]),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
+                            HashMap::from([(
+                                "device".into(),
+                                WireValue::Device("cuda".try_into().unwrap()),
+                            )]),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1701,8 +1738,11 @@ mod tests {
                         results: vec![Some(4.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.allclose.default".into(),
-                        args: vec![WireValue::Ref(2.into()), WireValue::Ref(3.into())],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(2.into()), WireValue::Ref(3.into())],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 0.into(),
                         remote_process_groups: vec![],
                     }),

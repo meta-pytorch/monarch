@@ -13,8 +13,8 @@ use hyperactor::ActorId;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::PyActorId;
 use monarch_messages::controller::Seq;
-use monarch_messages::wire_value::func_call_args_to_wire_values;
 use monarch_messages::worker;
+use monarch_messages::worker::ArgsKwargs;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::Cloudpickle;
 use monarch_messages::worker::Factory;
@@ -220,17 +220,16 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
     });
     m.insert(key("CallFunction"), |p| {
         let function = p.parseFunction("function")?;
-        let args = p.parse("args")?;
-        let kwargs = p.parse("kwargs")?;
+        let args: Bound<'_, PyTuple> = p.parse("args")?;
+        let kwargs: Bound<'_, PyDict> = p.parse("kwargs")?;
 
-        let (args, kwargs) = func_call_args_to_wire_values(Some(&function), &args, &kwargs)?;
+        let args_kwargs = ArgsKwargs::from_python(args.into_any(), kwargs.into_any())?;
         Ok(WorkerMessage::CallFunction(CallFunctionParams {
             seq: p.parseSeq("ident")?,
             results: p.parseFlatReferences("result")?,
             mutates: p.parseRefList("mutates")?,
             function,
-            args,
-            kwargs,
+            args_kwargs,
             stream: p.parseStreamRef("stream")?,
             remote_process_groups: p.parseRefList("remote_process_groups")?,
         }))
@@ -340,14 +339,13 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
                     "SendValue with no function must have exactly one argument and no keyword arguments",
                 ));
             }
-            let (args, kwargs) = func_call_args_to_wire_values(function.as_ref(), &args, &kwargs)?;
+            let args_kwargs = ArgsKwargs::from_python(args.into_any(), kwargs.into_any())?;
             Ok(WorkerMessage::SendValue {
                 seq: p.parseSeq("ident")?,
                 destination: p.parseOptionalRef("destination")?,
                 mutates: p.parseRefList("mutates")?,
                 function,
-                args,
-                kwargs,
+                args_kwargs,
                 stream: p.parseStreamRef("stream")?,
             })
         });

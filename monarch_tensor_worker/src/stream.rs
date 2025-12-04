@@ -46,6 +46,7 @@ use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::worker::ActorCallParams;
 use monarch_messages::worker::ActorMethodParams;
+use monarch_messages::worker::ArgsKwargs;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::SeqError;
@@ -217,8 +218,7 @@ pub enum StreamMessage {
         worker_actor_id: ActorId,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         device_meshes: HashMap<Ref, DeviceMesh>,
     },
 
@@ -653,7 +653,6 @@ impl StreamActor {
             WireValue::MemoryFormat(val) => RValue::MemoryFormat(val),
             WireValue::PyObject(val) => RValue::PyObject(val),
             WireValue::None(()) => RValue::None,
-            WireValue::IValue(val) => RValue::Opaque(val.into()),
         };
         Ok(ret)
     }
@@ -746,8 +745,7 @@ impl StreamActor {
         py: Python<'py>,
         cx: &Context<Self>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         mutates: &[Ref],
         device_meshes: HashMap<Ref, DeviceMesh>,
         remote_process_groups: HashMap<
@@ -755,6 +753,9 @@ impl StreamActor {
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
     ) -> Result<Bound<'py, PyAny>, CallFunctionError> {
+        let (args_tuple, kwargs_dict) = args_kwargs
+            .to_python(py)
+            .map_err(|e| CallFunctionError::Error(e.into()))?;
         let function = function
             .map(|function| {
                 function.resolve(py).map_err(|e| {
@@ -807,10 +808,8 @@ impl StreamActor {
         // this function.
         let mut multiborrow = MultiBorrow::new();
 
-        let resolve = |val: WireValue| {
-            val.into_bound_py_any(py)
-                .map_err(SerializablePyErr::from_fn(py))?
-                .extract::<PyTree<PyObject>>()
+        let resolve = |val: Bound<'py, PyAny>| {
+            val.extract::<PyTree<PyObject>>()
                 .map_err(SerializablePyErr::from_fn(py))?
                 .try_into_map(|obj| {
                     Ok(if let Ok(ref_) = Ref::from_py_object(obj.bind(py)) {
@@ -828,14 +827,21 @@ impl StreamActor {
                 })
         };
 
-        // Resolve refs
-        let py_args: Vec<PyTree<PyArg>> = args
-            .into_iter()
-            .map(resolve)
+        // Resolve args and kwargs
+        let py_args: Vec<PyTree<PyArg>> = args_tuple
+            .iter()
+            .map(|item| resolve(item))
             .collect::<Result<_, CallFunctionError>>()?;
-        let py_kwargs: HashMap<_, PyTree<PyArg>> = kwargs
-            .into_iter()
-            .map(|(k, object)| Ok((k, resolve(object)?)))
+
+        let py_kwargs: HashMap<String, PyTree<PyArg>> = kwargs_dict
+            .iter()
+            .map(|(k, v)| {
+                let key = k
+                    .extract::<String>()
+                    .map_err(SerializablePyErr::from_fn(py))?;
+                let value = resolve(v)?;
+                Ok((key, value))
+            })
             .collect::<Result<_, CallFunctionError>>()?;
 
         // Add a shared-borrow for each rvalue reference.
@@ -895,8 +901,7 @@ impl StreamActor {
         &mut self,
         cx: &hyperactor::Context<Self>,
         function: ResolvableFunction,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         mutates: &[Ref],
         device_meshes: HashMap<Ref, DeviceMesh>,
         remote_process_groups: HashMap<
@@ -909,8 +914,7 @@ impl StreamActor {
                 py,
                 cx,
                 Some(function),
-                args,
-                kwargs,
+                args_kwargs,
                 mutates,
                 device_meshes,
                 remote_process_groups,
@@ -976,8 +980,7 @@ impl StreamActor {
         seq: Seq,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         device_meshes: HashMap<Ref, DeviceMesh>,
     ) -> Result<()> {
         let rank = self.rank;
@@ -989,8 +992,7 @@ impl StreamActor {
                             py,
                             cx,
                             function,
-                            args,
-                            kwargs,
+                            args_kwargs,
                             &mutates,
                             device_meshes,
                             HashMap::new(),
@@ -1088,8 +1090,7 @@ impl StreamMessageHandler for StreamActor {
                     self.call_python_fn_pytree(
                         cx,
                         params.function,
-                        params.args,
-                        params.kwargs,
+                        params.args_kwargs,
                         &params.mutates,
                         device_meshes,
                         remote_process_groups,
@@ -1513,56 +1514,59 @@ impl StreamMessageHandler for StreamActor {
         worker_actor_id: ActorId,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         device_meshes: HashMap<Ref, DeviceMesh>,
     ) -> Result<()> {
         if self.respond_with_python_message {
             return self
-                .send_value_python_message(cx, seq, mutates, function, args, kwargs, device_meshes)
+                .send_value_python_message(cx, seq, mutates, function, args_kwargs, device_meshes)
                 .await;
         }
-        let result = if let Some(function) = function {
-            // If a function was provided, use that to resolve the value.
-            tokio::task::block_in_place(|| {
-                self.call_python_fn_pytree(
-                    cx,
-                    function,
-                    args,
-                    kwargs,
-                    &mutates,
-                    device_meshes,
-                    HashMap::new(),
-                )
-            })
-        } else {
-            // If there's no function provided, there should be exactly one arg
-            // and no kwargs.
-            match (args.len(), kwargs.len()) {
-                (1, 0) => Python::with_gil(|py| {
-                    let arg = args[0]
-                        .clone()
-                        .into_pyobject(py)
-                        .map_err(SerializablePyErr::from_fn(py))?;
-                    arg.extract::<PyTree<PyObject>>()
-                        .map_err(SerializablePyErr::from_fn(py))?
-                        .try_into_map(|obj| {
-                            let bound_obj = obj.bind(py);
-                            if let Ok(ref_) = Ref::from_py_object(bound_obj) {
-                                self.ref_to_rvalue(&ref_)
-                            } else {
-                                Ok(bound_obj
-                                    .extract::<RValue>()
-                                    .map_err(SerializablePyErr::from_fn(py))?)
-                            }
-                        })
-                }),
-                _ => Err(CallFunctionError::TooManyArgsForValue(
-                    format!("{:?}", args),
-                    format!("{:?}", kwargs),
-                )),
+
+        let result = (|| -> Result<PyTree<RValue>, CallFunctionError> {
+            if let Some(function) = function {
+                // If a function was provided, use that to resolve the value.
+                tokio::task::block_in_place(|| {
+                    self.call_python_fn_pytree(
+                        cx,
+                        function,
+                        args_kwargs,
+                        &mutates,
+                        device_meshes,
+                        HashMap::new(),
+                    )
+                })
+            } else {
+                // If there's no function provided, there should be exactly one arg
+                // and no kwargs.
+                Python::with_gil(|py| {
+                    let (args, kwargs) = args_kwargs
+                        .to_python(py)
+                        .map_err(|e| CallFunctionError::Error(e.into()))?;
+                    match (args.len(), kwargs.len()) {
+                        (1, 0) => {
+                            let arg = args.get_item(0).map_err(SerializablePyErr::from_fn(py))?;
+                            arg.extract::<PyTree<PyObject>>()
+                                .map_err(SerializablePyErr::from_fn(py))?
+                                .try_into_map(|obj| {
+                                    let bound_obj = obj.bind(py);
+                                    if let Ok(ref_) = Ref::from_py_object(bound_obj) {
+                                        self.ref_to_rvalue(&ref_)
+                                    } else {
+                                        Ok(bound_obj
+                                            .extract::<RValue>()
+                                            .map_err(SerializablePyErr::from_fn(py))?)
+                                    }
+                                })
+                        }
+                        _ => Err(CallFunctionError::TooManyArgsForValue(
+                            format!("args with {} elements", args.len()),
+                            format!("kwargs with {} elements", kwargs.len()),
+                        )),
+                    }
+                })
             }
-        };
+        })();
 
         let value = match result {
             Ok(rvalue) => {
@@ -2141,8 +2145,11 @@ mod tests {
                 stream_actor.actor_id().clone(),
                 Vec::new(),
                 None,
-                vec![WireValue::PyObject(ref_to_send)],
-                HashMap::new(),
+                ArgsKwargs::from_wire_values(
+                    vec![WireValue::PyObject(ref_to_send)],
+                    HashMap::new(),
+                )
+                .unwrap(),
                 HashMap::new(),
             )
             .await
