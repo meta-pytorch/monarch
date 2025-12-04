@@ -91,8 +91,11 @@ impl FromPyObject<'_> for Device {
     fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         let device_str: String = obj.str()?.extract()?;
         // Parse the device string
-        Self::try_from(device_str.as_str())
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))
+        device_str
+            .parse()
+            .map_err(|e: DeviceParseError| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
+            })
     }
 }
 
@@ -123,10 +126,10 @@ impl std::fmt::Display for Device {
     }
 }
 
-impl TryFrom<&str> for Device {
-    type Error = DeviceParseError;
+impl std::str::FromStr for Device {
+    type Err = DeviceParseError;
 
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "cpu" {
             Ok(Device {
                 device_type: DeviceType::CPU,
