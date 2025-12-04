@@ -103,6 +103,7 @@ struct ProcCreationState {
         resource::Stop,
         resource::GetState<ProcState>,
         resource::GetRankStatus { cast = true },
+        resource::List,
         ShutdownHost
     ]
 )]
@@ -434,6 +435,15 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
                 e
             );
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::List> for HostMeshAgent {
+    async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
+        list.reply
+            .send(cx, self.created.keys().cloned().collect())?;
         Ok(())
     }
 }
