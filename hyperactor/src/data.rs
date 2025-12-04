@@ -16,52 +16,15 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 
 use enum_as_inner::EnumAsInner;
+use hyperactor_macros::AttrValue;
+pub use hyperactor_named::Named;
+pub use hyperactor_named::intern_typename;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate as hyperactor;
 use crate::config;
-
-/// A [`Named`] type is a type that has a globally unique name.
-pub trait Named: Sized + 'static {
-    /// The globally unique type name for the type.
-    /// This should typically be the fully qualified Rust name of the type.
-    fn typename() -> &'static str;
-
-    /// A globally unique hash for this type.
-    /// TODO: actually enforce perfect hashing
-    fn typehash() -> u64 {
-        // The `Named` macro overrides this implementation with one that
-        // memoizes the hash.
-        cityhasher::hash(Self::typename())
-    }
-
-    /// The TypeId for this type. TypeIds are unique only within a binary,
-    /// and should not be used for global identification.
-    fn typeid() -> TypeId {
-        TypeId::of::<Self>()
-    }
-
-    /// The globally unique port for this type. Typed ports are in the range
-    /// of 1<<63..1<<64-1.
-    fn port() -> u64 {
-        Self::typehash() | (1 << 63)
-    }
-
-    /// If the named type is an enum, this returns the name of the arm
-    /// of the value self.
-    fn arm(&self) -> Option<&'static str> {
-        None
-    }
-
-    /// An unsafe version of 'arm', accepting a pointer to the value,
-    /// for use in type-erased settings.
-    unsafe fn arm_unchecked(self_: *const ()) -> Option<&'static str> {
-        // SAFETY: This isn't safe. We're passing it on.
-        unsafe { &*(self_ as *const Self) }.arm()
-    }
-}
 
 #[doc(hidden)]
 /// Dump trait for Named types that are also serializable/deserializable.
@@ -79,140 +42,6 @@ impl<T: Named + Serialize + for<'de> Deserialize<'de>> NamedDumpable for T {
     }
 }
 
-macro_rules! impl_basic {
-    ($t:ty) => {
-        impl Named for $t {
-            fn typename() -> &'static str {
-                stringify!($t)
-            }
-        }
-    };
-}
-
-impl_basic!(());
-impl_basic!(bool);
-impl_basic!(i8);
-impl_basic!(u8);
-impl_basic!(i16);
-impl_basic!(u16);
-impl_basic!(i32);
-impl_basic!(u32);
-impl_basic!(i64);
-impl_basic!(u64);
-impl_basic!(i128);
-impl_basic!(u128);
-impl_basic!(isize);
-impl_basic!(usize);
-impl_basic!(f32);
-impl_basic!(f64);
-impl_basic!(String);
-impl_basic!(std::net::IpAddr);
-impl_basic!(std::net::Ipv4Addr);
-impl_basic!(std::net::Ipv6Addr);
-impl_basic!(std::time::Duration);
-impl_basic!(std::time::SystemTime);
-impl_basic!(bytes::Bytes);
-// This is somewhat unfortunate. We should separate this module out into
-// its own crate, and just derive(Named) in `ndslice`. As it is, this would
-// create a circular (and heavy!) dependency for `ndslice`.
-impl_basic!(ndslice::Point);
-
-impl Named for &'static str {
-    fn typename() -> &'static str {
-        "&str"
-    }
-}
-
-// A macro that implements type-keyed interning of typenames. This is useful
-// for implementing [`Named`] for generic types.
-#[doc(hidden)] // not part of the public API
-#[macro_export]
-macro_rules! intern_typename {
-    ($key:ty, $format_string:expr, $($args:ty),+) => {
-        {
-            static CACHE: std::sync::LazyLock<$crate::dashmap::DashMap<std::any::TypeId, &'static str>> =
-              std::sync::LazyLock::new($crate::dashmap::DashMap::new);
-
-            match CACHE.entry(std::any::TypeId::of::<$key>()) {
-                $crate::dashmap::mapref::entry::Entry::Vacant(entry) => {
-                    let typename = format!($format_string, $(<$args>::typename()),+).leak();
-                    entry.insert(typename);
-                    typename
-                }
-                $crate::dashmap::mapref::entry::Entry::Occupied(entry) => *entry.get(),
-            }
-        }
-    };
-}
-pub use intern_typename;
-
-macro_rules! tuple_format_string {
-    ($a:ident,) => { "{}" };
-    ($a:ident, $($rest_a:ident,)+) => { concat!("{}, ", tuple_format_string!($($rest_a,)+)) };
-}
-
-macro_rules! impl_tuple_peel {
-    ($name:ident, $($other:ident,)*) => (impl_tuple! { $($other,)* })
-}
-
-macro_rules! impl_tuple {
-    () => ();
-    ( $($name:ident,)+ ) => (
-        impl<$($name:Named + 'static),+> Named for ($($name,)+) {
-            fn typename() -> &'static str {
-                intern_typename!(Self, concat!("(", tuple_format_string!($($name,)+), ")"), $($name),+)
-            }
-        }
-        impl_tuple_peel! { $($name,)+ }
-    )
-}
-
-impl_tuple! { E, D, C, B, A, Z, Y, X, W, V, U, T, }
-
-impl<T: Named + 'static> Named for Option<T> {
-    fn typename() -> &'static str {
-        intern_typename!(Self, "Option<{}>", T)
-    }
-}
-
-impl<T: Named + 'static> Named for Vec<T> {
-    fn typename() -> &'static str {
-        intern_typename!(Self, "Vec<{}>", T)
-    }
-}
-
-impl<K: Named + 'static, V: Named + 'static> Named for HashMap<K, V> {
-    fn typename() -> &'static str {
-        intern_typename!(Self, "HashMap<{}, {}>", K, V)
-    }
-}
-
-impl<T: Named + 'static, E: Named + 'static> Named for Result<T, E> {
-    fn typename() -> &'static str {
-        intern_typename!(Self, "Result<{}, {}>", T, E)
-    }
-}
-
-impl<T: Named + 'static> Named for std::ops::Range<T> {
-    fn typename() -> &'static str {
-        intern_typename!(Self, "std::ops::Range<{}>", T)
-    }
-}
-
-static SHAPE_CACHED_TYPEHASH: LazyLock<u64> =
-    LazyLock::new(|| cityhasher::hash(<ndslice::shape::Shape as Named>::typename()));
-
-impl Named for ndslice::shape::Shape {
-    fn typename() -> &'static str {
-        "ndslice::shape::Shape"
-    }
-
-    fn typehash() -> u64 {
-        *SHAPE_CACHED_TYPEHASH
-    }
-}
-
-/// Really internal, but needs to be exposed for macro.
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct TypeInfo {
@@ -321,7 +150,7 @@ macro_rules! register_type {
     Deserialize,
     PartialEq,
     Eq,
-    crate::AttrValue,
+    AttrValue,
     crate::Named,
     strum::EnumIter,
     strum::Display,
@@ -382,9 +211,13 @@ impl Encoded {
             Encoded::Json(data) => crc32fast::hash(data),
             Encoded::Multipart(message) => {
                 let mut hasher = crc32fast::Hasher::new();
-                hasher.update(message.body().as_ref());
+                for fragment in message.body().iter() {
+                    hasher.update(fragment);
+                }
                 for part in message.parts() {
-                    hasher.update(part.as_ref());
+                    for fragment in part.iter() {
+                        hasher.update(fragment);
+                    }
                 }
                 hasher.finalize()
             }
@@ -400,12 +233,11 @@ impl std::fmt::Debug for Encoded {
             Encoded::Multipart(message) => {
                 write!(
                     f,
-                    "Encoded::Multipart(illegal?={} body={}",
-                    message.is_illegal(),
-                    HexFmt(message.body())
+                    "Encoded::Multipart(body={}",
+                    HexFmt(&message.body().to_bytes())
                 )?;
                 for (index, part) in message.parts().iter().enumerate() {
-                    write!(f, ", part[{}]={}", index, HexFmt(part))?;
+                    write!(f, ", part[{}]={}", index, HexFmt(&part.to_bytes()))?;
                 }
                 write!(f, ")")
             }
@@ -465,7 +297,10 @@ impl Serialized {
     /// [`config::DEFAULT_ENCODING`] in the global configuration; use [`serialize_with_encoding`]
     /// to serialize values with a specific encoding.
     pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self, Error> {
-        Self::serialize_with_encoding(config::global::get(config::DEFAULT_ENCODING), value)
+        Self::serialize_with_encoding(
+            hyperactor_config::global::get(config::DEFAULT_ENCODING),
+            value,
+        )
     }
 
     /// Serialize U-typed value as a T-typed value. This should be used with care
@@ -473,7 +308,7 @@ impl Serialized {
     /// coerced.
     pub fn serialize_as<T: Named, U: Serialize>(value: &U) -> Result<Self, Error> {
         Self::serialize_with_encoding_as::<T, U>(
-            config::global::get(config::DEFAULT_ENCODING),
+            hyperactor_config::global::get(config::DEFAULT_ENCODING),
             value,
         )
     }
@@ -834,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_emplace_prefix() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::DEFAULT_ENCODING, Encoding::Bincode);
         let data = TestDumpStruct {
             a: "hello".to_string(),

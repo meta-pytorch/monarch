@@ -21,6 +21,7 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::forward;
 use hyperactor::instrument;
 use hyperactor::instrument_infallible;
@@ -78,9 +79,11 @@ enum TestVariantForms {
     },
 }
 
-#[derive(Debug, Default, Actor)]
+#[derive(Debug, Default)]
 #[hyperactor::export(handlers = [TestVariantForms])]
 struct TestVariantFormsActor {}
+
+impl Actor for TestVariantFormsActor {}
 
 #[async_trait]
 #[forward(TestVariantForms)]
@@ -136,17 +139,7 @@ enum GenericArgMessage<A: Clone + Sync + Send + Debug + 'static> {
 #[derive(Debug)]
 struct GenericArgActor {}
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct GenericArgParams {}
-
-#[async_trait]
-impl Actor for GenericArgActor {
-    type Params = GenericArgParams;
-
-    async fn new(_params: Self::Params) -> Result<Self> {
-        Ok(Self {})
-    }
-}
+impl Actor for GenericArgActor {}
 
 #[async_trait]
 #[forward(GenericArgMessage<usize>)]
@@ -156,24 +149,14 @@ impl GenericArgMessageHandler<usize> for GenericArgActor {
     }
 }
 
-#[derive(Actor, Default, Debug)]
+#[derive(Default, Debug)]
 struct DefaultActorTest {
     value: u64,
 }
 
+impl Actor for DefaultActorTest {}
+
 static_assertions::assert_impl_all!(DefaultActorTest: Actor);
-
-#[derive(Actor, Default, Debug)]
-#[actor(passthrough)]
-struct PassthroughActorTest {
-    value: u64,
-}
-
-static_assertions::assert_impl_all!(PassthroughActorTest: Actor);
-static_assertions::assert_type_eq_all!(
-    <PassthroughActorTest as hyperactor::Actor>::Params,
-    PassthroughActorTest
-);
 
 // Test struct support for Handler derive
 #[derive(Handler, Debug, Named, Serialize, Deserialize)]
@@ -199,10 +182,7 @@ mod tests {
     async fn test_client_macros() {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
-        let actor_handle = proc
-            .spawn::<TestVariantFormsActor>("foo", ())
-            .await
-            .unwrap();
+        let actor_handle = proc.spawn("foo", TestVariantFormsActor {}).unwrap();
 
         assert_eq!(actor_handle.call_struct(&client, 10).await.unwrap(), 10,);
 
