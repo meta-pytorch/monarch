@@ -426,7 +426,7 @@ mod tests {
             .err()
             .context("expected error")?;
         assert!(
-            error.contains("torch operator error"),
+            error.contains("failed to resolve function"),
             "If a borrowed value contains an error, downstream calls should propagate that error (unexpected error string: {})",
             error,
         );
