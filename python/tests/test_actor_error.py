@@ -22,6 +22,15 @@ from monarch.actor import Actor, ActorError, endpoint, MeshFailure
 
 
 class ExceptionActor(Actor):
+    def __init__(self, except_on_init=False) -> None:
+        if except_on_init:
+            raise Exception("This is an exception from __init__")
+        pass
+
+    @endpoint
+    async def noop(self) -> None:
+        pass
+
     @endpoint
     async def raise_exception(self) -> None:
         raise Exception("This is a test exception")
@@ -34,9 +43,18 @@ class ExceptionActor(Actor):
 
 
 class ExceptionActorSync(Actor):
+    def __init__(self, except_on_init=False) -> None:
+        if except_on_init:
+            raise Exception("This is an exception from __init__")
+        pass
+
     @endpoint
     def raise_exception(self) -> None:
         raise Exception("This is a test exception")
+
+    @endpoint
+    def noop(self) -> None:
+        pass
 
 
 class NestedExceptionActor(Actor):
@@ -145,6 +163,56 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
             exception_actor.raise_exception.call_one().get()
         else:
             exception_actor.raise_exception.call().get()
+
+
+@pytest.mark.parametrize(
+    "mesh",
+    [spawn_procs_on_fake_host, spawn_procs_on_this_host],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+@pytest.mark.parametrize(
+    "actor_class",
+    [ExceptionActor, ExceptionActorSync],
+)
+@pytest.mark.parametrize("num_procs", [1, 2])
+async def test_actor_init_exception_buggered(mesh, actor_class, num_procs) -> None:
+    """
+    Test that exceptions raised in actor initializers are propagated to the client.
+    The correct behavior here should be to raise a supervision exception.
+    """
+    proc = mesh({"gpus": num_procs})
+    exception_actor = proc.spawn("exception_actor", actor_class, except_on_init=True)
+
+    with pytest.raises(ActorError, match="This is an exception from __init__"):
+        if num_procs == 1:
+            await exception_actor.noop.call_one()
+        else:
+            await exception_actor.noop.call()
+
+
+@pytest.mark.parametrize(
+    "mesh",
+    [spawn_procs_on_fake_host, spawn_procs_on_this_host],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+@pytest.mark.parametrize(
+    "actor_class",
+    [ExceptionActor, ExceptionActorSync],
+)
+@pytest.mark.parametrize("num_procs", [1, 2])
+def test_actor_init_exception_sync_buggered(mesh, actor_class, num_procs) -> None:
+    """
+    Test that exceptions raised in actor initializers are propagated to the client.
+    The correct behavior here should be to raise a supervision exception.
+    """
+    proc = mesh({"gpus": num_procs})
+    exception_actor = proc.spawn("exception_actor", actor_class, except_on_init=True)
+
+    with pytest.raises(ActorError, match="This is an exception from __init__"):
+        if num_procs == 1:
+            exception_actor.noop.call_one().get()
+        else:
+            exception_actor.noop.call().get()
 
 
 @pytest.mark.parametrize(
