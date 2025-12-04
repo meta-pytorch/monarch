@@ -531,6 +531,26 @@ impl<T: Sink> Ctx<T> {
         id
     }
 
+    pub fn new_process_with_name(&mut self, pid: i32, process_name: String) -> u64 {
+        let id = self.next_uuid();
+        let pd = ProcessDescriptor {
+            pid: Some(pid),
+            process_name: Some(process_name),
+            ..Default::default()
+        };
+        let td = TrackDescriptor {
+            uuid: Some(id),
+            process: Some(pd),
+            ..Default::default()
+        };
+        let tp = TracePacket {
+            data: Some(Data::TrackDescriptor(td)),
+            ..Default::default()
+        };
+        self.sink.consume(tp);
+        id
+    }
+
     pub fn new_thread(&mut self, pid: i32, tid: i32, name: String) -> u64 {
         let id = self.next_uuid();
         let thd = ThreadDescriptor {

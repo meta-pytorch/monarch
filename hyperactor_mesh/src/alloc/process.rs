@@ -492,6 +492,18 @@ impl ProcessAlloc {
         );
         cmd.env(bootstrap::BOOTSTRAP_INDEX_ENV, index.to_string());
 
+        cmd.env(
+            "HYPERACTOR_PROCESS_NAME",
+            format!(
+                "host rank:{} @{}",
+                index,
+                hostname::get()
+                    .unwrap_or_else(|_| "unknown_host".into())
+                    .into_string()
+                    .unwrap_or("unknown_host".to_string())
+            ),
+        );
+
         tracing::debug!("spawning process {:?}", cmd);
         match cmd.spawn() {
             Err(err) => {

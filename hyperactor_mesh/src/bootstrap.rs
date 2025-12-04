@@ -1878,6 +1878,20 @@ impl ProcManager for BootstrapProcManager {
             mode.to_env_safe_string()
                 .map_err(|e| HostError::ProcessConfigurationFailure(proc_id.clone(), e.into()))?,
         );
+        cmd.env(
+            "HYPERACTOR_PROCESS_NAME",
+            format!(
+                "proc {} @ {}",
+                match &proc_id {
+                    ProcId::Direct(_, name) => name.clone(),
+                    ProcId::Ranked(world_id, rank) => format!("{world_id}[{rank}]"),
+                },
+                hostname::get()
+                    .unwrap_or_else(|_| "unknown_host".into())
+                    .into_string()
+                    .unwrap_or("unknown_host".to_string())
+            ),
+        );
 
         if need_stdio {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
