@@ -34,12 +34,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
-from monarch._rust_bindings.monarch_hyperactor.config import (
-    clear_runtime_configuration,
-    configure,
-    get_configuration,
-    get_runtime_configuration,
-)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     PortRef,
@@ -74,6 +68,7 @@ from monarch.actor import (
     endpoint,
     ProcMesh,
 )
+from monarch.config import configured
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
@@ -459,22 +454,6 @@ class Printer(Actor):
         # wasn't delivered.
         self._logger.error(f"Ignoring undeliverable message: {message}")
         return True
-
-
-@contextlib.contextmanager
-def configured(**overrides) -> Iterator[Dict[str, Any]]:
-    # Retrieve runtime
-    prev = get_runtime_configuration()
-    try:
-        # Merge overrides into runtime
-        configure(**overrides)
-
-        # Snapshot of merged config (global - all layers)
-        yield get_configuration()
-    finally:
-        # Restore previous runtime
-        clear_runtime_configuration()
-        configure(**prev)
 
 
 class RedirectedPaths(NamedTuple):

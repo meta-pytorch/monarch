@@ -56,6 +56,7 @@ use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Named;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
@@ -69,6 +70,7 @@ use monarch_messages::controller::Seq;
 use monarch_messages::wire_value::WireValue;
 use monarch_messages::worker::ActorCallParams;
 use monarch_messages::worker::ActorMethodParams;
+use monarch_messages::worker::ArgsKwargs;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::Factory;
 use monarch_messages::worker::Reduction;
@@ -214,8 +216,10 @@ impl WorkerActor {
     }
 }
 
+impl Actor for WorkerActor {}
+
 #[async_trait]
-impl Actor for WorkerActor {
+impl RemoteSpawn for WorkerActor {
     type Params = WorkerParams;
 
     async fn new(
@@ -295,16 +299,14 @@ impl WorkerMessageHandler for WorkerActor {
         let device = self
             .device
             .expect("tried to init backend network on a non-CUDA worker");
-        let comm = NcclCommActor::spawn(
-            cx,
-            CommParams::New {
-                device,
-                unique_id,
-                world_size: self.world_size.try_into().unwrap(),
-                rank: self.rank.try_into().unwrap(),
-            },
-        )
-        .await?;
+        let comm = NcclCommActor::new(CommParams::New {
+            device,
+            unique_id,
+            world_size: self.world_size.try_into().unwrap(),
+            rank: self.rank.try_into().unwrap(),
+        })
+        .await?
+        .spawn(cx)?;
 
         let tensor = factory_zeros(&[1], ScalarType::Float, Layout::Strided, device.into());
         let cell = TensorCell::new(tensor);
@@ -381,14 +383,11 @@ impl WorkerMessageHandler for WorkerActor {
         self.maybe_add_stream_to_recording(cx, params.stream)
             .await?;
 
-        let device_meshes = if params.function.as_torch_op().is_some() {
-            HashMap::new()
-        } else {
-            self.device_meshes
-                .iter()
-                .map(|(k, v)| (k.clone(), v.0.clone()))
-                .collect()
-        };
+        let device_meshes = self
+            .device_meshes
+            .iter()
+            .map(|(k, v)| (k.clone(), v.0.clone()))
+            .collect();
 
         let mut remote_process_groups = HashMap::new();
         for remote_process_group_ref in &params.remote_process_groups {
@@ -438,19 +437,16 @@ impl WorkerMessageHandler for WorkerActor {
         result: StreamRef,
         creation_mode: StreamCreationMode,
     ) -> Result<()> {
-        let handle: ActorHandle<StreamActor> = StreamActor::spawn(
-            cx,
-            StreamParams {
-                world_size: self.world_size,
-                rank: self.rank,
-                creation_mode,
-                id: result,
-                device: self.device,
-                controller_actor: self.controller_actor.clone(),
-                respond_with_python_message: self.respond_with_python_message,
-            },
-        )
-        .await?;
+        let handle: ActorHandle<StreamActor> = StreamActor::new(StreamParams {
+            world_size: self.world_size,
+            rank: self.rank,
+            creation_mode,
+            id: result,
+            device: self.device,
+            controller_actor: self.controller_actor.clone(),
+            respond_with_python_message: self.respond_with_python_message,
+        })
+        .spawn(cx)?;
         self.streams.insert(result, Arc::new(handle));
         Ok(())
     }
@@ -636,22 +632,6 @@ impl WorkerMessageHandler for WorkerActor {
         Ok(())
     }
 
-    async fn create_pipe(
-        &mut self,
-        _cx: &hyperactor::Context<Self>,
-        _result: Ref,
-        // TODO(agallagher): This is used in the python impl to name the socket
-        // path to use for comms, but we don't currently use a named socket.
-        _key: String,
-        _function: ResolvableFunction,
-        _max_messages: i64,
-        _device_mesh: Ref,
-        _args: Vec<WireValue>,
-        _kwargs: HashMap<String, WireValue>,
-    ) -> Result<()> {
-        panic!("create_pipe is no longer implemented")
-    }
-
     async fn send_tensor(
         &mut self,
         cx: &hyperactor::Context<Self>,
@@ -763,14 +743,13 @@ impl WorkerMessageHandler for WorkerActor {
         destination: Option<Ref>,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         stream: StreamRef,
     ) -> Result<()> {
         // Resolve the stream.
         let stream = self.try_get_stream(stream)?;
 
-        let device_meshes = if function.as_ref().is_none_or(|f| f.as_torch_op().is_some()) {
+        let device_meshes = if function.is_none() {
             HashMap::new()
         } else {
             self.device_meshes
@@ -791,8 +770,7 @@ impl WorkerMessageHandler for WorkerActor {
                 cx.self_id().clone(),
                 mutates,
                 function,
-                args,
-                kwargs,
+                args_kwargs,
                 device_meshes,
             )
             .await
@@ -1112,6 +1090,7 @@ mod tests {
 
     use anyhow::Result;
     use hyperactor::Instance;
+    use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
@@ -1151,16 +1130,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1175,8 +1155,11 @@ mod tests {
                         results: vec![Some(0.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.ones.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3])],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1185,8 +1168,11 @@ mod tests {
                         results: vec![Some(Ref { id: 2 })],
                         mutates: vec![0.into()],
                         function: "torch.ops.aten.sub_.Scalar".into(),
-                        args: vec![WireValue::Ref(0.into()), WireValue::Int(1)],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(0.into()), WireValue::Int(1)],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1195,8 +1181,11 @@ mod tests {
                         results: vec![Some(Ref { id: 3 })],
                         mutates: vec![],
                         function: "torch.ops.aten.zeros.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3])],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1205,8 +1194,11 @@ mod tests {
                         results: vec![Some(Ref { id: 4 })],
                         mutates: vec![],
                         function: "torch.ops.aten.allclose.default".into(),
-                        args: vec![WireValue::Ref(0.into()), WireValue::Ref(Ref { id: 3 })],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(0.into()), WireValue::Ref(Ref { id: 3 })],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1244,16 +1236,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1268,8 +1261,7 @@ mod tests {
                         results: vec![Some(0.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.rand.default".into(),
-                        args: vec![],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(vec![], HashMap::new()).unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1304,16 +1296,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1333,8 +1326,7 @@ mod tests {
                         results: vec![Some(Ref { id: 2 })],
                         mutates: vec![0.into()],
                         function: "i.dont.exist".into(),
-                        args: vec![],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(vec![], HashMap::new()).unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1375,16 +1367,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1399,8 +1392,7 @@ mod tests {
                         results: vec![Some(0.into())],
                         mutates: vec![],
                         function: "i.dont.exist".into(),
-                        args: vec![],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(vec![], HashMap::new()).unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1409,8 +1401,11 @@ mod tests {
                         results: vec![Some(1.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.sub_.Scalar".into(),
-                        args: vec![WireValue::Ref(0.into())],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::Ref(0.into())],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1448,16 +1443,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         let (split_arg, sort_list, mesh_ref, dim, layout, none, scalar, device, memory_format) =
             Python::with_gil(|py| {
@@ -1736,16 +1732,17 @@ mod tests {
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1810,16 +1807,17 @@ mod tests {
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         worker_handle
             .command_group(
@@ -1848,8 +1846,11 @@ mod tests {
                         results: vec![Some(Ref { id: i + 2 })],
                         mutates: vec![],
                         function: "torch.ops.aten.ones.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3])],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: (i % 2).into(),
                         remote_process_groups: vec![],
                     },
@@ -1891,28 +1892,30 @@ mod tests {
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
         let worker_handle1 = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker0",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 2,
                     rank: 0,
                     device_index: Some(0),
                     controller_actor: controller_ref.clone(),
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
         let worker_handle2 = proc
-            .spawn::<WorkerActor>(
+            .spawn(
                 "worker1",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 2,
                     rank: 1,
                     device_index: Some(1),
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
 
         let unique_id = UniqueId::new().unwrap();
@@ -1929,194 +1932,6 @@ mod tests {
         worker_handle1.await;
         worker_handle2.drain_and_stop().unwrap();
         worker_handle2.await;
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn send_value() -> Result<()> {
-        test_setup()?;
-
-        let proc = Proc::local();
-        let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
-
-        let worker_handle = proc
-            .spawn::<WorkerActor>(
-                "worker",
-                WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                },
-            )
-            .await
-            .unwrap();
-        worker_handle
-            .command_group(
-                &client,
-                vec![
-                    WorkerMessage::CreateStream {
-                        id: 1.into(),
-                        stream_creation: StreamCreationMode::UseDefaultStream,
-                    },
-                    WorkerMessage::CallFunction(CallFunctionParams {
-                        seq: 0.into(),
-                        results: vec![Some(0.into())],
-                        mutates: vec![],
-                        function: "torch.ops.aten.ones.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                        remote_process_groups: vec![],
-                    }),
-                    WorkerMessage::SendValue {
-                        seq: 1.into(),
-                        destination: None,
-                        mutates: vec![],
-                        function: None,
-                        args: vec![WireValue::Ref(0.into())],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::SendValue {
-                        seq: 2.into(),
-                        destination: None,
-                        mutates: vec![],
-                        function: Some("torch.ops.aten.var_mean.default".into()),
-                        args: vec![WireValue::Ref(0.into())],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::Exit { error: None },
-                ],
-            )
-            .await
-            .unwrap();
-
-        worker_handle.drain_and_stop()?;
-        assert_matches!(worker_handle.await, ActorStatus::Stopped);
-
-        let mut responses = controller_rx.drain();
-        assert_eq!(
-            responses.len(),
-            3,
-            "Expected one response, got: {:#?}",
-            responses
-        );
-
-        match responses.pop().unwrap() {
-            ControllerMessage::FetchResult { seq, value } => {
-                assert_eq!(seq, 2.into());
-                let value = value.unwrap().deserialized::<PyTree<RValue>>().unwrap();
-                assert_eq!(value.leaves().len(), 2);
-            }
-            resp => panic!("unexpected response {:#?}", resp),
-        };
-        match responses.pop().unwrap() {
-            ControllerMessage::FetchResult { seq, .. } => {
-                assert_eq!(seq, 1.into())
-            }
-            resp => panic!("unexpected response {:#?}", resp),
-        };
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn send_value_err_result() -> Result<()> {
-        test_setup()?;
-
-        let proc = Proc::local();
-        let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
-
-        let worker_handle = proc
-            .spawn::<WorkerActor>(
-                "worker",
-                WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                },
-            )
-            .await
-            .unwrap();
-
-        let ref_arg: PickledPyObject =
-            Python::with_gil(|py| Ref { id: 2 }.into_bound_py_any(py)?.try_into())?;
-
-        worker_handle
-            .command_group(
-                &client,
-                vec![
-                    WorkerMessage::CreateStream {
-                        id: 1.into(),
-                        stream_creation: StreamCreationMode::UseDefaultStream,
-                    },
-                    WorkerMessage::SetRefUnitTestsOnly {
-                        reference: Ref { id: 2 },
-                        value: WireValue::Bool(false),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::SendValue {
-                        seq: 1.into(),
-                        destination: None,
-                        mutates: vec![Ref { id: 2 }],
-                        function: Some("non.existent.function".into()),
-                        args: vec![],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::SendValue {
-                        seq: 2.into(),
-                        destination: None,
-                        mutates: vec![],
-                        function: None,
-                        args: vec![ref_arg.into()],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::Exit { error: None },
-                ],
-            )
-            .await
-            .unwrap();
-
-        worker_handle.drain_and_stop()?;
-        assert_matches!(worker_handle.await, ActorStatus::Stopped);
-
-        let mut responses = controller_rx.drain();
-        assert_eq!(
-            responses.len(),
-            3,
-            "Expected one response, got: {:#?}",
-            responses
-        );
-        match responses.pop() {
-            Some(ControllerMessage::FetchResult { seq, value }) => {
-                assert_eq!(seq, 2.into());
-                assert!(value.is_err());
-                assert!(
-                    value
-                        .unwrap_err()
-                        .backtrace
-                        .contains("failed to resolve function")
-                );
-            }
-            _ => panic!("unexpected response {:#?}", responses),
-        }
-        match responses.pop() {
-            Some(ControllerMessage::FetchResult { seq, value }) => {
-                assert_eq!(seq, 1.into());
-                assert!(value.is_err());
-                assert!(
-                    value
-                        .unwrap_err()
-                        .backtrace
-                        .contains("failed to resolve function")
-                );
-            }
-            _ => panic!("unexpected response {:#?}", responses),
-        }
-        Ok(())
     }
 
     #[allow(dead_code)]

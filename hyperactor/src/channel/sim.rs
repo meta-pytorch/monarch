@@ -397,11 +397,11 @@ impl<M: RemoteMessage> Rx<M> for SimRx<M> {
 mod tests {
     use std::iter::zip;
 
+    use hyperactor_config::attrs::Attrs;
     use ndslice::extent;
 
     use super::*;
     use crate::PortId;
-    use crate::attrs::Attrs;
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::clock::SimClock;

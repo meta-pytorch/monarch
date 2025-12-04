@@ -397,14 +397,17 @@ mod tests {
     use hyperactor::Actor;
     use hyperactor::Context;
     use hyperactor::Handler;
+    use hyperactor::RemoteSpawn;
     use hyperactor::proc::Proc;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
 
     use super::*;
 
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     struct EchoActor {}
+
+    impl Actor for EchoActor {}
 
     #[async_trait]
     impl Handler<Connect> for EchoActor {
@@ -427,7 +430,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _client_handle) = proc.instance("client")?;
         let (connect, completer) = Connect::allocate(client.self_id().clone(), client);
-        let actor = proc.spawn::<EchoActor>("actor", ()).await?;
+        let actor = proc.spawn("actor", EchoActor {})?;
         actor.send(connect)?;
         let (mut rd, mut wr) = completer.complete().await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];
