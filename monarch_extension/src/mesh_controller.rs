@@ -142,7 +142,7 @@ impl _Controller {
             signal_safe_block_on(py, async move {
                 let controller_handle = instance_dispatch!(client, |instance| {
                     instance.proc().spawn(
-                        &Name::new("mesh_controller").to_string(),
+                        &Name::new("mesh_controller").unwrap().to_string(),
                         MeshControllerActor::new(MeshControllerActorParams {
                             proc_mesh,
                             id,

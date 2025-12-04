@@ -752,7 +752,7 @@ impl ProcMesh {
             }
             ProcMeshKind::V1(proc_mesh) => {
                 proc_mesh
-                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name))
+                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name)?)
                     .await?;
                 Ok(())
             }
