@@ -16,6 +16,7 @@ use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::OncePortHandle;
+use hyperactor::RemoteSpawn;
 use pyo3::prelude::*;
 
 #[derive(Debug)]
@@ -30,12 +31,14 @@ pub enum LocalStateBrokerMessage {
     Get(usize, OncePortHandle<LocalState>),
 }
 
-#[derive(Debug, Default, Actor)]
+#[derive(Debug, Default)]
 #[hyperactor::export(spawn = true)]
 pub struct LocalStateBrokerActor {
     states: HashMap<usize, LocalState>,
     ports: HashMap<usize, OncePortHandle<LocalState>>,
 }
+
+impl Actor for LocalStateBrokerActor {}
 
 #[async_trait]
 impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {

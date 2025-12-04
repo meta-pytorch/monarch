@@ -90,7 +90,9 @@ impl LoggingMeshClient {
     fn spawn(instance: PyInstance, proc_mesh: &PyProcMesh) -> PyResult<PyPythonTask> {
         let proc_mesh = proc_mesh.try_inner()?;
         PyPythonTask::new(async move {
-            let client_actor = proc_mesh.client_proc().spawn("log_client", ()).await?;
+            let client_actor = proc_mesh
+                .client_proc()
+                .spawn("log_client", LogClientActor::default())?;
             let client_actor_ref = client_actor.bind();
             let forwarder_mesh = instance_dispatch!(instance, |cx| {
                 proc_mesh
