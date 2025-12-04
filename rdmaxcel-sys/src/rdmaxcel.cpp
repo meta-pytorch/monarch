@@ -77,7 +77,8 @@ void scan_existing_segments() {
   std::lock_guard<std::mutex> lock(segmentsMutex);
 
   // Allocate a buffer for the scanner to fill
-  std::vector<rdmaxcel_scanned_segment_t> scanned_segments(g_segment_buffer_size);
+  std::vector<rdmaxcel_scanned_segment_t> scanned_segments(
+      g_segment_buffer_size);
 
   // Call the scanner
   size_t segment_count =
@@ -119,10 +120,7 @@ void scan_existing_segments() {
     } else {
       // New segment - add it
       SegmentInfo segInfo(
-          segment_address,
-          scanned.size,
-          device,
-          scanned.is_expandable != 0);
+          segment_address, scanned.size, device, scanned.is_expandable != 0);
 
       activeSegments[segment_address] = segInfo;
     }
