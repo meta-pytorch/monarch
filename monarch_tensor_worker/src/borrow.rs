@@ -175,6 +175,7 @@ mod tests {
 
     use anyhow::Context;
     use anyhow::Result;
+    use hyperactor::RemoteSpawn;
     use hyperactor::proc::Proc;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::ArgsKwargs;
@@ -202,14 +203,14 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await?,
             )
-            .await
             .unwrap();
 
         worker_handle
@@ -354,14 +355,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerParams {
+                WorkerActor::new(WorkerParams {
                     world_size: 1,
                     rank: 0,
                     device_index: None,
                     controller_actor: controller_ref,
-                },
+                })
+                .await
+                .unwrap(),
             )
-            .await
             .unwrap();
 
         worker_handle

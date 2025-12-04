@@ -27,12 +27,11 @@ use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
-use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::actor::ActorStatus;
-use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -423,25 +422,21 @@ impl ProcActor {
         let mailbox_handle = proc.clone().serve(rx);
         let (state_tx, mut state_rx) = watch::channel(ProcState::AwaitingJoin);
 
-        let handle = match proc
-            .clone()
-            .spawn::<Self>(
-                "proc",
-                ProcActorParams {
-                    proc: proc.clone(),
-                    world_id: world_id.clone(),
-                    system_actor_ref: SYSTEM_ACTOR_REF.clone(),
-                    bootstrap_channel_addr: bootstrap_addr,
-                    local_addr,
-                    state_watch: state_tx,
-                    supervisor_actor_ref,
-                    supervision_update_interval,
-                    labels,
-                    lifecycle_mode,
-                },
-            )
-            .await
-        {
+        let handle = match proc.clone().spawn(
+            "proc",
+            ProcActor::new(ProcActorParams {
+                proc: proc.clone(),
+                world_id: world_id.clone(),
+                system_actor_ref: SYSTEM_ACTOR_REF.clone(),
+                bootstrap_channel_addr: bootstrap_addr,
+                local_addr,
+                state_watch: state_tx,
+                supervisor_actor_ref,
+                supervision_update_interval,
+                labels,
+                lifecycle_mode,
+            }),
+        ) {
             Ok(handle) => handle,
             Err(e) => {
                 Self::failed_proc_bootstrap_cleanup(mailbox_handle).await;
@@ -449,11 +444,7 @@ impl ProcActor {
             }
         };
 
-        let comm_actor = match proc
-            .clone()
-            .spawn::<CommActor>("comm", Default::default())
-            .await
-        {
+        let comm_actor = match proc.clone().spawn("comm", CommActor::default()) {
             Ok(handle) => handle,
             Err(e) => {
                 Self::failed_proc_bootstrap_cleanup(mailbox_handle).await;
@@ -502,18 +493,6 @@ impl ProcActor {
 
 #[async_trait]
 impl Actor for ProcActor {
-    type Params = ProcActorParams;
-
-    async fn new(params: ProcActorParams) -> Result<Self, anyhow::Error> {
-        let last_successful_supervision_update = params.proc.clock().system_time_now();
-        Ok(Self {
-            params,
-            state: ProcState::AwaitingJoin,
-            remote: Remote::collect(),
-            last_successful_supervision_update,
-        })
-    }
-
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         // Bind ports early so that when the proc actor joins, it can serve.
         this.bind::<Self>();
@@ -550,6 +529,16 @@ impl Actor for ProcActor {
 }
 
 impl ProcActor {
+    fn new(params: ProcActorParams) -> Self {
+        let last_successful_supervision_update = params.proc.clock().system_time_now();
+        Self {
+            params,
+            state: ProcState::AwaitingJoin,
+            remote: Remote::collect(),
+            last_successful_supervision_update,
+        }
+    }
+
     /// This proc's rank in the world.
     fn rank(&self) -> Index {
         self.params
@@ -837,15 +826,12 @@ impl Handler<ActorSupervisionEvent> for ProcActor {
 
 /// Convenience utility to spawn an actor on a proc. Spawn returns
 /// with the new ActorRef on success.
-pub async fn spawn<A: Actor + Referable>(
+pub async fn spawn<A: RemoteSpawn>(
     cx: &impl context::Actor,
     proc_actor: &ActorRef<ProcActor>,
     actor_name: &str,
     params: &A::Params,
-) -> Result<ActorRef<A>, anyhow::Error>
-where
-    A::Params: RemoteMessage,
-{
+) -> Result<ActorRef<A>, anyhow::Error> {
     let remote = Remote::collect();
     let (spawned_port, mut spawned_receiver) = open_port(cx);
     let ActorId(proc_id, _, _) = (*proc_actor).clone().into();
@@ -880,6 +866,7 @@ mod tests {
     use std::collections::HashSet;
     use std::time::Duration;
 
+    use hyperactor::RemoteSpawn;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel;
     use hyperactor::channel::ChannelAddr;
@@ -891,7 +878,6 @@ mod tests {
     use hyperactor::id;
     use hyperactor::reference::ActorRef;
     use hyperactor::test_utils::pingpong::PingPongActor;
-    use hyperactor::test_utils::pingpong::PingPongActorParams;
     use hyperactor::test_utils::pingpong::PingPongMessage;
     use maplit::hashset;
     use rand::Rng;
@@ -960,6 +946,11 @@ mod tests {
         }
     }
 
+    // V0 test - V1 has equivalent coverage. Basic smoke test that
+    // ProcActor bootstrap completes successfully. V1 equivalent is
+    // hyperactor_mesh/src/v1/proc_mesh.rs::test_proc_mesh_allocate
+    // which tests proc mesh allocation and is more comprehensive
+    // (also verifies all procs are alive and reachable).
     #[tokio::test]
     async fn test_bootstrap() {
         let Bootstrapped { server_handle, .. } = bootstrap().await;
@@ -970,7 +961,7 @@ mod tests {
         server_handle.await;
     }
 
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -978,6 +969,8 @@ mod tests {
         ],
     )]
     struct TestActor;
+
+    impl Actor for TestActor {}
 
     #[derive(Handler, HandleClient, RefClient, Serialize, Deserialize, Debug, Named)]
     enum TestActorMessage {
@@ -997,6 +990,15 @@ mod tests {
         }
     }
 
+    // V0 test - V1 has equivalent coverage. Tests graceful stop
+    // behavior where responsive actors stop cleanly within timeout.
+    // Spawns 4 TestActors, calls stop() with 1-second timeout,
+    // verifies all actors stop gracefully (5 stopped, 1 aborted). V1
+    // equivalent:
+    // hyperactor_mesh/src/v1/actor_mesh.rs::test_actor_mesh_stop_graceful.
+    // Both use the same underlying mechanism (Proc::destroy_and_wait),
+    // but V1 returns Ok() for clean stop vs V0's ProcStopResult with
+    // counts.
     #[tokio::test]
     async fn test_stop() {
         // Show here that the proc actors are stopped when the proc
@@ -1030,8 +1032,10 @@ mod tests {
         server_handle.await;
     }
 
+    // Helper actor for test_stop_timeout() below.
+
     // Sleep
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -1039,6 +1043,8 @@ mod tests {
         ],
     )]
     struct SleepActor {}
+
+    impl Actor for SleepActor {}
 
     #[async_trait]
     impl Handler<u64> for SleepActor {
@@ -1049,6 +1055,14 @@ mod tests {
         }
     }
 
+    // V0 test - V1 has equivalent coverage. Tests that actors not
+    // responding within stop timeout are forcibly aborted
+    // (JoinHandle::abort). Spawns SleepActors that block for 5
+    // seconds, calls stop() with 1-second timeout, verifies abort
+    // counts and "aborting JoinHandle" logs. V1 equivalent:
+    // hyperactor_mesh/src/v1/actor_mesh.rs::test_actor_mesh_stop_timeout.
+    // Both use the same underlying mechanism (Proc::destroy_and_wait),
+    // but V1 returns Err(Timeout) instead of Ok with abort counts.
     #[tracing_test::traced_test]
     #[tokio::test]
     #[cfg_attr(not(fbcode_build), ignore)]
@@ -1116,6 +1130,12 @@ mod tests {
         server_handle.await;
     }
 
+    // V0 test - V1 has equivalent coverage. Basic spawn test. This
+    // functionality is already covered (and more comprehensively
+    // tested) in V1 by
+    // hyperactor_mesh/src/v1/proc_mesh.rs::test_spawn_actor, which
+    // spawns multiple actors across multiple procs and verifies mesh
+    // behavior.
     #[tokio::test]
     async fn test_spawn() {
         let Bootstrapped {
@@ -1136,6 +1156,7 @@ mod tests {
         server_handle.await;
     }
 
+    // Helper for V0 specific test_bootstrap_retry() below.
     #[cfg(target_os = "linux")]
     fn random_abstract_addr() -> ChannelAddr {
         let random_string = rand::thread_rng()
@@ -1146,6 +1167,17 @@ mod tests {
         format!("unix!@{random_string}").parse().unwrap()
     }
 
+    // V0-specific test - no V1 equivalent. Tests ProcActor bootstrap
+    // retry behavior: when ProcActor::bootstrap() is called before
+    // the System server is ready, it retries connecting to the
+    // SystemActor until the server comes up, rather than failing
+    // immediately. Verifies resilient bootstrap where procs can start
+    // before the system is fully initialized. V1 does not have this
+    // bootstrap model - V1 uses ProcMesh allocation which is
+    // coordinated differently. Procs are allocated as a mesh through
+    // explicit allocation calls, not individually bootstrapped to
+    // join a system. V1 does not have the concept of procs
+    // independently retrying to join a central SystemActor.
     #[cfg(target_os = "linux")] // remove after making abstract unix sockets store-and-forward
     #[tokio::test]
     async fn test_bootstrap_retry() {
@@ -1196,6 +1228,18 @@ mod tests {
         handle.await.unwrap();
     }
 
+    // V0-specific test - no V1 equivalent. Tests ProcActor
+    // supervision reporting: ProcActor periodically sends
+    // ProcSupervisionMessage::Update to the SystemActor reporting
+    // proc health (Alive/Failed) and failed actor statuses. Verifies
+    // the supervision flow: ProcActor monitors actors → reports
+    // failures to supervisor → supervisor receives supervision
+    // updates with failed actor information. V1 does not have this
+    // centralized supervision model. V1 does not have ProcActor,
+    // ProcSupervisor, or SystemActor. V1 uses a different supervision
+    // approach where actors can handle supervision events locally
+    // rather than reporting to a central system actor for health
+    // monitoring.
     #[tokio::test]
     async fn test_supervision_message_handling() {
         if std::env::var("CARGO_TEST").is_ok() {
@@ -1293,8 +1337,17 @@ mod tests {
         server_handle.await;
     }
 
-    // Verify that the proc actor's ProcMessage port is bound properly so
-    // that we can send messages to it through the system actor.
+    // V0-specific test - no V1 equivalent. Tests ProcActor bootstrap
+    // infrastructure: during ProcActor::bootstrap(), the ProcMessage
+    // port is properly bound to the mailbox so that SystemActor can
+    // send control messages (SpawnProc, Stop, etc.) to the ProcActor.
+    // V1 does not have ProcActor or ProcMessage. V1 uses ProcMesh
+    // allocation instead of individual ProcActor bootstrap, and does
+    // not have a SystemActor sending control messages to per-proc
+    // actors. V1's bootstrap process is fundamentally different -
+    // procs are allocated as a mesh with static configuration rather
+    // than individually bootstrapped and managed by a central system
+    // actor.
     #[tokio::test]
     async fn test_bind_proc_actor_in_bootstrap() {
         let server_handle = System::serve(
@@ -1334,6 +1387,16 @@ mod tests {
         server_handle.await;
     }
 
+    // V0-specific test - no V1 equivalent. Tests proc.snapshot()
+    // which returns ActorLedgerSnapshot containing all actors in a
+    // proc with hierarchical metadata for debugging/monitoring. V1
+    // doesn't expose this capability - V1 uses mesh iteration
+    // patterns instead (.iter(), .values(), .actor_states()). The
+    // underlying Proc::snapshot() still exists in hyperactor core,
+    // and with hyper (observability tool) development resuming, V1
+    // may want to expose similar snapshot capabilities for mesh-level
+    // introspection, or determine if mesh iteration patterns are
+    // sufficient for observability needs.
     #[tokio::test]
     async fn test_proc_snapshot() {
         let Bootstrapped {
@@ -1369,6 +1432,16 @@ mod tests {
         server_handle.await;
     }
 
+    // V0-specific test - no V1 equivalent. Tests dynamic address book
+    // updates on first contact: when procs communicate for the first
+    // time, the SystemActor's ReportingRouter sends UpdateAddress
+    // messages to update cached addresses in DialMailboxRouter. V1
+    // does not have this functionality. V1 uses either: 1. Direct
+    // addressing (ProcId::Direct) where address is embedded in
+    // ProcId, or 2. Static address books for ranked procs that are
+    // configured once at allocation. V1 intentionally does not
+    // support dynamic address discovery - addresses are known
+    // statically at allocation time.
     #[tracing_test::traced_test]
     #[tokio::test]
     #[cfg_attr(not(fbcode_build), ignore)]
@@ -1445,15 +1518,17 @@ mod tests {
         // Spawn two actors 'ping' and 'pong' where 'ping' runs on
         // 'world[0]' and 'pong' on 'world[1]' (that is, not on the
         // same proc).
-        let ping_params = PingPongActorParams::new(Some(proc_0_undeliverable_tx.bind()), None);
         let ping_handle = proc_0
-            .spawn::<PingPongActor>("ping", ping_params)
-            .await
+            .spawn(
+                "ping",
+                PingPongActor::new(Some(proc_0_undeliverable_tx.bind()), None, None),
+            )
             .unwrap();
-        let pong_params = PingPongActorParams::new(Some(proc_1_undeliverable_tx.bind()), None);
         let pong_handle = proc_1
-            .spawn::<PingPongActor>("pong", pong_params)
-            .await
+            .spawn(
+                "pong",
+                PingPongActor::new(Some(proc_1_undeliverable_tx.bind()), None, None),
+            )
             .unwrap();
 
         // Have 'ping' send 'pong' a message.
@@ -1533,6 +1608,16 @@ mod tests {
         assert_matches!(once_rx.recv().await.unwrap(), ());
     }
 
+    // V0-specific test - no V1 equivalent. Tests dynamic address book
+    // updates when a proc is killed and restarted with a new
+    // ChannelAddr: the SystemActor broadcasts UpdateAddress messages
+    // to update cached addresses in DialMailboxRouter. V1 does not
+    // have this functionality. V1 uses either: 1. Direct addressing
+    // (ProcId::Direct) where address is embedded in ProcId, or 2.
+    // Static address books for ranked procs that are configured once
+    // at allocation. V1 intentionally does not support proc restart
+    // with new addresses - procs have stable addresses throughout
+    // their lifecycle.
     #[tokio::test]
     async fn test_update_address_book_cache() {
         let server_handle = System::serve(
@@ -1585,6 +1670,7 @@ mod tests {
         assert!(done_rx.recv().await.unwrap());
     }
 
+    // Helper called by V0 test_update_address_book_cache test above.
     async fn spawn_actor(
         cx: &impl context::Actor,
         actor_id: &ActorId,
@@ -1607,12 +1693,11 @@ mod tests {
         .await
         .unwrap();
         let (undeliverable_msg_tx, _) = cx.mailbox().open_port();
-        let params = PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), None);
         let actor_ref = spawn::<PingPongActor>(
             cx,
             &bootstrap.proc_actor.bind(),
             &actor_id.to_string(),
-            &params,
+            &(Some(undeliverable_msg_tx.bind()), None, None),
         )
         .await
         .unwrap();

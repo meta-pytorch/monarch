@@ -37,6 +37,8 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
+use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::declare_attrs;
 use hyperactor_macros::AttrValue;
 use hyperactor_macros::Named;
 use hyperactor_telemetry::recorder;
@@ -66,7 +68,6 @@ use crate::actor::Binds;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
-use crate::attrs::Attrs;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -77,7 +78,6 @@ use crate::config;
 use crate::context;
 use crate::data::Serialized;
 use crate::data::TypeInfo;
-use crate::declare_attrs;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -507,12 +507,7 @@ impl Proc {
 
     /// Spawn a named (root) actor on this proc. The name of the actor must be
     /// unique.
-    #[hyperactor::observe_result("Proc")]
-    pub async fn spawn<A: Actor>(
-        &self,
-        name: &str,
-        params: A::Params,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
+    pub fn spawn<A: Actor>(&self, name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_root_id(name)?;
         let span = tracing::span!(
             Level::INFO,
@@ -525,7 +520,6 @@ impl Proc {
             let _guard = span.clone().entered();
             Instance::new(self.clone(), actor_id.clone(), false, None)
         };
-        let actor = A::new(params).instrument(span.clone()).await?;
         // Add this actor to the proc's actor ledger. We do not actively remove
         // inactive actors from ledger, because the actor's state can be inferred
         // from its weak cell.
@@ -533,10 +527,7 @@ impl Proc {
             .ledger
             .insert(actor_id.clone(), instance.inner.cell.downgrade())?;
 
-        Ok(instance
-            .start(actor, actor_loop_receivers.take().unwrap(), work_rx)
-            .instrument(span)
-            .await)
+        Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
     }
 
     /// Create and return an actor instance and its corresponding handle. This allows actors to be
@@ -585,18 +576,15 @@ impl Proc {
     ///
     /// When spawn_child returns, the child has an associated cell and is linked
     /// with its parent.
-    async fn spawn_child<A: Actor>(
+    fn spawn_child<A: Actor>(
         &self,
         parent: InstanceCell,
-        params: A::Params,
+        actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_child_id(parent.actor_id())?;
         let (instance, mut actor_loop_receivers, work_rx) =
             Instance::new(self.clone(), actor_id, false, Some(parent.clone()));
-        let actor = A::new(params).await?;
-        Ok(instance
-            .start(actor, actor_loop_receivers.take().unwrap(), work_rx)
-            .await)
+        Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
     }
 
     /// Call `abort` on the `JoinHandle` associated with the given
@@ -1021,7 +1009,7 @@ impl<A: Actor> Instance<A> {
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
         let (work_tx, work_rx) = ordered_channel(
             actor_id.to_string(),
-            config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
+            hyperactor_config::global::get(config::ENABLE_CLIENT_SEQ_ASSIGNMENT),
         );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
@@ -1168,8 +1156,7 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
-    #[hyperactor::instrument_infallible(fields(actor_id=self.inner.cell.actor_id().clone().to_string(), actor_name=self.inner.cell.actor_id().name()))]
-    async fn start(
+    fn start(
         self,
         actor: A,
         actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
@@ -1356,7 +1343,7 @@ impl<A: Actor> Instance<A> {
         // be in an invalid state and unable to access anything, for example
         // the GIL.
         let cleanup_result = if !did_panic {
-            let cleanup_timeout = config::global::get(config::CLEANUP_TIMEOUT);
+            let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
             match RealClock
                 .timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
                 .await
@@ -1533,14 +1520,8 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Spawn on child on this instance. Currently used only by cap::CanSpawn.
-    pub(crate) async fn spawn<C: Actor>(
-        &self,
-        params: C::Params,
-    ) -> anyhow::Result<ActorHandle<C>> {
-        self.inner
-            .proc
-            .spawn_child(self.inner.cell.clone(), params)
-            .await
+    pub(crate) fn spawn<C: Actor>(&self, actor: C) -> anyhow::Result<ActorHandle<C>> {
+        self.inner.proc.spawn_child(self.inner.cell.clone(), actor)
     }
 
     /// Create a new direct child instance.
@@ -2194,9 +2175,11 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[export]
     struct TestActor;
+
+    impl Actor for TestActor {}
 
     #[derive(Handler, HandleClient, Debug)]
     enum TestActorMessage {
@@ -2276,7 +2259,7 @@ mod tests {
             cx: &crate::Context<Self>,
             reply: oneshot::Sender<ActorHandle<TestActor>>,
         ) -> Result<(), anyhow::Error> {
-            let handle = <Self as Actor>::spawn(cx, ()).await?;
+            let handle = TestActor::default().spawn(cx)?;
             reply.send(handle).unwrap();
             Ok(())
         }
@@ -2286,7 +2269,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
         let proc = Proc::local();
-        let handle = proc.spawn::<TestActor>("test", ()).await.unwrap();
+        let handle = proc.spawn("test", TestActor::default()).unwrap();
 
         // Check on the join handle.
         assert!(logs_contain(
@@ -2335,8 +2318,12 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_proc_actors_messaging() {
         let proc = Proc::local();
-        let first = proc.spawn::<TestActor>("first", ()).await.unwrap();
-        let second = proc.spawn::<TestActor>("second", ()).await.unwrap();
+        let first = proc
+            .spawn::<TestActor>("first", TestActor::default())
+            .unwrap();
+        let second = proc
+            .spawn::<TestActor>("second", TestActor::default())
+            .unwrap();
         let (tx, rx) = oneshot::channel::<()>();
         let reply_message = TestActorMessage::Reply(tx);
         first
@@ -2345,8 +2332,11 @@ mod tests {
         rx.await.unwrap();
     }
 
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
+    #[export]
     struct LookupTestActor;
+
+    impl Actor for LookupTestActor {}
 
     #[derive(Handler, HandleClient, Debug)]
     enum LookupTestMessage {
@@ -2370,9 +2360,13 @@ mod tests {
         let proc = Proc::local();
         let (client, _handle) = proc.instance("client").unwrap();
 
-        let target_actor = proc.spawn::<TestActor>("target", ()).await.unwrap();
+        let target_actor = proc
+            .spawn::<TestActor>("target", TestActor::default())
+            .unwrap();
         let target_actor_ref = target_actor.bind();
-        let lookup_actor = proc.spawn::<LookupTestActor>("lookup", ()).await.unwrap();
+        let lookup_actor = proc
+            .spawn::<LookupTestActor>("lookup", LookupTestActor::default())
+            .unwrap();
 
         assert!(
             lookup_actor
@@ -2430,7 +2424,9 @@ mod tests {
     async fn test_spawn_child() {
         let proc = Proc::local();
 
-        let first = proc.spawn::<TestActor>("first", ()).await.unwrap();
+        let first = proc
+            .spawn::<TestActor>("first", TestActor::default())
+            .unwrap();
         let second = TestActor::spawn_child(&first).await;
         let third = TestActor::spawn_child(&second).await;
 
@@ -2498,7 +2494,9 @@ mod tests {
     async fn test_child_lifecycle() {
         let proc = Proc::local();
 
-        let root = proc.spawn::<TestActor>("root", ()).await.unwrap();
+        let root = proc
+            .spawn::<TestActor>("root", TestActor::default())
+            .unwrap();
         let root_1 = TestActor::spawn_child(&root).await;
         let root_2 = TestActor::spawn_child(&root).await;
         let root_2_1 = TestActor::spawn_child(&root_2).await;
@@ -2519,7 +2517,9 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let root = proc.spawn::<TestActor>("root", ()).await.unwrap();
+        let root = proc
+            .spawn::<TestActor>("root", TestActor::default())
+            .unwrap();
         let root_1 = TestActor::spawn_child(&root).await;
         let root_2 = TestActor::spawn_child(&root).await;
         let root_2_1 = TestActor::spawn_child(&root_2).await;
@@ -2559,7 +2559,7 @@ mod tests {
         let proc = Proc::local();
 
         // Add the 1st root. This root will remain active until the end of the test.
-        let root: ActorHandle<TestActor> = proc.spawn::<TestActor>("root", ()).await.unwrap();
+        let root: ActorHandle<TestActor> = proc.spawn("root", TestActor::default()).unwrap();
         wait_until_idle(&root).await;
         {
             let snapshot = proc.state().ledger.snapshot();
@@ -2574,7 +2574,7 @@ mod tests {
 
         // Add the 2nd root.
         let another_root: ActorHandle<TestActor> =
-            proc.spawn::<TestActor>("another_root", ()).await.unwrap();
+            proc.spawn("another_root", TestActor::default()).unwrap();
         wait_until_idle(&another_root).await;
         {
             let snapshot = proc.state().ledger.snapshot();
@@ -2782,13 +2782,7 @@ mod tests {
         struct TestActor(Arc<AtomicUsize>);
 
         #[async_trait]
-        impl Actor for TestActor {
-            type Params = Arc<AtomicUsize>;
-
-            async fn new(param: Arc<AtomicUsize>) -> Result<Self, anyhow::Error> {
-                Ok(Self(param))
-            }
-        }
+        impl Actor for TestActor {}
 
         #[async_trait]
         impl Handler<OncePortHandle<PortHandle<usize>>> for TestActor {
@@ -2816,10 +2810,8 @@ mod tests {
 
         let proc = Proc::local();
         let state = Arc::new(AtomicUsize::new(0));
-        let handle = proc
-            .spawn::<TestActor>("test", state.clone())
-            .await
-            .unwrap();
+        let actor = TestActor(state.clone());
+        let handle = proc.spawn::<TestActor>("test", actor).unwrap();
         let client = proc.attach("client").unwrap();
         let (tx, rx) = client.open_once_port();
         handle.send(tx).unwrap();
@@ -2843,7 +2835,7 @@ mod tests {
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let (client, _handle) = proc.instance("client").unwrap();
-        let actor_handle = proc.spawn::<TestActor>("test", ()).await.unwrap();
+        let actor_handle = proc.spawn("test", TestActor::default()).unwrap();
         actor_handle
             .panic(&client, "some random failure".to_string())
             .await
@@ -2867,17 +2859,13 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_local_supervision_propagation() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
         #[derive(Debug)]
         struct TestActor(Arc<AtomicBool>, bool);
 
         #[async_trait]
         impl Actor for TestActor {
-            type Params = (Arc<AtomicBool>, bool);
-
-            async fn new(param: (Arc<AtomicBool>, bool)) -> Result<Self, anyhow::Error> {
-                Ok(Self(param.0, param.1))
-            }
-
             async fn handle_supervision_event(
                 &mut self,
                 _this: &Instance<Self>,
@@ -2920,34 +2908,37 @@ mod tests {
         let root_2_1_state = Arc::new(AtomicBool::new(false));
 
         let root = proc
-            .spawn::<TestActor>("root", (root_state.clone(), false))
-            .await
+            .spawn::<TestActor>("root", TestActor(root_state.clone(), false))
             .unwrap();
         let root_1 = proc
             .spawn_child::<TestActor>(
                 root.cell().clone(),
-                (
+                TestActor(
                     root_1_state.clone(),
                     true, /* set true so children's event stops here */
                 ),
             )
-            .await
             .unwrap();
         let root_1_1 = proc
-            .spawn_child::<TestActor>(root_1.cell().clone(), (root_1_1_state.clone(), false))
-            .await
+            .spawn_child::<TestActor>(
+                root_1.cell().clone(),
+                TestActor(root_1_1_state.clone(), false),
+            )
             .unwrap();
         let root_1_1_1 = proc
-            .spawn_child::<TestActor>(root_1_1.cell().clone(), (root_1_1_1_state.clone(), false))
-            .await
+            .spawn_child::<TestActor>(
+                root_1_1.cell().clone(),
+                TestActor(root_1_1_1_state.clone(), false),
+            )
             .unwrap();
         let root_2 = proc
-            .spawn_child::<TestActor>(root.cell().clone(), (root_2_state.clone(), false))
-            .await
+            .spawn_child::<TestActor>(root.cell().clone(), TestActor(root_2_state.clone(), false))
             .unwrap();
         let root_2_1 = proc
-            .spawn_child::<TestActor>(root_2.cell().clone(), (root_2_1_state.clone(), false))
-            .await
+            .spawn_child::<TestActor>(
+                root_2.cell().clone(),
+                TestActor(root_2_1_state.clone(), false),
+            )
             .unwrap();
 
         // fail `root_1_1_1`, the supervision msg should be propagated to
@@ -2978,8 +2969,10 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_instance() {
-        #[derive(Debug, Default, Actor)]
+        #[derive(Debug, Default)]
         struct TestActor;
+
+        impl Actor for TestActor {}
 
         #[async_trait]
         impl Handler<(String, PortRef<String>)> for TestActor {
@@ -2997,7 +2990,7 @@ mod tests {
 
         let (instance, handle) = proc.instance("my_test_actor").unwrap();
 
-        let child_actor = TestActor::spawn(&instance, ()).await.unwrap();
+        let child_actor = TestActor::default().spawn(&instance).unwrap();
 
         let (port, mut receiver) = instance.open_port();
         child_actor
@@ -3028,7 +3021,7 @@ mod tests {
             // Intentionally not setting a proc supervison coordinator. This
             // should cause the process to terminate.
             // ProcSupervisionCoordinator::set(&proc).await.unwrap();
-            let root = proc.spawn::<TestActor>("root", ()).await.unwrap();
+            let root = proc.spawn("root", TestActor::default()).unwrap();
             let (client, _handle) = proc.instance("client").unwrap();
             root.fail(&client, anyhow::anyhow!("some random failure"))
                 .await
@@ -3058,8 +3051,10 @@ mod tests {
     #[ignore = "until trace recording is turned back on"]
     #[test]
     fn test_handler_logging() {
-        #[derive(Debug, Default, Actor)]
+        #[derive(Debug, Default)]
         struct LoggingActor;
+
+        impl Actor for LoggingActor {}
 
         impl LoggingActor {
             async fn wait(handle: &ActorHandle<Self>) {
@@ -3121,7 +3116,7 @@ mod tests {
         }
 
         trace_and_block(async {
-            let handle = LoggingActor::spawn_detached(()).await.unwrap();
+            let handle = LoggingActor::default().spawn_detached().unwrap();
             handle.send("hello world".to_string()).unwrap();
             handle.send("hello world again".to_string()).unwrap();
             handle.send(123u64).unwrap();
