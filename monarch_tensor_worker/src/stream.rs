@@ -589,8 +589,10 @@ impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for &PyArg {
 impl StreamActor {
     fn tensor_to_pyobject(tensor_cell: TensorCell) -> PyObject {
         Python::with_gil(|py| {
-            // SAFETY: We have the GIL and tensor_cell is a valid TensorCell.
-            // TensorCell will be refactored later, so this temporary unsafe usage is acceptable.
+            // SAFETY: Cloning a tensor was unsafe because we were tracking their references like
+            // Rust objects (single mutable reference or many immutable references). We are
+            // removing this functionality in upcoming patches, so we use the unsafe version here
+            // until that happens.
             let tensor = unsafe {
                 // Get the owned tensor by calling clone_unsafe on the reference
                 tensor_cell.get_unchecked().clone_unsafe()
@@ -807,8 +809,13 @@ impl StreamActor {
                 // the appropriate types here, but they get casted to `PyAny`.
                 // It'd be nice to make `TryToPyObjectUnsafe` take a template
                 // arg for the converted py object to avoid this downcast.
+                // SAFETY: Tensor operations were unsafe because we were tracking their references
+                // like Rust objects (single mutable reference or many immutable references). We are
+                // removing this functionality in upcoming patches, so we use the unsafe version here
+                // until that happens.
                 let args = unsafe { py_args.try_to_object_unsafe(py) }
                     .map_err(SerializablePyErr::from_fn(py))?;
+                // SAFETY: Same as above - reference tracking functionality is being removed.
                 let kwargs = &unsafe { py_kwargs.try_to_object_unsafe(py) }
                     .map_err(SerializablePyErr::from_fn(py))?;
 
@@ -944,7 +951,8 @@ impl StreamActor {
             .env
             .get(&src)
             .ok_or_else(|| CallFunctionError::RefNotFound(src))?;
-        self.env.insert(dest, rvalue.clone());
+        self.env
+            .insert(dest, Python::with_gil(|_py| rvalue.clone()));
         Ok(())
     }
     async fn call_actor(

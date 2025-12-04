@@ -1504,8 +1504,11 @@ mod tests {
                         results: vec![Some(0.into()), Some(Ref { id: 2 })],
                         mutates: vec![],
                         function: "os.path.split".into(),
-                        args: vec![split_arg.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![split_arg.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1514,8 +1517,11 @@ mod tests {
                         results: vec![Some(4.into()), None, None, None, None],
                         mutates: vec![],
                         function: "builtins.sorted".into(),
-                        args: vec![sort_list.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![sort_list.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1529,8 +1535,11 @@ mod tests {
                         results: vec![Some(6.into())],
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.mesh_rank".into(),
-                        args: vec![mesh_ref.into(), dim.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![mesh_ref.into(), dim.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1540,8 +1549,11 @@ mod tests {
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_scalar_type"
                             .into(),
-                        args: vec![scalar.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![scalar.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1550,8 +1562,11 @@ mod tests {
                         results: vec![Some(8.into())],
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_layout".into(),
-                        args: vec![layout.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![layout.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1560,8 +1575,11 @@ mod tests {
                         results: vec![Some(9.into())],
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_none".into(),
-                        args: vec![none.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![none.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1572,8 +1590,7 @@ mod tests {
                         results: vec![None],
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.none".into(),
-                        args: vec![],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(vec![], HashMap::new()).unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1582,8 +1599,11 @@ mod tests {
                         results: vec![Some(10.into())],
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_device".into(),
-                        args: vec![device.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![device.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1593,8 +1613,11 @@ mod tests {
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.test_memory_format"
                             .into(),
-                        args: vec![memory_format.into()],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![memory_format.into()],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1604,8 +1627,11 @@ mod tests {
                         results: vec![Some(12.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.ones.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::IntList(vec![2, 3])],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
@@ -1614,8 +1640,11 @@ mod tests {
                         results: vec![Some(13.into())],
                         mutates: vec![],
                         function: "torch.ops.aten.stack.default".into(),
-                        args: vec![WireValue::RefList(vec![12.into(), 12.into()])],
-                        kwargs: HashMap::new(),
+                        args_kwargs: ArgsKwargs::from_wire_values(
+                            vec![WireValue::RefList(vec![12.into(), 12.into()])],
+                            HashMap::new(),
+                        )
+                        .unwrap(),
                         stream: 1.into(),
                         remote_process_groups: vec![],
                     }),
