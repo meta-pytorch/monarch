@@ -89,6 +89,8 @@ class SkyPilotJob(JobTrait):
         down_on_autostop: bool = False,
         python_exe: str = "python",
         setup_commands: Optional[str] = None,
+        workdir: Optional[str] = None,
+        file_mounts: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Args:
@@ -104,7 +106,11 @@ class SkyPilotJob(JobTrait):
                               just stopping it.
             python_exe: Python executable to use for worker processes.
             setup_commands: Optional setup commands to run before starting workers.
-                           Use this to install dependencies.
+                           Use this to install dependencies including Monarch.
+            workdir: Local directory to sync to the cluster. If provided, this
+                    directory will be uploaded to ~/sky_workdir on each node.
+            file_mounts: Dictionary mapping remote paths to local paths for
+                        additional file mounts.
         """
         if not HAS_SKYPILOT:
             raise ImportError(
@@ -128,6 +134,8 @@ class SkyPilotJob(JobTrait):
         self._down_on_autostop = down_on_autostop
         self._python_exe = python_exe
         self._setup_commands = setup_commands
+        self._workdir = workdir
+        self._file_mounts = file_mounts
 
         # Runtime state
         self._launched_cluster_name: Optional[str] = None
@@ -154,7 +162,12 @@ class SkyPilotJob(JobTrait):
             setup=setup if setup else None,
             run=worker_command,
             num_nodes=total_nodes,
+            workdir=self._workdir,
         )
+
+        # Add file mounts if provided
+        if self._file_mounts:
+            task.set_file_mounts(self._file_mounts)
 
         if self._resources is not None:
             task.set_resources(self._resources)
@@ -183,20 +196,21 @@ class SkyPilotJob(JobTrait):
         logger.info(f"SkyPilot cluster '{cluster_name}' launched successfully")
 
     def _build_worker_command(self) -> str:
-        """Build the command to start Monarch workers on each node."""
-        # This command will be run on each node
-        # We use the node's IP to create a unique address for each worker
-        return f"""
+        """Build the bash command to start Monarch workers on each node."""
+        # This command will be run on each node via SkyPilot
+        # SkyPilot expects a bash script, so we wrap Python code in python -c
+        python_code = f'''
 import socket
 hostname = socket.gethostname()
-# Get the IP address of this node
 ip_addr = socket.gethostbyname(hostname)
 address = f"tcp://{{ip_addr}}:{self._port}"
 print(f"Starting Monarch worker at {{address}}")
-
 from monarch.actor import run_worker_loop_forever
 run_worker_loop_forever(address=address, ca="trust_all_connections")
-"""
+'''
+        # Escape single quotes in the Python code for bash
+        escaped_code = python_code.replace("'", "'\"'\"'")
+        return f"python -c '{escaped_code}'"
 
     def _get_node_ips(self) -> List[str]:
         """Get the IP addresses of all nodes in the cluster."""
