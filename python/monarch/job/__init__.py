@@ -8,5 +8,19 @@
 from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
 from monarch._src.job.slurm import SlurmJob
 
+# SkyPilot is an optional dependency
+try:
+    from monarch._src.job.skypilot import SkyPilotJob
+except ImportError:
+    SkyPilotJob = None  # type: ignore[misc,assignment]
+
 # Define exports
-__all__ = ["JobTrait", "job_load", "job_loads", "JobState", "LocalJob", "SlurmJob"]
+__all__ = [
+    "JobTrait",
+    "job_load",
+    "job_loads",
+    "JobState",
+    "LocalJob",
+    "SlurmJob",
+    "SkyPilotJob",
+]
