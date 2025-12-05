@@ -328,7 +328,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                     None,
                 )),
             };
-            Ok(PyErr::new::<SupervisionError, _>(format!(
+            Ok(SupervisionError::new_err(format!(
                 "Actor {:?} exited because of the following reason: {}",
                 event.actor_id(),
                 event.__repr__()?
@@ -507,13 +507,13 @@ impl ActorMeshProtocol for PythonActorMeshRef {
                 PyPythonTask::new(async move {
                     while let Ok(Some(event)) =  receiver.recv().await {
                         if slice.iter().any(|rank| rank == event.actor_id.rank()) {
-                            return Ok(PyErr::new::<SupervisionError, _>(format!(
+                            return Ok(SupervisionError::new_err(format!(
                                 "Actor {:?} exited because of the following reason: {}",
                                 event.actor_id, event.actor_status
                             )));
                         }
                     }
-                    Ok(PyErr::new::<SupervisionError, _>(format!(
+                    Ok(SupervisionError::new_err(format!(
                         "Actor {:?} exited because of the following reason: actor mesh is stopped due to proc mesh shutdown",
                         id!(default[0].actor[0])
                     )))

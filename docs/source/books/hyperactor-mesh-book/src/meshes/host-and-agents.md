@@ -16,22 +16,22 @@ pub struct Host<M> {
 ```
 Visually, you can think of it like this:
 ```text
-                     ┌────────────┐
-                 ┌──▶│ proc *,1   │
-                 │ #1└────────────┘
-                 │
- ┌──────────┐    │    ┌────────────┐
- │   Host   │◀───┼────│ proc *,2   │
-*└──────────┘#   │ #2 └────────────┘
-                 │
-                 │    ┌────────────┐
-                 └────│ proc *,3   │
-                   #3 └────────────┘
+                      ┌────────────┐
+                  ┌───▶  proc *,1  │
+                  │ #1└────────────┘
+                  │
+  ┌──────────┐    │   ┌────────────┐
+  │   Host   │◀───┼───▶  proc *,2  │
+ *└──────────┘#   │ #2└────────────┘
+                  │
+                  │   ┌────────────┐
+                  └───▶  proc *,3  │
+                    #3└────────────┘
 ```
 
 - `*` is the host's frontend address (`frontend_addr`). This is the address other mesh participants know.
 - `#` is the host's backend address (`backend_addr`). Procs talk to the host here.
-- `#1`, `#2`, `#3` are the per-proc backend channels the host recorded in `procs: HashMap<String, ChannelAddr>`.
+- `#1`, `#2`, `#3` are the per-proc backend channels the host records in `router: DialMailboxRouter`
 - Each box `proc *,N` is a proc that is direct-addressed via the host — its id is essentially "proc at `*` named `N`".
 
 ## What the fields mean
@@ -88,7 +88,7 @@ Both variants wrap a `Host<…>`, and that `Host` is the thing we drew earlier a
 ```rust
 // hyperactor/src/host.rs (simplified)
 pub struct Host<M> {
-    procs: HashMap<String, ChannelAddr>,
+    procs: HashSet<String>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
     router: DialMailboxRouter,
@@ -223,7 +223,7 @@ When the agent calls `host.spawn(name, …)`, the **host itself** is not doing t
 - process-backed host → `Host<BootstrapProcManager>`
 - in-proc/test host → `Host<LocalProcManager<...>>`
 
-The manager is the thing that can "make a proc real" (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the backend address so the host can add it to the `procs: HashMap<String, ChannelAddr>` table and expose it as `ProcId::Direct(frontend_addr, name)`.
+The manager is the thing that can "make a proc real" (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the `procs: HashSet<String>` table and expose it as `ProcId::Direct(frontend_addr, name)`.
 
 We're not going to unpack the process-backed path here — that lives in **"BootstrapProcManager (process-backed hosts)"** where we can talk about commands, ready signals, and termination.
 

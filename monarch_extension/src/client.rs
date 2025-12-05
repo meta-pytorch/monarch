@@ -11,7 +11,6 @@ use std::sync::Arc;
 use hyperactor::ActorRef;
 use hyperactor::data::Serialized;
 use monarch_hyperactor::ndslice::PySlice;
-use monarch_hyperactor::proc::ControllerError;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyActorId;
 use monarch_hyperactor::proc::PyProc;
@@ -450,8 +449,7 @@ impl ClientActor {
 
     /// Attach the client to a controller actor. This will block until the controller responds.
     fn attach(&mut self, py: Python, controller_id: PyActorId) -> PyResult<()> {
-        let mut instance_wrapper = self.instance.blocking_lock();
-        instance_wrapper.set_controller((&controller_id).into());
+        let instance_wrapper = self.instance.blocking_lock();
         let actor_id = instance_wrapper.actor_id().clone();
         let (instance, _handler) = instance_wrapper
             .instance()
@@ -495,44 +493,25 @@ impl ClientActor {
             instance.lock().await.next_message(timeout_msec).await
         })?;
 
-        Python::with_gil(|py| {
-            match result {
-                Ok(Some(ClientMessage::Result { seq, result })) => {
-                    WorkerResponse { seq, result }.into_py_any(py)
-                }
-                Ok(Some(ClientMessage::Log { level, message })) => LogMessage {
-                    level: PyLogLevel::from(level),
-                    message,
-                }
-                .into_py_any(py),
-                Ok(Some(ClientMessage::DebuggerMessage {
-                    debugger_actor_id,
-                    action,
-                })) => DebuggerMessage {
-                    debugger_actor_id: debugger_actor_id.into(),
-                    action,
-                }
-                .into_py_any(py),
-                Ok(None) => PyNone::get(py).into_py_any(py),
-                Err(err) => {
-                    if let Some(ControllerError::Failed(controller_id, err_msg)) =
-                        err.downcast_ref::<ControllerError>()
-                    {
-                        let failure = DeviceFailure {
-                            actor_id: controller_id.clone(),
-                            address: "".to_string(), // Controller is always task 0 for now.
-                            backtrace: err_msg.clone(),
-                        };
-                        WorkerResponse {
-                            seq: Seq::default(),
-                            result: Some(Err(Exception::Failure(failure))),
-                        }
-                        .into_py_any(py)
-                    } else {
-                        Err(PyRuntimeError::new_err(err.to_string()))
-                    }
-                }
+        Python::with_gil(|py| match result {
+            Ok(Some(ClientMessage::Result { seq, result })) => {
+                WorkerResponse { seq, result }.into_py_any(py)
             }
+            Ok(Some(ClientMessage::Log { level, message })) => LogMessage {
+                level: PyLogLevel::from(level),
+                message,
+            }
+            .into_py_any(py),
+            Ok(Some(ClientMessage::DebuggerMessage {
+                debugger_actor_id,
+                action,
+            })) => DebuggerMessage {
+                debugger_actor_id: debugger_actor_id.into(),
+                action,
+            }
+            .into_py_any(py),
+            Ok(None) => PyNone::get(py).into_py_any(py),
+            Err(err) => Err(PyRuntimeError::new_err(err.to_string())),
         })
     }
 
