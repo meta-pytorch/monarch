@@ -764,16 +764,22 @@ impl ClientActor {
         filter: Option<&PySystemSnapshotFilter>,
     ) -> PyResult<PyObject> {
         let instance = self.instance.clone();
-        let filter = filter.cloned();
+        let filter = filter.map_or(SystemSnapshotFilter::all(), |f| {
+            SystemSnapshotFilter::from(f.clone())
+        });
         let worlds = signal_safe_block_on(py, async move {
-            instance
-                .lock()
-                .await
-                .world_status(
-                    filter.map_or(SystemSnapshotFilter::all(), SystemSnapshotFilter::from),
-                )
-                .await
-        })??;
+            let instance = instance.lock().await;
+            let snapshot = SYSTEM_ACTOR_REF
+                .snapshot(instance.instance(), filter)
+                .await?;
+            let result: HashMap<WorldId, _> = snapshot
+                .worlds
+                .into_iter()
+                .map(|(k, v)| (k, v.status))
+                .collect();
+            Ok::<_, anyhow::Error>(result)
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))??;
         Python::with_gil(|py| {
             let py_dict = PyDict::new(py);
             for (world, status) in worlds {

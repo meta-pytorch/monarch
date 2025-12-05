@@ -11,27 +11,6 @@ from typing import final, Optional, Type
 from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PythonActorHandle
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 
-def init_proc(
-    *,
-    proc_id: str,
-    bootstrap_addr: str,
-    timeout: int = 5,
-    supervision_update_interval: int = 0,
-    listen_addr: Optional[str] = None,
-) -> Proc:
-    """
-    Helper function to bootstrap a new Proc.
-
-    Arguments:
-    - `proc_id`: String representation of the ProcId eg. `"world_name[0]"`
-    - `bootstrap_addr`: String representation of the channel address of the system
-        actor. eg. `"tcp![::1]:2345"`
-    - `timeout`: Number of seconds to wait to successfully connect to the system.
-    - `supervision_update_interval`: Number of seconds between supervision updates.
-    - `listen_addr`: String representation of the channel address of the proc
-        actor. eg. `"tcp![::1]:2345"`
-    """
-    ...
 @final
 class Serialized:
     """

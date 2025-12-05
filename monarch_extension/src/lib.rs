@@ -18,6 +18,7 @@ mod debugger;
 mod logging;
 #[cfg(feature = "tensor_engine")]
 mod mesh_controller;
+mod proc;
 mod simulation_tools;
 #[cfg(feature = "tensor_engine")]
 mod tensor_worker;
@@ -230,6 +231,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module,
         "monarch_extension.trace",
     )?)?;
+
+    // Register proc module with multiprocess-dependent functions (init_proc, world_status)
+    crate::proc::register_python_bindings(&get_or_add_new_module(module, "proc")?)?;
 
     #[cfg(fbcode_build)]
     {
