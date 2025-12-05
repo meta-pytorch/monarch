@@ -130,7 +130,7 @@ async fn test_process_allocator_child_cleanup() {
     }
 
     eprintln!("Waiting longer to see if children eventually exit due to channel hangup...");
-    let timeout = Duration::from_secs(60);
+    let timeout = Duration::from_mins(1);
     let start = Instant::now();
 
     loop {
