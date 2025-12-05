@@ -20,8 +20,6 @@ from monarch._rust_bindings.monarch_extension import (
 )
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
-    SystemSnapshotFilter,
-    WorldState,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
@@ -187,13 +185,6 @@ class RustController:
                     raise RuntimeError(
                         f"unexpected debugger message {msg} when debugging rank {debugger_actor_id.rank}"
                     )
-
-    def worker_world_state(self) -> WorldState:
-        worlds_state = self._actor.world_state(
-            SystemSnapshotFilter(worlds=[self._worker_world_name])
-        )
-
-        return worlds_state[self._worker_world_name]
 
 
 # TODO: Handling conversion of the response can move to a separate module over time

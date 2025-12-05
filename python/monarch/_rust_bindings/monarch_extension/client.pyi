@@ -141,41 +141,6 @@ class ProcInfo:
         ...
 
 @final
-class SystemSnapshotFilter:
-    """
-    A filter for the system snapshot. All conditions are logically ANDed together.
-
-    Arguments:
-    - `worlds`: A list of worlds to filter on. If None, all worlds will be returned.
-    - `world_labels`: A dictionary of labels to filter on. If None, all worlds will be returned.
-    - `proc_labels`: A dictionary of labels to filter on. If None, all procs will be returned.
-    """
-    def __init__(
-        self,
-        worlds: List[str] | None = None,
-        world_labels: Dict[str, str] | None = None,
-        proc_labels: Dict[str, str] | None = None,
-    ) -> None: ...
-
-@final
-class WorldState:
-    """
-    A snapshot state of a world.
-    TODO: merge world status.
-
-    """
-
-    @property
-    def labels(self) -> Dict[str, str]:
-        """Labels attached to this world."""
-        ...
-
-    @property
-    def procs(self) -> Dict[str, ProcInfo]:
-        """The procs in the world."""
-        ...
-
-@final
 class ClientActor:
     """A python based detached actor that can be used to send messages to other
     actors and recieve WorkerResponse objects from them. This in practise will
@@ -249,18 +214,6 @@ class ClientActor:
 
     def drain_and_stop(self) -> List[LogMessage | WorkerResponse | DebuggerMessage]:
         """Stop the actor and drain all messages."""
-        ...
-
-    def world_status(
-        self, filter: SystemSnapshotFilter | None = None
-    ) -> dict[str, str]:
-        """Get the world status from the system."""
-        ...
-
-    def world_state(
-        self, filter: SystemSnapshotFilter | None = None
-    ) -> Dict[str, WorldState]:
-        """Get worlds info and procs from the system."""
         ...
 
     @property

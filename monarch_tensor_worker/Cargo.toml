@@ -10,7 +10,6 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.86"
-cxx = "1.0.119"
 derivative = "2.2"
 derive_more = { version = "1.0.0", features = ["full"] }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
@@ -32,7 +31,5 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 
 [dev-dependencies]
-hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 rand = { version = "0.8", features = ["small_rng"] }
 timed_test = { version = "0.0.0", path = "../timed_test" }
-tokio-retry = "0.3"

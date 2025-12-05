@@ -7,6 +7,8 @@
  */
 
 #![allow(unsafe_op_in_unsafe_fn)]
+use std::ops::Deref;
+
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -14,7 +16,6 @@ use hyperactor::ProcId;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_hyperactor::context::PyInstance;
-use monarch_hyperactor::instance_dispatch;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::signal_safe_block_on;
@@ -147,11 +148,9 @@ async fn create_rdma_buffer(
     let owner_ref: ActorRef<RdmaManagerActor> = ActorRef::attest(owner_id);
 
     // Create the RdmaBuffer
-    let buffer = instance_dispatch!(client, |cx_instance| {
-        owner_ref
-            .request_buffer_deprecated(&cx_instance, addr, size)
-            .await?
-    });
+    let buffer = owner_ref
+        .request_buffer_deprecated(client.deref(), addr, size)
+        .await?;
     Ok(PyRdmaBuffer { buffer, owner_ref })
 }
 
@@ -229,24 +228,16 @@ impl PyRdmaBuffer {
     ) -> PyResult<PyPythonTask> {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
         PyPythonTask::new(async move {
-            let local_buffer = instance_dispatch!(client, |cx_instance| {
-                local_owner_ref
-                    .request_buffer_deprecated(cx_instance, addr, size)
-                    .await?
-            });
-            instance_dispatch!(client, |cx_instance| {
-                local_buffer
-                    .write_from(cx_instance, buffer, timeout)
-                    .await
-                    .map_err(|e| {
-                        PyException::new_err(format!("failed to read into buffer: {}", e))
-                    })?
-            });
-            instance_dispatch!(client, |cx_instance| {
-                local_owner_ref
-                    .release_buffer_deprecated(cx_instance, local_buffer)
-                    .await?
-            });
+            let local_buffer = local_owner_ref
+                .request_buffer_deprecated(client.deref(), addr, size)
+                .await?;
+            local_buffer
+                .write_from(client.deref(), buffer, timeout)
+                .await
+                .map_err(|e| PyException::new_err(format!("failed to read into buffer: {}", e)))?;
+            local_owner_ref
+                .release_buffer_deprecated(client.deref(), local_buffer)
+                .await?;
             Ok(())
         })
     }
@@ -275,24 +266,16 @@ impl PyRdmaBuffer {
     ) -> PyResult<PyPythonTask> {
         let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
         PyPythonTask::new(async move {
-            let local_buffer = instance_dispatch!(client, |cx_instance| {
-                local_owner_ref
-                    .request_buffer_deprecated(cx_instance, addr, size)
-                    .await?
-            });
-            instance_dispatch!(&client, |cx_instance| {
-                local_buffer
-                    .read_into(cx_instance, buffer, timeout)
-                    .await
-                    .map_err(|e| {
-                        PyException::new_err(format!("failed to write from buffer: {}", e))
-                    })?
-            });
-            instance_dispatch!(client, |cx_instance| {
-                local_owner_ref
-                    .release_buffer_deprecated(cx_instance, local_buffer)
-                    .await?
-            });
+            let local_buffer = local_owner_ref
+                .request_buffer_deprecated(client.deref(), addr, size)
+                .await?;
+            local_buffer
+                .read_into(client.deref(), buffer, timeout)
+                .await
+                .map_err(|e| PyException::new_err(format!("failed to write from buffer: {}", e)))?;
+            local_owner_ref
+                .release_buffer_deprecated(client.deref(), local_buffer)
+                .await?;
             Ok(())
         })
     }
@@ -328,13 +311,10 @@ impl PyRdmaBuffer {
     ) -> PyResult<PyPythonTask> {
         let (_local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
         PyPythonTask::new(async move {
-            // Call the drop method on the buffer to release remote handles
-            instance_dispatch!(client, |cx_instance| {
-                buffer
-                    .drop_buffer(cx_instance)
-                    .await
-                    .map_err(|e| PyException::new_err(format!("Failed to drop buffer: {}", e)))?
-            });
+            buffer
+                .drop_buffer(client.deref())
+                .await
+                .map_err(|e| PyException::new_err(format!("Failed to drop buffer: {}", e)))?;
             Ok(())
         })
     }
@@ -377,14 +357,12 @@ impl PyRdmaManager {
             PyPythonTask::new(async move {
                 // Spawns the `RdmaManagerActor` on the target proc_mesh.
                 // This allows the `RdmaController` to run on any node while real RDMA operations occur on appropriate hardware.
-                let actor_mesh = instance_dispatch!(client, |cx| {
-                    tracked_proc_mesh
-                        // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
-                        // TODO - make IbverbsConfig configurable
-                        .spawn::<RdmaManagerActor>(cx, "rdma_manager", &None)
-                        .await
-                        .map_err(|err| PyException::new_err(err.to_string()))?
-                });
+                let actor_mesh = tracked_proc_mesh
+                    // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
+                    // TODO - make IbverbsConfig configurable
+                    .spawn::<RdmaManagerActor>(client.deref(), "rdma_manager", &None)
+                    .await
+                    .map_err(|err| PyException::new_err(err.to_string()))?;
 
                 // Use placeholder device name since actual device is determined on remote node
                 Ok(Some(PyRdmaManager {
@@ -395,14 +373,12 @@ impl PyRdmaManager {
         } else {
             let proc_mesh = proc_mesh.downcast::<PyProcMeshV1>()?.borrow().mesh_ref()?;
             PyPythonTask::new(async move {
-                let actor_mesh = instance_dispatch!(client, |cx| {
-                    proc_mesh
-                        // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
-                        // TODO - make IbverbsConfig configurable
-                        .spawn_service::<RdmaManagerActor>(cx, "rdma_manager", &None)
-                        .await
-                        .map_err(|err| PyException::new_err(err.to_string()))?
-                });
+                let actor_mesh = proc_mesh
+                    // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
+                    // TODO - make IbverbsConfig configurable
+                    .spawn_service::<RdmaManagerActor>(client.deref(), "rdma_manager", &None)
+                    .await
+                    .map_err(|err| PyException::new_err(err.to_string()))?;
 
                 let actor_mesh = RootActorMesh::from(actor_mesh);
                 let actor_mesh = SharedCell::from(actor_mesh);

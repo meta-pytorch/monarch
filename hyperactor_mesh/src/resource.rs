@@ -339,6 +339,14 @@ where
     }
 }
 
+/// List the set of resources managed by the controller.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct List {
+    /// List of resource names managed by this controller.
+    #[reply]
+    pub reply: PortRef<Vec<Name>>,
+}
+
 /// A trait that bundles a set of types that together define a resource.
 pub trait Resource {
     /// The spec specification for this resource.

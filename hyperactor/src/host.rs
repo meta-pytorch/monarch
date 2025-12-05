@@ -41,6 +41,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -55,6 +56,7 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate as hyperactor;
 use crate::Actor;
 use crate::ActorHandle;
 use crate::ActorId;
@@ -120,7 +122,7 @@ pub enum HostError {
 /// routing, as described in this module's documentation.
 #[derive(Debug)]
 pub struct Host<M> {
-    procs: HashMap<String, ChannelAddr>,
+    procs: HashSet<String>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
     router: DialMailboxRouter,
@@ -133,7 +135,7 @@ impl<M: ProcManager> Host<M> {
     /// Serve a host using the provided ProcManager, on the provided `addr`.
     /// On success, the host will multiplex messages for procs on the host
     /// on the address of the host.
-    #[tracing::instrument(skip(manager))]
+    #[crate::instrument(fields(addr=addr.to_string()))]
     pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
         let (frontend_addr, frontend_rx) = channel::serve(addr)?;
 
@@ -158,7 +160,7 @@ impl<M: ProcManager> Host<M> {
         );
 
         let host = Host {
-            procs: HashMap::new(),
+            procs: HashSet::new(),
             frontend_addr,
             backend_addr,
             router,
@@ -202,7 +204,7 @@ impl<M: ProcManager> Host<M> {
         name: String,
         config: M::Config,
     ) -> Result<(ProcId, ActorRef<ManagerAgent<M>>), HostError> {
-        if self.procs.contains_key(&name) {
+        if self.procs.contains(&name) {
             return Err(HostError::ProcExists(name));
         }
 
@@ -249,7 +251,7 @@ impl<M: ProcManager> Host<M> {
         })?;
 
         self.router.bind(proc_id.clone().into(), addr.clone());
-        self.procs.insert(name, addr);
+        self.procs.insert(name);
 
         Ok((proc_id, agent_ref))
     }
@@ -870,7 +872,7 @@ where
         ChannelTransport::Local
     }
 
-    #[tracing::instrument(skip(self, _config))]
+    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1048,7 +1050,7 @@ where
         ChannelTransport::Unix
     }
 
-    #[tracing::instrument(skip(self, _config))]
+    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1142,7 +1144,7 @@ where
 /// forwarding messages to the provided `backend_addr`,
 /// and returning the proc's address and agent actor on
 /// the provided `callback_addr`.
-#[tracing::instrument(skip(spawn))]
+#[crate::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
 pub async fn spawn_proc<A, S, F>(
     proc_id: ProcId,
     backend_addr: ChannelAddr,
@@ -1189,7 +1191,6 @@ pub mod testing {
     use crate::Context;
     use crate::Handler;
     use crate::OncePortRef;
-    use crate::RemoteSpawn;
 
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
@@ -1554,7 +1555,7 @@ mod tests {
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
         assert_eq!(agent.actor_id().proc_id(), &pid);
-        assert!(host.procs.contains_key("ok"));
+        assert!(host.procs.contains("ok"));
     }
 
     #[tokio::test]

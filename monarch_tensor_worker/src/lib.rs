@@ -979,7 +979,7 @@ impl WorkerMessageHandler for WorkerActor {
                         last_index
                     );
                     *last_index = index;
-                    existing_commands.extend(commands.into_iter());
+                    existing_commands.extend(commands);
                 }
             },
         };
@@ -1092,16 +1092,10 @@ mod tests {
     use std::assert_matches::assert_matches;
 
     use anyhow::Result;
-    use hyperactor::Instance;
     use hyperactor::RemoteSpawn;
-    use hyperactor::WorldId;
     
     use hyperactor::channel::ChannelAddr;
     use hyperactor::proc::Proc;
-    use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
-    use hyperactor_multiprocess::system_actor::SystemMessageClient;
-    use hyperactor_multiprocess::system_actor::SystemSnapshotFilter;
-    use hyperactor_multiprocess::system_actor::WorldStatus;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::controller::WorkerError;
     use monarch_messages::worker::WorkerMessageClient;
@@ -1115,8 +1109,6 @@ mod tests {
     use rand::Rng;
     use rand::distributions::Alphanumeric;
     use timed_test::async_timed_test;
-    use tokio_retry::Retry;
-    use tokio_retry::strategy::FixedInterval;
     use torch_sys2::Device;
     use torch_sys2::DeviceIndex;
     use torch_sys2::MemoryFormat;
@@ -1954,24 +1946,5 @@ mod tests {
             .map(char::from)
             .collect::<String>();
         format!("unix!@{random_string}").parse().unwrap()
-    }
-
-    #[allow(dead_code)]
-    async fn ensure_world_ready(client: &Instance<()>, world: WorldId) -> Result<()> {
-        tracing::info!("checking whether world {world} is ready");
-        let retry_strategy = FixedInterval::from_millis(1000).take(100);
-        Retry::spawn(retry_strategy, async || {
-            let snapshot = SYSTEM_ACTOR_REF
-                .snapshot(&client, SystemSnapshotFilter::default())
-                .await?;
-            let world_snapshot = snapshot.worlds.get(&world).ok_or(anyhow!("no world"))?;
-            tracing::info!("world status: {:?}", world_snapshot.status);
-            match world_snapshot.status {
-                WorldStatus::Live => Ok(()),
-                _ => Err(anyhow!("world is not live")),
-            }
-        })
-        .await?;
-        Ok(())
     }
 }

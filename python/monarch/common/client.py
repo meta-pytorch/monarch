@@ -35,7 +35,6 @@ import torch.distributed
 from monarch._rust_bindings.monarch_extension import tensor_worker
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     LogLevel,
-    WorldState,
 )
 from monarch._src.actor.shape import NDSlice
 from monarch.common import messages
@@ -442,9 +441,6 @@ class Client:
     def no_coalescing(self, reason):
         if _coalescing.is_active(self):
             raise NotImplementedError(f"NYI: {reason} during a coalescing block")
-
-    def mesh_state(self) -> WorldState:
-        return self.inner.worker_world_state()
 
     def fetch(
         self,
