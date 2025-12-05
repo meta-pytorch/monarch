@@ -11,6 +11,7 @@
 //! This test harness runs identical workloads through both implementations and
 //! verifies that the outputs are equivalent across all exporters:
 //! - Glog: Read log files and compare lines
+//! - SQLite: Query database and compare rows
 //!
 //! Usage:
 //!   buck2 run //monarch/hyperactor_telemetry:correctness_test
@@ -24,12 +25,15 @@ use hyperactor_telemetry::*;
 
 struct TestResults {
     glog_path: Option<PathBuf>,
+    sqlite_path: Option<PathBuf>,
+    #[allow(dead_code)]
+    _sqlite_tracing: Option<hyperactor_telemetry::sqlite::SqliteTracing>,
 }
 
 struct CorrectnessTestHarness {}
 
 impl CorrectnessTestHarness {
-    fn run<F>(&self, workload: F) -> Result<TestResults>
+    fn run<F>(&self, workload: F, unified: bool) -> Result<TestResults>
     where
         F: Fn(),
     {
@@ -38,12 +42,45 @@ impl CorrectnessTestHarness {
             Some("TEST_LOG_PREFIX".to_string()),
         );
 
+        let sqlite_tracing = if unified {
+            None
+        } else {
+            let sqlite_tracing = hyperactor_telemetry::sqlite::SqliteTracing::new()
+                .expect("Failed to create SqliteTracing");
+            let db_path = sqlite_tracing.db_path().expect("No db_path");
+            println!("SqliteTracing created successfully, db_path: {:?}", db_path);
+            println!("Database exists: {}", db_path.exists());
+            Some(sqlite_tracing)
+        };
+
         workload();
 
         std::thread::sleep(std::time::Duration::from_millis(300));
 
+        let username = whoami::username();
+        let possible_paths = vec![
+            format!(
+                "/tmp/{}/hyperactor_trace_{}.db",
+                username,
+                std::process::id()
+            ),
+            format!("/tmp/hyperactor_trace_{}.db", std::process::id()),
+            format!("/tmp/traces/hyperactor_trace_{}.db", std::process::id()),
+            format!("./hyperactor_trace_{}.db", std::process::id()),
+        ];
+
+        let mut sqlite_path = None;
+        for path in possible_paths {
+            if std::path::Path::new(&path).exists() {
+                sqlite_path = Some(PathBuf::from(path));
+                break;
+            }
+        }
+
         Ok(TestResults {
+            sqlite_path,
             glog_path: Self::find_glog_path(),
+            _sqlite_tracing: sqlite_tracing,
         })
     }
 
@@ -139,6 +176,107 @@ impl CorrectnessTestHarness {
             old_lines.len() - skip_lines,
             skip_lines
         );
+        Ok(())
+    }
+
+    fn compare_sqlite_databases(&self, old_db: &PathBuf, unified_db: &PathBuf) -> Result<()> {
+        println!("\n[Comparing SQLite Databases]");
+        println!("  Old: {}", old_db.display());
+        println!("  Unified: {}", unified_db.display());
+
+        let old_conn = rusqlite::Connection::open(old_db)?;
+
+        old_conn.execute(&format!("ATTACH '{}' AS unified", unified_db.display()), [])?;
+
+        let tables = vec!["log_events", "messages", "actor_lifecycle"];
+
+        for table in tables {
+            println!("\n  Comparing table: {}", table);
+
+            let old_count: i64 =
+                old_conn.query_row(&format!("SELECT COUNT(*) FROM main.{}", table), [], |row| {
+                    row.get(0)
+                })?;
+            let unified_count: i64 = old_conn.query_row(
+                &format!("SELECT COUNT(*) FROM unified.{}", table),
+                [],
+                |row| row.get(0),
+            )?;
+
+            println!("    Old rows: {}", old_count);
+            println!("    Unified rows: {}", unified_count);
+
+            if old_count != unified_count {
+                return Err(anyhow::anyhow!(
+                    "Table {} row count mismatch: old={} unified={}",
+                    table,
+                    old_count,
+                    unified_count
+                ));
+            }
+
+            let mut stmt = old_conn.prepare(&format!("PRAGMA table_info({})", table))?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| {
+                    let name: String = row.get(1)?;
+                    Ok(name)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|col| col != "time_us") // Ignore time_us column
+                .collect();
+
+            if columns.is_empty() {
+                continue;
+            }
+
+            let col_list = columns.join(", ");
+
+            let diff_query = format!(
+                "SELECT '-' as diff_type, {cols} FROM main.{table}
+                 EXCEPT
+                 SELECT '-' as diff_type, {cols} FROM unified.{table}
+                 UNION ALL
+                 SELECT '+' as diff_type, {cols} FROM unified.{table}
+                 EXCEPT
+                 SELECT '+' as diff_type, {cols} FROM main.{table}",
+                table = table,
+                cols = col_list
+            );
+
+            let mut stmt = old_conn.prepare(&diff_query)?;
+            let mut rows = stmt.query([])?;
+
+            let mut diffs = Vec::new();
+            while let Some(row) = rows.next()? {
+                let diff_type: String = row.get(0)?;
+                let color = if diff_type == "-" {
+                    "\x1b[31m" // red
+                } else {
+                    "\x1b[32m" // green
+                };
+                let mut row_str = format!("{}{} ", color, diff_type);
+                for i in 1..row.as_ref().column_count() {
+                    let col_name = row.as_ref().column_name(i)?;
+                    let val: Option<String> = row.get(i).ok();
+                    row_str.push_str(&format!("{}={:?}, ", col_name, val));
+                }
+                row_str.push_str("\x1b[0m"); // reset color
+                diffs.push(row_str);
+            }
+
+            if !diffs.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "Table {} has differences:\n{}",
+                    table,
+                    diffs.join("\n")
+                ));
+            }
+
+            println!("    ✓ {} rows match", old_count);
+        }
+
+        println!("\n  ✓ All tables match!");
         Ok(())
     }
 }
@@ -248,6 +386,7 @@ fn main() -> Result<()> {
             .arg("--old")
             .env("TEST_LOG_PREFIX", "test")
             .env("MONARCH_LOG_SUFFIX", &old_log_suffix)
+            .env("ENABLE_SQLITE_TRACING", "1")
             .status()?;
 
         if !old_status.success() {
@@ -263,6 +402,7 @@ fn main() -> Result<()> {
             .arg("--unified")
             .env("TEST_LOG_PREFIX", "test")
             .env("MONARCH_LOG_SUFFIX", &unified_log_suffix)
+            .env("ENABLE_SQLITE_TRACING", "1")
             .status()?;
 
         if !unified_status.success() {
@@ -302,6 +442,32 @@ fn main() -> Result<()> {
             }
         }
 
+        // Compare SQLite databases
+        let old_db = PathBuf::from(format!("/tmp/{}/test_{}_old.db", username, test_name));
+        let unified_db = PathBuf::from(format!("/tmp/{}/test_{}_unified.db", username, test_name));
+
+        // SQLite databases are now required - both implementations should create them
+        if !old_db.exists() {
+            println!("\n✗ OLD database not found: {}", old_db.display());
+            all_passed = false;
+            test_passed = false;
+        } else if !unified_db.exists() {
+            println!("\n✗ UNIFIED database not found: {}", unified_db.display());
+            all_passed = false;
+            test_passed = false;
+        } else {
+            match harness.compare_sqlite_databases(&old_db, &unified_db) {
+                Ok(()) => {
+                    println!("\n✓ SQLite databases match");
+                }
+                Err(e) => {
+                    println!("\n✗ SQLite comparison FAILED: {}", e);
+                    all_passed = false;
+                    test_passed = false;
+                }
+            }
+        }
+
         if test_passed {
             println!("\n✓ Test PASSED: {}", test_name_to_display(test_name));
         } else {
@@ -309,6 +475,8 @@ fn main() -> Result<()> {
         }
 
         // Clean up test files
+        let _ = std::fs::remove_file(&old_db);
+        let _ = std::fs::remove_file(&unified_db);
         let _ = std::fs::remove_file(&old_log);
         let _ = std::fs::remove_file(&unified_log);
     }
@@ -370,7 +538,7 @@ fn run_single_test(test_name: &str, impl_type: &str) -> Result<()> {
     let results = match impl_type {
         "--old" => {
             println!("Running with OLD implementation...");
-            harness.run(workload)?
+            harness.run(workload, false)?
         }
         "--unified" => {
             println!("Running with UNIFIED implementation...");
@@ -379,7 +547,7 @@ fn run_single_test(test_name: &str, impl_type: &str) -> Result<()> {
             unsafe {
                 std::env::set_var("USE_UNIFIED_LAYER", "1");
             }
-            harness.run(workload)?
+            harness.run(workload, true)?
         }
         _ => {
             return Err(anyhow::anyhow!(
@@ -394,6 +562,41 @@ fn run_single_test(test_name: &str, impl_type: &str) -> Result<()> {
 
         std::fs::copy(&glog_path, &target_path)?;
         println!("Glog file copied to: {}", target_path);
+    }
+
+    if let Some(db_path) = results.sqlite_path {
+        let target_path = format!("/tmp/{}/test_{}_{}.db", username, test_name, impl_suffix);
+
+        println!(
+            "Attempting to copy database from {} to {}",
+            db_path.display(),
+            target_path
+        );
+        std::fs::copy(&db_path, &target_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to copy database from {} to {}: {}",
+                db_path.display(),
+                target_path,
+                e
+            )
+        })?;
+
+        // Also copy WAL files if they exist (SQLite WAL mode)
+        let wal_path = format!("{}-wal", db_path.display());
+        let shm_path = format!("{}-shm", db_path.display());
+        let target_wal = format!("{}-wal", target_path);
+        let target_shm = format!("{}-shm", target_path);
+
+        if std::path::Path::new(&wal_path).exists() {
+            let _ = std::fs::copy(&wal_path, &target_wal);
+        }
+        if std::path::Path::new(&shm_path).exists() {
+            let _ = std::fs::copy(&shm_path, &target_shm);
+        }
+
+        println!("Database copied to: {}", target_path);
+    } else {
+        println!("Warning: No SQLite database path found");
     }
 
     Ok(())
