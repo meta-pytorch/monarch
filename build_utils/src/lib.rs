@@ -152,8 +152,14 @@ pub fn discover_cuda_config() -> Result<CudaConfig, BuildError> {
     };
 
     // Add standard include directories
-    // Check both old-style (include) and new-style (targets/x86_64-linux/include) CUDA installations
-    for include_subdir in &["include", "targets/x86_64-linux/include"] {
+    // Check both old-style (include) and new-style target-specific paths
+    // Support both x86_64 and aarch64/ARM architectures
+    for include_subdir in &[
+        "include",
+        "targets/x86_64-linux/include",
+        "targets/aarch64-linux/include",
+        "targets/sbsa-linux/include",
+    ] {
         let include_dir = cuda_home_path.join(include_subdir);
         if include_dir.exists() {
             config.include_dirs.push(include_dir);
@@ -161,8 +167,18 @@ pub fn discover_cuda_config() -> Result<CudaConfig, BuildError> {
     }
 
     // Add standard library directories
-    // Check both old-style (lib64, lib) and new-style (targets/x86_64-linux/lib) CUDA installations
-    for lib_subdir in &["lib64", "lib", "lib/x64", "targets/x86_64-linux/lib"] {
+    // Check both old-style and new-style CUDA installations for both x86_64 and aarch64
+    // Try architecture-specific paths first, then generic paths
+    for lib_subdir in &[
+        "lib64",                          // Common x86_64 location
+        "lib",                             // Common aarch64 location
+        "lib/x64",                         // Windows x64
+        "targets/x86_64-linux/lib",        // CUDA toolkit x86_64
+        "targets/aarch64-linux/lib",       // CUDA toolkit aarch64
+        "targets/sbsa-linux/lib",          // CUDA toolkit ARM server
+        "lib/aarch64-linux-gnu",           // Debian/Ubuntu aarch64
+        "lib/x86_64-linux-gnu",            // Debian/Ubuntu x86_64
+    ] {
         let lib_dir = cuda_home_path.join(lib_subdir);
         if lib_dir.exists() {
             config.lib_dirs.push(lib_dir);
@@ -201,8 +217,16 @@ pub fn get_cuda_lib_dir() -> Result<String, BuildError> {
     // Try to deduce from CUDA configuration
     let cuda_config = discover_cuda_config()?;
     if let Some(cuda_home) = cuda_config.cuda_home {
-        // Check both old-style and new-style CUDA library paths
-        for lib_subdir in &["lib64", "lib", "targets/x86_64-linux/lib"] {
+        // Check both x86_64 and aarch64 CUDA library paths
+        for lib_subdir in &[
+            "lib64",                          // Common x86_64 location
+            "lib",                             // Common aarch64 location
+            "targets/x86_64-linux/lib",        // CUDA toolkit x86_64
+            "targets/aarch64-linux/lib",       // CUDA toolkit aarch64
+            "targets/sbsa-linux/lib",          // CUDA toolkit ARM server
+            "lib/aarch64-linux-gnu",           // Debian/Ubuntu aarch64
+            "lib/x86_64-linux-gnu",            // Debian/Ubuntu x86_64
+        ] {
             let lib_path = cuda_home.join(lib_subdir);
             if lib_path.exists() {
                 return Ok(lib_path.to_string_lossy().to_string());
