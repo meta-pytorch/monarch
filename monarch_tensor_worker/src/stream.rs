@@ -1894,6 +1894,7 @@ impl StreamMessageHandler for StreamActor {
         _cx: &Context<Self>,
         reference: Ref,
     ) -> Result<Option<Result<WireValue, String>>> {
+        use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyNone, PyString};
         /// For testing only, doesn't support Tensor or TensorList.
         fn pyobject_to_wire(
             value: Result<PyObject, Arc<SeqError>>,
@@ -1901,17 +1902,25 @@ impl StreamMessageHandler for StreamActor {
             let pyobj = value?;
             Python::with_gil(|py| {
                 let bound = pyobj.bind(py);
-                if let Ok(val) = bound.extract::<i64>() {
-                    Ok(WireValue::Int(val))
-                } else if let Ok(val) = bound.extract::<Vec<i64>>() {
-                    Ok(WireValue::IntList(val))
-                } else if let Ok(val) = bound.extract::<f64>() {
-                    Ok(WireValue::Double(val))
-                } else if let Ok(val) = bound.extract::<bool>() {
-                    Ok(WireValue::Bool(val))
-                } else if let Ok(val) = bound.extract::<String>() {
-                    Ok(WireValue::String(val))
-                } else if bound.is_none() {
+                // Check bool before int since Python's bool is a subclass of int
+                if bound.is_instance_of::<PyBool>() {
+                    Ok(WireValue::Bool(bound.extract::<bool>().unwrap()))
+                } else if bound.is_instance_of::<PyInt>() {
+                    Ok(WireValue::Int(bound.extract::<i64>().unwrap()))
+                } else if bound.is_instance_of::<PyList>() {
+                    if let Ok(val) = bound.extract::<Vec<i64>>() {
+                        Ok(WireValue::IntList(val))
+                    } else {
+                        Ok(WireValue::String(format!(
+                            "unsupported list type: {:?}",
+                            bound
+                        )))
+                    }
+                } else if bound.is_instance_of::<PyFloat>() {
+                    Ok(WireValue::Double(bound.extract::<f64>().unwrap()))
+                } else if bound.is_instance_of::<PyString>() {
+                    Ok(WireValue::String(bound.extract::<String>().unwrap()))
+                } else if bound.is_instance_of::<PyNone>() {
                     Ok(WireValue::None(()))
                 } else {
                     Ok(WireValue::String(format!(
@@ -1921,10 +1930,9 @@ impl StreamMessageHandler for StreamActor {
                 }
             })
         }
-        Ok(self
-            .env
-            .get(&reference)
-            .map(|pyobj| pyobject_to_wire(pyobj.clone()).map_err(|err| err.to_string())))
+        Ok(self.env.get(&reference).map(|pyobj| {
+            pyobject_to_wire(Python::with_gil(|_py| pyobj.clone())).map_err(|err| err.to_string())
+        }))
     }
 
     async fn get_tensor_ref_unit_tests_only(
