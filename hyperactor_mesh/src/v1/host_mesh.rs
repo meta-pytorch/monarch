@@ -1588,7 +1588,7 @@ mod tests {
         let mut attrs_override = Attrs::new();
         attrs_override.set(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(180),
+            Duration::from_mins(3),
         );
         actor_mesh
             .cast(
@@ -1608,7 +1608,7 @@ mod tests {
             *actual_attrs
                 .get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT)
                 .unwrap(),
-            Duration::from_secs(180)
+            Duration::from_mins(3)
         );
         assert_eq!(
             *actual_attrs
