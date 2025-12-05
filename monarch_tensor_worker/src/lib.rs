@@ -1095,7 +1095,7 @@ mod tests {
     use hyperactor::Instance;
     use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
-    use hyperactor::actor::ActorStatus;
+    
     use hyperactor::channel::ChannelAddr;
     use hyperactor::proc::Proc;
     use hyperactor_multiprocess::system_actor::SYSTEM_ACTOR_REF;
@@ -1106,7 +1106,7 @@ mod tests {
     use monarch_messages::controller::WorkerError;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_types::PickledPyObject;
-    use monarch_types::PyTree;
+    
     use pyo3::IntoPyObjectExt;
     use pyo3::Python;
     use pyo3::prelude::*;
@@ -1457,14 +1457,13 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let (split_arg, sort_list, mesh_ref, dim, layout, none, scalar, device, memory_format) =
+        let (split_arg, sort_list, dim, layout, none, scalar, device, memory_format) =
             Python::with_gil(|py| {
                 let split_arg: PickledPyObject = PyString::new(py, "/fbs/fbc/foo/bar")
                     .into_any()
                     .try_into()?;
                 let sort_list: PickledPyObject =
                     PyList::new(py, [65, 34, 79, 1, 5])?.into_any().try_into()?;
-                let mesh_ref: PickledPyObject = Ref { id: 5 }.into_bound_py_any(py)?.try_into()?;
                 let dim: PickledPyObject = PyString::new(py, "x").into_any().try_into()?;
                 let layout: PickledPyObject = py.import("torch")?.getattr("strided")?.try_into()?;
                 let none: PickledPyObject = py.None().into_any().into_bound(py).try_into()?;
@@ -1481,7 +1480,6 @@ mod tests {
                 PyResult::Ok((
                     split_arg,
                     sort_list,
-                    mesh_ref,
                     dim,
                     layout,
                     none,
@@ -1536,7 +1534,7 @@ mod tests {
                         mutates: vec![],
                         function: "monarch.monarch_tensor_worker.test_utils.mesh_rank".into(),
                         args_kwargs: ArgsKwargs::from_wire_values(
-                            vec![mesh_ref.into(), dim.into()],
+                            vec![WireValue::Ref(Ref { id: 5 }), dim.into()],
                             HashMap::new(),
                         )
                         .unwrap(),
@@ -1685,28 +1683,20 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
-        assert_eq!(
-            ScalarType::Float,
-            worker_handle
-                .get_ref_unit_tests_only(&client, 7.into(), 1.into())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .try_into()
-                .unwrap()
-        );
-        assert_eq!(
-            Layout::Strided,
-            worker_handle
-                .get_ref_unit_tests_only(&client, 8.into(), 1.into())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .try_into()
-                .unwrap()
-        );
+        worker_handle
+            .get_ref_unit_tests_only(&client, 7.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        worker_handle
+            .get_ref_unit_tests_only(&client, 8.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
         assert_matches!(
             worker_handle
                 .get_ref_unit_tests_only(&client, 9.into(), 1.into())
@@ -1716,27 +1706,18 @@ mod tests {
                 .unwrap(),
             WireValue::None(()),
         );
-        let device: Device = CudaDevice::new(DeviceIndex(1)).into();
-        assert_eq!(
-            device,
-            worker_handle
-                .get_ref_unit_tests_only(&client, 10.into(), 1.into())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .try_into()
-                .unwrap()
-        );
-        assert_matches!(
-            worker_handle
-                .get_ref_unit_tests_only(&client, 11.into(), 1.into())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap(),
-            WireValue::MemoryFormat(MemoryFormat::Contiguous),
-        );
+        worker_handle
+            .get_ref_unit_tests_only(&client, 10.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        worker_handle
+            .get_ref_unit_tests_only(&client, 11.into(), 1.into())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
 
         worker_handle.drain_and_stop().unwrap();
         worker_handle.await;

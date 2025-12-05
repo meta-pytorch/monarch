@@ -54,7 +54,6 @@ use monarch_messages::worker::StreamRef;
 use monarch_types::PyTree;
 use monarch_types::SerializablePyErr;
 use monarch_types::TryIntoPyObjectUnsafe;
-use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
@@ -418,7 +417,7 @@ impl StreamMessage {
 /// thread.
 #[derive(Debug)]
 pub struct StreamActor {
-    world_size: usize,
+    _world_size: usize,
     rank: usize,
     /// Mapping of refs in the controller environment to TensorIndex in this
     /// stream's local environment.
@@ -475,7 +474,7 @@ impl StreamActor {
         }: StreamParams,
     ) -> Self {
         Self {
-            world_size,
+            _world_size: world_size,
             rank,
             env: HashMap::new(),
             creation_mode,
@@ -721,7 +720,7 @@ impl StreamActor {
     fn call_python_fn<'py>(
         &mut self,
         py: Python<'py>,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
         _mutates: &[Ref],
@@ -748,10 +747,10 @@ impl StreamActor {
 
         let remote_process_groups = remote_process_groups
             .into_iter()
-            .map(|(gref, (mesh, dims, comm))| {
+            .map(|(gref, (_mesh, _dims, _comm))| {
                 let group = match self.remote_process_groups.entry(gref) {
                     Entry::Occupied(ent) => ent.get().clone_ref(py),
-                    Entry::Vacant(ent) => {
+                    Entry::Vacant(_ent) => {
                         panic!("no longer implemented");
                     }
                 };
@@ -1870,6 +1869,7 @@ impl StreamMessageHandler for StreamActor {
         _cx: &Context<Self>,
         reference: Ref,
     ) -> Result<Option<Result<WireValue, String>>> {
+        use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyNone, PyString};
         /// For testing only, doesn't support Tensor or TensorList.
         fn pyobject_to_wire(
             value: Result<PyObject, Arc<SeqError>>,
@@ -1877,17 +1877,25 @@ impl StreamMessageHandler for StreamActor {
             let pyobj = value?;
             Python::with_gil(|py| {
                 let bound = pyobj.bind(py);
-                if let Ok(val) = bound.extract::<i64>() {
-                    Ok(WireValue::Int(val))
-                } else if let Ok(val) = bound.extract::<Vec<i64>>() {
-                    Ok(WireValue::IntList(val))
-                } else if let Ok(val) = bound.extract::<f64>() {
-                    Ok(WireValue::Double(val))
-                } else if let Ok(val) = bound.extract::<bool>() {
-                    Ok(WireValue::Bool(val))
-                } else if let Ok(val) = bound.extract::<String>() {
-                    Ok(WireValue::String(val))
-                } else if bound.is_none() {
+                // Check bool before int since Python's bool is a subclass of int
+                if bound.is_instance_of::<PyBool>() {
+                    Ok(WireValue::Bool(bound.extract::<bool>().unwrap()))
+                } else if bound.is_instance_of::<PyInt>() {
+                    Ok(WireValue::Int(bound.extract::<i64>().unwrap()))
+                } else if bound.is_instance_of::<PyList>() {
+                    if let Ok(val) = bound.extract::<Vec<i64>>() {
+                        Ok(WireValue::IntList(val))
+                    } else {
+                        Ok(WireValue::String(format!(
+                            "unsupported list type: {:?}",
+                            bound
+                        )))
+                    }
+                } else if bound.is_instance_of::<PyFloat>() {
+                    Ok(WireValue::Double(bound.extract::<f64>().unwrap()))
+                } else if bound.is_instance_of::<PyString>() {
+                    Ok(WireValue::String(bound.extract::<String>().unwrap()))
+                } else if bound.is_instance_of::<PyNone>() {
                     Ok(WireValue::None(()))
                 } else {
                     Ok(WireValue::String(format!(
@@ -1897,10 +1905,9 @@ impl StreamMessageHandler for StreamActor {
                 }
             })
         }
-        Ok(self
-            .env
-            .get(&reference)
-            .map(|pyobj| pyobject_to_wire(pyobj.clone()).map_err(|err| err.to_string())))
+        Ok(self.env.get(&reference).map(|pyobj| {
+            pyobject_to_wire(Python::with_gil(|_py| pyobj.clone())).map_err(|err| err.to_string())
+        }))
     }
 
     async fn get_tensor_ref_unit_tests_only(
@@ -2004,7 +2011,7 @@ mod tests {
         }
 
         async fn set_tensor(&mut self, reference: Ref, data: &[f32]) -> Result<()> {
-            let tensor = TensorCell::new(factory_float_tensor(data, "cuda".try_into().unwrap()));
+            let tensor = TensorCell::new(factory_float_tensor(data, "cuda".parse().unwrap()));
             self.stream_actor
                 .set_tensor_ref_unit_tests_only(&self.client, reference, Ok(tensor))
                 .await
@@ -2020,7 +2027,7 @@ mod tests {
                 .unwrap();
 
             let result = allclose(
-                &factory_float_tensor(data, "cpu".try_into().unwrap()),
+                &factory_float_tensor(data, "cpu".parse().unwrap()),
                 &actual.borrow(),
             )
             .unwrap();

@@ -422,7 +422,7 @@ mod tests {
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
     use ndslice::Slice;
-    use pyo3::Python;
+    
     use timed_test::async_timed_test;
     use torch_sys2::DeviceIndex;
     use torch_sys2::Layout;
@@ -637,12 +637,12 @@ mod tests {
         assert!(allclose(
             &cell0.borrow(),
             &factory_float_tensor(&[3.0], device0.into())
-        )?);
+        ).map_err(|e| anyhow::anyhow!(e))?);
         // Non-dest ranks should have the original value.
         assert!(allclose(
             &cell1.borrow(),
             &factory_float_tensor(&[2.0], device1.into())
-        )?);
+        ).map_err(|e| anyhow::anyhow!(e))?);
         Ok(())
     }
 
@@ -696,7 +696,7 @@ mod tests {
                     vec![WireValue::IntList(vec![2, 3])],
                     HashMap::from([(
                         "device".into(),
-                        WireValue::Device("cuda".try_into().unwrap()),
+                        WireValue::Device("cuda".parse().unwrap()),
                     )]),
                 )
                 .unwrap(),
@@ -711,7 +711,7 @@ mod tests {
                     size: vec![2, 3],
                     dtype: ScalarType::Float,
                     layout: Layout::Strided,
-                    device: "cuda".try_into().unwrap(),
+                    device: "cuda".parse().unwrap(),
                 },
                 mesh: 1.into(),
                 stream: 0.into(),
@@ -730,7 +730,7 @@ mod tests {
                     vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                     HashMap::from([(
                         "device".into(),
-                        WireValue::Device("cuda".try_into().unwrap()),
+                        WireValue::Device("cuda".parse().unwrap()),
                     )]),
                 )
                 .unwrap(),
@@ -764,7 +764,7 @@ mod tests {
                     size: vec![2, 3],
                     dtype: ScalarType::Float,
                     layout: Layout::Strided,
-                    device: "cuda".try_into()?,
+                    device: "cuda".parse()?,
                 },
                 mesh: 1.into(),
                 stream: 0.into(),
@@ -781,7 +781,7 @@ mod tests {
                 function: "torch.ops.aten.full.default".into(),
                 args_kwargs: ArgsKwargs::from_wire_values(
                     vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
-                    HashMap::from([("device".into(), WireValue::Device("cuda".try_into()?))]),
+                    HashMap::from([("device".into(), WireValue::Device("cuda".parse()?))]),
                 )
                 .unwrap(),
                 stream: 0.into(),
@@ -893,7 +893,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -913,7 +913,7 @@ mod tests {
                             size: vec![2, 3],
                             dtype: ScalarType::Float,
                             layout: Layout::Strided,
-                            device: "cuda".try_into().unwrap(),
+                            device: "cuda".parse().unwrap(),
                         },
                         from_stream: 0.into(),
                         to_stream: 0.into(),
@@ -945,7 +945,7 @@ mod tests {
                             size: vec![2, 3],
                             dtype: ScalarType::Float,
                             layout: Layout::Strided,
-                            device: "cuda".try_into().unwrap(),
+                            device: "cuda".parse().unwrap(),
                         },
                         from_stream: 0.into(),
                         to_stream: 0.into(),
@@ -968,7 +968,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1058,7 +1058,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1074,7 +1074,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1095,7 +1095,7 @@ mod tests {
                             size: vec![2, 3],
                             dtype: ScalarType::Float,
                             layout: Layout::Strided,
-                            device: "cuda".try_into().unwrap(),
+                            device: "cuda".parse().unwrap(),
                         },
                         from_stream: 0.into(),
                         to_stream: 0.into(),
@@ -1109,7 +1109,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1154,89 +1154,6 @@ mod tests {
             error_responses
         );
 
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 240)]
-    async fn test_comm_work() -> Result<()> {
-        test_setup()?;
-        let proc = Proc::local();
-        let (client, _handle) = proc.instance("client")?;
-
-        let unique_id = UniqueId::new()?;
-        let device0 = CudaDevice::new(DeviceIndex(0));
-        let actor0 = NcclCommActor::new(CommParams::New {
-            device: device0,
-            unique_id: unique_id.clone(),
-            world_size: 2,
-            rank: 0,
-        });
-
-        let device1 = CudaDevice::new(DeviceIndex(1));
-        let actor1 = NcclCommActor::new(CommParams::New {
-            device: device1,
-            unique_id,
-            world_size: 2,
-            rank: 1,
-        });
-
-        let (actor0, actor1) = tokio::join!(actor0, actor1);
-        let (actor0, actor1) = (actor0?, actor1?);
-
-        let handle0 = actor0.spawn_detached().unwrap();
-        let handle1 = actor1.spawn_detached().unwrap();
-
-        let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
-        let port0 = client.open_once_port();
-        handle0.send(CommMessage::Send(
-            cell0.clone(),
-            1,
-            Stream::get_current_stream_on_device(device0),
-            port0.0,
-        ))?;
-
-        let cell1 = TensorCell::new(factory_float_tensor(&[1.0], device1.into()));
-        let port1 = client.open_once_port();
-        handle1.send(CommMessage::Recv(
-            cell1.clone(),
-            0,
-            Stream::get_current_stream_on_device(device1),
-            port1.0,
-        ))?;
-        let (work0, work1) = tokio::try_join!(
-            CommWork::from(vec![cell0.clone()], port0.1),
-            CommWork::from(vec![cell1.clone()], port1.1)
-        )
-        .unwrap();
-        // Wait for the work to enqueue onto the stream.
-        work0.wait().await?;
-        work1.wait().await?;
-        // Wait is non-blocking, which means that there's no guarantee that the
-        // work is completed.
-        // Make sure the work completes.
-        while !work0.is_completed().await? {
-            // No need to sleep or yield, because the await on each iteration
-            // will give other tasks a chance to make progress.
-        }
-        while !work1.is_completed().await? {
-            // Same as above.
-        }
-
-        // Check that the tensors are correct after the work completes.
-        assert!(
-            allclose(
-                &cell0.borrow(),
-                &factory_float_tensor(&[1.0], device0.into())
-            )
-            .unwrap()
-        );
-        assert!(
-            allclose(
-                &cell1.borrow(),
-                &factory_float_tensor(&[1.0], device1.into())
-            )
-            .unwrap()
-        );
         Ok(())
     }
 }

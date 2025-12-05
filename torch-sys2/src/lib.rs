@@ -91,11 +91,9 @@ impl FromPyObject<'_> for Device {
     fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         let device_str: String = obj.str()?.extract()?;
         // Parse the device string
-        device_str
-            .parse()
-            .map_err(|e: DeviceParseError| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
-            })
+        device_str.parse().map_err(|e: DeviceParseError| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
+        })
     }
 }
 

@@ -39,8 +39,6 @@ use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::debugger::DebuggerAction;
 use monarch_messages::worker::Ref;
-use monarch_types::PyTree;
-use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;

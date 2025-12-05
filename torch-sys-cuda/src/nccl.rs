@@ -25,7 +25,6 @@ use torch_sys2::Tensor;
 use torch_sys2::TensorCell;
 use torch_sys2::factory_float_tensor;
 use torch_sys2::is_float8_type;
-use torch_sys2::suggest_memory_format;
 
 use crate::bridge::ffi::make_nccl_config;
 use crate::cuda::CudaError;

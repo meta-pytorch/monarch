@@ -8,7 +8,6 @@
 
 use derive_more::From;
 use derive_more::TryInto;
-use enum_as_inner::EnumAsInner;
 use hyperactor::Named;
 use monarch_types::PickledPyObject;
 use pyo3::IntoPyObjectExt;
