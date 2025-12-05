@@ -67,7 +67,8 @@ jobs:
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \
           --exclude torch-sys-cuda \
-          --exclude monarch_rdma
+          --exclude monarch_rdma \
+          --exclude torch-sys
         # Copy the test results to the expected location
         # TODO: error in pytest-results-action, TypeError: results.testsuites.testsuite.testcase is not iterable
         # Don't try to parse these results for now.
