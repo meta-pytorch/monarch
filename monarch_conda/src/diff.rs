@@ -439,7 +439,7 @@ mod tests {
         // Test various mtime scenarios
         let base_timestamp = 1640995200;
         let test_base_time = UNIX_EPOCH + Duration::from_secs(base_timestamp);
-        let old_time = test_base_time - Duration::from_secs(3600); // 1 hour before base
+        let old_time = test_base_time - Duration::from_hours(1); // 1 hour before base
         let new_time = test_base_time + Duration::from_secs(7200); // 2 hours after base (beyond slop)
 
         // Files older than base should be considered equal
@@ -492,13 +492,13 @@ mod tests {
 
         let base_timestamp = 1640995200;
         let test_base_time = UNIX_EPOCH + Duration::from_secs(base_timestamp);
-        let update_start = test_base_time + Duration::from_secs(3600); // Update window start
+        let update_start = test_base_time + Duration::from_hours(1); // Update window start
         let update_end = test_base_time + Duration::from_mins(61); // Update window end
         let in_window_time = update_start + Duration::from_secs(30); // Inside update window
-        let after_window_time = update_end + Duration::from_secs(3600); // After update window
+        let after_window_time = update_end + Duration::from_hours(1); // After update window
 
         // Files with mtimes in the update window should be ignored (treated as equal to old files)
-        let old_time = base_time - Duration::from_secs(3600);
+        let old_time = base_time - Duration::from_hours(1);
         assert_eq!(
             comparator(&in_window_time, &old_time),
             std::cmp::Ordering::Equal
@@ -738,7 +738,7 @@ mod tests {
 
         let base_timestamp = base_time.duration_since(UNIX_EPOCH)?.as_secs();
         let update_window_time = UNIX_EPOCH + Duration::from_secs(base_timestamp + 3630); // In the middle of update window
-        let old_time = base_time - Duration::from_secs(3600);
+        let old_time = base_time - Duration::from_hours(1);
         let new_time = base_time + Duration::from_secs(7200);
 
         // When update_window_time is the first arg (env1 context with update window),
@@ -814,7 +814,7 @@ mod tests {
         // But the mtime comparator should still work since the core history is the same
         let comparator = CondaFingerprint::mtime_comparator(&fingerprint1, &fingerprint2)?;
 
-        let old_time = base_time - Duration::from_secs(3600);
+        let old_time = base_time - Duration::from_hours(1);
         let new_time = base_time + Duration::from_secs(7200);
 
         // Basic mtime comparison should still work
@@ -928,7 +928,7 @@ mod tests {
         // Create mtime comparator and verify it works with large environments
         let comparator = CondaFingerprint::mtime_comparator(&fingerprint1, &fingerprint2)?;
 
-        let old_time = base_time - Duration::from_secs(3600);
+        let old_time = base_time - Duration::from_hours(1);
         let new_time = base_time + Duration::from_secs(7200);
 
         assert_eq!(comparator(&old_time, &old_time), std::cmp::Ordering::Equal);
@@ -984,7 +984,7 @@ mod tests {
         // Test exactly at the boundary points
         let one_sec_before_window = update_window_start - Duration::from_secs(1);
         let one_sec_after_window = update_window_end + Duration::from_secs(1);
-        let old_time = base_time - Duration::from_secs(3600);
+        let old_time = base_time - Duration::from_hours(1);
 
         // Just before update window should be newer than old files
         assert_eq!(
