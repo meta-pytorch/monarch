@@ -18,7 +18,7 @@ The Monarch project consists of several Rust crates, each with specialized funct
 ### CUDA and GPU Computing
 - <a id="link-cuda-sys" href="rust-api/cuda_sys/index.html">**cuda-sys**</a><span id="desc-cuda-sys"> - Low-level CUDA FFI bindings</span>
 - <a id="link-nccl-sys" href="rust-api/nccl_sys/index.html">**nccl-sys**</a><span id="desc-nccl-sys"> - NCCL (NVIDIA Collective Communications Library) bindings</span>
-- <a id="link-torch-sys" href="rust-api/torch_sys/index.html">**torch-sys**</a><span id="desc-torch-sys"> - PyTorch C++ API bindings for Rust</span>
+- <a id="link-torch-sys2" href="rust-api/torch_sys2/index.html">**torch-sys2**</a><span id="desc-torch-sys2"> - Simplified PyTorch Python API bindings for Rust</span>
 - <a id="link-monarch_tensor_worker" href="rust-api/monarch_tensor_worker/index.html">**monarch_tensor_worker**</a><span id="desc-monarch_tensor_worker"> - High-performance tensor processing worker</span>
 
 ### RDMA and High-Performance Networking

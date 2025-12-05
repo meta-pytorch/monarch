@@ -8,7 +8,6 @@
 
 use derive_more::From;
 use derive_more::TryInto;
-use enum_as_inner::EnumAsInner;
 use hyperactor::Named;
 use monarch_types::PickledPyObject;
 use pyo3::IntoPyObjectExt;
@@ -16,10 +15,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyNone;
 use serde::Deserialize;
 use serde::Serialize;
-use torch_sys::Device;
-use torch_sys::Layout;
-use torch_sys::MemoryFormat;
-use torch_sys::ScalarType;
+use torch_sys2::Device;
+use torch_sys2::Layout;
+use torch_sys2::MemoryFormat;
+use torch_sys2::ScalarType;
 
 use crate::worker::Ref;
 
@@ -40,9 +39,9 @@ pub enum WireValue {
     IntList(Vec<i64>),
     RefList(Vec<Ref>),
     Device(Device),
-    Layout(#[serde(with = "torch_sys::LayoutDef")] Layout),
-    ScalarType(#[serde(with = "torch_sys::ScalarTypeDef")] ScalarType),
-    MemoryFormat(#[serde(with = "torch_sys::MemoryFormatDef")] MemoryFormat),
+    Layout(#[serde(with = "torch_sys2::LayoutDef")] Layout),
+    ScalarType(#[serde(with = "torch_sys2::ScalarTypeDef")] ScalarType),
+    MemoryFormat(#[serde(with = "torch_sys2::MemoryFormatDef")] MemoryFormat),
     // Make this wrap the unit type, as `pyo3::FromPyObject` doesn't work with
     // empty enum variants.
     None(()),
