@@ -204,19 +204,42 @@ class SkyPilotJob(JobTrait):
         """Build the bash command to start Monarch workers on each node."""
         # This command will be run on each node via SkyPilot
         # SkyPilot expects a bash script, so we wrap Python code in python -c
+        # Note: Use IP address (not hostname) for the worker address since
+        # Kubernetes hostnames may not resolve across pods
         python_code = f'''
 import socket
+import logging
+import sys
+
+# Enable verbose logging
+logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 hostname = socket.gethostname()
 ip_addr = socket.gethostbyname(hostname)
 address = f"tcp://{{ip_addr}}:{self._port}"
-print(f"Starting Monarch worker at {{address}}")
-from monarch.actor import run_worker_loop_forever
-run_worker_loop_forever(address=address, ca="trust_all_connections")
+print(f"Starting Monarch worker at {{address}} (hostname={{hostname}})", flush=True)
+sys.stdout.flush()
+
+try:
+    from monarch.actor import run_worker_loop_forever
+    print(f"Imported run_worker_loop_forever successfully", flush=True)
+    print(f"Worker ready and listening...", flush=True)
+    run_worker_loop_forever(address=address, ca="trust_all_connections")
+except Exception as e:
+    print(f"ERROR in worker: {{e}}", flush=True)
+    import traceback
+    traceback.print_exc()
+    raise
 '''
         # Escape single quotes in the Python code for bash
         escaped_code = python_code.replace("'", "'\"'\"'")
-        # Set timeout env var - setup takes time so we need longer than default 30s
-        return f"export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=5m && python -c '{escaped_code}'"
+        # Set timeout env vars - setup takes time so we need longer than default 30s
+        env_vars = " ".join([
+            "export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=5m",
+            "export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=5m",
+            "export HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE=5m",
+        ])
+        return f"{env_vars} && python -c '{escaped_code}'"
 
     def _get_node_ips(self) -> List[str]:
         """Get the IP addresses of all nodes in the cluster."""
@@ -306,12 +329,23 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
             ip_idx += num_nodes
 
             workers = [f"tcp://{ip}:{self._port}" for ip in mesh_ips]
+            logger.info(f"Connecting to workers for mesh '{mesh_name}': {workers}")
 
             host_mesh = _attach_to_workers_wrapper(
                 name=mesh_name,
                 ca="trust_all_connections",
                 workers=workers,
             )
+            
+            # Wait for the host mesh to be initialized (connections established)
+            logger.info(f"Waiting for host mesh '{mesh_name}' to initialize...")
+            host_mesh.initialized.get()
+            logger.info(f"Host mesh '{mesh_name}' initialized successfully")
+            
+            # Give connections a moment to fully stabilize
+            time.sleep(5)
+            logger.info(f"Host mesh '{mesh_name}' ready")
+            
             host_meshes[mesh_name] = host_mesh
 
         return JobState(host_meshes)
