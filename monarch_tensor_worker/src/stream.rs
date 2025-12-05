@@ -1869,7 +1869,12 @@ impl StreamMessageHandler for StreamActor {
         _cx: &Context<Self>,
         reference: Ref,
     ) -> Result<Option<Result<WireValue, String>>> {
-        use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyNone, PyString};
+        use pyo3::types::PyBool;
+        use pyo3::types::PyFloat;
+        use pyo3::types::PyInt;
+        use pyo3::types::PyList;
+        use pyo3::types::PyNone;
+        use pyo3::types::PyString;
         /// For testing only, doesn't support Tensor or TensorList.
         fn pyobject_to_wire(
             value: Result<PyObject, Arc<SeqError>>,
