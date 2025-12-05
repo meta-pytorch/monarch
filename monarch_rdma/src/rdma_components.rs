@@ -1471,19 +1471,27 @@ pub fn get_registered_cuda_segments() -> Vec<rdmaxcel_sys::rdma_segment_info_t> 
     }
 }
 
-/// Check if PyTorch CUDA caching allocator has expandable segments enabled.
+/// Segment scanner callback type alias for convenience.
+pub type SegmentScannerFn = rdmaxcel_sys::RdmaxcelSegmentScannerFn;
+
+/// Register a segment scanner callback.
 ///
-/// This function calls the C++ implementation that directly accesses the
-/// PyTorch C10 CUDA allocator configuration to check if expandable segments
-/// are enabled, which is required for RDMA operations with CUDA tensors.
+/// The scanner callback is called during RDMA segment registration to discover
+/// CUDA memory segments. The callback should fill the provided buffer with
+/// segment information and return the total count of segments found.
 ///
-/// # Returns
+/// If the returned count exceeds the buffer size, the caller will allocate
+/// a larger buffer and retry.
 ///
-/// `true` if both CUDA caching allocator is enabled AND expandable segments are enabled,
-/// `false` otherwise.
-pub fn pt_cuda_allocator_compatibility() -> bool {
-    // SAFETY: We are calling a C++ function from rdmaxcel that accesses PyTorch C10 APIs.
-    unsafe { rdmaxcel_sys::pt_cuda_allocator_compatibility() }
+/// Pass `None` to unregister the scanner.
+///
+/// # Safety
+///
+/// The provided callback function must be safe to call from C code and must
+/// properly handle the segment buffer.
+pub fn register_segment_scanner(scanner: SegmentScannerFn) {
+    // SAFETY: We are registering a callback function pointer with rdmaxcel.
+    unsafe { rdmaxcel_sys::rdmaxcel_register_segment_scanner(scanner) }
 }
 
 #[cfg(test)]

@@ -160,10 +160,6 @@ pub struct RdmaManagerActor {
 
     config: IbverbsConfig,
 
-    // Flag indicating PyTorch CUDA allocator compatibility
-    // True if both C10 CUDA allocator is enabled AND expandable segments are enabled
-    pt_cuda_alloc: bool,
-
     mlx5dv_enabled: bool,
 
     // Map of unique RdmaMemoryRegionView to ibv_mr*.  In case of cuda w/ pytorch its -1
@@ -244,8 +240,9 @@ impl Drop for RdmaManagerActor {
             }
         }
 
-        // 4. Deregister all CUDA segments (if using PyTorch CUDA allocator)
-        if self.cuda_pt_alloc_enabled() {
+        // 4. Deregister all CUDA segments (if using mlx5dv)
+        // The segment scanner in Python handles compatibility checks
+        if self.mlx5dv_enabled {
             unsafe {
                 let result = rdmaxcel_sys::deregister_segments();
                 if result != 0 {
@@ -262,11 +259,6 @@ impl Drop for RdmaManagerActor {
 }
 
 impl RdmaManagerActor {
-    /// Whether to register all memory regions allocated by the PyTorch CUDA allocator
-    /// True if both `pt_cuda_alloc` and `mlx5dv_enabled` are true
-    fn cuda_pt_alloc_enabled(&self) -> bool {
-        self.pt_cuda_alloc && self.mlx5dv_enabled
-    }
     /// Get or create a domain and loopback QP for the specified RDMA device
     fn get_or_create_device_domain(
         &mut self,
@@ -416,58 +408,55 @@ impl RdmaManagerActor {
             let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
             let mrv;
 
-            if is_cuda && self.cuda_pt_alloc_enabled() {
-                // Get registered segments and check if our memory range is covered
-                let mut maybe_mrv = self.find_cuda_segment_for_address(addr, size);
-                // not found, lets re-sync with caching allocator  and retry
-                if maybe_mrv.is_none() {
-                    let err = rdmaxcel_sys::register_segments(
-                        domain.pd,
-                        qp.unwrap().qp as *mut rdmaxcel_sys::rdmaxcel_qp_t,
-                    );
-                    if err != 0 {
-                        let error_msg = get_rdmaxcel_error_message(err);
-                        return Err(anyhow::anyhow!(
-                            "RdmaXcel register_segments failed (addr: 0x{:x}, size: {}): {}",
-                            addr,
-                            size,
-                            error_msg
-                        ));
-                    }
+            if is_cuda {
+                // First, try to use segment scanning if mlx5dv is enabled
+                let mut segment_mrv = None;
+                if self.mlx5dv_enabled {
+                    // Try to find in already registered segments
+                    segment_mrv = self.find_cuda_segment_for_address(addr, size);
 
-                    maybe_mrv = self.find_cuda_segment_for_address(addr, size);
+                    // If not found, trigger a re-sync with the allocator and retry
+                    if segment_mrv.is_none() {
+                        let err = rdmaxcel_sys::register_segments(
+                            domain.pd,
+                            qp.unwrap().qp as *mut rdmaxcel_sys::rdmaxcel_qp_t,
+                        );
+                        // Only retry if register_segments succeeded
+                        // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
+                        if err == 0 {
+                            segment_mrv = self.find_cuda_segment_for_address(addr, size);
+                        }
+                    }
                 }
-                // if still not found, throw exception
-                if maybe_mrv.is_none() {
-                    return Err(anyhow::anyhow!(
-                        "MR registration failed for cuda (addr: 0x{:x}, size: {}), unable to find segment in CudaCachingAllocator",
-                        addr,
-                        size
-                    ));
+
+                // Use segment if found, otherwise fall back to direct dmabuf registration
+                if let Some(mrv_from_segment) = segment_mrv {
+                    mrv = mrv_from_segment;
+                } else {
+                    // Dmabuf path: used when mlx5dv is disabled OR scanner returns no segments
+                    let mut fd: i32 = -1;
+                    rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
+                        &mut fd,
+                        addr as rdmaxcel_sys::CUdeviceptr,
+                        size,
+                        rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+                        0,
+                    );
+                    mr =
+                        rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
+                    if mr.is_null() {
+                        return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
+                    }
+                    mrv = RdmaMemoryRegionView {
+                        id: self.mrv_id,
+                        virtual_addr: addr,
+                        rdma_addr: (*mr).addr as usize,
+                        size,
+                        lkey: (*mr).lkey,
+                        rkey: (*mr).rkey,
+                    };
+                    self.mrv_id += 1;
                 }
-                mrv = maybe_mrv.unwrap();
-            } else if is_cuda {
-                let mut fd: i32 = -1;
-                rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
-                    &mut fd,
-                    addr as rdmaxcel_sys::CUdeviceptr,
-                    size,
-                    rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-                    0,
-                );
-                mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
-                if mr.is_null() {
-                    return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
-                }
-                mrv = RdmaMemoryRegionView {
-                    id: self.mrv_id,
-                    virtual_addr: addr,
-                    rdma_addr: (*mr).addr as usize,
-                    size,
-                    lkey: (*mr).lkey,
-                    rkey: (*mr).rkey,
-                };
-                self.mrv_id += 1;
             } else {
                 // CPU memory path
                 mr = rdmaxcel_sys::ibv_reg_mr(
@@ -523,8 +512,6 @@ impl RemoteSpawn for RdmaManagerActor {
         let mut config = params.unwrap_or_default();
         tracing::debug!("rdma is enabled, config device hint: {}", config.device);
 
-        let pt_cuda_alloc = crate::rdma_components::pt_cuda_allocator_compatibility();
-
         let mlx5dv_enabled = resolve_qp_type(config.qp_type) == rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV;
 
         // check config and hardware support align
@@ -555,7 +542,6 @@ impl RemoteSpawn for RdmaManagerActor {
             pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
             device_domains: HashMap::new(),
             config,
-            pt_cuda_alloc,
             mlx5dv_enabled,
             mr_map: HashMap::new(),
             mrv_id: 0,

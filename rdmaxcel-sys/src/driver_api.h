@@ -96,6 +96,8 @@ rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx);
 
+CUresult rdmaxcel_cuCtxSynchronize(void);
+
 // Error handling
 CUresult rdmaxcel_cuGetErrorString(CUresult error, const char** pStr);
 

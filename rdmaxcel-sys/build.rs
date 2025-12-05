@@ -71,7 +71,7 @@ fn main() {
         .header(&header_path)
         .clang_arg("-x")
         .clang_arg("c++")
-        .clang_arg("-std=gnu++20")
+        .clang_arg("-std=gnu++14")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Allow the specified functions, types, and variables
         .allowlist_function("ibv_.*")
@@ -90,7 +90,6 @@ fn main() {
         .allowlist_function("launch_recv_wqe")
         .allowlist_function("rdma_get_active_segment_count")
         .allowlist_function("rdma_get_all_segment_info")
-        .allowlist_function("pt_cuda_allocator_compatibility")
         .allowlist_function("register_segments")
         .allowlist_function("deregister_segments")
         .allowlist_function("rdmaxcel_cu.*")
@@ -98,6 +97,7 @@ fn main() {
         .allowlist_function("rdmaxcel_print_device_info")
         .allowlist_function("rdmaxcel_error_string")
         .allowlist_function("rdmaxcel_qp_.*")
+        .allowlist_function("rdmaxcel_register_segment_scanner")
         .allowlist_function("poll_cq_with_cache")
         .allowlist_function("completion_cache_.*")
         .allowlist_type("ibv_.*")
@@ -107,12 +107,14 @@ fn main() {
         .allowlist_type("wqe_params_t")
         .allowlist_type("cqe_poll_params_t")
         .allowlist_type("rdma_segment_info_t")
+        .allowlist_type("rdmaxcel_scanned_segment_t")
         .allowlist_type("rdmaxcel_qp_t")
         .allowlist_type("rdmaxcel_qp")
         .allowlist_type("completion_cache_t")
         .allowlist_type("completion_cache")
         .allowlist_type("poll_context_t")
         .allowlist_type("poll_context")
+        .allowlist_type("rdmaxcel_segment_scanner_fn")
         .allowlist_var("MLX5_.*")
         .allowlist_var("IBV_.*")
         // Block specific types that are manually defined in lib.rs
@@ -171,29 +173,8 @@ fn main() {
     // Only link cudart (CUDA Runtime API)
     println!("cargo:rustc-link-lib=cudart");
 
-    // Link PyTorch C++ libraries for c10 symbols
-    let use_pytorch_apis = build_utils::get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS")
-        .unwrap_or_else(|_| "1".to_owned());
-    if use_pytorch_apis == "1" {
-        // Try to get PyTorch library directory
-        let python_interpreter = std::path::PathBuf::from("python");
-        if let Ok(output) = std::process::Command::new(&python_interpreter)
-            .arg("-c")
-            .arg(build_utils::PYTHON_PRINT_PYTORCH_DETAILS)
-            .output()
-        {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some(path) = line.strip_prefix("LIBTORCH_LIB: ") {
-                    println!("cargo:rustc-link-search=native={}", path);
-                    break;
-                }
-            }
-        }
-        // Link core PyTorch libraries needed for C10 symbols
-        println!("cargo:rustc-link-lib=torch_cpu");
-        println!("cargo:rustc-link-lib=torch");
-        println!("cargo:rustc-link-lib=c10");
-    }
+    // Note: We no longer link against libtorch/c10 since segment scanning
+    // is now done via a callback registered from the extension crate.
 
     // Generate bindings
     let bindings = builder.generate().expect("Unable to generate bindings");
@@ -230,42 +211,10 @@ fn main() {
                 panic!("C source file not found at {}", c_source_path);
             }
 
-            // Compile the C++ source file for CUDA allocator compatibility
+            // Compile the C++ source file
             let cpp_source_path = format!("{}/src/rdmaxcel.cpp", manifest_dir);
             let driver_api_cpp_path = format!("{}/src/driver_api.cpp", manifest_dir);
             if Path::new(&cpp_source_path).exists() && Path::new(&driver_api_cpp_path).exists() {
-                let mut libtorch_include_dirs: Vec<PathBuf> = vec![];
-
-                // Use the same approach as torch-sys: Python discovery first, env vars as fallback
-                let use_pytorch_apis =
-                    build_utils::get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS")
-                        .unwrap_or_else(|_| "1".to_owned());
-
-                if use_pytorch_apis == "1" {
-                    // Use Python to get PyTorch include paths (same as torch-sys)
-                    let python_interpreter = PathBuf::from("python");
-                    let output = std::process::Command::new(&python_interpreter)
-                        .arg("-c")
-                        .arg(build_utils::PYTHON_PRINT_PYTORCH_DETAILS)
-                        .output()
-                        .unwrap_or_else(|_| panic!("error running {python_interpreter:?}"));
-
-                    for line in String::from_utf8_lossy(&output.stdout).lines() {
-                        if let Some(path) = line.strip_prefix("LIBTORCH_INCLUDE: ") {
-                            libtorch_include_dirs.push(PathBuf::from(path));
-                        }
-                    }
-                } else {
-                    // Use environment variables (fallback approach)
-                    libtorch_include_dirs.extend(
-                        build_utils::get_env_var_with_rerun("LIBTORCH_INCLUDE")
-                            .unwrap_or_default()
-                            .split(':')
-                            .filter(|s| !s.is_empty())
-                            .map(PathBuf::from),
-                    );
-                }
-
                 let mut cpp_build = cc::Build::new();
                 cpp_build
                     .file(&cpp_source_path)
@@ -273,16 +222,10 @@ fn main() {
                     .include(format!("{}/src", manifest_dir))
                     .flag("-fPIC")
                     .cpp(true)
-                    .flag("-std=gnu++20")
-                    .define("PYTORCH_C10_DRIVER_API_SUPPORTED", "1");
+                    .flag("-std=gnu++14");
 
                 // Add CUDA include paths
                 cpp_build.include(&cuda_include_path);
-
-                // Add PyTorch/C10 include paths
-                for include_dir in &libtorch_include_dirs {
-                    cpp_build.include(include_dir);
-                }
 
                 // Add Python include path if available
                 if let Some(include_dir) = &python_config.include_dir {
@@ -324,7 +267,7 @@ fn main() {
                         &cuda_obj_path,
                         "--compiler-options",
                         "-fPIC",
-                        "-std=c++20",
+                        "-std=c++14",
                         "--expt-extended-lambda",
                         "-Xcompiler",
                         "-fPIC",
