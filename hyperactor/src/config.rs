@@ -98,7 +98,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
         py_name: None,
     })
-    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
+    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_mins(5);
 
     /// The default encoding to be used.
     @meta(CONFIG = ConfigAttr {
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
         assert_eq!(
             config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL],
-            Duration::from_secs(300)
+            Duration::from_mins(5)
         );
     }
 
