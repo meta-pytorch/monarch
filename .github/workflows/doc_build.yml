@@ -26,7 +26,7 @@ jobs:
         # Source common setup functions
         source scripts/common-setup.sh
 
-        # Setup build environment (conda + system deps + rust + build deps)
+        # Setup build environment (manylinux Python + system deps + rust)
         # docs build will use 3.13
         setup_build_environment 3.13
 
@@ -46,10 +46,12 @@ jobs:
         export USE_TENSOR_ENGINE=1
         export RUSTFLAGS="-Zthreads=16 ${RUSTFLAGS:-}"
         export _GLIBCXX_USE_CXX11_ABI=1
-        export CUDA_LIB_DIR=/usr/lib64
+
+        # Setup CUDA environment (detects CUDA paths automatically)
+        setup_cuda_environment
 
         # Build Monarch completely for documentation - use dedicated script
-        ./scripts/build_monarch_for_docs.sh
+        with_build_env ./scripts/build_monarch_for_docs.sh
 
         # Generate documentation for all workspace crates
         cargo doc --workspace --no-deps

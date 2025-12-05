@@ -19,14 +19,15 @@ jobs:
     with:
       timeout: 60
       runner: linux.4xlarge
+      docker-image: "pytorch/manylinux2_28-builder:cpu"
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
 
-        # Setup test environment
-        setup_conda_environment
+        # Setup test environment (uses manylinux Python)
+        setup_test_environment
 
         # Disable tensor engine
         export USE_TENSOR_ENGINE=0

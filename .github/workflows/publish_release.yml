@@ -12,26 +12,38 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    name: cuda12.6-py${{ matrix.python-version }}-${{ matrix.name }}
+    name: ${{ matrix.name }}-py${{ matrix.python-version }}
     strategy:
-      fail-fast: false  # Changed to false to see results from all Python versions
+      fail-fast: false
       matrix:
         # TODO add 3.14 once we figure out py03 issue
         python-version: ["3.10", "3.11", "3.12", "3.13"]
         include:
-          - name: 4xlarge
-            runs-on: linux.g5.4xlarge.nvidia.gpu
+          # x86_64 CUDA builds
+          - name: cuda12.8-x86_64
+            runner: linux.g5.4xlarge.nvidia.gpu
             torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128'
             gpu-arch-type: "cuda"
             gpu-arch-version: "12.8"
+            docker-image: "pytorch/almalinux-builder"  # Uses default, becomes pytorch/almalinux-builder:cuda12.8
+            platform-tag: "manylinux2014_x86_64"
+          # aarch64 CUDA builds
+          - name: cuda12.8-aarch64
+            runner: linux.arm64.r7g.12xlarge.memory  # GPU-enabled ARM runner like PyTorch uses
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128'
+            gpu-arch-type: "cpu"  # Use "cpu" to skip nvidia driver install, CUDA libs are in Docker image
+            gpu-arch-version: ""
+            docker-image: "pytorch/manylinuxaarch64-builder:cuda12.8"  # ARM-specific image with CUDA
+            platform-tag: "manylinux2014_aarch64"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 60
-      runner: ${{ matrix.runs-on }}
+      runner: ${{ matrix.runner }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      docker-image: ${{ matrix.docker-image }}
       submodules: recursive
-      upload-artifact: monarch-${{ matrix.python-version }}-${{ matrix.gpu-arch-type }}${{ matrix.gpu-arch-version }}
+      upload-artifact: monarch-${{ matrix.python-version }}-${{ matrix.name }}
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
@@ -44,17 +56,17 @@ jobs:
         # Setup Tensor Engine dependencies
         setup_tensor_engine
 
-        cargo install --path monarch_hyperactor
+        # Setup CUDA environment (detects CUDA paths automatically for both x86_64 and aarch64)
+        setup_cuda_environment
 
-        # Build wheel
+        # Build wheel with proper library paths
         export MONARCH_PACKAGE_NAME="torchmonarch"
-        export CUDA_LIB_DIR=/usr/lib64
         export MONARCH_VERSION="${{ github.event.inputs.version }}"
-        python setup.py bdist_wheel
 
-        # hacky until the right distribution wheel can be made...
-        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
-        ls -la dist/
+        with_build_env python setup.py bdist_wheel
+
+        # Properly retag wheel with manylinux platform tag
+        retag_wheel_platform "${{ matrix.platform-tag }}"
 
         # Run tests
         install_python_test_dependencies

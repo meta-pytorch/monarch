@@ -20,18 +20,19 @@ jobs:
     with:
       timeout: 60
       runner: ${{ matrix.runs-on }}
+      docker-image: "pytorch/manylinux2_28-builder:cpu"
       submodules: recursive
       upload-artifact: monarch-cpu-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
 
-        # Setup build environment (conda + system deps + rust + build deps)
+        # Setup build environment (manylinux Python + system deps + rust)
         setup_build_environment
 
         # Install torch nightly (CPU version)
         pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
         pip install -r build-requirements.txt
 
-        # Build monarch (No tensor engine, CPU version)
-        USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+        # Build monarch (No tensor engine, CPU version) with proper library paths
+        USE_TENSOR_ENGINE=0 with_build_env python setup.py bdist_wheel
