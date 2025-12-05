@@ -12,7 +12,6 @@ from typing import Any, Callable, Optional, Protocol
 
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
-    SystemSnapshotFilter,
 )
 
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
@@ -170,21 +169,6 @@ class PoolDeviceMeshProvider:
             time.sleep(sleep_sec)
 
         raise TimeoutError(f"Could not find a healthy world in {timeout_in_sec}s!")
-
-    def _refresh_worlds(self) -> None:
-        system_snapshot = self._root_client.world_state(
-            filter=SystemSnapshotFilter(world_labels={WORLD_WORKER_LABEL: "1"})
-        )
-        for world_id, world_snapshot in system_snapshot.items():
-            if WORLD_CONTROLLER_LABEL not in world_snapshot.labels:
-                continue
-            controller_actor_id = ActorId.from_string(
-                world_snapshot.labels[WORLD_CONTROLLER_LABEL]
-            )
-            world_tuple = (world_id, controller_actor_id)
-            if world_tuple not in self._mesh_map:
-                logger.debug(f"Discovered new worker world {world_id}")
-                self._mesh_map[world_tuple] = None
 
     def _remove_evicted_worlds(self, world_status: dict[str, str]) -> None:
         """
