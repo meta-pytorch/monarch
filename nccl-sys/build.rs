@@ -14,11 +14,10 @@ fn main() {}
 #[cfg(not(target_os = "macos"))]
 fn main() {
     let mut builder = bindgen::Builder::default()
-        // Parse nccl.h as C++ with -std=gnu++20.
         .header("src/nccl.h")
         .clang_arg("-x")
         .clang_arg("c++")
-        .clang_arg("-std=gnu++20")
+        .clang_arg("-std=c++14")
         .clang_arg(format!(
             "-I{}/include",
             build_utils::find_cuda_home().unwrap()
