@@ -110,9 +110,6 @@ class WorkerResponse:
         """Will return `True` if calling `error` will return an `Exception`."""
         ...
 
-    @staticmethod
-    def new_for_unit_test(*, seq: int, response: Any) -> "WorkerResponse": ...
-
 @final
 class LogLevel:
     INFO: ClassVar[LogLevel]

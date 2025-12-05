@@ -23,5 +23,8 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
     Single argument is the SupervisionEvent
     """
 
-    _logger.error(f"Unhandled monarch error on the root actor: {failure.report()}")
+    # use stderr, not _logger because loggers are sometimes set
+    # not print anything (e.g. in pytest)
+    sys.stderr.write(f"Unhandled monarch error on the root actor: {failure.report()}\n")
+    sys.stderr.flush()
     sys.exit(1)
