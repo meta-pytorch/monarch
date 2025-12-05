@@ -21,11 +21,14 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
+use hyperactor::Proc;
 use hyperactor::ProcId;
 use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
@@ -33,11 +36,13 @@ use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor::reference::WorldId;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
 use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
 use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::proc_mesh::default_transport;
 use hyperactor_mesh::reference::ActorMeshId;
+use hyperactor_mesh::router;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use pyo3::IntoPyObjectExt;
@@ -75,6 +80,7 @@ use crate::proc::PyActorId;
 use crate::proc::PyProc;
 use crate::proc::PySerialized;
 use crate::pytokio::PythonTask;
+use crate::runtime::get_tokio_runtime;
 use crate::runtime::signal_safe_block_on;
 use crate::supervision::MeshFailure;
 use crate::supervision::SupervisionFailureMessage;
@@ -174,21 +180,6 @@ impl PickledMessageClientActor {
             .map(|message| message.into_py_any(py))
             .collect::<PyResult<Vec<_>>>()?;
         PyList::new(py, messages)
-    }
-
-    fn world_status<'py>(&mut self, py: Python<'py>) -> PyResult<PyObject> {
-        let instance = Arc::clone(&self.instance);
-
-        let worlds = signal_safe_block_on(py, async move {
-            instance.lock().await.world_status(Default::default()).await
-        })??;
-        Python::with_gil(|py| {
-            let py_dict = PyDict::new(py);
-            for (world, status) in worlds {
-                py_dict.set_item(world.to_string(), status.to_string())?;
-            }
-            Ok(py_dict.into())
-        })
     }
 
     #[getter]
@@ -503,6 +494,23 @@ pub struct PythonActor {
 }
 
 impl PythonActor {
+    pub(crate) fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
+        Ok(Python::with_gil(|py| -> Result<Self, SerializablePyErr> {
+            let unpickled = actor_type.unpickle(py)?;
+            let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
+            let actor: PyObject = class_type.call0()?.into_py_any(py)?;
+
+            // Only create per-actor TaskLocals if not using shared runtime
+            let task_locals = (!hyperactor_config::global::get(SHARED_ASYNCIO_RUNTIME))
+                .then(|| Python::allow_threads(py, create_task_locals));
+            Ok(Self {
+                actor,
+                task_locals,
+                instance: None,
+            })
+        })?)
+    }
+
     /// Get the TaskLocals to use for this actor.
     /// Returns either the shared TaskLocals or this actor's own TaskLocals based on configuration.
     fn get_task_locals(&self, py: Python) -> &pyo3_async_runtimes::TaskLocals {
@@ -512,6 +520,126 @@ impl PythonActor {
             Python::allow_threads(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
         })
     }
+
+    pub(crate) fn bootstrap_client(py: Python<'_>) -> (&'static Instance<Self>, ActorHandle<Self>) {
+        static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
+
+        let client_proc = Proc::direct_with_default(
+            ChannelAddr::any(default_transport()),
+            "mesh_root_client_proc".into(),
+            router::global().clone().boxed(),
+        )
+        .unwrap();
+
+        // Make this proc reachable through the global router, so that we can use the
+        // same client in both direct-addressed and ranked-addressed modes.
+        router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
+
+        let actor_mesh_mod = py
+            .import("monarch._src.actor.actor_mesh")
+            .expect("import actor_mesh");
+        let root_client_class = actor_mesh_mod
+            .getattr("RootClientActor")
+            .expect("get RootClientActor");
+
+        let mut actor = PythonActor::new(
+            PickledPyObject::pickle(&actor_mesh_mod.getattr("_Actor").expect("get _Actor"))
+                .expect("pickle _Actor"),
+        )
+        .expect("create client PythonActor");
+
+        let (client, handle, supervision_rx, signal_rx, work_rx) = client_proc
+            .actor_instance(
+                root_client_class
+                    .getattr("name")
+                    .expect("get RootClientActor.name")
+                    .extract()
+                    .expect("extract RootClientActor.name"),
+            )
+            .expect("root instance create");
+
+        ROOT_CLIENT_INSTANCE
+            .set(client)
+            .map_err(|_| "already initialized root client instance")
+            .unwrap();
+
+        handle
+            .send(
+                PythonMessage::new(
+                    PythonMessageKind::CallMethod {
+                        name: MethodSpecifier::Init {},
+                        response_port: None,
+                    },
+                    root_client_class
+                        .call_method0("_pickled_init_args")
+                        .expect("call RootClientActor._pickled_init_args"),
+                )
+                .expect("create RootClientActor init message"),
+            )
+            .expect("initialize root client");
+
+        let instance = ROOT_CLIENT_INSTANCE.get().unwrap();
+
+        get_tokio_runtime().spawn(async move {
+            let mut signal_rx = signal_rx;
+            let mut supervision_rx = supervision_rx;
+            let mut work_rx = work_rx;
+            let err = 'messages: loop {
+                tokio::select! {
+                    work = work_rx.recv() => {
+                        let work = work.expect("inconsistent work queue state");
+                        if let Err(err) = work.handle(&mut actor, instance).await {
+                            for supervision_event in supervision_rx.drain() {
+                                if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                                    break 'messages err;
+                                }
+                            }
+                            let kind = ActorErrorKind::processing(err);
+                            break ActorError {
+                                actor_id: Box::new(instance.self_id().clone()),
+                                kind: Box::new(kind),
+                            };
+                        }
+                    }
+                    _ = signal_rx.recv() => {
+                        // TODO: do we need any signal handling for the root client?
+                    }
+                    Ok(supervision_event) = supervision_rx.recv() => {
+                        if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                            break err;
+                        }
+                    }
+                };
+            };
+            let event = match *err.kind {
+                ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
+                _ => {
+                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
+                    let status = ActorStatus::Failed(error_kind);
+                    ActorSupervisionEvent::new(
+                        instance.self_id().clone(),
+                        actor.display_name(),
+                        status,
+                        None,
+                    )
+                }
+            };
+            instance.proc().handle_supervision_event(event);
+        });
+
+        (ROOT_CLIENT_INSTANCE.get().unwrap(), handle)
+    }
+}
+
+pub(crate) fn root_client_actor() -> &'static Instance<PythonActor> {
+    static ROOT_CLIENT_ACTOR: OnceLock<&'static Instance<PythonActor>> = OnceLock::new();
+
+    ROOT_CLIENT_ACTOR.get_or_init(|| {
+        Python::with_gil(|py| {
+            let (client, _handle) = PythonActor::bootstrap_client(py);
+            client
+        })
+    })
 }
 
 /// An undeliverable might have its sender address set as the comm actor instead
@@ -689,6 +817,24 @@ impl Actor for PythonActor {
             Ok(())
         }
     }
+
+    async fn handle_supervision_event(
+        &mut self,
+        this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        let cx = Context::new(this, Attrs::new());
+        self.handle(
+            &cx,
+            SupervisionFailureMessage {
+                actor_mesh_name: None,
+                rank: None,
+                event: event.clone(),
+            },
+        )
+        .await
+        .map(|_| true)
+    }
 }
 
 #[async_trait]
@@ -696,20 +842,7 @@ impl RemoteSpawn for PythonActor {
     type Params = PickledPyObject;
 
     async fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
-        Ok(Python::with_gil(|py| -> Result<Self, SerializablePyErr> {
-            let unpickled = actor_type.unpickle(py)?;
-            let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
-            let actor: PyObject = class_type.call0()?.into_py_any(py)?;
-
-            // Only create per-actor TaskLocals if not using shared runtime
-            let task_locals = (!hyperactor_config::global::get(SHARED_ASYNCIO_RUNTIME))
-                .then(|| Python::allow_threads(py, create_task_locals));
-            Ok(Self {
-                actor,
-                task_locals,
-                instance: None,
-            })
-        })?)
+        Self::new(actor_type)
     }
 }
 
@@ -725,6 +858,8 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
         let kwargs = PyDict::new(py);
         let target = event_loop.getattr("run_forever").unwrap();
         kwargs.set_item("target", target).unwrap();
+        // Need to make this a daemon thread, otherwise shutdown will hang.
+        kwargs.set_item("daemon", true).unwrap();
         let thread = py
             .import("threading")
             .unwrap()
@@ -924,7 +1059,10 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                         // this actor is now the event creator.
                         for (actor_name, status) in [
                             (
-                                message.actor_mesh_name.as_str(),
+                                message
+                                    .actor_mesh_name
+                                    .as_deref()
+                                    .unwrap_or_else(|| message.event.actor_id.name()),
                                 "SupervisionError::Unhandled",
                             ),
                             (cx.self_id().name(), "UnhandledSupervisionEvent"),
@@ -943,7 +1081,7 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                                 cx.self_id().clone(),
                                 self.display_name(),
                                 ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(
-                                    Box::new(message.event),
+                                    Box::new(message.event.clone()),
                                 )),
                                 None,
                             ),
@@ -959,7 +1097,10 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                     // Add to caused_by chain.
                     for (actor_name, status) in [
                         (
-                            message.actor_mesh_name.as_str(),
+                            message
+                                .actor_mesh_name
+                                .as_deref()
+                                .unwrap_or_else(|| message.event.actor_id.name()),
                             "SupervisionError::__supervise__::exception",
                         ),
                         (cx.self_id().name(), "UnhandledSupervisionEvent"),
@@ -979,7 +1120,7 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                             self.display_name(),
                             ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
                                 err.to_string(),
-                                Box::new(message.event),
+                                Box::new(message.event.clone()),
                             )),
                             None,
                         ),
@@ -1170,7 +1311,7 @@ mod tests {
     fn to_py_error_preserves_proc_creation_message() {
         // State<ProcState> w/ `state.is_none()`
         let state: resource::State<ProcState> = resource::State {
-            name: Name::new("my_proc"),
+            name: Name::new("my_proc").unwrap(),
             status: Status::Failed("boom".into()),
             state: None,
         };

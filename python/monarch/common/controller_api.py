@@ -10,7 +10,6 @@ from typing import Any, List, NamedTuple, Optional, Protocol, Sequence, Union
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     DebuggerMessage,
     LogLevel,
-    WorldState,
 )
 
 from monarch._src.actor.shape import NDSlice
@@ -94,12 +93,4 @@ class TController(Protocol):
 
     def drain_and_stop(self) -> List[MessageResult | LogMessage | DebuggerMessage]:
         """Drain all the messages in the controller upon shutdown."""
-        ...
-
-    def worker_world_state(self) -> WorldState:
-        """
-        Retrieve the worker world state.
-
-        :return: The worker WorldState.
-        """
         ...

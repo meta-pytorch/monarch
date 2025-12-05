@@ -30,9 +30,6 @@ from typing import (
 
 import torch.utils._python_dispatch
 from monarch._rust_bindings.monarch_extension import client
-from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
-    WorldState,
-)
 from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.actor import (
@@ -216,9 +213,6 @@ class Controller(_Controller):
     ) -> List[LogMessage | MessageResult | client.DebuggerMessage]:
         self._drain_and_stop(context().actor_instance._as_rust())
         return []
-
-    def worker_world_state(self) -> WorldState:
-        raise NotImplementedError("worker world state")
 
     def stop_mesh(self):
         # I think this is a noop?
