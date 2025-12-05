@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(comparator(&old_time, &new_time), std::cmp::Ordering::Less);
 
         // Both files newer than base should compare normally
-        let newer_time = new_time + Duration::from_secs(1800);
+        let newer_time = new_time + Duration::from_mins(30);
         assert_eq!(comparator(&new_time, &newer_time), std::cmp::Ordering::Less);
         assert_eq!(
             comparator(&newer_time, &new_time),
@@ -863,7 +863,7 @@ mod tests {
         let comparator = CondaFingerprint::mtime_comparator(&fingerprint1, &fingerprint2)?;
 
         // Test with identical times
-        let test_time = base_time + Duration::from_secs(1800);
+        let test_time = base_time + Duration::from_mins(30);
         assert_eq!(
             comparator(&test_time, &test_time),
             std::cmp::Ordering::Equal
