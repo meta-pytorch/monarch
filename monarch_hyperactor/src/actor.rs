@@ -134,6 +134,13 @@ pub struct PickledMessageClientActor {
     instance: Arc<Mutex<InstanceWrapper<PickledMessage>>>,
 }
 
+impl PickledMessageClientActor {
+    /// Get the instance Arc (used by monarch_extension for world_status)
+    pub fn instance_arc(&self) -> &Arc<Mutex<InstanceWrapper<PickledMessage>>> {
+        &self.instance
+    }
+}
+
 #[pymethods]
 impl PickledMessageClientActor {
     #[new]
@@ -180,21 +187,6 @@ impl PickledMessageClientActor {
             .map(|message| message.into_py_any(py))
             .collect::<PyResult<Vec<_>>>()?;
         PyList::new(py, messages)
-    }
-
-    fn world_status<'py>(&mut self, py: Python<'py>) -> PyResult<PyObject> {
-        let instance = Arc::clone(&self.instance);
-
-        let worlds = signal_safe_block_on(py, async move {
-            instance.lock().await.world_status(Default::default()).await
-        })??;
-        Python::with_gil(|py| {
-            let py_dict = PyDict::new(py);
-            for (world, status) in worlds {
-                py_dict.set_item(world.to_string(), status.to_string())?;
-            }
-            Ok(py_dict.into())
-        })
     }
 
     #[getter]

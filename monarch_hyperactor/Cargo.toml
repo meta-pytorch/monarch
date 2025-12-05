@@ -34,7 +34,6 @@ futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
-hyperactor_multiprocess = { version = "0.0.0", path = "../hyperactor_multiprocess" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 inventory = "0.3.21"
 lazy_errors = "0.10.1"
@@ -52,7 +51,6 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 tempfile = "3.22"
-thiserror = "2.0.12"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

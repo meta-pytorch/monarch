@@ -17,8 +17,11 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
 
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
-    init_proc,
     Proc,
+)
+
+from monarch._rust_bindings.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
+    init_proc,
 )
 
 from monarch._src.actor.shape import NDSlice
@@ -115,8 +118,8 @@ class PoolDeviceMeshProvider:
         while timeout_in_sec is None or time.time() - now < timeout_in_sec:
             # Pull the fresh world status
             self._refresh_worlds()
-            world_status = self._root_client.world_status()
-            self._remove_evicted_worlds(world_status)
+            ws = self._root_client.world_status()
+            self._remove_evicted_worlds(ws)
 
             # Find the next available world
             for mesh_world, mesh in self._mesh_map.items():
@@ -127,8 +130,8 @@ class PoolDeviceMeshProvider:
                 worker_world, controller_id = mesh_world
                 controller_world = controller_id.world_name
 
-                if (not _is_world_healthy(world_status, worker_world)) or (
-                    not _is_world_healthy(world_status, controller_world)
+                if (not _is_world_healthy(ws, worker_world)) or (
+                    not _is_world_healthy(ws, controller_world)
                 ):
                     # Either controller world is not ready or worker world is not ready
                     continue
