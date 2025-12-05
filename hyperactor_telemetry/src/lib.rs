@@ -102,6 +102,70 @@ use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
 use crate::sqlite::get_reloadable_sqlite_layer;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TelemetrySample {
+    fields: Vec<(String, String)>,
+}
+
+impl TelemetrySample {
+    pub fn get_string(&self, key: &str) -> Option<&str> {
+        for (k, v) in &self.fields {
+            if k == key {
+                return Some(v.as_str());
+            }
+        }
+        None
+    }
+}
+
+#[cfg(fbcode_build)]
+impl From<crate::meta::sample_buffer::Sample> for TelemetrySample {
+    fn from(sample: crate::meta::sample_buffer::Sample) -> Self {
+        let mut fields = Vec::new();
+        for (key, value) in sample.0 {
+            if let crate::meta::sample_buffer::SampleValue::String(s) = value {
+                fields.push((key.to_string(), s.to_string()));
+            }
+        }
+        Self { fields }
+    }
+}
+
+#[cfg(not(fbcode_build))]
+impl TelemetrySample {
+    pub fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+}
+
+pub trait TelemetryTestHandle {
+    fn get_tracing_samples(&self) -> Vec<TelemetrySample>;
+}
+
+#[cfg(fbcode_build)]
+struct MockScubaHandle {
+    tracing_client: crate::meta::scuba_utils::MockScubaClient,
+}
+
+#[cfg(fbcode_build)]
+impl TelemetryTestHandle for MockScubaHandle {
+    fn get_tracing_samples(&self) -> Vec<TelemetrySample> {
+        self.tracing_client
+            .get_samples()
+            .into_iter()
+            .map(TelemetrySample::from)
+            .collect()
+    }
+}
+
+struct EmptyTestHandle;
+
+impl TelemetryTestHandle for EmptyTestHandle {
+    fn get_tracing_samples(&self) -> Vec<TelemetrySample> {
+        vec![]
+    }
+}
+
 pub trait TelemetryClock {
     fn now(&self) -> tokio::time::Instant;
     fn system_time_now(&self) -> std::time::SystemTime;
@@ -575,6 +639,21 @@ pub fn initialize_logging_with_log_prefix(
     clock: impl TelemetryClock + Send + 'static,
     prefix_env_var: Option<String>,
 ) {
+    let _ = initialize_logging_with_log_prefix_impl(clock, prefix_env_var, false);
+}
+
+pub fn initialize_logging_with_log_prefix_mock_scuba(
+    clock: impl TelemetryClock + Send + 'static,
+    prefix_env_var: Option<String>,
+) -> Box<dyn TelemetryTestHandle> {
+    initialize_logging_with_log_prefix_impl(clock, prefix_env_var, true)
+}
+
+fn initialize_logging_with_log_prefix_impl(
+    clock: impl TelemetryClock + Send + 'static,
+    prefix_env_var: Option<String>,
+    mock_scuba: bool,
+) -> Box<dyn TelemetryTestHandle> {
     let use_unified = hyperactor_config::global::get(USE_UNIFIED_LAYER);
 
     swap_telemetry_clock(clock);
@@ -591,6 +670,8 @@ pub fn initialize_logging_with_log_prefix(
 
     #[cfg(fbcode_build)]
     {
+        let mut mock_scuba_client: Option<crate::meta::scuba_utils::MockScubaClient> = None;
+
         if use_unified {
             let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
             sinks.push(Box::new(sinks::glog::GlogSink::new(
@@ -615,12 +696,37 @@ pub fn initialize_logging_with_log_prefix(
                 }
             }
 
+            {
+                if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
+                    use crate::meta;
+                    use crate::meta::get_tracing_targets;
+                    use crate::meta::scuba_utils::LOG_ENTER_EXIT;
+
+                    if mock_scuba {
+                        let tracing_client = meta::scuba_utils::MockScubaClient::new();
+
+                        sinks.push(Box::new(
+                            meta::scuba_sink::ScubaSink::with_client(
+                                tracing_client.clone(),
+                                match meta::tracing_resource().get(&LOG_ENTER_EXIT) {
+                                    Some(Value::Bool(enabled)) => enabled,
+                                    _ => false,
+                                },
+                            )
+                            .with_target_filter(get_tracing_targets()),
+                        ));
+
+                        mock_scuba_client = Some(tracing_client);
+                    } else {
+                        sinks.push(Box::new(
+                            meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
+                                .with_target_filter(get_tracing_targets()),
+                        ));
+                    }
+                }
+            }
+
             if let Err(err) = Registry::default()
-                .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
-                    Some(otel::tracing_layer())
-                } else {
-                    None
-                })
                 .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                     Some(recorder().layer())
                 } else {
@@ -661,7 +767,7 @@ pub fn initialize_logging_with_log_prefix(
                         .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
                 );
 
-            if let Err(err) = Registry::default()
+            let registry = Registry::default()
                 .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
                     // TODO: get_reloadable_sqlite_layer currently still returns None,
                     // and some additional work is required to make it work.
@@ -669,14 +775,26 @@ pub fn initialize_logging_with_log_prefix(
                 } else {
                     None
                 })
-                .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
-                    Some(otel::tracing_layer())
-                } else {
-                    None
-                })
                 .with(file_layer)
                 .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                     Some(recorder().layer())
+                } else {
+                    None
+                });
+
+            if mock_scuba {
+                let tracing_client = crate::meta::scuba_utils::MockScubaClient::new();
+
+                let scuba_layer = crate::meta::tracing_layer_with_client(tracing_client.clone());
+
+                if let Err(err) = registry.with(scuba_layer).try_init() {
+                    tracing::debug!("logging already initialized for this process: {}", err);
+                }
+
+                mock_scuba_client = Some(tracing_client);
+            } else if let Err(err) = registry
+                .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
+                    Some(otel::tracing_layer())
                 } else {
                     None
                 })
@@ -724,6 +842,12 @@ pub fn initialize_logging_with_log_prefix(
 
         if hyperactor_config::global::get(ENABLE_OTEL_METRICS) {
             otel::init_metrics();
+        }
+
+        if let Some(tracing_client) = mock_scuba_client {
+            Box::new(MockScubaHandle { tracing_client })
+        } else {
+            Box::new(EmptyTestHandle)
         }
     }
     #[cfg(not(fbcode_build))]
@@ -780,6 +904,8 @@ pub fn initialize_logging_with_log_prefix(
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
         }
+
+        Box::new(EmptyTestHandle)
     }
 }
 
