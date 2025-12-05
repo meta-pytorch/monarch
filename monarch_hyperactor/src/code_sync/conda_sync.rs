@@ -19,7 +19,6 @@ use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::PortRef;
-use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;

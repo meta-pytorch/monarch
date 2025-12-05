@@ -631,6 +631,9 @@ pub fn initialize_logging_with_log_prefix(
             tracing::debug!("logging already initialized for this process: {}", err);
         }
         let exec_id = env::execution_id();
+        let process_name =
+            std::env::var("HYPERACTOR_PROCESS_NAME").unwrap_or_else(|_| "client".to_string());
+
         // setting target to "execution" will prevent the monarch_tracing scuba client from logging this
         tracing::info!(
             target: "execution",
@@ -645,7 +648,8 @@ pub fn initialize_logging_with_log_prefix(
             package_release = build_info::BuildInfo::get_package_release(),
             upstream_revision = build_info::BuildInfo::get_upstream_revision(),
             revision = build_info::BuildInfo::get_revision(),
-            "logging_initialized"
+            process_name = process_name,
+            "logging_initialized",
         );
         // here we have the monarch_executions scuba client log
         meta::log_execution_event(
@@ -660,6 +664,7 @@ pub fn initialize_logging_with_log_prefix(
             build_info::BuildInfo::get_package_release(),
             build_info::BuildInfo::get_upstream_revision(),
             build_info::BuildInfo::get_revision(),
+            &process_name,
         );
 
         if hyperactor_config::global::get(ENABLE_OTEL_METRICS) {

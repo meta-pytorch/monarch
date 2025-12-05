@@ -587,7 +587,7 @@ mod tests {
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
-        let child_name = Name::new("child");
+        let child_name = Name::new("child").unwrap();
 
         let actor_mesh = proc_mesh
             .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
@@ -657,7 +657,7 @@ mod tests {
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
-        let child_name = Name::new("child");
+        let child_name = Name::new("child").unwrap();
 
         let actor_mesh = proc_mesh
             .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
@@ -722,7 +722,7 @@ mod tests {
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
-        let child_name = Name::new("child");
+        let child_name = Name::new("child").unwrap();
 
         let actor_mesh = proc_mesh
             .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())

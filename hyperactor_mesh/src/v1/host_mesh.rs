@@ -88,7 +88,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
         py_name: None,
     })
-    pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_secs(60);
+    pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
 
 /// A reference to a single host.
@@ -272,8 +272,11 @@ impl HostMesh {
         host_mesh_agent.bind::<HostMeshAgent>();
 
         let host = HostRef(addr);
-        let host_mesh_ref =
-            HostMeshRef::new(Name::new("local"), extent!(hosts = 1).into(), vec![host])?;
+        let host_mesh_ref = HostMeshRef::new(
+            Name::new("local").unwrap(),
+            extent!(hosts = 1).into(),
+            vec![host],
+        )?;
         Ok(HostMesh::take(host_mesh_ref))
     }
 
@@ -311,7 +314,7 @@ impl HostMesh {
             hosts.push(HostRef(addr));
         }
 
-        let host_mesh_ref = HostMeshRef::new(Name::new("process"), extent.into(), hosts)?;
+        let host_mesh_ref = HostMeshRef::new(Name::new("process").unwrap(), extent.into(), hosts)?;
         Ok(HostMesh::take(host_mesh_ref))
     }
 
@@ -364,7 +367,7 @@ impl HostMesh {
         name: &str,
         bootstrap_params: Option<BootstrapCommand>,
     ) -> v1::Result<Self> {
-        Self::allocate_inner(cx, alloc, Name::new(name), bootstrap_params).await
+        Self::allocate_inner(cx, alloc, Name::new(name)?, bootstrap_params).await
     }
 
     // Use allocate_inner to set field mesh_name in span
@@ -729,7 +732,7 @@ impl HostMeshRef {
         name: &str,
         per_host: Extent,
     ) -> v1::Result<ProcMesh> {
-        self.spawn_inner(cx, Name::new(name), per_host).await
+        self.spawn_inner(cx, Name::new(name)?, per_host).await
     }
 
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
@@ -810,7 +813,7 @@ impl HostMeshRef {
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
-                let proc_name = Name::new(format!("{}_{}", proc_mesh_name.name(), per_host_rank));
+                let proc_name = Name::new(format!("{}_{}", proc_mesh_name.name(), per_host_rank))?;
                 proc_names.push(proc_name.clone());
                 host.mesh_agent()
                     .create_or_update(
@@ -1306,7 +1309,7 @@ mod tests {
     #[test]
     fn test_host_mesh_ref_parse_roundtrip() {
         let host_mesh_ref = HostMeshRef::new(
-            Name::new("test"),
+            Name::new("test").unwrap(),
             extent!(replica = 2, host = 2).into(),
             vec![
                 "tcp:127.0.0.1:123".parse().unwrap(),
@@ -1458,7 +1461,7 @@ mod tests {
         }
 
         let instance = testing::instance().await;
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test"), hosts);
+        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
         let proc_mesh = host_mesh
             .spawn(&testing::instance().await, "test", Extent::unity())
@@ -1501,7 +1504,7 @@ mod tests {
             cmd.kill_on_drop(true);
             children.push(cmd.spawn().unwrap());
         }
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test"), hosts);
+        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
         let instance = testing::instance().await;
 
@@ -1545,7 +1548,7 @@ mod tests {
             cmd.kill_on_drop(true);
             children.push(cmd.spawn().unwrap());
         }
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test"), hosts);
+        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
         let instance = testing::instance().await;
 
@@ -1567,11 +1570,11 @@ mod tests {
         let _guard1 = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
         let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(120),
+            Duration::from_mins(2),
         );
         let _guard3 = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
 
         let instance = testing::instance().await;
@@ -1585,7 +1588,7 @@ mod tests {
         let mut attrs_override = Attrs::new();
         attrs_override.set(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(180),
+            Duration::from_mins(3),
         );
         actor_mesh
             .cast(
@@ -1605,13 +1608,13 @@ mod tests {
             *actual_attrs
                 .get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT)
                 .unwrap(),
-            Duration::from_secs(180)
+            Duration::from_mins(3)
         );
         assert_eq!(
             *actual_attrs
                 .get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT)
                 .unwrap(),
-            Duration::from_secs(60)
+            Duration::from_mins(1)
         );
     }
 }

@@ -3489,10 +3489,8 @@ mod tests {
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_split_port_id_every_n_messages() {
         let config = hyperactor_config::global::lock();
-        let _config_guard = config.override_key(
-            crate::config::SPLIT_MAX_BUFFER_AGE,
-            Duration::from_secs(600),
-        );
+        let _config_guard =
+            config.override_key(crate::config::SPLIT_MAX_BUFFER_AGE, Duration::from_mins(10));
         let proc = Proc::local();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();

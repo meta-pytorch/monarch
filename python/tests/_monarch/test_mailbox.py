@@ -32,8 +32,6 @@ from monarch._src.actor.allocator import LocalAllocator
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
 
-
-import pytest
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
@@ -42,7 +40,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._src.actor.actor_mesh import Instance
+from monarch._src.actor.actor_mesh import context, Instance
 
 
 S = TypeVar("S")
@@ -117,8 +115,8 @@ def _python_task_test(
 
 @_python_task_test
 async def test_accumulator() -> None:
-    proc_mesh: ProcMesh = await allocate()
-    mailbox: Mailbox = Instance._as_py(proc_mesh.client)._mailbox
+    ins: Instance = context().actor_instance
+    mailbox: Mailbox = ins._mailbox
 
     def my_accumulate(state: str, update: int) -> str:
         return f"{state}+{update}"
@@ -130,7 +128,7 @@ async def test_accumulator() -> None:
 
     def post_message(value: int) -> None:
         port_ref.send(
-            proc_mesh.client,
+            ins._as_rust(),
             PythonMessage(
                 PythonMessageKind.CallMethod(
                     MethodSpecifier.ReturnsResponse("test_accumulator"), None
@@ -174,6 +172,7 @@ class MyActor:
 async def test_reducer() -> None:
     proc_mesh = await allocate()
     actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    ins = context().actor_instance
 
     def my_accumulate(state: str, update: str) -> str:
         return state + update
@@ -183,9 +182,7 @@ async def test_reducer() -> None:
 
     accumulator = Accumulator("", my_accumulate, my_reduce)
     receiver: PortReceiver
-    handle, receiver = Instance._as_py(proc_mesh.client)._mailbox.open_accum_port(
-        accumulator
-    )
+    handle, receiver = ins._mailbox.open_accum_port(accumulator)
     port_ref = handle.bind()
 
     actor_mesh.cast(
@@ -196,7 +193,7 @@ async def test_reducer() -> None:
             pickle.dumps("start"),
         ),
         "all",
-        proc_mesh.client,
+        ins._as_rust(),
     )
 
     messge = await receiver.recv_task().with_timeout(seconds=5)
