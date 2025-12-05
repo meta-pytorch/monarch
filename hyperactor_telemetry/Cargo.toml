@@ -14,8 +14,10 @@ edition = "2024"
 anyhow = "1.0.98"
 chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
+erased-serde = "0.4.9"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 hdrhistogram = "7.5"
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 lazy_static = "1.5"
 opentelemetry = "0.29"
 opentelemetry_sdk = { version = "0.29.0", features = ["rt-tokio"] }
@@ -32,6 +34,7 @@ tracing-appender = "0.2.3"
 tracing-core = { version = "0.1.33", features = ["valuable"] }
 tracing-glog = { version = "0.4.1", features = ["ansi", "tracing-log"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+urlencoding = "2.1.0"
 whoami = "1.5"
 
 [dev-dependencies]

@@ -336,25 +336,13 @@ pub struct RsyncMessage {
     pub workspace: WorkspaceLocation,
 }
 
-#[derive(Debug, Named, Serialize, Deserialize)]
-pub struct RsyncParams {
-    //pub workspace: WorkspaceLocation,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
 pub struct RsyncActor {
     //workspace: WorkspaceLocation,
 }
 
-#[async_trait]
-impl Actor for RsyncActor {
-    type Params = RsyncParams;
-
-    async fn new(RsyncParams {}: Self::Params) -> Result<Self> {
-        Ok(Self {})
-    }
-}
+impl Actor for RsyncActor {}
 
 #[async_trait]
 impl Handler<RsyncMessage> for RsyncActor {
@@ -529,16 +517,13 @@ mod tests {
 
         let proc_mesh = ProcMesh::allocate(alloc).await?;
 
-        // Create RsyncParams - all actors will use the same target workspace for this test
-        let params = RsyncParams {};
-
         // TODO: thread through context, or access the actual python context;
         // for now this is basically equivalent (arguably better) to using the proc mesh client.
         let instance = global_root_client();
 
         // Spawn actor mesh with RsyncActors
         let actor_mesh = proc_mesh
-            .spawn::<RsyncActor>(&instance, "rsync_test", &params)
+            .spawn::<RsyncActor>(&instance, "rsync_test", &())
             .await?;
 
         // Test rsync_mesh function - this coordinates rsync operations across the mesh

@@ -46,6 +46,7 @@ use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::worker::ActorCallParams;
 use monarch_messages::worker::ActorMethodParams;
+use monarch_messages::worker::ArgsKwargs;
 use monarch_messages::worker::CallFunctionError;
 use monarch_messages::worker::CallFunctionParams;
 use monarch_messages::worker::SeqError;
@@ -53,8 +54,8 @@ use monarch_messages::worker::StreamRef;
 use monarch_types::PyTree;
 use monarch_types::SerializablePyErr;
 use monarch_types::TryIntoPyObjectUnsafe;
+use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -217,8 +218,7 @@ pub enum StreamMessage {
         worker_actor_id: ActorId,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         device_meshes: HashMap<Ref, DeviceMesh>,
     },
 
@@ -465,10 +465,8 @@ pub struct StreamParams {
     pub respond_with_python_message: bool,
 }
 
-#[async_trait]
-impl Actor for StreamActor {
-    type Params = StreamParams;
-    async fn new(
+impl StreamActor {
+    pub fn new(
         StreamParams {
             world_size,
             rank,
@@ -477,9 +475,9 @@ impl Actor for StreamActor {
             controller_actor,
             creation_mode,
             respond_with_python_message,
-        }: Self::Params,
-    ) -> Result<Self> {
-        Ok(Self {
+        }: StreamParams,
+    ) -> Self {
+        Self {
             world_size,
             rank,
             env: HashMap::new(),
@@ -493,9 +491,12 @@ impl Actor for StreamActor {
             active_recording: None,
             respond_with_python_message,
             last_seq_error: None,
-        })
+        }
     }
+}
 
+#[async_trait]
+impl Actor for StreamActor {
     async fn init(&mut self, cx: &Instance<Self>) -> Result<()> {
         // These thread locals are exposed via python functions, so we need to set them in the
         // same thread that python will run in. That means we need to initialize them here in
@@ -652,7 +653,6 @@ impl StreamActor {
             WireValue::MemoryFormat(val) => RValue::MemoryFormat(val),
             WireValue::PyObject(val) => RValue::PyObject(val),
             WireValue::None(()) => RValue::None,
-            WireValue::IValue(val) => RValue::Opaque(val.into()),
         };
         Ok(ret)
     }
@@ -740,41 +740,12 @@ impl StreamActor {
         Ok(())
     }
 
-    fn call_torch_op(
-        &self,
-        op: String,
-        overload: String,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
-    ) -> Result<Vec<RValue>, CallFunctionError> {
-        let args = args
-            .into_iter()
-            .map(|arg| self.wire_to_rvalue(arg))
-            .collect::<Result<Vec<_>, _>>()?;
-        let kwargs = kwargs
-            .into_iter()
-            .map(|(k, v)| self.wire_to_rvalue(v).map(|rvalue| (k, rvalue)))
-            .collect::<Result<HashMap<_, _>, CallFunctionError>>()?;
-
-        let results = torch_sys::call_op::call_op(op, overload, &args, &kwargs, true)?;
-
-        // Handle the case where the op returns nothing and convert it to a list of None.
-        // This is to ensure handle results does not error out as the client will call
-        // such a function with expected results of size 1.
-        Ok(if results.is_empty() {
-            vec![RValue::None]
-        } else {
-            results
-        })
-    }
-
     fn call_python_fn<'py>(
         &mut self,
         py: Python<'py>,
         cx: &Context<Self>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         mutates: &[Ref],
         device_meshes: HashMap<Ref, DeviceMesh>,
         remote_process_groups: HashMap<
@@ -782,6 +753,9 @@ impl StreamActor {
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
     ) -> Result<Bound<'py, PyAny>, CallFunctionError> {
+        let (args_tuple, kwargs_dict) = args_kwargs
+            .to_python(py)
+            .map_err(|e| CallFunctionError::Error(e.into()))?;
         let function = function
             .map(|function| {
                 function.resolve(py).map_err(|e| {
@@ -834,17 +808,8 @@ impl StreamActor {
         // this function.
         let mut multiborrow = MultiBorrow::new();
 
-        let resolve = |val: WireValue| {
-            val.into_py_object()
-                .map_err(|e| {
-                    CallFunctionError::UnsupportedArgType(
-                        format!("{:?}", function),
-                        format!("{:?}", e),
-                    )
-                })?
-                .unpickle(py)
-                .map_err(SerializablePyErr::from_fn(py))?
-                .extract::<PyTree<PyObject>>()
+        let resolve = |val: Bound<'py, PyAny>| {
+            val.extract::<PyTree<PyObject>>()
                 .map_err(SerializablePyErr::from_fn(py))?
                 .try_into_map(|obj| {
                     Ok(if let Ok(ref_) = Ref::from_py_object(obj.bind(py)) {
@@ -862,14 +827,21 @@ impl StreamActor {
                 })
         };
 
-        // Resolve refs
-        let py_args: Vec<PyTree<PyArg>> = args
-            .into_iter()
-            .map(resolve)
+        // Resolve args and kwargs
+        let py_args: Vec<PyTree<PyArg>> = args_tuple
+            .iter()
+            .map(|item| resolve(item))
             .collect::<Result<_, CallFunctionError>>()?;
-        let py_kwargs: HashMap<_, PyTree<PyArg>> = kwargs
-            .into_iter()
-            .map(|(k, object)| Ok((k, resolve(object)?)))
+
+        let py_kwargs: HashMap<String, PyTree<PyArg>> = kwargs_dict
+            .iter()
+            .map(|(k, v)| {
+                let key = k
+                    .extract::<String>()
+                    .map_err(SerializablePyErr::from_fn(py))?;
+                let value = resolve(v)?;
+                Ok((key, value))
+            })
             .collect::<Result<_, CallFunctionError>>()?;
 
         // Add a shared-borrow for each rvalue reference.
@@ -879,7 +851,7 @@ impl StreamActor {
             .flat_map(|o| o.iter())
             .for_each(|arg| {
                 if let PyArg::RValue(rval) = arg {
-                    multiborrow.add(rval, BorrowType::Shared);
+                    multiborrow.add(&rval, BorrowType::Shared);
                 }
             });
 
@@ -929,8 +901,7 @@ impl StreamActor {
         &mut self,
         cx: &hyperactor::Context<Self>,
         function: ResolvableFunction,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         mutates: &[Ref],
         device_meshes: HashMap<Ref, DeviceMesh>,
         remote_process_groups: HashMap<
@@ -943,8 +914,7 @@ impl StreamActor {
                 py,
                 cx,
                 Some(function),
-                args,
-                kwargs,
+                args_kwargs,
                 mutates,
                 device_meshes,
                 remote_process_groups,
@@ -1010,8 +980,7 @@ impl StreamActor {
         seq: Seq,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         device_meshes: HashMap<Ref, DeviceMesh>,
     ) -> Result<()> {
         let rank = self.rank;
@@ -1023,8 +992,7 @@ impl StreamActor {
                             py,
                             cx,
                             function,
-                            args,
-                            kwargs,
+                            args_kwargs,
                             &mutates,
                             device_meshes,
                             HashMap::new(),
@@ -1118,21 +1086,16 @@ impl StreamMessageHandler for StreamActor {
             params.results,
             &params.mutates,
             async |self| {
-                tokio::task::block_in_place(|| match params.function.as_torch_op() {
-                    Some((op, overload)) => {
-                        self.call_torch_op(op, overload, params.args, params.kwargs)
-                    }
-                    _ => self
-                        .call_python_fn_pytree(
-                            cx,
-                            params.function,
-                            params.args,
-                            params.kwargs,
-                            &params.mutates,
-                            device_meshes,
-                            remote_process_groups,
-                        )
-                        .map(|results| results.into_leaves()),
+                tokio::task::block_in_place(|| {
+                    self.call_python_fn_pytree(
+                        cx,
+                        params.function,
+                        params.args_kwargs,
+                        &params.mutates,
+                        device_meshes,
+                        remote_process_groups,
+                    )
+                    .map(|results| results.into_leaves())
                 })
             },
         )
@@ -1551,89 +1514,59 @@ impl StreamMessageHandler for StreamActor {
         worker_actor_id: ActorId,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
-        args: Vec<WireValue>,
-        kwargs: HashMap<String, WireValue>,
+        args_kwargs: ArgsKwargs,
         device_meshes: HashMap<Ref, DeviceMesh>,
     ) -> Result<()> {
         if self.respond_with_python_message {
             return self
-                .send_value_python_message(cx, seq, mutates, function, args, kwargs, device_meshes)
+                .send_value_python_message(cx, seq, mutates, function, args_kwargs, device_meshes)
                 .await;
         }
-        let result = if let Some(function) = function {
-            // If a function was provided, use that to resolve the value.
-            match function.as_torch_op() {
-                Some((op, overload)) => {
-                    self.call_torch_op(op, overload, args, kwargs)
-                        .map(|rvalues| {
-                            if rvalues.len() == 1 {
-                                Ok(rvalues[0].clone().into())
-                            } else {
-                                // TODO: Replace with native pytrees when possible
-                                Python::with_gil(|py| {
-                                    Ok((|| {
-                                        let py_rvalues = rvalues
-                                            .into_iter()
-                                            // SAFETY: This inherits the unsafety of `try_to_object_unsafe`.
-                                            .map(|rvalue| unsafe {
-                                                rvalue.try_to_object_unsafe(py)
-                                            })
-                                            .collect::<Result<Vec<_>, _>>()?;
-                                        PyTuple::new(py, &py_rvalues)?.extract::<PyTree<RValue>>()
-                                    })()
-                                    .map_err(SerializablePyErr::from_fn(py))?)
-                                })
-                            }
-                        })?
-                }
-                // Use block-in-place to allow nested callbacks to re-enter the
-                // runtime to run async code.
-                _ => tokio::task::block_in_place(|| {
+
+        let result = (|| -> Result<PyTree<RValue>, CallFunctionError> {
+            if let Some(function) = function {
+                // If a function was provided, use that to resolve the value.
+                tokio::task::block_in_place(|| {
                     self.call_python_fn_pytree(
                         cx,
                         function,
-                        args,
-                        kwargs,
+                        args_kwargs,
                         &mutates,
                         device_meshes,
                         HashMap::new(),
                     )
-                }),
+                })
+            } else {
+                // If there's no function provided, there should be exactly one arg
+                // and no kwargs.
+                Python::with_gil(|py| {
+                    let (args, kwargs) = args_kwargs
+                        .to_python(py)
+                        .map_err(|e| CallFunctionError::Error(e.into()))?;
+                    match (args.len(), kwargs.len()) {
+                        (1, 0) => {
+                            let arg = args.get_item(0).map_err(SerializablePyErr::from_fn(py))?;
+                            arg.extract::<PyTree<PyObject>>()
+                                .map_err(SerializablePyErr::from_fn(py))?
+                                .try_into_map(|obj| {
+                                    let bound_obj = obj.bind(py);
+                                    if let Ok(ref_) = Ref::from_py_object(bound_obj) {
+                                        self.ref_to_rvalue(&ref_)
+                                    } else {
+                                        Ok(bound_obj
+                                            .extract::<RValue>()
+                                            .map_err(SerializablePyErr::from_fn(py))?)
+                                    }
+                                })
+                        }
+                        _ => Err(CallFunctionError::TooManyArgsForValue(
+                            format!("args with {} elements", args.len()),
+                            format!("kwargs with {} elements", kwargs.len()),
+                        )),
+                    }
+                })
             }
-        } else {
-            // If there's no function provided, there should be exactly one arg
-            // and no kwargs.
-            match (args.len(), kwargs.len()) {
-                (1, 0) => Python::with_gil(|py| {
-                    let arg = args[0]
-                        .as_py_object()
-                        .ok_or_else(|| {
-                            CallFunctionError::UnsupportedArgType(
-                                "send_value".to_string(),
-                                "expected a PyObject as the first arg".to_string(),
-                            )
-                        })?
-                        .unpickle(py)
-                        .map_err(SerializablePyErr::from_fn(py))?;
-                    arg.extract::<PyTree<PyObject>>()
-                        .map_err(SerializablePyErr::from_fn(py))?
-                        .try_into_map(|obj| {
-                            let bound_obj = obj.bind(py);
-                            if let Ok(ref_) = Ref::from_py_object(bound_obj) {
-                                self.ref_to_rvalue(&ref_)
-                            } else {
-                                Ok(bound_obj
-                                    .extract::<RValue>()
-                                    .map_err(SerializablePyErr::from_fn(py))?)
-                            }
-                        })
-                }),
-                _ => Err(CallFunctionError::TooManyArgsForValue(
-                    format!("{:?}", args),
-                    format!("{:?}", kwargs),
-                )),
-            }
-        };
+        })();
 
         let value = match result {
             Ok(rvalue) => {
@@ -2094,20 +2027,18 @@ mod tests {
             let (client, _handle) = proc.instance("client")?;
             let (supervision_tx, supervision_rx) = client.open_port();
             proc.set_supervision_coordinator(supervision_tx)?;
-            let stream_actor = proc
-                .spawn::<StreamActor>(
-                    "stream",
-                    StreamParams {
-                        world_size,
-                        rank: 0,
-                        creation_mode: StreamCreationMode::UseDefaultStream,
-                        id: 0.into(),
-                        device: Some(CudaDevice::new(0.into())),
-                        controller_actor: controller_actor.clone(),
-                        respond_with_python_message: false,
-                    },
-                )
-                .await?;
+            let stream_actor = proc.spawn(
+                "stream",
+                StreamActor::new(StreamParams {
+                    world_size,
+                    rank: 0,
+                    creation_mode: StreamCreationMode::UseDefaultStream,
+                    id: 0.into(),
+                    device: Some(CudaDevice::new(0.into())),
+                    controller_actor: controller_actor.clone(),
+                    respond_with_python_message: false,
+                }),
+            )?;
 
             Ok(Self {
                 proc,
@@ -2214,8 +2145,11 @@ mod tests {
                 stream_actor.actor_id().clone(),
                 Vec::new(),
                 None,
-                vec![WireValue::PyObject(ref_to_send)],
-                HashMap::new(),
+                ArgsKwargs::from_wire_values(
+                    vec![WireValue::PyObject(ref_to_send)],
+                    HashMap::new(),
+                )
+                .unwrap(),
                 HashMap::new(),
             )
             .await
@@ -2576,18 +2510,17 @@ mod tests {
             .define_recording(&test_setup.client, 0.into())
             .await?;
 
-        let dummy_comm = test_setup
-            .proc
-            .spawn::<NcclCommActor>(
-                "comm",
-                CommParams::New {
-                    device: CudaDevice::new(0.into()),
-                    unique_id: UniqueId::new()?,
-                    world_size: 1,
-                    rank: 0,
-                },
-            )
-            .await?;
+        let dummy_comm = test_setup.proc.spawn(
+            "comm",
+            NcclCommActor::new(CommParams::New {
+                device: CudaDevice::new(0.into()),
+                unique_id: UniqueId::new()?,
+                world_size: 1,
+                rank: 0,
+            })
+            .await
+            .unwrap(),
+        )?;
 
         test_setup
             .stream_actor
@@ -2599,264 +2532,6 @@ mod tests {
             "init_comm not allowed in recording".into(),
         )
         .await;
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_call_function_in_recording() -> Result<()> {
-        let mut test_setup = TestSetup::new().await?;
-
-        // Define a recording equivalent to:
-        // def f(x, y):
-        //   w = x + y
-        //   nonlocal z
-        //   z.add_(1.0)
-        //   return w + z
-        test_setup
-            .stream_actor
-            .define_recording(&test_setup.client, 0.into())
-            .await?;
-
-        let formal0_ref = test_setup.next_ref();
-        let formal0_index = 0;
-        test_setup
-            .stream_actor
-            .recording_formal(&test_setup.client, formal0_ref, formal0_index)
-            .await?;
-
-        let formal1_ref = test_setup.next_ref();
-        let formal1_index = 1;
-        test_setup
-            .stream_actor
-            .recording_formal(&test_setup.client, formal1_ref, formal1_index)
-            .await?;
-
-        let captured_ref = test_setup.next_ref();
-        let result_captured_ref = test_setup.next_ref();
-        let add_one_function =
-            ResolvableFunction::FunctionPath("torch.ops.aten.add_.Scalar".into());
-        let add_tensors_function =
-            ResolvableFunction::FunctionPath("torch.ops.aten.add.Tensor".into());
-
-        let add_result_ref_0 = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .call_function(
-                &test_setup.client,
-                CallFunctionParams {
-                    seq: 100.into(),
-                    function: add_tensors_function.clone(),
-                    args: vec![WireValue::Ref(formal0_ref), WireValue::Ref(formal1_ref)],
-                    kwargs: HashMap::new(),
-                    results: vec![Some(add_result_ref_0)],
-                    mutates: vec![],
-                    stream: 0.into(),
-                    remote_process_groups: Vec::new(),
-                },
-                HashMap::new(),
-                HashMap::new(),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .call_function(
-                &test_setup.client,
-                CallFunctionParams {
-                    seq: 101.into(),
-                    function: add_one_function,
-                    args: vec![WireValue::Ref(captured_ref), WireValue::Double(1.0)],
-                    kwargs: HashMap::new(),
-                    results: vec![Some(result_captured_ref)],
-                    mutates: vec![captured_ref],
-                    stream: 0.into(),
-                    remote_process_groups: Vec::new(),
-                },
-                HashMap::new(),
-                HashMap::new(),
-            )
-            .await?;
-
-        let add_result_ref_1 = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .call_function(
-                &test_setup.client,
-                CallFunctionParams {
-                    seq: 102.into(),
-                    function: add_tensors_function,
-                    args: vec![
-                        WireValue::Ref(add_result_ref_0),
-                        WireValue::Ref(captured_ref),
-                    ],
-                    kwargs: HashMap::new(),
-                    results: vec![Some(add_result_ref_1)],
-                    mutates: vec![],
-                    stream: 0.into(),
-                    remote_process_groups: Vec::new(),
-                },
-                HashMap::new(),
-                HashMap::new(),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .recording_result(&test_setup.client, add_result_ref_1, 0)
-            .await?;
-
-        test_setup
-            .stream_actor
-            .delete_refs(
-                &test_setup.client,
-                vec![add_result_ref_0, add_result_ref_1, result_captured_ref],
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .finalize_recording(&test_setup.client, 0.into())
-            .await?;
-
-        let actual0_ref = test_setup.next_ref();
-        test_setup.set_tensor(actual0_ref, &[1.0, 2.0, 3.0]).await?;
-
-        let actual1_ref = test_setup.next_ref();
-        test_setup.set_tensor(actual1_ref, &[4.0, 5.0, 6.0]).await?;
-
-        test_setup
-            .set_tensor(captured_ref, &[7.0, 8.0, 9.0])
-            .await?;
-
-        let actual_result_ref = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                0.into(),
-                0.into(),
-                vec![actual_result_ref],
-                vec![actual0_ref, actual1_ref],
-            )
-            .await?;
-
-        assert!(
-            test_setup
-                .allclose(actual_result_ref, &[13.0, 16.0, 19.0])
-                .await
-        );
-
-        // Set actual1_tensor to a bad shape which will cause the recording to fail.
-        test_setup.set_tensor(actual1_ref, &[4.0, 5.0]).await?;
-
-        let actual_result_ref = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                1.into(),
-                0.into(),
-                vec![actual_result_ref],
-                vec![actual0_ref, actual1_ref],
-            )
-            .await?;
-
-        // Both inputs should still be valid.
-        for ref_ in [actual0_ref, actual1_ref] {
-            let _ = test_setup
-                .stream_actor
-                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
-                .await?
-                .unwrap()
-                .unwrap();
-        }
-
-        for ref_ in [captured_ref, actual_result_ref] {
-            let result_error = test_setup
-                .stream_actor
-                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
-                .await?
-                .unwrap()
-                .unwrap_err();
-            // Check that the error contains the expected strings
-            let error_str = result_error.to_string();
-            assert!(
-                error_str.contains("torch operator error"),
-                "Error should contain 'torch operator failed': {}",
-                error_str
-            );
-        }
-
-        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
-        match controller_msg {
-            ControllerMessage::RemoteFunctionFailed { seq, error } => {
-                assert_eq!(seq, 1.into());
-                assert!(
-                    error.backtrace.contains("torch operator error"),
-                    "Unexpected WorkerError: {:?}",
-                    error
-                );
-            }
-            _ => panic!("Unexpected controller message: {:?}", controller_msg),
-        };
-
-        // Reset input tensor to a valid shape.
-        test_setup.set_tensor(actual1_ref, &[4.0, 5.0, 6.0]).await?;
-
-        // captured_tensor should still have an error, so calling
-        // the recording should set DependentErrors and not report
-        // anything to the controller.
-        let actual_result_ref = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                2.into(),
-                0.into(),
-                vec![actual_result_ref],
-                vec![actual0_ref, actual1_ref],
-            )
-            .await?;
-
-        // Both inputs should still be valid.
-        for ref_ in [actual0_ref, actual1_ref] {
-            let _ = test_setup
-                .stream_actor
-                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
-                .await?
-                .unwrap()
-                .unwrap();
-        }
-
-        for ref_ in [captured_ref, actual_result_ref] {
-            let result_error = test_setup
-                .stream_actor
-                .get_tensor_ref_unit_tests_only(&test_setup.client, ref_)
-                .await?
-                .unwrap()
-                .unwrap_err();
-            // Check that the error contains the expected strings
-            let error_str = result_error.to_string();
-            assert!(
-                error_str.contains("torch operator error"),
-                "Error should contain input error: {}",
-                error_str
-            );
-        }
-
-        // This tests that the DependentError was never reported to the controller.
-        // If it were reported to the controller, the next message would match
-        // RemoteFunctionFailed instead of FetchResult.
-        check_fetch_result_error(
-            &test_setup.client,
-            test_setup.stream_actor.clone(),
-            3.into(),
-            captured_ref,
-            &mut test_setup.controller_rx,
-            "torch operator error",
-        )
-        .await;
-
         Ok(())
     }
 
@@ -2959,930 +2634,6 @@ mod tests {
             &test_setup.proc,
             test_setup.stream_actor.actor_id(),
             "all borrows created within recording must be dropped within recording".into(),
-        )
-        .await;
-
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_borrow_in_recording() -> Result<()> {
-        let mut test_setup = TestSetup::new().await?;
-
-        let borrower_stream = test_setup
-            .proc
-            .spawn::<StreamActor>(
-                "stream1",
-                StreamParams {
-                    world_size: 1,
-                    rank: 0,
-                    creation_mode: StreamCreationMode::CreateNewStream,
-                    id: 1.into(),
-                    device: Some(CudaDevice::new(0.into())),
-                    controller_actor: test_setup.controller_actor.clone(),
-                    respond_with_python_message: false,
-                },
-            )
-            .await?;
-
-        let lender_stream = test_setup.stream_actor.clone();
-
-        let borrow_id = 1;
-        let (first_use_sender, first_use_receiver) = test_setup.client.open_port();
-        let (last_use_sender, last_use_receiver) = test_setup.client.open_port();
-
-        // Stream 1: Define a recording that creates a borrow and drops it.
-        lender_stream
-            .define_recording(&test_setup.client, 0.into())
-            .await?;
-
-        let formal_ref = test_setup.next_ref();
-        lender_stream
-            .recording_formal(&test_setup.client, formal_ref, 0)
-            .await?;
-
-        lender_stream
-            .borrow_create(&test_setup.client, borrow_id, formal_ref, first_use_sender)
-            .await?;
-
-        lender_stream
-            .borrow_drop(
-                &test_setup.client,
-                borrow_id,
-                Arc::new(Mutex::new(last_use_receiver)),
-            )
-            .await?;
-
-        lender_stream
-            .finalize_recording(&test_setup.client, 0.into())
-            .await?;
-
-        let borrower_tensor_ref = test_setup.next_ref();
-        let borrower_tensor = TensorCell::new(factory_float_tensor(
-            &[1.0, 2.0, 3.0],
-            "cuda".try_into().unwrap(),
-        ));
-
-        borrower_stream
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                borrower_tensor_ref,
-                Ok(borrower_tensor.clone()),
-            )
-            .await?;
-
-        // Stream 2: Define a recording that uses the borrow from Stream 1.
-        borrower_stream
-            .define_recording(&test_setup.client, 0.into())
-            .await?;
-
-        let borrowed_ref = test_setup.next_ref();
-
-        borrower_stream
-            .borrow_first_use(
-                &test_setup.client,
-                borrow_id,
-                borrowed_ref,
-                Arc::new(Mutex::new(first_use_receiver)),
-            )
-            .await?;
-
-        let result_ref = test_setup.next_ref();
-        borrower_stream
-            .call_function(
-                &test_setup.client,
-                CallFunctionParams {
-                    seq: 100.into(),
-                    function: ResolvableFunction::FunctionPath("torch.ops.aten.add.Tensor".into()),
-                    args: vec![
-                        WireValue::Ref(borrowed_ref),
-                        WireValue::Ref(borrower_tensor_ref),
-                    ],
-                    kwargs: HashMap::new(),
-                    results: vec![Some(result_ref)],
-                    mutates: vec![],
-                    stream: 1.into(),
-                    remote_process_groups: Vec::new(),
-                },
-                HashMap::new(),
-                HashMap::new(),
-            )
-            .await?;
-
-        borrower_stream
-            .borrow_last_use(&test_setup.client, borrow_id, borrowed_ref, last_use_sender)
-            .await?;
-
-        borrower_stream
-            .recording_result(&test_setup.client, result_ref, 0)
-            .await?;
-
-        borrower_stream
-            .finalize_recording(&test_setup.client, 0.into())
-            .await?;
-
-        // Set up a tensor in the lender stream and call the recording.
-        let input_tensor_ref = test_setup.next_ref();
-        test_setup
-            .set_tensor(input_tensor_ref, &[4.0, 5.0, 6.0])
-            .await?;
-
-        let result_tensor_ref = test_setup.next_ref();
-
-        let lender_future = lender_stream.call_recording(
-            &test_setup.client,
-            0.into(),
-            0.into(),
-            vec![],
-            vec![input_tensor_ref],
-        );
-
-        let borrower_future = borrower_stream.call_recording(
-            &test_setup.client,
-            0.into(),
-            0.into(),
-            vec![result_tensor_ref],
-            vec![],
-        );
-
-        tokio::try_join!(lender_future, borrower_future)?;
-
-        let result_tensor = borrower_stream
-            .get_tensor_ref_unit_tests_only(&test_setup.client, result_tensor_ref)
-            .await?
-            .unwrap()
-            .unwrap();
-
-        let expected_tensor = TensorCell::new(factory_float_tensor(
-            &[5.0, 7.0, 9.0],
-            "cpu".try_into().unwrap(),
-        ));
-        assert!(allclose(&result_tensor.borrow(), &expected_tensor.borrow()).unwrap());
-
-        // Set borrower_tensor to a tensor with only 2 elements to cause a failure.
-        let invalid_borrower_tensor = TensorCell::new(factory_float_tensor(
-            &[1.0, 2.0],
-            "cuda".try_into().unwrap(),
-        ));
-        borrower_stream
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                borrower_tensor_ref,
-                Ok(invalid_borrower_tensor.clone()),
-            )
-            .await?;
-
-        // Call the recording again.
-        let lender_future = lender_stream.call_recording(
-            &test_setup.client,
-            1.into(),
-            0.into(),
-            vec![],
-            vec![input_tensor_ref],
-        );
-
-        let borrower_future = borrower_stream.call_recording(
-            &test_setup.client,
-            1.into(),
-            0.into(),
-            vec![result_tensor_ref],
-            vec![],
-        );
-
-        tokio::try_join!(lender_future, borrower_future)?;
-
-        // Check that the borrower_stream reports the error to the controller.
-        let controller_msg = test_setup.controller_rx.recv().await.unwrap();
-        match controller_msg {
-            ControllerMessage::RemoteFunctionFailed { seq, error } => {
-                assert_eq!(seq, 1.into());
-                assert!(
-                    error.backtrace.contains("recording failed"),
-                    "Unexpected WorkerError: {:?}",
-                    error
-                );
-                assert_eq!(&error.worker_actor_id, borrower_stream.actor_id());
-            }
-            _ => panic!("Unexpected controller message: {:?}", controller_msg),
-        };
-
-        // Check that no error was reported from the lender stream
-        check_fetch_result_value(
-            &test_setup.client,
-            lender_stream.clone(),
-            2.into(),
-            input_tensor_ref,
-            &mut test_setup.controller_rx,
-        )
-        .await;
-
-        // Set the recording's input tensor to an error.
-        let input_error = fake_seq_error(anyhow!("input error"));
-        lender_stream
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                input_tensor_ref,
-                Err(input_error.clone()),
-            )
-            .await?;
-
-        let lender_future = lender_stream.call_recording(
-            &test_setup.client,
-            3.into(),
-            0.into(),
-            vec![],
-            vec![input_tensor_ref],
-        );
-
-        let borrower_future = borrower_stream.call_recording(
-            &test_setup.client,
-            3.into(),
-            0.into(),
-            vec![result_tensor_ref],
-            vec![],
-        );
-
-        tokio::try_join!(lender_future, borrower_future)?;
-
-        // Verify that borrower_stream sets a CallFunctionError::DependentError on result_tensor_ref.
-        let result_error = borrower_stream
-            .get_tensor_ref_unit_tests_only(&test_setup.client, result_tensor_ref)
-            .await?
-            .unwrap()
-            .unwrap_err();
-
-        // Check that the error contains the expected strings
-        let error_str = result_error.to_string();
-        assert!(
-            error_str.contains("input error"),
-            "Error should contain input error: {}",
-            error_str
-        );
-
-        // Since we're checking for pointer equality in the original code, we need to ensure
-        // the error is propagated correctly. We can check that the original error message is contained.
-        let input_error_str = input_error.to_string();
-        assert!(
-            error_str.contains(&input_error_str),
-            "Error should contain the original error: {}",
-            error_str
-        );
-
-        // Verify that neither stream sends a failure message to the controller.
-        check_fetch_result_error(
-            &test_setup.client,
-            lender_stream,
-            4.into(),
-            input_tensor_ref,
-            &mut test_setup.controller_rx,
-            "input error",
-        )
-        .await;
-
-        // Verify that neither stream sends a failure message to the controller.
-        check_fetch_result_error(
-            &test_setup.client,
-            borrower_stream,
-            5.into(),
-            result_tensor_ref,
-            &mut test_setup.controller_rx,
-            "input error",
-        )
-        .await;
-
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_reduce_in_recording() -> Result<()> {
-        let mut test_setup = TestSetup::new().await?;
-        let recording_ref = test_setup.next_ref();
-
-        let comm = Arc::new(
-            test_setup
-                .proc
-                .spawn::<NcclCommActor>(
-                    "comm",
-                    CommParams::New {
-                        device: CudaDevice::new(0.into()),
-                        unique_id: UniqueId::new()?,
-                        world_size: 1,
-                        rank: 0,
-                    },
-                )
-                .await?,
-        );
-
-        let factory = Factory {
-            size: vec![3],
-            dtype: torch_sys::ScalarType::Float,
-            layout: torch_sys::Layout::Strided,
-            device: "cuda".try_into().unwrap(),
-        };
-
-        let reduction = Reduction::ReduceOp(torch_sys_cuda::nccl::ReduceOp::Sum);
-
-        test_setup
-            .stream_actor
-            .define_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let formal_tensor_ref_0 = test_setup.next_ref();
-        let formal_tensor_ref_1 = test_setup.next_ref();
-        let formal_tensor_ref_2 = test_setup.next_ref();
-
-        test_setup
-            .stream_actor
-            .recording_formal(&test_setup.client, formal_tensor_ref_0, 0)
-            .await?;
-        test_setup
-            .stream_actor
-            .recording_formal(&test_setup.client, formal_tensor_ref_1, 1)
-            .await?;
-        test_setup
-            .stream_actor
-            .recording_formal(&test_setup.client, formal_tensor_ref_2, 2)
-            .await?;
-
-        let intermediate_tensor_ref_0 = test_setup.next_ref();
-
-        // Handle case with in_place = true.
-        test_setup
-            .stream_actor
-            .reduce(
-                &test_setup.client,
-                comm.clone(),
-                1,
-                intermediate_tensor_ref_0,
-                formal_tensor_ref_0,
-                factory.clone(),
-                reduction.clone(),
-                false,
-                true,
-                None,
-            )
-            .await?;
-
-        // Handle case with in_place = false and out = None.
-        let intermediate_tensor_ref_1 = test_setup.next_ref();
-        test_setup
-            .stream_actor
-            .reduce(
-                &test_setup.client,
-                comm.clone(),
-                1,
-                intermediate_tensor_ref_1,
-                formal_tensor_ref_1,
-                factory.clone(),
-                reduction.clone(),
-                false,
-                false,
-                None,
-            )
-            .await?;
-
-        let intermediate_tensor_ref_2 = test_setup.next_ref();
-
-        // Third reduce call with out = formal_tensor_ref_2
-        test_setup
-            .stream_actor
-            .reduce(
-                &test_setup.client,
-                comm.clone(),
-                1,
-                intermediate_tensor_ref_2,
-                intermediate_tensor_ref_1,
-                factory.clone(),
-                reduction.clone(),
-                false,
-                false,
-                Some(formal_tensor_ref_2),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .recording_result(&test_setup.client, intermediate_tensor_ref_2, 0)
-            .await?;
-
-        test_setup
-            .stream_actor
-            .finalize_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let input_tensor_ref_0 = test_setup.next_ref();
-        let input_tensor_ref_1 = test_setup.next_ref();
-        let input_tensor_ref_2 = test_setup.next_ref();
-
-        test_setup
-            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-            .await?;
-
-        test_setup
-            .set_tensor(input_tensor_ref_1, &[4.0, 5.0, 6.0])
-            .await?;
-
-        test_setup
-            .set_tensor(input_tensor_ref_2, &[7.0, 8.0, 9.0])
-            .await?;
-
-        let output_ref = test_setup.next_ref();
-
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                0.into(),
-                recording_ref,
-                vec![output_ref],
-                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
-            )
-            .await?;
-
-        // Validate that input_tensor_ref_0 is unchanged.
-        assert!(
-            test_setup
-                .allclose(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-                .await
-        );
-        // All the other inputs/outputs should be equal to input 1
-        for ref_ in [input_tensor_ref_1, input_tensor_ref_2, output_ref] {
-            assert!(test_setup.allclose(ref_, &[4.0, 5.0, 6.0]).await);
-        }
-
-        // Set an error on input 0
-        let input_error = fake_seq_error(anyhow!("input error"));
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                input_tensor_ref_0,
-                Err(input_error.clone()),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                1.into(),
-                recording_ref,
-                vec![output_ref],
-                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
-            )
-            .await?;
-
-        // Verify that input_tensor_ref_0, input_tensor_ref_2, and output_ref have a dependent error.
-        for ref_ in [input_tensor_ref_0, input_tensor_ref_2, output_ref] {
-            test_setup
-                .validate_dependent_error(ref_, input_error.clone())
-                .await;
-        }
-
-        // Verify that input_tensor_ref_1 is untouched.
-        assert!(
-            test_setup
-                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
-                .await
-        );
-
-        // Verify that no failure was reported to the controller.
-        check_fetch_result_value(
-            &test_setup.client,
-            test_setup.stream_actor.clone(),
-            2.into(),
-            input_tensor_ref_1,
-            &mut test_setup.controller_rx,
-        )
-        .await;
-
-        // Reset input tensors 0 and 2 to their original values
-        test_setup
-            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-            .await?;
-        test_setup
-            .set_tensor(input_tensor_ref_2, &[7.0, 8.0, 9.0])
-            .await?;
-
-        // Set an error on input tensor 1
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                input_tensor_ref_1,
-                Err(input_error.clone()),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                3.into(),
-                recording_ref,
-                vec![output_ref],
-                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
-            )
-            .await?;
-
-        // Validate that the mutated inputs and the output have a dependent error containing
-        // the input error
-        for ref_ in [input_tensor_ref_0, input_tensor_ref_2, output_ref] {
-            test_setup
-                .validate_dependent_error(ref_, input_error.clone())
-                .await;
-        }
-
-        // Validate that no error was reported to the controller
-        check_fetch_result_error(
-            &test_setup.client,
-            test_setup.stream_actor.clone(),
-            4.into(),
-            input_tensor_ref_1,
-            &mut test_setup.controller_rx,
-            "input error",
-        )
-        .await;
-
-        // Reset input tensors 0 and 1 to their original values
-        test_setup
-            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-            .await?;
-        test_setup
-            .set_tensor(input_tensor_ref_1, &[4.0, 5.0, 6.0])
-            .await?;
-
-        // Set an error on input tensor 2
-        test_setup
-            .stream_actor
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                input_tensor_ref_2,
-                Err(input_error.clone()),
-            )
-            .await?;
-
-        test_setup
-            .stream_actor
-            .call_recording(
-                &test_setup.client,
-                5.into(),
-                recording_ref,
-                vec![output_ref],
-                vec![input_tensor_ref_0, input_tensor_ref_1, input_tensor_ref_2],
-            )
-            .await?;
-
-        // Validate that input tensor 1 has its original values
-        assert!(
-            test_setup
-                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
-                .await
-        );
-
-        // Validate that the mutated inputs and the output have a dependent error containing
-        // the input error
-        for ref_ in [input_tensor_ref_0, input_tensor_ref_2, output_ref] {
-            test_setup
-                .validate_dependent_error(ref_, input_error.clone())
-                .await;
-        }
-
-        // Validate that no error was reported to the controller
-        check_fetch_result_value(
-            &test_setup.client,
-            test_setup.stream_actor.clone(),
-            6.into(),
-            input_tensor_ref_1,
-            &mut test_setup.controller_rx,
-        )
-        .await;
-
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_send_tensor_in_recording() -> Result<()> {
-        let mut test_setup = TestSetup::new_with_world_size(2).await?;
-        let recording_ref = test_setup.next_ref();
-
-        let unique_id = UniqueId::new()?;
-        let comm0 = test_setup.proc.spawn::<NcclCommActor>(
-            "comm0",
-            CommParams::New {
-                device: CudaDevice::new(0.into()),
-                unique_id: unique_id.clone(),
-                world_size: 2,
-                rank: 0,
-            },
-        );
-        let comm1 = test_setup.proc.spawn::<NcclCommActor>(
-            "comm1",
-            CommParams::New {
-                device: CudaDevice::new(1.into()),
-                unique_id,
-                world_size: 2,
-                rank: 1,
-            },
-        );
-        let (comm0, comm1) = tokio::try_join!(comm0, comm1)?;
-        let comm0 = Arc::new(comm0);
-        let comm1 = Arc::new(comm1);
-
-        let factory = Factory {
-            size: vec![3],
-            dtype: torch_sys::ScalarType::Float,
-            layout: torch_sys::Layout::Strided,
-            device: "cuda".try_into().unwrap(),
-        };
-
-        let send_stream = test_setup.stream_actor.clone();
-        let recv_stream = test_setup
-            .proc
-            .spawn::<StreamActor>(
-                "recv_stream",
-                StreamParams {
-                    world_size: 2,
-                    rank: 1,
-                    creation_mode: StreamCreationMode::CreateNewStream,
-                    id: 1.into(),
-                    device: Some(CudaDevice::new(1.into())),
-                    controller_actor: test_setup.controller_actor.clone(),
-                    respond_with_python_message: false,
-                },
-            )
-            .await?;
-
-        send_stream
-            .define_recording(&test_setup.client, recording_ref)
-            .await?;
-        recv_stream
-            .define_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let formal_tensor_ref_0 = test_setup.next_ref();
-        let formal_tensor_ref_1 = test_setup.next_ref();
-
-        send_stream
-            .recording_formal(&test_setup.client, formal_tensor_ref_0, 0)
-            .await?;
-        send_stream
-            .recording_formal(&test_setup.client, formal_tensor_ref_1, 1)
-            .await?;
-
-        let _ref = test_setup.next_ref();
-        send_stream
-            .send_tensor(
-                &test_setup.client,
-                _ref,
-                None,
-                Some(1),
-                formal_tensor_ref_0,
-                factory.clone(),
-                comm0.clone(),
-            )
-            .await?;
-
-        let result_ref_0 = test_setup.next_ref();
-        let _ref = test_setup.next_ref();
-        recv_stream
-            .send_tensor(
-                &test_setup.client,
-                result_ref_0,
-                Some(0),
-                None,
-                _ref,
-                factory.clone(),
-                comm1,
-            )
-            .await?;
-
-        let result_ref_1 = test_setup.next_ref();
-        send_stream
-            .send_tensor(
-                &test_setup.client,
-                result_ref_1,
-                Some(0),
-                Some(0),
-                formal_tensor_ref_1,
-                factory.clone(),
-                comm0,
-            )
-            .await?;
-
-        send_stream
-            .recording_result(&test_setup.client, result_ref_1, 0)
-            .await?;
-        recv_stream
-            .recording_result(&test_setup.client, result_ref_0, 0)
-            .await?;
-
-        send_stream
-            .finalize_recording(&test_setup.client, recording_ref)
-            .await?;
-        recv_stream
-            .finalize_recording(&test_setup.client, recording_ref)
-            .await?;
-
-        let input_tensor_ref_0 = test_setup.next_ref();
-        let input_tensor_ref_1 = test_setup.next_ref();
-        test_setup
-            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-            .await?;
-        test_setup
-            .set_tensor(input_tensor_ref_1, &[4.0, 5.0, 6.0])
-            .await?;
-
-        let actual_result_ref_0 = test_setup.next_ref();
-        let actual_result_ref_1 = test_setup.next_ref();
-        let send_fut = send_stream.call_recording(
-            &test_setup.client,
-            0.into(),
-            recording_ref,
-            vec![actual_result_ref_1],
-            vec![input_tensor_ref_0, input_tensor_ref_1],
-        );
-        let recv_fut = recv_stream.call_recording(
-            &test_setup.client,
-            0.into(),
-            recording_ref,
-            vec![actual_result_ref_0],
-            vec![],
-        );
-        tokio::try_join!(send_fut, recv_fut)?;
-
-        assert!(
-            test_setup
-                .allclose(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-                .await
-        );
-        assert!(
-            test_setup
-                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
-                .await
-        );
-        assert!(
-            test_setup
-                .allclose(actual_result_ref_1, &[4.0, 5.0, 6.0])
-                .await
-        );
-
-        let actual_result_0 = recv_stream
-            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref_0)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(allclose(
-            &actual_result_0.borrow(),
-            &factory_float_tensor(&[1.0, 2.0, 3.0], "cpu".try_into().unwrap())
-        )?);
-
-        // Validate that failure wasn't reported to controller.
-        check_fetch_result_value(
-            &test_setup.client,
-            send_stream.clone(),
-            1.into(),
-            actual_result_ref_1,
-            &mut test_setup.controller_rx,
-        )
-        .await;
-        check_fetch_result_value(
-            &test_setup.client,
-            recv_stream.clone(),
-            2.into(),
-            actual_result_ref_0,
-            &mut test_setup.controller_rx,
-        )
-        .await;
-
-        let input_error = fake_seq_error(anyhow!("input error"));
-        send_stream
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                input_tensor_ref_0,
-                Err(input_error.clone()),
-            )
-            .await?;
-
-        let send_fut = send_stream.call_recording(
-            &test_setup.client,
-            3.into(),
-            recording_ref,
-            vec![actual_result_ref_1],
-            vec![input_tensor_ref_0, input_tensor_ref_1],
-        );
-        let recv_fut = recv_stream.call_recording(
-            &test_setup.client,
-            3.into(),
-            recording_ref,
-            vec![actual_result_ref_0],
-            vec![],
-        );
-        tokio::try_join!(send_fut, recv_fut)?;
-
-        // The result on recv_stream should have a value, but it will be garbage.
-        let _ = recv_stream
-            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref_0)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-
-        test_setup
-            .validate_dependent_error(actual_result_ref_1, input_error.clone())
-            .await;
-
-        // Input 1 should be untouched.
-        assert!(
-            test_setup
-                .allclose(input_tensor_ref_1, &[4.0, 5.0, 6.0])
-                .await
-        );
-
-        // Validate that failure wasn't reported to controller.
-        check_fetch_result_error(
-            &test_setup.client,
-            send_stream.clone(),
-            4.into(),
-            actual_result_ref_1,
-            &mut test_setup.controller_rx,
-            "input error",
-        )
-        .await;
-        check_fetch_result_value(
-            &test_setup.client,
-            recv_stream.clone(),
-            5.into(),
-            actual_result_ref_0,
-            &mut test_setup.controller_rx,
-        )
-        .await;
-
-        test_setup
-            .set_tensor(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-            .await?;
-        send_stream
-            .set_tensor_ref_unit_tests_only(
-                &test_setup.client,
-                input_tensor_ref_1,
-                Err(input_error.clone()),
-            )
-            .await?;
-
-        let send_fut = send_stream.call_recording(
-            &test_setup.client,
-            6.into(),
-            recording_ref,
-            vec![actual_result_ref_1],
-            vec![input_tensor_ref_0, input_tensor_ref_1],
-        );
-        let recv_fut = recv_stream.call_recording(
-            &test_setup.client,
-            6.into(),
-            recording_ref,
-            vec![actual_result_ref_0],
-            vec![],
-        );
-        tokio::try_join!(send_fut, recv_fut)?;
-
-        let actual_result_0 = recv_stream
-            .get_tensor_ref_unit_tests_only(&test_setup.client, actual_result_ref_0)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(allclose(
-            &actual_result_0.borrow(),
-            &factory_float_tensor(&[1.0, 2.0, 3.0], "cpu".try_into().unwrap())
-        )?);
-
-        assert!(
-            test_setup
-                .allclose(input_tensor_ref_0, &[1.0, 2.0, 3.0])
-                .await
-        );
-
-        test_setup
-            .validate_dependent_error(actual_result_ref_1, input_error)
-            .await;
-
-        // Validate that failure wasn't reported to controller.
-        check_fetch_result_error(
-            &test_setup.client,
-            send_stream.clone(),
-            7.into(),
-            actual_result_ref_1,
-            &mut test_setup.controller_rx,
-            "input error",
-        )
-        .await;
-        check_fetch_result_value(
-            &test_setup.client,
-            recv_stream.clone(),
-            8.into(),
-            actual_result_ref_0,
-            &mut test_setup.controller_rx,
         )
         .await;
 

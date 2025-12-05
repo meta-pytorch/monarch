@@ -23,18 +23,14 @@ use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Instance;
 use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
-use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::config;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
 use hyperactor::context;
-use hyperactor::declare_attrs;
 use hyperactor::mailbox;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
@@ -48,6 +44,10 @@ use hyperactor::metrics;
 use hyperactor::proc::Proc;
 use hyperactor::reference::ProcId;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
+use hyperactor_config::global;
 use ndslice::Range;
 use ndslice::Shape;
 use ndslice::ShapeError;
@@ -98,7 +98,7 @@ declare_attrs! {
 
 /// Get the default transport type to use across the application.
 pub fn default_transport() -> ChannelTransport {
-    config::global::get_cloned(DEFAULT_TRANSPORT)
+    global::get_cloned(DEFAULT_TRANSPORT)
 }
 
 /// Single, process-wide supervision sink storage.
@@ -274,7 +274,7 @@ impl ProcMesh {
         C.get_or_init(|| AtomicUsize::new(0))
     }
 
-    #[tracing::instrument(skip_all)]
+    #[hyperactor::instrument]
     #[hyperactor::observe_result("ProcMesh")]
     async fn allocate_boxed_inner(
         mut alloc: Box<dyn Alloc + Send + Sync>,
@@ -501,7 +501,7 @@ impl ProcMesh {
     ///   Referable`.
     /// - `A::Params: RemoteMessage` - params must serialize for
     ///   cross-proc spawn.
-    async fn spawn_on_procs<A: Actor + Referable>(
+    async fn spawn_on_procs<A: RemoteSpawn>(
         cx: &impl context::Actor,
         agents: impl IntoIterator<Item = ActorRef<ProcMeshAgent>> + '_,
         actor_name: &str,
@@ -608,7 +608,7 @@ impl ProcMesh {
     ///   Referable`.
     /// - `A::Params: RemoteMessage` — params must be serializable to
     ///   cross proc boundaries when launching each actor.
-    pub async fn spawn<A: Actor + Referable>(
+    pub async fn spawn<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         actor_name: &str,
@@ -718,7 +718,7 @@ impl ProcMesh {
         match &self.inner {
             ProcMeshKind::V0 { client, .. } => {
                 let timeout =
-                    hyperactor::config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+                    hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
                 let results = join_all(self.agents().map(|agent| async move {
                     let actor_id =
                         ActorId(agent.actor_id().proc_id().clone(), mesh_name.to_string(), 0);
@@ -752,7 +752,7 @@ impl ProcMesh {
             }
             ProcMeshKind::V1(proc_mesh) => {
                 proc_mesh
-                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name))
+                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name)?)
                     .await?;
                 Ok(())
             }
@@ -958,7 +958,7 @@ impl ProcEvents {
 pub trait SharedSpawnable {
     // `Actor`: the type actually runs in the mesh;
     // `Referable`: so we can hand back ActorRef<A> in RootActorMesh
-    async fn spawn<A: Actor + Referable>(
+    async fn spawn<A: RemoteSpawn>(
         self,
         cx: &impl context::Actor,
         actor_name: &str,
@@ -972,7 +972,7 @@ pub trait SharedSpawnable {
 impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D {
     // `Actor`: the type actually runs in the mesh;
     // `Referable`: so we can hand back ActorRef<A> in RootActorMesh
-    async fn spawn<A: Actor + Referable>(
+    async fn spawn<A: RemoteSpawn>(
         self,
         cx: &impl context::Actor,
         actor_name: &str,

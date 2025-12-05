@@ -46,7 +46,6 @@ use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
 use monarch_hyperactor::buffers::FrozenBuffer;
 use monarch_hyperactor::context::PyInstance;
-use monarch_hyperactor::instance_dispatch;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::ndslice::PySlice;
@@ -140,19 +139,14 @@ impl _Controller {
         let id = NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed);
         let controller_handle: Arc<Mutex<ActorHandle<MeshControllerActor>>> =
             signal_safe_block_on(py, async move {
-                let controller_handle = instance_dispatch!(client, |instance| {
-                    instance
-                        .proc()
-                        .spawn(
-                            &Name::new("mesh_controller").to_string(),
-                            MeshControllerActorParams {
-                                proc_mesh,
-                                id,
-                                rank_map,
-                            },
-                        )
-                        .await?
-                });
+                let controller_handle = client.spawn(
+                    MeshControllerActor::new(MeshControllerActorParams {
+                        proc_mesh,
+                        id,
+                        rank_map,
+                    })
+                    .await,
+                )?;
                 Ok::<_, anyhow::Error>(Arc::new(Mutex::new(controller_handle)))
             })??;
 
@@ -233,8 +227,7 @@ impl _Controller {
     }
 
     fn _drain_and_stop(&mut self, py: Python<'_>, instance: &PyInstance) -> PyResult<()> {
-        let (stop_worker_port, stop_worker_receiver) =
-            instance_dispatch!(instance, |cx_instance| { cx_instance.open_once_port() });
+        let (stop_worker_port, stop_worker_receiver) = instance.open_once_port();
 
         self.controller_handle
             .blocking_lock()
@@ -683,7 +676,33 @@ struct MeshControllerActor {
     rank_map: Option<HashMap<ProcId, usize>>,
 }
 
+struct MeshControllerActorParams {
+    proc_mesh: SharedCell<TrackedProcMesh>,
+    id: usize,
+    rank_map: Option<HashMap<ProcId, usize>>,
+}
+
 impl MeshControllerActor {
+    async fn new(
+        MeshControllerActorParams {
+            proc_mesh,
+            id,
+            rank_map,
+        }: MeshControllerActorParams,
+    ) -> Self {
+        let world_size = proc_mesh.borrow().unwrap().shape().slice().len();
+        MeshControllerActor {
+            proc_mesh,
+            workers: None,
+            brokers: None,
+            history: History::new(world_size),
+            id,
+            debugger_active: None,
+            debugger_paused: VecDeque::new(),
+            rank_map,
+        }
+    }
+
     fn workers(&self) -> SharedCellRef<RootActorMesh<'static, WorkerActor>> {
         self.workers.as_ref().unwrap().borrow().unwrap()
     }
@@ -764,41 +783,8 @@ impl MeshControllerActor {
     }
 }
 
-impl Debug for MeshControllerActor {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MeshControllerActor").finish()
-    }
-}
-
-struct MeshControllerActorParams {
-    proc_mesh: SharedCell<TrackedProcMesh>,
-    id: usize,
-    rank_map: Option<HashMap<ProcId, usize>>,
-}
-
 #[async_trait]
 impl Actor for MeshControllerActor {
-    type Params = MeshControllerActorParams;
-    async fn new(
-        MeshControllerActorParams {
-            proc_mesh,
-            id,
-            rank_map,
-        }: Self::Params,
-    ) -> Result<Self, anyhow::Error> {
-        let world_size = proc_mesh.borrow().unwrap().shape().slice().len();
-        Ok(MeshControllerActor {
-            proc_mesh,
-            workers: None,
-            brokers: None,
-            history: History::new(world_size),
-            id,
-            debugger_active: None,
-            debugger_paused: VecDeque::new(),
-            rank_map,
-        })
-    }
-
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         let controller_actor_ref: ActorRef<ControllerActor> = this.bind();
         let proc_mesh = self.proc_mesh.borrow().unwrap();
@@ -825,6 +811,16 @@ impl Actor for MeshControllerActor {
             .await?;
         self.brokers = Some(brokers);
         Ok(())
+    }
+
+    fn display_name(&self) -> Option<String> {
+        Some(format!("mesh_controller_{}", self.id))
+    }
+}
+
+impl Debug for MeshControllerActor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshControllerActor").finish()
     }
 }
 

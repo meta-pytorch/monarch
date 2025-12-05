@@ -33,7 +33,6 @@ use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
-use hyperactor::attrs::Attrs;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -42,12 +41,7 @@ use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
-use hyperactor::config::global as config;
-use hyperactor::config::global::override_or_global;
 use hyperactor::context;
-use hyperactor::declare_attrs;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::ProcHandle;
@@ -57,6 +51,11 @@ use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::declare_attrs;
+use hyperactor_config::global::override_or_global;
 use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
@@ -269,7 +268,7 @@ async fn halt<R>() -> R {
 /// Bootstrap configures how a mesh process starts up.
 ///
 /// Both `Proc` and `Host` variants may include an optional
-/// configuration snapshot (`hyperactor::config::Attrs`). This
+/// configuration snapshot (`hyperactor_config::Attrs`). This
 /// snapshot is serialized into the bootstrap payload and made
 /// available to the child. Interpretation and application of that
 /// snapshot is up to the child process; if omitted, the child falls
@@ -289,7 +288,7 @@ pub enum Bootstrap {
         /// in this directory, so that they can be looked up by other procs
         /// for direct transfer.
         socket_dir_path: PathBuf,
-        /// Optional config snapshot (`hyperactor::config::Attrs`)
+        /// Optional config snapshot (`hyperactor_config::Attrs`)
         /// captured by the parent. If present, the child installs it
         /// as the `ClientOverride` layer so the parent's effective config
         /// takes precedence over Defaults.
@@ -304,7 +303,7 @@ pub enum Bootstrap {
         /// If specified, use the provided command instead of
         /// [`BootstrapCommand::current`].
         command: Option<BootstrapCommand>,
-        /// Optional config snapshot (`hyperactor::config::Attrs`)
+        /// Optional config snapshot (`hyperactor_config::Attrs`)
         /// captured by the parent. If present, the child installs it
         /// as the `ClientOverride` layer so the parent's effective config
         /// takes precedence over Defaults.
@@ -416,13 +415,16 @@ impl Bootstrap {
                 )
                 .entered();
                 if let Some(attrs) = config {
-                    config::set(config::Source::ClientOverride, attrs);
+                    hyperactor_config::global::set(
+                        hyperactor_config::global::Source::ClientOverride,
+                        attrs,
+                    );
                     tracing::debug!("bootstrap: installed ClientOverride config snapshot (Proc)");
                 } else {
                     tracing::debug!("bootstrap: no config snapshot provided (Proc)");
                 }
 
-                if hyperactor::config::global::get(MESH_BOOTSTRAP_ENABLE_PDEATHSIG) {
+                if hyperactor_config::global::get(MESH_BOOTSTRAP_ENABLE_PDEATHSIG) {
                     // Safety net: normal shutdown is via
                     // `host_mesh.shutdown(&instance)`; PR_SET_PDEATHSIG
                     // is a last-resort guard against leaks if that
@@ -476,7 +478,10 @@ impl Bootstrap {
                 config,
             } => {
                 if let Some(attrs) = config {
-                    config::set(config::Source::Runtime, attrs);
+                    hyperactor_config::global::set(
+                        hyperactor_config::global::Source::Runtime,
+                        attrs,
+                    );
                     tracing::debug!("bootstrap: installed Runtime config snapshot (Host)");
                 } else {
                     tracing::debug!("bootstrap: no config snapshot provided (Host)");
@@ -488,13 +493,13 @@ impl Bootstrap {
                 };
                 let manager = BootstrapProcManager::new(command).unwrap();
 
-                let (host, _handle) = ok!(Host::serve(manager, addr).await);
+                let host = ok!(Host::new(manager, addr).await);
                 let addr = host.addr().clone();
-                let host_mesh_agent = ok!(host
-                    .system_proc()
-                    .clone()
-                    .spawn::<HostMeshAgent>("agent", HostAgentMode::Process(host))
-                    .await);
+                let system_proc = host.system_proc().clone();
+                let host_mesh_agent = ok!(system_proc.spawn::<HostMeshAgent>(
+                    "agent",
+                    HostMeshAgent::new(HostAgentMode::Process(host)),
+                ));
 
                 tracing::info!(
                     "serving host at {}, agent: {}",
@@ -1643,7 +1648,7 @@ impl BootstrapProcManager {
     /// backed by a specific binary path (e.g. a bootstrap
     /// trampoline).
     pub(crate) fn new(command: BootstrapCommand) -> Result<Self, io::Error> {
-        let file_appender = if hyperactor::config::global::get(MESH_ENABLE_FILE_CAPTURE) {
+        let file_appender = if hyperactor_config::global::get(MESH_ENABLE_FILE_CAPTURE) {
             match crate::logging::FileAppender::new() {
                 Some(fm) => {
                     tracing::info!("file appender created successfully");
@@ -1843,7 +1848,7 @@ impl ProcManager for BootstrapProcManager {
     /// Returns a [`BootstrapProcHandle`] that exposes the child
     /// process's lifecycle (status, wait/ready, termination). Errors
     /// are surfaced as [`HostError`].
-    #[tracing::instrument(skip(self, config))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1872,6 +1877,20 @@ impl ProcManager for BootstrapProcManager {
             "HYPERACTOR_MESH_BOOTSTRAP_MODE",
             mode.to_env_safe_string()
                 .map_err(|e| HostError::ProcessConfigurationFailure(proc_id.clone(), e.into()))?,
+        );
+        cmd.env(
+            "HYPERACTOR_PROCESS_NAME",
+            format!(
+                "proc {} @ {}",
+                match &proc_id {
+                    ProcId::Direct(_, name) => name.clone(),
+                    ProcId::Ranked(world_id, rank) => format!("{world_id}[{rank}]"),
+                },
+                hostname::get()
+                    .unwrap_or_else(|_| "unknown_host".into())
+                    .into_string()
+                    .unwrap_or("unknown_host".to_string())
+            ),
         );
 
         if need_stdio {
@@ -2352,6 +2371,7 @@ mod tests {
     use hyperactor::ActorId;
     use hyperactor::ActorRef;
     use hyperactor::ProcId;
+    use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
@@ -2614,15 +2634,16 @@ mod tests {
 
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
+        let log_client_actor = LogClientActor::new(()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
-            proc.spawn("log_client", ()).await.unwrap().bind();
+            proc.spawn("log_client", log_client_actor).unwrap().bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
         // BOOTSTRAP_LOG_CHANNEL).
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn("log_forwarder", log_client.clone())
-            .await
+            .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();
 
@@ -3688,7 +3709,7 @@ mod tests {
     async fn exit_tail_is_attached_and_logged() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
         let _guard = lock.override_key(MESH_TAIL_LOG_LINES, 100);
 
         // Spawn a child that writes to stderr then exits 7.
@@ -3717,7 +3738,7 @@ mod tests {
 
                 // Set up logging like ProcManager does
                 let log_channel = ChannelAddr::any(ChannelTransport::Unix);
-                let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
+                let tail_size = hyperactor_config::global::get(MESH_TAIL_LOG_LINES);
 
                 // Set up StreamFwders if pipes are available
                 let stdout_monitor = StreamFwder::start(

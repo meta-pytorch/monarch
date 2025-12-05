@@ -21,6 +21,7 @@ use crate::Instance;
 use crate::Named;
 use crate::OncePortRef;
 use crate::PortRef;
+use crate::RemoteSpawn;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::mailbox::MessageEnvelope;
@@ -34,9 +35,10 @@ use crate::mailbox::UndeliverableMessageError;
 #[derive(Serialize, Deserialize, Debug, Named)]
 pub struct PingPongMessage(pub u64, pub ActorRef<PingPongActor>, pub OncePortRef<bool>);
 
-/// Initialization parameters for `PingPongActor`s.
-#[derive(Debug, Named, Serialize, Deserialize, Clone)]
-pub struct PingPongActorParams {
+/// A PingPong actor that can play the PingPong game by sending messages around.
+#[derive(Debug)]
+#[hyperactor::export(spawn = true, handlers = [PingPongMessage])]
+pub struct PingPongActor {
     /// A port to send undeliverable messages to.
     undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
     /// The TTL at which the actor will exit with error.
@@ -45,40 +47,40 @@ pub struct PingPongActorParams {
     delay: Option<Duration>,
 }
 
-impl PingPongActorParams {
-    /// Create a new set of initialization parameters.
+impl PingPongActor {
+    /// Create a new ping pong actor with the following parameters:
+    ///
+    /// - `undeliverable_port_ref`: A port to send undeliverable messages to.
+    /// - `error_ttl`: The TTL at which the actor will exit with error.
+    /// - `delay`: Manual delay before sending handling the message.
     pub fn new(
         undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
         error_ttl: Option<u64>,
+        delay: Option<Duration>,
     ) -> Self {
         Self {
             undeliverable_port_ref,
             error_ttl,
-            delay: None,
+            delay,
         }
-    }
-
-    /// Set the delay
-    pub fn set_delay(&mut self, delay: Duration) {
-        self.delay = Some(delay);
     }
 }
 
-/// A PingPong actor that can play the PingPong game by sending messages around.
-#[derive(Debug)]
-#[hyperactor::export(handlers = [PingPongMessage])]
-pub struct PingPongActor {
-    params: PingPongActorParams,
+#[async_trait]
+impl RemoteSpawn for PingPongActor {
+    type Params = (
+        Option<PortRef<Undeliverable<MessageEnvelope>>>,
+        Option<u64>,
+        Option<Duration>,
+    );
+
+    async fn new((undeliverable_port_ref, error_ttl, delay): Self::Params) -> anyhow::Result<Self> {
+        Ok(Self::new(undeliverable_port_ref, error_ttl, delay))
+    }
 }
 
 #[async_trait]
 impl Actor for PingPongActor {
-    type Params = PingPongActorParams;
-
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(Self { params })
-    }
-
     // This is an override of the default actor behavior. It is used
     // for testing the mechanism for returning undeliverable messages to
     // their senders.
@@ -87,7 +89,7 @@ impl Actor for PingPongActor {
         cx: &Instance<Self>,
         undelivered: crate::mailbox::Undeliverable<crate::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        match &self.params.undeliverable_port_ref {
+        match &self.undeliverable_port_ref {
             Some(port) => port.send(cx, undelivered).unwrap(),
             None => {
                 let Undeliverable(envelope) = undelivered;
@@ -111,13 +113,13 @@ impl Handler<PingPongMessage> for PingPongActor {
     ) -> anyhow::Result<()> {
         // PingPongActor sends the messages back and forth. When it's ttl = 0, it will stop.
         // User can set a preconfigured TTL that can cause mocked problem: such as an error.
-        if Some(ttl) == self.params.error_ttl {
+        if Some(ttl) == self.error_ttl {
             anyhow::bail!("PingPong handler encountered an Error");
         }
         if ttl == 0 {
             done_port.send(cx, true)?;
         } else {
-            if let Some(delay) = self.params.delay {
+            if let Some(delay) = self.delay {
                 RealClock.sleep(delay).await;
             }
             let next_message = PingPongMessage(ttl - 1, cx.bind(), done_port);
@@ -126,5 +128,3 @@ impl Handler<PingPongMessage> for PingPongActor {
         Ok(())
     }
 }
-
-hyperactor::remote!(PingPongActor);

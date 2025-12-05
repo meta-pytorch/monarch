@@ -7,6 +7,7 @@
  */
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::PathBuf;
 
 use hyperactor_mesh::bootstrap::BootstrapCommand;
@@ -26,7 +27,6 @@ use pyo3::types::PyType;
 use crate::actor::to_py_error;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
-use crate::instance_dispatch;
 use crate::pytokio::PyPythonTask;
 use crate::shape::PyExtent;
 use crate::shape::PyRegion;
@@ -141,10 +141,9 @@ impl PyHostMesh {
         };
         let instance = instance.clone();
         PyPythonTask::new(async move {
-            let mesh = instance_dispatch!(instance, async move |cx_instance| {
-                HostMesh::allocate(cx_instance, alloc, &name, bootstrap_params).await
-            })
-            .map_err(|err| PyException::new_err(err.to_string()))?;
+            let mesh = HostMesh::allocate(instance.deref(), alloc, &name, bootstrap_params)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
             Ok(Self::new_owned(mesh))
         })
     }
@@ -159,10 +158,10 @@ impl PyHostMesh {
         let instance = instance.clone();
         let per_host = per_host.clone().into();
         let mesh_impl = async move {
-            let proc_mesh = instance_dispatch!(instance, async move |cx_instance| {
-                host_mesh.spawn(cx_instance, &name, per_host).await
-            })
-            .map_err(to_py_error)?;
+            let proc_mesh = host_mesh
+                .spawn(instance.deref(), &name, per_host)
+                .await
+                .map_err(to_py_error)?;
             Ok(PyProcMesh::new_owned(proc_mesh))
         };
         PyPythonTask::new(mesh_impl)
@@ -201,9 +200,7 @@ impl PyHostMesh {
                 let fut = async move {
                     match mesh_borrow.take().await {
                         Ok(mut mesh) => {
-                            instance_dispatch!(instance, |cx_instance| {
-                                mesh.shutdown(cx_instance).await
-                            })?;
+                            mesh.shutdown(instance.deref()).await?;
                             Ok(())
                         }
                         Err(_) => {

@@ -19,6 +19,7 @@ use pyo3::Bound;
 use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
+use pyo3::exceptions::PyException;
 use pyo3::pyfunction;
 use pyo3::types::PyAnyMethods;
 use pyo3::types::PyModule;
@@ -114,7 +115,8 @@ pub fn attach_to_workers<'py>(
         .map(|x| x.borrow_mut().take_task())
         .collect::<PyResult<Vec<_>>>()?;
 
-    let name = Name::new(name.unwrap_or("hosts"));
+    let name =
+        Name::new(name.unwrap_or("hosts")).map_err(|err| PyException::new_err(err.to_string()))?;
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
 

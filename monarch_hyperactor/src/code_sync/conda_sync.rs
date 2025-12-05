@@ -61,18 +61,11 @@ pub struct CondaSyncMessage {
 #[derive(Debug, Named, Serialize, Deserialize)]
 pub struct CondaSyncParams {}
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [CondaSyncMessage { cast = true }])]
 pub struct CondaSyncActor {}
 
-#[async_trait]
-impl Actor for CondaSyncActor {
-    type Params = CondaSyncParams;
-
-    async fn new(CondaSyncParams {}: Self::Params) -> Result<Self> {
-        Ok(Self {})
-    }
-}
+impl Actor for CondaSyncActor {}
 
 #[async_trait]
 impl Handler<CondaSyncMessage> for CondaSyncActor {

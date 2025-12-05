@@ -32,7 +32,6 @@ use hyperactor::channel::TxStatus;
 use hyperactor::clock;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::observe_async;
@@ -175,7 +174,7 @@ impl RemoteProcessAllocator {
     /// Start a remote process allocator with given allocator listening for
     /// RemoteProcessAllocatorMessage on serve_addr.
     /// Used for testing.
-    #[tracing::instrument(skip(self, process_allocator))]
+    #[hyperactor::instrument(fields(addr=serve_addr.to_string()))]
     pub async fn start_with_allocator<A: Allocator + Send + Sync + 'static>(
         &self,
         serve_addr: ChannelAddr,
@@ -474,7 +473,7 @@ impl RemoteProcessAllocator {
                         }
                     }
                 }
-                _ = RealClock.sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)) => {
+                _ = RealClock.sleep(hyperactor_config::global::get(hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)) => {
                     tracing::trace!("sending heartbeat");
                     tx.post(RemoteProcessProcStateMessage::HeartBeat);
                 }
@@ -628,10 +627,11 @@ impl RemoteProcessAlloc {
         remote_allocator_port: u16,
         initializer: impl RemoteProcessAllocInitializer + Send + Sync + 'static,
     ) -> Result<Self, anyhow::Error> {
-        let alloc_serve_addr = match config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
-            Some(addr_str) => addr_str.parse()?,
-            None => ChannelAddr::any(spec.transport.clone()),
-        };
+        let alloc_serve_addr =
+            match hyperactor_config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
+                Some(addr_str) => addr_str.parse()?,
+                None => ChannelAddr::any(spec.transport.clone()),
+            };
 
         let (bootstrap_addr, rx) = serve_with_config(alloc_serve_addr)?;
 
@@ -1129,8 +1129,9 @@ impl Alloc for RemoteProcessAlloc {
                 });
             }
 
-            let heartbeat_interval =
-                config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL);
+            let heartbeat_interval = hyperactor_config::global::get(
+                hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+            );
             let mut heartbeat_time = hyperactor::clock::RealClock.now() + heartbeat_interval;
             // rerun outer loop in case we pushed new items to the event queue
             let mut reloop = false;
@@ -1457,7 +1458,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 5)]
     async fn test_simple() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
@@ -1613,7 +1614,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_normal_stop() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
@@ -1694,7 +1695,7 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_realloc() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
@@ -1828,7 +1829,7 @@ mod test {
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_upstream_closed() {
         // Use temporary config for this test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_secs(1),
@@ -1923,10 +1924,10 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_inner_alloc_failure() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2025,10 +2026,10 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_trace_id_propagation() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2106,10 +2107,10 @@ mod test {
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
     async fn test_trace_id_propagation_no_client_context() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2185,7 +2186,7 @@ mod test_alloc {
     use std::os::unix::process::ExitStatusExt;
 
     use hyperactor::clock::ClockKind;
-    use hyperactor::config;
+    use hyperactor_config;
     use ndslice::extent;
     use nix::sys::signal;
     use nix::unistd::Pid;
@@ -2197,7 +2198,7 @@ mod test_alloc {
     #[cfg(fbcode_build)]
     async fn test_alloc_simple() {
         // Use temporary config for this test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_secs(1),
@@ -2328,7 +2329,7 @@ mod test_alloc {
     #[cfg(fbcode_build)]
     async fn test_alloc_host_failure() {
         // Use temporary config for this test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_secs(1),
@@ -2413,7 +2414,11 @@ mod test_alloc {
         tracing::info!("aborting task1 allocator");
         task1_allocator_handle.abort();
         RealClock
-            .sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
+            .sleep(
+                hyperactor_config::global::get(
+                    hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+                ) * 2,
+            )
             .await;
         for _ in 0..spec.extent.num_ranks() / 2 {
             let proc_state = alloc.next().await.unwrap();
@@ -2437,7 +2442,11 @@ mod test_alloc {
         tracing::info!("aborting task2 allocator");
         task2_allocator_handle.abort();
         RealClock
-            .sleep(config::global::get(config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL) * 2)
+            .sleep(
+                hyperactor_config::global::get(
+                    hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
+                ) * 2,
+            )
             .await;
         for _ in 0..spec.extent.num_ranks() / 2 {
             let proc_state = alloc.next().await.unwrap();
@@ -2465,7 +2474,7 @@ mod test_alloc {
             std::env::set_var("MONARCH_MESSAGE_DELIVERY_TIMEOUT_SECS", "1");
         }
 
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
@@ -2593,10 +2602,10 @@ mod test_alloc {
         task2_allocator_handle.await.unwrap();
     }
 
-    #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_remote_process_alloc_signal_handler() {
+        hyperactor_telemetry::initialize_logging_for_test();
         let num_proc_meshes = 5;
         let hosts_per_proc_mesh = 5;
 

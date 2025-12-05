@@ -6,52 +6,12 @@
 
 # pyre-unsafe
 
-import contextlib
-from typing import Any, Dict, Iterator
-
 import pytest
+
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import (
-    clear_runtime_config,
-    configure,
-    get_global_config,
-    get_runtime_config,
-)
-
-
-@contextlib.contextmanager
-def configured(**overrides) -> Iterator[Dict[str, Any]]:
-    """Temporarily apply Python-side config overrides for this
-    process.
-
-    This context manager:
-      * snapshots the current **Runtime** configuration layer
-        (`get_runtime_configuration()`),
-      * applies the given `overrides` via `configure(**overrides)`,
-        and
-      * yields the **merged** view of config (`get_configuration()`),
-        including defaults, env, file, and Runtime.
-
-    On exit it restores the previous Runtime layer by:
-      * clearing all Runtime entries, and
-      * re-applying the saved snapshot.
-
-    This is intended for tests, so per-test overrides do not leak into
-    other tests.
-
-    """
-    # Retrieve runtime
-    prev = get_runtime_config()
-    try:
-        # Merge overrides into runtime
-        configure(**overrides)
-
-        # Snapshot of merged config (all layers)
-        yield get_global_config()
-    finally:
-        # Restore previous runtime
-        clear_runtime_config()
-        configure(**prev)
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch.actor import Actor, endpoint, this_proc
+from monarch.config import configured, get_global_config
 
 
 def test_get_set_transport() -> None:
@@ -99,3 +59,77 @@ def test_get_set_multiple() -> None:
     assert not config["enable_file_capture"]
     assert config["tail_log_lines"] == 0
     assert config["default_transport"] == ChannelTransport.Unix
+
+
+# This test tries to allocate too much memory for the GitHub actions
+# environment.
+@pytest.mark.oss_skip
+def test_codec_max_frame_length_exceeds_default() -> None:
+    """Test that sending 10 chunks of 1GiB fails with default 10 GiB
+    limit."""
+
+    class Chunker(Actor):
+        def __init__(self):
+            self.chunks = []
+
+        @endpoint
+        def process_chunks(self, chunks):
+            self.chunks = chunks
+            return len(chunks)
+
+    oneGiB = 1024 * 1024 * 1024
+    tenGiB = 10 * oneGiB
+
+    # Verify default is 10 GiB
+    config = get_global_config()
+    assert config["codec_max_frame_length"] == tenGiB
+
+    # Try to send 10 chunks of 1GiB each with default 10 GiB limit
+    # This should fail due to serialization overhead
+    proc = this_proc()
+
+    # Create 10 chunks, 1GiB each (total 10GiB)
+    chunks = [bytes(oneGiB) for _ in range(10)]
+
+    # Spawn actor and send chunks - should fail with SupervisionError
+    chunker = proc.spawn("chunker", Chunker)
+    with pytest.raises(SupervisionError):
+        chunker.process_chunks.call_one(chunks).get()
+
+
+# This test tries to allocate too much memory for the GitHub actions
+# environment.
+@pytest.mark.oss_skip
+def test_codec_max_frame_length_with_increased_limit() -> None:
+    """Test that we can successfully send 10 chunks of 1GiB each with
+    100 GiB limit."""
+
+    class Chunker(Actor):
+        def __init__(self):
+            self.chunks = []
+
+        @endpoint
+        def process_chunks(self, chunks):
+            self.chunks = chunks
+            return len(chunks)
+
+    oneGiB = 1024 * 1024 * 1024
+    tenGiB = 10 * oneGiB
+    oneHundredGiB = 10 * tenGiB
+
+    # Verify default is 10 GiB
+    config = get_global_config()
+    assert config["codec_max_frame_length"] == tenGiB
+
+    # Set the frame limit to confidently handle 10GiB
+    with configured(codec_max_frame_length=oneHundredGiB):
+        proc = this_proc()
+
+        # Create 10 chunks, 1GiB each (total 10GiB)
+        chunks = [bytes(oneGiB) for _ in range(10)]
+
+        # Spawn actor and send chunks - should succeed
+        chunker = proc.spawn("chunker", Chunker)
+        result = chunker.process_chunks.call_one(chunks).get()
+
+        assert result == 10
