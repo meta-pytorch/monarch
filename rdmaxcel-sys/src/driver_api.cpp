@@ -32,6 +32,7 @@
   _(cuDeviceGetAttribute)           \
   _(cuCtxCreate_v2)                 \
   _(cuCtxSetCurrent)                \
+  _(cuCtxSynchronize)               \
   _(cuGetErrorString)
 
 namespace rdmaxcel {
@@ -212,6 +213,10 @@ rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx) {
   return rdmaxcel::DriverAPI::get()->cuCtxSetCurrent_(ctx);
+}
+
+CUresult rdmaxcel_cuCtxSynchronize(void) {
+  return rdmaxcel::DriverAPI::get()->cuCtxSynchronize_();
 }
 
 // Error handling

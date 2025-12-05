@@ -422,7 +422,6 @@ mod tests {
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
     use ndslice::Slice;
-    
     use timed_test::async_timed_test;
     use torch_sys2::DeviceIndex;
     use torch_sys2::Layout;
@@ -634,15 +633,21 @@ mod tests {
         res1?;
 
         // Only dest_rank=0 should have the reduced value.
-        assert!(allclose(
-            &cell0.borrow(),
-            &factory_float_tensor(&[3.0], device0.into())
-        ).map_err(|e| anyhow::anyhow!(e))?);
+        assert!(
+            allclose(
+                &cell0.borrow(),
+                &factory_float_tensor(&[3.0], device0.into())
+            )
+            .map_err(|e| anyhow::anyhow!(e))?
+        );
         // Non-dest ranks should have the original value.
-        assert!(allclose(
-            &cell1.borrow(),
-            &factory_float_tensor(&[2.0], device1.into())
-        ).map_err(|e| anyhow::anyhow!(e))?);
+        assert!(
+            allclose(
+                &cell1.borrow(),
+                &factory_float_tensor(&[2.0], device1.into())
+            )
+            .map_err(|e| anyhow::anyhow!(e))?
+        );
         Ok(())
     }
 
@@ -694,10 +699,7 @@ mod tests {
                 function: "torch.ops.aten.ones.default".into(),
                 args_kwargs: ArgsKwargs::from_wire_values(
                     vec![WireValue::IntList(vec![2, 3])],
-                    HashMap::from([(
-                        "device".into(),
-                        WireValue::Device("cuda".parse().unwrap()),
-                    )]),
+                    HashMap::from([("device".into(), WireValue::Device("cuda".parse().unwrap()))]),
                 )
                 .unwrap(),
                 stream: 0.into(),
@@ -728,10 +730,7 @@ mod tests {
                 function: "torch.ops.aten.full.default".into(),
                 args_kwargs: ArgsKwargs::from_wire_values(
                     vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
-                    HashMap::from([(
-                        "device".into(),
-                        WireValue::Device("cuda".parse().unwrap()),
-                    )]),
+                    HashMap::from([("device".into(), WireValue::Device("cuda".parse().unwrap()))]),
                 )
                 .unwrap(),
                 stream: 0.into(),

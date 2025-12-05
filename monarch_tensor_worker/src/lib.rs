@@ -1093,14 +1093,12 @@ mod tests {
 
     use anyhow::Result;
     use hyperactor::RemoteSpawn;
-    
     use hyperactor::channel::ChannelAddr;
     use hyperactor::proc::Proc;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::controller::WorkerError;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_types::PickledPyObject;
-    
     use pyo3::IntoPyObjectExt;
     use pyo3::Python;
     use pyo3::prelude::*;

@@ -182,7 +182,6 @@ mod tests {
     use monarch_messages::worker::WorkerMessage;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
-    
     use timed_test::async_timed_test;
     use torch_sys2::Device;
     use torch_sys2::DeviceType;
