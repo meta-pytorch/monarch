@@ -32,11 +32,11 @@ use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
-use hyperactor::attrs::Attrs;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
+use hyperactor_config::attrs::Attrs;
 use ndslice::Region;
 use ndslice::ViewExt;
 use serde::Deserialize;
@@ -337,6 +337,14 @@ where
             reply: self.reply.clone(),
         }
     }
+}
+
+/// List the set of resources managed by the controller.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct List {
+    /// List of resource names managed by this controller.
+    #[reply]
+    pub reply: PortRef<Vec<Name>>,
 }
 
 /// A trait that bundles a set of types that together define a resource.

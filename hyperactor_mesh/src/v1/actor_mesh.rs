@@ -17,11 +17,11 @@ use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
-use hyperactor::attrs::Attrs;
 use hyperactor::context;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
+use hyperactor_config::attrs::Attrs;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
@@ -587,7 +587,7 @@ mod tests {
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
-        let child_name = Name::new("child");
+        let child_name = Name::new("child").unwrap();
 
         let actor_mesh = proc_mesh
             .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
@@ -646,7 +646,7 @@ mod tests {
     async fn test_actor_states_with_process_exit() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
 
         let instance = testing::instance().await;
@@ -657,7 +657,7 @@ mod tests {
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
-        let child_name = Name::new("child");
+        let child_name = Name::new("child").unwrap();
 
         let actor_mesh = proc_mesh
             .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
@@ -722,7 +722,7 @@ mod tests {
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
-        let child_name = Name::new("child");
+        let child_name = Name::new("child").unwrap();
 
         let actor_mesh = proc_mesh
             .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
@@ -786,7 +786,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
     async fn test_cast() {
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance().await;
@@ -836,13 +836,12 @@ mod tests {
         use hyperactor::mailbox::MessageEnvelope;
         use hyperactor::mailbox::Undeliverable;
         use hyperactor::test_utils::pingpong::PingPongActor;
-        use hyperactor::test_utils::pingpong::PingPongActorParams;
         use hyperactor::test_utils::pingpong::PingPongMessage;
 
         hyperactor_telemetry::initialize_logging_for_test();
 
         // Set message delivery timeout for faster test
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             std::time::Duration::from_secs(1),
@@ -858,23 +857,22 @@ mod tests {
         let (undeliverable_port, mut undeliverable_rx) =
             instance.open_port::<Undeliverable<MessageEnvelope>>();
 
-        // Spawn PingPongActors across both replicas.
-        // Only actors on replica 0 will forward undeliverable messages.
-        let ping_params = PingPongActorParams::new(Some(undeliverable_port.bind()), None);
-        let pong_params = PingPongActorParams::new(None, None);
-
         // Spawn actors individually on each replica by spawning separate actor meshes
         // with specific proc selections.
         let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
         let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
 
         let ping_mesh = ping_proc_mesh
-            .spawn::<PingPongActor>(instance, "ping", &ping_params)
+            .spawn::<PingPongActor>(
+                instance,
+                "ping",
+                &(Some(undeliverable_port.bind()), None, None),
+            )
             .await
             .unwrap();
 
         let pong_mesh = pong_proc_mesh
-            .spawn::<PingPongActor>(instance, "pong", &pong_params)
+            .spawn::<PingPongActor>(instance, "pong", &(None, None, None))
             .await
             .unwrap();
 
@@ -957,7 +955,7 @@ mod tests {
         // We set this to 1 second (instead of default 30s) so hung
         // actors (sleeping 5s in this test) get aborted quickly,
         // making the test fast.
-        let config = hyperactor::config::global::lock();
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
 
         let instance = testing::instance().await;
@@ -1029,6 +1027,60 @@ mod tests {
         assert!(
             stop_duration >= std::time::Duration::from_millis(900),
             "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
+            stop_duration
+        );
+    }
+
+    /// Test that actors stop gracefully when they respond to stop
+    /// signals within the timeout. Complementary to
+    /// test_actor_mesh_stop_timeout which tests abort behavior. V1
+    /// equivalent of
+    /// hyperactor_multiprocess/src/proc_actor.rs::test_stop
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_actor_mesh_stop_graceful() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let instance = testing::instance().await;
+
+        // Create proc mesh with 2 replicas
+        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+        let proc_mesh = &meshes[1];
+
+        // Spawn TestActors - these stop cleanly (no blocking
+        // operations)
+        let actor_mesh = proc_mesh
+            .spawn::<testactor::TestActor>(instance, "test_actors", &())
+            .await
+            .unwrap();
+
+        let expected_actors = actor_mesh.values().count();
+        assert!(expected_actors > 0, "Should have spawned some actors");
+
+        // Time the stop operation
+        let stop_start = RealClock.now();
+        let result = actor_mesh.stop(instance).await;
+        let stop_duration = RealClock.now().duration_since(stop_start);
+
+        // Graceful stop should succeed (return Ok)
+        assert!(
+            result.is_ok(),
+            "Stop should succeed for responsive actors, got: {:?}",
+            result.err()
+        );
+
+        // Verify stop completed quickly (< 2 seconds). Responsive
+        // actors should stop almost immediately, not wait for
+        // timeout.
+        assert!(
+            stop_duration < std::time::Duration::from_secs(2),
+            "Graceful stop took {:?}, expected < 2s (actors should stop quickly)",
+            stop_duration
+        );
+
+        tracing::info!(
+            "Successfully stopped {} actors in {:?}",
+            expected_actors,
             stop_duration
         );
     }

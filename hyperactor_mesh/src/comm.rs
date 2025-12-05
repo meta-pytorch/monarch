@@ -75,7 +75,7 @@ struct ReceiveState {
 
 /// This is the comm actor used for efficient and scalable message multicasting
 /// and result accumulation.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[hyperactor::export(
     spawn = true,
     handlers = [
@@ -162,16 +162,6 @@ impl CommActorMode {
 
 #[async_trait]
 impl Actor for CommActor {
-    type Params = CommActorParams;
-
-    async fn new(_params: Self::Params) -> Result<Self> {
-        Ok(Self {
-            send_seq: HashMap::new(),
-            recv_state: HashMap::new(),
-            mode: Default::default(),
-        })
-    }
-
     // This is an override of the default actor behavior.
     async fn handle_undeliverable_message(
         &mut self,
@@ -350,6 +340,7 @@ impl Handler<CommActorMode> for CommActor {
 // TODO(T218630526): reliable casting for mutable topology
 #[async_trait]
 impl Handler<CastMessage> for CommActor {
+    #[hyperactor::instrument]
     async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessage) -> Result<()> {
         // Always forward the message to the root rank of the slice, casting starts from there.
         let slice = cast_message.dest.slice.clone();
@@ -380,6 +371,7 @@ impl Handler<CastMessage> for CommActor {
 
 #[async_trait]
 impl Handler<ForwardMessage> for CommActor {
+    #[hyperactor::instrument]
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessage) -> Result<()> {
         let ForwardMessage {
             sender,
@@ -522,7 +514,10 @@ pub mod test_utils {
     }
 
     #[async_trait]
-    impl Actor for TestActor {
+    impl Actor for TestActor {}
+
+    #[async_trait]
+    impl hyperactor::RemoteSpawn for TestActor {
         type Params = TestActorParams;
 
         async fn new(params: Self::Params) -> Result<Self> {
@@ -560,11 +555,11 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::config;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
     use hyperactor::reference::Index;
+    use hyperactor_config;
     use hyperactor_mesh_macros::sel;
     use maplit::btreemap;
     use maplit::hashmap;
@@ -1031,9 +1026,9 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         // Use temporary config for this test
-        let _guard1 = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 1);
+        let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let MeshSetup {
             actor_mesh,
@@ -1072,7 +1067,7 @@ mod tests {
             .await
             .unwrap();
 
-        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test.local")
+        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
             .await
             .unwrap();
 
@@ -1159,9 +1154,9 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_and_accum_v1() {
-        let config = config::global::lock();
+        let config = hyperactor_config::global::lock();
         // Use temporary config for this test
-        let _guard1 = config.override_key(config::SPLIT_MAX_BUFFER_SIZE, 1);
+        let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
         let MeshSetupV1 {
             instance,

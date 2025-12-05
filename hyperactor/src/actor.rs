@@ -68,12 +68,6 @@ pub mod remote;
 /// actor is determined by the set (and order) of messages it receives.
 #[async_trait]
 pub trait Actor: Sized + Send + Debug + 'static {
-    /// The type of initialization parameters accepted by this actor.
-    type Params: Send + 'static;
-
-    /// Creates a new actor instance given its instantiation parameters.
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error>;
-
     /// Initialize the actor, after the runtime has been fully initialized.
     /// Init thus provides a mechanism by which an actor can reliably and always
     /// receive some initial event that can be used to kick off further
@@ -104,11 +98,8 @@ pub trait Actor: Sized + Send + Debug + 'static {
 
     /// Spawn a child actor, given a spawning capability (usually given by [`Instance`]).
     /// The spawned actor will be supervised by the parent (spawning) actor.
-    async fn spawn(
-        cx: &impl context::Actor,
-        params: Self::Params,
-    ) -> anyhow::Result<ActorHandle<Self>> {
-        cx.instance().spawn(params).await
+    fn spawn(self, cx: &impl context::Actor) -> anyhow::Result<ActorHandle<Self>> {
+        cx.instance().spawn(self)
     }
 
     /// Spawns this actor in a detached state, handling its messages
@@ -117,8 +108,8 @@ pub trait Actor: Sized + Send + Debug + 'static {
     ///
     /// Actors spawned through `spawn_detached` are not attached to a supervision
     /// hierarchy, and not managed by a [`Proc`].
-    async fn spawn_detached(params: Self::Params) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::local().spawn("anon", params).await
+    fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
+        Proc::local().spawn("anon", self)
     }
 
     /// This method is used by the runtime to spawn the actor server. It can be
@@ -175,13 +166,7 @@ pub fn handle_undeliverable_message<A: Actor>(
 /// An actor that does nothing. It is used to represent "client only" actors,
 /// returned by [`Proc::instance`].
 #[async_trait]
-impl Actor for () {
-    type Params = ();
-
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
-        Ok(params)
-    }
-}
+impl Actor for () {}
 
 impl Referable for () {}
 
@@ -240,36 +225,27 @@ where
 
 /// An `Actor` that can be spawned remotely.
 ///
-/// Blanket-implemented for actors that opt in to remote spawn by also
-/// implementing `Referable` and `Binds<A>`, with serializable
-/// params:
-///
-/// ```rust,ignore
-/// impl<A> RemotableActor for A
-/// where
-///     A: Actor + Referable + Binds<A>,
-///     A::Params: RemoteMessage,
-/// {}
-/// ```
-///
 /// Bounds explained:
+/// - `Actor`: only actors may be remotely spawned.
 /// - `Referable`: marks the type as eligible for typed remote
 ///   references (`ActorRef<A>`); required because remote spawn
 ///   ultimately hands back an `ActorId` that higher-level APIs may
 ///   re-type as `ActorRef<A>`.
-/// - `Binds<A>`: lets the runtime wire this actor's message ports
-///   when it is spawned (the blanket impl calls `handle.bind::<A>()`).
-/// - `A::Params: RemoteMessage`: constructor params must be
-///   (de)serializable to cross a process boundary.
+/// - `Binds<Self>`: lets the runtime wire this actor's message ports
+///   when it is spawned (the blanket impl calls `handle.bind::<Self>()`).
 ///
 /// `gspawn` is a type-erased entry point used by the remote
 /// spawn/registry machinery. It takes serialized params and returns
-/// the new actor’s `ActorId`; application code shouldn’t call it
+/// the new actor's `ActorId`; application code shouldn't call it
 /// directly.
-pub trait RemotableActor: Actor
-where
-    Self::Params: RemoteMessage,
-{
+#[async_trait]
+pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
+    /// The type of parameters used to instantiate the actor remotely.
+    type Params: RemoteMessage;
+
+    /// Creates a new actor instance given its instantiation parameters.
+    async fn new(params: Self::Params) -> anyhow::Result<Self>;
+
     /// A type-erased entry point to spawn this actor. This is
     /// primarily used by hyperactor's remote actor registration
     /// mechanism.
@@ -278,30 +254,13 @@ where
         proc: &Proc,
         name: &str,
         serialized_params: Data,
-    ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>>;
-
-    /// The type ID of this actor.
-    fn get_type_id() -> TypeId {
-        TypeId::of::<Self>()
-    }
-}
-
-impl<A> RemotableActor for A
-where
-    A: Actor + Referable + Binds<A>,
-    A::Params: RemoteMessage,
-{
-    fn gspawn(
-        proc: &Proc,
-        name: &str,
-        serialized_params: Data,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
-            let handle = proc
-                .spawn::<A>(&name, bincode::deserialize(&serialized_params)?)
-                .await?;
+            let params = bincode::deserialize(&serialized_params)?;
+            let actor = Self::new(params).await?;
+            let handle = proc.spawn(&name, actor)?;
             // We return only the ActorId, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
             // only via the serialized/opaque messaging path, which
@@ -313,8 +272,24 @@ where
             //
             // This will be replaced by a proper export/registry
             // mechanism.
-            Ok(handle.bind::<A>().actor_id)
+            Ok(handle.bind::<Self>().actor_id)
         })
+    }
+
+    /// The type ID of this actor.
+    fn get_type_id() -> TypeId {
+        TypeId::of::<Self>()
+    }
+}
+
+/// If an actor implements Default, we use this as the
+/// `RemoteSpawn` implementation, too.
+#[async_trait]
+impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
+    type Params = ();
+
+    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
+        Ok(Default::default())
     }
 }
 
@@ -337,8 +312,10 @@ where
 /// with the ID of the actor being served.
 #[derive(Debug)]
 pub struct ActorError {
-    pub(crate) actor_id: Box<ActorId>,
-    pub(crate) kind: Box<ActorErrorKind>,
+    /// The ActorId for the actor that generated this error.
+    pub actor_id: Box<ActorId>,
+    /// The kind of error that occurred.
+    pub kind: Box<ActorErrorKind>,
 }
 
 /// The kinds of actor serving errors.
@@ -722,9 +699,9 @@ impl<A: Actor> Clone for ActorHandle<A> {
 /// - and can be carried in [`ActorRef<T>`] values across process
 ///   boundaries.
 ///
-/// In contrast, [`RemotableActor`] is the trait that marks *actors*
+/// In contrast, [`RemoteSpawn`] is the trait that marks *actors*
 /// that can actually be **spawned remotely**. A behavior may be a
-/// `Referable` but is never a `RemotableActor`.
+/// `Referable` but is never a `RemoteSpawn`.
 pub trait Referable: Named + Send + Sync {}
 
 /// Binds determines how an actor's ports are bound to a specific
@@ -744,12 +721,15 @@ pub trait RemoteHandles<M: RemoteMessage>: Referable {}
 /// # use serde::Serialize;
 /// # use serde::Deserialize;
 /// # use hyperactor::Named;
+/// # use hyperactor::Actor;
 ///
 /// // First, define a behavior, based on handling a single message type `()`.
 /// hyperactor::behavior!(UnitBehavior, ());
 ///
-/// #[derive(hyperactor::Actor, Debug, Default)]
+/// #[derive(Debug, Default)]
 /// struct MyActor;
+///
+/// impl Actor for MyActor {}
 ///
 /// #[async_trait::async_trait]
 /// impl hyperactor::Handler<()> for MyActor {
@@ -790,7 +770,6 @@ mod tests {
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
     use crate::test_utils::pingpong::PingPongActor;
-    use crate::test_utils::pingpong::PingPongActorParams;
     use crate::test_utils::pingpong::PingPongMessage;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
 
@@ -798,13 +777,7 @@ mod tests {
     struct EchoActor(PortRef<u64>);
 
     #[async_trait]
-    impl Actor for EchoActor {
-        type Params = PortRef<u64>;
-
-        async fn new(params: PortRef<u64>) -> Result<Self, anyhow::Error> {
-            Ok(Self(params))
-        }
-    }
+    impl Actor for EchoActor {}
 
     #[async_trait]
     impl Handler<u64> for EchoActor {
@@ -820,7 +793,8 @@ mod tests {
         let proc = Proc::local();
         let client = proc.attach("client").unwrap();
         let (tx, mut rx) = client.open_port();
-        let handle = proc.spawn::<EchoActor>("echo", tx.bind()).await.unwrap();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
         handle.send(123u64).unwrap();
         handle.drain_and_stop().unwrap();
         handle.await;
@@ -834,16 +808,10 @@ mod tests {
         let client = proc.attach("client").unwrap();
         let (undeliverable_msg_tx, _) = client.open_port();
 
-        let ping_pong_actor_params =
-            PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), None);
-        let ping_handle = proc
-            .spawn::<PingPongActor>("ping", ping_pong_actor_params.clone())
-            .await
-            .unwrap();
-        let pong_handle = proc
-            .spawn::<PingPongActor>("pong", ping_pong_actor_params)
-            .await
-            .unwrap();
+        let ping_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
+        let pong_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
+        let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
+        let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
 
         let (local_port, local_receiver) = client.open_once_port();
 
@@ -865,16 +833,13 @@ mod tests {
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let error_ttl = 66;
-        let ping_pong_actor_params =
-            PingPongActorParams::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl));
-        let ping_handle = proc
-            .spawn::<PingPongActor>("ping", ping_pong_actor_params.clone())
-            .await
-            .unwrap();
-        let pong_handle = proc
-            .spawn::<PingPongActor>("pong", ping_pong_actor_params)
-            .await
-            .unwrap();
+
+        let ping_actor =
+            PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
+        let pong_actor =
+            PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
+        let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
+        let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
 
         let (local_port, local_receiver) = client.open_once_port();
 
@@ -898,12 +863,6 @@ mod tests {
 
     #[async_trait]
     impl Actor for InitActor {
-        type Params = ();
-
-        async fn new(_params: ()) -> Result<Self, anyhow::Error> {
-            Ok(Self(false))
-        }
-
         async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
             self.0 = true;
             Ok(())
@@ -925,7 +884,8 @@ mod tests {
     #[tokio::test]
     async fn test_init() {
         let proc = Proc::local();
-        let handle = proc.spawn::<InitActor>("init", ()).await.unwrap();
+        let actor = InitActor(false);
+        let handle = proc.spawn::<InitActor>("init", actor).unwrap();
         let client = proc.attach("client").unwrap();
 
         let (port, receiver) = client.open_once_port();
@@ -944,16 +904,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Actor for CheckpointActor {
-        type Params = PortRef<u64>;
-
-        async fn new(params: PortRef<u64>) -> Result<Self, anyhow::Error> {
-            Ok(Self {
-                sum: 0,
-                port: params,
-            })
-        }
-    }
+    impl Actor for CheckpointActor {}
 
     #[async_trait]
     impl Handler<u64> for CheckpointActor {
@@ -992,10 +943,8 @@ mod tests {
         async fn new() -> Self {
             let proc = Proc::local();
             let values: MultiValues = Arc::new(Mutex::new((0, "".to_string())));
-            let handle = proc
-                .spawn::<MultiActor>("myactor", values.clone())
-                .await
-                .unwrap();
+            let actor = MultiActor(values.clone());
+            let handle = proc.spawn::<MultiActor>("myactor", actor).unwrap();
             let (client, client_handle) = proc.instance("client").unwrap();
             Self {
                 proc,
@@ -1030,13 +979,7 @@ mod tests {
     struct MultiActor(MultiValues);
 
     #[async_trait]
-    impl Actor for MultiActor {
-        type Params = MultiValues;
-
-        async fn new(init: Self::Params) -> Result<Self, anyhow::Error> {
-            Ok(Self(init))
-        }
-    }
+    impl Actor for MultiActor {}
 
     #[async_trait]
     impl Handler<u64> for MultiActor {
@@ -1111,13 +1054,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_handle_downcast() {
-        #[derive(Debug, Default, Actor)]
+        #[derive(Debug, Default)]
         struct NothingActor;
+
+        impl Actor for NothingActor {}
 
         // Just test that we can round-trip the handle through a downcast.
 
         let proc = Proc::local();
-        let handle = proc.spawn::<NothingActor>("nothing", ()).await.unwrap();
+        let handle = proc.spawn("nothing", NothingActor).unwrap();
         let cell = handle.cell();
 
         // Invalid actor doesn't succeed.

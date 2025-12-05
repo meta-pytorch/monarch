@@ -7,33 +7,15 @@
  */
 
 #![allow(internal_features)]
+#![allow(clippy::disallowed_methods)] // hyperactor_telemetry can't use hyperactor::clock::Clock (circular dependency)
 #![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
 #![feature(cfg_version)]
 #![feature(formatting_options)]
+#![recursion_limit = "256"]
 
-// TODO:ehedeman Remove or replace with better config once telemetry perf issues are solved
-/// Environment variable to disable the OpenTelemetry logging layer.
-/// Set to "1" to disable OpenTelemetry  tracing.
-pub const DISABLE_OTEL_TRACING: &str = "DISABLE_OTEL_TRACING";
-
-/// Environment variable to disable the OpenTelemetry logging layer.
-/// Set to "1" to disable OpenTelemetry metrics.
-pub const DISABLE_OTEL_METRICS: &str = "DISABLE_OTEL_METRICS";
-
-/// Environment variable to disable the recorder logging layer.
-/// Set to "1" to disable the recorder output.
-pub const DISABLE_RECORDER_TRACING: &str = "DISABLE_RECORDER_TRACING";
-
-/// Environment variable to enable the sqlite logging layer.
-/// Set to "1" to enable the sqlite tracing.
-pub const ENABLE_SQLITE_TRACING: &str = "ENABLE_SQLITE_TRACING";
-
-/// Environment variable constants
-// Log level (debug, info, warn, error, critical) to capture for Monarch traces on dedicated log file (changes based on environment, see `log_file_path`).
-const MONARCH_FILE_LOG_ENV: &str = "MONARCH_FILE_LOG";
-
+// Environment variable for job name (used for environment detection)
 pub const MAST_HPC_JOB_NAME_ENV: &str = "MAST_HPC_JOB_NAME";
 
 // Log level constants
@@ -53,6 +35,22 @@ const ENV_VALUE_TEST: &str = "test";
 #[allow(dead_code)]
 const ENV_VALUE_LOCAL_MAST_SIMULATOR: &str = "local_mast_simulator";
 
+/// A marker field used to indicate that a span should not be recorded as
+/// individual start/end span events; rather the span is purely used to
+/// provide context for child events.
+///
+/// Note that the mechanism for skipping span recording uses the precise
+/// name "skip_record", thus it must be used as a naked identifier:
+/// ```ignore
+/// use hyperactor_telemetry::skip_record;
+///
+/// tracing::span!(..., skip_record);
+/// ```
+#[allow(non_upper_case_globals)]
+// pub const skip_record: tracing::field::Empty = tracing::field::Empty;
+pub const skip_record: bool = true;
+
+mod config;
 pub mod in_memory_reader;
 #[cfg(fbcode_build)]
 mod meta;
@@ -92,6 +90,11 @@ use tracing_subscriber::fmt::FormatFields;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::registry::LookupSpan;
 
+use crate::config::ENABLE_OTEL_METRICS;
+use crate::config::ENABLE_OTEL_TRACING;
+use crate::config::ENABLE_RECORDER_TRACING;
+use crate::config::ENABLE_SQLITE_TRACING;
+use crate::config::MONARCH_FILE_LOG_LEVEL;
 use crate::recorder::Recorder;
 use crate::sqlite::get_reloadable_sqlite_layer;
 
@@ -587,12 +590,14 @@ pub fn initialize_logging_with_log_prefix(
         .with_ansi(false)
         .with_filter(
             Targets::new()
-                .with_default(LevelFilter::from_level(
-                    tracing::Level::from_str(
-                        &std::env::var(MONARCH_FILE_LOG_ENV).unwrap_or(file_log_level.to_string()),
-                    )
-                    .expect("Invalid log level"),
-                ))
+                .with_default(LevelFilter::from_level({
+                    let log_level_str =
+                        hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
+                            .unwrap_or_else(|| file_log_level.to_string());
+                    tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
+                        tracing::Level::from_str(file_log_level).expect("Invalid default log level")
+                    })
+                }))
                 .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
         );
 
@@ -602,28 +607,21 @@ pub fn initialize_logging_with_log_prefix(
 
     #[cfg(fbcode_build)]
     {
-        use crate::env::Env;
-        fn is_layer_enabled(env_var: &str) -> bool {
-            std::env::var(env_var).unwrap_or_default() == "1"
-        }
-        fn is_layer_disabled(env_var: &str) -> bool {
-            std::env::var(env_var).unwrap_or_default() == "1"
-        }
         if let Err(err) = Registry::default()
-            .with(if is_layer_enabled(ENABLE_SQLITE_TRACING) {
+            .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
                 // TODO: get_reloadable_sqlite_layer currently still returns None,
                 // and some additional work is required to make it work.
                 Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
             } else {
                 None
             })
-            .with(if !is_layer_disabled(DISABLE_OTEL_TRACING) {
+            .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
                 Some(otel::tracing_layer())
             } else {
                 None
             })
             .with(file_layer)
-            .with(if !is_layer_disabled(DISABLE_RECORDER_TRACING) {
+            .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
                 None
@@ -633,10 +631,14 @@ pub fn initialize_logging_with_log_prefix(
             tracing::debug!("logging already initialized for this process: {}", err);
         }
         let exec_id = env::execution_id();
+        let process_name =
+            std::env::var("HYPERACTOR_PROCESS_NAME").unwrap_or_else(|_| "client".to_string());
+
+        // setting target to "execution" will prevent the monarch_tracing scuba client from logging this
         tracing::info!(
             target: "execution",
             execution_id = exec_id,
-            environment = %Env::current(),
+            environment = %env::Env::current(),
             args = ?std::env::args(),
             build_mode = build_info::BuildInfo::get_build_mode(),
             compiler = build_info::BuildInfo::get_compiler(),
@@ -646,10 +648,26 @@ pub fn initialize_logging_with_log_prefix(
             package_release = build_info::BuildInfo::get_package_release(),
             upstream_revision = build_info::BuildInfo::get_upstream_revision(),
             revision = build_info::BuildInfo::get_revision(),
-            "logging_initialized"
+            process_name = process_name,
+            "logging_initialized",
+        );
+        // here we have the monarch_executions scuba client log
+        meta::log_execution_event(
+            &exec_id,
+            &env::Env::current().to_string(),
+            std::env::args().collect(),
+            build_info::BuildInfo::get_build_mode(),
+            build_info::BuildInfo::get_compiler(),
+            build_info::BuildInfo::get_compiler_version(),
+            build_info::BuildInfo::get_rule(),
+            build_info::BuildInfo::get_package_name(),
+            build_info::BuildInfo::get_package_release(),
+            build_info::BuildInfo::get_upstream_revision(),
+            build_info::BuildInfo::get_revision(),
+            &process_name,
         );
 
-        if !is_layer_disabled(DISABLE_OTEL_METRICS) {
+        if hyperactor_config::global::get(ENABLE_OTEL_METRICS) {
             otel::init_metrics();
         }
     }
@@ -657,13 +675,11 @@ pub fn initialize_logging_with_log_prefix(
     {
         if let Err(err) = Registry::default()
             .with(file_layer)
-            .with(
-                if std::env::var(DISABLE_RECORDER_TRACING).unwrap_or_default() != "1" {
-                    Some(recorder().layer())
-                } else {
-                    None
-                },
-            )
+            .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+                Some(recorder().layer())
+            } else {
+                None
+            })
             .try_init()
         {
             tracing::debug!("logging already initialized for this process: {}", err);
@@ -704,6 +720,18 @@ pub mod env {
             std::env::set_var(HYPERACTOR_EXECUTION_ID_ENV, id.clone());
         }
         id
+    }
+
+    /// Returns a URL for the execution trace, if available.
+    #[cfg(fbcode_build)]
+    pub async fn execution_url() -> anyhow::Result<Option<String>> {
+        Ok(Some(
+            crate::meta::scuba_tracing::url::get_samples_shorturl(&execution_id()).await?,
+        ))
+    }
+    #[cfg(not(fbcode_build))]
+    pub async fn execution_url() -> anyhow::Result<Option<String>> {
+        Ok(None)
     }
 
     #[derive(PartialEq)]

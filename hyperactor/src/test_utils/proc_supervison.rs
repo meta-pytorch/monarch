@@ -30,10 +30,6 @@ use crate::supervision::ActorSupervisionEvent;
 ///
 ///   If the the proc supervison coordinator is not set, supervision will crash the
 ///   process because it cannot find the coordinator during the "bubbling up".
-///
-///   Note that if you are using hyperactor_multiprocess' ProcActor bootstrap,
-///   the `ProcActor` will be set as the coordinator by the bootstrap. As a
-///   result, you do not need to set the supervior again with this struct.
 #[derive(Debug)]
 pub struct ProcSupervisionCoordinator(ReportedEvent);
 
@@ -42,9 +38,8 @@ impl ProcSupervisionCoordinator {
     /// proc.
     pub async fn set(proc: &Proc) -> Result<ReportedEvent, anyhow::Error> {
         let state = ReportedEvent::new();
-        let coordinator = proc
-            .spawn::<ProcSupervisionCoordinator>("coordinator", state.clone())
-            .await?;
+        let actor = ProcSupervisionCoordinator(state.clone());
+        let coordinator = proc.spawn::<ProcSupervisionCoordinator>("coordinator", actor)?;
         proc.set_supervision_coordinator(coordinator.port())?;
         Ok(state)
     }
@@ -69,13 +64,7 @@ impl ReportedEvent {
 }
 
 #[async_trait]
-impl Actor for ProcSupervisionCoordinator {
-    type Params = ReportedEvent;
-
-    async fn new(param: ReportedEvent) -> Result<Self, anyhow::Error> {
-        Ok(Self(param))
-    }
-}
+impl Actor for ProcSupervisionCoordinator {}
 
 #[async_trait]
 impl Handler<ActorSupervisionEvent> for ProcSupervisionCoordinator {

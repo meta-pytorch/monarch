@@ -18,7 +18,6 @@ use hyperactor_mesh::logging::LogClientMessage;
 use hyperactor_mesh::logging::LogForwardActor;
 use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::Name;
 use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use ndslice::View;
 use pyo3::Bound;
@@ -27,7 +26,6 @@ use pyo3::types::PyModule;
 use pyo3::types::PyString;
 
 use crate::context::PyInstance;
-use crate::instance_dispatch;
 use crate::logging::LoggerRuntimeActor;
 use crate::logging::LoggerRuntimeMessage;
 use crate::pytokio::PyPythonTask;
@@ -202,28 +200,21 @@ impl LoggingMeshClient {
             // 1. Spawn the client-side coordinator actor (lives in
             // the caller's process).
             let client_actor: ActorHandle<LogClientActor> =
-                instance_dispatch!(instance, async move |cx_instance| {
-                    cx_instance
-                        .proc()
-                        .spawn(&Name::new("log_client").to_string(), ())
-                        .await
-                })?;
+                instance.spawn(LogClientActor::default())?;
             let client_actor_ref = client_actor.bind();
 
             // Read config to decide if we stand up per-proc
             // stdout/stderr forwarding.
-            let forwarding_enabled = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
+            let forwarding_enabled = hyperactor_config::global::get(MESH_ENABLE_LOG_FORWARDING);
 
             // 2. Optionally spawn per-proc `LogForwardActor` mesh
             // (stdout/stderr forwarders).
             let forwarder_mesh = if forwarding_enabled {
                 // Spawn a `LogFwdActor` on every proc.
-                let mesh = instance_dispatch!(instance, async |cx_instance| {
-                    proc_mesh
-                        .spawn(cx_instance, "log_forwarder", &client_actor_ref)
-                        .await
-                })
-                .map_err(anyhow::Error::from)?;
+                let mesh = proc_mesh
+                    .spawn(instance.deref(), "log_forwarder", &client_actor_ref)
+                    .await
+                    .map_err(anyhow::Error::from)?;
 
                 Some(mesh)
             } else {
@@ -231,10 +222,10 @@ impl LoggingMeshClient {
             };
 
             // 3. Always spawn a `LoggerRuntimeActor` on every proc.
-            let logger_mesh = instance_dispatch!(instance, async |cx_instance| {
-                proc_mesh.spawn(cx_instance, "logger", &()).await
-            })
-            .map_err(anyhow::Error::from)?;
+            let logger_mesh = proc_mesh
+                .spawn(instance.deref(), "logger", &())
+                .await
+                .map_err(anyhow::Error::from)?;
 
             Ok(Self {
                 forwarder_mesh,
@@ -293,10 +284,14 @@ impl LoggingMeshClient {
             // Forwarders exist (config enabled at startup). We can
             // toggle live.
             (Some(fwd_mesh), _) => {
-                instance_dispatch!(instance, |cx_instance| {
-                    fwd_mesh.cast(cx_instance, LogForwardMessage::SetMode { stream_to_client })
-                })
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+                fwd_mesh
+                    .cast(
+                        instance.deref(),
+                        LogForwardMessage::SetMode { stream_to_client },
+                    )
+                    .map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+                    })?;
             }
 
             // Forwarders were never spawned (global forwarding
@@ -318,11 +313,9 @@ impl LoggingMeshClient {
         }
 
         // Always update the per-proc Python logging level.
-        instance_dispatch!(instance, |cx_instance| {
-            self.logger_mesh
-                .cast(cx_instance, LoggerRuntimeMessage::SetLogging { level })
-        })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        self.logger_mesh
+            .cast(instance.deref(), LoggerRuntimeMessage::SetLogging { level })
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         // Always update the client actor's aggregation window.
         self.client_actor
@@ -356,10 +349,9 @@ impl LoggingMeshClient {
                 return Ok(());
             };
 
-            instance_dispatch!(instance, async move |cx_instance| {
-                Self::flush_internal(cx_instance, client_actor, forwarder_mesh).await
-            })
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+            Self::flush_internal(instance.deref(), client_actor, forwarder_mesh)
+                .await
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
         })
     }
 }
@@ -479,20 +471,21 @@ mod tests {
     use ndslice::View; // .region(), .num_ranks() etc.
 
     use super::*;
+    use crate::actor::PythonActor;
     use crate::pytokio::AwaitPyExt;
     use crate::pytokio::ensure_python;
 
     /// Bring up a minimal "world" suitable for integration-style
     /// tests.
-    pub async fn test_world() -> Result<(Proc, Instance<()>, HostMesh, ProcMesh)> {
+    pub async fn test_world() -> Result<(Proc, Instance<PythonActor>, HostMesh, ProcMesh)> {
         ensure_python();
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
             .await
             .expect("failed to start root Proc");
 
-        let (instance, _handle) = proc
-            .instance("client")
+        let (instance, ..) = proc
+            .actor_instance("client")
             .expect("failed to create proc Instance");
 
         let host_mesh = HostMesh::local_with_bootstrap(
@@ -538,7 +531,7 @@ mod tests {
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh` should be `None`.
         {
@@ -595,7 +588,7 @@ mod tests {
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh.is_none()`.
         {
@@ -710,7 +703,7 @@ mod tests {
 
         let py_instance = PyInstance::from(&instance);
         let py_proc_mesh = PyProcMesh::new_owned(proc_mesh);
-        let lock = hyperactor::config::global::lock();
+        let lock = hyperactor_config::global::lock();
 
         // Case 1: forwarding disabled => `forwarder_mesh.is_none()`.
         {

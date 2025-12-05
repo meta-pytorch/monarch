@@ -72,6 +72,10 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
     Region,
     Shape,
 )
+from monarch._rust_bindings.monarch_hyperactor.supervision import (
+    MeshFailure,
+    SupervisionError,
+)
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
@@ -488,6 +492,7 @@ class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
         actor_mesh: "ActorMeshProtocol",
+        mesh_name: str,
         shape: Shape,
         proc_mesh: "Optional[ProcMesh]",
         name: MethodSpecifier,
@@ -497,6 +502,7 @@ class ActorEndpoint(Endpoint[P, R]):
     ) -> None:
         super().__init__(propagator)
         self._actor_mesh = actor_mesh
+        self._mesh_name = mesh_name
         self._name = name
         self._shape = shape
         self._proc_mesh = proc_mesh
@@ -541,13 +547,25 @@ class ActorEndpoint(Endpoint[P, R]):
         shape = self._shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
+    def _full_name(self) -> str:
+        method_name = "unknown"
+        match self._name:
+            case MethodSpecifier.Init():
+                method_name = "__init__"
+            case MethodSpecifier.ReturnsResponse(name=method_name):
+                pass
+            case MethodSpecifier.ExplicitPort(name=method_name):
+                pass
+        return f"{self._mesh_name}.{method_name}()"
+
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
         instance = context().actor_instance._as_rust()
         monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
             instance
         )
-        r._set_monitor(monitor)
+
+        r._attach_supervision(monitor, self._full_name())
         return (p, r)
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
@@ -643,6 +661,57 @@ class Accumulator(Generic[P, R, A]):
 class ValueMesh(MeshTrait, Generic[R]):
     """
     A mesh that holds the result of an endpoint invocation.
+
+    ValueMesh is returned when calling `.get()` on a Future from an endpoint
+    invocation on an ActorMesh or ProcMesh, or by awaiting the Future directly.
+    It contains the return values from all actors in the mesh, organized by
+    their coordinates.
+
+    Iteration:
+        The most efficient way to iterate over a ValueMesh is using `.items()`,
+        which yields (point, value) tuples:
+
+        >>> for point, result in value_mesh.items():
+        ...     rank = point["hosts"] * gpus_per_host + point["gpus"]
+        ...     print(f"Rank {rank}: {result}")
+
+        You can also iterate over just values:
+
+        >>> for result in value_mesh.values():
+        ...     process(result)
+
+    Accessing specific values:
+        Use `.item()` to extract a single value from a singleton mesh:
+
+        >>> single_value = value_mesh.slice(hosts=0, gpus=0).item()
+
+        Or with keyword arguments for multi-dimensional access:
+
+        >>> value = value_mesh.item(hosts=0, gpus=0)
+
+    Mesh operations:
+        ValueMesh supports the same operations as other MeshTrait types:
+
+        - `.flatten(dimension)`: Flatten to a single dimension
+        - `.slice(**coords)`: Select a subset of the mesh
+
+    Examples:
+        >>> # Sync API - Get results from all actors
+        >>> results = actor_mesh.endpoint.call(arg).get()
+        >>> for point, result in results.items():
+        ...     print(f"Actor at {point}: {result}")
+        >>>
+        >>> # Async API - Await the future directly
+        >>> results = await actor_mesh.endpoint.call(arg)
+        >>> for point, result in results.items():
+        ...     print(f"Actor at {point}: {result}")
+        >>>
+        >>> # Access a specific actor's result
+        >>> result_0 = results.item(hosts=0, gpus=0)
+        >>>
+        >>> # Flatten and iterate
+        >>> for point, result in results.flatten("rank").items():
+        ...     print(f"Rank {point.rank}: {result}")
     """
 
     def __init__(self, shape: Shape, values: List[R]) -> None:
@@ -882,19 +951,33 @@ class PortReceiver(Generic[R]):
         mailbox: Mailbox,
         receiver: "PortReceiverBase",
         monitor: "Optional[Shared[Exception]]" = None,
+        endpoint: Optional[str] = None,
     ) -> None:
         self._mailbox: Mailbox = mailbox
         self._monitor = monitor
         self._receiver = receiver
+        self._endpoint = endpoint
+
+    def _tag_supervision_error(self, error: Exception) -> None:
+        """Tag supervision error with endpoint name if available."""
+        if self._endpoint is not None and isinstance(error, SupervisionError):
+            error.endpoint = self._endpoint
 
     async def _recv(self) -> R:
         awaitable = self._receiver.recv_task()
         if self._monitor is None:
             result = await awaitable
         else:
-            # type: ignore
-            result, i = await PythonTask.select_one([self._monitor.task(), awaitable])
+            try:
+                result, i = await PythonTask.select_one(
+                    # type: ignore
+                    [self._monitor.task(), awaitable]
+                )
+            except Exception as e:
+                self._tag_supervision_error(e)
+                raise e
             if i == 0:
+                self._tag_supervision_error(result)
                 raise result
         return self._process(result)
 
@@ -905,7 +988,9 @@ class PortReceiver(Generic[R]):
             case PythonMessageKind.Result():
                 return payload
             case PythonMessageKind.Exception():
-                raise cast(Exception, payload)
+                e = cast(Exception, payload)
+                self._tag_supervision_error(e)
+                raise e
             case _:
                 raise ValueError(f"Unexpected message kind: {msg.kind}")
 
@@ -913,10 +998,25 @@ class PortReceiver(Generic[R]):
         return Future(coro=self._recv())
 
     def ranked(self) -> "RankedPortReceiver[R]":
-        return RankedPortReceiver[R](self._mailbox, self._receiver, self._monitor)
+        return RankedPortReceiver[R](
+            self._mailbox, self._receiver, self._monitor, self._endpoint
+        )
 
-    def _set_monitor(self, monitor: "Optional[Shared[Exception]]") -> None:
+    def _attach_supervision(
+        self, monitor: "Optional[Shared[Exception]]", endpoint: str
+    ) -> None:
+        """
+        Attach supervision monitoring to this port receiver.
+
+        Enables the receiver to detect and report errors on any supervision events.
+
+        Args:
+            monitor: Shared exception monitor that signals supervision errors
+                from the actor mesh. None if supervision is not enabled.
+            endpoint: Full endpoint name
+        """
         self._monitor = monitor
+        self._endpoint = endpoint
 
 
 class RankedPortReceiver(PortReceiver[Tuple[int, R]]):
@@ -940,6 +1040,16 @@ singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
 # We do this by blanking out the running event loop during the call to the synchronous actor function.
 
 MESSAGES_HANDLED: Counter = METER.create_counter("py_mesages_handled")
+
+
+@dataclass
+class ActorInitArgs:
+    Class: Type["Actor"]
+    proc_mesh: Optional["ProcMesh"]
+    controller_controller: Optional["_ControllerController"]
+    name: str
+    creator: Optional[CreatorInstance]
+    args: Tuple[Any, ...]
 
 
 class _Actor:
@@ -973,8 +1083,13 @@ class _Actor:
     ) -> None:
         method_name = None
         MESSAGES_HANDLED.add(1)
+
+        # Initialize method_name before try block so it's always defined
+        method_name = "unknown"
+
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
+
         try:
             _set_context(ctx)
 
@@ -984,15 +1099,18 @@ class _Actor:
 
             match method:
                 case MethodSpecifier.Init():
+                    method_name = "__init__"
                     ins = ctx.actor_instance
-                    (
-                        Class,
-                        ins.proc_mesh,
-                        ins._controller_controller,
-                        ins.name,
-                        ins.creator,
-                        *args,
-                    ) = args
+                    (args,) = args
+                    init_args = cast(ActorInitArgs, args)
+                    Class = init_args.Class
+                    ins.proc_mesh = cast("ProcMesh", init_args.proc_mesh)
+                    ins._controller_controller = cast(
+                        "_ControllerController", init_args.controller_controller
+                    )
+                    ins.name = init_args.name
+                    ins.creator = init_args.creator
+                    args = init_args.args
                     ins.rank = ctx.message_rank
                     ins.class_name = f"{Class.__module__}.{Class.__qualname__}"
                     try:
@@ -1000,7 +1118,7 @@ class _Actor:
                         self._maybe_exit_debugger()
                     except Exception as e:
                         self._saved_error = ActorError(
-                            e, f"Remote actor {Class}.__init__ call failed."
+                            e, f"Actor call {ins.name}.{method_name} failed."
                         )
                         raise
                     response_port.send(None)
@@ -1024,7 +1142,7 @@ class _Actor:
                 #    message delivery mechanism, or the framework accidentally
                 #    mixed the usage of cast and direct send.
 
-                error_message = f"Actor object is missing when executing method {method_name} on actor {ctx.actor_instance.actor_id}."
+                error_message = f'Actor object is missing when executing method "{method_name}" on actor {ctx.actor_instance.actor_id}.'
                 if self._saved_error is not None:
                     error_message += (
                         f" This is likely due to an earlier error: {self._saved_error}"
@@ -1064,14 +1182,24 @@ class _Actor:
         except Exception as e:
             log_endpoint_exception(e, method_name)
             self._post_mortem_debug(e.__traceback__)
-            response_port.exception(ActorError(e))
+            response_port.exception(
+                ActorError(
+                    e,
+                    f"Actor call {ctx.actor_instance.name}.{method_name} failed.",
+                )
+            )
         except BaseException as e:
             self._post_mortem_debug(e.__traceback__)
             # A BaseException can be thrown in the case of a Rust panic.
             # In this case, we need a way to signal the panic to the Rust side.
             # See [Panics in async endpoints]
             try:
-                panic_flag.signal_panic(e)
+                panic_flag.signal_panic(
+                    ActorError(
+                        e,
+                        f"Actor call {ctx.actor_instance.name}.{method_name} failed with BaseException.",
+                    )
+                )
             except Exception:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
@@ -1245,11 +1373,15 @@ class ActorMesh(MeshTrait, Generic[T]):
     def __init__(
         self,
         Class: Type[T],
+        name: str,
         inner: "ActorMeshProtocol",
         shape: Shape,
         proc_mesh: "Optional[ProcMesh]",
     ) -> None:
+        # Class name of the actor.
         self.__name__: str = Class.__name__
+        # The name user gives when spawning the mesh
+        self._mesh_name = name
         self._class: Type[T] = Class
         self._inner: "ActorMeshProtocol" = inner
         self._shape = shape
@@ -1318,6 +1450,7 @@ class ActorMesh(MeshTrait, Generic[T]):
     ) -> Any:
         return ActorEndpoint(
             self._inner,
+            self._mesh_name,
             self._shape,
             self._proc_mesh,
             name,
@@ -1340,7 +1473,7 @@ class ActorMesh(MeshTrait, Generic[T]):
         *args: Any,
         **kwargs: Any,
     ) -> "ActorMesh[T]":
-        mesh = cls(Class, actor_mesh, shape, proc_mesh)
+        mesh = cls(Class, name, actor_mesh, shape, proc_mesh)
 
         # We don't start the supervision polling loop until the first call to
         # supervision_event, which needs an Instance. Initialize here so events
@@ -1365,12 +1498,14 @@ class ActorMesh(MeshTrait, Generic[T]):
         send(
             ep,
             (
-                mesh._class,
-                proc_mesh,
-                controller_controller,
-                name,
-                context().actor_instance._as_creator(),
-                *args,
+                ActorInitArgs(
+                    cast(Type[Actor], mesh._class),
+                    proc_mesh,
+                    controller_controller,
+                    name,
+                    context().actor_instance._as_creator(),
+                    args,
+                ),
             ),
             kwargs,
         )
@@ -1383,12 +1518,18 @@ class ActorMesh(MeshTrait, Generic[T]):
         Class: Type[T],
         actor_id: ActorId,
     ) -> "ActorMesh[T]":
-        return cls(Class, _SingletonActorAdapator(actor_id), singleton_shape, None)
+        return cls(Class, "", _SingletonActorAdapator(actor_id), singleton_shape, None)
 
     def __reduce_ex__(
         self, protocol: Any
     ) -> "Tuple[Type[ActorMesh[T]], Tuple[Any, ...]]":
-        return ActorMesh, (self._class, self._inner, self._shape, self._proc_mesh)
+        return ActorMesh, (
+            self._class,
+            self._mesh_name,
+            self._inner,
+            self._shape,
+            self._proc_mesh,
+        )
 
     @property
     def _ndslice(self) -> NDSlice:
@@ -1400,7 +1541,7 @@ class ActorMesh(MeshTrait, Generic[T]):
 
     def _new_with_shape(self, shape: Shape) -> "ActorMesh[T]":
         sliced = self._inner.new_with_region(shape.region)
-        return ActorMesh(self._class, sliced, shape, self._proc_mesh)
+        return ActorMesh(self._class, self._mesh_name, sliced, shape, self._proc_mesh)
 
     def __repr__(self) -> str:
         return f"ActorMesh(class={self._class}, shape={self._shape}), inner={type(self._inner)})"
@@ -1423,7 +1564,7 @@ class ActorError(Exception):
 
     def __init__(
         self,
-        exception: Exception,
+        exception: BaseException,
         message: str = "A remote actor call has failed.",
     ) -> None:
         self.exception = exception
@@ -1459,3 +1600,22 @@ def current_rank() -> Point:
 def current_size() -> Dict[str, int]:
     r = context().message_rank.extent
     return {k: r[k] for k in r}
+
+
+class RootClientActor(Actor):
+    name: str = "client"
+
+    def __supervise__(self, failure: MeshFailure) -> object:
+        from monarch.actor import unhandled_fault_hook  # pyre-ignore
+
+        unhandled_fault_hook(failure)  # pyre-ignore
+        return True
+
+    @staticmethod
+    def _pickled_init_args() -> FrozenBuffer:
+        args = (
+            ActorInitArgs(RootClientActor, None, None, RootClientActor.name, None, ()),
+        )
+        kwargs = {}
+        _, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        return buffer

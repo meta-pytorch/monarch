@@ -9,6 +9,7 @@
 use std::ops::Deref;
 
 use bytes::Bytes;
+use bytes::BytesMut;
 use bytes::buf::Reader as BufReader;
 use bytes::buf::Writer as BufWriter;
 use serde::Deserialize;
@@ -24,28 +25,70 @@ use crate::ser;
 /// serialization implementation that is specialized for the multipart codecs in
 /// this crate, skipping copying the bytes whenever possible.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct Part(pub(crate) Bytes);
+pub struct Part(pub(crate) Vec<Bytes>);
 
 impl Part {
-    /// Consumes the part, returning its underlying byte buffer.
-    pub fn into_inner(self) -> Bytes {
+    /// Consumes the part, returning its underlying byte buffers.
+    pub fn into_inner(self) -> Vec<Bytes> {
         self.0
     }
 
-    /// Returns a reference to the underlying byte buffer.
+    /// Consumes the part, concatenating fragments if necessary into a single byte buffer.
+    pub fn into_bytes(self) -> Bytes {
+        match self.0.len() {
+            0 => Bytes::new(),
+            1 => self.0.into_iter().next().unwrap(),
+            _ => {
+                let total_len: usize = self.0.iter().map(|p| p.len()).sum();
+                let mut result = BytesMut::with_capacity(total_len);
+                for fragment in self.0 {
+                    result.extend_from_slice(&fragment);
+                }
+                result.freeze()
+            }
+        }
+    }
+
+    /// Get bytes as a reference, concatenating fragments if necessary.
     pub fn to_bytes(&self) -> Bytes {
-        self.0.clone()
+        match self.0.len() {
+            0 => Bytes::new(),
+            1 => self.0.first().unwrap().clone(),
+            _ => {
+                let total_len: usize = self.0.iter().map(|p| p.len()).sum();
+                let mut result = BytesMut::with_capacity(total_len);
+                for fragment in &self.0 {
+                    result.extend_from_slice(fragment);
+                }
+                result.freeze()
+            }
+        }
+    }
+
+    /// Returns the total length in bytes.
+    pub fn len(&self) -> usize {
+        self.0.iter().map(|b| b.len()).sum()
+    }
+
+    /// Returns the number of fragments
+    pub fn num_fragments(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns whether the part is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|b| b.is_empty())
     }
 }
 
 impl<T: Into<Bytes>> From<T> for Part {
     fn from(bytes: T) -> Self {
-        Self(bytes.into())
+        Self(vec![bytes.into()])
     }
 }
 
 impl Deref for Part {
-    type Target = Bytes;
+    type Target = Vec<Bytes>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -74,8 +117,8 @@ pub trait PartSerializer<S: serde::Serializer> {
 /// into the serialization buffer.
 impl<S: serde::Serializer> PartSerializer<S> for Part {
     default fn serialize(this: &Part, s: S) -> Result<S::Ok, S::Error> {
-        // Normal serializer: contiguous byte chunk, but requires copy.
-        this.0.serialize(s)
+        // Normal serializer: concatenate into contiguous byte chunk (requires copy).
+        this.to_bytes().serialize(s)
     }
 }
 
@@ -109,7 +152,7 @@ trait PartDeserializer<'de, S: serde::Deserializer<'de>>: Sized {
 /// into the value directly.
 impl<'de, D: serde::Deserializer<'de>> PartDeserializer<'de, D> for Part {
     default fn deserialize(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Part(Bytes::deserialize(deserializer)?))
+        Ok(Part(vec![Bytes::deserialize(deserializer)?]))
     }
 }
 

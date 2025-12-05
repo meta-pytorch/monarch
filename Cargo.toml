@@ -7,7 +7,6 @@ members = [
     "hyper",
     "hyperactor",
     "hyperactor_macros",
-    "hyperactor_multiprocess",
     "hyperactor_mesh",
     "hyperactor_mesh_macros",
     "hyperactor_telemetry",

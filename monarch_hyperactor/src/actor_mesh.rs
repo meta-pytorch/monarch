@@ -7,6 +7,7 @@
  */
 
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -43,7 +44,6 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::instance_dispatch;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
@@ -141,6 +141,7 @@ pub(crate) fn to_hy_sel(selection: &str) -> PyResult<Selection> {
 
 #[pymethods]
 impl PythonActorMesh {
+    #[hyperactor::instrument]
     fn cast(
         &self,
         message: &PythonMessage,
@@ -306,11 +307,9 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             }
         }
 
-        instance_dispatch!(instance, |cx_instance| {
-            self.try_inner()?
-                .cast(cx_instance, selection, message)
-                .map_err(|err| PyException::new_err(err.to_string()))?;
-        });
+        self.try_inner()?
+            .cast(instance.deref(), selection, message)
+            .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok(())
     }
 
@@ -351,10 +350,8 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                 .take()
                 .await
                 .map_err(|_| PyRuntimeError::new_err("`ActorMesh` has already been stopped"))?;
-            instance_dispatch!(instance, |cx_instance| {
-                actor_mesh.stop(cx_instance).await.map_err(|err| {
-                    PyException::new_err(format!("Failed to stop actor mesh: {}", err))
-                })
+            actor_mesh.stop(instance.deref()).await.map_err(|err| {
+                PyException::new_err(format!("Failed to stop actor mesh: {}", err))
             })?;
             Ok(())
         })
@@ -485,11 +482,9 @@ impl ActorMeshProtocol for PythonActorMeshRef {
             }
         }
 
-        instance_dispatch!(instance, |cx_instance| {
-            self.inner
-                .cast(cx_instance, selection, message)
-                .map_err(|err| PyException::new_err(err.to_string()))?;
-        });
+        self.inner
+            .cast(instance.deref(), selection, message)
+            .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok(())
     }
 

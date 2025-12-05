@@ -28,14 +28,14 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
+use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock as _;
 use hyperactor::clock::RealClock;
-use hyperactor::config;
-use hyperactor::config::global::Source;
 #[cfg(test)]
 use hyperactor::mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::global::Source;
 use ndslice::Point;
 #[cfg(test)]
 use ndslice::ViewExt as _;
@@ -51,7 +51,7 @@ use crate::v1::ActorMeshRef;
 use crate::v1::testing;
 
 /// A simple test actor used by various unit tests.
-#[derive(Actor, Default, Debug)]
+#[derive(Default, Debug)]
 #[hyperactor::export(
     spawn = true,
     handlers = [
@@ -64,6 +64,8 @@ use crate::v1::testing;
     ]
 )]
 pub struct TestActor;
+
+impl Actor for TestActor {}
 
 /// A message that returns the recipient actor's id.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
@@ -129,12 +131,6 @@ pub struct TestActorWithSupervisionHandling;
 
 #[async_trait]
 impl Actor for TestActorWithSupervisionHandling {
-    type Params = ();
-
-    async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
-        Ok(Self {})
-    }
-
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
@@ -159,12 +155,14 @@ impl Handler<ActorSupervisionEvent> for TestActorWithSupervisionHandling {
 
 /// A test actor that sleeps when it receives a Duration message.
 /// Used for testing timeout and abort behavior.
-#[derive(Actor, Default, Debug)]
+#[derive(Default, Debug)]
 #[hyperactor::export(
     spawn = true,
     handlers = [std::time::Duration],
 )]
 pub struct SleepActor;
+
+impl Actor for SleepActor {}
 
 #[async_trait]
 impl Handler<std::time::Duration> for SleepActor {
@@ -238,12 +236,15 @@ impl Handler<GetCastInfo> for TestActor {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 #[hyperactor::export(spawn = true)]
 pub struct FailingCreateTestActor;
 
 #[async_trait]
-impl Actor for FailingCreateTestActor {
+impl Actor for FailingCreateTestActor {}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for FailingCreateTestActor {
     type Params = ();
 
     async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
@@ -262,7 +263,7 @@ impl Handler<SetConfigAttrs> for TestActor {
         SetConfigAttrs(attrs): SetConfigAttrs,
     ) -> Result<(), anyhow::Error> {
         let attrs = bincode::deserialize(&attrs)?;
-        config::global::set(Source::Runtime, attrs);
+        hyperactor_config::global::set(Source::Runtime, attrs);
         Ok(())
     }
 }
@@ -277,7 +278,7 @@ impl Handler<GetConfigAttrs> for TestActor {
         cx: &Context<Self>,
         GetConfigAttrs(reply): GetConfigAttrs,
     ) -> Result<(), anyhow::Error> {
-        let attrs = bincode::serialize(&config::global::attrs())?;
+        let attrs = bincode::serialize(&hyperactor_config::global::attrs())?;
         reply.send(cx, attrs)?;
         Ok(())
     }

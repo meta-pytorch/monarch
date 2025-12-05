@@ -41,6 +41,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -55,6 +56,7 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate as hyperactor;
 use crate::Actor;
 use crate::ActorHandle;
 use crate::ActorId;
@@ -67,6 +69,7 @@ use crate::actor::Referable;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::ChannelRx;
 use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::Tx;
@@ -119,23 +122,21 @@ pub enum HostError {
 /// routing, as described in this module's documentation.
 #[derive(Debug)]
 pub struct Host<M> {
-    procs: HashMap<String, ChannelAddr>,
+    procs: HashSet<String>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
     router: DialMailboxRouter,
     manager: M,
     service_proc: Proc,
+    frontend_rx: Option<ChannelRx<MessageEnvelope>>,
 }
 
 impl<M: ProcManager> Host<M> {
     /// Serve a host using the provided ProcManager, on the provided `addr`.
     /// On success, the host will multiplex messages for procs on the host
     /// on the address of the host.
-    #[tracing::instrument(skip(manager))]
-    pub async fn serve(
-        manager: M,
-        addr: ChannelAddr,
-    ) -> Result<(Self, MailboxServerHandle), HostError> {
+    #[crate::instrument(fields(addr=addr.to_string()))]
+    pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
         let (frontend_addr, frontend_rx) = channel::serve(addr)?;
 
         // We set up a cascade of routers: first, the outer router supports
@@ -159,24 +160,25 @@ impl<M: ProcManager> Host<M> {
         );
 
         let host = Host {
-            procs: HashMap::new(),
+            procs: HashSet::new(),
             frontend_addr,
             backend_addr,
-            router: router.clone(),
-            manager,
-            service_proc: service_proc.clone(),
-        };
-
-        let router = ProcOrDial {
-            proc: service_proc,
             router,
+            manager,
+            service_proc,
+            frontend_rx: Some(frontend_rx),
         };
 
-        // Serve the same router on both frontend and backend addresses.
-        let _backend_handle = router.clone().serve(backend_rx);
-        let frontend_handle = router.serve(frontend_rx);
+        // We the same router on both frontend and backend addresses.
+        let _backend_handle = host.forwarder().serve(backend_rx);
 
-        Ok((host, frontend_handle))
+        Ok(host)
+    }
+
+    /// Start serving this host's mailbox on its frontend address.
+    /// Returns the server handle on first invocation; afterwards None.
+    pub fn serve(&mut self) -> Option<MailboxServerHandle> {
+        Some(self.forwarder().serve(self.frontend_rx.take()?))
     }
 
     /// The underlying proc manager.
@@ -202,7 +204,7 @@ impl<M: ProcManager> Host<M> {
         name: String,
         config: M::Config,
     ) -> Result<(ProcId, ActorRef<ManagerAgent<M>>), HostError> {
-        if self.procs.contains_key(&name) {
+        if self.procs.contains(&name) {
             return Err(HostError::ProcExists(name));
         }
 
@@ -213,7 +215,7 @@ impl<M: ProcManager> Host<M> {
             .await?;
 
         // Await readiness (config-driven; 0s disables timeout).
-        let to: Duration = crate::config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
+        let to: Duration = hyperactor_config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
         let ready: Result<(), HostError> = if to == Duration::from_secs(0) {
             handle.ready().await.map_err(|e| {
                 HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
@@ -249,9 +251,16 @@ impl<M: ProcManager> Host<M> {
         })?;
 
         self.router.bind(proc_id.clone().into(), addr.clone());
-        self.procs.insert(name, addr);
+        self.procs.insert(name);
 
         Ok((proc_id, agent_ref))
+    }
+
+    fn forwarder(&self) -> ProcOrDial {
+        ProcOrDial {
+            proc: self.service_proc.clone(),
+            dialer: self.router.clone(),
+        }
     }
 }
 
@@ -260,7 +269,7 @@ impl<M: ProcManager> Host<M> {
 #[derive(Debug, Clone)]
 struct ProcOrDial {
     proc: Proc,
-    router: DialMailboxRouter,
+    dialer: DialMailboxRouter,
 }
 
 impl MailboxSender for ProcOrDial {
@@ -272,7 +281,7 @@ impl MailboxSender for ProcOrDial {
         if envelope.dest().actor_id().proc_id() == self.proc.proc_id() {
             self.proc.post_unchecked(envelope, return_handle);
         } else {
-            self.router.post_unchecked(envelope, return_handle)
+            self.dialer.post_unchecked(envelope, return_handle)
         }
     }
 }
@@ -863,7 +872,7 @@ where
         ChannelTransport::Local
     }
 
-    #[tracing::instrument(skip(self, _config))]
+    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1041,7 +1050,7 @@ where
         ChannelTransport::Unix
     }
 
-    #[tracing::instrument(skip(self, _config))]
+    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1135,7 +1144,7 @@ where
 /// forwarding messages to the provided `backend_addr`,
 /// and returning the proc's address and agent actor on
 /// the provided `callback_addr`.
-#[tracing::instrument(skip(spawn))]
+#[crate::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
 pub async fn spawn_proc<A, S, F>(
     proc_id: ProcId,
     backend_addr: ChannelAddr,
@@ -1185,9 +1194,11 @@ pub mod testing {
 
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
-    #[derive(Debug, Default, Actor)]
+    #[derive(Debug, Default)]
     #[hyperactor::export(handlers = [OncePortRef<ActorId>])]
     pub struct EchoActor;
+
+    impl Actor for EchoActor {}
 
     #[async_trait]
     impl Handler<OncePortRef<ActorId>> for EchoActor {
@@ -1217,12 +1228,11 @@ mod tests {
     #[tokio::test]
     async fn test_basic() {
         let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()).await });
+            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()) });
         let procs = Arc::clone(&proc_manager.procs);
-        let (mut host, _handle) =
-            Host::serve(proc_manager, ChannelAddr::any(ChannelTransport::Local))
-                .await
-                .unwrap();
+        let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Local))
+            .await
+            .unwrap();
 
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
         assert_eq!(
@@ -1288,10 +1298,13 @@ mod tests {
         let process_manager = ProcessProcManager::<EchoActor>::new(
             buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
         );
-        let (mut host, _handle) =
-            Host::serve(process_manager, ChannelAddr::any(ChannelTransport::Unix))
-                .await
-                .unwrap();
+        let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
+            .await
+            .unwrap();
+
+        // Manually serve this: the agent isn't actually doing anything in this case,
+        // but we are testing connectivity.
+        host.serve();
 
         // (1) Spawn and check invariants.
         assert!(matches!(host.addr().transport(), ChannelTransport::Unix));
@@ -1508,13 +1521,13 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_times_out_when_configured() {
-        let cfg = crate::config::global::lock();
+        let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
             crate::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_millis(10),
         );
 
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::from_millis(50))),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1527,13 +1540,13 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_timeout_zero_disables_and_succeeds() {
-        let cfg = crate::config::global::lock();
+        let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
             crate::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(0),
         );
 
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::from_millis(20))),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1542,12 +1555,12 @@ mod tests {
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
         assert_eq!(agent.actor_id().proc_id(), &pid);
-        assert!(host.procs.contains_key("ok"));
+        assert!(host.procs.contains("ok"));
     }
 
     #[tokio::test]
     async fn host_spawn_maps_channel_closed_ready_error_to_config_failure() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::ErrChannelClosed),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1560,7 +1573,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_maps_terminal_ready_error_to_config_failure() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::ErrTerminal),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1573,7 +1586,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_addr() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(true, false),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1589,7 +1602,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_agent() {
-        let (mut host, _h) = Host::serve(
+        let mut host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(false, true),
             ChannelAddr::any(ChannelTransport::Local),
         )

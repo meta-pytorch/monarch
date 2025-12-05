@@ -11,10 +11,8 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use hyperactor::Actor;
-use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
-use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::context::Mailbox as _;
 use hyperactor::proc::Instance;
@@ -46,7 +44,6 @@ use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
 use crate::alloc::PyAlloc;
-use crate::context::PyInstance;
 use crate::mailbox::PyMailbox;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
@@ -89,15 +86,12 @@ impl From<ProcMesh> for TrackedProcMesh {
 }
 
 impl TrackedProcMesh {
-    pub async fn spawn<A: Actor + Referable>(
+    pub async fn spawn<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error>
-    where
-        A::Params: RemoteMessage,
-    {
+    ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error> {
         let mesh = self.cell.borrow()?;
         let actor = mesh.spawn(cx, actor_name, params).await?;
         Ok(self.children.insert(actor))
@@ -403,11 +397,6 @@ impl PyProcMesh {
             Ok(PyProcMeshMonitor { receiver })
         })?
         .into())
-    }
-
-    #[getter]
-    fn client(&self) -> PyResult<PyInstance> {
-        Ok(self.try_inner()?.client().into())
     }
 
     fn __repr__(&self) -> PyResult<String> {

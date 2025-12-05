@@ -347,7 +347,7 @@ impl Child {
         tracing::info!("spawning watchdog");
         tokio::spawn(async move {
             let exit_timeout =
-                hyperactor::config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+                hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
             #[allow(clippy::disallowed_methods)]
             if tokio::time::timeout(exit_timeout, exit_flag).await.is_err() {
                 tracing::info!("watchdog timeout, killing process");
@@ -460,8 +460,8 @@ impl ProcessAlloc {
         // from child to parent (**`Stdio::inherit`** does not work!).
         // So, this variable is being used as a proxy for "use pipes"
         // here.
-        let enable_forwarding = hyperactor::config::global::get(MESH_ENABLE_LOG_FORWARDING);
-        let tail_size = hyperactor::config::global::get(MESH_TAIL_LOG_LINES);
+        let enable_forwarding = hyperactor_config::global::get(MESH_ENABLE_LOG_FORWARDING);
+        let tail_size = hyperactor_config::global::get(MESH_TAIL_LOG_LINES);
         if enable_forwarding || tail_size > 0 {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         } else {
@@ -491,6 +491,18 @@ impl ProcessAlloc {
             self.client_context.trace_id.as_str(),
         );
         cmd.env(bootstrap::BOOTSTRAP_INDEX_ENV, index.to_string());
+
+        cmd.env(
+            "HYPERACTOR_PROCESS_NAME",
+            format!(
+                "host rank:{} @{}",
+                index,
+                hostname::get()
+                    .unwrap_or_else(|_| "unknown_host".into())
+                    .into_string()
+                    .unwrap_or("unknown_host".to_string())
+            ),
+        );
 
         tracing::debug!("spawning process {:?}", cmd);
         match cmd.spawn() {

@@ -25,6 +25,7 @@ use hyperactor::ActorRef;
 use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
@@ -33,14 +34,13 @@ use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::config;
-use hyperactor::config::CONFIG;
-use hyperactor::config::ConfigAttr;
 use hyperactor::context;
-use hyperactor::declare_attrs;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -91,7 +91,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
         py_name: None,
     })
-    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(60);
+    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
 
 /// A reference to a single [`hyperactor::Proc`].
@@ -210,7 +210,7 @@ impl ProcMesh {
         spawn_comm_actor: bool,
     ) -> v1::Result<Self> {
         let comm_actor_name = if spawn_comm_actor {
-            Some(Name::new("comm"))
+            Some(Name::new("comm").unwrap())
         } else {
             None
         };
@@ -302,7 +302,7 @@ impl ProcMesh {
         name: &str,
     ) -> v1::Result<Self> {
         let caller = Location::caller();
-        Self::allocate_inner(cx, alloc, Name::new(name), caller).await
+        Self::allocate_inner(cx, alloc, Name::new(name)?, caller).await
     }
 
     // Use allocate_inner to set field mesh_name in span
@@ -710,7 +710,8 @@ impl ProcMeshRef {
     pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcMeshAgent> {
         let agent_name = self.ranks.first().unwrap().agent.actor_id().name();
         // This name must match the ProcMeshAgent name, which can change depending on the allocator.
-        ActorMeshRef::new(Name::new_reserved(agent_name), self.clone())
+        // Since we control the agent_name, it is guaranteed to be a valid mesh identifier.
+        ActorMeshRef::new(Name::new_reserved(agent_name).unwrap(), self.clone())
     }
 
     /// The supervision events of procs in this mesh.
@@ -732,7 +733,7 @@ impl ProcMeshRef {
         )?;
         let expected = self.ranks.len();
         let mut states = Vec::with_capacity(expected);
-        let timeout = config::global::get(GET_ACTOR_STATE_MAX_IDLE);
+        let timeout = hyperactor_config::global::get(GET_ACTOR_STATE_MAX_IDLE);
         for _ in 0..expected {
             // The agent runs on the same process as the running actor, so if some
             // fatal event caused the process to crash (e.g. OOM, signal, process exit),
@@ -834,7 +835,7 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
-    pub async fn spawn<A: Actor + Referable>(
+    pub async fn spawn<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -843,7 +844,7 @@ impl ProcMeshRef {
     where
         A::Params: RemoteMessage,
     {
-        self.spawn_with_name(cx, Name::new(name), params).await
+        self.spawn_with_name(cx, Name::new(name)?, params).await
     }
 
     /// Spawn a 'service' actor. Service actors are *singletons*, using
@@ -853,7 +854,7 @@ impl ProcMeshRef {
     ///
     /// Note: avoid using service actors if possible; the mechanism will
     /// be replaced by an actor registry.
-    pub async fn spawn_service<A: Actor + Referable>(
+    pub async fn spawn_service<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: &str,
@@ -862,7 +863,7 @@ impl ProcMeshRef {
     where
         A::Params: RemoteMessage,
     {
-        self.spawn_with_name(cx, Name::new_reserved(name), params)
+        self.spawn_with_name(cx, Name::new_reserved(name)?, params)
             .await
     }
 
@@ -884,7 +885,7 @@ impl ProcMeshRef {
         proc_mesh=self.name.to_string(),
         actor_name=name.to_string(),
     ))]
-    pub(crate) async fn spawn_with_name<A: Actor + Referable>(
+    pub(crate) async fn spawn_with_name<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: Name,
@@ -915,18 +916,16 @@ impl ProcMeshRef {
         result
     }
 
-    async fn spawn_with_name_inner<A: Actor + Referable>(
+    async fn spawn_with_name_inner<A: RemoteSpawn>(
         &self,
         cx: &impl context::Actor,
         name: Name,
         params: &A::Params,
-    ) -> v1::Result<ActorMesh<A>>
-    where
-        A::Params: RemoteMessage,
-    {
+    ) -> v1::Result<ActorMesh<A>> {
         let remote = Remote::collect();
-        // `Referable` ensures the type `A` is registered with
-        // `Remote`.
+        // `RemoteSpawn` + `remote!(A)` ensure that `A` has a
+        // `SpawnableActor` entry in this registry, so
+        // `name_of::<A>()` can resolve its global type name.
         let actor_type = remote
             .name_of::<A>()
             .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
@@ -993,7 +992,7 @@ impl ProcMeshRef {
         let mesh = match GetRankStatus::wait(
             rx,
             self.ranks.len(),
-            config::global::get(ACTOR_SPAWN_MAX_IDLE),
+            hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE),
             region.clone(), // fallback
         )
         .await
@@ -1030,10 +1029,10 @@ impl ProcMeshRef {
         }?;
         // Spawn a unique mesh manager for each actor mesh, so the type of the
         // mesh can be preserved.
-        let _controller: ActorHandle<ActorMeshController<A>> =
-            ActorMeshController::<A>::spawn(cx, mesh.deref().clone())
-                .await
-                .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        let controller = ActorMeshController::<A>::new(mesh.deref().clone());
+        controller
+            .spawn(cx)
+            .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         Ok(mesh)
     }
 
@@ -1105,7 +1104,7 @@ impl ProcMeshRef {
         let start_time = RealClock.now();
 
         // Reuse actor spawn idle time.
-        let max_idle_time = config::global::get(ACTOR_SPAWN_MAX_IDLE);
+        let max_idle_time = hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE);
         match GetRankStatus::wait(
             rx,
             self.ranks.len(),
