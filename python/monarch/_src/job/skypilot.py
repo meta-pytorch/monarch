@@ -170,12 +170,7 @@ class SkyPilotJob(JobTrait):
             task.set_file_mounts(self._file_mounts)
 
         if self._resources is not None:
-            # Copy resources and override image_id to use PyTorch image with CUDA
-            # This ensures torchmonarch has access to CUDA libraries
-            resources = self._resources.copy(
-                image_id="docker:pytorch/pytorch:2.9.1-cuda12.6-cudnn9-devel"
-            )
-            task.set_resources(resources)
+            task.set_resources(self._resources)
 
         # Generate cluster name if not provided
         cluster_name = self._cluster_name or f"monarch-{os.getpid()}"
@@ -199,6 +194,45 @@ class SkyPilotJob(JobTrait):
 
         self._launched_cluster_name = cluster_name
         logger.info(f"SkyPilot cluster '{cluster_name}' launched successfully")
+        
+        # Wait for the job to be RUNNING (setup complete, run started)
+        self._wait_for_job_running(cluster_name, job_id, timeout=900)
+    
+    def _wait_for_job_running(self, cluster_name: str, job_id: int, timeout: int = 900) -> None:
+        """Wait for the SkyPilot job to reach RUNNING status (setup complete)."""
+        import time
+        start_time = time.time()
+        poll_interval = 10  # seconds
+        
+        logger.info(f"Waiting for job {job_id} setup to complete (timeout={timeout}s)...")
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Get job queue for the cluster
+                request_id = sky.queue(cluster_name)
+                jobs = sky.get(request_id)
+                
+                # Find our job
+                for job in jobs:
+                    if job.get('id') == job_id or job.get('job_id') == job_id:
+                        status = job.get('status', '')
+                        status_str = str(status)
+                        if 'RUNNING' in status_str:
+                            logger.info(f"Job {job_id} is now RUNNING (setup complete)")
+                            return
+                        elif 'FAILED' in status_str or 'CANCELLED' in status_str:
+                            raise RuntimeError(f"Job {job_id} failed with status: {status}. Check logs with: sky logs {cluster_name}")
+                        else:
+                            elapsed = int(time.time() - start_time)
+                            logger.info(f"Job {job_id} status: {status} (waited {elapsed}s)")
+                        break
+                
+            except Exception as e:
+                logger.warning(f"Error checking job status: {e}")
+            
+            time.sleep(poll_interval)
+        
+        raise RuntimeError(f"Timeout waiting for job {job_id} to reach RUNNING status")
 
     def _build_worker_command(self) -> str:
         """Build the bash command to start Monarch workers on each node."""
@@ -233,13 +267,13 @@ except Exception as e:
 '''
         # Escape single quotes in the Python code for bash
         escaped_code = python_code.replace("'", "'\"'\"'")
-        # Set timeout env vars - setup takes time so we need longer than default 30s
+        # Set timeout env vars - setup takes time (building from source) so we need longer timeouts
         env_vars = " ".join([
-            "export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=5m",
-            "export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=5m",
-            "export HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE=5m",
+            "export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=15m",
+            "export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=15m",
+            "export HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE=15m",
         ])
-        return f"{env_vars} && python -c '{escaped_code}'"
+        return f"{env_vars} && {self._python_exe} -c '{escaped_code}'"
 
     def _get_node_ips(self) -> List[str]:
         """Get the IP addresses of all nodes in the cluster."""

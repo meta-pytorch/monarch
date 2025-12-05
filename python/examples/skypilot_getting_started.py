@@ -133,7 +133,7 @@ def main():
     )
     parser.add_argument(
         "--accelerator",
-        default="H100:1",
+        default="H200:1",
         help="GPU accelerator to request (e.g., H100:1, A100:1, V100:1)",
     )
     parser.add_argument(
@@ -160,11 +160,51 @@ def main():
     print("\n[1] Creating SkyPilot job...")
 
     # Setup commands to install Monarch on the remote nodes
-    # torchmonarch is the PyPI package name for Monarch
+    # Build from source to ensure client/worker version compatibility
+    # NOTE: Currently builds WITHOUT tensor engine due to old rdma-core on Ubuntu 20.04
     setup_commands = """
-sudo apt-get update && sudo apt-get install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev || true
-pip install torchmonarch
-echo "DONE INSTALLING TORCHMONARCH"
+set -ex
+
+# Add PPA for newer toolchains
+sudo apt-get update
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+sudo apt-get update
+
+# Install system dependencies
+sudo apt-get install -y \
+  build-essential \
+  ninja-build \
+  g++-11 \
+  rdma-core \
+  libibverbs1 \
+  libmlx5-1 \
+  libibverbs-dev \
+  curl \
+  pkg-config \
+  libssl-dev
+
+# Install CUDA toolkit and NCCL
+wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get install -y cuda-toolkit-12-1
+sudo apt-get install -y --allow-change-held-packages libnccl2=2.28.9-1+cuda12.9 libnccl-dev=2.28.9-1+cuda12.9
+
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source $HOME/.cargo/env
+rustup default nightly
+
+# Install Python dependencies
+cd ~/sky_workdir
+pip install setuptools-rust maturin
+pip install -r torch-requirements.txt -r build-requirements.txt
+
+# Build Monarch (without tensor engine due to old rdma-core)
+CC=gcc-11 CXX=g++-11 USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
+
+echo "DONE INSTALLING MONARCH"
 """
 
     # Build resources specification
@@ -187,6 +227,10 @@ echo "DONE INSTALLING TORCHMONARCH"
         down_on_autostop=True,
         # Setup commands to install dependencies
         setup_commands=setup_commands,
+        # Sync Monarch source to workers for building
+        workdir="/home/sky/dev/monarch",
+        # Use default python (same as used by pip in setup)
+        python_exe="python",
     )
 
     try:

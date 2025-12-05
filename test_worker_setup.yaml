@@ -1,0 +1,78 @@
+# Minimal SkyPilot YAML to test Monarch build on remote workers
+# Usage: sky launch test_worker_setup.yaml -c monarch-test
+#        sky down monarch-test
+#
+# NOTE: Currently builds WITHOUT tensor engine due to old rdma-core on Ubuntu 20.04.
+# For tensor engine support, need a newer base image with rdma-core >= 32.
+
+name: monarch-worker-test
+
+resources:
+  cloud: kubernetes
+  accelerators: H200:1
+  cpus: 4+
+  memory: 16+
+
+num_nodes: 1
+
+# Sync the local monarch repo to the worker
+workdir: /home/sky/dev/monarch
+
+setup: |
+  set -ex
+  
+  echo "=== System info ==="
+  uname -a
+  cat /etc/os-release | head -3
+  
+  echo "=== Adding PPA for newer toolchains ==="
+  sudo apt-get update
+  sudo apt-get install -y software-properties-common
+  sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+  sudo apt-get update
+  
+  echo "=== Installing system dependencies ==="
+  sudo apt-get install -y \
+    build-essential \
+    ninja-build \
+    g++-11 \
+    rdma-core \
+    libibverbs1 \
+    libmlx5-1 \
+    libibverbs-dev \
+    curl \
+    pkg-config \
+    libssl-dev
+  
+  echo "=== Installing CUDA toolkit ==="
+  wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
+  sudo dpkg -i cuda-keyring_1.1-1_all.deb
+  sudo apt-get update
+  sudo apt-get install -y cuda-toolkit-12-1
+  sudo apt-get install -y --allow-change-held-packages libnccl2=2.28.9-1+cuda12.9 libnccl-dev=2.28.9-1+cuda12.9
+  
+  echo "=== Installing Rust ==="
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  source $HOME/.cargo/env
+  rustup default nightly
+  
+  echo "=== Installing Python dependencies ==="
+  cd ~/sky_workdir
+  pip install setuptools-rust maturin
+  pip install -r torch-requirements.txt -r build-requirements.txt
+  
+  echo "=== Building Monarch (without tensor engine due to old rdma-core) ==="
+  cd ~/sky_workdir
+  CC=gcc-11 CXX=g++-11 USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
+  
+  echo "=== Verifying installation ==="
+  pip list | grep monarch
+  python -c "import monarch; print('Monarch imported successfully')"
+  python -c "import monarch._rust_bindings; print('Rust bindings loaded successfully')"
+  
+  echo "=== SETUP COMPLETE ==="
+
+run: |
+  echo "Worker setup test completed successfully!"
+  python -c "import monarch; print('Monarch ready')"
+  echo "Ready for Monarch worker operations"
