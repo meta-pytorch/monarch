@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 import asyncio
-import functools
 import importlib.resources
 import os
 import re
@@ -49,11 +48,7 @@ from monarch._src.actor.debugger.debug_session import (
 )
 from monarch._src.actor.endpoint import endpoint, Extent
 from monarch._src.actor.host_mesh import create_local_host_mesh, this_host
-from monarch._src.actor.proc_mesh import (
-    get_or_spawn_controller,
-    proc_mesh as proc_mesh_v0,
-    ProcMesh,
-)
+from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
 from monarch._src.actor.source_loader import SourceLoaderController
 from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
@@ -85,57 +80,6 @@ debug_env = {
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR: "0.0.0.0",
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR: "0",
 }
-
-
-def isolate_in_subprocess(test_fn=None, *, env=None):
-    if test_fn is None:
-        return functools.partial(isolate_in_subprocess, env=env)
-
-    if env is None:
-        env = {}
-
-    def sync_test_fn():
-        asyncio.run(test_fn())
-
-    sync_test_fn_name = f"sync_{test_fn.__name__}"
-    setattr(sys.modules[__name__], sync_test_fn_name, sync_test_fn)
-
-    env.update(os.environ.copy())
-
-    def wrapper():
-        if IN_PAR:
-            assert (
-                subprocess.call(
-                    [
-                        str(
-                            importlib.resources.files("monarch.python.tests").joinpath(
-                                "run_test_bin"
-                            )
-                        ),
-                        sync_test_fn_name,
-                    ],
-                    env=env,
-                )
-                == 0
-            )
-        else:
-            assert (
-                subprocess.call(
-                    [
-                        sys.executable,
-                        "-c",
-                        f"import tests.test_debugger; tests.test_debugger.{sync_test_fn_name}()",
-                    ],
-                    env=env,
-                )
-                == 0
-            )
-
-    return wrapper
-
-
-def run_test_from_name():
-    getattr(sys.modules[__name__], sys.argv[1])()
 
 
 cli_bin = (
@@ -392,34 +336,31 @@ async def _test_debug(nested: bool) -> None:
 # We have to run this test in a separate process because there is only one
 # debug controller per process, and we don't want this to interfere with
 # the other tests that access the debug controller.
-@isolate_in_subprocess(env=debug_env)
+@pytest.mark.spawn_isolate(timeout=180, env=debug_env)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
-@pytest.mark.timeout(60)
 async def test_debug():
     await _test_debug(nested=False)
 
 
 # See earlier comment.
-@isolate_in_subprocess(env=debug_env)
+@pytest.mark.spawn_isolate(timeout=180, env=debug_env)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
-@pytest.mark.timeout(60)
 async def test_debug_nested():
     await _test_debug(nested=True)
 
 
 # See earlier comment
-@isolate_in_subprocess(env=debug_env)
+@pytest.mark.spawn_isolate(timeout=180, env=debug_env)
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
-@pytest.mark.timeout(60)
 async def test_debug_multi_actor() -> None:
     proc = proc_mesh(hosts=2, gpus=2)
     debugee_1 = proc.spawn("debugee_1", DebugeeActor)
@@ -836,12 +777,11 @@ async def test_debug_command_parser_invalid_inputs(invalid_input):
 
 
 # See earlier comment
-@isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
+@pytest.mark.spawn_isolate(timeout=180, env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Not enough GPUs, this test requires at least 2 GPUs",
 )
-@pytest.mark.timeout(60)
 async def test_debug_cli():
     proc = proc_mesh(hosts=2, gpus=2)
     debugee = proc.spawn("debugee", DebugeeActor)
@@ -1157,8 +1097,7 @@ class ClosureDebugeeActor(Actor):
 
 # We have to run this test in a subprocess because it requires a special
 # instantiation of the debug controller singleton.
-@isolate_in_subprocess(env=debug_env)
-@pytest.mark.timeout(60)
+@pytest.mark.spawn_isolate(timeout=180, env=debug_env)
 async def test_debug_with_pickle_by_value():
     """
     This test tests debugger functionality when there are breakpoints in
