@@ -875,7 +875,7 @@ mod tests {
 
         // Modify a file in the source environment
         let modified_content = "modified test data\n";
-        let newer_time = base_time + Duration::from_secs(3600); // 1 hour later
+        let newer_time = base_time + Duration::from_hours(1); // 1 hour later
         modify_file(
             src_env.path(),
             "bin/test-file",
@@ -919,7 +919,7 @@ mod tests {
 
         // Add a new file to the source environment
         let new_file_content = "new file content\n";
-        let newer_time = base_time + Duration::from_secs(3600); // 1 hour later
+        let newer_time = base_time + Duration::from_hours(1); // 1 hour later
         add_file(
             src_env.path(),
             "lib/new-file.txt",
@@ -966,7 +966,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, None).await?;
 
         // Create a new directory with a file in the source environment
-        let newer_time = base_time + Duration::from_secs(3600); // 1 hour later
+        let newer_time = base_time + Duration::from_hours(1); // 1 hour later
         fs::create_dir(src_env.path().join("new_dir")).await?;
         add_file(
             src_env.path(),
@@ -1021,7 +1021,7 @@ mod tests {
         fs::symlink("bin/test-file", src_env.path().join("link-to-test")).await?;
 
         // Set a newer time for the symlink to ensure it's synced
-        let newer_time = base_time + Duration::from_secs(3600); // 1 hour later
+        let newer_time = base_time + Duration::from_hours(1); // 1 hour later
         set_mtime(&src_env.path().join("link-to-test"), newer_time).await?;
 
         // Sync changes from source to destination
@@ -1061,7 +1061,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, None).await?;
 
         // Add an extra file to the destination that doesn't exist in source
-        let newer_time = base_time + Duration::from_secs(3600); // 1 hour later
+        let newer_time = base_time + Duration::from_hours(1); // 1 hour later
         add_file(
             dst_env.path(),
             "extra-file.txt",
@@ -1099,7 +1099,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, None).await?;
 
         // Add a .pyc file to the source.
-        let newer_time = base_time + Duration::from_secs(3600); // 1 hour later
+        let newer_time = base_time + Duration::from_hours(1); // 1 hour later
         add_file(
             src_env.path(),
             "lib/test.pyc",
@@ -1156,7 +1156,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, None).await?;
 
         // Add an executable file to the source
-        let newer_time = base_time + Duration::from_secs(3600); // 1 hour later
+        let newer_time = base_time + Duration::from_hours(1); // 1 hour later
         add_file(
             src_env.path(),
             "bin/executable",
@@ -1208,7 +1208,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, Some(dst_prefix)).await?;
 
         // Add a text file with prefix references to the source
-        let newer_time = base_time + Duration::from_secs(3600);
+        let newer_time = base_time + Duration::from_hours(1);
         let text_content = format!(
             "#!/bin/bash\nexport PATH={}/bin:$PATH\necho 'Using prefix: {}'\n",
             src_prefix, src_prefix
@@ -1264,7 +1264,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, Some(dst_prefix)).await?;
 
         // Create a binary file with embedded prefix and null bytes
-        let newer_time = base_time + Duration::from_secs(3600);
+        let newer_time = base_time + Duration::from_hours(1);
         let mut binary_content = Vec::new();
         binary_content.extend_from_slice(b"\x7fELF"); // ELF magic number
         binary_content.extend_from_slice(&[0u8; 10]); // null bytes to make it binary
@@ -1315,7 +1315,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, Some(dst_prefix)).await?;
 
         // Create a symlink that points to a path with the source prefix
-        let newer_time = base_time + Duration::from_secs(3600);
+        let newer_time = base_time + Duration::from_hours(1);
         let symlink_target = format!("{}/lib/target-file", src_prefix);
         fs::symlink(&symlink_target, src_env.path().join("bin/link-to-target")).await?;
         set_mtime(&src_env.path().join("bin/link-to-target"), newer_time).await?;
@@ -1350,7 +1350,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, Some(dst_prefix)).await?;
 
         // Create a symlink that points to a relative path (should not be modified)
-        let newer_time = base_time + Duration::from_secs(3600);
+        let newer_time = base_time + Duration::from_hours(1);
         let symlink_target = "relative/path/target";
         fs::symlink(&symlink_target, src_env.path().join("bin/relative-link")).await?;
         set_mtime(&src_env.path().join("bin/relative-link"), newer_time).await?;
@@ -1385,7 +1385,7 @@ mod tests {
         let dst_env = setup_conda_env(TempDir::new()?, base_time, Some(dst_prefix)).await?;
 
         // Create a binary file with embedded prefix and null bytes
-        let newer_time = base_time + Duration::from_secs(3600);
+        let newer_time = base_time + Duration::from_hours(1);
         let mut binary_content = Vec::new();
         binary_content.extend_from_slice(b"\x7fELF"); // ELF magic number
         binary_content.extend_from_slice(&[0u8; 10]); // null bytes to make it binary

@@ -399,7 +399,7 @@ mod tests {
                 ProcMeshId("proc_mesh".to_string()),
                 "actor_mesh".to_string(),
             ),
-            ActorMeshId::V1(Name::new("testing")),
+            ActorMeshId::V1(Name::new("testing").unwrap()),
         ];
 
         for mesh_id in mesh_ids {

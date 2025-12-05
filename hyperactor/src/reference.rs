@@ -70,7 +70,23 @@ mod parse;
 use parse::Lexer;
 use parse::ParseError;
 use parse::Token;
+pub use parse::is_valid_ident;
 use parse::parse;
+
+/// The kinds of references.
+#[derive(strum::Display)]
+pub enum ReferenceKind {
+    /// World references.
+    World,
+    /// Proc references.
+    Proc,
+    /// Actor references.
+    Actor,
+    /// Port references.
+    Port,
+    /// Gang references.
+    Gang,
+}
 
 /// A universal reference to hierarchical identifiers in Hyperactor.
 ///
@@ -191,6 +207,17 @@ impl Reference {
             Self::Actor(_) => None,
             Self::Port(port_id) => Some(port_id.index()),
             Self::Gang(_) => None,
+        }
+    }
+
+    /// Returns the kind of the reference.
+    pub fn kind(&self) -> ReferenceKind {
+        match self {
+            Self::World(_) => ReferenceKind::World,
+            Self::Proc(_) => ReferenceKind::Proc,
+            Self::Actor(_) => ReferenceKind::Actor,
+            Self::Port(_) => ReferenceKind::Port,
+            Self::Gang(_) => ReferenceKind::Gang,
         }
     }
 }
@@ -1465,12 +1492,7 @@ mod tests {
 
     #[test]
     fn test_reference_parse_error() {
-        let cases: Vec<&str> = vec![
-            "(blah)",
-            "world(1, 2, 3)",
-            // hyphen is not allowed in actor name
-            "test[234].testactor-12345[6]",
-        ];
+        let cases: Vec<&str> = vec!["(blah)", "world(1, 2, 3)"];
 
         for s in cases {
             let result: Result<Reference, ReferenceParsingError> = s.parse();

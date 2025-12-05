@@ -957,10 +957,10 @@ mod tests {
         let orig_value = std::env::var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT").ok();
         {
             let _guard1 = config.override_key(CODEC_MAX_FRAME_LENGTH, 4096);
-            let _guard2 = config.override_key(MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(60));
+            let _guard2 = config.override_key(MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(1));
 
             assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 4096);
-            assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(60));
+            assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_mins(1));
             // This was overridden:
             assert_eq!(
                 std::env::var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT").unwrap(),
@@ -1165,12 +1165,12 @@ mod tests {
         reset_to_defaults();
 
         let mut env = Attrs::new();
-        env[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_secs(120);
+        env[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_mins(2);
         set(Source::Env, env);
 
-        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(120));
+        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_mins(2));
         let v = get_cloned(MESSAGE_DELIVERY_TIMEOUT);
-        assert_eq!(v, Duration::from_secs(120));
+        assert_eq!(v, Duration::from_mins(2));
     }
 
     #[test]

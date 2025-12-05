@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::ops::Deref;
+
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::v1::proc_mesh::ProcMesh;
 use hyperactor_mesh::v1::proc_mesh::ProcMeshRef;
@@ -26,7 +28,6 @@ use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
-use crate::instance_dispatch;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
@@ -83,10 +84,9 @@ impl PyProcMesh {
         };
         let instance = instance.clone();
         PyPythonTask::new(async move {
-            let mesh = instance_dispatch!(instance, async move |cx_instance| {
-                ProcMesh::allocate(cx_instance, alloc, &name).await
-            })
-            .map_err(|err| PyException::new_err(err.to_string()))?;
+            let mesh = ProcMesh::allocate(instance.deref(), alloc, &name)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
             Ok(Self::new_owned(mesh))
         })
     }
@@ -101,10 +101,10 @@ impl PyProcMesh {
         let proc_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         let mesh_impl = async move {
-            let actor_mesh = instance_dispatch!(instance, async move |cx_instance| {
-                proc_mesh.spawn(cx_instance, &name, &pickled_type).await
-            })
-            .map_err(to_py_error)?;
+            let actor_mesh = proc_mesh
+                .spawn(instance.deref(), &name, &pickled_type)
+                .await
+                .map_err(to_py_error)?;
             Ok(PythonActorMesh::from_impl(Box::new(
                 PythonActorMeshImpl::new_owned(actor_mesh),
             )))
@@ -131,10 +131,10 @@ impl PyProcMesh {
                 Ok((slf.mesh_ref()?.clone(), pickled_type))
             })?;
 
-            let actor_mesh = instance_dispatch!(instance, async move |cx_instance| {
-                proc_mesh.spawn(cx_instance, &name, &pickled_type).await
-            })
-            .map_err(anyhow::Error::from)?;
+            let actor_mesh = proc_mesh
+                .spawn(instance.deref(), &name, &pickled_type)
+                .await
+                .map_err(anyhow::Error::from)?;
             Ok::<_, PyErr>(Box::new(PythonActorMeshImpl::new_owned(actor_mesh)))
         };
         if emulated {
@@ -200,13 +200,10 @@ impl PyProcMesh {
         PyPythonTask::new(async move {
             let mesh = owned_inner.0.take().await;
             match mesh {
-                Ok(mut mesh) => {
-                    instance_dispatch!(instance, async move |cx_instance| {
-                        mesh.stop(cx_instance).await.map_err(|e| {
-                            PyValueError::new_err(format!("error stopping mesh: {}", e))
-                        })
-                    })
-                }
+                Ok(mut mesh) => mesh
+                    .stop(instance.deref())
+                    .await
+                    .map_err(|e| PyValueError::new_err(format!("error stopping mesh: {}", e))),
                 Err(e) => {
                     // Don't return an exception, silently ignore the stop request
                     // because it was already done.

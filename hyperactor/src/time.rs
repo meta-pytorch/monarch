@@ -166,7 +166,7 @@ mod tests {
         assert!(handle.await.unwrap());
 
         let mut sleeper = alarm.sleeper();
-        alarm.arm(Duration::from_secs(600));
+        alarm.arm(Duration::from_mins(10));
         let handle = tokio::spawn(async move { sleeper.sleep().await });
         drop(alarm);
         // Dropped:
@@ -193,7 +193,7 @@ mod tests {
     #[tokio::test]
     async fn test_reset() {
         let mut alarm = Alarm::new();
-        alarm.arm(Duration::from_secs(600));
+        alarm.arm(Duration::from_mins(10));
         let mut sleeper = alarm.sleeper();
         assert_pending!(task::spawn(sleeper.sleep()).poll());
         // Should reset after setting to an earlier time:
@@ -204,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn test_disarm() {
         let mut alarm = Alarm::new();
-        alarm.arm(Duration::from_secs(600));
+        alarm.arm(Duration::from_mins(10));
         let mut sleeper = alarm.sleeper();
         assert_pending!(task::spawn(sleeper.sleep()).poll());
         alarm.disarm();

@@ -58,10 +58,10 @@ pub struct SpawnableActor {
     /// multiple actors with the same name.
     ///
     /// This is a LazyLock because the names are provided through a trait
-    /// implemetnation, which can not yet be `const`.
+    /// implementation, which can not yet be `const`.
     pub name: &'static LazyLock<&'static str>,
 
-    /// Type-erased spawn function. This is the type's [`Actor::gspawn`].
+    /// Type-erased spawn function. This is the type's [`RemoteSpawn::gspawn`].
     pub gspawn: fn(
         &Proc,
         &str,
@@ -76,7 +76,7 @@ pub struct SpawnableActor {
 inventory::collect!(SpawnableActor);
 
 /// Registry of actors linked into this image and registered by way of
-/// [`crate::register`].
+/// [`crate::remote`].
 #[derive(Debug)]
 pub struct Remote {
     by_name: HashMap<&'static str, &'static SpawnableActor>,
