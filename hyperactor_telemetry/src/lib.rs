@@ -687,6 +687,84 @@ pub fn initialize_logging_with_log_prefix(
     }
 }
 
+/// Create a context span at ERROR level with skip_record enabled.
+/// This is intended to create spans whose only purpose it is to add context
+/// to child events; the span itself is never independently recorded.
+///
+/// Example:
+/// ```ignore
+/// use hyperactor_telemetry::context_span;
+///
+/// let span = context_span!("my_context", field1 = value1, field2 = value2);
+/// let _guard = span.enter();
+/// // ... do work that will be logged with this context
+/// ```
+#[macro_export]
+macro_rules! context_span {
+    (target: $target:expr, parent: $parent:expr, $name:expr, $($field:tt)*) => {
+        ::tracing::error_span!(
+            target: $target,
+            parent: $parent,
+            $name,
+            skip_record = $crate::skip_record,
+            $($field)*
+        )
+    };
+    (target: $target:expr, parent: $parent:expr, $name:expr) => {
+        ::tracing::error_span!(
+            target: $target,
+            parent: $parent,
+            $name,
+            skip_record = $crate::skip_record,
+        )
+    };
+    (parent: $parent:expr, $name:expr, $($field:tt)*) => {
+        ::tracing::error_span!(
+            target: module_path!(),
+            parent: $parent,
+            $name,
+            skip_record = $crate::skip_record,
+            $($field)*
+        )
+    };
+    (parent: $parent:expr, $name:expr) => {
+        ::tracing::error_span!(
+            parent: $parent,
+            $name,
+            skip_record = $crate::skip_record,
+        )
+    };
+    (target: $target:expr, $name:expr, $($field:tt)*) => {
+        ::tracing::error_span!(
+            target: $target,
+            $name,
+            skip_record = $crate::skip_record,
+            $($field)*
+        )
+    };
+    (target: $target:expr, $name:expr) => {
+        ::tracing::error_span!(
+            target: $target,
+            $name,
+            skip_record = $crate::skip_record,
+        )
+    };
+    ($name:expr, $($field:tt)*) => {
+        ::tracing::error_span!(
+            target: module_path!(),
+            $name,
+            skip_record = $crate::skip_record,
+            $($field)*
+        )
+    };
+    ($name:expr) => {
+        ::tracing::error_span!(
+            $name,
+            skip_record = $crate::skip_record,
+        )
+    };
+}
+
 pub mod env {
     use rand::RngCore;
 
