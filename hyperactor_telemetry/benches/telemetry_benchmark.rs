@@ -15,7 +15,8 @@
 //! - Multiple iterations
 //!
 //! Usage:
-//!   buck2 run //monarch/hyperactor_telemetry:telemetry_benchmark -- --old
+//!   buck2 run //monarch/hyperactor_telemetry:telemetry_benchmark -- --old-no-sqlite
+//!   buck2 run //monarch/hyperactor_telemetry:telemetry_benchmark -- --old-with-sqlite
 //!   buck2 run //monarch/hyperactor_telemetry:telemetry_benchmark -- --unified
 //!   buck2 run //monarch/hyperactor_telemetry:telemetry_benchmark -- --compare
 
@@ -129,10 +130,21 @@ fn run_benchmark_stages(iterations: usize) -> Vec<(&'static str, std::time::Dura
     results
 }
 
-fn benchmark(iterations: usize) -> Vec<(&'static str, std::time::Duration)> {
-    println!("{}", "=".repeat(100));
-
+fn benchmark_no_sqlite(iterations: usize) -> Vec<(&'static str, std::time::Duration)> {
     initialize_logging_with_log_prefix(DefaultTelemetryClock {}, None);
+
+    let results = run_benchmark_stages(iterations);
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    results
+}
+
+fn benchmark_with_sqlite(iterations: usize) -> Vec<(&'static str, std::time::Duration)> {
+    initialize_logging_with_log_prefix(DefaultTelemetryClock {}, None);
+
+    let _sqlite_tracing =
+        hyperactor_telemetry::sqlite::SqliteTracing::new().expect("Failed to create SqliteTracing");
 
     let results = run_benchmark_stages(iterations);
 
@@ -147,19 +159,27 @@ fn main() {
     let iterations = 1000;
 
     if args.len() < 2 {
-        println!("Usage: {} [--old | --unified | --compare]", args[0]);
-        println!("  --old: Benchmark old implementation only");
-        println!("  --unified: Benchmark unified implementation only");
-        println!("  --compare: Run both in separate processes and compare");
+        println!("Usage: {} [OPTIONS]", args[0]);
+        println!("  --old-no-sqlite:      Benchmark old implementation without SQLite");
+        println!("  --old-with-sqlite:    Benchmark old implementation with SQLite");
+        println!(
+            "  --unified:            Benchmark unified implementation (use ENABLE_SQLITE_TRACING)"
+        );
+        println!("  --compare:            Run all four benchmarks and compare");
         return;
     }
 
     match args[1].as_str() {
-        "--old" => {
-            println!("Benchmarking OLD implementation...");
-            // Don't set USE_UNIFIED_LAYER - uses old implementation
-            let _results = benchmark(iterations);
+        "--old-no-sqlite" => {
             println!("\n{}", "=".repeat(100));
+            println!("Benchmarking OLD implementation (SQLite DISABLED)...");
+            // Don't set USE_UNIFIED_LAYER - uses old implementation
+            let _results = benchmark_no_sqlite(iterations);
+        }
+        "--old-with-sqlite" => {
+            println!("\n{}", "=".repeat(100));
+            println!("Benchmarking OLD implementation (SQLite ENABLED)...");
+            let _results = benchmark_with_sqlite(iterations);
         }
         "--unified" => {
             println!("Benchmarking UNIFIED implementation...");
@@ -168,8 +188,16 @@ fn main() {
             unsafe {
                 std::env::set_var("USE_UNIFIED_LAYER", "1");
             }
-            let _results = benchmark(iterations);
             println!("\n{}", "=".repeat(100));
+            println!(
+                "Benchmarking UNIFIED implementation (SQLite {})...",
+                if std::env::var("ENABLE_SQLITE_TRACING").unwrap_or_default() == "1" {
+                    "ENABLED"
+                } else {
+                    "DISABLED"
+                }
+            );
+            let _results = benchmark_no_sqlite(iterations);
         }
         "--compare" => {
             println!(
@@ -177,28 +205,54 @@ fn main() {
                 iterations
             );
 
-            let old_status = std::process::Command::new(&args[0])
-                .arg("--old")
+            let old_no_sqlite_status = std::process::Command::new(&args[0])
+                .arg("--old-no-sqlite")
                 .status()
-                .expect("Failed to spawn old implementation");
+                .expect("Failed to spawn old implementation without SQLite");
 
-            if !old_status.success() {
-                eprintln!("\n✗ OLD implementation benchmark FAILED");
+            if !old_no_sqlite_status.success() {
+                eprintln!("\n✗ OLD implementation (no SQLite) benchmark FAILED");
                 return;
             }
 
-            let unified_status = std::process::Command::new(&args[0])
+            let old_with_sqlite_status = std::process::Command::new(&args[0])
+                .arg("--old-with-sqlite")
+                .env("ENABLE_SQLITE_TRACING", "1")
+                .status()
+                .expect("Failed to spawn old implementation with SQLite");
+
+            if !old_with_sqlite_status.success() {
+                eprintln!("\n✗ OLD implementation (with SQLite) benchmark FAILED");
+                return;
+            }
+
+            let unified_no_sqlite_status = std::process::Command::new(&args[0])
                 .arg("--unified")
                 .status()
-                .expect("Failed to spawn unified implementation");
+                .expect("Failed to spawn unified implementation without SQLite");
 
-            if !unified_status.success() {
-                eprintln!("\n✗ UNIFIED implementation benchmark FAILED");
+            if !unified_no_sqlite_status.success() {
+                eprintln!("\n✗ UNIFIED implementation (no SQLite) benchmark FAILED");
             }
+
+            let unified_with_sqlite_status = std::process::Command::new(&args[0])
+                .arg("--unified")
+                .env("ENABLE_SQLITE_TRACING", "1")
+                .status()
+                .expect("Failed to spawn unified implementation with SQLite");
+
+            if !unified_with_sqlite_status.success() {
+                eprintln!("\n✗ UNIFIED implementation (with SQLite) benchmark FAILED");
+                return;
+            }
+
+            println!("All benchmarks completed successfully!");
         }
         _ => {
             println!("Unknown option: {}", args[1]);
-            println!("Use --old, --unified, or --compare");
+            println!(
+                "Use --old-no-sqlite, --old-with-sqlite, --unified-no-sqlite, --unified-with-sqlite, or --compare"
+            );
         }
     }
 }
