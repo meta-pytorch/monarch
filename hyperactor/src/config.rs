@@ -23,7 +23,7 @@ declare_attrs! {
     /// Maximum frame length for codec
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH".to_string()),
-        py_name: None,
+        py_name: Some("codec_max_frame_length".to_string()),
     })
     pub attr CODEC_MAX_FRAME_LENGTH: usize = 10 * 1024 * 1024 * 1024; // 10 GiB
 
@@ -98,7 +98,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
         py_name: None,
     })
-    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
+    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_mins(5);
 
     /// The default encoding to be used.
     @meta(CONFIG = ConfigAttr {
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
         assert_eq!(
             config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL],
-            Duration::from_secs(300)
+            Duration::from_mins(5)
         );
     }
 
@@ -182,7 +182,7 @@ mod tests {
         let config = from_env();
 
         assert_eq!(config[CODEC_MAX_FRAME_LENGTH], 1024);
-        assert_eq!(config[MESSAGE_DELIVERY_TIMEOUT], Duration::from_secs(60));
+        assert_eq!(config[MESSAGE_DELIVERY_TIMEOUT], Duration::from_mins(1));
         assert_eq!(
             config[MESSAGE_ACK_TIME_INTERVAL],
             Duration::from_millis(500)

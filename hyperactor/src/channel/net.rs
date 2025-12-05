@@ -2299,8 +2299,7 @@ mod tests {
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_throughput() {
         let config = hyperactor_config::global::lock();
-        let _guard =
-            config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
+        let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
         let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).unwrap();
@@ -2407,8 +2406,7 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let config = hyperactor_config::global::lock();
-        let _guard =
-            config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(300));
+        let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
         let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
         let socket_addr = match addr {
             ChannelAddr::Tcp(a) => a,

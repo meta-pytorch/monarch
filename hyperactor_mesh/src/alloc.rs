@@ -681,7 +681,7 @@ pub mod test_utils {
     extern "C" fn exit_handler() {
         loop {
             #[allow(clippy::disallowed_methods)]
-            std::thread::sleep(Duration::from_secs(60));
+            std::thread::sleep(Duration::from_mins(1));
         }
     }
 

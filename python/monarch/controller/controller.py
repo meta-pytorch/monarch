@@ -12,7 +12,6 @@ from typing import Generator, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     DebuggerMessage,
-    WorldState,
 )
 
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
@@ -100,11 +99,6 @@ class Controller:
 
     def _handle_message(self, sender, value) -> Generator[MessageResult, None, None]:
         yield from getattr(self, value.__class__.__name__)(sender, *value)
-
-    def worker_world_state(self) -> WorldState:
-        # Eventhough not implemented, return needed so return value complies with type checking
-        assert 1 == 2, "not implemented"
-        return WorldState()
 
     def ProcessExited(self, proc, result) -> Generator[MessageResult, None, None]:
         if result != 0:

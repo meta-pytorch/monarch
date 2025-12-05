@@ -59,8 +59,8 @@ impl SupervisionError {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
 pub struct SupervisionFailureMessage {
-    pub actor_mesh_name: String,
-    pub rank: usize,
+    pub actor_mesh_name: Option<String>,
+    pub rank: Option<usize>,
     pub event: ActorSupervisionEvent,
 }
 
@@ -71,15 +71,19 @@ pub struct SupervisionFailureMessage {
     module = "monarch._rust_bindings.monarch_hyperactor.supervision"
 )]
 pub struct MeshFailure {
-    pub mesh_name: String,
-    pub rank: usize,
+    pub mesh_name: Option<String>,
+    pub rank: Option<usize>,
     pub event: ActorSupervisionEvent,
 }
 
 impl MeshFailure {
-    pub fn new(mesh_name: &impl ToString, rank: usize, event: ActorSupervisionEvent) -> Self {
+    pub fn new(
+        mesh_name: Option<&impl ToString>,
+        rank: Option<usize>,
+        event: ActorSupervisionEvent,
+    ) -> Self {
         Self {
-            mesh_name: mesh_name.to_string(),
+            mesh_name: mesh_name.map(|name| name.to_string()),
             rank,
             event,
         }
@@ -101,7 +105,9 @@ impl std::fmt::Display for MeshFailure {
         write!(
             f,
             "MeshFailure(mesh_name={}, rank={}, event={})",
-            self.mesh_name, self.rank, self.event
+            self.mesh_name.clone().unwrap_or("<none>".into()),
+            self.rank.map_or("<none>".into(), |r| r.to_string()),
+            self.event
         )
     }
 }

@@ -72,7 +72,10 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
     Region,
     Shape,
 )
-from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch._rust_bindings.monarch_hyperactor.supervision import (
+    MeshFailure,
+    SupervisionError,
+)
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
@@ -658,6 +661,57 @@ class Accumulator(Generic[P, R, A]):
 class ValueMesh(MeshTrait, Generic[R]):
     """
     A mesh that holds the result of an endpoint invocation.
+
+    ValueMesh is returned when calling `.get()` on a Future from an endpoint
+    invocation on an ActorMesh or ProcMesh, or by awaiting the Future directly.
+    It contains the return values from all actors in the mesh, organized by
+    their coordinates.
+
+    Iteration:
+        The most efficient way to iterate over a ValueMesh is using `.items()`,
+        which yields (point, value) tuples:
+
+        >>> for point, result in value_mesh.items():
+        ...     rank = point["hosts"] * gpus_per_host + point["gpus"]
+        ...     print(f"Rank {rank}: {result}")
+
+        You can also iterate over just values:
+
+        >>> for result in value_mesh.values():
+        ...     process(result)
+
+    Accessing specific values:
+        Use `.item()` to extract a single value from a singleton mesh:
+
+        >>> single_value = value_mesh.slice(hosts=0, gpus=0).item()
+
+        Or with keyword arguments for multi-dimensional access:
+
+        >>> value = value_mesh.item(hosts=0, gpus=0)
+
+    Mesh operations:
+        ValueMesh supports the same operations as other MeshTrait types:
+
+        - `.flatten(dimension)`: Flatten to a single dimension
+        - `.slice(**coords)`: Select a subset of the mesh
+
+    Examples:
+        >>> # Sync API - Get results from all actors
+        >>> results = actor_mesh.endpoint.call(arg).get()
+        >>> for point, result in results.items():
+        ...     print(f"Actor at {point}: {result}")
+        >>>
+        >>> # Async API - Await the future directly
+        >>> results = await actor_mesh.endpoint.call(arg)
+        >>> for point, result in results.items():
+        ...     print(f"Actor at {point}: {result}")
+        >>>
+        >>> # Access a specific actor's result
+        >>> result_0 = results.item(hosts=0, gpus=0)
+        >>>
+        >>> # Flatten and iterate
+        >>> for point, result in results.flatten("rank").items():
+        ...     print(f"Rank {point.rank}: {result}")
     """
 
     def __init__(self, shape: Shape, values: List[R]) -> None:
@@ -988,6 +1042,16 @@ singleton_shape = Shape([], NDSlice(offset=0, sizes=[], strides=[]))
 MESSAGES_HANDLED: Counter = METER.create_counter("py_mesages_handled")
 
 
+@dataclass
+class ActorInitArgs:
+    Class: Type["Actor"]
+    proc_mesh: Optional["ProcMesh"]
+    controller_controller: Optional["_ControllerController"]
+    name: str
+    creator: Optional[CreatorInstance]
+    args: Tuple[Any, ...]
+
+
 class _Actor:
     """
     This is the message handling implementation of a Python actor.
@@ -1037,14 +1101,16 @@ class _Actor:
                 case MethodSpecifier.Init():
                     method_name = "__init__"
                     ins = ctx.actor_instance
-                    (
-                        Class,
-                        ins.proc_mesh,
-                        ins._controller_controller,
-                        ins.name,
-                        ins.creator,
-                        *args,
-                    ) = args
+                    (args,) = args
+                    init_args = cast(ActorInitArgs, args)
+                    Class = init_args.Class
+                    ins.proc_mesh = cast("ProcMesh", init_args.proc_mesh)
+                    ins._controller_controller = cast(
+                        "_ControllerController", init_args.controller_controller
+                    )
+                    ins.name = init_args.name
+                    ins.creator = init_args.creator
+                    args = init_args.args
                     ins.rank = ctx.message_rank
                     ins.class_name = f"{Class.__module__}.{Class.__qualname__}"
                     try:
@@ -1432,12 +1498,14 @@ class ActorMesh(MeshTrait, Generic[T]):
         send(
             ep,
             (
-                mesh._class,
-                proc_mesh,
-                controller_controller,
-                name,
-                context().actor_instance._as_creator(),
-                *args,
+                ActorInitArgs(
+                    cast(Type[Actor], mesh._class),
+                    proc_mesh,
+                    controller_controller,
+                    name,
+                    context().actor_instance._as_creator(),
+                    args,
+                ),
             ),
             kwargs,
         )
@@ -1532,3 +1600,22 @@ def current_rank() -> Point:
 def current_size() -> Dict[str, int]:
     r = context().message_rank.extent
     return {k: r[k] for k in r}
+
+
+class RootClientActor(Actor):
+    name: str = "client"
+
+    def __supervise__(self, failure: MeshFailure) -> object:
+        from monarch.actor import unhandled_fault_hook  # pyre-ignore
+
+        unhandled_fault_hook(failure)  # pyre-ignore
+        return True
+
+    @staticmethod
+    def _pickled_init_args() -> FrozenBuffer:
+        args = (
+            ActorInitArgs(RootClientActor, None, None, RootClientActor.name, None, ()),
+        )
+        kwargs = {}
+        _, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        return buffer
