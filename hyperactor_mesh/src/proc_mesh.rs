@@ -274,7 +274,7 @@ impl ProcMesh {
         C.get_or_init(|| AtomicUsize::new(0))
     }
 
-    #[tracing::instrument(skip_all)]
+    #[hyperactor::instrument]
     #[hyperactor::observe_result("ProcMesh")]
     async fn allocate_boxed_inner(
         mut alloc: Box<dyn Alloc + Send + Sync>,
@@ -752,7 +752,7 @@ impl ProcMesh {
             }
             ProcMeshKind::V1(proc_mesh) => {
                 proc_mesh
-                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name))
+                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name)?)
                     .await?;
                 Ok(())
             }

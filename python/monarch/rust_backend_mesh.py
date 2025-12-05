@@ -12,7 +12,6 @@ from typing import Any, Callable, Optional, Protocol
 
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
-    SystemSnapshotFilter,
 )
 
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
@@ -92,99 +91,9 @@ class PoolDeviceMeshProvider:
         or timeout_in_sec is reached.xtimeout_in_sec being None indicates no timeout.
         """
 
-        logger.info("Trying to allocate a new mesh in its desired world...")
+        # TODO: clean up
 
-        def _create_exit(
-            client: Client,
-        ) -> Callable[[Optional[RemoteException | DeviceException | Exception]], None]:
-            def _exit(
-                error: Optional[RemoteException | DeviceException | Exception] = None,
-            ) -> None:
-                client.shutdown(True, error)
-
-            return _exit
-
-        def _is_world_healthy(world_status: dict[str, str], target_world: str) -> bool:
-            return (
-                target_world in world_status
-                and DeviceMeshStatus(world_status[target_world])
-                == DeviceMeshStatus.LIVE
-            )
-
-        now = time.time()
-        while timeout_in_sec is None or time.time() - now < timeout_in_sec:
-            # Pull the fresh world status
-            self._refresh_worlds()
-            world_status = self._root_client.world_status()
-            self._remove_evicted_worlds(world_status)
-
-            # Find the next available world
-            for mesh_world, mesh in self._mesh_map.items():
-                if mesh is not None:
-                    # Mesh has been allocated to this world, skip
-                    continue
-
-                worker_world, controller_id = mesh_world
-                controller_world = controller_id.world_name
-
-                if (not _is_world_healthy(world_status, worker_world)) or (
-                    not _is_world_healthy(world_status, controller_world)
-                ):
-                    # Either controller world is not ready or worker world is not ready
-                    continue
-
-                # Previously this grafted a child actor ("new_with_parent") to the root client.
-                # This is not a legal thing to do to: instead, we create a unique controller
-                # actor name based on the root client.
-                controller_actor_name = f"{self._root_client.actor_id.actor_name}.backend_controller_{self._create_count}"
-                self._create_count += 1
-                backend_ctrl = RustController(
-                    proc=self._proc,
-                    client_actor=ClientActor(self._proc, controller_actor_name),
-                    controller_id=controller_id,
-                    worker_world_name=worker_world,
-                )
-                client = Client(backend_ctrl, self._hosts * self._gpus, self._gpus)
-
-                # TODO: we need to consider hosts and gpus constraints as well
-                dm = DeviceMesh(
-                    client,
-                    NDSlice(
-                        offset=0,
-                        sizes=[self._hosts, self._gpus],
-                        strides=[self._gpus, 1],
-                    ),
-                    ("host", "gpu"),
-                    worker_world,
-                )
-                dm.exit = _create_exit(client)
-                self._mesh_map[mesh_world] = dm
-
-                logger.info("Mesh successfully allocated in world: %s", worker_world)
-
-                return dm
-
-            # TODO(T216841374): Change to healthy world push based checks
-            sleep_sec = 0.05
-            logger.debug(f"No healthy world found, sleeping for {sleep_sec}s...")
-            time.sleep(sleep_sec)
-
-        raise TimeoutError(f"Could not find a healthy world in {timeout_in_sec}s!")
-
-    def _refresh_worlds(self) -> None:
-        system_snapshot = self._root_client.world_state(
-            filter=SystemSnapshotFilter(world_labels={WORLD_WORKER_LABEL: "1"})
-        )
-        for world_id, world_snapshot in system_snapshot.items():
-            if WORLD_CONTROLLER_LABEL not in world_snapshot.labels:
-                continue
-            controller_actor_id = ActorId.from_string(
-                world_snapshot.labels[WORLD_CONTROLLER_LABEL]
-            )
-            world_tuple = (world_id, controller_actor_id)
-            if world_tuple not in self._mesh_map:
-                logger.debug(f"Discovered new worker world {world_id}")
-                self._mesh_map[world_tuple] = None
+        raise NotImplementedError()
 
     def _remove_evicted_worlds(self, world_status: dict[str, str]) -> None:
         """

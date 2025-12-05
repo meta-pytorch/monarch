@@ -1848,7 +1848,7 @@ impl ProcManager for BootstrapProcManager {
     /// Returns a [`BootstrapProcHandle`] that exposes the child
     /// process's lifecycle (status, wait/ready, termination). Errors
     /// are surfaced as [`HostError`].
-    #[tracing::instrument(skip(self, config))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcId,
@@ -1877,6 +1877,20 @@ impl ProcManager for BootstrapProcManager {
             "HYPERACTOR_MESH_BOOTSTRAP_MODE",
             mode.to_env_safe_string()
                 .map_err(|e| HostError::ProcessConfigurationFailure(proc_id.clone(), e.into()))?,
+        );
+        cmd.env(
+            "HYPERACTOR_PROCESS_NAME",
+            format!(
+                "proc {} @ {}",
+                match &proc_id {
+                    ProcId::Direct(_, name) => name.clone(),
+                    ProcId::Ranked(world_id, rank) => format!("{world_id}[{rank}]"),
+                },
+                hostname::get()
+                    .unwrap_or_else(|_| "unknown_host".into())
+                    .into_string()
+                    .unwrap_or("unknown_host".to_string())
+            ),
         );
 
         if need_stdio {

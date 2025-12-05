@@ -318,20 +318,6 @@ class DeviceMesh(Referenceable, MeshTrait):
             self._active_mesh_context.__exit__(None, None, None)
             self._active_mesh_context = None
 
-    def get_info(self) -> DeviceMeshInfo:
-        """
-        Retrieves metadata about the device mesh and its constituent devices.
-
-        Returns:
-            DeviceMeshInfo: Contains mesh-level labels and per-device labels.
-        """
-        mesh_state = self.client.mesh_state()
-
-        return DeviceMeshInfo(
-            mesh_labels=mesh_state.labels,
-            devices_labels=[proc.labels for proc in mesh_state.procs.values()],
-        )
-
 
 _active: Optional[DeviceMesh] = None
 _dispatch_enabled = False

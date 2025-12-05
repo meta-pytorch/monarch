@@ -312,8 +312,10 @@ where
 /// with the ID of the actor being served.
 #[derive(Debug)]
 pub struct ActorError {
-    pub(crate) actor_id: Box<ActorId>,
-    pub(crate) kind: Box<ActorErrorKind>,
+    /// The ActorId for the actor that generated this error.
+    pub actor_id: Box<ActorId>,
+    /// The kind of error that occurred.
+    pub kind: Box<ActorErrorKind>,
 }
 
 /// The kinds of actor serving errors.
