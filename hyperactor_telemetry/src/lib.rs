@@ -57,6 +57,7 @@ mod meta;
 mod otel;
 mod pool;
 pub mod recorder;
+pub mod sinks;
 mod spool;
 pub mod sqlite;
 pub mod task;
@@ -96,6 +97,7 @@ use crate::config::ENABLE_OTEL_TRACING;
 use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
 use crate::config::MONARCH_FILE_LOG_LEVEL;
+use crate::config::MONARCH_LOG_SUFFIX;
 use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
 use crate::sqlite::get_reloadable_sqlite_layer;
@@ -175,7 +177,8 @@ fn writer() -> Box<dyn Write + Send> {
     match env::Env::current() {
         env::Env::Test => Box::new(std::io::stderr()),
         env::Env::Local | env::Env::MastEmulator | env::Env::Mast => {
-            let (path, filename) = log_file_path(env::Env::current(), None).unwrap();
+            let suffix = hyperactor_config::global::try_get_cloned(MONARCH_LOG_SUFFIX);
+            let (path, filename) = log_file_path(env::Env::current(), suffix.as_deref()).unwrap();
             match try_create_appender(&path, &filename, true) {
                 Ok(file_appender) => Box::new(file_appender),
                 Err(e) => {
@@ -581,29 +584,6 @@ pub fn initialize_logging_with_log_prefix(
         env::Env::Mast => LOG_LEVEL_INFO,
         env::Env::Test => LOG_LEVEL_DEBUG,
     };
-    let (non_blocking, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
-        .lossy(false)
-        .finish(writer());
-    let writer_guard = Arc::new((non_blocking, guard));
-    let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
-
-    let file_layer = fmt::Layer::default()
-        .with_writer(writer_guard.0.clone())
-        .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
-        .fmt_fields(GlogFields::default().compact())
-        .with_ansi(false)
-        .with_filter(
-            Targets::new()
-                .with_default(LevelFilter::from_level({
-                    let log_level_str =
-                        hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
-                            .unwrap_or_else(|| file_log_level.to_string());
-                    tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
-                        tracing::Level::from_str(file_log_level).expect("Invalid default log level")
-                    })
-                }))
-                .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
-        );
 
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
@@ -612,6 +592,64 @@ pub fn initialize_logging_with_log_prefix(
     #[cfg(fbcode_build)]
     {
         if use_unified {
+            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+            sinks.push(Box::new(sinks::glog::GlogSink::new(
+                writer(),
+                prefix_env_var.clone(),
+                file_log_level,
+            )));
+
+            if let Err(err) = Registry::default()
+                .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
+                    // TODO: get_reloadable_sqlite_layer currently still returns None,
+                    // and some additional work is required to make it work.
+                    Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
+                } else {
+                    None
+                })
+                .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
+                    Some(otel::tracing_layer())
+                } else {
+                    None
+                })
+                .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+                    Some(recorder().layer())
+                } else {
+                    None
+                })
+                .with(trace_dispatcher::TraceEventDispatcher::new(sinks, None))
+                .try_init()
+            {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
+        } else {
+            // For file_layer, use NonBlocking
+            let (non_blocking, guard) =
+                tracing_appender::non_blocking::NonBlockingBuilder::default()
+                    .lossy(false)
+                    .finish(writer());
+            let writer_guard = Arc::new((non_blocking, guard));
+            let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
+
+            let file_layer = fmt::Layer::default()
+                .with_writer(writer_guard.0.clone())
+                .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
+                .fmt_fields(GlogFields::default().compact())
+                .with_ansi(false)
+                .with_filter(
+                    Targets::new()
+                        .with_default(LevelFilter::from_level({
+                            let log_level_str =
+                                hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
+                                    .unwrap_or_else(|| file_log_level.to_string());
+                            tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
+                                tracing::Level::from_str(file_log_level)
+                                    .expect("Invalid default log level")
+                            })
+                        }))
+                        .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+                );
+
             if let Err(err) = Registry::default()
                 .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
                     // TODO: get_reloadable_sqlite_layer currently still returns None,
@@ -631,33 +669,10 @@ pub fn initialize_logging_with_log_prefix(
                 } else {
                     None
                 })
-                .with(trace_dispatcher::TraceEventDispatcher::new(vec![], None))
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
-        } else if let Err(err) = Registry::default()
-            .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
-                // TODO: get_reloadable_sqlite_layer currently still returns None,
-                // and some additional work is required to make it work.
-                Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
-            } else {
-                None
-            })
-            .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
-                Some(otel::tracing_layer())
-            } else {
-                None
-            })
-            .with(file_layer)
-            .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
-                Some(recorder().layer())
-            } else {
-                None
-            })
-            .try_init()
-        {
-            tracing::debug!("logging already initialized for this process: {}", err);
         }
         let exec_id = env::execution_id();
         let process_name =
@@ -702,23 +717,55 @@ pub fn initialize_logging_with_log_prefix(
     }
     #[cfg(not(fbcode_build))]
     {
-        let registry = Registry::default().with(file_layer).with(
-            if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+        let registry =
+            Registry::default().with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
                 None
-            },
-        );
+            });
 
         if use_unified {
+            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+            sinks.push(Box::new(sinks::glog::GlogSink::new(
+                writer(),
+                prefix_env_var.clone(),
+                file_log_level,
+            )));
+
             if let Err(err) = registry
-                .with(trace_dispatcher::TraceEventDispatcher::new(vec![], None))
+                .with(trace_dispatcher::TraceEventDispatcher::new(sinks, None))
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
         } else {
-            if let Err(err) = registry.try_init() {
+            let (non_blocking, guard) =
+                tracing_appender::non_blocking::NonBlockingBuilder::default()
+                    .lossy(false)
+                    .finish(writer());
+            let writer_guard = Arc::new((non_blocking, guard));
+            let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
+
+            let file_layer = fmt::Layer::default()
+                .with_writer(writer_guard.0.clone())
+                .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
+                .fmt_fields(GlogFields::default().compact())
+                .with_ansi(false)
+                .with_filter(
+                    Targets::new()
+                        .with_default(LevelFilter::from_level({
+                            let log_level_str =
+                                hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
+                                    .unwrap_or_else(|| file_log_level.to_string());
+                            tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
+                                tracing::Level::from_str(file_log_level)
+                                    .expect("Invalid default log level")
+                            })
+                        }))
+                        .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+                );
+
+            if let Err(err) = registry.with(file_layer).try_init() {
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
         }
