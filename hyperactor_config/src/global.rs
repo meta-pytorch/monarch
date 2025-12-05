@@ -1165,12 +1165,12 @@ mod tests {
         reset_to_defaults();
 
         let mut env = Attrs::new();
-        env[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_secs(120);
+        env[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_mins(2);
         set(Source::Env, env);
 
-        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(120));
+        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_mins(2));
         let v = get_cloned(MESSAGE_DELIVERY_TIMEOUT);
-        assert_eq!(v, Duration::from_secs(120));
+        assert_eq!(v, Duration::from_mins(2));
     }
 
     #[test]

@@ -432,7 +432,7 @@ mod tests {
         config.set(I64_KEY, -123);
         config.set(F64_KEY, 1.414);
         config.set(U32_KEY, 777);
-        config.set(DURATION_KEY, std::time::Duration::from_secs(120));
+        config.set(DURATION_KEY, std::time::Duration::from_mins(2));
         config.set(MODE_KEY, TestMode::Staging);
         config.set(IP_KEY, Ipv4Addr::new(10, 0, 0, 1));
         config.set(
@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(loaded_config[U32_KEY], 777);
         assert_eq!(
             loaded_config[DURATION_KEY],
-            std::time::Duration::from_secs(120)
+            std::time::Duration::from_mins(2)
         );
         assert_eq!(loaded_config[MODE_KEY], TestMode::Staging);
         assert_eq!(loaded_config[IP_KEY], Ipv4Addr::new(10, 0, 0, 1));

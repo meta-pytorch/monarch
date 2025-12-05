@@ -1456,8 +1456,8 @@ mod tests {
         // Serve a system.
         let server_handle = System::serve(
             ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
-            Duration::from_secs(120),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
+            Duration::from_mins(2),
         )
         .await
         .unwrap();
@@ -1489,7 +1489,7 @@ mod tests {
             listen_addr,
             server_handle.local_addr().clone(),
             sup_ref.clone(),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             HashMap::new(),
             ProcLifecycleMode::ManagedBySystem,
         )
@@ -1506,7 +1506,7 @@ mod tests {
             ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
             server_handle.local_addr().clone(),
             sup_ref.clone(),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             HashMap::new(),
             ProcLifecycleMode::ManagedBySystem,
         )
