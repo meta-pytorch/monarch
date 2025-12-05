@@ -440,7 +440,7 @@ mod tests {
         let base_timestamp = 1640995200;
         let test_base_time = UNIX_EPOCH + Duration::from_secs(base_timestamp);
         let old_time = test_base_time - Duration::from_hours(1); // 1 hour before base
-        let new_time = test_base_time + Duration::from_secs(7200); // 2 hours after base (beyond slop)
+        let new_time = test_base_time + Duration::from_hours(2); // 2 hours after base (beyond slop)
 
         // Files older than base should be considered equal
         assert_eq!(comparator(&old_time, &old_time), std::cmp::Ordering::Equal);
@@ -739,7 +739,7 @@ mod tests {
         let base_timestamp = base_time.duration_since(UNIX_EPOCH)?.as_secs();
         let update_window_time = UNIX_EPOCH + Duration::from_secs(base_timestamp + 3630); // In the middle of update window
         let old_time = base_time - Duration::from_hours(1);
-        let new_time = base_time + Duration::from_secs(7200);
+        let new_time = base_time + Duration::from_hours(2);
 
         // When update_window_time is the first arg (env1 context with update window),
         // it should be treated as equal to old files
@@ -815,7 +815,7 @@ mod tests {
         let comparator = CondaFingerprint::mtime_comparator(&fingerprint1, &fingerprint2)?;
 
         let old_time = base_time - Duration::from_hours(1);
-        let new_time = base_time + Duration::from_secs(7200);
+        let new_time = base_time + Duration::from_hours(2);
 
         // Basic mtime comparison should still work
         assert_eq!(comparator(&old_time, &old_time), std::cmp::Ordering::Equal);
@@ -929,7 +929,7 @@ mod tests {
         let comparator = CondaFingerprint::mtime_comparator(&fingerprint1, &fingerprint2)?;
 
         let old_time = base_time - Duration::from_hours(1);
-        let new_time = base_time + Duration::from_secs(7200);
+        let new_time = base_time + Duration::from_hours(2);
 
         assert_eq!(comparator(&old_time, &old_time), std::cmp::Ordering::Equal);
         assert_eq!(
