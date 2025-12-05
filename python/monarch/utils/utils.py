@@ -6,62 +6,13 @@
 
 
 # pyre-strict
-import os
-import socket
+import warnings
 
 from typing import Optional
 
-from monarch.actor import Actor, current_rank, endpoint, ProcMesh
-from monarch.tools.network import AddrType, get_ipaddr
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("localhost", 0))
-        addr = s.getsockname()
-        port = addr[1]
-        return port
-
-
-class _TorchDistributedInitActor(Actor):
-    def __init__(self) -> None:
-        self.rank: int = current_rank().rank
-
-    @endpoint
-    def get_host_port(self, use_ipaddr: Optional[AddrType]) -> tuple[str, int]:
-        hostname = socket.gethostname()
-        port = _find_free_port()
-        if use_ipaddr is None:
-            return (hostname, port)
-
-        ipaddr = get_ipaddr(hostname, port, use_ipaddr)
-        return (ipaddr, port)
-
-    @endpoint
-    def setup_env(self, master_addr: str, master_port: int) -> None:
-        cr = current_rank()
-        # Assume last dimension is the local rank.
-        last_label = cr.extent.labels[-1]
-        local_world_size = cr.size(last_label)
-        world_size = cr.extent.nelements
-        global_rank = cr.rank
-        local_rank = min(world_size, global_rank % local_world_size)
-        group_rank = global_rank // local_world_size
-        group_world_size = (world_size + local_world_size - 1) // local_world_size
-        env = {
-            "MASTER_ADDR": master_addr,
-            "MASTER_PORT": str(master_port),
-            "RANK": str(global_rank),
-            "LOCAL_RANK": str(local_rank),
-            "LOCAL_WORLD_SIZE": str(local_world_size),
-            "GROUP_RANK": str(group_rank),
-            "GROUP_WORLD_SIZE": str(group_world_size),
-            "ROLE_RANK": str(global_rank),
-            "ROLE_WORLD_SIZE": str(world_size),
-            "ROLE_NAME": "rank",
-            "WORLD_SIZE": str(world_size),
-        }
-        os.environ.update(env)
+from monarch.actor import ProcMesh
+from monarch.spmd import setup_torch_elastic_env_async
+from monarch.tools.network import AddrType
 
 
 async def setup_env_for_distributed(
@@ -75,14 +26,15 @@ async def setup_env_for_distributed(
     It selects a random proc in the proc_mesh to be the master node.
     It sets enviornment variables like RANK, LOCAL_RANK, WORLD_SIZE, etc.
     If master_addr and master_port are None, it will automatically select a master node and port.
+
+    .. deprecated:: 0.2.0
+        This function is deprecated and will be removed in monarch 0.3.0.
+        Use :func:`monarch.spmd.setup_torch_elastic_env` instead.
     """
-    assert (
-        (master_addr is None) == (master_port is None)
-    ), "Either both master_addr and master_port must be specified or neither must be specified."
-    am = proc_mesh.spawn("_TorchDistributedInitActor", _TorchDistributedInitActor)
-    if master_addr is None:
-        # We use call instead of call_one because call_one can't handle tuple return types.
-        vm = await am.flatten("rank").slice(rank=0).get_host_port.call(use_ipaddr)
-        master_addr, master_port = vm.item()
-    assert master_port is not None, "master_port should not be None here."
-    await am.setup_env.call(master_addr, master_port)
+    warnings.warn(
+        "setup_env_for_distributed is deprecated and will be removed in monarch 0.3.0. "
+        "Use monarch.spmd.setup_torch_elastic_env instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    await setup_torch_elastic_env_async(proc_mesh, master_addr, master_port, use_ipaddr)
