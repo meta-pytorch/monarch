@@ -102,10 +102,10 @@ def attach_to_workers(
 
 
     private_key is a tls private key file loaded as bytes used to establish secure connections.
-    The workers must private_key in their certificate authority file.
+    The workers must trust this private_key in their certificate authority file.
 
     ca is a certificate authority key file. This client will only trust workers with private_keys signed
-    but the ca file.
+    by the ca file.
 
     """
 
@@ -118,7 +118,7 @@ def attach_to_workers(
     hm = HostMesh(
         host_mesh.spawn(),
         extent.region,
-        stream_logs=True,
+        stream_logs=False,
         is_fake_in_process=False,
         _initialized_hy_host_mesh=None,
         _code_sync_proc_mesh=None,

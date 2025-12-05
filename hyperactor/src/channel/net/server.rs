@@ -198,7 +198,6 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
             ack_result = self.write_state.send().instrument(tracing::span!(Level::ERROR, "write ack", skip_record)) => {
                 match ack_result {
                     Ok(acked_seq) => {
-                        tracing::info!("sent ack {acked_seq}");
                         *last_ack_time = RealClock.now();
                         next.ack = acked_seq;
                     }

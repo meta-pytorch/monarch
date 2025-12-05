@@ -61,7 +61,7 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
             .await
             .unwrap();
 
-        ProcMesh::allocate(cx, Box::new(alloc), "test.local")
+        ProcMesh::allocate(cx, Box::new(alloc), "test_local")
             .await
             .unwrap()
     });
@@ -81,7 +81,7 @@ pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMe
             .await
             .unwrap();
 
-        ProcMesh::allocate(cx, Box::new(alloc), "test.process")
+        ProcMesh::allocate(cx, Box::new(alloc), "test_process")
             .await
             .unwrap()
     });

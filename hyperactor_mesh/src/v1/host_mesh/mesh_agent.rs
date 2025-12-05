@@ -103,6 +103,7 @@ struct ProcCreationState {
         resource::Stop,
         resource::GetState<ProcState>,
         resource::GetRankStatus { cast = true },
+        resource::List,
         ShutdownHost
     ]
 )]
@@ -438,6 +439,15 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
     }
 }
 
+#[async_trait]
+impl Handler<resource::List> for HostMeshAgent {
+    async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
+        list.reply
+            .send(cx, self.created.keys().cloned().collect())?;
+        Ok(())
+    }
+}
+
 /// A trampoline actor that spawns a [`Host`], and sends a reference to the
 /// corresponding [`HostMeshAgent`] to the provided reply port.
 ///
@@ -549,7 +559,7 @@ mod tests {
             .unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let name = Name::new("proc1");
+        let name = Name::new("proc1").unwrap();
 
         // First, create the proc, then query its state:
 

@@ -123,9 +123,9 @@ mod tests {
     #[tokio::test]
     async fn test_proc_dialer() {
         let dir = tempfile::tempdir().unwrap();
-        let first = Name::new("first");
-        let second = Name::new("second");
-        let third = Name::new("third");
+        let first = Name::new("first").unwrap();
+        let second = Name::new("second").unwrap();
+        let third = Name::new("third").unwrap();
         let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(
             format!("unix:{}/{}", dir.path().display(), first)
                 .parse()
