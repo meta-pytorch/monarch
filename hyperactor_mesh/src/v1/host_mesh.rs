@@ -1570,7 +1570,7 @@ mod tests {
         let _guard1 = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
         let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(120),
+            Duration::from_mins(2),
         );
         let _guard3 = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
