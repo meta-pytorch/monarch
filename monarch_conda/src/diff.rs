@@ -493,7 +493,7 @@ mod tests {
         let base_timestamp = 1640995200;
         let test_base_time = UNIX_EPOCH + Duration::from_secs(base_timestamp);
         let update_start = test_base_time + Duration::from_secs(3600); // Update window start
-        let update_end = test_base_time + Duration::from_secs(3660); // Update window end
+        let update_end = test_base_time + Duration::from_mins(61); // Update window end
         let in_window_time = update_start + Duration::from_secs(30); // Inside update window
         let after_window_time = update_end + Duration::from_secs(3600); // After update window
 
