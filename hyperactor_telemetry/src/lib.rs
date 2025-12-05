@@ -61,6 +61,7 @@ mod spool;
 pub mod sqlite;
 pub mod task;
 pub mod trace;
+pub mod trace_dispatcher;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -95,6 +96,7 @@ use crate::config::ENABLE_OTEL_TRACING;
 use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
 use crate::config::MONARCH_FILE_LOG_LEVEL;
+use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
 use crate::sqlite::get_reloadable_sqlite_layer;
 
@@ -570,6 +572,8 @@ pub fn initialize_logging_with_log_prefix(
     clock: impl TelemetryClock + Send + 'static,
     prefix_env_var: Option<String>,
 ) {
+    let use_unified = hyperactor_config::global::get(USE_UNIFIED_LAYER);
+
     swap_telemetry_clock(clock);
     let file_log_level = match env::Env::current() {
         env::Env::Local => LOG_LEVEL_INFO,
@@ -607,7 +611,32 @@ pub fn initialize_logging_with_log_prefix(
 
     #[cfg(fbcode_build)]
     {
-        if let Err(err) = Registry::default()
+        if use_unified {
+            if let Err(err) = Registry::default()
+                .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
+                    // TODO: get_reloadable_sqlite_layer currently still returns None,
+                    // and some additional work is required to make it work.
+                    Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
+                } else {
+                    None
+                })
+                .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
+                    Some(otel::tracing_layer())
+                } else {
+                    None
+                })
+                .with(file_layer)
+                .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+                    Some(recorder().layer())
+                } else {
+                    None
+                })
+                .with(trace_dispatcher::TraceEventDispatcher::new(vec![], None))
+                .try_init()
+            {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
+        } else if let Err(err) = Registry::default()
             .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
                 // TODO: get_reloadable_sqlite_layer currently still returns None,
                 // and some additional work is required to make it work.
@@ -673,16 +702,25 @@ pub fn initialize_logging_with_log_prefix(
     }
     #[cfg(not(fbcode_build))]
     {
-        if let Err(err) = Registry::default()
-            .with(file_layer)
-            .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+        let registry = Registry::default().with(file_layer).with(
+            if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                 Some(recorder().layer())
             } else {
                 None
-            })
-            .try_init()
-        {
-            tracing::debug!("logging already initialized for this process: {}", err);
+            },
+        );
+
+        if use_unified {
+            if let Err(err) = registry
+                .with(trace_dispatcher::TraceEventDispatcher::new(vec![], None))
+                .try_init()
+            {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
+        } else {
+            if let Err(err) = registry.try_init() {
+                tracing::debug!("logging already initialized for this process: {}", err);
+            }
         }
     }
 }

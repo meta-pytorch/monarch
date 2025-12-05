@@ -72,4 +72,11 @@ declare_attrs! {
         py_name: Some("scuba_log_enter_exit".to_string()),
     })
     pub attr SCUBA_LOG_ENTER_EXIT: bool = false;
+
+    /// Enable the unified tracing layer.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("USE_UNIFIED_LAYER".to_string()),
+        py_name: Some("use_unified_layer".to_string()),
+    })
+    pub attr USE_UNIFIED_LAYER: bool = false;
 }
