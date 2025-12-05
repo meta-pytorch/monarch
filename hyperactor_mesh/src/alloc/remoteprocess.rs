@@ -1927,7 +1927,7 @@ mod test {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         hyperactor_telemetry::initialize_logging_for_test();
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2029,7 +2029,7 @@ mod test {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2110,7 +2110,7 @@ mod test {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         hyperactor_telemetry::initialize_logging(ClockKind::default());
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
