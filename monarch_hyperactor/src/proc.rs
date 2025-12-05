@@ -14,7 +14,6 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use hyperactor::RemoteMessage;
-use hyperactor::RemoteSpawn;
 use hyperactor::actor::Signal;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
@@ -122,7 +121,7 @@ impl PyProc {
             Ok(PythonActorHandle {
                 inner: proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type).await?,
+                    PythonActor::new(pickled_type)?,
                 )?,
             })
         })
@@ -141,7 +140,7 @@ impl PyProc {
             inner: signal_safe_block_on(py, async move {
                 proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type).await?,
+                    PythonActor::new(pickled_type)?,
                 )
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,

@@ -382,14 +382,11 @@ impl WorkerMessageHandler for WorkerActor {
         self.maybe_add_stream_to_recording(cx, params.stream)
             .await?;
 
-        let device_meshes = if params.function.as_torch_op().is_some() {
-            HashMap::new()
-        } else {
-            self.device_meshes
-                .iter()
-                .map(|(k, v)| (k.clone(), v.0.clone()))
-                .collect()
-        };
+        let device_meshes = self
+            .device_meshes
+            .iter()
+            .map(|(k, v)| (k.clone(), v.0.clone()))
+            .collect();
 
         let mut remote_process_groups = HashMap::new();
         for remote_process_group_ref in &params.remote_process_groups {
@@ -634,22 +631,6 @@ impl WorkerMessageHandler for WorkerActor {
         Ok(())
     }
 
-    async fn create_pipe(
-        &mut self,
-        _cx: &hyperactor::Context<Self>,
-        _result: Ref,
-        // TODO(agallagher): This is used in the python impl to name the socket
-        // path to use for comms, but we don't currently use a named socket.
-        _key: String,
-        _function: ResolvableFunction,
-        _max_messages: i64,
-        _device_mesh: Ref,
-        _args: Vec<WireValue>,
-        _kwargs: HashMap<String, WireValue>,
-    ) -> Result<()> {
-        panic!("create_pipe is no longer implemented")
-    }
-
     async fn send_tensor(
         &mut self,
         cx: &hyperactor::Context<Self>,
@@ -768,7 +749,7 @@ impl WorkerMessageHandler for WorkerActor {
         // Resolve the stream.
         let stream = self.try_get_stream(stream)?;
 
-        let device_meshes = if function.as_ref().is_none_or(|f| f.as_torch_op().is_some()) {
+        let device_meshes = if function.is_none() {
             HashMap::new()
         } else {
             self.device_meshes
@@ -1929,196 +1910,6 @@ mod tests {
         worker_handle1.await;
         worker_handle2.drain_and_stop().unwrap();
         worker_handle2.await;
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn send_value() -> Result<()> {
-        test_setup()?;
-
-        let proc = Proc::local();
-        let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
-
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
-                .await
-                .unwrap(),
-            )
-            .unwrap();
-        worker_handle
-            .command_group(
-                &client,
-                vec![
-                    WorkerMessage::CreateStream {
-                        id: 1.into(),
-                        stream_creation: StreamCreationMode::UseDefaultStream,
-                    },
-                    WorkerMessage::CallFunction(CallFunctionParams {
-                        seq: 0.into(),
-                        results: vec![Some(0.into())],
-                        mutates: vec![],
-                        function: "torch.ops.aten.ones.default".into(),
-                        args: vec![WireValue::IntList(vec![2, 3])],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                        remote_process_groups: vec![],
-                    }),
-                    WorkerMessage::SendValue {
-                        seq: 1.into(),
-                        destination: None,
-                        mutates: vec![],
-                        function: None,
-                        args: vec![WireValue::Ref(0.into())],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::SendValue {
-                        seq: 2.into(),
-                        destination: None,
-                        mutates: vec![],
-                        function: Some("torch.ops.aten.var_mean.default".into()),
-                        args: vec![WireValue::Ref(0.into())],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::Exit { error: None },
-                ],
-            )
-            .await
-            .unwrap();
-
-        worker_handle.drain_and_stop()?;
-        assert_matches!(worker_handle.await, ActorStatus::Stopped);
-
-        let mut responses = controller_rx.drain();
-        assert_eq!(
-            responses.len(),
-            3,
-            "Expected one response, got: {:#?}",
-            responses
-        );
-
-        match responses.pop().unwrap() {
-            ControllerMessage::FetchResult { seq, value } => {
-                assert_eq!(seq, 2.into());
-                let value = value.unwrap().deserialized::<PyTree<RValue>>().unwrap();
-                assert_eq!(value.leaves().len(), 2);
-            }
-            resp => panic!("unexpected response {:#?}", resp),
-        };
-        match responses.pop().unwrap() {
-            ControllerMessage::FetchResult { seq, .. } => {
-                assert_eq!(seq, 1.into())
-            }
-            resp => panic!("unexpected response {:#?}", resp),
-        };
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 60)]
-    async fn send_value_err_result() -> Result<()> {
-        test_setup()?;
-
-        let proc = Proc::local();
-        let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
-
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
-                .await
-                .unwrap(),
-            )
-            .unwrap();
-
-        let ref_arg: PickledPyObject =
-            Python::with_gil(|py| Ref { id: 2 }.into_bound_py_any(py)?.try_into())?;
-
-        worker_handle
-            .command_group(
-                &client,
-                vec![
-                    WorkerMessage::CreateStream {
-                        id: 1.into(),
-                        stream_creation: StreamCreationMode::UseDefaultStream,
-                    },
-                    WorkerMessage::SetRefUnitTestsOnly {
-                        reference: Ref { id: 2 },
-                        value: WireValue::Bool(false),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::SendValue {
-                        seq: 1.into(),
-                        destination: None,
-                        mutates: vec![Ref { id: 2 }],
-                        function: Some("non.existent.function".into()),
-                        args: vec![],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::SendValue {
-                        seq: 2.into(),
-                        destination: None,
-                        mutates: vec![],
-                        function: None,
-                        args: vec![ref_arg.into()],
-                        kwargs: HashMap::new(),
-                        stream: 1.into(),
-                    },
-                    WorkerMessage::Exit { error: None },
-                ],
-            )
-            .await
-            .unwrap();
-
-        worker_handle.drain_and_stop()?;
-        assert_matches!(worker_handle.await, ActorStatus::Stopped);
-
-        let mut responses = controller_rx.drain();
-        assert_eq!(
-            responses.len(),
-            3,
-            "Expected one response, got: {:#?}",
-            responses
-        );
-        match responses.pop() {
-            Some(ControllerMessage::FetchResult { seq, value }) => {
-                assert_eq!(seq, 2.into());
-                assert!(value.is_err());
-                assert!(
-                    value
-                        .unwrap_err()
-                        .backtrace
-                        .contains("failed to resolve function")
-                );
-            }
-            _ => panic!("unexpected response {:#?}", responses),
-        }
-        match responses.pop() {
-            Some(ControllerMessage::FetchResult { seq, value }) => {
-                assert_eq!(seq, 1.into());
-                assert!(value.is_err());
-                assert!(
-                    value
-                        .unwrap_err()
-                        .backtrace
-                        .contains("failed to resolve function")
-                );
-            }
-            _ => panic!("unexpected response {:#?}", responses),
-        }
-        Ok(())
     }
 
     #[allow(dead_code)]
