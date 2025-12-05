@@ -661,6 +661,57 @@ class Accumulator(Generic[P, R, A]):
 class ValueMesh(MeshTrait, Generic[R]):
     """
     A mesh that holds the result of an endpoint invocation.
+
+    ValueMesh is returned when calling `.get()` on a Future from an endpoint
+    invocation on an ActorMesh or ProcMesh, or by awaiting the Future directly.
+    It contains the return values from all actors in the mesh, organized by
+    their coordinates.
+
+    Iteration:
+        The most efficient way to iterate over a ValueMesh is using `.items()`,
+        which yields (point, value) tuples:
+
+        >>> for point, result in value_mesh.items():
+        ...     rank = point["hosts"] * gpus_per_host + point["gpus"]
+        ...     print(f"Rank {rank}: {result}")
+
+        You can also iterate over just values:
+
+        >>> for result in value_mesh.values():
+        ...     process(result)
+
+    Accessing specific values:
+        Use `.item()` to extract a single value from a singleton mesh:
+
+        >>> single_value = value_mesh.slice(hosts=0, gpus=0).item()
+
+        Or with keyword arguments for multi-dimensional access:
+
+        >>> value = value_mesh.item(hosts=0, gpus=0)
+
+    Mesh operations:
+        ValueMesh supports the same operations as other MeshTrait types:
+
+        - `.flatten(dimension)`: Flatten to a single dimension
+        - `.slice(**coords)`: Select a subset of the mesh
+
+    Examples:
+        >>> # Sync API - Get results from all actors
+        >>> results = actor_mesh.endpoint.call(arg).get()
+        >>> for point, result in results.items():
+        ...     print(f"Actor at {point}: {result}")
+        >>>
+        >>> # Async API - Await the future directly
+        >>> results = await actor_mesh.endpoint.call(arg)
+        >>> for point, result in results.items():
+        ...     print(f"Actor at {point}: {result}")
+        >>>
+        >>> # Access a specific actor's result
+        >>> result_0 = results.item(hosts=0, gpus=0)
+        >>>
+        >>> # Flatten and iterate
+        >>> for point, result in results.flatten("rank").items():
+        ...     print(f"Rank {point.rank}: {result}")
     """
 
     def __init__(self, shape: Shape, values: List[R]) -> None:
