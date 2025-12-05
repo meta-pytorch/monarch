@@ -575,12 +575,16 @@ impl TensorCell {
 
     pub fn borrow(&self) -> BorrowGuard {
         BorrowGuard {
+            // SAFETY: TensorCell owns the tensor and the returned BorrowGuard
+            // maintains proper ownership semantics by holding a clone.
             tensor: unsafe { self.tensor.clone_unsafe() },
         }
     }
 
     pub fn borrow_mut(&self) -> BorrowGuardMut {
         BorrowGuardMut {
+            // SAFETY: TensorCell owns the tensor and the returned BorrowGuardMut
+            // maintains proper ownership semantics by holding a clone.
             tensor: unsafe { self.tensor.clone_unsafe() },
         }
     }
