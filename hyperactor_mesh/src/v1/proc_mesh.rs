@@ -923,8 +923,9 @@ impl ProcMeshRef {
         params: &A::Params,
     ) -> v1::Result<ActorMesh<A>> {
         let remote = Remote::collect();
-        // `Referable` ensures the type `A` is registered with
-        // `Remote`.
+        // `RemoteSpawn` + `remote!(A)` ensure that `A` has a
+        // `SpawnableActor` entry in this registry, so
+        // `name_of::<A>()` can resolve its global type name.
         let actor_type = remote
             .name_of::<A>()
             .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
