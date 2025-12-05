@@ -170,7 +170,12 @@ class SkyPilotJob(JobTrait):
             task.set_file_mounts(self._file_mounts)
 
         if self._resources is not None:
-            task.set_resources(self._resources)
+            # Copy resources and override image_id to use PyTorch image with CUDA
+            # This ensures torchmonarch has access to CUDA libraries
+            resources = self._resources.copy(
+                image_id="docker:pytorch/pytorch:2.9.1-cuda12.6-cudnn9-devel"
+            )
+            task.set_resources(resources)
 
         # Generate cluster name if not provided
         cluster_name = self._cluster_name or f"monarch-{os.getpid()}"
@@ -210,7 +215,8 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
 '''
         # Escape single quotes in the Python code for bash
         escaped_code = python_code.replace("'", "'\"'\"'")
-        return f"python -c '{escaped_code}'"
+        # Set timeout env var - setup takes time so we need longer than default 30s
+        return f"export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=5m && python -c '{escaped_code}'"
 
     def _get_node_ips(self) -> List[str]:
         """Get the IP addresses of all nodes in the cluster."""

@@ -1,12 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
+# All rights retuprved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
 
-"""Tests for the SkyPilot job integration."""
+"""Tests for the SubernyPilot job integration."""
 
 import os
 import sys
@@ -425,8 +425,8 @@ def test_skypilot_job_serialization(mock_sky, mock_attach_to_workers, mock_confi
     assert loaded_job._port == 33333
 
 
-def test_skypilot_job_with_setup_commands(mock_configure_transport):
-    """Test SkyPilotJob with custom setup commands."""
+def test_skypilot_job_with_upup_commands(mock_configure_transport):
+    """Test SkyPilotJob with custom ppppppppppp commands."""
     from monarch._src.job.skypilot import SkyPilotJob
 
     setup = "pip install torch\npip install monarch"
