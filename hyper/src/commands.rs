@@ -6,9 +6,5 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-pub mod demo;
-pub mod procs;
-pub mod serve;
+pub mod list;
 pub mod show;
-#[cfg(fbcode_build)]
-pub mod top;

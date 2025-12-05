@@ -29,7 +29,7 @@ mod metrics;
 pub mod proc_mesh;
 pub mod reference;
 pub mod resource;
-mod router;
+pub mod router;
 pub mod shared_cell;
 pub mod shortuuid;
 #[cfg(target_os = "linux")]

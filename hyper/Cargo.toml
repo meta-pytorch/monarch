@@ -1,4 +1,4 @@
-# This file is manually maintained to maintain the abilith to build hyper
+# This file is manually maintained to maintain the ability to build hyper
 # using cargo. The code is annotated with fbcode_build conditionals such that
 # it works with both cargo (all oss deps) and buck (full meta deps).
 [package]
@@ -15,7 +15,7 @@ chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-fea
 clap = { version = "4.5.30", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 console = "0.15.7"
 hyperactor = { path = "../hyperactor" }
-hyperactor_multiprocess = { path = "../hyperactor_multiprocess" }
+hyperactor_mesh = { path = "../hyperactor_mesh" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_json = { version = "1.0.132", features = ["float_roundtrip", "unbounded_depth"] }
 tabwriter = { version = "1.2.1", features = ["ansi_formatting"] }
