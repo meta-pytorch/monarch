@@ -284,7 +284,7 @@ mod tests {
             env_name: Some("TEST_DURATION_KEY".to_string()),
             py_name: None,
         })
-        pub attr DURATION_KEY: std::time::Duration = std::time::Duration::from_secs(60);
+        pub attr DURATION_KEY: std::time::Duration = std::time::Duration::from_mins(1);
 
         @meta(CONFIG = ConfigAttr {
             env_name: Some("TEST_MODE_KEY".to_string()),

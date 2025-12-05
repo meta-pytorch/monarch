@@ -91,7 +91,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
         py_name: None,
     })
-    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(60);
+    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
 
 /// A reference to a single [`hyperactor::Proc`].
