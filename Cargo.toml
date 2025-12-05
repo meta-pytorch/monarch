@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "build_utils",
-    "cuda-sys",
     "erased_lifetime",
     "hyper",
     "hyperactor",
