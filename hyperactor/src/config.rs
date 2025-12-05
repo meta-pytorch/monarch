@@ -182,7 +182,7 @@ mod tests {
         let config = from_env();
 
         assert_eq!(config[CODEC_MAX_FRAME_LENGTH], 1024);
-        assert_eq!(config[MESSAGE_DELIVERY_TIMEOUT], Duration::from_secs(60));
+        assert_eq!(config[MESSAGE_DELIVERY_TIMEOUT], Duration::from_mins(1));
         assert_eq!(
             config[MESSAGE_ACK_TIME_INTERVAL],
             Duration::from_millis(500)

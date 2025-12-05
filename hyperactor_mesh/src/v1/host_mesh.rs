@@ -88,7 +88,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
         py_name: None,
     })
-    pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_secs(60);
+    pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
 
 /// A reference to a single host.
@@ -1574,7 +1574,7 @@ mod tests {
         );
         let _guard3 = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
 
         let instance = testing::instance().await;
@@ -1614,7 +1614,7 @@ mod tests {
             *actual_attrs
                 .get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT)
                 .unwrap(),
-            Duration::from_secs(60)
+            Duration::from_mins(1)
         );
     }
 }
