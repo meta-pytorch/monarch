@@ -10,7 +10,6 @@ use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::time::Duration;
-use std::time::SystemTime;
 
 use anyhow::Result;
 use hyperactor::RemoteMessage;
@@ -18,7 +17,6 @@ use hyperactor::actor::Signal;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::data::Serialized;
-use hyperactor::mailbox::PortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
@@ -32,8 +30,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
-use tokio::sync::OnceCell;
-use tokio::sync::watch;
 
 use crate::actor::PythonActor;
 use crate::actor::PythonActorHandle;
@@ -317,21 +313,8 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
 
-    // TODO(T216450632): merge actor.rs and client.rs in monarch_extension
-    signal_port: PortHandle<Signal>,
-    last_controller_status_check: SystemTime,
-    controller_id: OnceCell<ActorId>,
-    controller_error_sender: watch::Sender<String>,
-    controller_error_receiver: watch::Receiver<String>,
     clock: ClockKind,
     actor_id: ActorId,
-}
-
-/// Error that can occur when there is controller supervision error.
-#[derive(thiserror::Error, Debug)]
-pub enum ControllerError {
-    #[error("controller actor {0} failed: {1}")]
-    Failed(ActorId, String),
 }
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
@@ -346,9 +329,8 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         // TEMPORARY: remove after using fixed message ports.
         let (_message_port, message_receiver) = instance.bind_actor_port::<M>();
 
-        let (signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
+        let (_signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
 
-        let (controller_error_sender, controller_error_receiver) = watch::channel("".to_string());
         let actor_id = instance.self_id().clone();
 
         Ok(Self {
@@ -356,18 +338,9 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             message_receiver,
             signal_receiver,
             status: InstanceStatus::Running,
-            signal_port,
-            last_controller_status_check: clock.system_time_now(),
-            controller_id: OnceCell::new(),
-            controller_error_sender,
-            controller_error_receiver,
             clock,
             actor_id,
         })
-    }
-
-    pub fn set_controller(&mut self, controller_id: ActorId) {
-        self.controller_id.set(controller_id).unwrap();
     }
 
     /// Send a message to any actor. It is the responsibility of the caller to ensure the right

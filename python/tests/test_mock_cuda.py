@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
+import unittest
 from unittest import main, TestCase
 
 import pytest
@@ -42,6 +43,7 @@ class TestMockCuda(TestCase):
     def setUp(self) -> None:
         return super().setUp()
 
+    @unittest.skip("Disabled due to older version of driver")
     def test_output_is_garbage(self):
         with mock_cuda().mock_cuda_guard():
             x = torch.arange(9, device="cuda", dtype=torch.float32).reshape(3, 3)
@@ -51,6 +53,7 @@ class TestMockCuda(TestCase):
             )
             self.assertFalse(torch.equal((x @ y).cpu(), true_output))
 
+    @unittest.skip("Disabled due to older version of driver")
     def test_simple_forward_backward(self):
         # Make sure that any side-effects from importing mock_cuda are applied here too:
         mock_cuda()
@@ -58,6 +61,7 @@ class TestMockCuda(TestCase):
         # and don't crash.
         simple_forward_backward("cuda")
 
+    @unittest.skip("Disabled due to older version of driver")
     def test_turn_mock_on_and_off(self):
         cpu_y, cpu_dw, cpu_db = simple_forward_backward("cpu")
 
