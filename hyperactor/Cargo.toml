@@ -92,7 +92,6 @@ indoc = "2.0.2"
 maplit = "1.0"
 proptest = "1.5"
 serde_bytes = "0.11"
-serde_yaml = "0.9.25"
 tempfile = "3.22"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio-test = "0.4.4"

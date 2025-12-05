@@ -19,9 +19,6 @@ from typing import (
 )
 
 import torch
-from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
-    WorldState,
-)
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
@@ -162,11 +159,6 @@ class MockController:
         self, seq: Seq, defs: Sequence["Tensor"], uses: Sequence["Tensor"]
     ) -> None:
         self.history.ident(seq, defs, uses)
-
-    def worker_world_state(self) -> WorldState:
-        # Eventhough not implemented, return needed so return value complies with type checking
-        assert 1 == 2, "not implemented"
-        return WorldState()
 
     # Below are the messages that should be executed on "workers".
     def CommandGroup(self, ranks: Ranks, msg: messages.CommandGroup):
