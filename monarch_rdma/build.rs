@@ -11,14 +11,42 @@ fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Validate CUDA installation and get CUDA home path
-    let _cuda_home = match build_utils::validate_cuda_installation() {
-        Ok(home) => home,
-        Err(_) => {
-            build_utils::print_cuda_error_help();
-            std::process::exit(1);
+    // Check if we are building for ROCm (HIP) - check ROCm first
+    let is_rocm = build_utils::find_rocm_home().is_some();
+
+    // Validate compute installation and set cfg flags
+    if is_rocm {
+        match build_utils::validate_rocm_installation() {
+            Ok(_) => println!("cargo:warning=Using ROCm/HIP for monarch_rdma"),
+            Err(_) => {
+                build_utils::print_rocm_error_help();
+                std::process::exit(1);
+            }
         }
-    };
+
+        // Set ROCm version cfg flags
+        let rocm_version = build_utils::find_rocm_home()
+            .and_then(|home| build_utils::get_rocm_version(&home))
+            .unwrap_or((6, 0));
+
+        if rocm_version.0 >= 7 {
+            println!("cargo:rustc-cfg=rocm_7_plus");
+        } else {
+            println!("cargo:rustc-cfg=rocm_6_x");
+        }
+    } else {
+        match build_utils::validate_cuda_installation() {
+            Ok(_) => println!("cargo:warning=Using CUDA for monarch_rdma"),
+            Err(_) => {
+                build_utils::print_cuda_error_help();
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Emit cfg check declarations
+    println!("cargo:rustc-check-cfg=cfg(rocm_6_x)");
+    println!("cargo:rustc-check-cfg=cfg(rocm_7_plus)");
 
     // Include headers and libs from the active environment.
     let python_config = match build_utils::python_env_dirs_with_interpreter("python3") {
@@ -39,17 +67,34 @@ fn main() {
         println!("cargo:metadata=LIB_PATH={}", lib_dir);
     }
 
-    // Get CUDA library directory and emit link directives
-    let cuda_lib_dir = match build_utils::get_cuda_lib_dir() {
-        Ok(dir) => dir,
-        Err(_) => {
-            build_utils::print_cuda_lib_error_help();
-            std::process::exit(1);
+    // Get compute library directory and emit link directives
+    let compute_lib_dir = if is_rocm {
+        match build_utils::get_rocm_lib_dir() {
+            Ok(dir) => dir,
+            Err(_) => {
+                build_utils::print_rocm_lib_error_help();
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match build_utils::get_cuda_lib_dir() {
+            Ok(dir) => dir,
+            Err(_) => {
+                build_utils::print_cuda_lib_error_help();
+                std::process::exit(1);
+            }
         }
     };
-    println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
-    println!("cargo:rustc-link-lib=cuda");
-    println!("cargo:rustc-link-lib=cudart");
+    println!("cargo:rustc-link-search=native={}", compute_lib_dir);
+
+    // Link compute libraries
+    if is_rocm {
+        println!("cargo:rustc-link-lib=amdhip64");
+        println!("cargo:rustc-link-lib=hsa-runtime64");
+    } else {
+        println!("cargo:rustc-link-lib=cuda");
+        println!("cargo:rustc-link-lib=cudart");
+    }
 
     // Link against the ibverbs and mlx5 libraries (used by rdmaxcel-sys)
     println!("cargo:rustc-link-lib=ibverbs");
@@ -72,7 +117,7 @@ fn main() {
                         // Add library search path
                         println!("cargo:rustc-link-search=native={}", path);
                         // Set rpath so runtime linker can find the libraries
-                        println!("cargo::rustc-link-arg=-Wl,-rpath,{}", path);
+                        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path);
                     }
                 }
             }
@@ -82,21 +127,25 @@ fn main() {
         println!("cargo:rustc-link-lib=torch_cpu");
         println!("cargo:rustc-link-lib=torch");
         println!("cargo:rustc-link-lib=c10");
-        println!("cargo:rustc-link-lib=c10_cuda");
+        if is_rocm {
+            println!("cargo:rustc-link-lib=c10_hip");
+        } else {
+            println!("cargo:rustc-link-lib=c10_cuda");
+        }
     } else {
         // Fallback to torch-sys links metadata if available
         if let Ok(torch_lib_path) = std::env::var("DEP_TORCH_LIB_PATH") {
-            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", torch_lib_path);
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", torch_lib_path);
         }
     }
 
     // Set rpath for NCCL libraries if available
     if let Ok(nccl_lib_path) = std::env::var("DEP_NCCL_LIB_PATH") {
-        println!("cargo::rustc-link-arg=-Wl,-rpath,{}", nccl_lib_path);
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", nccl_lib_path);
     }
 
     // Disable new dtags, as conda envs generally use `RPATH` over `RUNPATH`
-    println!("cargo::rustc-link-arg=-Wl,--disable-new-dtags");
+    println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
 
     // Link the static libraries from rdmaxcel-sys
     // Try the Cargo dependency mechanism first, then fall back to fixed paths
@@ -144,6 +193,6 @@ fn main() {
     }
 
     // Set build configuration flags
-    println!("cargo::rustc-cfg=cargo");
-    println!("cargo::rustc-check-cfg=cfg(cargo)");
+    println!("cargo:rustc-cfg=cargo");
+    println!("cargo:rustc-check-cfg=cfg(cargo)");
 }
