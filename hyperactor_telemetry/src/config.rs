@@ -64,7 +64,7 @@ declare_attrs! {
         env_name: Some("OTEL_METRIC_EXPORT_INTERVAL".to_string()),
         py_name: Some("otel_metric_export_interval".to_string()),
     })
-    pub attr OTEL_METRIC_EXPORT_INTERVAL: Duration = Duration::from_secs(10);
+    pub attr OTEL_METRIC_EXPORT_INTERVAL: Duration = Duration::from_secs(1);
 
     /// Enable logging of span enter/exit events to Scuba.
     @meta(CONFIG = ConfigAttr {
