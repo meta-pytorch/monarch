@@ -29,7 +29,7 @@ from monarch._src.actor.meta.allocator import (
 
 from monarch._src.job.job import BatchJob, JobState, JobTrait
 
-from monarch.tools.commands import create, info, kill
+from monarch._src.tools.commands import create, info, kill
 from monarch.tools.components.meta import hyperactor
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
