@@ -14,8 +14,8 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock
 
-from monarch.tools import commands
-from monarch.tools.commands import component_args_from_cli, server_ready
+from monarch._src.tools import commands
+from monarch._src.tools.commands import component_args_from_cli, server_ready
 
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
@@ -27,9 +27,9 @@ from monarch.tools.mesh_spec import MeshSpec, ServerSpec
 from torchx.specs import AppDef, AppDryRunInfo, AppState, AppStatus, Role, RoleStatus
 from torchx.specs.api import ReplicaState, ReplicaStatus
 
-CMD_INFO = "monarch.tools.commands.info"
-CMD_CREATE = "monarch.tools.commands.create"
-CMD_KILL = "monarch.tools.commands.kill"
+CMD_INFO = "monarch._src.tools.commands.info"
+CMD_CREATE = "monarch._src.tools.commands.create"
+CMD_KILL = "monarch._src.tools.commands.kill"
 
 
 class TestCommands(unittest.TestCase):
@@ -98,18 +98,18 @@ class TestCommands(unittest.TestCase):
         mock_schedule.assert_called_once()
         self.assertEqual(server_handle, "slurm:///test_job_id")
 
-    @mock.patch("monarch.tools.commands.Runner.cancel")
+    @mock.patch("monarch._src.tools.commands.Runner.cancel")
     def test_kill(self, mock_cancel: mock.MagicMock) -> None:
         handle = "slurm:///test_job_id"
         commands.kill(handle)
         mock_cancel.assert_called_once_with(handle)
 
-    @mock.patch("monarch.tools.commands.Runner.status", return_value=None)
+    @mock.patch("monarch._src.tools.commands.Runner.status", return_value=None)
     def test_info_non_existent_server(self, _: mock.MagicMock) -> None:
         self.assertIsNone(commands.info("slurm:///job-does-not-exist"))
 
-    @mock.patch("monarch.tools.commands.Runner.describe")
-    @mock.patch("monarch.tools.commands.Runner.status")
+    @mock.patch("monarch._src.tools.commands.Runner.describe")
+    @mock.patch("monarch._src.tools.commands.Runner.status")
     def test_info(
         self, mock_status: mock.MagicMock, mock_describe: mock.MagicMock
     ) -> None:
