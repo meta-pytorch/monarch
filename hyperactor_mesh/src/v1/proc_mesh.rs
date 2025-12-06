@@ -19,7 +19,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use hyperactor::Actor;
-use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -784,7 +783,10 @@ impl ProcMeshRef {
                                 supervision_events: vec![ActorSupervisionEvent::new(
                                     agent_id,
                                     None,
-                                    ActorStatus::Stopped,
+                                    ActorStatus::generic_failure(format!(
+                                        "timeout waiting for message from proc mesh agent while querying for \"{}\". The process likely crashed",
+                                        name,
+                                    )),
                                     None,
                                 )],
                             }),

@@ -16,7 +16,6 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::RemoteMessage;
-use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::actor::RemoteSpawn;
@@ -441,14 +440,15 @@ async fn actor_states_monitor<A>(
                 let actor_status = match state.state.and_then(|s| s.proc_status) {
                     Some(ProcStatus::Stopped { .. })
                     // SIGTERM
-                    | Some(ProcStatus::Killed { signal: 15, .. })
-                    // Conservatively treat lack of status as stopped
-                    | None => ActorStatus::Stopped,
-
-                    Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
+                    | Some(ProcStatus::Killed { signal: 15, .. })  => ActorStatus::Stopped,
+                    Some(status) => ActorStatus::generic_failure(format!(
                         "process failure: {}",
                         status
-                    ))),
+                    )),
+                    // Lack of state means there was a timeout reaching the HostMeshAgent.
+                    None => ActorStatus::generic_failure(format!(
+                        "process failure: timeout waiting for response from host mesh agent for {}", state.name
+                    )),
                 };
                 let display_name = if !point.is_empty() {
                     let coords_display = point.format_as_dict();
