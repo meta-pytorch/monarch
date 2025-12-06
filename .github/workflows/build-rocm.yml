@@ -1,4 +1,4 @@
-trunk: Build ROCm
+name: Build ROCm
 
 on:
   workflow_call:
