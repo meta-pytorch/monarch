@@ -13,6 +13,9 @@ fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
+    // Get NCCL/rdma-core config from nccl-static-sys (includes are used, links emitted by monarch_extension)
+    let nccl_config = build_utils::NcclStaticConfig::from_env();
+
     let mut builder = bindgen::Builder::default()
         .header("src/nccl.h")
         .clang_arg("-x")
@@ -22,6 +25,7 @@ fn main() {
             "-I{}/include",
             build_utils::find_cuda_home().unwrap()
         ))
+        .clang_arg(format!("-I{}", nccl_config.nccl_include))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Communicator creation and management
         .allowlist_function("ncclGetLastError")
@@ -97,8 +101,6 @@ fn main() {
     }
     if let Some(lib_dir) = &python_config.lib_dir {
         println!("cargo::rustc-link-search=native={}", lib_dir);
-        // Set cargo metadata to inform dependent binaries about how to set their
-        // RPATH (see controller/build.rs for an example).
         println!("cargo::metadata=LIB_PATH={}", lib_dir);
     }
 
@@ -110,7 +112,6 @@ fn main() {
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
 
-    println!("cargo::rustc-link-lib=nccl");
     println!("cargo::rustc-cfg=cargo");
     println!("cargo::rustc-check-cfg=cfg(cargo)");
 }

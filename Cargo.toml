@@ -17,6 +17,7 @@ members = [
     "monarch_rdma",
     "monarch_tensor_worker",
     "monarch_types",
+    "monarch_cpp_static_libs",
     "nccl-sys",
     "ndslice",
     "preempt_rwlock",
