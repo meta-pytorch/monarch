@@ -90,7 +90,6 @@ use sorted_vec::SortedVec;
 use stream::StreamActor;
 use stream::StreamMessageClient;
 use stream::StreamParams;
-use torch_sys_cuda::nccl::NcclConfig;
 use torch_sys_cuda::nccl::ReduceOp;
 use torch_sys_cuda::nccl::UniqueId;
 use torch_sys2::CudaDevice;
@@ -340,7 +339,7 @@ impl WorkerMessageHandler for WorkerActor {
         for _ in 0..sorted_streams.len() {
             // Do the split in this event loop, to provide a deterministic
             // order.
-            splits.push(comm.split_all(cx, None).await?);
+            splits.push(comm.split_all(cx).await?);
         }
         let _: Vec<()> = try_join_all(
             sorted_streams
@@ -371,7 +370,7 @@ impl WorkerMessageHandler for WorkerActor {
             .comm
             .as_ref()
             .context("tried to call Reduce before BackendNetworkInit")?;
-        let comm = global_comm.split_all(cx, None).await?;
+        let comm = global_comm.split_all(cx).await?;
         self.send_recv_comms
             .insert((from_stream, to_stream), Arc::new(comm));
         Ok(())
@@ -803,7 +802,6 @@ impl WorkerMessageHandler for WorkerActor {
         dims: Vec<String>,
         device_mesh: Ref,
         stream_ref: StreamRef,
-        config: Option<NcclConfig>,
     ) -> Result<()> {
         let global_comm = self
             .comm
@@ -833,7 +831,6 @@ impl WorkerMessageHandler for WorkerActor {
                             .into_iter()
                             .map(|v| v.clone().try_into())
                             .collect::<Result<Vec<_>, _>>()?,
-                        config,
                     )
                     .await?
                     .context("split comm should include self rank")?;
@@ -842,7 +839,7 @@ impl WorkerMessageHandler for WorkerActor {
             None => {
                 // This rank is not in the group to be split off. We still need to
                 // participate in the commSplit call, however.
-                global_comm.split_from(cx, vec![], config).await?;
+                global_comm.split_from(cx, vec![]).await?;
             }
         }
         Ok(())
@@ -853,7 +850,6 @@ impl WorkerMessageHandler for WorkerActor {
         cx: &hyperactor::Context<Self>,
         remote_process_group_ref: Ref,
         stream_ref: StreamRef,
-        config: Option<NcclConfig>,
     ) -> Result<()> {
         ensure!(
             self.streams.contains_key(&stream_ref),
@@ -888,7 +884,6 @@ impl WorkerMessageHandler for WorkerActor {
                             .into_iter()
                             .map(|v| v.clone().try_into())
                             .collect::<Result<Vec<_>, _>>()?,
-                        config,
                     )
                     .await?
                     .context("split comm should include self rank")?;
@@ -897,7 +892,7 @@ impl WorkerMessageHandler for WorkerActor {
             None => {
                 // This rank is not in the group to be split off. We still need to
                 // participate in the commSplit call, however.
-                global_comm.split_from(cx, vec![], config).await?;
+                global_comm.split_from(cx, vec![]).await?;
             }
         }
         Ok(())
