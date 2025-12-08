@@ -52,15 +52,8 @@ fn main() {
         .flag_if_supported("-w")
         .compile("torch-sys-cuda");
 
-    // Statically link libstdc++ to avoid runtime dependency on system libstdc++
-    build_utils::link_libstdcpp_static();
-
-    // Configure CUDA-specific linking - use static cudart
-    println!("cargo::rustc-link-lib=static=cudart_static");
-    // cudart_static requires linking against librt and libpthread
-    println!("cargo::rustc-link-lib=rt");
-    println!("cargo::rustc-link-lib=pthread");
-    println!("cargo::rustc-link-lib=dl");
+    // Configure CUDA-specific linking
+    println!("cargo::rustc-link-lib=cudart");
     println!(
         "cargo::rustc-link-search=native={}/lib64",
         cuda_home.display()
