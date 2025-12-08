@@ -846,8 +846,21 @@ mod tests {
     use super::*;
     use crate::cuda::set_device;
 
+    /// Initialize Python and import torch in a separate thread.
+    /// This is a workaround for a pybind11 bug in PyTorch.
+    fn test_setup() {
+        pyo3::prepare_freethreaded_python();
+        let handle = std::thread::spawn(|| {
+            pyo3::Python::with_gil(|py| {
+                py.import("torch").expect("failed to import torch");
+            });
+        });
+        handle.join().expect("failed to join torch import thread");
+    }
+
     #[test]
     fn all_reduce() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -873,6 +886,7 @@ mod tests {
 
     #[test]
     fn broadcast() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -897,6 +911,7 @@ mod tests {
 
     #[test]
     fn reduce() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -925,6 +940,7 @@ mod tests {
 
     #[test]
     fn all_gather_into_tensor() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -959,6 +975,7 @@ mod tests {
 
     #[test]
     fn send_recv() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         let unique_id_ = unique_id.clone();
@@ -994,6 +1011,7 @@ mod tests {
 
     #[test]
     fn all_to_all_single() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -1031,6 +1049,7 @@ mod tests {
 
     #[test]
     fn reduce_scatter_tensor() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -1065,6 +1084,7 @@ mod tests {
 
     #[test]
     fn split_from() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
