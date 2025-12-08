@@ -35,7 +35,7 @@ mod inner {
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-    // This type is manually defined instead of generated because we want to dervice
+    // This type is manually defined instead of generated because we want to derive
     // Serialize/Deserialize on it.
     #[repr(C)]
     #[derive(Debug, Copy, Clone, Serialize, Deserialize)]

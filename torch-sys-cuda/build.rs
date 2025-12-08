@@ -15,7 +15,6 @@
 use std::path::PathBuf;
 
 use build_utils::find_cuda_home;
-use cxx_build::CFG;
 
 #[cfg(target_os = "macos")]
 fn main() {}
@@ -41,17 +40,6 @@ fn main() {
 
     let cuda_home = PathBuf::from(find_cuda_home().expect("CUDA installation not found"));
 
-    // Prefix includes with `monarch` to maintain consistency with fbcode
-    // folder structure
-    CFG.include_prefix = "monarch/torch-sys-cuda";
-    let _builder = cxx_build::bridge("src/bridge.rs")
-        .file("src/bridge.cpp")
-        .flag("-std=c++14")
-        .include(format!("{}/include", cuda_home.display()))
-        // Suppress warnings, otherwise we get massive spew from libtorch
-        .flag_if_supported("-w")
-        .compile("torch-sys-cuda");
-
     // Configure CUDA-specific linking
     println!("cargo::rustc-link-lib=cudart");
     println!(
@@ -63,8 +51,4 @@ fn main() {
     if let Some(python_lib_dir) = &python_lib_dir {
         println!("cargo::rustc-link-arg=-Wl,-rpath,{}", python_lib_dir);
     }
-
-    println!("cargo::rerun-if-changed=src/bridge.rs");
-    println!("cargo::rerun-if-changed=src/bridge.cpp");
-    println!("cargo::rerun-if-changed=src/bridge.h");
 }
