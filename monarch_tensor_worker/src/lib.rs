@@ -90,15 +90,15 @@ use sorted_vec::SortedVec;
 use stream::StreamActor;
 use stream::StreamMessageClient;
 use stream::StreamParams;
-use torch_sys::CudaDevice;
-use torch_sys::DeviceIndex;
-use torch_sys::Layout;
-use torch_sys::ScalarType;
-use torch_sys::TensorCell;
-use torch_sys::factory_zeros;
 use torch_sys_cuda::nccl::NcclConfig;
 use torch_sys_cuda::nccl::ReduceOp;
 use torch_sys_cuda::nccl::UniqueId;
+use torch_sys2::CudaDevice;
+use torch_sys2::DeviceIndex;
+use torch_sys2::Layout;
+use torch_sys2::ScalarType;
+use torch_sys2::TensorCell;
+use torch_sys2::factory_zeros;
 
 #[derive(Debug)]
 struct RemoteProcessGroupState {
@@ -230,6 +230,9 @@ impl RemoteSpawn for WorkerActor {
             controller_actor,
         }: Self::Params,
     ) -> Result<Self> {
+        Python::with_gil(|py| {
+            py.import("monarch.safe_torch").unwrap();
+        });
         Ok(Self {
             device: device_index.map(|i| CudaDevice::new(DeviceIndex(i))),
             streams: HashMap::new(),
@@ -1090,14 +1093,12 @@ mod tests {
 
     use anyhow::Result;
     use hyperactor::RemoteSpawn;
-    use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::proc::Proc;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::controller::WorkerError;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_types::PickledPyObject;
-    use monarch_types::PyTree;
     use pyo3::IntoPyObjectExt;
     use pyo3::Python;
     use pyo3::prelude::*;
@@ -1106,10 +1107,9 @@ mod tests {
     use rand::Rng;
     use rand::distributions::Alphanumeric;
     use timed_test::async_timed_test;
-    use torch_sys::Device;
-    use torch_sys::DeviceIndex;
-    use torch_sys::MemoryFormat;
-    use torch_sys::RValue;
+    use torch_sys2::Device;
+    use torch_sys2::DeviceIndex;
+    use torch_sys2::MemoryFormat;
 
     use super::*;
     use crate::test_util::test_setup;
@@ -1890,6 +1890,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn backend_network_init() {
+        test_setup().unwrap();
         let proc = Proc::local();
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 

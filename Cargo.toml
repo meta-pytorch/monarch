@@ -25,6 +25,4 @@ members = [
     "struct_diff_patch",
     "struct_diff_patch_macros",
     "timed_test",
-    "torch-sys",
-    "torch-sys-cuda",
 ]
