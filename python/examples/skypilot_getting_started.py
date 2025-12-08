@@ -40,7 +40,7 @@ os.environ["HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE"] = "300s"
 try:
     import sky
 except ImportError:
-    print("ERROR: SkyPilot is not installed. Run: pip install skypilot")
+    print("ERROR: SkyPilot is not installed. Run: pip install skypilot[kubernetes]")
     sys.exit(1)
 
 try:
