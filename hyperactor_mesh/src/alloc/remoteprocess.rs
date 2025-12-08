@@ -1228,8 +1228,8 @@ impl Alloc for RemoteProcessAlloc {
                                     break Some((None, ProcState::Failed {
                                         world_id: self.world_id.clone(),
                                         description: format!(
-                                            "no process has ever been allocated on {} before the channel is closed; \
-                                            a common issue could be the channel was never established",
+                                            "no process has ever been allocated on {}, connection is not established; \
+                                            a common issue could be allocator port mismatch, or transport not enabled on client",
                                             closed_host_id
                                         )}));
                                 }

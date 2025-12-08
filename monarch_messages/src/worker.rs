@@ -38,14 +38,13 @@ use pyo3::types::PyTuple;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
-use torch_sys::BorrowError;
-use torch_sys::Device;
-use torch_sys::Layout;
-use torch_sys::ScalarType;
-use torch_sys::call_op::CallOpError;
 use torch_sys_cuda::nccl::NcclConfig;
 use torch_sys_cuda::nccl::ReduceOp;
 use torch_sys_cuda::nccl::UniqueId;
+use torch_sys2::BorrowError;
+use torch_sys2::Device;
+use torch_sys2::Layout;
+use torch_sys2::ScalarType;
 
 use crate::controller::ControllerActor;
 use crate::controller::Seq;
@@ -483,9 +482,9 @@ pub enum Reduction {
 )]
 pub struct Factory {
     pub size: Vec<i64>,
-    #[serde(with = "torch_sys::ScalarTypeDef")]
+    #[serde(with = "torch_sys2::ScalarTypeDef")]
     pub dtype: ScalarType,
-    #[serde(with = "torch_sys::LayoutDef")]
+    #[serde(with = "torch_sys2::LayoutDef")]
     pub layout: Layout,
     pub device: Device,
 }
@@ -620,11 +619,6 @@ impl CallFunctionError {
     }
 
     #[allow(non_snake_case)]
-    pub fn OperatorFailed(err: CallOpError) -> Self {
-        Self::Error(anyhow::anyhow!("torch operator failed: {}", err))
-    }
-
-    #[allow(non_snake_case)]
     pub fn UnexpectedNumberOfReturns(expected: usize, actual: usize) -> Self {
         Self::Error(anyhow::anyhow!(
             "unexpected number of returns from op, expected {}, got {}",
@@ -656,12 +650,6 @@ impl From<SerializablePyErr> for CallFunctionError {
 
 impl From<BorrowError> for CallFunctionError {
     fn from(v: BorrowError) -> CallFunctionError {
-        CallFunctionError::Error(v.into())
-    }
-}
-
-impl From<CallOpError> for CallFunctionError {
-    fn from(v: CallOpError) -> CallFunctionError {
         CallFunctionError::Error(v.into())
     }
 }

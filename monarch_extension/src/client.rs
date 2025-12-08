@@ -28,8 +28,6 @@ use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
 use monarch_messages::debugger::DebuggerAction;
 use monarch_messages::worker::Ref;
-use monarch_types::PyTree;
-use monarch_types::TryIntoPyObjectUnsafe;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -37,7 +35,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::types::PyNone;
 use tokio::sync::Mutex;
-use torch_sys::RValue;
 
 use crate::convert::convert;
 
@@ -61,55 +58,11 @@ impl WorkerResponse {
 
 #[pymethods]
 impl WorkerResponse {
-    #[staticmethod]
-    fn new_for_unit_test(py: Python<'_>, seq: u64, response: PyObject) -> PyResult<Self> {
-        if let Ok(exc) = response.downcast_bound::<PyException>(py) {
-            Ok(Self {
-                seq: seq.into(),
-                result: Some(Err(exc.borrow().inner.clone())),
-            })
-        } else {
-            Ok(Self {
-                seq: seq.into(),
-                result: Some(Ok(Serialized::serialize(
-                    &response.extract::<PyTree<RValue>>(py)?,
-                )
-                .map_err(|err| {
-                    PyRuntimeError::new_err(format!("Failed to deserialize: {:?}", err))
-                })?)),
-            })
-        }
-    }
-
     // For now lets treat Seq as just an int with an opaque alias on python side.
     // We can expose the rust version later if desired.
     #[getter]
     fn seq(&self) -> u64 {
         self.seq.into()
-    }
-
-    // TODO: result() cannot yet be called within a device mesh.
-    // Fake tensors, which are not on the intended devices, will cause the deserialization to fail.
-    fn result(&self, py: Python<'_>) -> PyResult<PyObject> {
-        if let Some(result) = &self.result {
-            if result.is_err() {
-                PyNone::get(py).into_py_any(py)
-            } else {
-                // TODO: Use better shared error class
-                let rvalue = result
-                    .clone()
-                    .unwrap()
-                    .deserialized::<PyTree<RValue>>()
-                    .map_err(|err| {
-                        PyRuntimeError::new_err(format!("Failed to deserialize: {:?}", err))
-                    })?;
-                // SAFETY: Safety requirements are propagated via the `unsafe` tag
-                // on this method.
-                Ok(unsafe { rvalue.try_to_object_unsafe(py)?.unbind() })
-            }
-        } else {
-            PyNone::get(py).into_py_any(py)
-        }
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<PyObject> {

@@ -9,65 +9,120 @@
 //! Bindings for torch's wrappers around CUDA-related functionality.
 use std::time::Duration;
 
-use cxx::SharedPtr;
-use cxx::UniquePtr;
 use derive_more::Into;
+use monarch_types::py_global;
 use nccl_sys::cudaError_t;
 use nccl_sys::cudaSetDevice;
 use nccl_sys::cudaStream_t;
+use pyo3::PyObject;
+use pyo3::prelude::*;
 use thiserror::Error;
-use torch_sys::CudaDevice;
+use torch_sys2::CudaDevice;
 
-use crate::bridge::ffi::{self};
+// Cached imports for torch.cuda APIs
+py_global!(cuda_stream_class, "torch.cuda", "Stream");
+py_global!(cuda_event_class, "torch.cuda", "Event");
+py_global!(cuda_current_stream, "torch.cuda", "current_stream");
+py_global!(cuda_set_stream, "torch.cuda", "set_stream");
+py_global!(cuda_current_device, "torch.cuda", "current_device");
+py_global!(cuda_set_device, "torch.cuda", "set_device");
 
 /// Wrapper around a CUDA stream.
 ///
 /// A CUDA stream is a linear sequence of execution that belongs to a specific
 /// device, independent from other streams.  See the documentation for
 /// `torch.cuda.Stream` for more details.
-#[derive(Debug, Clone, Into)]
+#[derive(Debug, Into)]
 #[into(ref)]
 pub struct Stream {
-    inner: SharedPtr<ffi::CUDAStream>,
+    inner: PyObject,
 }
 
-// SAFETY: CUDAStream is thread safe
-unsafe impl Send for Stream {}
-// SAFETY: see above
-unsafe impl Sync for Stream {}
+impl Clone for Stream {
+    fn clone(&self) -> Self {
+        Python::with_gil(|py| Self {
+            inner: self.inner.clone_ref(py),
+        })
+    }
+}
 
 impl Stream {
     /// Create a new stream on the current device, at priority 0.
     pub fn new() -> Self {
+        Python::with_gil(|py| {
+            let stream = cuda_stream_class(py).call0().unwrap();
+            Self {
+                inner: stream.into(),
+            }
+        })
+    }
+
+    /// Clone this stream reference. Requires holding the GIL.
+    pub fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
-            inner: ffi::create_stream(-1, 0),
+            inner: self.inner.clone_ref(py),
         }
     }
 
     /// Create a new stream on the specified device, at priority 0.
     pub fn new_with_device(device: CudaDevice) -> Self {
-        Self {
-            inner: ffi::create_stream(device.index().into(), 0),
-        }
+        Python::with_gil(|py| {
+            let device_idx: i8 = device.index().into();
+            let stream = cuda_stream_class(py).call1((device_idx,)).unwrap();
+            Self {
+                inner: stream.into(),
+            }
+        })
     }
 
     /// Get the current stream on the current device.
     pub fn get_current_stream() -> Self {
-        Self {
-            inner: ffi::get_current_stream(-1),
-        }
+        Python::with_gil(|py| {
+            let stream = cuda_current_stream(py).call0().unwrap();
+            Self {
+                inner: stream.into(),
+            }
+        })
     }
+
     /// Get the current stream on the specified device.
     pub fn get_current_stream_on_device(device: CudaDevice) -> Self {
-        Self {
-            inner: ffi::get_current_stream(device.index().into()),
-        }
+        Python::with_gil(|py| {
+            let device_idx: i8 = device.index().into();
+            let stream = cuda_current_stream(py).call1((device_idx,)).unwrap();
+            Self {
+                inner: stream.into(),
+            }
+        })
     }
 
     /// Set the provided stream as the current stream. Also sets the current
     /// device to be the same as the stream's device.
     pub fn set_current_stream(stream: &Stream) {
-        ffi::set_current_stream(stream.as_ref())
+        Python::with_gil(|py| {
+            let stream_obj = stream.inner.bind(py);
+
+            // Get current device and stream device
+            let current_device = cuda_current_device(py)
+                .call0()
+                .unwrap()
+                .extract::<i64>()
+                .unwrap();
+
+            let stream_device = stream_obj
+                .getattr("device_index")
+                .unwrap()
+                .extract::<i64>()
+                .unwrap();
+
+            // Set device if different
+            if current_device != stream_device {
+                cuda_set_device(py).call1((stream_device,)).unwrap();
+            }
+
+            // Set the stream
+            cuda_set_stream(py).call1((stream_obj,)).unwrap();
+        })
     }
 
     /// Make all future work submitted to this stream wait for an event.
@@ -93,23 +148,34 @@ impl Stream {
 
     /// Check if all work submitted to this stream has completed.
     pub fn query(&self) -> bool {
-        self.inner.query()
+        Python::with_gil(|py| {
+            let stream_obj = self.inner.bind(py);
+            stream_obj
+                .call_method0("query")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap()
+        })
     }
 
     /// Wait for all kernels in this stream to complete.
     pub fn synchronize(&self) {
-        self.inner.synchronize()
+        Python::with_gil(|py| {
+            let stream_obj = self.inner.bind(py);
+            stream_obj.call_method0("synchronize").unwrap();
+        })
     }
 
     pub fn stream(&self) -> cudaStream_t {
-        self.inner.stream()
-    }
-}
+        Python::with_gil(|py| {
+            let stream_obj = self.inner.bind(py);
+            let cuda_stream = stream_obj.getattr("cuda_stream").unwrap();
 
-impl AsRef<ffi::CUDAStream> for Stream {
-    fn as_ref(&self) -> &ffi::CUDAStream {
-        // Fine to unwrap here, `Stream` guarantees that `inner` is never null.
-        self.inner.as_ref().unwrap()
+            // Extract the raw pointer
+            let ptr = cuda_stream.extract::<usize>().unwrap();
+
+            ptr as cudaStream_t
+        })
     }
 }
 
@@ -133,47 +199,77 @@ impl PartialEq for Stream {
 /// See the docs of `torch.cuda.Event` for more details.
 #[derive(Debug)]
 pub struct Event {
-    inner: UniquePtr<ffi::CUDAEvent>,
+    inner: PyObject,
+}
+
+impl Clone for Event {
+    fn clone(&self) -> Self {
+        Python::with_gil(|py| Self {
+            inner: self.inner.clone_ref(py),
+        })
+    }
 }
 
 impl Event {
     /// Create a new event.
     // TODO: add support for flags.
     pub fn new() -> Self {
-        Self {
-            inner: ffi::create_cuda_event(false, false, false),
-        }
+        Python::with_gil(|py| {
+            let event = cuda_event_class(py).call0().unwrap();
+            Self {
+                inner: event.into(),
+            }
+        })
     }
 
     /// Record the event on the current stream.
     ///
     /// Uses the current stream if no stream is provided.
     pub fn record(&mut self, stream: Option<&Stream>) {
-        match stream {
-            Some(stream) => self.inner.pin_mut().record(stream.as_ref()),
-            None => self
-                .inner
-                .pin_mut()
-                .record(Stream::get_current_stream().as_ref()),
-        }
+        Python::with_gil(|py| {
+            let event_obj = self.inner.bind(py);
+
+            match stream {
+                Some(stream) => {
+                    let stream_obj = stream.inner.bind(py);
+                    event_obj.call_method1("record", (stream_obj,)).unwrap();
+                }
+                None => {
+                    event_obj.call_method0("record").unwrap();
+                }
+            }
+        })
     }
 
     /// Make all future work submitted to the given stream wait for this event.
     ///
     /// Uses the current stream if no stream is specified.
     pub fn wait(&mut self, stream: Option<&Stream>) {
-        match stream {
-            Some(stream) => self.inner.pin_mut().block(stream.as_ref()),
-            None => self
-                .inner
-                .pin_mut()
-                .block(Stream::get_current_stream().as_ref()),
-        }
+        Python::with_gil(|py| {
+            let event_obj = self.inner.bind(py);
+
+            match stream {
+                Some(stream) => {
+                    let stream_obj = stream.inner.bind(py);
+                    event_obj.call_method1("wait", (stream_obj,)).unwrap();
+                }
+                None => {
+                    event_obj.call_method0("wait").unwrap();
+                }
+            }
+        })
     }
 
     /// Check if all work currently captured by event has completed.
     pub fn query(&self) -> bool {
-        self.inner.query()
+        Python::with_gil(|py| {
+            let event_obj = self.inner.bind(py);
+            event_obj
+                .call_method0("query")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap()
+        })
     }
 
     /// Return the time elapsed.
@@ -181,21 +277,28 @@ impl Event {
     /// Time reported in after the event was recorded and before the end_event
     /// was recorded.
     pub fn elapsed_time(&self, end_event: &Event) -> Duration {
-        Duration::from_millis(self.inner.elapsed_time(end_event.as_ref()) as u64)
+        Python::with_gil(|py| {
+            let event_obj = self.inner.bind(py);
+            let end_event_obj = end_event.inner.bind(py);
+
+            let elapsed_ms = event_obj
+                .call_method1("elapsed_time", (end_event_obj,))
+                .unwrap()
+                .extract::<f64>()
+                .unwrap();
+
+            Duration::from_millis(elapsed_ms as u64)
+        })
     }
 
     /// Wait for the event to complete.
     /// Waits until the completion of all work currently captured in this event.
     /// This prevents the CPU thread from proceeding until the event completes.
     pub fn synchronize(&self) {
-        self.inner.synchronize()
-    }
-}
-
-impl AsRef<ffi::CUDAEvent> for Event {
-    fn as_ref(&self) -> &ffi::CUDAEvent {
-        // Fine to unwrap here, `Event` guarantees that `inner` is never null.
-        self.inner.as_ref().unwrap()
+        Python::with_gil(|py| {
+            let event_obj = self.inner.bind(py);
+            event_obj.call_method0("synchronize").unwrap();
+        })
     }
 }
 

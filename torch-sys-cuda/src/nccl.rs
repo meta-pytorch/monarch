@@ -18,14 +18,13 @@ use nccl_sys::*;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
-use torch_sys::CudaDevice;
-use torch_sys::DeviceType;
-use torch_sys::ScalarType;
-use torch_sys::Tensor;
-use torch_sys::TensorCell;
-use torch_sys::factory_float_tensor;
-use torch_sys::is_float8_type;
-use torch_sys::suggest_memory_format;
+use torch_sys2::CudaDevice;
+use torch_sys2::DeviceType;
+use torch_sys2::ScalarType;
+use torch_sys2::Tensor;
+use torch_sys2::TensorCell;
+use torch_sys2::factory_float_tensor;
+use torch_sys2::is_float8_type;
 
 use crate::bridge::ffi::make_nccl_config;
 use crate::cuda::CudaError;
@@ -308,7 +307,7 @@ fn check_tensor(tensor: &Tensor, is_p2p: bool) -> Result<(), NcclError> {
         return Err(NcclError::InvalidSparseTensor);
     }
 
-    if !is_p2p && !tensor.is_contiguous(suggest_memory_format(tensor)) {
+    if !is_p2p && !tensor.is_contiguous() {
         return Err(NcclError::NoncontiguousTensor);
     }
 
@@ -837,18 +836,31 @@ impl Communicator {
 
 #[cfg(test)]
 mod tests {
-    use torch_sys::CudaDevice;
-    use torch_sys::DeviceIndex;
-    use torch_sys::factory_float_tensor;
-    use torch_sys::testing::allclose;
-    use torch_sys::testing::cuda_full;
-    use torch_sys::testing::stack;
+    use torch_sys2::CudaDevice;
+    use torch_sys2::DeviceIndex;
+    use torch_sys2::factory_float_tensor;
+    use torch_sys2::testing::allclose;
+    use torch_sys2::testing::cuda_full;
+    use torch_sys2::testing::stack;
 
     use super::*;
     use crate::cuda::set_device;
 
+    /// Initialize Python and import torch in a separate thread.
+    /// This is a workaround for a pybind11 bug in PyTorch.
+    fn test_setup() {
+        pyo3::prepare_freethreaded_python();
+        let handle = std::thread::spawn(|| {
+            pyo3::Python::with_gil(|py| {
+                py.import("torch").expect("failed to import torch");
+            });
+        });
+        handle.join().expect("failed to join torch import thread");
+    }
+
     #[test]
     fn all_reduce() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -874,6 +886,7 @@ mod tests {
 
     #[test]
     fn broadcast() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -898,6 +911,7 @@ mod tests {
 
     #[test]
     fn reduce() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -926,6 +940,7 @@ mod tests {
 
     #[test]
     fn all_gather_into_tensor() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -960,6 +975,7 @@ mod tests {
 
     #[test]
     fn send_recv() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         let unique_id_ = unique_id.clone();
@@ -995,6 +1011,7 @@ mod tests {
 
     #[test]
     fn all_to_all_single() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -1032,6 +1049,7 @@ mod tests {
 
     #[test]
     fn reduce_scatter_tensor() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
@@ -1066,6 +1084,7 @@ mod tests {
 
     #[test]
     fn split_from() {
+        test_setup();
         let unique_id = UniqueId::new().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {

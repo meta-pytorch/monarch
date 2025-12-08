@@ -6,6 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#pragma once
+//! Exporters for the unified telemetry layer.
+//! Each exporter implements the TraceExporter trait and handles
+//! writing events to a specific backend (SQLite, Scuba, glog, etc).
 
-#include <cuda_runtime.h>
+pub mod glog;
+pub mod sqlite;
