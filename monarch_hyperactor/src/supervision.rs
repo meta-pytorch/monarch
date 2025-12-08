@@ -37,7 +37,12 @@ impl SupervisionError {
 
     #[staticmethod]
     pub fn new_err(message: String) -> PyErr {
-        PyRuntimeError::new_err(message)
+        PyErr::new::<Self, _>(message)
+    }
+
+    #[staticmethod]
+    pub fn new_err_from_endpoint(message: String, endpoint: String) -> PyErr {
+        PyErr::new::<Self, _>((message, Some(endpoint)))
     }
 
     fn __str__(&self) -> String {
