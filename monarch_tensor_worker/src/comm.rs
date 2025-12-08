@@ -684,7 +684,6 @@ mod tests {
                 dims: vec!["x".into()],
                 device_mesh: 1.into(),
                 stream: 0.into(),
-                config: None,
             },
             WorkerMessage::CallFunction(CallFunctionParams {
                 seq: 0.into(),
@@ -747,7 +746,6 @@ mod tests {
                 dims: vec!["x".into(), "y".into()],
                 device_mesh: 1.into(),
                 stream: 0.into(),
-                config: None,
             },
             // Test reduce over "x" and "y".
             WorkerMessage::Reduce {

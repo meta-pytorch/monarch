@@ -1021,7 +1021,7 @@ mod tests {
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
 
                 // Split a new comm with only rank 0
-                let split_comm = comm.split_from(vec![0], None).unwrap();
+                let split_comm = comm.split_from(vec![0]).unwrap();
 
                 match i {
                     0 => assert!(split_comm.is_some()),
