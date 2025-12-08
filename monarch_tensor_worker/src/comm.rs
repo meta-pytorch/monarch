@@ -10,39 +10,18 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
 use async_trait::async_trait;
-use cxx::CxxVector;
-use derivative::Derivative;
 use hyperactor::Actor;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
 use hyperactor::mailbox::OncePortHandle;
-use hyperactor::mailbox::OncePortReceiver;
 use parking_lot::Mutex;
-use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
-use torch_sys::CloneUnsafe;
-use torch_sys::CudaDevice;
-use torch_sys::ScalarType;
-use torch_sys::Tensor;
-use torch_sys::TensorCell;
-use torch_sys::backend::AllToAllOptions;
-use torch_sys::backend::AllreduceOptions;
-use torch_sys::backend::Backend;
-use torch_sys::backend::BarrierOptions;
-use torch_sys::backend::BroadcastOptions;
-use torch_sys::backend::GatherOptions;
-use torch_sys::backend::ReduceOptions;
-use torch_sys::backend::ReduceScatterOptions;
-use torch_sys::backend::ScatterOptions;
-use torch_sys::backend::Work;
 use torch_sys_cuda::cuda::Event;
 use torch_sys_cuda::cuda::Stream;
 use torch_sys_cuda::nccl::Communicator;
@@ -53,6 +32,8 @@ use torch_sys_cuda::nccl::ReduceOp;
 use torch_sys_cuda::nccl::UniqueId;
 use torch_sys_cuda::nccl::group_end;
 use torch_sys_cuda::nccl::group_start;
+use torch_sys2::CudaDevice;
+use torch_sys2::TensorCell;
 
 /// Messages for NcclCommActor. See the underlying [`Communicator`] APIs for what
 /// these do.
@@ -427,604 +408,6 @@ impl CommMessageHandler for NcclCommActor {
     }
 }
 
-pub struct CommWork {
-    // Keep a reference to the "input" streams used in the collective ops, to
-    // prevent the allocator from free'ing them w/ using `.record_stream()`
-    // (as per https://github.com/pytorch/pytorch/pull/76861).
-    #[allow(dead_code)]
-    inputs: Vec<TensorCell>,
-    event: RwLock<Event>,
-}
-
-impl CommWork {
-    async fn from(inputs: Vec<TensorCell>, rx: OncePortReceiver<Event>) -> Result<Self> {
-        let event = rx.recv().await.map_err(|mailbox_err| {
-            anyhow::anyhow!("Error receiving CUDA event: {mailbox_err:?}")
-        })?;
-        Ok(Self {
-            inputs,
-            event: RwLock::new(event),
-        })
-    }
-}
-
-#[async_trait]
-impl Work for CommWork {
-    type Error = anyhow::Error;
-    async fn wait(&self) -> Result<()> {
-        // As nccl/cuda operations are async, to implement `.wait()`
-        // we need to synchronize on an event created after the op. We
-        // shouldn't need to wrap this in `spawn_blocking` because this
-        // it shouldn't cause a host<->device sync; instead, it will cause
-        // a stream<->stream sync, with any future work submitted to the current
-        // active stream waiting for the stream on which the event was recorded.
-        self.event.write().await.wait(None);
-        Ok(())
-    }
-
-    async fn is_completed(&self) -> Result<bool> {
-        Ok(self.event.read().await.query())
-    }
-}
-
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub struct CommBackend {
-    #[derivative(Debug = "ignore")]
-    instance: Instance<()>, // The actor that represents this object.
-    comm: Arc<ActorHandle<NcclCommActor>>,
-    rank: usize,
-    // Size of group. This is less than or equal to world_size.
-    group_size: usize,
-    // Global world size.
-    #[allow(dead_code)]
-    world_size: usize,
-}
-
-impl CommBackend {
-    pub fn new(
-        instance: Instance<()>,
-        comm: Arc<ActorHandle<NcclCommActor>>,
-        rank: usize,
-        group_size: usize,
-        world_size: usize,
-    ) -> Self {
-        assert!(
-            group_size <= world_size,
-            "Group must be smaller or equal to the world size"
-        );
-        Self {
-            instance,
-            comm,
-            rank,
-            group_size,
-            world_size,
-        }
-    }
-
-    fn check_root_rank(&self, rank: i32) -> Result<usize> {
-        if rank < 0 || rank >= self.group_size as i32 {
-            Err(anyhow!("invalid root rank: {}", rank))
-        } else {
-            Ok(rank as usize)
-        }
-    }
-}
-
-fn convert_reduce_op(op: torch_sys::backend::ReduceOp) -> Result<ReduceOp> {
-    Ok(match op {
-        torch_sys::backend::ReduceOp::Sum => ReduceOp::Sum,
-        torch_sys::backend::ReduceOp::Avg => ReduceOp::Avg,
-        torch_sys::backend::ReduceOp::Max => ReduceOp::Max,
-        torch_sys::backend::ReduceOp::Min => ReduceOp::Min,
-        _ => bail!("unsupported op: {:?}", op),
-    })
-}
-
-fn as_singleton<'a>(tensors: &'a [Tensor]) -> Result<&'a Tensor> {
-    match tensors {
-        [tensor] => Ok(tensor),
-        _ => bail!("expected single tensor"),
-    }
-}
-
-fn assert_type_match(tensor: &Tensor, dtype: ScalarType) -> Result<()> {
-    if tensor.scalar_type() != dtype {
-        Err(anyhow!(
-            "Tensor dtype {:?} doesn't match expected {:?}",
-            tensor.scalar_type(),
-            dtype
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn assert_size_match(tensor: &Tensor, shape: &[i32]) -> Result<()> {
-    if tensor.sizes() != shape {
-        Err(anyhow!(
-            "Tensor shape {:?} doesn't match expected {:?}",
-            tensor.sizes(),
-            shape
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn assert_type_and_sizes_match(tensors: &[Tensor], dtype: ScalarType, sizes: &[i32]) -> Result<()> {
-    for t in tensors {
-        assert_type_match(t, dtype)?;
-        assert_size_match(t, sizes)?;
-    }
-    Ok(())
-}
-
-// TODO: move this to comm.rs?
-#[async_trait]
-impl Backend for CommBackend {
-    type Error = anyhow::Error;
-
-    async fn allreduce(
-        &self,
-        tensors: &CxxVector<Tensor>,
-        opts: AllreduceOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::AllReduce(
-            cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(CommWork::from(vec![cell], rx).await?))
-    }
-
-    async fn allgather(
-        &self,
-        output: &CxxVector<Tensor>,
-        input: &Tensor,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        let output_cell = output
-            .iter()
-            // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-            // It should be safe, as the original `CallFunction` that led us here
-            // has performed the necessary borrows.
-            .map(|t| TensorCell::new(unsafe { t.clone_unsafe() }))
-            .collect::<Vec<TensorCell>>();
-        // SAFETY: As above.
-        let input_cell = TensorCell::new(unsafe { input.clone_unsafe() });
-        if output_cell.len() != self.group_size {
-            return Err(anyhow!(
-                "Expected output list of tensors to be one per rank, got {}, expected {}",
-                output_cell.len(),
-                self.group_size
-            ));
-        }
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        // This is not implemented in this function because the broadcasts we need
-        // to create will change their behavior based on rank.
-        self.comm.send(CommMessage::AllGather(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        let mut input_cells = vec![];
-        input_cells.extend(output_cell);
-        input_cells.push(input_cell);
-        Ok(Box::new(CommWork::from(input_cells, rx).await?))
-    }
-
-    async fn _allgather_base(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let output_cell = TensorCell::new(unsafe { output.clone_unsafe() });
-        // SAFETY: As above.
-        let input_cell = TensorCell::new(unsafe { input.clone_unsafe() });
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::AllGatherIntoTensor(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(
-            CommWork::from(vec![output_cell, input_cell], rx).await?,
-        ))
-    }
-
-    async fn barrier(&self, _opts: BarrierOptions) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm
-            // There's no native barrier op in nccl, so impl via all-reduce.
-            .send(CommMessage::Barrier(Stream::get_current_stream(), tx))?;
-        Ok(Box::new(CommWork::from(vec![], rx).await?))
-    }
-
-    async fn reduce(
-        &self,
-        input: &Tensor,
-        opts: ReduceOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let input_cell = TensorCell::new(unsafe { input.clone_unsafe() });
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Reduce(
-            input_cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            opts.root_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(CommWork::from(vec![input_cell], rx).await?))
-    }
-
-    async fn _reduce_scatter_base(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-        opts: ReduceScatterOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let output_cell = TensorCell::new(unsafe { output.clone_unsafe() });
-        // SAFETY: As above.
-        let input_cell = TensorCell::new(unsafe { input.clone_unsafe() });
-
-        if input_cell.borrow().numel() != output_cell.borrow().numel() * self.group_size as i64 {
-            return Err(anyhow!(
-                "input tensor must be the same size as output size times group size, input={}, output={}, group_size={}",
-                input_cell.borrow().numel(),
-                output_cell.borrow().numel(),
-                self.group_size,
-            ));
-        }
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::ReduceScatterTensor(
-            output_cell.clone(),
-            input_cell.clone(),
-            convert_reduce_op(opts.reduce_op)?,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(
-            CommWork::from(vec![output_cell, input_cell], rx).await?,
-        ))
-    }
-
-    async fn send(
-        &self,
-        tensors: &CxxVector<Tensor>,
-        dst_rank: i32,
-        _tag: i32,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        ensure!(
-            _tag == 0,
-            "tag is not yet supported for send in CommBackend"
-        );
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Send(
-            cell.clone(),
-            dst_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(CommWork::from(vec![cell], rx).await?))
-    }
-
-    async fn recv(
-        &self,
-        tensors: &CxxVector<Tensor>,
-        src_rank: i32,
-        _tag: i32,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        ensure!(
-            _tag == 0,
-            "tag is not yet supported for recv in CommBackend"
-        );
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Recv(
-            cell.clone(),
-            src_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(CommWork::from(vec![cell], rx).await?))
-    }
-
-    async fn gather(
-        &self,
-        outputs: &CxxVector<Tensor>,
-        input: &Tensor,
-        opts: GatherOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        let output_cells = outputs
-            .iter()
-            // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-            // It should be safe, as the original `CallFunction` that led us here
-            // has performed the necessary borrows.
-            .map(|t| unsafe { TensorCell::new(t.clone_unsafe()) })
-            .collect::<Vec<_>>();
-        // SAFETY: Same as above.
-        let input_cell = TensorCell::new(unsafe { input.clone_unsafe() });
-        // Check arguments for correctness.
-        let root = self.check_root_rank(opts.root_rank)?;
-        assert_type_and_sizes_match(outputs.as_slice(), input.scalar_type(), &input.sizes())?;
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        let mut messages = vec![];
-        // All ranks other than the root Recv, and the root rank calls Send.
-        if self.rank == root {
-            if output_cells.len() != self.group_size {
-                return Err(anyhow!(
-                    "Incorrect output list size {}. Output list should be {}, same as size of the process group",
-                    output_cells.len(),
-                    self.group_size
-                ));
-            }
-            for (r, output) in output_cells.clone().into_iter().enumerate() {
-                if r != root {
-                    let (tx_recv, _rx_recv) = self.instance.open_once_port();
-                    messages.push(CommMessage::Recv(
-                        output,
-                        r as i32,
-                        Stream::get_current_stream(),
-                        tx_recv,
-                    ));
-                } else {
-                    // on its own rank, simply copy from the input
-                    output.borrow_mut().copy_(&input_cell.borrow());
-                }
-            }
-        } else {
-            if !output_cells.is_empty() {
-                return Err(anyhow!(
-                    "Output list should be empty for non-root ranks, got {} outputs",
-                    output_cells.len()
-                ));
-            }
-            let (tx_send, _rx_send) = self.instance.open_once_port();
-            messages.push(CommMessage::Send(
-                input_cell.clone(),
-                root as i32,
-                Stream::get_current_stream(),
-                tx_send,
-            ));
-        }
-        self.comm.send(CommMessage::Group(
-            messages,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        let mut inputs = vec![];
-        inputs.extend(output_cells);
-        inputs.push(input_cell);
-        Ok(Box::new(CommWork::from(inputs, rx).await?))
-    }
-
-    async fn scatter(
-        &self,
-        output: &Tensor,
-        inputs: &CxxVector<Tensor>,
-        opts: ScatterOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let output_cell = TensorCell::new(unsafe { output.clone_unsafe() });
-        let input_cells = inputs
-            .iter()
-            // SAFETY: Same as above.
-            .map(|t| unsafe { TensorCell::new(t.clone_unsafe()) })
-            .collect::<Vec<_>>();
-
-        let root = self.check_root_rank(opts.root_rank)?;
-        assert_type_and_sizes_match(inputs.as_slice(), output.scalar_type(), &output.sizes())?;
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        let mut messages = vec![];
-        // Implementation is the inverse set of messages from gather, where all ranks
-        // other than the root Send, and the root rank calls Recv.
-        if self.rank == root {
-            if input_cells.len() != self.group_size {
-                return Err(anyhow!(
-                    "Incorrect input list size {}. Input list should be {}, same as size of the process group",
-                    input_cells.len(),
-                    self.group_size
-                ));
-            }
-            for (r, input) in input_cells.clone().into_iter().enumerate() {
-                if r != root {
-                    let (tx_send, _rx_send) = self.instance.open_once_port();
-                    messages.push(CommMessage::Send(
-                        input,
-                        r as i32,
-                        Stream::get_current_stream(),
-                        tx_send,
-                    ));
-                } else {
-                    // on its own rank, simply copy from the input
-                    input.borrow_mut().copy_(&output_cell.borrow());
-                }
-            }
-        } else {
-            if !input_cells.is_empty() {
-                return Err(anyhow!(
-                    "Input list should be empty for non-root ranks, got {} inputs",
-                    input_cells.len()
-                ));
-            }
-            let (tx_recv, _rx_recv) = self.instance.open_once_port();
-            messages.push(CommMessage::Recv(
-                output_cell.clone(),
-                root as i32,
-                Stream::get_current_stream(),
-                tx_recv,
-            ));
-        }
-        self.comm.send(CommMessage::Group(
-            messages,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        let mut inputs = vec![];
-        inputs.push(output_cell);
-        inputs.extend(input_cells);
-        Ok(Box::new(CommWork::from(inputs, rx).await?))
-    }
-
-    async fn broadcast(
-        &self,
-        tensors: &CxxVector<Tensor>,
-        opts: BroadcastOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let cell = TensorCell::new(unsafe { as_singleton(tensors.as_slice())?.clone_unsafe() });
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Broadcast(
-            cell.clone(),
-            opts.root_rank,
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(CommWork::from(vec![cell], rx).await?))
-    }
-
-    async fn alltoall_base(
-        &self,
-        output_buffer: &Tensor,
-        input_buffer: &Tensor,
-        _opts: AllToAllOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-        // It should be safe, as the original `CallFunction` that led us here
-        // has performed the necessary borrows.
-        let output_cell = TensorCell::new(unsafe { output_buffer.clone_unsafe() });
-        // SAFETY: As above.
-        let input_cell = TensorCell::new(unsafe { input_buffer.clone_unsafe() });
-
-        // Call into `NcclCommActor`.
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::AllToAllSingle(
-            output_cell.clone(),
-            input_cell.clone(),
-            Stream::get_current_stream(),
-            tx,
-        ))?;
-        Ok(Box::new(
-            CommWork::from(vec![output_cell, input_cell], rx).await?,
-        ))
-    }
-
-    async fn alltoall(
-        &self,
-        output_tensors: &CxxVector<Tensor>,
-        input_tensors: &CxxVector<Tensor>,
-        _opts: AllToAllOptions,
-    ) -> Result<Box<dyn Work<Error = anyhow::Error>>> {
-        let output_cells = output_tensors
-            .as_slice()
-            .iter()
-            // SAFETY: We need to wrap in a `TensorCell` for the `NcclCommActor` API.
-            // It should be safe, as the original `CallFunction` that led us here
-            // has performed the necessary borrows.
-            .map(|t| TensorCell::new(unsafe { t.clone_unsafe() }))
-            .collect::<Vec<TensorCell>>();
-        let input_cells = input_tensors
-            .as_slice()
-            .iter()
-            // SAFETY: As above.
-            .map(|t| TensorCell::new(unsafe { t.clone_unsafe() }))
-            .collect::<Vec<TensorCell>>();
-
-        if input_cells.len() != self.group_size {
-            return Err(anyhow!(
-                "Expected input list of tensors to be one per rank, got {}, expected {}",
-                input_cells.len(),
-                self.group_size
-            ));
-        }
-
-        if output_cells.len() != self.group_size {
-            return Err(anyhow!(
-                "Expected output list of tensors to be one per rank, got {}, expected {}",
-                output_cells.len(),
-                self.group_size
-            ));
-        }
-
-        // Call into `NcclCommActor`.
-        let mut messages: Vec<CommMessage> = vec![];
-        let stream = Stream::get_current_stream();
-        for r in 0..output_tensors.len() {
-            let output_cell = &output_cells[r];
-            let input_cell = &input_cells[r];
-            let (tx_send, _rx_send) = self.instance.open_once_port();
-            let (tx_recv, _rx_recv) = self.instance.open_once_port();
-            messages.push(CommMessage::Send(
-                input_cell.clone(),
-                r as i32,
-                stream.clone(),
-                tx_send,
-            ));
-            messages.push(CommMessage::Recv(
-                output_cell.clone(),
-                r as i32,
-                stream.clone(),
-                tx_recv,
-            ));
-        }
-        let (tx, rx) = self.instance.open_once_port();
-        self.comm.send(CommMessage::Group(messages, stream, tx))?;
-        let mut all_cells = vec![];
-        all_cells.extend(output_cells);
-        all_cells.extend(input_cells);
-        Ok(Box::new(CommWork::from(all_cells, rx).await?))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
@@ -1039,13 +422,12 @@ mod tests {
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
     use ndslice::Slice;
-    use pyo3::Python;
     use timed_test::async_timed_test;
-    use torch_sys::DeviceIndex;
-    use torch_sys::Layout;
-    use torch_sys::ScalarType;
-    use torch_sys::factory_float_tensor;
-    use torch_sys::testing::allclose;
+    use torch_sys2::DeviceIndex;
+    use torch_sys2::Layout;
+    use torch_sys2::ScalarType;
+    use torch_sys2::factory_float_tensor;
+    use torch_sys2::testing::allclose;
 
     use super::*;
     use crate::CallFunctionParams;
@@ -1059,6 +441,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn all_reduce() {
+        test_setup().unwrap();
         let proc = Proc::local();
         let (client, _handle) = proc.instance("client").unwrap();
 
@@ -1251,15 +634,21 @@ mod tests {
         res1?;
 
         // Only dest_rank=0 should have the reduced value.
-        assert!(allclose(
-            &cell0.borrow(),
-            &factory_float_tensor(&[3.0], device0.into())
-        )?);
+        assert!(
+            allclose(
+                &cell0.borrow(),
+                &factory_float_tensor(&[3.0], device0.into())
+            )
+            .map_err(|e| anyhow::anyhow!(e))?
+        );
         // Non-dest ranks should have the original value.
-        assert!(allclose(
-            &cell1.borrow(),
-            &factory_float_tensor(&[2.0], device1.into())
-        )?);
+        assert!(
+            allclose(
+                &cell1.borrow(),
+                &factory_float_tensor(&[2.0], device1.into())
+            )
+            .map_err(|e| anyhow::anyhow!(e))?
+        );
         Ok(())
     }
 
@@ -1311,10 +700,7 @@ mod tests {
                 function: "torch.ops.aten.ones.default".into(),
                 args_kwargs: ArgsKwargs::from_wire_values(
                     vec![WireValue::IntList(vec![2, 3])],
-                    HashMap::from([(
-                        "device".into(),
-                        WireValue::Device("cuda".try_into().unwrap()),
-                    )]),
+                    HashMap::from([("device".into(), WireValue::Device("cuda".parse().unwrap()))]),
                 )
                 .unwrap(),
                 stream: 0.into(),
@@ -1328,7 +714,7 @@ mod tests {
                     size: vec![2, 3],
                     dtype: ScalarType::Float,
                     layout: Layout::Strided,
-                    device: "cuda".try_into().unwrap(),
+                    device: "cuda".parse().unwrap(),
                 },
                 mesh: 1.into(),
                 stream: 0.into(),
@@ -1345,10 +731,7 @@ mod tests {
                 function: "torch.ops.aten.full.default".into(),
                 args_kwargs: ArgsKwargs::from_wire_values(
                     vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
-                    HashMap::from([(
-                        "device".into(),
-                        WireValue::Device("cuda".try_into().unwrap()),
-                    )]),
+                    HashMap::from([("device".into(), WireValue::Device("cuda".parse().unwrap()))]),
                 )
                 .unwrap(),
                 stream: 0.into(),
@@ -1381,7 +764,7 @@ mod tests {
                     size: vec![2, 3],
                     dtype: ScalarType::Float,
                     layout: Layout::Strided,
-                    device: "cuda".try_into()?,
+                    device: "cuda".parse()?,
                 },
                 mesh: 1.into(),
                 stream: 0.into(),
@@ -1398,7 +781,7 @@ mod tests {
                 function: "torch.ops.aten.full.default".into(),
                 args_kwargs: ArgsKwargs::from_wire_values(
                     vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
-                    HashMap::from([("device".into(), WireValue::Device("cuda".try_into()?))]),
+                    HashMap::from([("device".into(), WireValue::Device("cuda".parse()?))]),
                 )
                 .unwrap(),
                 stream: 0.into(),
@@ -1510,7 +893,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1530,7 +913,7 @@ mod tests {
                             size: vec![2, 3],
                             dtype: ScalarType::Float,
                             layout: Layout::Strided,
-                            device: "cuda".try_into().unwrap(),
+                            device: "cuda".parse().unwrap(),
                         },
                         from_stream: 0.into(),
                         to_stream: 0.into(),
@@ -1562,7 +945,7 @@ mod tests {
                             size: vec![2, 3],
                             dtype: ScalarType::Float,
                             layout: Layout::Strided,
-                            device: "cuda".try_into().unwrap(),
+                            device: "cuda".parse().unwrap(),
                         },
                         from_stream: 0.into(),
                         to_stream: 0.into(),
@@ -1585,7 +968,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1675,7 +1058,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1691,7 +1074,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(4.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1712,7 +1095,7 @@ mod tests {
                             size: vec![2, 3],
                             dtype: ScalarType::Float,
                             layout: Layout::Strided,
-                            device: "cuda".try_into().unwrap(),
+                            device: "cuda".parse().unwrap(),
                         },
                         from_stream: 0.into(),
                         to_stream: 0.into(),
@@ -1726,7 +1109,7 @@ mod tests {
                             vec![WireValue::IntList(vec![2, 3]), WireValue::Double(2.0)],
                             HashMap::from([(
                                 "device".into(),
-                                WireValue::Device("cuda".try_into().unwrap()),
+                                WireValue::Device("cuda".parse().unwrap()),
                             )]),
                         )
                         .unwrap(),
@@ -1771,89 +1154,6 @@ mod tests {
             error_responses
         );
 
-        Ok(())
-    }
-
-    #[async_timed_test(timeout_secs = 240)]
-    async fn test_comm_work() -> Result<()> {
-        test_setup()?;
-        let proc = Proc::local();
-        let (client, _handle) = proc.instance("client")?;
-
-        let unique_id = UniqueId::new()?;
-        let device0 = CudaDevice::new(DeviceIndex(0));
-        let actor0 = NcclCommActor::new(CommParams::New {
-            device: device0,
-            unique_id: unique_id.clone(),
-            world_size: 2,
-            rank: 0,
-        });
-
-        let device1 = CudaDevice::new(DeviceIndex(1));
-        let actor1 = NcclCommActor::new(CommParams::New {
-            device: device1,
-            unique_id,
-            world_size: 2,
-            rank: 1,
-        });
-
-        let (actor0, actor1) = tokio::join!(actor0, actor1);
-        let (actor0, actor1) = (actor0?, actor1?);
-
-        let handle0 = actor0.spawn_detached().unwrap();
-        let handle1 = actor1.spawn_detached().unwrap();
-
-        let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
-        let port0 = client.open_once_port();
-        handle0.send(CommMessage::Send(
-            cell0.clone(),
-            1,
-            Stream::get_current_stream_on_device(device0),
-            port0.0,
-        ))?;
-
-        let cell1 = TensorCell::new(factory_float_tensor(&[1.0], device1.into()));
-        let port1 = client.open_once_port();
-        handle1.send(CommMessage::Recv(
-            cell1.clone(),
-            0,
-            Stream::get_current_stream_on_device(device1),
-            port1.0,
-        ))?;
-        let (work0, work1) = tokio::try_join!(
-            CommWork::from(vec![cell0.clone()], port0.1),
-            CommWork::from(vec![cell1.clone()], port1.1)
-        )
-        .unwrap();
-        // Wait for the work to enqueue onto the stream.
-        work0.wait().await?;
-        work1.wait().await?;
-        // Wait is non-blocking, which means that there's no guarantee that the
-        // work is completed.
-        // Make sure the work completes.
-        while !work0.is_completed().await? {
-            // No need to sleep or yield, because the await on each iteration
-            // will give other tasks a chance to make progress.
-        }
-        while !work1.is_completed().await? {
-            // Same as above.
-        }
-
-        // Check that the tensors are correct after the work completes.
-        assert!(
-            allclose(
-                &cell0.borrow(),
-                &factory_float_tensor(&[1.0], device0.into())
-            )
-            .unwrap()
-        );
-        assert!(
-            allclose(
-                &cell1.borrow(),
-                &factory_float_tensor(&[1.0], device1.into())
-            )
-            .unwrap()
-        );
         Ok(())
     }
 }

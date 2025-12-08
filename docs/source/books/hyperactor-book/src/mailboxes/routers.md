@@ -37,8 +37,10 @@ impl PartialOrd for Reference {
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
         (
+            // Ranked procs precede direct procs:
             self.world_id(),
             self.rank(),
+            self.proc_id().and_then(ProcId::as_direct),
             self.actor_name(),
             self.pid(),
             self.port(),
@@ -46,6 +48,7 @@ impl Ord for Reference {
             .cmp(&(
                 other.world_id(),
                 other.rank(),
+                other.proc_id().and_then(ProcId::as_direct),
                 other.actor_name(),
                 other.pid(),
                 other.port(),
@@ -53,12 +56,17 @@ impl Ord for Reference {
     }
 }
 ```
-This means that references are ordered by their position in the system hierarchy-starting with world, then rank (within the world), then actor name, PID, and finally port. For example:
+This means that references are ordered by their position in the system hierarchy-starting with world, then rank (within the world), then direct proc address and name (for procs without ranks), then actor name, PID, and finally port. For example:
 ```text
 world[0] < world[0].actor["trainer"] < world[0].actor["trainer"][5]
 ```
 
-Semantically, a `Reference` like `Proc(p)` is considered a prefix of any `Actor` or `Port` reference that shares the same world and process.
+For Direct addressing (see [ProcId](../references/proc_id.md)), references use channel addresses instead of ranks:
+```text
+tcp:127.0.0.1:8080,service < tcp:127.0.0.1:8080,service,trainer[0]
+```
+
+Semantically, a `Reference` like `Proc(p)` is considered a prefix of any `Actor` or `Port` reference that shares the same proc (either by matching world and rank, or by matching channel address and proc name).
 
 Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using `BTreeMap<Reference, ...>`. When routing a message, the destination `ActorId` is converted into a `Reference`, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination.
 

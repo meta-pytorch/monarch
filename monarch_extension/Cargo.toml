@@ -27,17 +27,15 @@ monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true }
 monarch_rdma_extension = { version = "0.0.0", path = "../monarch_rdma/extension", optional = true }
 monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker", optional = true }
-monarch_types = { version = "0.0.0", path = "../monarch_types" }
 nccl-sys = { path = "../nccl-sys", optional = true }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
-torch-sys = { version = "0.0.0", path = "../torch-sys", optional = true }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]
 default = ["tensor_engine"]
-tensor_engine = ["dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys", "dep:torch-sys-cuda"]
+tensor_engine = ["dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys-cuda"]

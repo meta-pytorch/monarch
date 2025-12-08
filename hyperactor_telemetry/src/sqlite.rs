@@ -165,7 +165,7 @@ lazy_static! {
         .as_slice()
     )
         .into();
-    static ref ALL_TABLES: Vec<Table> = vec![
+    pub static ref ALL_TABLES: Vec<Table> = vec![
         ACTOR_LIFECYCLE.clone(),
         MESSAGES.clone(),
         LOG_EVENTS.clone()
@@ -178,7 +178,7 @@ pub struct SqliteLayer {
 use tracing::field::Visit;
 
 #[derive(Debug, Clone, Default, Serialize)]
-struct SqlVisitor(HashMap<String, JValue>);
+pub struct SqlVisitor(pub HashMap<String, JValue>);
 
 impl Visit for SqlVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -230,6 +230,17 @@ macro_rules! insert_event {
                 .as_slice(),
         )?;
     };
+}
+
+/// Public helper to insert event fields into database using the same logic as the old implementation.
+/// This is used by the unified SqliteExporter to ensure identical behavior.
+pub fn insert_event_fields(conn: &Connection, table: &Table, fields: SqlVisitor) -> Result<()> {
+    conn.prepare_cached(&table.insert_stmt)?.execute(
+        serde_rusqlite::to_params_named_with_fields(fields, table.columns)?
+            .to_slice()
+            .as_slice(),
+    )?;
+    Ok(())
 }
 
 impl SqliteLayer {
