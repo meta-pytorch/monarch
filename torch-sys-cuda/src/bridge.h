@@ -8,6 +8,4 @@
 
 #pragma once
 
-namespace monarch {
-
-} // namespace monarch
+namespace monarch {} // namespace monarch

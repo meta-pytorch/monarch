@@ -338,10 +338,7 @@ impl Communicator {
     /// If `ranks` is empty, `ncclCommSplit` will be called with
     /// NCCL_SPLIT_NOCOLOR. This can be useful if ranks excluded from the split
     /// don't even know what ranks will be included.
-    pub fn split_from(
-        &mut self,
-        mut ranks: Vec<i32>,
-    ) -> Result<Option<Self>, NcclError> {
+    pub fn split_from(&mut self, mut ranks: Vec<i32>) -> Result<Option<Self>, NcclError> {
         ranks.sort();
         for rank in &ranks {
             if *rank < 0 || *rank >= self.global_world_size {
