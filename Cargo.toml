@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "build_utils",
-    "cuda-sys",
     "erased_lifetime",
     "hyper",
     "hyperactor",
@@ -26,6 +25,4 @@ members = [
     "struct_diff_patch",
     "struct_diff_patch_macros",
     "timed_test",
-    "torch-sys",
-    "torch-sys-cuda",
 ]

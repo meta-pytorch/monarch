@@ -17,7 +17,6 @@ use std::ops::DerefMut;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use enum_as_inner::EnumAsInner;
-use hyperactor_telemetry::skip_record;
 use tokio::io::AsyncWriteExt;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
@@ -790,8 +789,7 @@ where
         .as_ref()
         .map(|acked_seq| AckedSeqValue(acked_seq.clone()));
 
-    tracing::span!(
-        Level::ERROR,
+    hyperactor_telemetry::context_span!(
         "net i/o loop",
         session = format!("{}.{}", link.dest(), session_id),
         connected = conn.is_connected(),
@@ -799,7 +797,6 @@ where
         largest_acked = largest_acked.as_value(),
         outbox = QueueValue::from(&deliveries.outbox.deque).as_value(),
         unacked = QueueValue::from(&deliveries.unacked.deque).as_value(),
-        skip_record,
     )
 }
 
@@ -925,7 +922,7 @@ where
             tokio::select! {
                 biased;
 
-                ack_result = reader.next().instrument(tracing::span!(Level::ERROR, "read ack", skip_record)) => {
+                ack_result = reader.next().instrument(hyperactor_telemetry::context_span!("read ack")) => {
                     match ack_result {
                         Ok(Some(buffer)) => {
                             match deserialize_response(buffer) {
@@ -1017,7 +1014,7 @@ where
 
                 // We have to be careful to manage outgoing write states, so that we never write
                 // partial frames in the presence cancellation.
-                send_result = write_state.send().instrument(tracing::span!(Level::ERROR, "write bytes", skip_record)) => {
+                send_result = write_state.send().instrument(hyperactor_telemetry::context_span!("write bytes")) => {
                     match send_result {
                         Ok(()) => {
                             let mut message = outbox.pop_front().expect("outbox should not be empty");

@@ -182,10 +182,9 @@ mod tests {
     use monarch_messages::worker::WorkerMessage;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
-    use pyo3::Python;
     use timed_test::async_timed_test;
-    use torch_sys::Device;
-    use torch_sys::DeviceType;
+    use torch_sys2::Device;
+    use torch_sys2::DeviceType;
 
     use super::*;
     use crate::CallFunctionParams;
@@ -337,12 +336,12 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn borrow_cpu() -> Result<()> {
-        basic_borrow_test_impl(Device::new(DeviceType::CPU)).await
+        basic_borrow_test_impl("cpu".parse().unwrap()).await
     }
 
     #[async_timed_test(timeout_secs = 60)]
     async fn borrow_cuda() -> Result<()> {
-        basic_borrow_test_impl(Device::new(DeviceType::CUDA)).await
+        basic_borrow_test_impl("cuda".parse().unwrap()).await
     }
 
     #[async_timed_test(timeout_secs = 60)]

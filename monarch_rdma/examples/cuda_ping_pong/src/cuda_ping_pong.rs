@@ -407,7 +407,7 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
                 self.device_id as i32
             ));
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
-            cuda_sys::cudaDeviceSynchronize();
+            rdmaxcel_sys::rdmaxcel_cuCtxSynchronize();
             cu_check!(rdmaxcel_sys::rdmaxcel_cuMemcpyHtoD_v2(
                 self.cu_ptr as u64,
                 self.cpu_buffer.as_ptr() as *const std::ffi::c_void,
@@ -554,7 +554,7 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
                 self.device_id as i32
             ));
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
-            cuda_sys::cudaDeviceSynchronize();
+            rdmaxcel_sys::rdmaxcel_cuCtxSynchronize();
             cu_check!(rdmaxcel_sys::rdmaxcel_cuMemcpyDtoH_v2(
                 self.cpu_buffer.as_mut_ptr() as *mut std::ffi::c_void,
                 self.cu_ptr as rdmaxcel_sys::CUdeviceptr,
