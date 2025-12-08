@@ -39,5 +39,8 @@ torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = tru
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]
-default = ["tensor_engine"]
-tensor_engine = ["dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys", "dep:torch-sys-cuda"]
+core = []
+default = ["full"]
+full = ["rdma", "tensor_engine"]
+rdma = ["dep:monarch_rdma_extension", "dep:rdmaxcel-sys"]
+tensor_engine = ["dep:monarch_messages", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:torch-sys", "dep:torch-sys-cuda"]

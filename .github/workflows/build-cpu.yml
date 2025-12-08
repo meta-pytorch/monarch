@@ -34,4 +34,4 @@ jobs:
         pip install -r build-requirements.txt
 
         # Build monarch (No tensor engine, CPU version)
-        USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+        MONARCH_FEATURES=core python setup.py bdist_wheel -v

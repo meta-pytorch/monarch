@@ -98,7 +98,7 @@ sudo dnf install clang-devel libnccl-devel
 conda install -c conda-forge clangdev nccl
 conda update -n monarchenv --all -c conda-forge -y
 
-# If you are building with RDMA support, build monarch with `USE_TENSOR_ENGINE=1 pip install --no-build-isolation .` and dnf install the following packages
+# If you are building with RDMA support, build monarch with `MONARCH_FEATURES=rdma pip install --no-build-isolation .` and dnf install the following packages
 sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
 
 # Install build dependencies
@@ -145,12 +145,12 @@ pip install -r torch-requirements.txt -r build-requirements.txt
 # Install test dependencies
 pip install -r python/tests/requirements.txt
 
-# Build and install Monarch (with tensor engine support)
+# Build and install Monarch (with all features)
 pip install --no-build-isolation .
 
 # or
 # Build and install Monarch (without tensor engine support)
-USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
+MONARCH_FEATURES=core pip install --no-build-isolation .
 
 # or setup for development
 pip install --no-build-isolation -e .
@@ -183,10 +183,10 @@ pip install -r build-requirements.txt
 # Install test dependencies
 pip install -r python/tests/requirements.txt
 
-# Build and install Monarch
-USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
+# Build and install Monarch (core only, no RDMA or tensor engine)
+MONARCH_FEATURES=core pip install --no-build-isolation .
 # or setup for development
-USE_TENSOR_ENGINE=0 pip install --no-build-isolation -e .
+MONARCH_FEATURES=core pip install --no-build-isolation -e .
 
 # Verify installation
 pip list | grep monarch

@@ -15,7 +15,7 @@ echo "========================================="
 export CI=true
 # BUILD MONARCH COMPLETELY - This is critical for API documentation
 echo "Building Monarch with Rust bindings..."
-python -m pip install -e . --no-build-isolation
+python -m pip install -e . --no-build-isolation -v
 
 # Verify Monarch installation and imports
 echo "Verifying Monarch installation..."
