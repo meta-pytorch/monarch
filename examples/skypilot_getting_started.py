@@ -25,7 +25,7 @@ import argparse
 import os
 import sys
 
-# Set timeouts before importing monarch - worker setup takes time
+# Set timeouts before importing monarch - monarch build takes time
 os.environ["HYPERACTOR_HOST_SPAWN_READY_TIMEOUT"] = "300s"
 os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT"] = "300s"
 os.environ["HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE"] = "300s"
@@ -42,15 +42,10 @@ try:
     from monarch.actor import Actor, endpoint, ProcMesh, context
 except ImportError as e:
     print(f"ERROR: Monarch is not properly installed: {e}")
-    print("\nTo install Monarch, you need to build it from source:")
-    print("  cd monarch/")
-    print("  pip install -e .")
-    print("\nThis requires the Rust toolchain and other dependencies.")
-    print("See monarch/README.md for full installation instructions.")
     sys.exit(1)
 
 # ============================================================================
-# Step 1: Define our Actors (same as getting started guide)
+# Step 1: Define actors (same as getting started guide)
 # ============================================================================
 
 
@@ -94,7 +89,7 @@ def get_cloud(cloud_name: str):
         "kubernetes": sky.Kubernetes,
         "aws": sky.AWS,
         "gcp": sky.GCP,
-        "azure": sky.Azure,
+        "azure": sky.Azure, # TODO(romilb): Add more clouds here
     }
     if cloud_name.lower() not in clouds:
         raise ValueError(f"Unknown cloud: {cloud_name}. Available: {list(clouds.keys())}")
@@ -114,6 +109,7 @@ def main():
         default=2,
         help="Number of host nodes to provision",
     )
+    # TODO(romilb): This should be parsed from the accelerator spec
     parser.add_argument(
         "--gpus-per-host",
         type=int,
@@ -156,7 +152,7 @@ def main():
     # Build resources specification
     resources_kwargs = {
         "cloud": get_cloud(args.cloud),
-        "accelerators": args.accelerator,  # GPU required - torchmonarch needs CUDA
+        "accelerators": args.accelerator,
     }
     if args.region:
         resources_kwargs["region"] = args.region
@@ -168,7 +164,6 @@ def main():
     job = SkyPilotJob(
         # Define the mesh of hosts we need
         meshes={"trainers": args.num_hosts},
-        # Specify cloud resources - GPU required for torchmonarch (needs CUDA)
         resources=sky.Resources(**resources_kwargs),
         cluster_name=args.cluster_name,
         # Auto-cleanup after 10 minutes of idle time
@@ -233,7 +228,7 @@ def main():
             print(f"    {i}")
 
         print("\n" + "=" * 60)
-        print("SUCCESS! Monarch actors ran on SkyPilot cluster!")
+        print("Success! Monarch actors ran on SkyPilot cluster!")
         print("=" * 60)
 
     except Exception as e:
