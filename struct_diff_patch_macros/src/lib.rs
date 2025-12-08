@@ -181,7 +181,7 @@ fn build_struct_parts(
             let apply_steps = binding_names
                 .iter()
                 .zip(names.iter())
-                .map(|(binding, name)| quote! { #binding.apply(&mut value.#name); });
+                .map(|(binding, name)| quote! { #binding.apply(&mut value.#name)?; });
 
             let patch_type = if patch_types.len() > 0 {
                 quote! { ( #( #patch_types ),* , ) }
