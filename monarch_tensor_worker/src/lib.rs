@@ -1890,6 +1890,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn backend_network_init() {
+        test_setup().unwrap();
         let proc = Proc::local();
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 

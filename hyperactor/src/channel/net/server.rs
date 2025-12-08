@@ -19,7 +19,6 @@ use anyhow::Context;
 use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use hyperactor_telemetry::skip_record;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt as _;
@@ -69,8 +68,7 @@ fn process_state_span(
         0
     };
 
-    tracing::span!(
-        Level::ERROR,
+    hyperactor_telemetry::context_span!(
         "net i/o loop",
         session_id = format!("{}.{}", dest, session_id),
         source = source.to_string(),
@@ -79,7 +77,6 @@ fn process_state_span(
         pending_ack_count = pending_ack_count,
         rcv_raw_frame_count = rcv_raw_frame_count,
         since_last_ack = since_last_ack_str.as_str(),
-        skip_record,
     )
 }
 
@@ -120,7 +117,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let Some(frame) = self
             .reader
             .next()
-            .instrument(tracing::span!(Level::ERROR, "read handshake", skip_record))
+            .instrument(hyperactor_telemetry::context_span!("read handshake"))
             .await?
         else {
             anyhow::bail!("end of stream before first frame from {}", self.source);
@@ -195,7 +192,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
             // We have to be careful to manage the ack write state here, so that we do not
             // write partial acks in the presence of cancellation.
-            ack_result = self.write_state.send().instrument(tracing::span!(Level::ERROR, "write ack", skip_record)) => {
+            ack_result = self.write_state.send().instrument(hyperactor_telemetry::context_span!("write ack")) => {
                 match ack_result {
                     Ok(acked_seq) => {
                         *last_ack_time = RealClock.now();
@@ -220,7 +217,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
             _ = cancel_token.cancelled() => return (next, Some((Ok(()), RejectConn::ServerClosing))),
 
-            bytes_result = self.reader.next().instrument(tracing::span!(Level::ERROR, "read bytes", skip_record)) => {
+            bytes_result = self.reader.next().instrument(hyperactor_telemetry::context_span!("read bytes")) => {
                 *rcv_raw_frame_count += 1;
                 // First handle transport-level I/O errors, and EOFs.
                 let bytes = match bytes_result {
@@ -319,10 +316,9 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                             )
                         }
                         match self.send_with_buffer_metric(session_id, tx, message)
-                            .instrument(tracing::info_span!(
+                            .instrument(hyperactor_telemetry::context_span!(
                                 "send_with_buffer_metric",
                                 seq = seq,
-                                skip_record,
                             ))
                             .await
                         {

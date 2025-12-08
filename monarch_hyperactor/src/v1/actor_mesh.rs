@@ -358,7 +358,7 @@ fn send_state_change(
     };
     let event_actor_id = event.actor_id.clone();
     let py_event = PyActorSupervisionEvent::from(event.clone());
-    let pyerr = PyErr::new::<SupervisionError, _>(format!(
+    let pyerr = SupervisionError::new_err(format!(
         "Actor {} exited because of the following reason: {}",
         event_actor_id,
         py_event
@@ -574,12 +574,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             .unwrap_or_else(|e| e.into_inner())
         {
             Unhealthy::StreamClosed => {
-                return Err(PyErr::new::<SupervisionError, _>(
+                return Err(SupervisionError::new_err(
                     "actor mesh is stopped due to proc mesh shutdown".to_string(),
                 ));
             }
             Unhealthy::Crashed(event) => {
-                return Err(PyErr::new::<SupervisionError, _>(format!(
+                return Err(SupervisionError::new_err(format!(
                     "Actor {} is unhealthy with reason: {}",
                     event.actor_id, event.actor_status
                 )));
@@ -593,7 +593,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                         .get(&rank)
                         .map(|entry| entry.value().clone())
                 }) {
-                    return Err(PyErr::new::<SupervisionError, _>(format!(
+                    return Err(SupervisionError::new_err(format!(
                         "Actor {} is unhealthy with reason: {}",
                         event.actor_id, event.actor_status
                     )));
@@ -660,7 +660,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
                     .await
                     .map_err(|err| PyValueError::new_err(err.to_string()))
             }),
-            PythonActorMeshImpl::Ref(_) => Err(PyErr::new::<PyNotImplementedError, _>(
+            PythonActorMeshImpl::Ref(_) => Err(PyNotImplementedError::new_err(
                 "Cannot call stop on an ActorMeshRef, requires an owned ActorMesh",
             )),
         }
@@ -706,7 +706,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        Err(PyErr::new::<PyNotImplementedError, _>(
+        Err(PyNotImplementedError::new_err(
             "This should never be called on ActorMeshRef directly",
         ))
     }
@@ -716,14 +716,14 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         _instance: &PyInstance,
         _supervision_display_name: String,
     ) -> PyResult<()> {
-        Err(PyErr::new::<PyNotImplementedError, _>(
+        Err(PyNotImplementedError::new_err(
             "This should never be called on ActorMeshRef directly",
         ))
     }
 
     /// Stop the actor mesh asynchronously.
     fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
-        Err(PyErr::new::<PyNotImplementedError, _>(
+        Err(PyNotImplementedError::new_err(
             "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))
     }
@@ -734,8 +734,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes =
-            bincode::serialize(self).map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let bytes = bincode::serialize(self).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let module = py
             .import("monarch._rust_bindings.monarch_hyperactor.v1.actor_mesh")
@@ -762,8 +761,8 @@ impl PythonActorMeshImpl {
 
 #[pyfunction]
 fn py_actor_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
-    let r: PyResult<ActorMeshRef<PythonActor>> = bincode::deserialize(bytes.as_bytes())
-        .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
+    let r: PyResult<ActorMeshRef<PythonActor>> =
+        bincode::deserialize(bytes.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()));
     r.map(|r| PythonActorMesh::from_impl(Box::new(PythonActorMeshImpl::new_ref(r))))
 }
 

@@ -441,6 +441,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn all_reduce() {
+        test_setup().unwrap();
         let proc = Proc::local();
         let (client, _handle) = proc.instance("client").unwrap();
 
