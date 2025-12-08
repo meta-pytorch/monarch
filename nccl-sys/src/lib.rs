@@ -16,13 +16,6 @@ unsafe impl ExternType for CUstream_st {
 }
 
 /// SAFETY: bindings
-/// Trivial because this is POD struct
-unsafe impl ExternType for ncclConfig_t {
-    type Id = type_id!("ncclConfig_t");
-    type Kind = cxx::kind::Trivial;
-}
-
-/// SAFETY: bindings
 unsafe impl ExternType for ncclComm {
     type Id = type_id!("ncclComm");
     type Kind = cxx::kind::Opaque;

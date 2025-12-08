@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::ffi::CString;
 use std::fmt;
 use std::fmt::Write;
 use std::hash::Hasher;
@@ -26,7 +25,6 @@ use torch_sys2::TensorCell;
 use torch_sys2::factory_float_tensor;
 use torch_sys2::is_float8_type;
 
-use crate::bridge::ffi::make_nccl_config;
 use crate::cuda::CudaError;
 use crate::cuda::Stream;
 use crate::cuda::set_device;
@@ -98,60 +96,6 @@ pub enum NcclStatus {
     /// A NCCL operation on the communicator is being enqueued and is being
     /// progressed in the background.
     InProgress,
-}
-
-/// Rust version of ncclConfig_t. See nccl documentation for what each field
-/// means:
-/// https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/types.html#ncclconfig-t
-///
-/// Note that we don't validate field values; we rely on nccl to do that.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NcclConfig {
-    pub blocking: bool,
-    pub cga_cluster_size: u8,
-    pub min_ctas: u8,
-    pub max_ctas: u8,
-    pub net_name: Option<String>,
-    pub split_share: bool,
-}
-
-impl Default for NcclConfig {
-    fn default() -> Self {
-        NcclConfig {
-            blocking: true,
-            cga_cluster_size: 4,
-            min_ctas: 1,
-            max_ctas: 32,
-            net_name: None,
-            split_share: false,
-        }
-    }
-}
-
-impl From<NcclConfig> for ncclConfig_t {
-    fn from(config: NcclConfig) -> Self {
-        let mut ret = make_nccl_config();
-        ret.blocking = config.blocking.into();
-        ret.cgaClusterSize = config.cga_cluster_size.into();
-        ret.minCTAs = config.min_ctas.into();
-        ret.maxCTAs = config.max_ctas.into();
-        if let Some(net_name) = config.net_name {
-            let c_string = CString::new(net_name)
-                .expect("failed to create CString")
-                .into_boxed_c_str();
-
-            // Just leak the string to avoid complicated ownership issues. I'm
-            // not aware of anywhere where we actually want to specify the
-            // network module name in configuration instead of letting nccl just
-            // choose it for us. If this happens + we are creating tons of
-            // config objects, we can revisit this.
-            let ptr = Box::leak(c_string).as_ptr();
-            ret.netName = ptr;
-        }
-        ret.splitShare = config.split_share.into();
-
-        ret
-    }
 }
 
 fn nccl_check(result: ncclResult_t) -> Result<NcclStatus, RawNcclError> {
@@ -383,9 +327,9 @@ impl Communicator {
 
     /// Split off a new communicator from this one, preserving the same world
     /// size.
-    pub fn split_all(&mut self, config: Option<NcclConfig>) -> Result<Self, NcclError> {
+    pub fn split_all(&mut self) -> Result<Self, NcclError> {
         let ranks = (0..self.global_world_size).collect();
-        Ok(self.split_from(ranks, config)?.unwrap())
+        Ok(self.split_from(ranks)?.unwrap())
     }
 
     /// Split off a new communicator from this one. Only `ranks` will be present
@@ -397,7 +341,6 @@ impl Communicator {
     pub fn split_from(
         &mut self,
         mut ranks: Vec<i32>,
-        config: Option<NcclConfig>,
     ) -> Result<Option<Self>, NcclError> {
         ranks.sort();
         for rank in &ranks {
@@ -411,34 +354,17 @@ impl Communicator {
             Err(_) => NCCL_SPLIT_NOCOLOR,
         };
 
-        let config = config.map(ncclConfig_t::from);
         let mut new = MaybeUninit::uninit();
 
         // SAFETY: intended use of C function
         let new = unsafe {
-            // This rather awkward duplication is intentional; we are passing in
-            // `config` as a pointer, which is only guaranteed to be valid for
-            // the duration of `Some(mut config)` match arm.
-            match config {
-                Some(mut config) => {
-                    nccl_check(ncclCommSplit(
-                        self.inner,
-                        color,
-                        self.rank,
-                        new.as_mut_ptr(),
-                        &mut config,
-                    ))?;
-                }
-                None => {
-                    nccl_check(ncclCommSplit(
-                        self.inner,
-                        color,
-                        self.rank,
-                        new.as_mut_ptr(),
-                        std::ptr::null_mut(),
-                    ))?;
-                }
-            }
+            nccl_check(ncclCommSplit(
+                self.inner,
+                color,
+                self.rank,
+                new.as_mut_ptr(),
+                std::ptr::null_mut(),
+            ))?;
             new.assume_init()
         };
 
