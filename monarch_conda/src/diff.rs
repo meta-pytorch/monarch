@@ -102,7 +102,7 @@ impl CondaFingerprint {
 
         // NOTE(agallagher): There appears to be some mtime drift on some files after fbpkg creation,
         // so acccount for that here.
-        let slop = Duration::from_secs(5 * 60);
+        let slop = Duration::from_mins(5);
 
         // We load the timestamp from the first history entry, and use this to see if any
         // files have been updated since the env was created.
@@ -675,7 +675,7 @@ mod tests {
 
         // Test edge cases around the slop period (5 minutes)
         let base_timestamp = base_time.duration_since(UNIX_EPOCH)?.as_secs();
-        let slop = Duration::from_secs(5 * 60);
+        let slop = Duration::from_mins(5);
         let base_plus_slop = UNIX_EPOCH + Duration::from_secs(base_timestamp) + slop;
 
         // Times just before and after the slop period
@@ -974,7 +974,7 @@ mod tests {
         let comparator = CondaFingerprint::mtime_comparator(&fingerprint1, &fingerprint2)?;
 
         let base_timestamp = base_time.duration_since(UNIX_EPOCH)?.as_secs();
-        let slop = Duration::from_secs(5 * 60);
+        let slop = Duration::from_mins(5);
 
         // Test exact boundary conditions
         let _exact_base_plus_slop = UNIX_EPOCH + Duration::from_secs(base_timestamp) + slop;

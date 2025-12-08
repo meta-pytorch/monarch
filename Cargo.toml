@@ -22,5 +22,7 @@ members = [
     "preempt_rwlock",
     "rdmaxcel-sys",
     "serde_multipart",
+    "struct_diff_patch",
+    "struct_diff_patch_macros",
     "timed_test",
 ]
