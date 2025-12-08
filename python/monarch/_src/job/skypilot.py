@@ -38,6 +38,58 @@ logger.propagate = False
 # Default port for Monarch TCP communication
 DEFAULT_MONARCH_PORT = 22222
 
+# Default setup commands to build Monarch from source on remote workers.
+# NOTE: Cold start is slow (~7-10 minutes) because we need to compile Monarch
+# each worker This is necessary to ensure client/worker version compatibility
+# when using a development branch. For production use, consider
+# using pre-built wheels from PyPI (pip install torchmonarch).
+#
+# For faster cold starts (<30s), use a custom Docker image with all dependencies
+# pre-installed by setting image_id in sky.Resources:
+#   resources = sky.Resources(image_id="docker:your-registry/monarch-image:tag", ...)
+DEFAULT_SETUP_COMMANDS = """
+set -ex
+
+# Add PPA for newer toolchains
+sudo apt-get update
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+sudo apt-get update
+
+# Install system dependencies
+sudo apt-get install -y \
+  build-essential \
+  ninja-build \
+  g++-11 \
+  rdma-core \
+  libibverbs1 \
+  libmlx5-1 \
+  libibverbs-dev \
+  curl \
+  pkg-config \
+  libssl-dev
+
+# Install CUDA toolkit and NCCL
+wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get install -y cuda-toolkit-12-1
+sudo apt-get install -y --allow-change-held-packages libnccl2=2.28.9-1+cuda12.9 libnccl-dev=2.28.9-1+cuda12.9
+
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source $HOME/.cargo/env
+rustup default nightly
+
+# Install Python dependencies and build Monarch from source
+cd ~/sky_workdir
+pip install setuptools-rust maturin
+pip install -r torch-requirements.txt -r build-requirements.txt
+CC=gcc-11 CXX=g++-11 USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
+
+echo "Done installing Monarch"
+"""
+
 
 def _configure_transport() -> None:
     """Configure the Monarch transport. Deferred import to avoid import errors."""
@@ -55,6 +107,7 @@ def _attach_to_workers_wrapper(name: str, ca: str, workers: List[str]):
 
 
 class SkyPilotJob(JobTrait):
+    
     """
     A job scheduler that uses SkyPilot to provision cloud instances.
 
@@ -107,8 +160,12 @@ class SkyPilotJob(JobTrait):
             python_exe: Python executable to use for worker processes.
             setup_commands: Optional setup commands to run before starting workers.
                            Use this to install dependencies including Monarch.
+                           If None and workdir is provided, uses DEFAULT_SETUP_COMMANDS
+                           which builds Monarch from source.
             workdir: Local directory to sync to the cluster. If provided, this
                     directory will be uploaded to ~/sky_workdir on each node.
+                    When using workdir with the Monarch repo, DEFAULT_SETUP_COMMANDS
+                    will build Monarch from source on each worker.
             file_mounts: Dictionary mapping remote paths to local paths for
                         additional file mounts.
         """
@@ -152,7 +209,13 @@ class SkyPilotJob(JobTrait):
         worker_command = self._build_worker_command()
 
         # Create setup commands
-        setup = self._setup_commands or ""
+        # If workdir is provided but no setup_commands, use defaults to build Monarch
+        if self._setup_commands is not None:
+            setup = self._setup_commands
+        elif self._workdir is not None:
+            setup = DEFAULT_SETUP_COMMANDS
+        else:
+            setup = ""
         if setup and not setup.endswith("\n"):
             setup += "\n"
 

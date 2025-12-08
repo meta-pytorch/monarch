@@ -16,13 +16,13 @@ but uses SkyPilot to launch the worker nodes.
 Prerequisites:
 - Monarch installed with its Rust bindings (build with `pip install -e .` in monarch/)
 - SkyPilot installed and configured (run `sky check`)
-- torchmonarch available on PyPI (requires CUDA on remote nodes)
 
 Usage:
-    python skypilot_getting_started.py
+    # Run from inside a Kubernetes pod (client runs locally):
+    python examples/skypilot_getting_started.py --cloud kubernetes --num-hosts 2
 
-    # With explicit options:
-    python skypilot_getting_started.py --cloud kubernetes --num-hosts 2
+    # Run from outside the cluster using the SkyPilot YAML:
+    sky launch examples/skypilot_run_example.yaml
 
 See SKY_README.md for full documentation.
 """
@@ -159,63 +159,18 @@ def main():
     # This will launch cloud instances and start Monarch workers on them
     print("\n[1] Creating SkyPilot job...")
 
-    # Setup commands to install Monarch on the remote nodes
-    # Build from source to ensure client/worker version compatibility
-    # NOTE: Currently builds WITHOUT tensor engine due to old rdma-core on Ubuntu 20.04
-    setup_commands = """
-set -ex
-
-# Add PPA for newer toolchains
-sudo apt-get update
-sudo apt-get install -y software-properties-common
-sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-sudo apt-get update
-
-# Install system dependencies
-sudo apt-get install -y \
-  build-essential \
-  ninja-build \
-  g++-11 \
-  rdma-core \
-  libibverbs1 \
-  libmlx5-1 \
-  libibverbs-dev \
-  curl \
-  pkg-config \
-  libssl-dev
-
-# Install CUDA toolkit and NCCL
-wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
-sudo apt-get install -y cuda-toolkit-12-1
-sudo apt-get install -y --allow-change-held-packages libnccl2=2.28.9-1+cuda12.9 libnccl-dev=2.28.9-1+cuda12.9
-
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source $HOME/.cargo/env
-rustup default nightly
-
-# Install Python dependencies
-cd ~/sky_workdir
-pip install setuptools-rust maturin
-pip install -r torch-requirements.txt -r build-requirements.txt
-
-# Build Monarch (without tensor engine due to old rdma-core)
-CC=gcc-11 CXX=g++-11 USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
-
-echo "DONE INSTALLING MONARCH"
-"""
-
     # Build resources specification
     resources_kwargs = {
         "cloud": get_cloud(args.cloud),
-        "cpus": "2+",
         "accelerators": args.accelerator,  # GPU required - torchmonarch needs CUDA
     }
     if args.region:
         resources_kwargs["region"] = args.region
 
+    # Find Monarch repo root (this script is in examples/)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    monarch_root = os.path.dirname(script_dir)  # Go up from examples/
+    
     job = SkyPilotJob(
         # Define the mesh of hosts we need
         meshes={"trainers": args.num_hosts},
@@ -225,12 +180,9 @@ echo "DONE INSTALLING MONARCH"
         # Auto-cleanup after 10 minutes of idle time
         idle_minutes_to_autostop=10,
         down_on_autostop=True,
-        # Setup commands to install dependencies
-        setup_commands=setup_commands,
-        # Sync Monarch source to workers for building
-        workdir="/home/sky/dev/monarch",
-        # Use default python (same as used by pip in setup)
-        python_exe="python",
+        # Sync Monarch source to workers for building from source
+        # (SkyPilotJob uses default setup commands when workdir is provided)
+        workdir=monarch_root,
     )
 
     try:
