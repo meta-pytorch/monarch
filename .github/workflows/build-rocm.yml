@@ -5,9 +5,6 @@ on:
   push:
     tags:
       - ciflow/rocm/*
-  ### TEMPORARY STARTS ###
-  pull_request:
-  ### TEMPORARY ENDS ###
   workflow_dispatch:
 
 concurrency:
