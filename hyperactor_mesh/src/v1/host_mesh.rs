@@ -7,7 +7,6 @@
  */
 
 use hyperactor::Actor;
-use hyperactor::ActorHandle;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
@@ -1082,6 +1081,8 @@ impl HostMeshRef {
 
     /// Get the state of all procs with Name in this host mesh.
     /// The procs iterator must be in rank order.
+    /// The returned ValueMesh will have a non-empty inner state unless there
+    /// was a timeout reaching the host mesh agent.
     #[allow(clippy::result_large_err)]
     pub(crate) async fn proc_states(
         &self,
