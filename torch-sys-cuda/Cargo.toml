@@ -21,7 +21,6 @@ torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
-cxx-build = "1.0.119"
 pyo3-build-config = "0.24.2"
 
 [features]
