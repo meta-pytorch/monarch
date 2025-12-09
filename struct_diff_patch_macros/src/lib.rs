@@ -81,10 +81,11 @@ pub fn derive_diff(input: TokenStream) -> TokenStream {
 ///       String: struct_diff_patch::Diff,
 ///       u32: struct_diff_patch::Diff,
 ///   {
-///       fn apply(self, value: &mut MyStruct) {
+///       fn apply(self, value: &mut MyStruct) -> struct_diff_patch::Result<()> {
 ///           let (field_patch_0, field_patch_1) = self;
-///           field_patch_0.apply(&mut value.name);
-///           field_patch_1.apply(&mut value.count);
+///           field_patch_0.apply(&mut value.name)?;
+///           field_patch_1.apply(&mut value.count)?;
+///           Ok(())
 ///       }
 ///   }
 /// ```
@@ -140,8 +141,9 @@ fn expand_diff(input: DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         impl #impl_generics_tokens #crate_path::Patch<#ident #ty_generics> for #patch_type #where_clause_tokens {
-            fn apply(self, value: &mut #ident #ty_generics) {
+            fn apply(self, value: &mut #ident #ty_generics) -> #crate_path::Result<()> {
                 #apply_body
+                Ok(())
             }
         }
     })
@@ -179,7 +181,7 @@ fn build_struct_parts(
             let apply_steps = binding_names
                 .iter()
                 .zip(names.iter())
-                .map(|(binding, name)| quote! { #binding.apply(&mut value.#name); });
+                .map(|(binding, name)| quote! { #binding.apply(&mut value.#name)?; });
 
             let patch_type = if patch_types.len() > 0 {
                 quote! { ( #( #patch_types ),* , ) }
@@ -233,7 +235,7 @@ fn build_struct_parts(
             let apply_steps = binding_names
                 .iter()
                 .zip(indices.iter())
-                .map(|(binding, idx)| quote! { #binding.apply(&mut value.#idx); });
+                .map(|(binding, idx)| quote! { #binding.apply(&mut value.#idx)?; });
 
             let patch_type = if patch_fields.len() > 0 {
                 quote! { ( #( #patch_fields ),* , ) }
