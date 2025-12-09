@@ -427,17 +427,20 @@ class ProcMesh(MeshTrait):
         host_mesh: "HostMesh",
         region: Region,
         root_region: Region,
+        _controller_controller: Optional["_ControllerController"],
     ) -> "ProcMesh":
         async def task() -> HyProcMesh:
             return hy_proc_mesh
 
-        return ProcMesh(
+        pm = ProcMesh(
             PythonTask.from_coroutine(task()).spawn(),
             host_mesh,
             region,
             root_region,
             _initialized_hy_proc_mesh=hy_proc_mesh,
         )
+        pm._controller_controller = _controller_controller
+        return pm
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return ProcMesh._from_initialized_hy_proc_mesh, (
@@ -447,6 +450,7 @@ class ProcMesh(MeshTrait):
             self._host_mesh,
             self._region,
             self._root_region,
+            self._controller_controller,
         )
 
     def _host(self, proc_rank: int) -> "HostMesh":
