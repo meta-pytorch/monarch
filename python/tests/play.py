@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 import math
 import os
 import runpy
@@ -13,8 +11,8 @@ import socket
 import sys
 from typing import Optional
 
-from monarch._src.actor.actor_mesh import Actor, current_rank, current_size
-from monarch._src.actor.endpoint import endpoint
+from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
+from monarch.spmd import setup_torch_elastic_env, setup_torch_elastic_env_async
 from monarch.tools.network import AddrType, get_ipaddr
 
 
@@ -60,6 +58,25 @@ class SPMDActor(Actor):
         self.group_world_size: int = (
             self.world_size + self.local_world_size - 1
         ) // self.local_world_size
+        print("hello")
+
+    @endpoint
+    def hello(self) -> None:
+        print("hello")
+        keys = {
+            "MASTER_ADDR",
+            "MASTER_PORT",
+            "RANK",
+            "LOCAL_RANK",
+            "LOCAL_WORLD_SIZE",
+            "GROUP_RANK",
+            "GROUP_WORLD_SIZE",
+            "ROLE_RANK",
+            "ROLE_WORLD_SIZE",
+            "ROLE_NAME",
+            "WORLD_SIZE",
+        }
+        print({(k, v) for k, v in os.environ.items() if k in keys})
 
     def _setup_env(self, master_addr: str, master_port: int) -> None:
         os.environ.update(
@@ -124,3 +141,57 @@ class SPMDActor(Actor):
             raise ValueError("No script or module specified")
 
         return True
+
+
+class EnvCapture(Actor):
+    """Actor to capture environment variables after setup."""
+
+    @endpoint
+    async def get_env_vars(self) -> dict[str, str]:
+        """Capture torch elastic environment variables."""
+        env_keys = [
+            "MASTER_ADDR",
+            "MASTER_PORT",
+            "RANK",
+            "LOCAL_RANK",
+            "LOCAL_WORLD_SIZE",
+            "GROUP_RANK",
+            "GROUP_WORLD_SIZE",
+            "ROLE_RANK",
+            "ROLE_WORLD_SIZE",
+            "ROLE_NAME",
+            "WORLD_SIZE",
+        ]
+        return {key: os.environ.get(key, "") for key in env_keys}
+
+    @endpoint
+    async def get_rank_info(self) -> dict[str, int]:
+        """Get rank information from current_rank() and current_size()."""
+        point = current_rank()
+        sizes = current_size()
+        return {
+            "rank": point.rank,
+            "local_rank": point["gpus"],
+            "nproc_per_node": sizes["gpus"],
+            "world_size": sizes["hosts"] * sizes["gpus"],
+        }
+
+
+if __name__ == "__main__":
+    print("hi")
+
+    hm = this_host()
+    proc_mesh = hm.spawn_procs(name="test_spmd", per_host={"gpus": 2})
+    setup_torch_elastic_env(proc_mesh)
+    # am = proc_mesh.spawn("_SPMDActor", SPMDActor)
+    # am.hello.call().get()
+    # # # Select the first actor (all coordinates = 0) to get the master host/port
+    # first_values = dict.fromkeys(proc_mesh._labels, 0)
+    # master_addr, master_port = (
+    #     am.slice(**first_values).get_host_port.call_one(None).get()
+    # )
+    # print(master_addr, master_port)
+    # assert master_port is not None, "master_port should not be None here."
+    # am.setup_env.call(master_addr, master_port).get()
+    res = proc_mesh.spawn("_EnvCapture", EnvCapture).get_env_vars.call().get()
+    print(res)
