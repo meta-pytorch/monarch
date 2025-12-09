@@ -29,7 +29,7 @@ from monarch._src.actor.meta.allocator import (
 
 from monarch._src.job.job import BatchJob, JobState, JobTrait
 
-from monarch.tools.commands import create, info, kill
+from monarch._src.tools.commands import create, info, kill
 from monarch.tools.components.meta import hyperactor
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
@@ -49,6 +49,7 @@ class _MASTSpec(NamedTuple):
     timeout_sec: int
     meshes: List[Tuple[str, int, str]]
     workspace: Dict[Union[Path, str], str]
+    env: Dict[str, str]
 
 
 MONARCH_PORT: int = 26600
@@ -80,6 +81,7 @@ class MASTJob(JobTrait):
         hpcClusterUuid: str = "MastProdCluster",
         packages: Sequence[str] = (),
         timeout_sec=3600,
+        env: Optional[Dict[str, str]] = None,
     ):
         super().__init__()
         self._name: Optional[str] = None
@@ -92,6 +94,7 @@ class MASTJob(JobTrait):
             timeout_sec,
             [],
             {},
+            env or {},
         )
         self._handle: Optional[str] = None
 
@@ -115,6 +118,7 @@ class MASTJob(JobTrait):
             ],
             additional_packages=packages,
             timeout_sec=self._spec.timeout_sec,
+            env=self._spec.env,
         )
         with ExitStack() as stack:
             workspace = Workspace(self._spec.workspace)

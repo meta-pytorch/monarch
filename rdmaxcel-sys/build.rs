@@ -71,7 +71,7 @@ fn main() {
         .header(&header_path)
         .clang_arg("-x")
         .clang_arg("c++")
-        .clang_arg("-std=gnu++14")
+        .clang_arg("-std=c++14")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Allow the specified functions, types, and variables
         .allowlist_function("ibv_.*")
@@ -222,7 +222,7 @@ fn main() {
                     .include(format!("{}/src", manifest_dir))
                     .flag("-fPIC")
                     .cpp(true)
-                    .flag("-std=gnu++14");
+                    .flag("-std=c++14");
 
                 // Add CUDA include paths
                 cpp_build.include(&cuda_include_path);
