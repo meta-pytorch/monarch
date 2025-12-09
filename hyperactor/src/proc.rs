@@ -1098,8 +1098,12 @@ impl<A: Actor> Instance<A> {
         );
         // Actor status changes between Idle and Processing when handling every
         // message. It creates too many logs if we want to log these 2 states.
+        // Also, sometimes the actor transitions from Processing -> Processing.
         // Therefore we skip the status changes between them.
-        if !((old.is_idle() && new.is_processing()) || (old.is_processing() && new.is_idle())) {
+        if !((old.is_idle() && new.is_processing())
+            || (old.is_processing() && new.is_idle())
+            || old == new)
+        {
             let new_status = new.arm().unwrap_or("unknown");
             let change_reason = match new {
                 ActorStatus::Failed(reason) => reason.to_string(),

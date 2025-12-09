@@ -322,7 +322,13 @@ pub enum NameParseError {
     #[error("invalid name: missing uuid")]
     MissingUuid,
 
-    #[error("invalid name '{0}'")]
+    /// Strictly speaking Monarch identifier also supports other characters. But
+    /// to avoid confusion for the user, we only state intuitive characters here
+    /// so the error message is more actionable.
+    #[error(
+        "invalid name '{0}': names must contain only alphanumeric characters \
+        and underscores, and must start with a letter or underscore"
+    )]
     InvalidName(String),
 
     #[error(transparent)]
