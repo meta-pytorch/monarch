@@ -7,6 +7,7 @@
  */
 
 #include "driver_api.h"
+#include <cuda_runtime.h>
 #include <dlfcn.h>
 #include <iostream>
 #include <stdexcept>
@@ -79,6 +80,8 @@ DriverAPI create_driver_api() {
 } // namespace
 
 DriverAPI* DriverAPI::get() {
+  // Ensure we have a valid CUDA context for this thread
+  cudaFree(0);
   static DriverAPI singleton = create_driver_api();
   return &singleton;
 }
