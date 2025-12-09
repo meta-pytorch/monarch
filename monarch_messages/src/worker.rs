@@ -38,7 +38,6 @@ use pyo3::types::PyTuple;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
-use torch_sys_cuda::nccl::NcclConfig;
 use torch_sys_cuda::nccl::ReduceOp;
 use torch_sys_cuda::nccl::UniqueId;
 use torch_sys2::BorrowError;
@@ -800,10 +799,6 @@ pub enum WorkerMessage {
         /// will be ordered with respect to other operations scheduled on this
         /// stream.
         stream: StreamRef,
-        /// Configuration for the new communicator. If None, we will not pass a
-        /// config object to nccl, which means that the created communicator
-        /// will inherit its parent's config.
-        config: Option<NcclConfig>,
     },
 
     /// Create a new communicator on each rank in `ranks`, capable of
@@ -816,10 +811,6 @@ pub enum WorkerMessage {
         /// will be ordered with respect to other operations scheduled on this
         /// stream.
         stream: StreamRef,
-        /// Configuration for the new communicator. If None, we will not pass a
-        /// config object to nccl, which means that the created communicator
-        /// will inherit its parent's config.
-        config: Option<NcclConfig>,
     },
 
     SendTensor {

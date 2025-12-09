@@ -11,10 +11,5 @@
 pub(crate) mod ffi {
     unsafe extern "C++" {
         include!("monarch/torch-sys-cuda/src/bridge.h");
-
-        // nccl helpers
-        #[namespace = ""]
-        type ncclConfig_t = nccl_sys::ncclConfig_t;
-        fn make_nccl_config() -> ncclConfig_t;
     }
 }

@@ -68,7 +68,6 @@ fn main() {
         .allowlist_type("ncclDataType_t")
         .allowlist_type("ncclRedOp_t")
         .allowlist_type("ncclScalarResidence_t")
-        .allowlist_type("ncclConfig_t")
         .allowlist_type("ncclSimInfo_t")
         .allowlist_var("NCCL_SPLIT_NOCOLOR")
         .allowlist_var("NCCL_MAJOR")

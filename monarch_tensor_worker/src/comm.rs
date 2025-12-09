@@ -25,7 +25,6 @@ use tokio::task::spawn_blocking;
 use torch_sys_cuda::cuda::Event;
 use torch_sys_cuda::cuda::Stream;
 use torch_sys_cuda::nccl::Communicator;
-use torch_sys_cuda::nccl::NcclConfig;
 use torch_sys_cuda::nccl::NcclError;
 use torch_sys_cuda::nccl::NcclStatus;
 use torch_sys_cuda::nccl::ReduceOp;
@@ -90,14 +89,10 @@ pub enum CommMessage {
 
     Group(Vec<CommMessage>, Stream, #[reply] OncePortHandle<Event>),
 
-    SplitAll(
-        Option<NcclConfig>,
-        #[reply] OncePortHandle<ActorHandle<NcclCommActor>>,
-    ),
+    SplitAll(#[reply] OncePortHandle<ActorHandle<NcclCommActor>>),
 
     SplitFrom(
         Vec<i32>,
-        Option<NcclConfig>,
         #[reply] OncePortHandle<Option<ActorHandle<NcclCommActor>>>,
     ),
 }
@@ -224,11 +219,10 @@ impl CommMessageHandler for NcclCommActor {
     async fn split_all(
         &mut self,
         cx: &hyperactor::Context<Self>,
-        nccl_config: Option<NcclConfig>,
     ) -> Result<ActorHandle<NcclCommActor>> {
         let comm = self.comm.clone();
 
-        let split_comm = spawn_blocking(move || comm.lock().split_all(nccl_config))
+        let split_comm = spawn_blocking(move || comm.lock().split_all())
             .await
             .unwrap()?;
 
@@ -241,11 +235,10 @@ impl CommMessageHandler for NcclCommActor {
         &mut self,
         cx: &hyperactor::Context<Self>,
         ranks: Vec<i32>,
-        nccl_config: Option<NcclConfig>,
     ) -> Result<Option<ActorHandle<NcclCommActor>>> {
         let comm = self.comm.clone();
 
-        let split_comm = spawn_blocking(move || comm.lock().split_from(ranks, nccl_config))
+        let split_comm = spawn_blocking(move || comm.lock().split_from(ranks))
             .await
             .unwrap()?;
 
@@ -691,7 +684,6 @@ mod tests {
                 dims: vec!["x".into()],
                 device_mesh: 1.into(),
                 stream: 0.into(),
-                config: None,
             },
             WorkerMessage::CallFunction(CallFunctionParams {
                 seq: 0.into(),
@@ -754,7 +746,6 @@ mod tests {
                 dims: vec!["x".into(), "y".into()],
                 device_mesh: 1.into(),
                 stream: 0.into(),
-                config: None,
             },
             // Test reduce over "x" and "y".
             WorkerMessage::Reduce {
