@@ -146,7 +146,7 @@ NcclAPI create_nccl_api() {
 #define LOOKUP_NCCL_ENTRY(name)                                            \
   r.name##_ = reinterpret_cast<decltype(r.name##_)>(dlsym(handle, #name)); \
   if (!r.name##_) {                                                        \
-    std::cerr << "[NCCL-SYS] Warning: Can't find " << #name << ": "       \
+    std::cerr << "[NCCL-SYS] Warning: Can't find " << #name << ": "        \
               << dlerror() << std::endl;                                   \
     r.init_result_ = ncclSystemError;                                      \
     return r;                                                              \
@@ -225,17 +225,17 @@ NcclAPI* NcclAPI::get() {
 } // namespace nccl_sys
 
 // Macro to get the NCCL API and return early if initialization failed
-#define GET_NCCL_API(api_ptr)                   \
+#define GET_NCCL_API(api_ptr)                            \
   nccl_sys::NcclAPI* api_ptr = nccl_sys::NcclAPI::get(); \
-  if (api_ptr->init_result_ != ncclSuccess) {   \
-    return api_ptr->init_result_;               \
+  if (api_ptr->init_result_ != ncclSuccess) {            \
+    return api_ptr->init_result_;                        \
   }
 
 // Macro for functions that return const char*
-#define GET_NCCL_API_STR(api_ptr)               \
+#define GET_NCCL_API_STR(api_ptr)                        \
   nccl_sys::NcclAPI* api_ptr = nccl_sys::NcclAPI::get(); \
-  if (api_ptr->init_result_ != ncclSuccess) {   \
-    return "[NCCL-SYS] NCCL library not initialized"; \
+  if (api_ptr->init_result_ != ncclSuccess) {            \
+    return "[NCCL-SYS] NCCL library not initialized";    \
   }
 
 // C API wrapper implementations
@@ -263,17 +263,13 @@ const char* ncclGetLastError(ncclComm_t comm) {
 }
 
 // Communicator creation and management
-ncclResult_t ncclCommInitRank(
-    ncclComm_t* comm,
-    int nranks,
-    ncclUniqueId commId,
-    int rank) {
+ncclResult_t
+ncclCommInitRank(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank) {
   GET_NCCL_API(api);
   return api->ncclCommInitRank_(comm, nranks, commId, rank);
 }
 
-ncclResult_t
-ncclCommInitAll(ncclComm_t* comm, int ndev, const int* devlist) {
+ncclResult_t ncclCommInitAll(ncclComm_t* comm, int ndev, const int* devlist) {
   GET_NCCL_API(api);
   return api->ncclCommInitAll_(comm, ndev, devlist);
 }
@@ -325,9 +321,7 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
   return api->ncclCommAbort_(comm);
 }
 
-ncclResult_t ncclCommGetAsyncError(
-    ncclComm_t comm,
-    ncclResult_t* asyncError) {
+ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t* asyncError) {
   GET_NCCL_API(api);
   return api->ncclCommGetAsyncError_(comm, asyncError);
 }
