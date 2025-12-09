@@ -15,9 +15,9 @@ fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Get NCCL/rdma-core config from nccl-static-sys (includes are used, links emitted by monarch_extension)
-    let nccl_config = build_utils::NcclStaticConfig::from_env();
-    let rdma_include = &nccl_config.rdma_include;
+    // Get rdma-core config from cpp_static_libs (includes are used, links emitted by monarch_extension)
+    let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
+    let rdma_include = &cpp_static_libs_config.rdma_include;
 
     // Link against dl for dynamic loading
     println!("cargo:rustc-link-lib=dl");

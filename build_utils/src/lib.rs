@@ -307,55 +307,41 @@ pub fn link_libstdcpp_static() {
     println!("cargo:rustc-link-lib=static=stdc++");
 }
 
-/// Configuration for NCCL and rdma-core static libraries from nccl-static-sys.
+/// Configuration for rdma-core static libraries from monarch_cpp_static_libs.
 ///
-/// Use `NcclStaticConfig::from_env()` to get the paths, then use the include
+/// Use `CppStaticLibsConfig::from_env()` to get the paths, then use the include
 /// paths for bindgen/cc, and call `emit_link_directives()` to link.
-pub struct NcclStaticConfig {
-    pub nccl_include: String,
+pub struct CppStaticLibsConfig {
     pub rdma_include: String,
-    pub nccl_lib_dir: String,
     pub rdma_lib_dir: String,
     pub rdma_util_dir: String,
 }
 
-impl NcclStaticConfig {
-    /// Load configuration from DEP_* environment variables set by nccl-static-sys.
+impl CppStaticLibsConfig {
+    /// Load configuration from DEP_* environment variables set by monarch_cpp_static_libs.
     ///
-    /// The nccl-static-sys crate must be listed as a build-dependency.
+    /// The monarch_cpp_static_libs crate must be listed as a build-dependency.
     pub fn from_env() -> Self {
         Self {
-            nccl_include: std::env::var("DEP_NCCL_STATIC_NCCL_INCLUDE")
-                .expect("DEP_NCCL_STATIC_NCCL_INCLUDE not set - add nccl-static-sys as build-dependency"),
-            rdma_include: std::env::var("DEP_NCCL_STATIC_RDMA_INCLUDE")
-                .expect("DEP_NCCL_STATIC_RDMA_INCLUDE not set - add nccl-static-sys as build-dependency"),
-            nccl_lib_dir: std::env::var("DEP_NCCL_STATIC_NCCL_LIB_DIR")
-                .expect("DEP_NCCL_STATIC_NCCL_LIB_DIR not set - add nccl-static-sys as build-dependency"),
-            rdma_lib_dir: std::env::var("DEP_NCCL_STATIC_RDMA_LIB_DIR")
-                .expect("DEP_NCCL_STATIC_RDMA_LIB_DIR not set - add nccl-static-sys as build-dependency"),
-            rdma_util_dir: std::env::var("DEP_NCCL_STATIC_RDMA_UTIL_DIR")
-                .expect("DEP_NCCL_STATIC_RDMA_UTIL_DIR not set - add nccl-static-sys as build-dependency"),
+            rdma_include: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_INCLUDE")
+                .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_INCLUDE not set - add monarch_cpp_static_libs as build-dependency"),
+            rdma_lib_dir: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_LIB_DIR")
+                .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_LIB_DIR not set - add monarch_cpp_static_libs as build-dependency"),
+            rdma_util_dir: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_UTIL_DIR")
+                .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_UTIL_DIR not set - add monarch_cpp_static_libs as build-dependency"),
         }
     }
 
-    /// Emit all cargo link directives for static linking of NCCL and rdma-core.
+    /// Emit all cargo link directives for static linking of rdma-core.
     ///
     /// This emits search paths and link-lib directives for:
-    /// - libnccl_static.a
     /// - libmlx5.a
     /// - libibverbs.a
     /// - librdma_util.a
     pub fn emit_link_directives(&self) {
         // Emit link search paths
-        println!("cargo::rustc-link-search=native={}", self.nccl_lib_dir);
         println!("cargo::rustc-link-search=native={}", self.rdma_lib_dir);
         println!("cargo::rustc-link-search=native={}", self.rdma_util_dir);
-
-        // Static libraries - order matters for dependency resolution
-        // Use whole-archive for NCCL static library to ensure all symbols are included
-        println!("cargo::rustc-link-arg=-Wl,--whole-archive");
-        println!("cargo::rustc-link-lib=static=nccl_static");
-        println!("cargo::rustc-link-arg=-Wl,--no-whole-archive");
 
         // Use whole-archive for rdma-core static libraries
         println!("cargo::rustc-link-arg=-Wl,--whole-archive");
@@ -368,18 +354,18 @@ impl NcclStaticConfig {
     }
 }
 
-/// Convenience function to set up NCCL/rdma-core static linking.
+/// Convenience function to set up rdma-core static linking.
 ///
 /// Returns the config with include paths, and emits all link directives.
-/// The nccl-static-sys crate must be listed as a build-dependency.
+/// The monarch_cpp_static_libs crate must be listed as a build-dependency.
 ///
 /// Example:
 /// ```ignore
-/// let config = build_utils::setup_nccl_static();
-/// // Use config.nccl_include and config.rdma_include for bindgen/cc
+/// let config = build_utils::setup_cpp_static_libs();
+/// // Use config.rdma_include for bindgen/cc
 /// ```
-pub fn setup_nccl_static() -> NcclStaticConfig {
-    let config = NcclStaticConfig::from_env();
+pub fn setup_cpp_static_libs() -> CppStaticLibsConfig {
+    let config = CppStaticLibsConfig::from_env();
     config.emit_link_directives();
     config
 }

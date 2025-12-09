@@ -13,25 +13,32 @@ fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Get NCCL/rdma-core config from nccl-static-sys (includes are used, links emitted by monarch_extension)
-    let nccl_config = build_utils::NcclStaticConfig::from_env();
+    // Compile the bridge.cpp file
+    let mut cc_builder = cc::Build::new();
+    cc_builder
+        .cpp(true)
+        .file("src/bridge.cpp")
+        .flag("-std=c++14");
+
+    // Include CUDA headers
+    if let Some(cuda_home) = build_utils::find_cuda_home() {
+        cc_builder.include(format!("{}/include", cuda_home));
+    }
+
+    cc_builder.compile("nccl_bridge");
 
     let mut builder = bindgen::Builder::default()
-        .header("src/nccl.h")
+        .header("src/bridge.h")
         .clang_arg("-x")
         .clang_arg("c++")
         .clang_arg("-std=c++14")
-        .clang_arg(format!(
-            "-I{}/include",
-            build_utils::find_cuda_home().unwrap()
-        ))
-        .clang_arg(format!("-I{}", nccl_config.nccl_include))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Communicator creation and management
-        .allowlist_function("ncclGetLastError")
-        .allowlist_function("ncclGetErrorString")
+        // Version and error handling
         .allowlist_function("ncclGetVersion")
         .allowlist_function("ncclGetUniqueId")
+        .allowlist_function("ncclGetErrorString")
+        .allowlist_function("ncclGetLastError")
+        // Communicator creation and management
         .allowlist_function("ncclCommInitRank")
         .allowlist_function("ncclCommInitAll")
         .allowlist_function("ncclCommInitRankConfig")
@@ -64,16 +71,20 @@ fn main() {
         // User-defined reduction operators
         .allowlist_function("ncclRedOpCreatePreMulSum")
         .allowlist_function("ncclRedOpDestroy")
-        // Random nccl stuff we want
-        .allowlist_function("cudaStream.*")
+        // CUDA runtime functions
         .allowlist_function("cudaSetDevice")
+        .allowlist_function("cudaStreamSynchronize")
+        // Types
         .allowlist_type("ncclComm_t")
         .allowlist_type("ncclResult_t")
         .allowlist_type("ncclDataType_t")
         .allowlist_type("ncclRedOp_t")
         .allowlist_type("ncclScalarResidence_t")
-        .allowlist_type("ncclConfig_t")
         .allowlist_type("ncclSimInfo_t")
+        .allowlist_type("ncclConfig_t")
+        .allowlist_type("cudaError_t")
+        .allowlist_type("cudaStream_t")
+        // Constants
         .allowlist_var("NCCL_SPLIT_NOCOLOR")
         .allowlist_var("NCCL_MAJOR")
         .allowlist_var("NCCL_MINOR")
@@ -83,6 +94,11 @@ fn main() {
             is_bitfield: false,
             is_global: false,
         });
+
+    // Include CUDA headers
+    if let Some(cuda_home) = build_utils::find_cuda_home() {
+        builder = builder.clang_arg(format!("-I{}/include", cuda_home));
+    }
 
     // Include headers and libs from the active environment
     let python_config = match build_utils::python_env_dirs() {
@@ -106,12 +122,26 @@ fn main() {
 
     // Write the bindings to the $OUT_DIR/bindings.rs file.
     let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+
+    // Generate bindings (NCCL + CUDA runtime combined)
     builder
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
 
+    // We no longer link against nccl directly since we dlopen it
+    // But we do link against CUDA runtime statically
+    // Add CUDA library search path first
+    if let Some(cuda_home) = build_utils::find_cuda_home() {
+        println!("cargo::rustc-link-search=native={}/lib64", cuda_home);
+    }
+
+    println!("cargo::rustc-link-lib=static=cudart_static");
+    // cudart_static requires linking against librt, libpthread, and libdl
+    println!("cargo::rustc-link-lib=rt");
+    println!("cargo::rustc-link-lib=pthread");
+    println!("cargo::rustc-link-lib=dl");
     println!("cargo::rustc-cfg=cargo");
     println!("cargo::rustc-check-cfg=cfg(cargo)");
 }

@@ -355,14 +355,12 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
             dims: p.parse("dims")?,
             device_mesh: p.parseRef("device_mesh")?,
             stream: p.parseStreamRef("stream")?,
-            config: None,
         })
     });
     m.insert(key("SplitCommForProcessGroup"), |p| {
         Ok(WorkerMessage::SplitCommForProcessGroup {
             remote_process_group: p.parseRef("remote_process_group")?,
             stream: p.parseStreamRef("stream")?,
-            config: None,
         })
     });
     m.insert(key("DefineRecording"), |p| {

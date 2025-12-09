@@ -6,57 +6,106 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Static NCCL and rdma-core build script
+//! Static rdma-core build script
 //!
 //! This build script:
-//! 1. Copies rdma-core and NCCL from the feasibility directories
+//! 1. Obtains rdma-core source (from MONARCH_RDMA_CORE_SRC or by cloning)
 //! 2. Builds rdma-core with static libraries (libibverbs.a, libmlx5.a)
-//! 3. Builds NCCL with static linking to rdma-core (libnccl_static.a)
-//! 4. Emits link directives for downstream crates
+//! 3. Emits link directives for downstream crates
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
 // Repository configuration
-// Source: https://github.com/NVIDIA/nccl - tag v2.28.9-1
-const NCCL_SRC: &str = "feasibility/nccl";
-// Source: https://github.com/linux-rdma/rdma-core - tag v60.0
-const RDMA_CORE_SRC: &str = "feasibility/rdma-core";
+const RDMA_CORE_REPO: &str = "https://github.com/linux-rdma/rdma-core";
+const RDMA_CORE_TAG: &str = "224154663a9ad5b1ad5629fb76a0c40c675fb936";
 
 #[cfg(target_os = "macos")]
 fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    let manifest_dir =
-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
-    let monarch_root = manifest_dir
-        .parent()
-        .expect("Failed to get monarch root directory");
-
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
     let vendor_dir = out_dir.join("vendor");
     std::fs::create_dir_all(&vendor_dir).expect("Failed to create vendor directory");
 
-    let rdma_core_src = monarch_root.join(RDMA_CORE_SRC);
-    let nccl_src = monarch_root.join(NCCL_SRC);
-
     let rdma_core_dir = vendor_dir.join("rdma-core");
-    let nccl_dir = vendor_dir.join("nccl");
 
-    // Copy source directories
-    copy_dir(&rdma_core_src, &rdma_core_dir);
-    copy_dir(&nccl_src, &nccl_dir);
+    // Get or clone rdma-core source
+    get_or_clone_rdma_core(&rdma_core_dir);
 
-    // Build rdma-core first (NCCL depends on it)
+    // Build rdma-core
     let rdma_build_dir = build_rdma_core(&rdma_core_dir);
 
-    // Build NCCL with static rdma-core
-    let nccl_build_dir = build_nccl(&nccl_dir, &rdma_build_dir);
-
     // Emit link directives
-    emit_link_directives(&nccl_build_dir, &rdma_build_dir);
+    emit_link_directives(&rdma_build_dir);
+}
+
+/// Get or clone rdma-core source.
+///
+/// If MONARCH_RDMA_CORE_SRC is set, copies from that directory.
+/// Otherwise, clones from GitHub at the specified tag.
+fn get_or_clone_rdma_core(target_dir: &Path) {
+    // Skip if already exists
+    if target_dir.exists() {
+        println!(
+            "cargo:warning=rdma-core source already exists at {}",
+            target_dir.display()
+        );
+        return;
+    }
+
+    // Check for MONARCH_RDMA_CORE_SRC environment variable
+    println!("cargo:rerun-if-env-changed=MONARCH_RDMA_CORE_SRC");
+    if let Ok(src_path) = std::env::var("MONARCH_RDMA_CORE_SRC") {
+        let src_dir = PathBuf::from(src_path);
+        println!(
+            "cargo:warning=Using rdma-core source from MONARCH_RDMA_CORE_SRC: {}",
+            src_dir.display()
+        );
+        copy_dir(&src_dir, target_dir);
+    } else {
+        println!(
+            "cargo:warning=MONARCH_RDMA_CORE_SRC not set, cloning from {} (commit {})",
+            RDMA_CORE_REPO, RDMA_CORE_TAG
+        );
+        clone_rdma_core(target_dir);
+    }
+}
+
+/// Clone rdma-core from GitHub at the specified commit.
+fn clone_rdma_core(target_dir: &Path) {
+    // First, clone the repository without checking out
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "--no-checkout",
+            RDMA_CORE_REPO,
+            target_dir.to_str().unwrap(),
+        ])
+        .status()
+        .expect("Failed to execute git clone");
+
+    if !status.success() {
+        panic!("Failed to clone rdma-core from {}", RDMA_CORE_REPO);
+    }
+
+    // Then checkout the specific commit
+    let status = Command::new("git")
+        .args(["checkout", RDMA_CORE_TAG])
+        .current_dir(target_dir)
+        .status()
+        .expect("Failed to execute git checkout");
+
+    if !status.success() {
+        panic!("Failed to checkout rdma-core commit {}", RDMA_CORE_TAG);
+    }
+
+    println!(
+        "cargo:warning=Successfully cloned rdma-core at commit {}",
+        RDMA_CORE_TAG
+    );
 }
 
 fn copy_dir(src_dir: &Path, target_dir: &Path) {
@@ -75,7 +124,11 @@ fn copy_dir(src_dir: &Path, target_dir: &Path) {
     );
 
     let status = Command::new("cp")
-        .args(["-r", src_dir.to_str().unwrap(), target_dir.to_str().unwrap()])
+        .args([
+            "-r",
+            src_dir.to_str().unwrap(),
+            target_dir.to_str().unwrap(),
+        ])
         .status()
         .expect("Failed to execute cp");
 
@@ -190,82 +243,18 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
     build_dir
 }
 
-fn build_nccl(nccl_dir: &Path, rdma_build_dir: &Path) -> PathBuf {
-    let build_dir = nccl_dir.join("build");
-
-    // Check if already built
-    if build_dir.join("lib/libnccl_static.a").exists() {
-        println!("cargo:warning=NCCL already built");
-        return build_dir;
-    }
-
-    println!("cargo:warning=Building NCCL...");
-
-    // Find CUDA
-    let cuda_home = build_utils::find_cuda_home().expect("CUDA not found");
-
-    // Set up environment
-    // IMPORTANT: -fPIC is required for static libs linked into shared objects
-    let rdma_include = rdma_build_dir.join("include");
-    let cxxflags = format!("-fPIC -I{}", rdma_include.display());
-
-    let num_jobs = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(4);
-
-    // Build NCCL with RDMA_CORE=1 and MLX5DV=1
-    // Pass -Xcompiler -fPIC to nvcc for host code
-    let status = Command::new("make")
-        .current_dir(nccl_dir)
-        .env("CXXFLAGS", &cxxflags)
-        .env("CFLAGS", "-fPIC")
-        .args([
-            &format!("-j{}", num_jobs),
-            "src.build",
-            &format!("CUDA_HOME={}", cuda_home),
-            "NVCC_GENCODE=-gencode=arch=compute_90,code=sm_90",
-            "RDMA_CORE=1",
-            "MLX5DV=1",
-        ])
-        .status()
-        .expect("Failed to run make for NCCL");
-
-    if !status.success() {
-        panic!("Failed to build NCCL");
-    }
-
-    println!("cargo:warning=NCCL build complete");
-    build_dir
-}
-
-fn emit_link_directives(nccl_build_dir: &Path, rdma_build_dir: &Path) {
-    let nccl_lib_dir = nccl_build_dir.join("lib");
+fn emit_link_directives(rdma_build_dir: &Path) {
     let rdma_static_dir = rdma_build_dir.join("lib/statics");
     let rdma_util_dir = rdma_build_dir.join("util");
 
     // Emit search paths
     println!(
         "cargo:rustc-link-search=native={}",
-        nccl_lib_dir.display()
-    );
-    println!(
-        "cargo:rustc-link-search=native={}",
         rdma_static_dir.display()
     );
-    println!(
-        "cargo:rustc-link-search=native={}",
-        rdma_util_dir.display()
-    );
+    println!("cargo:rustc-link-search=native={}", rdma_util_dir.display());
 
-    // Static libraries - order matters for dependency resolution
-    // NCCL depends on rdma-core, so link NCCL first
-
-    // Use whole-archive for NCCL static library
-    println!("cargo:rustc-link-arg=-Wl,--whole-archive");
-    println!("cargo:rustc-link-lib=static=nccl_static");
-    println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
-
-    // Use whole-archive for rdma-core static libraries
+    // Static libraries - use whole-archive for rdma-core static libraries
     println!("cargo:rustc-link-arg=-Wl,--whole-archive");
     println!("cargo:rustc-link-lib=static=mlx5");
     println!("cargo:rustc-link-lib=static=ibverbs");
@@ -274,31 +263,14 @@ fn emit_link_directives(nccl_build_dir: &Path, rdma_build_dir: &Path) {
     // rdma_util helper library
     println!("cargo:rustc-link-lib=static=rdma_util");
 
-    // System libraries
-    println!("cargo:rustc-link-lib=cudart_static");
-    println!("cargo:rustc-link-lib=pthread");
-    println!("cargo:rustc-link-lib=rt");
-    println!("cargo:rustc-link-lib=dl");
-
     // Export metadata for dependent crates
     // Use cargo:: (double colon) format for proper DEP_<LINKS>_<KEY> env vars
-    println!(
-        "cargo::metadata=NCCL_INCLUDE={}",
-        nccl_build_dir.join("include").display()
-    );
     println!(
         "cargo::metadata=RDMA_INCLUDE={}",
         rdma_build_dir.join("include").display()
     );
-    println!("cargo::metadata=NCCL_LIB_DIR={}", nccl_lib_dir.display());
-    println!(
-        "cargo::metadata=RDMA_LIB_DIR={}",
-        rdma_static_dir.display()
-    );
-    println!(
-        "cargo::metadata=RDMA_UTIL_DIR={}",
-        rdma_util_dir.display()
-    );
+    println!("cargo::metadata=RDMA_LIB_DIR={}", rdma_static_dir.display());
+    println!("cargo::metadata=RDMA_UTIL_DIR={}", rdma_util_dir.display());
 
     // Re-run if build scripts change
     println!("cargo:rerun-if-changed=build.rs");

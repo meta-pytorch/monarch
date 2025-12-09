@@ -12,11 +12,6 @@
 
 #![feature(exit_status_error)]
 
-use std::path::PathBuf;
-
-use build_utils::find_cuda_home;
-use cxx_build::CFG;
-
 #[cfg(target_os = "macos")]
 fn main() {}
 
@@ -39,39 +34,11 @@ fn main() {
         println!("cargo::rustc-link-lib={}", lib_name);
     }
 
-    let cuda_home = PathBuf::from(find_cuda_home().expect("CUDA installation not found"));
-
-    // Prefix includes with `monarch` to maintain consistency with fbcode
-    // folder structure
-    CFG.include_prefix = "monarch/torch-sys-cuda";
-    let _builder = cxx_build::bridge("src/bridge.rs")
-        .file("src/bridge.cpp")
-        .flag("-std=c++14")
-        .include(format!("{}/include", cuda_home.display()))
-        // Suppress warnings, otherwise we get massive spew from libtorch
-        .flag_if_supported("-w")
-        .compile("torch-sys-cuda");
-
     // Statically link libstdc++ to avoid runtime dependency on system libstdc++
     build_utils::link_libstdcpp_static();
-
-    // Configure CUDA-specific linking - use static cudart
-    println!("cargo::rustc-link-lib=static=cudart_static");
-    // cudart_static requires linking against librt and libpthread
-    println!("cargo::rustc-link-lib=rt");
-    println!("cargo::rustc-link-lib=pthread");
-    println!("cargo::rustc-link-lib=dl");
-    println!(
-        "cargo::rustc-link-search=native={}/lib64",
-        cuda_home.display()
-    );
 
     // Add Python library directory to rpath for runtime linking
     if let Some(python_lib_dir) = &python_lib_dir {
         println!("cargo::rustc-link-arg=-Wl,-rpath,{}", python_lib_dir);
     }
-
-    println!("cargo::rerun-if-changed=src/bridge.rs");
-    println!("cargo::rerun-if-changed=src/bridge.cpp");
-    println!("cargo::rerun-if-changed=src/bridge.h");
 }
