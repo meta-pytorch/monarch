@@ -16,13 +16,6 @@ unsafe impl ExternType for CUstream_st {
 }
 
 /// SAFETY: bindings
-/// Trivial because this is POD struct
-unsafe impl ExternType for ncclConfig_t {
-    type Id = type_id!("ncclConfig_t");
-    type Kind = cxx::kind::Trivial;
-}
-
-/// SAFETY: bindings
 unsafe impl ExternType for ncclComm {
     type Id = type_id!("ncclComm");
     type Kind = cxx::kind::Opaque;
@@ -42,7 +35,7 @@ mod inner {
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-    // This type is manually defined instead of generated because we want to dervice
+    // This type is manually defined instead of generated because we want to derive
     // Serialize/Deserialize on it.
     #[repr(C)]
     #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
