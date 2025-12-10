@@ -274,7 +274,8 @@ impl<'a, T: Sink> Instant<'a, T> {
     }
 
     pub fn consume(self) {
-        let event = self.event;
+        let mut event = self.event;
+        event.r#type = Some(TrackEventType::Instant as i32);
         let tp = TracePacket {
             timestamp: self.ts.into(),
             data: Some(Data::TrackEvent(event)),

@@ -683,12 +683,16 @@ impl ActorMeshProtocol for AsyncActorMesh {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mesh = self.mesh.clone();
         self.push(async move {
-            if tx.send(mesh.await.unwrap()).is_err() {
+            if tx.send(mesh.await).is_err() {
                 panic!("oneshot failed");
             }
         });
         PyPythonTask::new(async move {
-            let mut event = rx.await.unwrap().supervision_event(&instance)?.unwrap();
+            let mut event = rx
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))??
+                .supervision_event(&instance)?
+                .unwrap();
             event.task()?.take_task()?.await
         })
         // This task must be aborted to run the Drop for the inner PyShared, in

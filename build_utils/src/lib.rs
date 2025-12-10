@@ -57,9 +57,9 @@ print('PYTHON_LIB_DIR:', sysconfig.get_config_var('LIBDIR'))
 ";
 
 /// Configuration structure for CUDA environment
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CudaConfig {
-    pub cuda_home: Option<PathBuf>,
+    pub cuda_home: PathBuf,
     pub include_dirs: Vec<PathBuf>,
     pub lib_dirs: Vec<PathBuf>,
 }
@@ -142,11 +142,10 @@ pub fn find_cuda_home() -> Option<String> {
 
 /// Discover CUDA configuration including home, include dirs, and lib dirs
 pub fn discover_cuda_config() -> Result<CudaConfig, BuildError> {
-    let cuda_home = find_cuda_home().ok_or(BuildError::CudaNotFound)?;
-    let cuda_home_path = PathBuf::from(&cuda_home);
+    let cuda_home_path = PathBuf::from(find_cuda_home().ok_or(BuildError::CudaNotFound)?);
 
     let mut config = CudaConfig {
-        cuda_home: Some(cuda_home_path.clone()),
+        cuda_home: cuda_home_path.clone(),
         include_dirs: Vec::new(),
         lib_dirs: Vec::new(),
     };
@@ -176,11 +175,10 @@ pub fn discover_cuda_config() -> Result<CudaConfig, BuildError> {
 /// Validate CUDA installation exists and is complete
 pub fn validate_cuda_installation() -> Result<String, BuildError> {
     let cuda_config = discover_cuda_config()?;
-    let cuda_home = cuda_config.cuda_home.ok_or(BuildError::CudaNotFound)?;
-    let cuda_home_str = cuda_home.to_string_lossy().to_string();
+    let cuda_home_str = cuda_config.cuda_home.to_string_lossy().to_string();
 
     // Verify CUDA include directory exists
-    let cuda_include_path = cuda_home.join("include");
+    let cuda_include_path = cuda_config.cuda_home.join("include");
     if !cuda_include_path.exists() {
         return Err(BuildError::PathNotFound(format!(
             "CUDA include directory at {}",
@@ -192,27 +190,51 @@ pub fn validate_cuda_installation() -> Result<String, BuildError> {
 }
 
 /// Get CUDA library directory
-pub fn get_cuda_lib_dir() -> Result<String, BuildError> {
+///
+/// Searches for the directory containing libcudart_static.a in the CUDA installation.
+/// Panics with a helpful error message if not found.
+pub fn get_cuda_lib_dir() -> String {
     // Check if user explicitly set CUDA_LIB_DIR
     if let Ok(cuda_lib_dir) = env::var("CUDA_LIB_DIR") {
-        return Ok(cuda_lib_dir);
+        return cuda_lib_dir;
     }
 
     // Try to deduce from CUDA configuration
-    let cuda_config = discover_cuda_config()?;
-    if let Some(cuda_home) = cuda_config.cuda_home {
-        // Check both old-style and new-style CUDA library paths
-        for lib_subdir in &["lib64", "lib", "targets/x86_64-linux/lib"] {
-            let lib_path = cuda_home.join(lib_subdir);
-            if lib_path.exists() {
-                return Ok(lib_path.to_string_lossy().to_string());
-            }
+    let cuda_config = match discover_cuda_config() {
+        Ok(config) => config,
+        Err(_) => {
+            eprintln!("Error: CUDA installation not found!");
+            eprintln!("Please ensure CUDA is installed and one of the following is true:");
+            eprintln!(
+                "  1. Set CUDA_HOME environment variable to your CUDA installation directory"
+            );
+            eprintln!(
+                "  2. Set CUDA_PATH environment variable to your CUDA installation directory"
+            );
+            eprintln!("  3. Ensure 'nvcc' is in your PATH");
+            eprintln!("  4. Install CUDA to the default location (/usr/local/cuda on Linux)");
+            eprintln!();
+            eprintln!("Example: export CUDA_HOME=/usr/local/cuda-12.0");
+            panic!("CUDA installation not found");
+        }
+    };
+
+    let cuda_home = &cuda_config.cuda_home;
+    // Check both old-style and new-style CUDA library paths
+    // Look for the actual cudart_static library file to ensure we find the right directory
+    let libs = &["lib64", "lib", "targets/x86_64-linux/lib"];
+    for lib_subdir in libs {
+        let lib_path = cuda_home.join(lib_subdir);
+        let cudart_static = lib_path.join("libcudart_static.a");
+        if cudart_static.exists() {
+            return lib_path.to_string_lossy().to_string();
         }
     }
 
-    Err(BuildError::PathNotFound(
-        "CUDA library directory".to_string(),
-    ))
+    panic!(
+        "CUDA library directoryies {:#?} do not contain libcudart_static.a",
+        libs
+    );
 }
 
 /// Discover Python environment directories using sysconfig
