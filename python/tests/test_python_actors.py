@@ -1752,3 +1752,47 @@ def test_recursive_stop():
     # Two increments to the counter: one for the actors on the owned proc mesh,
     # and one for the actors on the passed-in proc mesh.
     assert counter.value.call_one().get() == 2
+
+
+def test_get_or_spawn_controller_on_unpickled_proc_mesh():
+    class StoreActor(Actor):
+        def __init__(self):
+            self._store = {}
+
+        @endpoint
+        def put(self, key, value):
+            self._store[key] = value
+
+        @endpoint
+        def get(self, key):
+            return self._store[key]
+
+    class MyActor(Actor):
+        @endpoint
+        def register_pm(self, proc_mesh):
+            self.pm = proc_mesh
+
+        @endpoint
+        def spawn_and_get_from_store(self, actor_cls, key):
+            child_actor = self.pm.spawn("child_actor", actor_cls)
+            return child_actor.get_from_store.call_one(key).get()
+
+    class ChildActor(Actor):
+        @endpoint
+        def get_from_store(self, key):
+            return (
+                get_or_spawn_controller("store", StoreActor)
+                .get()
+                .get.call_one(key)
+                .get()
+            )
+
+    pm = this_host().spawn_procs(per_host={"procs": 1})
+    my_actor = pm.spawn("my_actor", MyActor)
+
+    store = get_or_spawn_controller("store", StoreActor).get()
+    store.put.call_one("a", 1).get()
+
+    child_pm = this_host().spawn_procs(per_host={"procs": 1})
+    my_actor.register_pm.call(child_pm).get()
+    assert my_actor.spawn_and_get_from_store.call_one(ChildActor, "a").get() == 1
