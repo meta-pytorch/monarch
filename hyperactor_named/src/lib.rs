@@ -104,13 +104,15 @@ macro_rules! intern_typename {
             static CACHE: std::sync::LazyLock<$crate::dashmap::DashMap<std::any::TypeId, &'static str>> =
               std::sync::LazyLock::new($crate::dashmap::DashMap::new);
 
-            match CACHE.entry(std::any::TypeId::of::<$key>()) {
-                $crate::dashmap::mapref::entry::Entry::Vacant(entry) => {
-                    let typename = format!($format_string, $(<$args>::typename()),+).leak();
-                    entry.insert(typename);
-                    typename
-                }
-                $crate::dashmap::mapref::entry::Entry::Occupied(entry) => *entry.get(),
+            // Don't use entry, because typename() might re-enter intern_typename
+            // for nested types like Option<Option<T>>
+            let typeid = std::any::TypeId::of::<$key>();
+            if let Some(value) = CACHE.get(&typeid) {
+                *value
+            } else {
+                let typename = format!($format_string, $(<$args>::typename()),+).leak();
+                CACHE.insert(typeid, typename);
+                typename
             }
         }
     };
