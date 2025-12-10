@@ -10,8 +10,8 @@
 Monarch Actor API
 """
 
-from monarch.config import configure
 from monarch._src.ipython_check import is_ipython
+from monarch.config import configure
 
 # Detect if we're running in IPython/Jupyter
 _in_ipython = is_ipython()
