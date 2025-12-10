@@ -117,8 +117,6 @@ fn main() {
     }
     if let Some(lib_dir) = &python_config.lib_dir {
         println!("cargo::rustc-link-search=native={}", lib_dir);
-        // Set cargo metadata to inform dependent binaries about how to set their
-        // RPATH (see controller/build.rs for an example).
         println!("cargo::metadata=LIB_PATH={}", lib_dir);
     }
 
@@ -133,8 +131,16 @@ fn main() {
         .expect("Couldn't write bindings!");
 
     // We no longer link against nccl directly since we dlopen it
-    // But we do link against CUDA runtime
-    println!("cargo::rustc-link-lib=cudart");
+    // But we do link against CUDA runtime statically
+    // Add CUDA library search path first
+    let cuda_lib_dir = build_utils::get_cuda_lib_dir();
+    println!("cargo::rustc-link-search=native={}", cuda_lib_dir);
+
+    println!("cargo::rustc-link-lib=static=cudart_static");
+    // cudart_static requires linking against librt, libpthread, and libdl
+    println!("cargo::rustc-link-lib=rt");
+    println!("cargo::rustc-link-lib=pthread");
+    println!("cargo::rustc-link-lib=dl");
     println!("cargo::rustc-cfg=cargo");
     println!("cargo::rustc-check-cfg=cfg(cargo)");
 }

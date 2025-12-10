@@ -15,11 +15,9 @@ fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Link against the ibverbs library
-    println!("cargo:rustc-link-lib=ibverbs");
-
-    // Link against the mlx5 library
-    println!("cargo:rustc-link-lib=mlx5");
+    // Get rdma-core config from cpp_static_libs (includes are used, links emitted by monarch_extension)
+    let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
+    let rdma_include = &cpp_static_libs_config.rdma_include;
 
     // Link against dl for dynamic loading
     println!("cargo:rustc-link-lib=dl");
@@ -140,6 +138,9 @@ fn main() {
     println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", cuda_include_path);
     builder = builder.clang_arg(format!("-I{}", cuda_include_path));
 
+    // Add rdma-core include path from nccl-static-sys
+    builder = builder.clang_arg(format!("-I{}", rdma_include));
+
     // Include headers and libs from the active environment.
     let python_config = match build_utils::python_env_dirs_with_interpreter("python3") {
         Ok(config) => config,
@@ -161,17 +162,15 @@ fn main() {
     }
 
     // Get CUDA library directory and emit link directives
-    let cuda_lib_dir = match build_utils::get_cuda_lib_dir() {
-        Ok(dir) => dir,
-        Err(_) => {
-            build_utils::print_cuda_lib_error_help();
-            std::process::exit(1);
-        }
-    };
+    let cuda_lib_dir = build_utils::get_cuda_lib_dir();
     println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
     // Note: libcuda is now loaded dynamically via dlopen in driver_api.cpp
-    // Only link cudart (CUDA Runtime API)
-    println!("cargo:rustc-link-lib=cudart");
+    // Link cudart statically (CUDA Runtime API)
+    println!("cargo:rustc-link-lib=static=cudart_static");
+    // cudart_static requires linking against librt and libpthread
+    println!("cargo:rustc-link-lib=rt");
+    println!("cargo:rustc-link-lib=pthread");
+    println!("cargo:rustc-link-lib=dl");
 
     // Note: We no longer link against libtorch/c10 since segment scanning
     // is now done via a callback registered from the extension crate.
@@ -201,6 +200,7 @@ fn main() {
                 build
                     .file(&c_source_path)
                     .include(format!("{}/src", manifest_dir))
+                    .include(&rdma_include)
                     .flag("-fPIC");
 
                 // Add CUDA include paths - reuse the paths we already found for bindgen
@@ -220,6 +220,7 @@ fn main() {
                     .file(&cpp_source_path)
                     .file(&driver_api_cpp_path)
                     .include(format!("{}/src", manifest_dir))
+                    .include(&rdma_include)
                     .flag("-fPIC")
                     .cpp(true)
                     .flag("-std=c++14");
@@ -233,6 +234,9 @@ fn main() {
                 }
 
                 cpp_build.compile("rdmaxcel_cpp");
+
+                // Statically link libstdc++ to avoid runtime dependency on system libstdc++
+                build_utils::link_libstdcpp_static();
             } else {
                 if !Path::new(&cpp_source_path).exists() {
                     panic!("C++ source file not found at {}", cpp_source_path);
@@ -273,8 +277,7 @@ fn main() {
                         "-fPIC",
                         &format!("-I{}", cuda_include_path),
                         &format!("-I{}/src", manifest_dir),
-                        &format!("-I/usr/include"),
-                        &format!("-I/usr/include/infiniband"),
+                        &format!("-I{}", rdma_include),
                     ])
                     .output();
 

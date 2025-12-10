@@ -12,10 +12,6 @@
 
 #![feature(exit_status_error)]
 
-use std::path::PathBuf;
-
-use build_utils::find_cuda_home;
-
 #[cfg(target_os = "macos")]
 fn main() {}
 
@@ -38,14 +34,8 @@ fn main() {
         println!("cargo::rustc-link-lib={}", lib_name);
     }
 
-    let cuda_home = PathBuf::from(find_cuda_home().expect("CUDA installation not found"));
-
-    // Configure CUDA-specific linking
-    println!("cargo::rustc-link-lib=cudart");
-    println!(
-        "cargo::rustc-link-search=native={}/lib64",
-        cuda_home.display()
-    );
+    // Statically link libstdc++ to avoid runtime dependency on system libstdc++
+    build_utils::link_libstdcpp_static();
 
     // Add Python library directory to rpath for runtime linking
     if let Some(python_lib_dir) = &python_lib_dir {

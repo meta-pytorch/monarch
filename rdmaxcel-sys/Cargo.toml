@@ -9,8 +9,12 @@ links = "rdmaxcel"
 [dependencies]
 cxx = "1.0.119"
 serde = { version = "1.0.185", features = ["derive", "rc"] }
+# Depend on monarch_cpp_static_libs to get statically linked rdma-core (libibverbs, libmlx5)
+monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs" }
 
 [build-dependencies]
 bindgen = "0.70.1"
 cc = "1.0"
 build_utils = { path = "../build_utils" }
+# Need monarch_cpp_static_libs as build-dep to get include paths via DEP_* env vars
+monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs" }

@@ -33,4 +33,3 @@ docs/_build/**
 docs/build/**
 docs/**/generated/**
 */sg_execution_times.rst
-nccl/**
