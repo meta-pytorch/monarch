@@ -33,6 +33,7 @@ from monarch._src.actor.actor_mesh import (
     Port,
     PortReceiver,
     send,
+    shutdown_context,
     ValueMesh,
 )
 from monarch._src.actor.bootstrap import attach_to_workers, run_worker_loop_forever
@@ -89,6 +90,7 @@ __all__ = [
     "ProcMesh",
     "Channel",
     "send",
+    "shutdown_context",
     "sim_proc_mesh",
     "ValueMesh",
     "debug_controller",

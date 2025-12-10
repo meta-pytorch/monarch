@@ -108,6 +108,12 @@ pub fn get_execution_id() -> PyResult<String> {
     Ok(hyperactor_telemetry::env::execution_id())
 }
 
+#[pyfunction]
+pub fn instant_event(message: &str) -> PyResult<()> {
+    tracing::info!(message);
+    Ok(())
+}
+
 // opentelemetry requires that the names of counters etc are static for the lifetime of the program.
 // Since we are binding these classes from python to rust, we have to leak these strings in order to
 // ensure they live forever. This is fine, as these classes aren't dynamically created.
@@ -341,6 +347,13 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_hyperactor.telemetry",
     )?;
     module.add_function(get_execution_id_fn)?;
+
+    let instant_event_fn = wrap_pyfunction!(instant_event, module)?;
+    instant_event_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.telemetry",
+    )?;
+    module.add_function(instant_event_fn)?;
 
     module.add_class::<PySpan>()?;
     module.add_class::<PyCounter>()?;

@@ -133,9 +133,8 @@ fn main() {
     // We no longer link against nccl directly since we dlopen it
     // But we do link against CUDA runtime statically
     // Add CUDA library search path first
-    if let Some(cuda_home) = build_utils::find_cuda_home() {
-        println!("cargo::rustc-link-search=native={}/lib64", cuda_home);
-    }
+    let cuda_lib_dir = build_utils::get_cuda_lib_dir();
+    println!("cargo::rustc-link-search=native={}", cuda_lib_dir);
 
     println!("cargo::rustc-link-lib=static=cudart_static");
     // cudart_static requires linking against librt, libpthread, and libdl

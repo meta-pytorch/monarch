@@ -32,6 +32,7 @@ from typing import (
 
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
+from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 
 from monarch._src.actor.future import Future
 from monarch._src.actor.metrics import (
@@ -295,6 +296,8 @@ class Endpoint(ABC, Generic[P, R]):
                 extent.labels,
                 NDSlice.new_row_major(extent.sizes),
             )
+            instant_event(f"{method_name} response received")
+
             return ValueMesh(call_shape, results)
 
         return Future(coro=process())
