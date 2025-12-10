@@ -260,7 +260,7 @@ fn main() {
 
                 // Use nvcc to compile the CUDA file
                 let nvcc_output = std::process::Command::new(&nvcc_path)
-                    .args(&[
+                    .args([
                         "-c",
                         &cuda_source_path,
                         "-o",
@@ -295,7 +295,7 @@ fn main() {
 
                 // Create static library from the compiled CUDA object
                 let ar_output = std::process::Command::new("ar")
-                    .args(&["rcs", &cuda_lib_path, &cuda_obj_path])
+                    .args(["rcs", &cuda_lib_path, &cuda_obj_path])
                     .output();
 
                 match ar_output {
