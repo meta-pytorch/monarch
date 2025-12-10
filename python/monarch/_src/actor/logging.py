@@ -21,19 +21,9 @@ from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
 )
 from monarch._src.actor.actor_mesh import context
 from monarch._src.actor.future import Future
+from monarch._src.ipython_check import is_ipython
 
-IN_IPYTHON = False
-try:
-    # Check if we are in ipython environment
-    # pyre-ignore[21]
-    from IPython import get_ipython
-
-    # pyre-ignore[21]
-    from IPython.core.interactiveshell import ExecutionResult  # noqa: F401
-
-    IN_IPYTHON = get_ipython() is not None
-except ImportError:
-    pass
+IN_IPYTHON = is_ipython()
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -88,7 +78,12 @@ class LoggingManager:
             with _global_flush_lock:
                 global _global_flush_registered
                 if not _global_flush_registered:
-                    get_ipython().events.register(
+                    # pyre-ignore[21]: IPython is already loaded if IN_IPYTHON is True
+                    from IPython import get_ipython
+
+                    ipython = get_ipython()
+                    assert ipython is not None
+                    ipython.events.register(
                         "post_run_cell",
                         lambda _: flush_all_proc_mesh_logs(
                             self._logging_mesh_client is not None
