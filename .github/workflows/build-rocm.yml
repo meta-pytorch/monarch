@@ -11,6 +11,10 @@ concurrency:
   group: build-rocm-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build-rocm:
     name: Build ROCm (rocm6.4-py3.10)
