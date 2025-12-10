@@ -631,13 +631,19 @@ impl PythonActor {
     }
 }
 
-pub(crate) fn root_client_actor() -> &'static Instance<PythonActor> {
+pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor> {
     static ROOT_CLIENT_ACTOR: OnceLock<&'static Instance<PythonActor>> = OnceLock::new();
 
-    ROOT_CLIENT_ACTOR.get_or_init(|| {
-        Python::with_gil(|py| {
-            let (client, _handle) = PythonActor::bootstrap_client(py);
-            client
+    // Release the GIL before waiting on ROOT_CLIENT_ACTOR, because PythonActor::bootstrap_client
+    // may release/reacquire the GIL; if thread 0 holds the GIL blocking on ROOT_CLIENT_ACTOR.get_or_init
+    // while thread 1 blocks on acquiring the GIL inside PythonActor::bootstrap_client, we get
+    // a deadlock.
+    py.allow_threads(|| {
+        ROOT_CLIENT_ACTOR.get_or_init(|| {
+            Python::with_gil(|py| {
+                let (client, _handle) = PythonActor::bootstrap_client(py);
+                client
+            })
         })
     })
 }

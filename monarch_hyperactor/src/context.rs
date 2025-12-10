@@ -120,7 +120,7 @@ impl PyContext {
     #[staticmethod]
     fn _root_client_context(py: Python<'_>) -> PyResult<PyContext> {
         let _guard = runtime::get_tokio_runtime().enter();
-        let instance: PyInstance = root_client_actor().into();
+        let instance: PyInstance = root_client_actor(py).into();
         Ok(PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),

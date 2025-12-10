@@ -72,6 +72,12 @@ def get_execution_id() -> str:
     """
     ...
 
+def instant_event(message: str) -> None:
+    """
+    Emit an instant event. This is a binding for tracing::info!(message)
+    """
+    ...
+
 class PySpan:
     def __init__(self, name: str, actor_id: str | None = None) -> None:
         """

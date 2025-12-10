@@ -162,13 +162,7 @@ fn main() {
     }
 
     // Get CUDA library directory and emit link directives
-    let cuda_lib_dir = match build_utils::get_cuda_lib_dir() {
-        Ok(dir) => dir,
-        Err(_) => {
-            build_utils::print_cuda_lib_error_help();
-            std::process::exit(1);
-        }
-    };
+    let cuda_lib_dir = build_utils::get_cuda_lib_dir();
     println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
     // Note: libcuda is now loaded dynamically via dlopen in driver_api.cpp
     // Link cudart statically (CUDA Runtime API)

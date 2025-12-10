@@ -705,7 +705,7 @@ mod tests {
                 .expect("state should be present")
                 .supervision_events;
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].actor_status, ActorStatus::Stopped);
+            assert_matches!(events[0].actor_status, ActorStatus::Failed(_));
         }
     }
 
