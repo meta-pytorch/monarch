@@ -35,7 +35,11 @@ pub struct Alarm {
 }
 enum AlarmStatus {
     Unarmed,
-    Armed { version: usize, deadline: Instant },
+    Armed {
+        version: usize,
+        deadline: Instant,
+        armed_at: Instant,
+    },
     Dropped,
 }
 
@@ -52,13 +56,29 @@ impl Alarm {
     /// Arm the alarm to fire after the provided duration.
     pub fn arm(&mut self, duration: Duration) {
         let mut status = self.status.lock().unwrap();
+        let armed_at = RealClock.now();
         *status = AlarmStatus::Armed {
             version: self.version,
-            deadline: RealClock.now() + duration,
+            deadline: armed_at + duration,
+            armed_at,
         };
         drop(status);
         self.notify.notify_waiters();
         self.version += 1;
+    }
+
+    /// Arm the alarm to fire `duration` after the alarm was originally armed.
+    /// This behaves as if arm was called originally with the new duration.
+    /// If it has not been armed it behaves the same as arm.
+    pub fn rearm(&mut self, duration: Duration) {
+        let remaining = match *self.status.lock().unwrap() {
+            AlarmStatus::Armed { armed_at, .. } => {
+                let elapsed = RealClock.now() - armed_at;
+                duration.saturating_sub(elapsed)
+            }
+            AlarmStatus::Unarmed | AlarmStatus::Dropped => duration,
+        };
+        self.arm(remaining);
     }
 
     /// Disarm the alarm, canceling any pending alarms.
@@ -123,13 +143,16 @@ impl AlarmSleeper {
                 AlarmStatus::Dropped => return false,
                 AlarmStatus::Unarmed => None,
                 AlarmStatus::Armed { version, .. } if version < self.min_version => None,
-                AlarmStatus::Armed { version, deadline } if RealClock.now() >= deadline => {
+                AlarmStatus::Armed {
+                    version, deadline, ..
+                } if RealClock.now() >= deadline => {
                     self.min_version = version + 1;
                     return true;
                 }
                 AlarmStatus::Armed {
                     version: _,
                     deadline,
+                    ..
                 } => Some(deadline),
             };
 
