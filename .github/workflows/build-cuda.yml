@@ -41,7 +41,5 @@ jobs:
         # Setup Tensor Engine
         setup_tensor_engine
 
-        export CUDA_LIB_DIR=/usr/lib64
-
         # Build monarch (CUDA version)
         python setup.py bdist_wheel

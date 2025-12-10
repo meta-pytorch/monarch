@@ -194,8 +194,17 @@ pub fn validate_cuda_installation() -> Result<String, BuildError> {
 /// Searches for the directory containing libcudart_static.a in the CUDA installation.
 /// Panics with a helpful error message if not found.
 pub fn get_cuda_lib_dir() -> String {
-    // Check if user explicitly set CUDA_LIB_DIR
+    // Check if user explicitly set CUDA_LIB_DIR and verify it contains the library
     if let Ok(cuda_lib_dir) = env::var("CUDA_LIB_DIR") {
+        let lib_path = PathBuf::from(&cuda_lib_dir);
+        let cudart_static = lib_path.join("libcudart_static.a");
+        if !cudart_static.exists() {
+            panic!(
+                "CUDA_LIB_DIR is set to '{}' but libcudart_static.a not found at {}",
+                cuda_lib_dir,
+                cudart_static.display()
+            );
+        }
         return cuda_lib_dir;
     }
 
@@ -232,8 +241,9 @@ pub fn get_cuda_lib_dir() -> String {
     }
 
     panic!(
-        "CUDA library directoryies {:#?} do not contain libcudart_static.a",
-        libs
+        "CUDA library directories {:#?} under {} do not contain libcudart_static.a",
+        libs,
+        cuda_home.display()
     );
 }
 
