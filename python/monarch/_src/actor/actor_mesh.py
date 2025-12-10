@@ -76,6 +76,7 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
 )
+from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
@@ -563,6 +564,7 @@ class ActorEndpoint(Endpoint[P, R]):
                 ),
                 buffer,
             )
+            instant_event(f"sending {self._method_name()} message")
             self._actor_mesh.cast(
                 message, selection, context().actor_instance._as_rust()
             )
@@ -572,6 +574,9 @@ class ActorEndpoint(Endpoint[P, R]):
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _full_name(self) -> str:
+        return f"{self._mesh_name}.{self._method_name()}()"
+
+    def _method_name(self) -> str:
         method_name = "unknown"
         match self._name:
             case MethodSpecifier.Init():
@@ -580,7 +585,7 @@ class ActorEndpoint(Endpoint[P, R]):
                 pass
             case MethodSpecifier.ExplicitPort(name=method_name):
                 pass
-        return f"{self._mesh_name}.{method_name}()"
+        return method_name
 
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
