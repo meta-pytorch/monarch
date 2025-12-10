@@ -21,10 +21,10 @@ use std::process::Command;
 const RDMA_CORE_REPO: &str = "https://github.com/linux-rdma/rdma-core";
 const RDMA_CORE_TAG: &str = "224154663a9ad5b1ad5629fb76a0c40c675fb936";
 
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "linux"))]
 fn main() {}
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
     let vendor_dir = out_dir.join("vendor");
