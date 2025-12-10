@@ -9,6 +9,7 @@ members = [
     "hyperactor_mesh",
     "hyperactor_mesh_macros",
     "hyperactor_telemetry",
+    "monarch_bench",
     "monarch_conda",
     "monarch_extension",
     "monarch_hyperactor",

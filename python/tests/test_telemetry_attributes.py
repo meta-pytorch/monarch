@@ -17,40 +17,34 @@ class CounterAttributesTest(unittest.TestCase):
 
     def test_counter_add_passes_attributes(self) -> None:
         """Test that Counter.add() accepts and processes attributes correctly."""
-        # Setup: Create a counter instance
+        # Setup: Create a counter instance and mock the inner Rust object
         counter = Counter("test_counter")
+        mock_inner = MagicMock()
+        counter.inner = mock_inner
 
-        # Execute: Call add with attributes (should not raise an error)
-        # Note: We can't directly verify the Rust implementation receives the attributes,
-        # but we can verify the method accepts them and the conversion logic works
-        try:
-            counter.add(1, attributes={"method": "test_method", "actor_count": 5})
-            # If we get here without exception, the attributes were processed
-            success = True
-        except Exception:
-            success = False
+        # Execute: Call add with attributes
+        counter.add(1, attributes={"method": "test_method", "actor_count": 5})
 
-        # Assert: Verify the call succeeded
-        self.assertTrue(
-            success, "Counter.add() should accept and process attributes without error"
+        # Assert: Verify the inner Rust implementation was called with correctly converted attributes
+        mock_inner.add.assert_called_once()
+        call_args = mock_inner.add.call_args
+        self.assertEqual(call_args[0][0], 1)
+        self.assertEqual(
+            call_args[1]["attributes"], {"method": "test_method", "actor_count": "5"}
         )
 
     def test_counter_add_with_none_attributes(self) -> None:
         """Test that Counter.add() works correctly when attributes is None."""
-        # Setup: Create a counter instance
+        # Setup: Create a counter instance and mock the inner Rust object
         counter = Counter("test_counter_none")
+        mock_inner = MagicMock()
+        counter.inner = mock_inner
 
-        # Execute: Call add without attributes (should not raise an error)
-        try:
-            counter.add(1, attributes=None)
-            success = True
-        except Exception:
-            success = False
+        # Execute: Call add without attributes
+        counter.add(1, attributes=None)
 
-        # Assert: Verify the call succeeded
-        self.assertTrue(
-            success, "Counter.add() should work correctly when attributes is None"
-        )
+        # Assert: Verify the inner Rust implementation was called with None converted to None
+        mock_inner.add.assert_called_once_with(1, attributes=None)
 
     def test_counter_add_increments_value(self) -> None:
         """Test that Counter.add() correctly increments the counter value."""
@@ -89,39 +83,34 @@ class UpDownCounterAttributesTest(unittest.TestCase):
 
     def test_updowncounter_add_passes_attributes(self) -> None:
         """Test that UpDownCounter.add() accepts and processes attributes correctly."""
-        # Setup: Create an updowncounter instance
+        # Setup: Create an updowncounter instance and mock the inner Rust object
         counter = UpDownCounter("test_updowncounter")
+        mock_inner = MagicMock()
+        counter.inner = mock_inner
 
-        # Execute: Call add with attributes (should not raise an error)
-        try:
-            counter.add(1, attributes={"method": "test_method", "actor_count": 5})
-            success = True
-        except Exception:
-            success = False
+        # Execute: Call add with attributes
+        counter.add(1, attributes={"method": "test_method", "actor_count": 5})
 
-        # Assert: Verify the call succeeded
-        self.assertTrue(
-            success,
-            "UpDownCounter.add() should accept and process attributes without error",
+        # Assert: Verify the inner Rust implementation was called with correctly converted attributes
+        mock_inner.add.assert_called_once()
+        call_args = mock_inner.add.call_args
+        self.assertEqual(call_args[0][0], 1)
+        self.assertEqual(
+            call_args[1]["attributes"], {"method": "test_method", "actor_count": "5"}
         )
 
     def test_updowncounter_add_with_none_attributes(self) -> None:
         """Test that UpDownCounter.add() works correctly when attributes is None."""
-        # Setup: Create an updowncounter instance
+        # Setup: Create an updowncounter instance and mock the inner Rust object
         counter = UpDownCounter("test_updowncounter_none")
+        mock_inner = MagicMock()
+        counter.inner = mock_inner
 
-        # Execute: Call add without attributes (should not raise an error)
-        try:
-            counter.add(1, attributes=None)
-            success = True
-        except Exception:
-            success = False
+        # Execute: Call add without attributes
+        counter.add(1, attributes=None)
 
-        # Assert: Verify the call succeeded
-        self.assertTrue(
-            success,
-            "UpDownCounter.add() should work correctly when attributes is None",
-        )
+        # Assert: Verify the inner Rust implementation was called with None converted to None
+        mock_inner.add.assert_called_once_with(1, attributes=None)
 
     def test_updowncounter_add_changes_value(self) -> None:
         """Test that UpDownCounter.add() correctly changes the counter value."""

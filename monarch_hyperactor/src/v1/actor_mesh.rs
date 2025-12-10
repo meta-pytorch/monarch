@@ -444,7 +444,6 @@ async fn actor_states_monitor<A>(
                     | Some(ProcStatus::Killed { signal: 15, .. })
                     // Conservatively treat lack of status as stopped
                     | None => ActorStatus::Stopped,
-
                     Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
                         "process failure: {}",
                         status
