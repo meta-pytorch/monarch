@@ -143,7 +143,7 @@ mod tests {
             name: "start".into(),
             count: 1,
         };
-        patch.apply(&mut value);
+        let _ = patch.apply(&mut value);
 
         assert_eq!(
             value,

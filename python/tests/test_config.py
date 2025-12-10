@@ -6,12 +6,24 @@
 
 # pyre-unsafe
 
-import pytest
+import contextlib
 
+import monarch
+import pytest
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_proc
 from monarch.config import configured, get_global_config
+
+
+@contextlib.contextmanager
+def override_fault_hook(callback=None):
+    original_hook = monarch.actor.unhandled_fault_hook
+    try:
+        monarch.actor.unhandled_fault_hook = callback or (lambda failure: None)
+        yield
+    finally:
+        monarch.actor.unhandled_fault_hook = original_hook
 
 
 def test_get_set_transport() -> None:
@@ -84,17 +96,18 @@ def test_codec_max_frame_length_exceeds_default() -> None:
     config = get_global_config()
     assert config["codec_max_frame_length"] == tenGiB
 
-    # Try to send 10 chunks of 1GiB each with default 10 GiB limit
-    # This should fail due to serialization overhead
-    proc = this_proc()
+    with override_fault_hook():
+        # Try to send 10 chunks of 1GiB each with default 10 GiB limit
+        # This should fail due to serialization overhead
+        proc = this_proc()
 
-    # Create 10 chunks, 1GiB each (total 10GiB)
-    chunks = [bytes(oneGiB) for _ in range(10)]
+        # Create 10 chunks, 1GiB each (total 10GiB)
+        chunks = [bytes(oneGiB) for _ in range(10)]
 
-    # Spawn actor and send chunks - should fail with SupervisionError
-    chunker = proc.spawn("chunker", Chunker)
-    with pytest.raises(SupervisionError):
-        chunker.process_chunks.call_one(chunks).get()
+        # Spawn actor and send chunks - should fail with SupervisionError
+        chunker = proc.spawn("chunker", Chunker)
+        with pytest.raises(SupervisionError):
+            chunker.process_chunks.call_one(chunks).get()
 
 
 # This test tries to allocate too much memory for the GitHub actions
