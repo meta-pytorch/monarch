@@ -353,18 +353,26 @@ impl Handler<CastMessage> for CommActor {
             .or_default();
         let last_seq = *seq;
         *seq += 1;
-        Self::forward(
-            cx,
-            &self.mode,
-            rank,
-            ForwardMessage {
-                dests: vec![frame],
-                sender: cx.self_id().clone(),
-                message: cast_message.message,
-                seq: *seq,
-                last_seq,
-            },
-        )?;
+
+        let fwd_message = ForwardMessage {
+            dests: vec![frame],
+            sender: cx.self_id().clone(),
+            message: cast_message.message,
+            seq: *seq,
+            last_seq,
+        };
+
+        // Optimization: if forwarding to ourselves, handle inline instead of
+        // going through the message queue
+        if self
+            .mode
+            .self_rank(cx.self_id())
+            .is_ok_and(|self_rank| self_rank == rank)
+        {
+            Handler::<ForwardMessage>::handle(self, cx, fwd_message).await?;
+        } else {
+            Self::forward(cx, &self.mode, rank, fwd_message)?;
+        }
         Ok(())
     }
 }

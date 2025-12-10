@@ -19,7 +19,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use hyperactor::Actor;
-use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -439,7 +438,7 @@ impl ProcMesh {
         let extent = alloc.extent().clone();
         let alloc_name = alloc.world_id().to_string();
 
-        {
+        let alloc_task = {
             let stop = Arc::clone(&stop);
 
             tokio::spawn(
@@ -475,8 +474,8 @@ impl ProcMesh {
                     }
                 }
                 .instrument(tracing::info_span!("alloc_monitor")),
-            );
-        }
+            )
+        };
 
         let mesh = Self::create(
             cx,
@@ -486,6 +485,7 @@ impl ProcMesh {
                 stop,
                 extent,
                 ranks: Arc::new(ranks),
+                alloc_task: Some(alloc_task),
             },
             true, // alloc-based meshes support comm actors
         )
@@ -511,15 +511,31 @@ impl ProcMesh {
         let region = self.region.clone();
         match &mut self.allocation {
             ProcMeshAllocation::Allocated {
-                stop, alloc_name, ..
+                stop,
+                alloc_task,
+                alloc_name,
+                ..
             } => {
                 stop.notify_one();
+                // Wait for the alloc monitor task to complete, ensuring the
+                // alloc has fully stopped before we drop it.
+                if let Some(handle) = alloc_task.take() {
+                    if let Err(e) = handle.await {
+                        tracing::warn!(
+                            name = "ProcMeshStatus",
+                            proc_mesh = %self.name,
+                            alloc_name,
+                            %e,
+                            "alloc monitor task failed"
+                        );
+                    }
+                }
                 tracing::info!(
                     name = "ProcMeshStatus",
                     proc_mesh = %self.name,
                     alloc_name,
                     status = "StoppingAlloc",
-                    "sending stop to alloc {alloc_name}; check its log for stop status",
+                    "alloc {alloc_name} has stopped",
                 );
                 Ok(())
             }
@@ -571,6 +587,9 @@ enum ProcMeshAllocation {
 
         // The allocated ranks.
         ranks: Arc<Vec<ProcRef>>,
+
+        // The task handle for the alloc monitor. Used to wait for clean shutdown.
+        alloc_task: Option<tokio::task::JoinHandle<()>>,
     },
 
     /// An owned allocation: this ProcMesh fully owns the set of ranks.
@@ -784,7 +803,10 @@ impl ProcMeshRef {
                                 supervision_events: vec![ActorSupervisionEvent::new(
                                     agent_id,
                                     None,
-                                    ActorStatus::Stopped,
+                                    ActorStatus::generic_failure(format!(
+                                        "timeout waiting for message from proc mesh agent while querying for \"{}\". The process likely crashed",
+                                        name,
+                                    )),
                                     None,
                                 )],
                             }),

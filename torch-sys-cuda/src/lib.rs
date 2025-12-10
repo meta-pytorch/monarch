@@ -11,6 +11,5 @@
 /// make it easier for clients who want to avoid compiling CUDA code.
 ///
 /// The same safety logic described in the `torch-sys` crate applies here.
-mod bridge;
 pub mod cuda;
 pub mod nccl;
