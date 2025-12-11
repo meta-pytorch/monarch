@@ -351,6 +351,7 @@ mod tests {
                 typehash: 123,
                 builder_params: None,
             }),
+            None,
         );
         let my_message = MyMessage {
             arg0: true,
@@ -406,6 +407,7 @@ mod tests {
                 typehash: 123,
                 builder_params: None,
             }),
+            None,
         );
         let new_bindings = Bindings(
             [
