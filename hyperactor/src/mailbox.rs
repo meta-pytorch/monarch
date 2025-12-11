@@ -3497,7 +3497,17 @@ mod tests {
         let port_id = port_handle.bind().port_id().clone();
         // Split it
         let reducer_spec = accum::sum::<u64>().reducer_spec();
-        let split_port_id = port_id.split(&actor, reducer_spec, None, true).unwrap();
+        let split_port_id = port_id
+            .split(
+                &actor,
+                reducer_spec,
+                Some(ReducerOpts {
+                    max_update_interval: Some(Duration::from_mins(10)),
+                    initial_update_interval: Some(Duration::from_mins(10)),
+                }),
+                true,
+            )
+            .unwrap();
 
         // Send 9 messages.
         for msg in [1, 5, 3, 4, 2, 91, 92, 93, 94] {
@@ -3535,6 +3545,7 @@ mod tests {
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: Some(Duration::from_millis(50)),
             }),
         )
         .await;
@@ -3578,6 +3589,7 @@ mod tests {
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: Some(Duration::from_millis(50)),
             }),
         )
         .await;

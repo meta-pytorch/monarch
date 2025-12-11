@@ -31,9 +31,9 @@ class LoggingManagerTest(TestCase):
         # Assert: confirm that _logging_mesh_client is initialized to None
         self.assertIsNone(manager._logging_mesh_client)
 
-    @pytest.mark.oss_skip  # type: ignore: monarch._src.actor.logging.get_ipython doesn't exist in OSS CI
+    @pytest.mark.oss_skip  # type: ignore: IPython.get_ipython doesn't exist in OSS CI
     @patch("monarch._src.actor.logging.IN_IPYTHON", True)
-    @patch("monarch._src.actor.logging.get_ipython")
+    @patch("IPython.get_ipython")
     @patch("monarch._src.actor.logging._global_flush_registered", False)
     def test_register_flusher_if_in_ipython_registers_event(
         self, mock_get_ipython: Mock
