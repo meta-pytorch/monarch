@@ -7,6 +7,7 @@
 # pyre-unsafe
 import csv
 import json
+import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import count
@@ -18,6 +19,7 @@ from typing import (
     List,
     NamedTuple,
     Optional,
+    Sequence,
     Set,
     Tuple,
     Union,
@@ -40,7 +42,7 @@ class Command(NamedTuple):
         command_name (str): Name of command (CallFunction: aten:mm, SendTensor: 7, etc.)
         devices (List[int]): Device IDs associated with this command
         control_dependencies (List[int]): Command IDs this command depends on
-        traceback (List[str]): Python traceback at command execution
+        traceback (Sequence[traceback.FrameSummary]): Python traceback at command execution
         duration (int): Command execution duration in milliseconds
     """
 
@@ -50,7 +52,7 @@ class Command(NamedTuple):
     command_name: str
     devices: List[int]
     control_dependencies: List[int]
-    traceback: List[str]
+    traceback: Sequence[traceback.FrameSummary]
     duration: int = 0  # ms
 
 
@@ -116,6 +118,7 @@ class TensorDeletionEvent(NamedTuple):
     devices: List[int]
     mesh_ref: Optional[int]
     stream_name: str
+    traceback: Sequence[traceback.FrameSummary]
 
 
 """
@@ -209,7 +212,7 @@ class IRGraph:
         command_name: str,
         devices: List[int],
         control_dependencies: List[int],
-        traceback: List[str],
+        traceback: Sequence[traceback.FrameSummary],
     ) -> None:
         new_dag_node = Command(
             worker_rank=worker_rank,
@@ -386,6 +389,7 @@ class IRGraph:
         mesh_ranks: List[int],
         stream_name: str,
         command_id: int,
+        tb: Sequence[traceback.FrameSummary],
     ) -> None:
         storage_id = self._data.tensorref_to_storageid[ref]
 
@@ -401,6 +405,7 @@ class IRGraph:
                 devices=mesh_ranks,
                 mesh_ref=None,
                 stream_name=stream_name,
+                traceback=tb,
             )
         )
 
@@ -698,7 +703,7 @@ class IRGraph:
                 stream_locs[f"{worker_rank}_{stream_name}"] += (
                     default_event_width + default_event_spacing
                 )
-                event["args"]["traceback"] = dag_item.traceback
+                event["args"]["traceback"] = traceback.format_list(dag_item.traceback)
                 trace_events.append(event)
             else:
                 raise ValueError(f"Unknown DAG item type: {type(dag_item)}")
@@ -793,6 +798,56 @@ class IRGraph:
         # Convert list to dict with indices as keys to use _export_info_to_csv
         timeline_dict = dict(enumerate(self.data_dag))
         self._export_info_to_csv(timeline_dict, filename, "data dependency timeline")
+
+    def export_memory_viz(self, filename: str) -> None:
+        from monarch.simulator.trace import MemoryViewer
+
+        memory_viewer = MemoryViewer()
+
+        device_events = {}
+        for event in self.data_dag:
+            if not isinstance(event, (StorageCreationEvent, StorageDeletionEvent)):
+                continue
+            for device in event.devices:
+                if device not in device_events:
+                    device_events[device] = []
+                device_events[device].append(event)
+
+        for device, events in sorted(device_events.items()):
+            # print(device, events) # Note: Use this to debug memory snapshot address
+            memory_viewer.next_device()
+            max_mem = curr_mem = 0
+
+            for event in events:
+                size = event.size if event.size is not None else 0
+                if isinstance(event, StorageDeletionEvent):
+                    size = -size
+                curr_mem += size
+                if curr_mem > max_mem:
+                    max_mem = curr_mem
+
+                traceback_info = []
+                if isinstance(event, StorageCreationEvent):
+                    for cmd in self.control_dag:
+                        if cmd.command_id == event.command_id:
+                            traceback_info = cmd.traceback
+                            break
+                elif isinstance(event, StorageDeletionEvent):
+                    for cmd in self.data_dag:
+                        if cmd.command_id == event.command_id:
+                            assert isinstance(cmd, TensorDeletionEvent)
+                            traceback_info = cmd.traceback
+                            break
+
+                memory_viewer.add_trace(
+                    addr=event.storage_id,  # Note: this is overwritten by segment["allocated_size"] in MemoryViewer.add_trace()
+                    delta=size,
+                    stream=0,  # TODO: separate worker memory by stream (?)
+                    traceback=traceback_info,
+                )
+            print(f"Device {device} max mem: {max_mem} B")
+
+        memory_viewer.dump(filename)
 
     class _ControlManager:
         """
