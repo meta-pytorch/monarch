@@ -57,8 +57,6 @@ class Command(NamedTuple):
 class StorageCreationEvent(NamedTuple):
     command_id: int
     storage_id: int
-    dtype: Optional[torch.dtype]
-    dims: Optional[tuple]
     size: Optional[int]
     devices: List[int]
     mesh_ref: Optional[int]
@@ -68,8 +66,6 @@ class StorageCreationEvent(NamedTuple):
 class StorageDeletionEvent(NamedTuple):
     command_id: int
     storage_id: int
-    dtype: Optional[torch.dtype]
-    dims: Optional[tuple]
     size: Optional[int]
     devices: List[int]
     mesh_ref: Optional[int]
@@ -80,6 +76,7 @@ class TensorCreationEvent(NamedTuple):
     command_id: int
     DTensorRef: int
     storage_id: int
+    dtype: Optional[torch.dtype]
     dims: Optional[
         tuple
     ]  # TODO: make sure dims here reflect tensor's and not storages'
@@ -92,6 +89,7 @@ class TensorAccessEvent(NamedTuple):
     command_id: int
     DTensorRef: int
     storage_id: int
+    dtype: Optional[torch.dtype]
     dims: Optional[tuple]
     devices: List[int]
     mesh_ref: Optional[int]
@@ -102,6 +100,7 @@ class TensorMutationEvent(NamedTuple):
     command_id: int
     DTensorRef: int
     storage_id: int
+    dtype: Optional[torch.dtype]
     dims: Optional[tuple]
     devices: List[int]
     mesh_ref: Optional[int]
@@ -112,6 +111,7 @@ class TensorDeletionEvent(NamedTuple):
     command_id: int
     DTensorRef: int
     storage_id: int
+    dtype: Optional[torch.dtype]
     dims: Optional[tuple]
     devices: List[int]
     mesh_ref: Optional[int]
@@ -329,8 +329,6 @@ class IRGraph:
                 StorageCreationEvent(
                     command_id=command_id,
                     storage_id=storage_id,
-                    dtype=dtype,
-                    dims=dims,
                     size=tensor_size,
                     devices=[worker_rank],
                     mesh_ref=None,
@@ -343,6 +341,7 @@ class IRGraph:
                     command_id=command_id,
                     DTensorRef=ref,
                     storage_id=storage_id,
+                    dtype=dtype,
                     dims=dims,
                     devices=[worker_rank],
                     mesh_ref=None,
@@ -355,6 +354,7 @@ class IRGraph:
                     command_id=command_id,
                     DTensorRef=ref,
                     storage_id=storage_id,
+                    dtype=dtype,
                     dims=dims,
                     devices=[worker_rank],
                     mesh_ref=None,
@@ -367,6 +367,7 @@ class IRGraph:
                     command_id=command_id,
                     DTensorRef=ref,
                     storage_id=storage_id,
+                    dtype=dtype,
                     dims=dims,
                     devices=[worker_rank],
                     mesh_ref=None,
@@ -395,6 +396,7 @@ class IRGraph:
                 command_id=command_id,
                 DTensorRef=ref,
                 storage_id=storage_id,
+                dtype=self._data.data_dependency_info[storage_id].dtype,
                 dims=self._data.data_dependency_info[storage_id].dims,
                 devices=mesh_ranks,
                 mesh_ref=None,
@@ -410,8 +412,6 @@ class IRGraph:
                 StorageDeletionEvent(
                     command_id=command_id,
                     storage_id=storage_id,
-                    dtype=self._data.data_dependency_info[storage_id].dtype,
-                    dims=self._data.data_dependency_info[storage_id].dims,
                     size=self._data.data_dependency_info[storage_id].size,
                     devices=mesh_ranks,
                     mesh_ref=None,
