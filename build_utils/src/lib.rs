@@ -513,6 +513,91 @@ pub fn print_rocm_lib_error_help() {
     eprintln!("Example: export ROCM_LIB_DIR=/opt/rocm/lib");
 }
 
+/// Run hipify_torch to convert CUDA sources to HIP
+///
+/// This function:
+/// 1. Creates output_dir if needed
+/// 2. Copies all source_files to output_dir
+/// 3. Finds deps/hipify_torch/hipify_cli.py relative to project_root
+/// 4. Runs hipify_torch with --v2 flag
+///
+/// After this function returns, hipified files will be in output_dir with
+/// "_hip" suffix (e.g., "bridge.h" becomes "bridge_hip.h").
+///
+/// # Arguments
+/// * `project_root` - Path to the monarch project root (contains deps/hipify_torch)
+/// * `source_files` - Files to copy and hipify
+/// * `output_dir` - Directory where hipified files will be written
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(BuildError)` if hipify fails
+pub fn run_hipify_torch(
+    project_root: &Path,
+    source_files: &[PathBuf],
+    output_dir: &Path,
+) -> Result<(), BuildError> {
+    // Create output directory if needed
+    fs::create_dir_all(output_dir).map_err(|e| {
+        BuildError::PathNotFound(format!("Failed to create output directory: {}", e))
+    })?;
+
+    // Copy source files to output directory
+    for source_file in source_files {
+        let filename = source_file.file_name().ok_or_else(|| {
+            BuildError::PathNotFound(format!("Invalid source file path: {:?}", source_file))
+        })?;
+        let dest = output_dir.join(filename);
+        fs::copy(source_file, &dest).map_err(|e| {
+            BuildError::CommandFailed(format!(
+                "Failed to copy {:?} to {:?}: {}",
+                source_file, dest, e
+            ))
+        })?;
+        println!("cargo:rerun-if-changed={}", source_file.display());
+    }
+
+    // Find hipify script
+    let hipify_script = project_root.join("deps/hipify_torch/hipify_cli.py");
+    if !hipify_script.exists() {
+        return Err(BuildError::PathNotFound(format!(
+            "hipify_cli.py not found at {:?}",
+            hipify_script
+        )));
+    }
+
+    // Get Python interpreter (defined in this module)
+    let python = find_python_interpreter();
+
+    // Run hipify_torch
+    let output = Command::new(&python)
+        .arg(&hipify_script)
+        .arg("--project-directory")
+        .arg(output_dir)
+        .arg("--v2")
+        .arg("--output-directory")
+        .arg(output_dir)
+        .output()
+        .map_err(|e| BuildError::CommandFailed(format!("Failed to run hipify_torch: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(BuildError::CommandFailed(format!(
+            "hipify_torch failed:\nstdout: {}\nstderr: {}",
+            stdout, stderr
+        )));
+    }
+
+    println!(
+        "cargo:warning=Successfully hipified {} files to {:?}",
+        source_files.len(),
+        output_dir
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

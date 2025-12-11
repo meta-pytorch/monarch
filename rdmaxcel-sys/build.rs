@@ -262,7 +262,7 @@ fn patch_hipified_files_rocm6(hip_src_dir: &Path) -> Result<(), Box<dyn std::err
         patched_content = patched_content.replace("CUmemRangeHandleType", "int /* placeholder - ROCm 6.x */");
         patched_content = patched_content.replace("_(hipMemGetHandleForAddressRange)  \\", "/* hipMemGetHandleForAddressRange removed for ROCm 6.x - using HSA */  \\");
         patched_content = patched_content.replace("_(hipMemGetHandleForAddressRange) \\", "/* hipMemGetHandleForAddressRange removed for ROCm 6.x - using HSA */ \\");
-        
+
         let cuda_compat_wrapper = r#"
 // CUDA-compatible wrapper for monarch_rdma - translates to HSA call
 hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
@@ -303,49 +303,43 @@ fn validate_hipified_files(hip_src_dir: &Path) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Hipify sources for rdmaxcel-sys using build_utils::run_hipify_torch
+/// and apply rdmaxcel-specific patches based on ROCm version
 fn hipify_sources(
-    python_interpreter: &Path,
     src_dir: &Path,
     hip_src_dir: &Path,
     rocm_version: (u32, u32),
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:warning=Copying sources from {} to {}...", src_dir.display(), hip_src_dir.display());
-    fs::create_dir_all(hip_src_dir)?;
+    println!("cargo:warning=Hipifying sources from {} to {}...", src_dir.display(), hip_src_dir.display());
 
+    // Collect source files to hipify
     let files_to_copy = [
         "lib.rs", "rdmaxcel.h", "rdmaxcel.c", "rdmaxcel.cpp", "rdmaxcel.cu",
         "test_rdmaxcel.c", "driver_api.h", "driver_api.cpp",
     ];
-    for file_name in files_to_copy {
-        let src_file = src_dir.join(file_name);
-        let dest_file = hip_src_dir.join(file_name);
-        if src_file.exists() {
-            fs::copy(&src_file, &dest_file)?;
-            println!("cargo:rerun-if-changed={}", src_file.display());
-        }
-    }
 
+    let source_files: Vec<PathBuf> = files_to_copy
+        .iter()
+        .map(|f| src_dir.join(f))
+        .filter(|p| p.exists())
+        .collect();
+
+    // Find project root
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let project_root = manifest_dir.parent().ok_or("Failed to find project root")?;
-    let hipify_script = project_root.join("deps").join("hipify_torch").join("hipify_cli.py");
 
-    let hipify_output = Command::new(python_interpreter)
-        .arg(&hipify_script)
-        .arg("--project-directory").arg(hip_src_dir)
-        .arg("--v2")
-        .arg("--output-directory").arg(hip_src_dir)
-        .output()?;
+    // Use centralized hipify function from build_utils
+    build_utils::run_hipify_torch(project_root, &source_files, hip_src_dir)
+        .map_err(|e| format!("hipify_torch failed: {}", e))?;
 
-    if !hipify_output.status.success() {
-        return Err(format!("hipify_cli.py failed: {}", String::from_utf8_lossy(&hipify_output.stderr)).into());
-    }
-
+    // Apply rdmaxcel-specific patches based on ROCm version
     let (major, _minor) = rocm_version;
     if major >= 7 {
         patch_hipified_files_rocm7(hip_src_dir)?;
     } else {
         patch_hipified_files_rocm6(hip_src_dir)?;
     }
+
     Ok(())
 }
 
@@ -366,6 +360,11 @@ fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
+    // Declare custom cfg options to avoid warnings
+    println!("cargo::rustc-check-cfg=cfg(cargo)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_6_x)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
+
     println!("cargo:rustc-link-lib=ibverbs");
     println!("cargo:rustc-link-lib=mlx5");
 
@@ -382,9 +381,6 @@ fn main() {
             eprintln!("Error: Neither CUDA nor ROCm installation found!");
             std::process::exit(1);
         };
-
-    println!("cargo:rustc-check-cfg=cfg(rocm_6_x)");
-    println!("cargo:rustc-check-cfg=cfg(rocm_7_plus)");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("src");
@@ -433,7 +429,7 @@ fn main() {
 
             if is_rocm {
                 let hip_src_dir = out_path.join("hipified_src");
-                hipify_sources(&python_interpreter, &src_dir, &hip_src_dir, rocm_version).expect("Failed to hipify sources");
+                hipify_sources(&src_dir, &hip_src_dir, rocm_version).expect("Failed to hipify sources");
                 validate_hipified_files(&hip_src_dir).expect("Hipified files validation failed");
                 code_dir = hip_src_dir.clone();
                 header_path = hip_src_dir.join("rdmaxcel_hip.h");
@@ -525,6 +521,10 @@ fn main() {
             if cpp_source_path.exists() {
                 let mut cpp_build = cc::Build::new();
                 cpp_build.file(&cpp_source_path).include(&code_dir).flag("-fPIC").cpp(true).flag("-std=gnu++20").flag("-Wno-unused-parameter").define("PYTORCH_C10_DRIVER_API_SUPPORTED", "1");
+                // Suppress deprecated API warnings for HIP context management APIs (deprecated in ROCm 6.x)
+                if is_rocm {
+                    cpp_build.flag("-Wno-deprecated-declarations");
+                }
                 if driver_api_cpp_path.exists() { cpp_build.file(&driver_api_cpp_path); }
                 cpp_build.include(&compute_include_path);
                 if is_rocm {
@@ -538,7 +538,7 @@ fn main() {
 
             // Compile CUDA/HIP files
             if cuda_source_path.exists() {
-                let (compiler_path, compiler_name) = if is_rocm { (format!("{}/bin/hipcc", compute_home), "hipcc") } else { (format!("{}/bin/nvcc", compute_home), "nvcc") };
+                let compiler_path = if is_rocm { format!("{}/bin/hipcc", compute_home) } else { format!("{}/bin/nvcc", compute_home) };
                 let cuda_build_dir = format!("{}/target/cuda_build", manifest_dir.display());
                 std::fs::create_dir_all(&cuda_build_dir).expect("Failed to create CUDA build directory");
                 let cuda_obj_path = format!("{}/rdmaxcel_cuda.o", cuda_build_dir);

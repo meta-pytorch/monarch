@@ -14,6 +14,7 @@ mod inner {
     #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
     #![allow(unused_attributes)]
+    #![allow(dead_code)] // bindgen generates many functions we may not use
     #[cfg(not(cargo))]
     use crate::ibv_wc_flags;
     #[cfg(not(cargo))]

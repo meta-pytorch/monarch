@@ -16,63 +16,43 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 use cxx_build::CFG;
 
 #[cfg(target_os = "macos")]
 fn main() {}
 
-/// Hipify the bridge sources for ROCm compatibility
+/// Hipify the bridge sources for ROCm compatibility using build_utils,
+/// then apply torch-sys-cuda specific patches.
+/// Returns the path to the hipified bridge.rs file.
 fn hipify_sources(
-    python_interpreter: &Path,
     src_dir: &Path,
     hip_src_dir: &Path,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     println!(
-        "cargo:warning=torch-sys-cuda: Copying sources from {} to {} for hipify...",
+        "cargo:warning=torch-sys-cuda: Hipifying sources from {} to {}...",
         src_dir.display(),
         hip_src_dir.display()
     );
-    fs::create_dir_all(hip_src_dir)?;
 
-    // Copy bridge.h, bridge.cpp, and bridge.rs
-    for filename in &["bridge.h", "bridge.cpp", "bridge.rs"] {
-        let src_file = src_dir.join(filename);
-        let dest_file = hip_src_dir.join(filename);
-        if src_file.exists() {
-            fs::copy(&src_file, &dest_file)?;
-            println!("cargo:rerun-if-changed={}", src_file.display());
-        }
-    }
-
+    // Find project root
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let project_root = manifest_dir
         .parent()
         .ok_or("Failed to find project root")?;
-    let hipify_script = project_root
-        .join("deps")
-        .join("hipify_torch")
-        .join("hipify_cli.py");
 
-    println!("cargo:warning=torch-sys-cuda: Running hipify_torch...");
-    let hipify_output = Command::new(python_interpreter)
-        .arg(&hipify_script)
-        .arg("--project-directory")
-        .arg(hip_src_dir)
-        .arg("--v2")
-        .arg("--output-directory")
-        .arg(hip_src_dir)
-        .output()?;
+    // Collect source files to hipify
+    let source_files: Vec<PathBuf> = ["bridge.h", "bridge.cpp", "bridge.rs"]
+        .iter()
+        .map(|f| src_dir.join(f))
+        .filter(|p| p.exists())
+        .collect();
 
-    if !hipify_output.status.success() {
-        return Err(format!(
-            "hipify_cli.py failed: {}",
-            String::from_utf8_lossy(&hipify_output.stderr)
-        )
-        .into());
-    }
+    // Use centralized hipify function from build_utils
+    build_utils::run_hipify_torch(project_root, &source_files, hip_src_dir)
+        .map_err(|e| format!("hipify_torch failed: {}", e))?;
 
+    // Apply torch-sys-cuda specific patches:
     // Modify bridge.cpp to include bridge_hip.h instead of the original header
     let bridge_cpp_path = hip_src_dir.join("bridge.cpp");
     let bridge_cpp_content = fs::read_to_string(&bridge_cpp_path)?;
@@ -92,13 +72,18 @@ fn hipify_sources(
     fs::write(&bridge_rs_path, modified_rs)?;
 
     println!("cargo:warning=torch-sys-cuda: hipify complete");
-    
+
     // Return the path to the hipified bridge.rs
     Ok(bridge_rs_path)
 }
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
+    // Declare custom cfg options to avoid warnings
+    println!("cargo::rustc-check-cfg=cfg(rocm)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_6_x)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
+
     // Auto-detect ROCm vs CUDA using build_utils
     let (is_rocm, compute_home) =
         if let Ok(rocm_home) = build_utils::validate_rocm_installation() {
@@ -124,11 +109,6 @@ fn main() {
             panic!("Neither CUDA nor ROCm installation found!");
         };
 
-    // Emit cfg check declarations
-    println!("cargo:rustc-check-cfg=cfg(rocm)");
-    println!("cargo:rustc-check-cfg=cfg(rocm_6_x)");
-    println!("cargo:rustc-check-cfg=cfg(rocm_7_plus)");
-
     // Use PyO3's Python discovery to find the correct Python library paths
     let mut python_lib_dir: Option<String> = None;
     let python_config = pyo3_build_config::get();
@@ -150,9 +130,8 @@ fn main() {
 
     // Determine source files to compile
     let (bridge_rs_path, bridge_cpp_path, include_dir) = if is_rocm {
-        let python_interpreter = build_utils::find_python_interpreter();
         let hip_src_dir = out_path.join("hipified_src");
-        let hipified_bridge_rs = hipify_sources(&python_interpreter, &src_dir, &hip_src_dir)
+        let hipified_bridge_rs = hipify_sources(&src_dir, &hip_src_dir)
             .expect("Failed to hipify torch-sys-cuda sources");
 
         (hipified_bridge_rs, hip_src_dir.join("bridge.cpp"), hip_src_dir)

@@ -7,68 +7,19 @@
  */
 
 use std::env;
-use std::fs;
-use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 #[cfg(target_os = "macos")]
 fn main() {}
 
-/// Hipify the nccl.h header for ROCm compatibility
-fn hipify_sources(
-    python_interpreter: &Path,
-    src_dir: &Path,
-    hip_src_dir: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!(
-        "cargo:warning=nccl-sys: Copying sources from {} to {} for hipify...",
-        src_dir.display(),
-        hip_src_dir.display()
-    );
-    fs::create_dir_all(hip_src_dir)?;
-
-    // Copy header file
-    let src_file = src_dir.join("nccl.h");
-    let dest_file = hip_src_dir.join("nccl.h");
-    if src_file.exists() {
-        fs::copy(&src_file, &dest_file)?;
-        println!("cargo:rerun-if-changed={}", src_file.display());
-    }
-
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
-    let project_root = manifest_dir
-        .parent()
-        .ok_or("Failed to find project root")?;
-    let hipify_script = project_root
-        .join("deps")
-        .join("hipify_torch")
-        .join("hipify_cli.py");
-
-    println!("cargo:warning=nccl-sys: Running hipify_torch...");
-    let hipify_output = Command::new(python_interpreter)
-        .arg(&hipify_script)
-        .arg("--project-directory")
-        .arg(hip_src_dir)
-        .arg("--v2")
-        .arg("--output-directory")
-        .arg(hip_src_dir)
-        .output()?;
-
-    if !hipify_output.status.success() {
-        return Err(format!(
-            "hipify_cli.py failed: {}",
-            String::from_utf8_lossy(&hipify_output.stderr)
-        )
-        .into());
-    }
-
-    println!("cargo:warning=nccl-sys: hipify complete");
-    Ok(())
-}
-
 #[cfg(not(target_os = "macos"))]
 fn main() {
+    // Declare custom cfg options to avoid warnings
+    println!("cargo::rustc-check-cfg=cfg(cargo)");
+    println!("cargo::rustc-check-cfg=cfg(rocm)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_6_x)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
+
     // Auto-detect ROCm vs CUDA using build_utils
     let (is_rocm, compute_home, _rocm_version) =
         if let Ok(rocm_home) = build_utils::validate_rocm_installation() {
@@ -95,22 +46,20 @@ fn main() {
             std::process::exit(1);
         };
 
-    // Emit cfg check declarations
-    println!("cargo:rustc-check-cfg=cfg(rocm)");
-    println!("cargo:rustc-check-cfg=cfg(rocm_6_x)");
-    println!("cargo:rustc-check-cfg=cfg(rocm_7_plus)");
-
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("src");
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let python_interpreter = build_utils::find_python_interpreter();
     let compute_include_path = format!("{}/include", compute_home);
 
     // Determine which header to use
     let header_path = if is_rocm {
-        // Hipify the sources for ROCm
+        // Hipify the sources for ROCm using centralized build_utils function
         let hip_src_dir = out_path.join("hipified_src");
-        hipify_sources(&python_interpreter, &src_dir, &hip_src_dir)
+        let project_root = manifest_dir.parent().expect("Failed to find project root");
+
+        let source_files = vec![src_dir.join("nccl.h")];
+
+        build_utils::run_hipify_torch(project_root, &source_files, &hip_src_dir)
             .expect("Failed to hipify nccl-sys sources");
 
         // The hipified header should now include <rccl/rccl.h>
@@ -229,5 +178,4 @@ fn main() {
     }
 
     println!("cargo::rustc-cfg=cargo");
-    println!("cargo::rustc-check-cfg=cfg(cargo)");
 }
