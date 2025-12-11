@@ -61,6 +61,7 @@ class StorageCreationEvent(NamedTuple):
     dims: Optional[tuple]
     size: Optional[int]
     devices: List[int]
+    mesh_ref: Optional[int]
     stream_name: str
 
 
@@ -71,6 +72,7 @@ class StorageDeletionEvent(NamedTuple):
     dims: Optional[tuple]
     size: Optional[int]
     devices: List[int]
+    mesh_ref: Optional[int]
     stream_name: str
 
 
@@ -82,6 +84,7 @@ class TensorCreationEvent(NamedTuple):
         tuple
     ]  # TODO: make sure dims here reflect tensor's and not storages'
     devices: List[int]
+    mesh_ref: Optional[int]
     stream_name: str
 
 
@@ -91,6 +94,7 @@ class TensorAccessEvent(NamedTuple):
     storage_id: int
     dims: Optional[tuple]
     devices: List[int]
+    mesh_ref: Optional[int]
     stream_name: str
 
 
@@ -100,6 +104,7 @@ class TensorMutationEvent(NamedTuple):
     storage_id: int
     dims: Optional[tuple]
     devices: List[int]
+    mesh_ref: Optional[int]
     stream_name: str
 
 
@@ -109,6 +114,7 @@ class TensorDeletionEvent(NamedTuple):
     storage_id: int
     dims: Optional[tuple]
     devices: List[int]
+    mesh_ref: Optional[int]
     stream_name: str
 
 
@@ -158,6 +164,7 @@ class TensorInfo:
     dims: Tuple[int, ...] = field(default_factory=tuple)
     size: Optional[int] = None
     devices: Set[int] = field(default_factory=set)
+    mesh_ref: Optional[int] = None
     stream_name: Optional[str] = None
     storage_create_id: Optional[int] = None
     tensor_create_ids: Set[int] = field(default_factory=set)
@@ -241,10 +248,10 @@ class IRGraph:
         mutate=False,
         borrow_src_tensor_ref: Optional[int] = None,
         tensor_size: Optional[int] = None,
+        mesh_ref: Optional[int] = None,
     ) -> None:
         new_tensor_event = new_storage_event = False
         update_tensor_devices = update_storage_devices = False
-
         if temp_id not in self._data.id_to_storageid:
             if borrow_src_tensor_ref is None:
                 new_storage_event = True
@@ -254,6 +261,7 @@ class IRGraph:
                 self._data.data_dependency_info[storage_id].dtype = dtype
                 self._data.data_dependency_info[storage_id].dims = dims
                 self._data.data_dependency_info[storage_id].size = tensor_size
+                self._data.data_dependency_info[storage_id].devices.add(worker_rank)
                 self._data.data_dependency_info[storage_id].stream_name = stream_name
                 self._data.data_dependency_info[
                     storage_id
@@ -271,18 +279,20 @@ class IRGraph:
         if ref not in self._data.tensorref_to_stream:
             new_tensor_event = True
             self._data.tensorref_to_storageid[ref] = storage_id
-            self._data.tensorref_to_mesh[ref].add(worker_rank)
             self._data.tensorref_to_stream[ref] = stream_name
             self._data.storageid_to_tensorref[storage_id].add(ref)
+
+            # Track mesh reference for this tensor
+            self._data.tensorref_to_mesh_ref[ref] = mesh_ref
+
+            # Track mesh reference for the storage if not set
+            if storage_id not in self._data.storage_to_mesh_ref:
+                self._data.storage_to_mesh_ref[storage_id] = mesh_ref
 
             self._data.data_dependency_info[storage_id].DTensorRefs.add(ref)
             self._data.data_dependency_info[storage_id].tensor_create_ids.add(
                 command_id
             )
-        else:
-            if worker_rank not in self._data.tensorref_to_mesh[ref]:
-                update_tensor_devices = True
-                self._data.tensorref_to_mesh[ref].add(worker_rank)
 
         self._data.data_dependency_info[storage_id].access_ids.add(command_id)
         self._data.data_dependency_info[
@@ -323,6 +333,7 @@ class IRGraph:
                     dims=dims,
                     size=tensor_size,
                     devices=[worker_rank],
+                    mesh_ref=None,
                     stream_name=stream_name,
                 )
             )
@@ -334,6 +345,7 @@ class IRGraph:
                     storage_id=storage_id,
                     dims=dims,
                     devices=[worker_rank],
+                    mesh_ref=None,
                     stream_name=stream_name,
                 )
             )
@@ -345,6 +357,7 @@ class IRGraph:
                     storage_id=storage_id,
                     dims=dims,
                     devices=[worker_rank],
+                    mesh_ref=None,
                     stream_name=stream_name,
                 )
             )
@@ -356,6 +369,7 @@ class IRGraph:
                     storage_id=storage_id,
                     dims=dims,
                     devices=[worker_rank],
+                    mesh_ref=None,
                     stream_name=stream_name,
                 )
             )
@@ -383,6 +397,7 @@ class IRGraph:
                 storage_id=storage_id,
                 dims=self._data.data_dependency_info[storage_id].dims,
                 devices=mesh_ranks,
+                mesh_ref=None,
                 stream_name=stream_name,
             )
         )
@@ -399,6 +414,7 @@ class IRGraph:
                     dims=self._data.data_dependency_info[storage_id].dims,
                     size=self._data.data_dependency_info[storage_id].size,
                     devices=mesh_ranks,
+                    mesh_ref=None,
                     stream_name=stream_name,
                 )
             )
@@ -429,6 +445,71 @@ class IRGraph:
             result_tensor_id
         ].result_tensor_dims = result_tensor_dims
         return
+
+    def convert_devices_to_meshes(self) -> None:
+        """
+        Set mesh references directly on data events for proper mesh tracking.
+
+        This method uses actual mesh references (mesh.ref) instead of device sets
+        to identify unique meshes. This correctly handles cases where two different
+        logical meshes use the same physical devices but have different topologies.
+        """
+        new_data_dag = []
+
+        # Handle self.data_dag - use mesh_ref directly
+        for event in self.data_dag:
+            mesh_ref = self._get_mesh_ref_for_event(event)
+            new_event = event._replace(mesh_ref=mesh_ref)
+            new_data_dag.append(new_event)
+
+        self.data_dag = new_data_dag
+
+        # Handle self._data.data_dependency_info - use mesh_ref directly
+        for storage_info in self._data.data_dependency_info.values():
+            storage_id = storage_info.storage_id
+            if storage_id is not None:
+                mesh_ref = self._get_mesh_ref_for_storage(storage_id)
+                storage_info.mesh_ref = mesh_ref
+
+        return
+
+    def _get_mesh_ref_for_event(self, event: DataEvent) -> Optional[int]:
+        """
+        Extract mesh reference for a data event.
+
+        Args:
+            event: A data event (TensorCreationEvent, StorageCreationEvent, etc.)
+
+        Returns:
+            The mesh reference (mesh.ref) associated with this event, or None if not found
+        """
+        # Handle tensor events (have DTensorRef attribute)
+        if isinstance(
+            event,
+            (
+                TensorCreationEvent,
+                TensorAccessEvent,
+                TensorMutationEvent,
+                TensorDeletionEvent,
+            ),
+        ):
+            return self._data.tensorref_to_mesh_ref.get(event.DTensorRef)
+        # Handle storage events (have storage_id attribute)
+        elif isinstance(event, (StorageCreationEvent, StorageDeletionEvent)):
+            return self._data.storage_to_mesh_ref.get(event.storage_id)
+        return None
+
+    def _get_mesh_ref_for_storage(self, storage_id: int) -> Optional[int]:
+        """
+        Get mesh reference for a storage ID.
+
+        Args:
+            storage_id: The storage ID to look up
+
+        Returns:
+            The mesh reference associated with this storage, or None if not found
+        """
+        return self._data.storage_to_mesh_ref.get(storage_id)
 
     def remove_dag_item_type(
         self, command_types: Union[str, List[str]], print_removed_nodes: bool = False
@@ -657,7 +738,7 @@ class IRGraph:
                 "command_id",
                 "storage_id",
                 "DTensorRef",
-                "devices",
+                "mesh_ref",
                 "stream_name",
                 "dims",
                 "dtype",
@@ -742,7 +823,8 @@ class IRGraph:
             data_dependency_info: Maps storage IDs to their complete lifecycle metadata
             tensorref_to_stream: Maps tensor references to their associated stream names
             tensorref_to_storageid: Maps tensor references to their underlying storage IDs
-            tensorref_to_mesh: Maps tensor references to the set of mesh device IDs
+            tensorref_to_mesh_ref: Maps tensor references to their actual mesh references (mesh.ref)
+            storage_to_mesh_ref: Maps storage IDs to their actual mesh references (mesh.ref)
             id_to_storageid: Maps Python object IDs to storage IDs
             storageid_to_tensorref: Maps storage IDs to their associated tensor references
             storageid_counter: Counter for generating unique storage IDs
@@ -758,9 +840,12 @@ class IRGraph:
             self.tensorref_to_storageid: Dict[
                 int, int
             ] = {}  # key = DTensorRef.ref (int); value = storage id (int)
-            self.tensorref_to_mesh: DefaultDict[int, Set[int]] = defaultdict(
-                set
-            )  # key = DTensorRef.ref (int); value = mesh device ids (Set[int])
+            self.tensorref_to_mesh_ref: Dict[
+                int, Optional[int]
+            ] = {}  # key = DTensorRef.ref (int); value = mesh.ref (int) or None
+            self.storage_to_mesh_ref: Dict[
+                int, Optional[int]
+            ] = {}  # key = storage_id (int); value = mesh.ref (int) or None
             self.id_to_storageid: Dict[
                 int, int
             ] = {}  # key = id(UntypedStorage) (int); value = storage id (int)
