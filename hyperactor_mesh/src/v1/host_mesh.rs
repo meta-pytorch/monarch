@@ -804,6 +804,7 @@ impl HostMeshRef {
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: None,
             }),
         );
 
@@ -988,6 +989,7 @@ impl HostMeshRef {
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: None,
             }),
         );
         for proc_id in procs.into_iter() {
