@@ -20,8 +20,8 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
+use backoff::ExponentialBackoffBuilder;
 use dashmap::DashSet;
 use hyperactor_config::attrs::Attrs;
 
@@ -194,12 +194,13 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                 // Default to global configuration if not specified.
                 let reducer_opts = reducer_opts.unwrap_or_default();
                 let max_interval = reducer_opts.max_update_interval();
+                let initial_interval = reducer_opts.initial_update_interval();
 
-                // Create exponential backoff for buffer flush interval, starting at 1ms
-                // and growing to max_interval
+                // Create exponential backoff for buffer flush interval, starting at
+                // initial_interval and growing to max_interval
                 let backoff = Mutex::new(
                     ExponentialBackoffBuilder::new()
-                        .with_initial_interval(std::time::Duration::from_millis(1))
+                        .with_initial_interval(initial_interval)
                         .with_multiplier(2.0)
                         .with_max_interval(max_interval)
                         .with_max_elapsed_time(None)
