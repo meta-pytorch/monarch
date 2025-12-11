@@ -20,8 +20,8 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use backoff::backoff::Backoff;
 use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use dashmap::DashSet;
 use hyperactor_config::attrs::Attrs;
 
