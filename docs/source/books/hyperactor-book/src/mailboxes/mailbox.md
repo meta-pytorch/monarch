@@ -94,7 +94,8 @@ impl<M: RemoteMessage> PortHandle<M> {
             self.bound
                 .get_or_init(|| self.mailbox.bind(self).port_id().clone())
                 .clone(),
-            self.reducer_typehash.clone(),
+            self.reducer_spec.clone(),
+            self.reducer_opts.clone(),
         )
     }
 }
