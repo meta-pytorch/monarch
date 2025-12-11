@@ -178,24 +178,39 @@ class CommandHistory:
         ):
             if result is not None:
                 results_list = result if isinstance(result, list) else [result]
-                for tensor_ref in results_list:
-                    fake = tensor_ref._fake
-                    # Extract mesh reference from DTensorRef (captured at creation time)
-                    mesh_ref = getattr(tensor_ref, "_mesh_ref", None)
+                for item in results_list:
+                    # Handle tuples recursively - some operations return tuples.
+                    if isinstance(item, tuple):
+                        for sub_item in item:
+                            _process_tensor_results(
+                                sub_item,
+                                worker_rank,
+                                stream_name,
+                                command_id,
+                                mutate=mutate,
+                                borrow_src_tensor_ref=borrow_src_tensor_ref,
+                            )
+                    # Only process items that have _fake attribute (i.e., are tensor references)
+                    elif hasattr(item, "_fake"):
+                        fake = item._fake
+                        # Extract mesh reference from DTensorRef (captured at creation time)
+                        mesh_ref = getattr(item, "_mesh_ref", None)
 
-                    ir.update_tensor(
-                        tensor_ref._storage_id,
-                        tensor_ref.ref,
-                        fake.dtype,
-                        tuple(fake.shape),
-                        worker_rank,
-                        stream_name,
-                        command_id,
-                        mutate=mutate,
-                        borrow_src_tensor_ref=borrow_src_tensor_ref,
-                        tensor_size=tensor_ref._size,
-                        mesh_ref=mesh_ref,
-                    )
+                        ir.update_tensor(
+                            item._storage_id,
+                            item.ref,
+                            fake.dtype,
+                            tuple(fake.shape),
+                            worker_rank,
+                            stream_name,
+                            command_id,
+                            mutate=mutate,
+                            borrow_src_tensor_ref=borrow_src_tensor_ref,
+                            tensor_size=item._size,
+                            mesh_ref=mesh_ref,
+                        )
+                    # Skip non-tensor items (like borrow handles, strings, etc.)
+                    # These don't need IR tracking
 
         assert msg is not None
         stream_name = src_stream_name = dst_stream_name = ""
