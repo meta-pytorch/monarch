@@ -380,12 +380,25 @@ fn main() {
     let cpp_static_libs_config = try_get_cpp_static_libs_config();
     let rdma_include = cpp_static_libs_config.as_ref().map(|c| c.rdma_include.clone());
 
-    // If we don't have static libs config, use dynamic linking for ibverbs/mlx5
-    if cpp_static_libs_config.is_none() {
+    if let Some(config) = &cpp_static_libs_config {
+        // Explicitly emit link directives from the config if it was found.
+        // This ensures ccan, rdma_util, etc., are linked.
+        config.emit_link_directives();
+    } else {
+        // Fallback: If metadata failed, check if we should link statically anyway.
+        // If monarch_cpp_static_libs ran (which it did, per logs), it emitted -L flags
+        // that cargo propagates automatically. We just need to ensure the libraries
+        // are on the link list.
+        
+        // Link main libs (could be static or dynamic, but if -L is present, static wins)
         println!("cargo:rustc-link-lib=ibverbs");
         println!("cargo:rustc-link-lib=mlx5");
+        
+        // FORCE link helpers: ccan and rdma_util.
+        // These are required by the static version of libmlx5.a/libibverbs.a
+        println!("cargo:rustc-link-lib=static=rdma_util");
+        println!("cargo:rustc-link-lib=static=ccan");
     }
-    // Note: If cpp_static_libs_config is Some, link directives are emitted by monarch_extension
 
     let (is_rocm, compute_home, compute_lib_names, rocm_version) =
         if let Ok(rocm_home) = build_utils::validate_rocm_installation() {

@@ -108,7 +108,7 @@ impl std::error::Error for BuildError {}
 
 /// Get environment variable with cargo rerun notification
 pub fn get_env_var_with_rerun(name: &str) -> Result<String, std::env::VarError> {
-    println!("cargo::rerun-if-env-changed={}", name);
+    println!("cargo:rerun-if-env-changed={}", name);
     env::var(name)
 }
 
@@ -677,6 +677,7 @@ pub struct CppStaticLibsConfig {
     pub rdma_include: String,
     pub rdma_lib_dir: String,
     pub rdma_util_dir: String,
+    pub rdma_ccan_dir: String,
 }
 
 impl CppStaticLibsConfig {
@@ -691,6 +692,8 @@ impl CppStaticLibsConfig {
                 .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_LIB_DIR not set - add monarch_cpp_static_libs as build-dependency"),
             rdma_util_dir: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_UTIL_DIR")
                 .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_UTIL_DIR not set - add monarch_cpp_static_libs as build-dependency"),
+            rdma_ccan_dir: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_CCAN_DIR")
+                .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_CCAN_DIR not set - add monarch_cpp_static_libs as build-dependency"),
         }
     }
 
@@ -700,19 +703,22 @@ impl CppStaticLibsConfig {
     /// - libmlx5.a
     /// - libibverbs.a
     /// - librdma_util.a
+    /// - libccan.a
     pub fn emit_link_directives(&self) {
         // Emit link search paths
-        println!("cargo::rustc-link-search=native={}", self.rdma_lib_dir);
-        println!("cargo::rustc-link-search=native={}", self.rdma_util_dir);
+        println!("cargo:rustc-link-search=native={}", self.rdma_lib_dir);
+        println!("cargo:rustc-link-search=native={}", self.rdma_util_dir);
+        println!("cargo:rustc-link-search=native={}", self.rdma_ccan_dir);
 
         // Use whole-archive for rdma-core static libraries
-        println!("cargo::rustc-link-arg=-Wl,--whole-archive");
-        println!("cargo::rustc-link-lib=static=mlx5");
-        println!("cargo::rustc-link-lib=static=ibverbs");
-        println!("cargo::rustc-link-arg=-Wl,--no-whole-archive");
+        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
+        println!("cargo:rustc-link-lib=static=mlx5");
+        println!("cargo:rustc-link-lib=static=ibverbs");
+        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
 
         // rdma_util helper library
-        println!("cargo::rustc-link-lib=static=rdma_util");
+        println!("cargo:rustc-link-lib=static=rdma_util");
+        println!("cargo:rustc-link-lib=static=ccan");
     }
 }
 

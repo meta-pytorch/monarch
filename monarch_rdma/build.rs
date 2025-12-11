@@ -77,13 +77,8 @@ fn main() {
             }
         }
     } else {
-        match build_utils::get_cuda_lib_dir() {
-            Ok(dir) => dir,
-            Err(_) => {
-                build_utils::print_cuda_lib_error_help();
-                std::process::exit(1);
-            }
-        }
+        // get_cuda_lib_dir() returns String directly and panics on failure
+        build_utils::get_cuda_lib_dir()
     };
     println!("cargo:rustc-link-search=native={}", compute_lib_dir);
 
