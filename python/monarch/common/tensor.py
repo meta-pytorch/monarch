@@ -446,6 +446,8 @@ class MeshSliceTensor:
         from_ranks = NDSlice(
             offset=self.slicing.processes.offset, sizes=sizes, strides=strides
         )
+        # Ensure the destination mesh is defined remotely so it has a proper ref
+        mesh.define_remotely()
         r = Tensor(fake_call(self.tensor._fake.clone), mesh, stream)
         assert r.ref is not None
         client = self.tensor.mesh.client
