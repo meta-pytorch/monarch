@@ -8,8 +8,8 @@ This directory contains a standalone integration for running Monarch workloads o
 
 **Supported platforms:**
 - Kubernetes (any cluster)
-- AWS, GCP, Azure
-- Lambda Labs, CoreWeave, RunPod, and [20+ other clouds](https://docs.skypilot.co/en/latest/getting-started/installation.html)
+- Hyperscalers: AWS, GCP, Azure
+- Neoclouds: CoreWeave, Nebius, and [20+ other clouds](https://docs.skypilot.co/en/latest/getting-started/installation.html)
 
 ## Installation
 
@@ -26,6 +26,8 @@ pip install skypilot[all]         # For all clouds
 # Verify SkyPilot setup
 sky check
 ```
+
+TODO(romilb): Link to SkyPilot docs for k8s setup
 
 ## Quick Start
 
@@ -149,44 +151,21 @@ Cluster 'monarch-skypilot-test' terminated
     Cluster terminated.
 ```
 
-## Configuration Options
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `meshes` | Dict mapping mesh names to node counts | Required |
-| `resources` | SkyPilot Resources specification | None (SkyPilot defaults) |
-| `cluster_name` | Name for the cluster | Auto-generated |
-| `monarch_port` | Port for Monarch TCP communication | 22222 |
-| `idle_minutes_to_autostop` | Auto-stop after idle time | None |
-| `down_on_autostop` | Tear down on autostop vs just stop | False |
-| `setup_commands` | Custom setup script | Installs torchmonarch-nightly |
-| `workdir` | Local directory to sync to cluster | None |
-| `file_mounts` | Additional files to mount | None |
-
 ## Default Image
 
-By default, `SkyPilotJob` uses the `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime` Docker image which has compatible system libraries for `torchmonarch-nightly`. Setup time is ~1-2 minutes (just pip install).
+By default, `SkyPilotJob` uses the `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime` Docker image which has compatible system libraries for `torchmonarch-nightly`. TODO(romilb): mention image requirements.
 
-## Faster Cold Starts
+## Faster Cold Starts with SkyPilot's cluster reuse
 
-For faster cold starts (<30s):
-
-**Option 1: Use a pre-built Docker image**
-```python
-resources = sky.Resources(
-    image_id="docker:your-registry/monarch-image:tag",
-    accelerators="H100:1",
-)
-```
-
-**Option 2: Use SkyPilot's cluster reuse**
+TODO(romilb): Validate if this works:
 ```python
 job = SkyPilotJob(
     ...,
     idle_minutes_to_autostop=30,  # Keep cluster alive
-    down_on_autostop=False,       # Just stop, don't terminate
 )
 ```
+
+TODO(romilb): Benchmark pre-baked container images
 
 ## Network Requirements
 
