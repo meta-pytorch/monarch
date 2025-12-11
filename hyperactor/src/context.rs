@@ -20,6 +20,8 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
+use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use dashmap::DashSet;
 use hyperactor_config::attrs::Attrs;
 
@@ -191,6 +193,19 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
 
                 // Default to global configuration if not specified.
                 let reducer_opts = reducer_opts.unwrap_or_default();
+                let max_interval = reducer_opts.max_update_interval();
+                let initial_interval = reducer_opts.initial_update_interval();
+
+                // Create exponential backoff for buffer flush interval, starting at
+                // initial_interval and growing to max_interval
+                let backoff = Mutex::new(
+                    ExponentialBackoffBuilder::new()
+                        .with_initial_interval(initial_interval)
+                        .with_multiplier(2.0)
+                        .with_max_interval(max_interval)
+                        .with_max_elapsed_time(None)
+                        .build(),
+                );
 
                 Box::new(move |update: Serialized| {
                     // Hold the lock until messages are sent. This is to avoid another
@@ -199,16 +214,12 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                     //
                     // We also always acquire alarm *after* the buffer, to avoid deadlocks.
                     let mut buf = buffer.lock().unwrap();
-                    let was_empty = buf.is_empty();
                     match buf.push(update) {
-                        None if was_empty => {
-                            alarm
-                                .lock()
-                                .unwrap()
-                                .arm(reducer_opts.max_update_interval());
+                        None => {
+                            let interval = backoff.lock().unwrap().next_backoff().unwrap();
+                            alarm.lock().unwrap().rearm(interval);
                             Ok(())
                         }
-                        None => Ok(()),
                         Some(Ok(reduced)) => {
                             alarm.lock().unwrap().disarm();
                             post(&mailbox, port_id.clone(), reduced, return_undeliverable);

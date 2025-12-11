@@ -841,7 +841,7 @@ async def test_flush_called_only_once() -> None:
     ):
         mock_ipython = MockIPython()
         with unittest.mock.patch(
-            "monarch._src.actor.logging.get_ipython",
+            "IPython.get_ipython",
             lambda: mock_ipython,
         ), unittest.mock.patch(
             "monarch._src.actor.logging.IN_IPYTHON", True
@@ -880,7 +880,7 @@ async def test_flush_logs_ipython() -> None:
         mock_ipython = MockIPython()
 
         with unittest.mock.patch(
-            "monarch._src.actor.logging.get_ipython",
+            "IPython.get_ipython",
             lambda: mock_ipython,
         ), unittest.mock.patch("monarch._src.actor.logging.IN_IPYTHON", True):
             # Make sure we can register and unregister callbacks

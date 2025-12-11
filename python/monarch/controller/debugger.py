@@ -6,22 +6,8 @@
 
 # pyre-strict
 import sys
-from typing import Optional
 
-_is_ipython: Optional[bool] = None
-
-
-def is_ipython() -> bool:
-    global _is_ipython
-    if _is_ipython is not None:
-        return _is_ipython
-    try:
-        from IPython import get_ipython
-
-        _is_ipython = get_ipython() is not None
-    except ImportError:
-        _is_ipython = False
-    return _is_ipython
+from monarch._src.actor.ipython_check import is_ipython
 
 
 def write(msg: str) -> None:

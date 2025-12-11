@@ -10,17 +10,11 @@
 Monarch Actor API
 """
 
+from monarch._src.actor.ipython_check import is_ipython
 from monarch.config import configure
 
 # Detect if we're running in IPython/Jupyter
-_in_ipython = False
-try:
-    # pyre-ignore[21]
-    from IPython import get_ipython
-
-    _in_ipython = get_ipython() is not None
-except ImportError:
-    pass
+_in_ipython: bool = is_ipython()
 
 # Set notebook-friendly defaults for stdio piping when spawning procs.
 # These config is read by:
