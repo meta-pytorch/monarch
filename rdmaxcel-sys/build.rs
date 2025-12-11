@@ -533,7 +533,7 @@ fn main() {
                 }
                 for include_dir in &libtorch_include_dirs { cpp_build.include(include_dir); }
                 if let Some(include_dir) = &python_config.include_dir { cpp_build.include(include_dir); }
-                cpp_build.compile("rdmaxcel");
+                cpp_build.compile("rdmaxcel_cpp");
             }
 
             // Compile CUDA/HIP files
