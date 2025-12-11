@@ -21,9 +21,9 @@ from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
 )
 from monarch._src.actor.actor_mesh import context
 from monarch._src.actor.future import Future
-from monarch._src.ipython_check import is_ipython
+from monarch._src.actor.ipython_check import is_ipython
 
-IN_IPYTHON = is_ipython()
+IN_IPYTHON: bool = is_ipython()
 
 logger: logging.Logger = logging.getLogger(__name__)
 

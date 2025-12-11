@@ -74,7 +74,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_SPLIT_MAX_BUFFER_AGE".to_string()),
         py_name: None,
     })
-    pub attr SPLIT_MAX_BUFFER_AGE: Duration = Duration::from_millis(1);
+    pub attr SPLIT_MAX_BUFFER_AGE: Duration = Duration::from_millis(50);
 
     /// Timeout used by proc mesh for stopping an actor.
     @meta(CONFIG = ConfigAttr {

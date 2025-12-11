@@ -7,7 +7,7 @@
 # pyre-strict
 import sys
 
-from monarch._src.ipython_check import is_ipython
+from monarch._src.actor.ipython_check import is_ipython
 
 
 def write(msg: str) -> None:
