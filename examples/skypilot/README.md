@@ -82,6 +82,73 @@ python getting_started.py --cloud aws --num-hosts 2 --accelerator "A100:1"
 python getting_started.py --cloud gcp --num-hosts 2 --accelerator "A100:1"
 ```
 
+Example output:
+```
+$ python skypilot_getting_started.py --num-hosts 2 --gpus-per-host 1 --cluster-name monarch-skypilot-test
+
+============================================================
+Monarch Getting Started with SkyPilot
+============================================================
+
+Configuration:
+  Cloud: kubernetes
+  Hosts: 2
+  GPUs per host: 1
+  Accelerator: H200:1
+  Cluster name: monarch-skypilot-test
+
+[1] Creating SkyPilot job...
+
+[2] Launching cluster and starting Monarch workers...
+No cached job found at path: .monarch/job_state.pkl
+Applying current job
+Launching SkyPilot cluster 'monarch-skypilot-test' with 2 nodes
+Running on cluster: monarch-skypilot-test
+SkyPilot cluster 'monarch-skypilot-test' launched successfully
+Waiting for job 1 setup to complete (timeout=300s)...
+Job 1 status: JobStatus.SETTING_UP (waited 5s)
+Job 1 is now RUNNING (setup complete)
+Saving job to cache at .monarch/job_state.pkl
+Job has started, connecting to current state
+Found 2 nodes ready
+Connecting to workers for mesh 'trainers': ['tcp://10.0.4.22:22222', 'tcp://10.0.4.112:22222']
+Monarch internal logs are being written to /tmp/sky/monarch_log.log; execution id sky_Dec-11_01:31_653
+Waiting for host mesh 'trainers' to initialize...
+Host mesh 'trainers' initialized successfully
+Host mesh 'trainers' ready
+    Got host mesh with extent: {hosts: 2}
+
+[3] Spawning processes on cloud hosts...
+    Process mesh extent: {hosts: 2, gpus: 1}
+
+[4] Spawning Counter actors...
+
+[5] Broadcasting increment to all counters...
+
+[6] Getting counter values...
+    Counter values: ValueMesh({hosts: 2, gpus: 1}):
+  (({'hosts': 0/2, 'gpus': 0/1}, 3), ({'hosts': 1/2, 'gpus': 0/1}, 3))
+
+[7] Spawning Trainer actors...
+
+[8] Performing distributed training step...
+    ({'hosts': 0/2, 'gpus': 0/1}, "Trainer {'hosts': 0/2, 'gpus': 0/1} taking a step.")
+    ({'hosts': 1/2, 'gpus': 0/1}, "Trainer {'hosts': 1/2, 'gpus': 0/1} taking a step.")
+
+[9] Getting trainer info...
+    ({'hosts': 0/2, 'gpus': 0/1}, "Trainer at rank {'hosts': 0/2, 'gpus': 0/1}")
+    ({'hosts': 1/2, 'gpus': 0/1}, "Trainer at rank {'hosts': 1/2, 'gpus': 0/1}")
+
+============================================================
+Success! Monarch actors ran on SkyPilot cluster!
+============================================================
+
+[10] Cleaning up SkyPilot cluster...
+Tearing down SkyPilot cluster 'monarch-skypilot-test'
+Cluster 'monarch-skypilot-test' terminated
+    Cluster terminated.
+```
+
 ## Configuration Options
 
 | Parameter | Description | Default |
