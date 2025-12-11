@@ -984,6 +984,7 @@ impl ProcMeshRef {
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: None,
             }),
         );
 
@@ -1114,6 +1115,7 @@ impl ProcMeshRef {
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: None,
             }),
         );
         agent_mesh.cast(
