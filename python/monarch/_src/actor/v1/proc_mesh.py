@@ -217,7 +217,22 @@ class ProcMesh(MeshTrait):
         - `kwargs`: Keyword arguments to pass to the actor's constructor.
 
         Returns:
-        - The actor instance.
+        - The actor mesh reference typed as T.
+
+        Note:
+
+        The method returns immediately, initializing the underlying actor instances
+        asynchronously. Thus, return of this method does not guarantee the actor's
+        __init__ has be executed; but rather that __init__ will be executed before the
+        first call to the actor's endpoints.
+
+        Nonblocking enhances composition, permitting the user to easily pipeline mesh
+        creation, for exmaple to construct complex mesh object graphs without introducing
+        additional latency.
+
+
+        If __init__ fails, the actor will be stopped and a supervision event will
+        be raised.
         """
         return self._spawn_nonblocking(name, Class, *args, **kwargs)
 
