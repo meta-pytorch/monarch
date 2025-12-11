@@ -334,7 +334,7 @@ class CommandHistory:
                     command_type,
                     devices,
                     control_dependencies,
-                    traceback.format_list(tb),
+                    tb,
                 )
 
         assert ranks is not None
@@ -370,7 +370,7 @@ class CommandHistory:
                     command_type,
                     devices,
                     control_dependencies,
-                    traceback.format_list(tb),
+                    tb,
                 )
             src_tensor = getattr(msg, "tensor", None)
             if src_tensor is not None:
@@ -402,12 +402,7 @@ class CommandHistory:
             for ref in refs:
                 stream_name = ir._data.tensorref_to_stream[ref]
                 # Do not call _insert_node() since we do not need DeleteRefs for the control DAG
-                ir.delete_tensor(
-                    ref,
-                    flattened_ranks,
-                    stream_name,
-                    command_id,
-                )
+                ir.delete_tensor(ref, flattened_ranks, stream_name, command_id, tb)
         if dag_item_type == "Exit":
             ir.convert_devices_to_meshes()
 
