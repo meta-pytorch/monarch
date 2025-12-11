@@ -10,8 +10,16 @@ use cxx::ExternType;
 use cxx::type_id;
 
 /// SAFETY: bindings
+#[cfg(not(rocm))]
 unsafe impl ExternType for CUstream_st {
     type Id = type_id!("CUstream_st");
+    type Kind = cxx::kind::Opaque;
+}
+
+/// SAFETY: bindings
+#[cfg(rocm)]
+unsafe impl ExternType for ihipStream_t {
+    type Id = type_id!("ihipStream_t");
     type Kind = cxx::kind::Opaque;
 }
 
