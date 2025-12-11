@@ -180,6 +180,9 @@ class CommandHistory:
                 results_list = result if isinstance(result, list) else [result]
                 for tensor_ref in results_list:
                     fake = tensor_ref._fake
+                    # Extract mesh reference from DTensorRef (captured at creation time)
+                    mesh_ref = getattr(tensor_ref, "_mesh_ref", None)
+
                     ir.update_tensor(
                         tensor_ref._storage_id,
                         tensor_ref.ref,
@@ -191,6 +194,7 @@ class CommandHistory:
                         mutate=mutate,
                         borrow_src_tensor_ref=borrow_src_tensor_ref,
                         tensor_size=tensor_ref._size,
+                        mesh_ref=mesh_ref,
                     )
 
         assert msg is not None
@@ -389,6 +393,7 @@ class CommandHistory:
                         dst_stream_name,
                         tuple(res._fake.size()),
                     )
+
                     for rank, dst_stream_name in dst_rank_stream_pairs:
                         _process_tensor_results(res, rank, dst_stream_name, command_id)
 
@@ -403,6 +408,8 @@ class CommandHistory:
                     stream_name,
                     command_id,
                 )
+        if dag_item_type == "Exit":
+            ir.convert_devices_to_meshes()
 
     def step(self, iter_count: int, dump: bool = False) -> None:
         if dump:
