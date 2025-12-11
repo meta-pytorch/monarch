@@ -1,34 +1,40 @@
 #!/usr/bin/env python3
 """
-Monarch Getting Started with SkyPilot
-=====================================
+Running Monarch on Kubernetes with SkyPilot
+===========================================
 
 This script demonstrates running Monarch actors on cloud infrastructure
-provisioned by SkyPilot. It follows the Monarch getting started guide
-but uses SkyPilot to launch the worker nodes.
+provisioned by SkyPilot (Kubernetes or cloud VMs).
 
 Prerequisites:
-- Monarch installed with its Rust bindings (build with `pip install -e .` in monarch/)
-- SkyPilot installed and configured (run `sky check`)
+    pip install torchmonarch-nightly
+    pip install skypilot[kubernetes]  # or skypilot[aws], skypilot[gcp], etc.
+    sky check  # Verify SkyPilot configuration
 
 Usage:
-    # Run from inside a Kubernetes pod (client runs locally):
-    python examples/skypilot_getting_started.py --cloud kubernetes --num-hosts 2
+    # Run on Kubernetes:
+    python getting_started.py --cloud kubernetes --num-hosts 2
 
-    # Run from outside the cluster using the SkyPilot YAML:
-    sky launch examples/skypilot_run_example.yaml
+    # Run on AWS:
+    python getting_started.py --cloud aws --num-hosts 2
 
-See SKY_README.md for full documentation.
+    # Run on GCP:
+    python getting_started.py --cloud gcp --num-hosts 2
 """
 
 import argparse
 import os
 import sys
 
-# Set timeouts before importing monarch - monarch build takes time
+# Set timeouts before importing monarch
 os.environ["HYPERACTOR_HOST_SPAWN_READY_TIMEOUT"] = "300s"
 os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT"] = "300s"
 os.environ["HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE"] = "300s"
+
+# If running inside a SkyPilot cluster, unset the in-cluster context
+# to allow launching new clusters on the same Kubernetes cluster
+if "SKYPILOT_IN_CLUSTER_CONTEXT_NAME" in os.environ:
+    del os.environ["SKYPILOT_IN_CLUSTER_CONTEXT_NAME"]
 
 # Check dependencies before importing
 try:
@@ -38,11 +44,14 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from monarch.job import SkyPilotJob
     from monarch.actor import Actor, endpoint, ProcMesh, context
 except ImportError as e:
     print(f"ERROR: Monarch is not properly installed: {e}")
+    print("Run: pip install torchmonarch-nightly")
     sys.exit(1)
+
+# Import SkyPilotJob from the local package
+from skypilot_job import SkyPilotJob
 
 # ============================================================================
 # Step 1: Define actors (same as getting started guide)
@@ -89,7 +98,8 @@ def get_cloud(cloud_name: str):
         "kubernetes": sky.Kubernetes,
         "aws": sky.AWS,
         "gcp": sky.GCP,
-        "azure": sky.Azure, # TODO(romilb): Add more clouds here
+        "azure": sky.Azure,
+        "lambda": sky.Lambda,
     }
     if cloud_name.lower() not in clouds:
         raise ValueError(f"Unknown cloud: {cloud_name}. Available: {list(clouds.keys())}")
@@ -101,7 +111,7 @@ def main():
     parser.add_argument(
         "--cloud",
         default="kubernetes",
-        help="Cloud provider to use (kubernetes, aws, gcp, azure)",
+        help="Cloud provider to use (kubernetes, aws, gcp, azure, lambda)",
     )
     parser.add_argument(
         "--num-hosts",
@@ -109,11 +119,10 @@ def main():
         default=2,
         help="Number of host nodes to provision",
     )
-    # TODO(romilb): This should be parsed from the accelerator spec
     parser.add_argument(
         "--gpus-per-host",
         type=int,
-        default=2,
+        default=1,
         help="Number of GPU processes per host",
     )
     parser.add_argument(
@@ -146,7 +155,6 @@ def main():
         print(f"  Region: {args.region}")
 
     # Create a SkyPilotJob to provision nodes
-    # This will launch cloud instances and start Monarch workers on them
     print("\n[1] Creating SkyPilot job...")
 
     # Build resources specification
@@ -156,10 +164,6 @@ def main():
     }
     if args.region:
         resources_kwargs["region"] = args.region
-
-    # Find Monarch repo root (this script is in examples/)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    monarch_root = os.path.dirname(script_dir)  # Go up from examples/
     
     job = SkyPilotJob(
         # Define the mesh of hosts we need
@@ -169,9 +173,6 @@ def main():
         # Auto-cleanup after 10 minutes of idle time
         idle_minutes_to_autostop=10,
         down_on_autostop=True,
-        # Sync Monarch source to workers for building from source
-        # (SkyPilotJob uses default setup commands when workdir is provided)
-        workdir=monarch_root,
     )
 
     try:
