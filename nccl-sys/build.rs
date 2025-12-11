@@ -51,23 +51,72 @@ fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let compute_include_path = format!("{}/include", compute_home);
 
-    // Determine which header to use
-    let header_path = if is_rocm {
-        // Hipify the sources for ROCm using centralized build_utils function
+    // Determine source paths based on platform
+    let (bridge_cpp_path, bridge_include_dir, header_path) = if is_rocm {
+        // Hipify bridge.h and bridge.cpp for ROCm
         let hip_src_dir = out_path.join("hipified_src");
         let project_root = manifest_dir.parent().expect("Failed to find project root");
 
-        let source_files = vec![src_dir.join("nccl.h")];
+        // Only hipify files that exist
+        let source_files = vec![
+            src_dir.join("bridge.h"),
+            src_dir.join("bridge.cpp"),
+        ];
 
         build_utils::run_hipify_torch(project_root, &source_files, &hip_src_dir)
             .expect("Failed to hipify nccl-sys sources");
 
-        // The hipified header should now include <rccl/rccl.h>
-        hip_src_dir.join("nccl_hip.h")
+        // Apply ROCm-specific patches to hipified bridge.cpp
+        // hipify_torch doesn't catch all cudaStream_t occurrences in the .cpp file
+        let bridge_cpp_hipified = hip_src_dir.join("bridge.cpp");
+        if bridge_cpp_hipified.exists() {
+            let content = std::fs::read_to_string(&bridge_cpp_hipified)
+                .expect("Failed to read hipified bridge.cpp");
+            let patched = content
+                // Fix include path to use hipified header
+                .replace("#include \"bridge.h\"", "#include \"bridge_hip.h\"")
+                // Replace all cudaStream_t with hipStream_t
+                .replace("cudaStream_t", "hipStream_t")
+                // Patch dlopen library name for RCCL
+                .replace("libnccl.so", "librccl.so")
+                .replace("libnccl.so.2", "librccl.so");
+            std::fs::write(&bridge_cpp_hipified, patched)
+                .expect("Failed to write patched bridge.cpp");
+        }
+
+        (
+            bridge_cpp_hipified,
+            hip_src_dir.clone(),
+            hip_src_dir.join("bridge_hip.h"),
+        )
     } else {
-        src_dir.join("nccl.h")
+        (
+            src_dir.join("bridge.cpp"),
+            src_dir.clone(),
+            src_dir.join("bridge.h"),
+        )
     };
 
+    // Compile the bridge.cpp file
+    let mut cc_builder = cc::Build::new();
+    cc_builder
+        .cpp(true)
+        .file(&bridge_cpp_path)
+        .include(&bridge_include_dir)
+        .flag("-std=c++14");
+
+    // Include compute headers (CUDA or ROCm)
+    cc_builder.include(&compute_include_path);
+
+    if is_rocm {
+        cc_builder
+            .define("__HIP_PLATFORM_AMD__", "1")
+            .define("USE_ROCM", "1");
+    }
+
+    cc_builder.compile("nccl_bridge");
+
+    // Set up bindgen using bridge.h (which contains all NCCL declarations)
     let mut builder = bindgen::Builder::default()
         .header(header_path.to_string_lossy())
         .clang_arg("-x")
@@ -75,11 +124,12 @@ fn main() {
         .clang_arg("-std=c++14")
         .clang_arg(format!("-I{}", compute_include_path))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Communicator creation and management
-        .allowlist_function("ncclGetLastError")
-        .allowlist_function("ncclGetErrorString")
+        // Version and error handling
         .allowlist_function("ncclGetVersion")
         .allowlist_function("ncclGetUniqueId")
+        .allowlist_function("ncclGetErrorString")
+        .allowlist_function("ncclGetLastError")
+        // Communicator creation and management
         .allowlist_function("ncclCommInitRank")
         .allowlist_function("ncclCommInitAll")
         .allowlist_function("ncclCommInitRankConfig")
@@ -112,18 +162,24 @@ fn main() {
         // User-defined reduction operators
         .allowlist_function("ncclRedOpCreatePreMulSum")
         .allowlist_function("ncclRedOpDestroy")
-        // CUDA/HIP stream and device functions
-        .allowlist_function("cudaStream.*")
-        .allowlist_function("hipStream.*")
+        // CUDA/HIP runtime functions
         .allowlist_function("cudaSetDevice")
+        .allowlist_function("cudaStreamSynchronize")
         .allowlist_function("hipSetDevice")
+        .allowlist_function("hipStreamSynchronize")
+        // Types
         .allowlist_type("ncclComm_t")
         .allowlist_type("ncclResult_t")
         .allowlist_type("ncclDataType_t")
         .allowlist_type("ncclRedOp_t")
         .allowlist_type("ncclScalarResidence_t")
-        .allowlist_type("ncclConfig_t")
         .allowlist_type("ncclSimInfo_t")
+        .allowlist_type("ncclConfig_t")
+        .allowlist_type("cudaError_t")
+        .allowlist_type("cudaStream_t")
+        .allowlist_type("hipError_t")
+        .allowlist_type("hipStream_t")
+        // Constants
         .allowlist_var("NCCL_SPLIT_NOCOLOR")
         .allowlist_var("NCCL_MAJOR")
         .allowlist_var("NCCL_MINOR")
@@ -168,13 +224,27 @@ fn main() {
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
 
-    // Link appropriate library
+    // Platform-specific linking
     if is_rocm {
-        // RCCL is ROCm's NCCL-compatible library
+        // ROCm: Link against RCCL and HIP runtime
         println!("cargo::rustc-link-lib=rccl");
         println!("cargo::rustc-link-search=native={}/lib", compute_home);
+
+        // Link HIP runtime
+        let hip_lib_dir = format!("{}/lib", compute_home);
+        println!("cargo::rustc-link-search=native={}", hip_lib_dir);
+        println!("cargo::rustc-link-lib=amdhip64");
     } else {
-        println!("cargo::rustc-link-lib=nccl");
+        // CUDA: We no longer link against nccl directly since we dlopen it
+        // But we do link against CUDA runtime statically
+        let cuda_lib_dir = build_utils::get_cuda_lib_dir();
+        println!("cargo::rustc-link-search=native={}", cuda_lib_dir);
+
+        println!("cargo::rustc-link-lib=static=cudart_static");
+        // cudart_static requires linking against librt, libpthread, and libdl
+        println!("cargo::rustc-link-lib=rt");
+        println!("cargo::rustc-link-lib=pthread");
+        println!("cargo::rustc-link-lib=dl");
     }
 
     println!("cargo::rustc-cfg=cargo");

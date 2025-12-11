@@ -397,7 +397,6 @@ mod tests {
     use hyperactor::Actor;
     use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::RemoteSpawn;
     use hyperactor::proc::Proc;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;

@@ -32,7 +32,6 @@ use tokio::time::Duration;
 use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
-use tracing::Level;
 use tracing::Span;
 
 use super::serialize_response;

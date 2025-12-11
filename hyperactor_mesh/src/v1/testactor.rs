@@ -28,7 +28,6 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
-use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock as _;
 use hyperactor::clock::RealClock;

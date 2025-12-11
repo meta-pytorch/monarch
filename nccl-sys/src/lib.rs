@@ -41,6 +41,7 @@ unsafe impl ExternType for ncclComm {
 #[allow(non_camel_case_types)]
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
+#[allow(dead_code)]
 mod inner {
     use serde::Deserialize;
     use serde::Deserializer;
@@ -51,7 +52,7 @@ mod inner {
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-    // This type is manually defined instead of generated because we want to dervice
+    // This type is manually defined instead of generated because we want to derive
     // Serialize/Deserialize on it.
     #[repr(C)]
     #[derive(Debug, Copy, Clone, Serialize, Deserialize)]

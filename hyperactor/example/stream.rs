@@ -18,7 +18,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
-use hyperactor::RemoteSpawn;
 use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;

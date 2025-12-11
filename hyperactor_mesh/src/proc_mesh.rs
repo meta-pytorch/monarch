@@ -17,7 +17,6 @@ use std::sync::atomic::Ordering;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::future::join_all;
-use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;

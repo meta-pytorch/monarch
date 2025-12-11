@@ -21,6 +21,3 @@ thiserror = "2.0.12"
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
-
-[dev-dependencies]
-paste = "1.0.14"

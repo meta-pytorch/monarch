@@ -754,6 +754,11 @@ class Simulator:
     ):
         return
 
+    def CreateRemoteProcessGroup(
+        self, ranks: List[NDSlice], msg: messages.CreateRemoteProcessGroup
+    ):
+        return
+
 
 class SimulatorController(MockController):
     """

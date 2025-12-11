@@ -7,7 +7,6 @@
  */
 
 use hyperactor::Actor;
-use hyperactor::ActorHandle;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
@@ -72,7 +71,7 @@ declare_attrs! {
     /// meshes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("mesh_proc_spawn_max_idle".to_string()),
     })
     pub attr PROC_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
@@ -628,7 +627,13 @@ impl Drop for HostMesh {
             tracing::warn!(
                 host_mesh = %self.name,
                 hosts = hosts.len(),
-                "HostMesh dropped without a tokio runtime; skipping best-effort shutdown"
+                "HostMesh dropped without a Tokio runtime; skipping \
+                 best-effort shutdown. This indicates that .shutdown() \
+                 on this mesh has not been called before program exit \
+                 (perhaps due to a missing call to \
+                 'monarch.actor.shutdown_context()'?) This in turn can \
+                 lead to backtrace output due to folly SIGTERM \
+                 handlers."
             );
         }
 
@@ -799,6 +804,7 @@ impl HostMeshRef {
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: None,
             }),
         );
 
@@ -922,7 +928,7 @@ impl HostMeshRef {
                     );
 
                     return Err(v1::Error::ProcCreationError {
-                        state,
+                        state: Box::new(state),
                         host_rank,
                         mesh_agent,
                     });
@@ -983,6 +989,7 @@ impl HostMeshRef {
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
             Some(ReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
+                initial_update_interval: None,
             }),
         );
         for proc_id in procs.into_iter() {
@@ -1082,6 +1089,8 @@ impl HostMeshRef {
 
     /// Get the state of all procs with Name in this host mesh.
     /// The procs iterator must be in rank order.
+    /// The returned ValueMesh will have a non-empty inner state unless there
+    /// was a timeout reaching the host mesh agent.
     #[allow(clippy::result_large_err)]
     pub(crate) async fn proc_states(
         &self,
@@ -1513,8 +1522,9 @@ mod tests {
             .await
             .unwrap_err();
         assert_matches!(
-            err, v1::Error::ProcCreationError { state: resource::State { status: resource::Status::Failed(msg), ..}, .. }
-            if msg.contains("failed to configure process: Terminal(Stopped { exit_code: 1")
+            err,
+            v1::Error::ProcCreationError { state, .. }
+            if matches!(state.status, resource::Status::Failed(ref msg) if msg.contains("failed to configure process: Terminal(Stopped { exit_code: 1"))
         );
     }
 

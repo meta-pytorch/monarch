@@ -21,7 +21,6 @@ use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
-use hyperactor::RemoteSpawn;
 use hyperactor::forward;
 use hyperactor::instrument;
 use hyperactor::instrument_infallible;

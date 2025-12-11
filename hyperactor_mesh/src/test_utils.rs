@@ -12,7 +12,6 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Named;
-use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;

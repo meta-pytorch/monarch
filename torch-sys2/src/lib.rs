@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![allow(non_camel_case_types)]
+
 //! Simplified Rust bindings for libtorch C++ APIs.
 //!
 //! This is a streamlined version that only includes the functionality

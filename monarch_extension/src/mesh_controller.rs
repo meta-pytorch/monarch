@@ -40,7 +40,6 @@ use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::selection::Selection;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
-use hyperactor_mesh::v1::Name;
 use hyperactor_mesh_macros::sel;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;

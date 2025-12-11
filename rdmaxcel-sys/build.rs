@@ -355,6 +355,16 @@ fn get_libtorch_include_dirs(python_interpreter: &Path) -> Vec<PathBuf> {
     include_dirs
 }
 
+/// Try to get rdma-core config from cpp_static_libs, returns None if not available
+fn try_get_cpp_static_libs_config() -> Option<build_utils::CppStaticLibsConfig> {
+    // Check if the required environment variables are set
+    if std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_INCLUDE").is_ok() {
+        Some(build_utils::CppStaticLibsConfig::from_env())
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn main() {}
 
@@ -365,8 +375,17 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(rocm_6_x)");
     println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
 
-    println!("cargo:rustc-link-lib=ibverbs");
-    println!("cargo:rustc-link-lib=mlx5");
+    // Try to get rdma-core config from cpp_static_libs (upstream approach)
+    // If not available, fall back to dynamic linking
+    let cpp_static_libs_config = try_get_cpp_static_libs_config();
+    let rdma_include = cpp_static_libs_config.as_ref().map(|c| c.rdma_include.clone());
+
+    // If we don't have static libs config, use dynamic linking for ibverbs/mlx5
+    if cpp_static_libs_config.is_none() {
+        println!("cargo:rustc-link-lib=ibverbs");
+        println!("cargo:rustc-link-lib=mlx5");
+    }
+    // Note: If cpp_static_libs_config is Some, link directives are emitted by monarch_extension
 
     let (is_rocm, compute_home, compute_lib_names, rocm_version) =
         if let Ok(rocm_home) = build_utils::validate_rocm_installation() {
@@ -376,7 +395,7 @@ fn main() {
             (true, rocm_home, vec!["amdhip64", "hsa-runtime64"], version)
         } else if let Ok(cuda_home) = build_utils::validate_cuda_installation() {
             println!("cargo:warning=Using CUDA from {}", cuda_home);
-            (false, cuda_home, vec!["cuda", "cudart"], (0, 0))
+            (false, cuda_home, vec![], (0, 0))  // CUDA libs handled below
         } else {
             eprintln!("Error: Neither CUDA nor ROCm installation found!");
             std::process::exit(1);
@@ -393,11 +412,25 @@ fn main() {
         Err(_) => build_utils::PythonConfig { include_dir: None, lib_dir: None },
     };
 
-    let compute_lib_dir = if is_rocm { build_utils::get_rocm_lib_dir().unwrap() } else { build_utils::get_cuda_lib_dir().unwrap() };
-    println!("cargo:rustc-link-search=native={}", compute_lib_dir);
-    for lib_name in &compute_lib_names {
-        println!("cargo:rustc-link-lib={}", lib_name);
+    // Platform-specific library linking
+    if is_rocm {
+        let compute_lib_dir = build_utils::get_rocm_lib_dir().unwrap();
+        println!("cargo:rustc-link-search=native={}", compute_lib_dir);
+        for lib_name in &compute_lib_names {
+            println!("cargo:rustc-link-lib={}", lib_name);
+        }
+    } else {
+        // CUDA: Link cudart statically (upstream approach)
+        let cuda_lib_dir = build_utils::get_cuda_lib_dir();
+        println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
+        // Note: libcuda is now loaded dynamically via dlopen in driver_api.cpp
+        // Link cudart statically (CUDA Runtime API)
+        println!("cargo:rustc-link-lib=static=cudart_static");
+        // cudart_static requires linking against librt and libpthread
+        println!("cargo:rustc-link-lib=rt");
+        println!("cargo:rustc-link-lib=pthread");
     }
+    println!("cargo:rustc-link-lib=dl");
 
     let use_pytorch_apis = build_utils::get_env_var_with_rerun("TORCH_SYS_USE_PYTORCH_APIS").unwrap_or_else(|_| "1".to_owned());
     let libtorch_include_dirs: Vec<PathBuf> = if use_pytorch_apis == "1" {
@@ -420,11 +453,10 @@ fn main() {
         println!("cargo:rustc-link-lib=c10");
         if is_rocm { println!("cargo:rustc-link-lib=c10_hip"); } else { println!("cargo:rustc-link-lib=c10_cuda"); }
     }
-    println!("cargo:rustc-link-lib=dl");
 
     match env::var("OUT_DIR") {
         Ok(out_dir) => {
-            let out_path = PathBuf::from(out_dir);
+            let out_path = PathBuf::from(&out_dir);
             let (code_dir, header_path, c_source_path, cpp_source_path, cuda_source_path, driver_api_cpp_path);
 
             if is_rocm {
@@ -449,7 +481,7 @@ fn main() {
             // Bindgen setup
             let mut builder = bindgen::Builder::default()
                 .header(header_path.to_string_lossy())
-                .clang_arg("-x").clang_arg("c++").clang_arg("-std=gnu++20")
+                .clang_arg("-x").clang_arg("c++").clang_arg("-std=c++14")
                 .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
                 .allowlist_function("ibv_.*").allowlist_function("mlx5dv_.*").allowlist_function("mlx5_wqe_.*")
                 .allowlist_function("create_qp").allowlist_function("create_mlx5dv_.*")
@@ -462,6 +494,7 @@ fn main() {
                 .allowlist_function("pt_cuda_allocator_compatibility").allowlist_function("pt_hip_allocator_compatibility")
                 .allowlist_function("register_segments").allowlist_function("deregister_segments")
                 .allowlist_function("register_dmabuf_buffer").allowlist_function("get_hip_pci_address_from_ptr")
+                .allowlist_function("get_cuda_pci_address_from_ptr")
                 .allowlist_function("rdmaxcel_cu.*").allowlist_function("rdmaxcel_hip.*").allowlist_function("rdmaxcel_hsa.*")
                 .allowlist_function("rdmaxcel_qp_.*").allowlist_function("rdmaxcel_print_device_info")
                 .allowlist_function("rdmaxcel_error_string").allowlist_function("completion_cache_.*")
@@ -472,6 +505,7 @@ fn main() {
                 .allowlist_type("completion_node").allowlist_type("poll_context_t")
                 .allowlist_type("poll_context").allowlist_type("rdma_qp_type_t")
                 .allowlist_type("rdmaxcel_segment_scanner_fn")
+                .allowlist_type("rdmaxcel_scanned_segment_t")
                 .allowlist_type("CUdeviceptr").allowlist_type("CUdevice").allowlist_type("CUresult")
                 .allowlist_type("CUcontext").allowlist_type("CUmemRangeHandleType")
                 .allowlist_var("CUDA_SUCCESS").allowlist_var("CU_.*")
@@ -493,6 +527,12 @@ fn main() {
                 .derive_default(true).prepend_enum_name(false);
 
             builder = builder.clang_arg(format!("-I{}", compute_include_path));
+
+            // Add rdma-core include path
+            if let Some(ref rdma_inc) = rdma_include {
+                builder = builder.clang_arg(format!("-I{}", rdma_inc));
+            }
+
             if is_rocm {
                 builder = builder.clang_arg("-D__HIP_PLATFORM_AMD__=1").clang_arg("-DUSE_ROCM=1");
                 if rocm_version.0 >= 7 { builder = builder.clang_arg("-DROCM_7_PLUS=1"); } else { builder = builder.clang_arg("-DROCM_6_X=1"); }
@@ -510,6 +550,9 @@ fn main() {
                 let mut build = cc::Build::new();
                 build.file(&c_source_path).include(&code_dir).flag("-fPIC");
                 build.include(&compute_include_path);
+                if let Some(ref rdma_inc) = rdma_include {
+                    build.include(rdma_inc);
+                }
                 if is_rocm {
                     build.define("__HIP_PLATFORM_AMD__", "1").define("USE_ROCM", "1");
                     if rocm_version.0 >= 7 { build.define("ROCM_7_PLUS", "1"); } else { build.define("ROCM_6_X", "1"); }
@@ -520,7 +563,10 @@ fn main() {
             // Compile C++ files (rdmaxcel.cpp)
             if cpp_source_path.exists() {
                 let mut cpp_build = cc::Build::new();
-                cpp_build.file(&cpp_source_path).include(&code_dir).flag("-fPIC").cpp(true).flag("-std=gnu++20").flag("-Wno-unused-parameter").define("PYTORCH_C10_DRIVER_API_SUPPORTED", "1");
+                cpp_build.file(&cpp_source_path).include(&code_dir).flag("-fPIC").cpp(true).flag("-std=c++14");
+                if let Some(ref rdma_inc) = rdma_include {
+                    cpp_build.include(rdma_inc);
+                }
                 // Suppress deprecated API warnings for HIP context management APIs (deprecated in ROCm 6.x)
                 if is_rocm {
                     cpp_build.flag("-Wno-deprecated-declarations");
@@ -534,6 +580,9 @@ fn main() {
                 for include_dir in &libtorch_include_dirs { cpp_build.include(include_dir); }
                 if let Some(include_dir) = &python_config.include_dir { cpp_build.include(include_dir); }
                 cpp_build.compile("rdmaxcel_cpp");
+
+                // Statically link libstdc++ to avoid runtime dependency on system libstdc++ (upstream)
+                build_utils::link_libstdcpp_static();
             }
 
             // Compile CUDA/HIP files
@@ -544,13 +593,39 @@ fn main() {
                 let cuda_obj_path = format!("{}/rdmaxcel_cuda.o", cuda_build_dir);
                 let cuda_lib_path = format!("{}/librdmaxcel_cuda.a", cuda_build_dir);
 
+                let mut compiler_args: Vec<String> = vec![
+                    "-c".to_string(),
+                    cuda_source_path.to_str().unwrap().to_string(),
+                    "-o".to_string(),
+                    cuda_obj_path.clone(),
+                    "-fPIC".to_string(),
+                    format!("-I{}", compute_include_path),
+                    format!("-I{}", code_dir.display()),
+                    "-I/usr/include".to_string(),
+                    "-I/usr/include/infiniband".to_string(),
+                ];
+
+                if let Some(ref rdma_inc) = rdma_include {
+                    compiler_args.push(format!("-I{}", rdma_inc));
+                }
+
                 let compiler_output = if is_rocm {
-                     let mut cmd = Command::new(&compiler_path);
-                     cmd.args(["-c", cuda_source_path.to_str().unwrap(), "-o", &cuda_obj_path, "-fPIC", "-std=c++20", "-D__HIP_PLATFORM_AMD__=1", "-DUSE_ROCM=1", &format!("-I{}", compute_include_path), &format!("-I{}", code_dir.display()), "-I/usr/include", "-I/usr/include/infiniband"]);
-                     if rocm_version.0 >= 7 { cmd.arg("-DROCM_7_PLUS=1"); } else { cmd.arg("-DROCM_6_X=1"); }
-                     cmd.output()
+                    compiler_args.push("-std=c++14".to_string());
+                    compiler_args.push("-D__HIP_PLATFORM_AMD__=1".to_string());
+                    compiler_args.push("-DUSE_ROCM=1".to_string());
+                    if rocm_version.0 >= 7 {
+                        compiler_args.push("-DROCM_7_PLUS=1".to_string());
+                    } else {
+                        compiler_args.push("-DROCM_6_X=1".to_string());
+                    }
+                    Command::new(&compiler_path).args(&compiler_args).output()
                 } else {
-                     Command::new(&compiler_path).args(["-c", cuda_source_path.to_str().unwrap(), "-o", &cuda_obj_path, "-fPIC", "-std=c++20", "-Xcompiler", "-fPIC", &format!("-I{}", compute_include_path), &format!("-I{}", code_dir.display()), "-I/usr/include", "-I/usr/include/infiniband"]).output()
+                    compiler_args.insert(4, "--compiler-options".to_string());
+                    compiler_args.insert(6, "-std=c++14".to_string());
+                    compiler_args.insert(7, "--expt-extended-lambda".to_string());
+                    compiler_args.insert(8, "-Xcompiler".to_string());
+                    compiler_args.insert(9, "-fPIC".to_string());
+                    Command::new(&compiler_path).args(&compiler_args).output()
                 };
 
                 match compiler_output {

@@ -92,8 +92,8 @@ conda install libunwind -y
 # Install the correct cuda and cuda-toolkit versions for your machine
 sudo dnf install cuda-toolkit-12-8 cuda-12-8
 
-# Install clang-dev and nccl-dev
-sudo dnf install clang-devel libnccl-devel
+# Install clang-devel, nccl-devel, and libstdc++-static
+sudo dnf install clang-devel libnccl-devel libstdc++-static
 # Or, in some environments, the following may be necessary instead
 conda install -c conda-forge clangdev nccl
 conda update -n monarchenv --all -c conda-forge -y

@@ -1949,6 +1949,7 @@ mod tests {
     use crate::comm::CommParams;
     use crate::test_util;
 
+    #[allow(dead_code)]
     fn fake_seq_error(err: anyhow::Error) -> Arc<SeqError> {
         Arc::new(SeqError {
             seq: 0.into(),
@@ -1964,7 +1965,9 @@ mod tests {
         // port -- otherwise an actor failure will cause a crash.
         #[allow(dead_code)]
         supervision_rx: PortReceiver<ActorSupervisionEvent>,
+        #[allow(dead_code)]
         controller_rx: PortReceiver<ControllerMessage>,
+        #[allow(dead_code)]
         controller_actor: ActorRef<ControllerActor>,
         next_ref: Ref,
     }
@@ -2040,6 +2043,7 @@ mod tests {
             result
         }
 
+        #[allow(dead_code)]
         async fn validate_dependent_error(&mut self, reference: Ref, error: Arc<SeqError>) {
             let result_error = self
                 .stream_actor
@@ -2084,6 +2088,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     async fn fetch_result(
         cx: &impl context::Actor,
         stream_actor: ActorHandle<StreamActor>,
@@ -2112,6 +2117,7 @@ mod tests {
             .unwrap()
     }
 
+    #[allow(dead_code)]
     async fn check_fetch_result_error(
         cx: &impl context::Actor,
         stream_actor: ActorHandle<StreamActor>,
@@ -2140,6 +2146,7 @@ mod tests {
         };
     }
 
+    #[allow(dead_code)]
     async fn check_fetch_result_value(
         cx: &impl context::Actor,
         stream_actor: ActorHandle<StreamActor>,

@@ -99,6 +99,7 @@ pub struct CommActor {
 /// - In `Mesh` mode, the comm actor is assigned an explicit rank and a mapping to each peer by rank.
 /// - In `Implicit` mode, the comm actor infers its rank and peers from its own actor ID.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
+#[derive(Default)]
 pub enum CommActorMode {
     /// When configured as a mesh, the comm actor is assigned a rank
     /// and a set of references for each peer rank.
@@ -106,6 +107,7 @@ pub enum CommActorMode {
 
     /// In an implicit mode, the comm actor derives its rank and
     /// peers from its own ID.
+    #[default]
     Implicit,
 
     /// Like `Implicit`, but override the destination world id.
@@ -114,12 +116,6 @@ pub enum CommActorMode {
     /// until we are fully onto ActorMeshes.
     // TODO: T224926642 Remove this once we are fully onto ActorMeshes.
     ImplicitWithWorldId(WorldId),
-}
-
-impl Default for CommActorMode {
-    fn default() -> Self {
-        Self::Implicit
-    }
 }
 
 impl CommActorMode {
@@ -353,18 +349,26 @@ impl Handler<CastMessage> for CommActor {
             .or_default();
         let last_seq = *seq;
         *seq += 1;
-        Self::forward(
-            cx,
-            &self.mode,
-            rank,
-            ForwardMessage {
-                dests: vec![frame],
-                sender: cx.self_id().clone(),
-                message: cast_message.message,
-                seq: *seq,
-                last_seq,
-            },
-        )?;
+
+        let fwd_message = ForwardMessage {
+            dests: vec![frame],
+            sender: cx.self_id().clone(),
+            message: cast_message.message,
+            seq: *seq,
+            last_seq,
+        };
+
+        // Optimization: if forwarding to ourselves, handle inline instead of
+        // going through the message queue
+        if self
+            .mode
+            .self_rank(cx.self_id())
+            .is_ok_and(|self_rank| self_rank == rank)
+        {
+            Handler::<ForwardMessage>::handle(self, cx, fwd_message).await?;
+        } else {
+            Self::forward(cx, &self.mode, rank, fwd_message)?;
+        }
         Ok(())
     }
 }

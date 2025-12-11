@@ -853,7 +853,6 @@ mod tests {
     use hyperactor::ActorId;
     use hyperactor::PortRef;
     use hyperactor::ProcId;
-    use hyperactor::RemoteSpawn;
     use hyperactor::WorldId;
     use hyperactor::data::Encoding;
     use hyperactor_config::attrs::Attrs;
@@ -1270,7 +1269,6 @@ mod tests {
         use hyperactor::channel::ChannelTransport;
 
         use crate::alloc::local::LocalAllocator;
-        use crate::config;
 
         actor_mesh_test_suite!(LocalAllocator);
 

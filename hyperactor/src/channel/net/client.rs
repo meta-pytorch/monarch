@@ -26,7 +26,6 @@ use tokio::sync::watch;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use tracing::Instrument;
-use tracing::Level;
 use tracing::Span;
 
 use super::framed::FrameReader;
@@ -543,7 +542,7 @@ impl<S: Stream> Conn<S> {
     fn reconnect_with_default() -> Self {
         Self::Disconnected(Box::new(
             ExponentialBackoffBuilder::new()
-                .with_initial_interval(Duration::from_millis(50))
+                .with_initial_interval(Duration::from_millis(1))
                 .with_multiplier(2.0)
                 .with_randomization_factor(0.1)
                 .with_max_interval(Duration::from_millis(1000))

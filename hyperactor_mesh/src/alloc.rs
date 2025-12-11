@@ -134,23 +134,18 @@ pub struct AllocConstraints {
 
 /// Specifies how to interpret the extent dimensions for allocation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ProcAllocationMode {
     /// Proc-level allocation: splits extent to allocate multiple processes per host.
     /// Requires at least 2 dimensions (e.g., [hosts: N, gpus: M]).
     /// Splits by second-to-last dimension, creating N regions with M processes each.
     /// Used by MastAllocator.
+    #[default]
     ProcLevel,
     /// Host-level allocation: each point in the extent is a host (no sub-host splitting).
     /// For extent!(region = 2, host = 4), create 8 regions, each representing 1 host.
     /// Used by MastHostAllocator.
     HostLevel,
-}
-
-impl Default for ProcAllocationMode {
-    fn default() -> Self {
-        // Default to ProcLevel for backward compatibility
-        Self::ProcLevel
-    }
 }
 
 /// A specification (desired state) of an alloc.
@@ -671,7 +666,6 @@ pub mod test_utils {
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::Named;
-    use hyperactor::RemoteSpawn;
     use libc::atexit;
     use tokio::sync::broadcast::Receiver;
     use tokio::sync::broadcast::Sender;

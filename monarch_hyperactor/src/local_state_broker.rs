@@ -16,7 +16,6 @@ use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::OncePortHandle;
-use hyperactor::RemoteSpawn;
 use pyo3::prelude::*;
 
 #[derive(Debug)]

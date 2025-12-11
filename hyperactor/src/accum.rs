@@ -53,12 +53,21 @@ pub struct ReducerOpts {
     /// The maximum interval between updates. When unspecified, a default
     /// interval is used.
     pub max_update_interval: Option<Duration>,
+    /// The initial interval for the first update. When unspecified, defaults to 1ms.
+    /// This allows quick flushing of single messages while using exponential backoff
+    /// to reach max_update_interval for batched messages.
+    pub initial_update_interval: Option<Duration>,
 }
 
 impl ReducerOpts {
     pub(crate) fn max_update_interval(&self) -> Duration {
         self.max_update_interval
             .unwrap_or(hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_AGE))
+    }
+
+    pub(crate) fn initial_update_interval(&self) -> Duration {
+        self.initial_update_interval
+            .unwrap_or(Duration::from_millis(1))
     }
 }
 

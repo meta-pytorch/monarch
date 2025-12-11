@@ -343,7 +343,7 @@ mod tests {
         // Verify values loaded from environment
         assert_eq!(config[USIZE_KEY], 1024);
         assert_eq!(config[STRING_KEY], "world");
-        assert_eq!(config[BOOL_KEY], true);
+        assert!(config[BOOL_KEY]);
         assert_eq!(config[I64_KEY], -999);
         assert_eq!(config[F64_KEY], 2.718);
         assert_eq!(config[U32_KEY], 500);
@@ -454,7 +454,7 @@ mod tests {
 
         assert_eq!(loaded_config[USIZE_KEY], 2048);
         assert_eq!(loaded_config[STRING_KEY], "hello_yaml");
-        assert_eq!(loaded_config[BOOL_KEY], true);
+        assert!(loaded_config[BOOL_KEY]);
         assert_eq!(loaded_config[I64_KEY], -123);
         assert_eq!(loaded_config[F64_KEY], 1.414);
         assert_eq!(loaded_config[U32_KEY], 777);

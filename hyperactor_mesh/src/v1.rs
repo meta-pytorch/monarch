@@ -120,7 +120,7 @@ pub enum Error {
         "error creating proc (host rank {host_rank}) on host mesh agent {mesh_agent}, state: {state}"
     )]
     ProcCreationError {
-        state: resource::State<ProcState>,
+        state: Box<resource::State<ProcState>>,
         host_rank: usize,
         mesh_agent: ActorRef<HostMeshAgent>,
     },
