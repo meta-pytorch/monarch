@@ -67,7 +67,7 @@ pub mod remote;
 /// Actors are assumed to be _deterministic_: that is, the state of an
 /// actor is determined by the set (and order) of messages it receives.
 #[async_trait]
-pub trait Actor: Sized + Send + Debug + 'static {
+pub trait Actor: Sized + Send + 'static {
     /// Initialize the actor, after the runtime has been fully initialized.
     /// Init thus provides a mechanism by which an actor can reliably and always
     /// receive some initial event that can be used to kick off further

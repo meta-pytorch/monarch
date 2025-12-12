@@ -222,7 +222,6 @@ impl<M: RemoteMessage> Drop for SimRx<M> {
 }
 
 /// Primarily used for dispatching messages to the correct sender.
-#[derive(Debug)]
 pub struct SimDispatcher {
     dispatchers: DashMap<ChannelAddr, mpsc::Sender<Serialized>>,
     sender_cache: DashMap<ChannelAddr, Arc<dyn Tx<MessageEnvelope> + Send + Sync>>,
@@ -258,7 +257,6 @@ impl Default for SimDispatcher {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct SimTx<M: RemoteMessage> {
     src_addr: Option<ChannelAddr>,
     dst_addr: ChannelAddr,
@@ -267,7 +265,6 @@ pub(crate) struct SimTx<M: RemoteMessage> {
     _phantom: PhantomData<M>,
 }
 
-#[derive(Debug)]
 pub(crate) struct SimRx<M: RemoteMessage> {
     /// The destination address, not the full SimAddr.
     addr: ChannelAddr,

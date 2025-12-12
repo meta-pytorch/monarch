@@ -122,7 +122,6 @@ fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
 
 /// A Tx implemented on top of a Link. The Tx manages the link state,
 /// reconnections, etc.
-#[derive(Debug)]
 pub(crate) struct NetTx<M: RemoteMessage> {
     sender: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
     dest: ChannelAddr,
@@ -155,7 +154,6 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
     }
 }
 
-#[derive(Debug)]
 pub struct NetRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr, ServerHandle);
 
 #[async_trait]
@@ -1150,7 +1148,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
     struct MockLink<M> {
         buffer_size: usize,
         receiver_storage: Arc<MVar<DuplexStream>>,
@@ -1166,6 +1163,21 @@ mod tests {
         // is normally set only when debugging a test failure.
         debug_log_sampling_rate: Option<u64>,
         _message_type: PhantomData<M>,
+    }
+
+    impl<M> fmt::Debug for MockLink<M> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("MockLink")
+                .field("buffer_size", &self.buffer_size)
+                .field("receiver_storage", &"<MVar<DuplexStream>>")
+                .field("fail_connects", &self.fail_connects)
+                .field("disconnect_signal", &"<watch::Sender>")
+                .field("network_flakiness", &self.network_flakiness)
+                .field("disconnected_count", &self.disconnected_count)
+                .field("prev_diconnected_at", &"<RwLock<Instant>>")
+                .field("debug_log_sampling_rate", &self.debug_log_sampling_rate)
+                .finish()
+        }
     }
 
     impl<M: RemoteMessage> MockLink<M> {
@@ -1330,8 +1342,8 @@ mod tests {
                             let is_sampled = debug_log_sampling_rate.is_some_and(|sample_rate| send_count % sample_rate == 1);
                             if is_sampled {
                                 if is_from_client {
-                                    if let Ok(Frame::Message(_seq, msg)) = bincode::deserialize::<Frame<M>>(&data) {
-                                        tracing::debug!("MockLink relays a msg from client. msg: {:?}", msg);
+                                    if let Ok(Frame::Message(_seq, _msg)) = bincode::deserialize::<Frame<M>>(&data) {
+                                        tracing::debug!("MockLink relays a msg from client. msg type: {}", std::any::type_name::<M>());
                                     }
                                 } else {
                                     let result = deserialize_response(data.clone());
@@ -1712,7 +1724,7 @@ mod tests {
         (reader, writer)
     }
 
-    async fn verify_message<M: RemoteMessage + PartialEq>(
+    async fn verify_message<M: RemoteMessage + PartialEq + std::fmt::Debug>(
         reader: &mut FrameReader<ReadHalf<DuplexStream>>,
         expect: (u64, M),
         loc: u32,
@@ -1725,7 +1737,7 @@ mod tests {
         assert_eq!(frame, expected, "from ln={loc}");
     }
 
-    async fn verify_stream<M: RemoteMessage + PartialEq + Clone>(
+    async fn verify_stream<M: RemoteMessage + PartialEq + std::fmt::Debug + Clone>(
         reader: &mut FrameReader<ReadHalf<DuplexStream>>,
         expects: &[(u64, M)],
         expect_session_id: Option<u64>,
