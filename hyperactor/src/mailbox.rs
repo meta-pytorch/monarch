@@ -144,8 +144,8 @@ pub mod headers;
 
 /// Message collects the necessary requirements for messages that are deposited
 /// into mailboxes.
-pub trait Message: Debug + Send + Sync + 'static {}
-impl<M: Debug + Send + Sync + 'static> Message for M {}
+pub trait Message: Send + Sync + 'static {}
+impl<M: Send + Sync + 'static> Message for M {}
 
 /// RemoteMessage extends [`Message`] by requiring that the messages
 /// also be serializable, and can thus traverse process boundaries.
@@ -706,7 +706,7 @@ impl std::error::Error for MailboxSenderError {
 
 /// MailboxSenders can send messages through ports to mailboxes. It
 /// provides a unified interface for message delivery in the system.
-pub trait MailboxSender: Send + Sync + Debug + Any {
+pub trait MailboxSender: Send + Sync + Any {
     /// Apply hop semantics (TTL decrement; undeliverable on 0), then
     /// delegate to transport.
     fn post(
@@ -829,7 +829,6 @@ impl MailboxSender for UndeliverableMailboxSender {
     }
 }
 
-#[derive(Debug)]
 struct Buffer<T: Message> {
     queue: mpsc::UnboundedSender<(T, PortHandle<Undeliverable<T>>)>,
     processed: watch::Receiver<usize>,
@@ -887,8 +886,16 @@ static BOXED_PANICKING_MAILBOX_SENDER: LazyLock<BoxedMailboxSender> =
 /// difficult to work with dyn values.  BoxedMailboxSender bridges this
 /// gap by providing a concrete MailboxSender which dispatches using an
 /// underlying (boxed) dyn.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BoxedMailboxSender(Arc<dyn MailboxSender + Send + Sync + 'static>);
+
+impl fmt::Debug for BoxedMailboxSender {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BoxedMailboxSender")
+            .field("sender", &"<dyn MailboxSender>")
+            .finish()
+    }
+}
 
 impl BoxedMailboxSender {
     /// Create a new boxed sender given the provided sender implementation.
@@ -1106,13 +1113,20 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
 impl<T: MailboxSender + Clone + Sized + Sync + Send + 'static> MailboxServer for T {}
 
 /// A mailbox server client that transmits messages on a Tx channel.
-#[derive(Debug)]
 pub struct MailboxClient {
     // The unbounded sender.
     buffer: Buffer<MessageEnvelope>,
 
     // To cancel monitoring tx health.
     _tx_monitoring: CancellationToken,
+}
+
+impl fmt::Debug for MailboxClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MailboxClient")
+            .field("buffer", &"<Buffer>")
+            .finish()
+    }
 }
 
 impl MailboxClient {
@@ -2243,7 +2257,7 @@ impl fmt::Debug for State {
 // TODO: mux based on some parameterized type. (mux key).
 /// An in-memory mailbox muxer. This is used to route messages to
 /// different underlying senders.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MailboxMuxer {
     mailboxes: Arc<DashMap<ActorId, Box<dyn MailboxSender + Send + Sync>>>,
 }
@@ -2313,7 +2327,7 @@ impl MailboxSender for MailboxMuxer {
 
 /// MailboxRouter routes messages to the sender that is bound to its
 /// nearest prefix.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MailboxRouter {
     entries: Arc<RwLock<BTreeMap<Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
 }
@@ -2390,7 +2404,7 @@ impl MailboxSender for MailboxRouter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct FallbackMailboxRouter {
     router: MailboxRouter,
     default: BoxedMailboxSender,
@@ -2458,7 +2472,7 @@ impl MailboxSender for WeakMailboxRouter {
 ///
 /// Messages sent to unknown destinations are routed to the `default`
 /// sender, if present.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DialMailboxRouter {
     address_book: Arc<RwLock<BTreeMap<Reference, ChannelAddr>>>,
     sender_cache: Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,

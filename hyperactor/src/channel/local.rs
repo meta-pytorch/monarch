@@ -62,7 +62,6 @@ impl Default for Ports {
 
 static PORTS: LazyLock<Mutex<Ports>> = LazyLock::new(|| Mutex::new(Ports::default()));
 
-#[derive(Debug)]
 pub struct LocalTx<M: RemoteMessage> {
     tx: mpsc::UnboundedSender<Data>,
     port: u64,
@@ -102,7 +101,6 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
     }
 }
 
-#[derive(Debug)]
 pub struct LocalRx<M: RemoteMessage> {
     data_rx: mpsc::UnboundedReceiver<Data>,
     status_tx: watch::Sender<TxStatus>,
