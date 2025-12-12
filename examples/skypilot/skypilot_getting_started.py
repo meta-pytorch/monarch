@@ -10,16 +10,14 @@ Prerequisites:
     pip install torchmonarch-nightly
     pip install skypilot[kubernetes]  # or skypilot[aws], skypilot[gcp], etc.
     sky check  # Verify SkyPilot configuration
+    sky show-gpus --infra kubernetes  # Verify GPUs available
 
 Usage:
-    # Run on Kubernetes:
-    python getting_started.py --cloud kubernetes --num-hosts 2
+    # Run on Kubernetes with 2 nodes, 8 GPUs per node
+    python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --gpus "H200:8"
 
-    # Run on AWS:
-    python getting_started.py --cloud aws --num-hosts 2
-
-    # Run on GCP:
-    python getting_started.py --cloud gcp --num-hosts 2
+    # Run on cloud VMs
+    python skypilot_getting_started.py --cloud <aws/gcp/azure/...> --num-hosts 2 --gpus-per-host 1 --gpus "H100:1"
 """
 
 import argparse
@@ -54,7 +52,7 @@ except ImportError as e:
 from skypilot_job import SkyPilotJob
 
 # ============================================================================
-# Step 1: Define actors (same as getting started guide)
+# Step 1: Define actors
 # ============================================================================
 
 
@@ -88,7 +86,7 @@ class Trainer(Actor):
 
 
 # ============================================================================
-# Step 2: Create a SkyPilot Job to provision cloud infrastructure
+# Step 2: Create a SkyPilot Job to provision k8s pods/cloud VMs
 # ============================================================================
 
 
@@ -99,7 +97,10 @@ def get_cloud(cloud_name: str):
         "aws": sky.AWS,
         "gcp": sky.GCP,
         "azure": sky.Azure,
-        "lambda": sky.Lambda,
+        "nebius": sky.Nebius,
+        # "slurm": sky.Slurm,
+        # "ssh": sky.SSH, 
+        # TODO(romilb): Add other clouds
     }
     if cloud_name.lower() not in clouds:
         raise ValueError(f"Unknown cloud: {cloud_name}. Available: {list(clouds.keys())}")
@@ -111,7 +112,7 @@ def main():
     parser.add_argument(
         "--cloud",
         default="kubernetes",
-        help="Cloud provider to use (kubernetes, aws, gcp, azure, lambda)",
+        help="Cloud provider to use (kubernetes, aws, gcp, azure, ssh)",
     )
     parser.add_argument(
         "--num-hosts",
@@ -165,12 +166,13 @@ def main():
     if args.region:
         resources_kwargs["region"] = args.region
     
+    # Create a SkyPilotJob to provision nodes
     job = SkyPilotJob(
         # Define the mesh of hosts we need
         meshes={"trainers": args.num_hosts},
         resources=sky.Resources(**resources_kwargs),
         cluster_name=args.cluster_name,
-        # Auto-cleanup after 10 minutes of idle time
+        # Auto-cleanup after 10 minutes of idle time (recommended for auto clean up if the job/controller fails)
         idle_minutes_to_autostop=10,
         down_on_autostop=True,
     )

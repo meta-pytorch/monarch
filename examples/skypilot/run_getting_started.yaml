@@ -1,0 +1,80 @@
+# SkyPilot YAML for running the Monarch Getting Started example.
+#
+# This YAML file syncs the example directory, installs dependencies,
+# and runs the getting started example.
+#
+# Usage:
+#   cd monarch/examples/skypilot
+#   sky launch run_getting_started.yaml -c monarch-demo
+#
+# To view logs:
+#   sky logs monarch-demo
+#
+# To SSH into the cluster:
+#   sky ssh monarch-demo
+#
+# To tear down:
+#   sky down monarch-demo
+
+name: monarch-getting-started
+
+resources:
+  cloud: kubernetes # Optional, remove or change to your preferred cloud provider
+  cpus: 2+ # No GPUs needed for the driver script
+  image_id: docker:pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
+
+# Sync the current directory (examples/skypilot) to the cluster
+workdir: .
+
+setup: |
+  set -ex
+  
+  echo "=== Installing system dependencies ==="
+  # Install socat (required for SkyPilot Kubernetes portforward networking) and curl
+  apt-get update && apt-get install -y socat curl
+  
+  # Install kubectl for Kubernetes cluster management
+  echo "=== Installing kubectl ==="
+  curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+  chmod +x kubectl
+  mv kubectl /usr/local/bin/
+  kubectl version --client || echo "kubectl installed"
+  
+  echo "=== Installing Python dependencies ==="  
+  uv pip install --system torchmonarch-nightly
+  # Install SkyPilot with Kubernetes support for launching nested clusters
+  uv pip install --system "skypilot[kubernetes]"
+  
+  # Verify installations
+  python -c "import monarch; print(f'Monarch installed: {monarch}')"
+  python -c "import sky; print(f'SkyPilot installed: {sky}')"
+  
+  # Configure SkyPilot to use in-cluster Kubernetes context
+  # This allows the driver pod to launch nested SkyPilot clusters
+  unset SKYPILOT_IN_CLUSTER_CONTEXT_NAME
+  sky api start
+  
+  # Verify Kubernetes access
+  echo "=== Verifying Kubernetes access ==="
+  sky check kubernetes
+
+  echo "=== GPUs available ==="
+  sky show-gpus --infra kubernetes
+  
+  echo "=== Setup complete ==="
+
+run: |  
+  echo "=== Running Monarch Getting Started with SkyPilot ==="  
+
+  # Run the getting started example
+  # This will launch a SkyPilot cluster with Monarch workers.
+  # Change the arguments to your desired values.
+  python skypilot_getting_started.py \
+    --cloud kubernetes \
+    --num-hosts 2 \
+    --gpus-per-host 1 \
+    --cluster-name monarch-workers \
+    --accelerator "H200:1"
+  
+  echo "=== Example ran successfully ==="
+

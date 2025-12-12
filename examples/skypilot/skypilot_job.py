@@ -1,9 +1,7 @@
 """
-SkyPilot integration for Monarch - standalone implementation.
+SkyPilotJob for Monarch.
 
-This module provides SkyPilotJob, which allows running Monarch workloads on
-Kubernetes and cloud VMs via SkyPilot. It is designed to be used independently
-of the main Monarch source tree.
+SkyPilotJob allows running Monarch on Kubernetes and cloud VMs via SkyPilot. 
 
 Requirements:
     - pip install torchmonarch-nightly (or torchmonarch)
@@ -16,7 +14,6 @@ import sys
 import time
 from typing import Dict, List, Optional, TYPE_CHECKING
 
-# Import Monarch's job interface
 from monarch._src.job.job import JobState, JobTrait
 
 # If running inside a SkyPilot cluster, unset the in-cluster context variable
@@ -25,7 +22,6 @@ from monarch._src.job.job import JobState, JobTrait
 if "SKYPILOT_IN_CLUSTER_CONTEXT_NAME" in os.environ:
     del os.environ["SKYPILOT_IN_CLUSTER_CONTEXT_NAME"]
 
-# Defer imports that may not be available in all environments
 if TYPE_CHECKING:
     import sky
 
@@ -46,21 +42,22 @@ logger.propagate = False
 # Default port for Monarch TCP communication
 DEFAULT_MONARCH_PORT = 22222
 
+# Timeout for waiting for the job to reach RUNNING status.
+JOB_TIMEOUT = 300 # seconds
+
 # Default setup commands to install Monarch from PyPI on remote workers.
-# Requires a Docker image with Ubuntu 22.04+ for compatible libibverbs.
+# Requires a Docker image with Ubuntu 22.04+ with RDMA dependencies.
+# In this implementation, we default to pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime image.
 #
-# Cold start time: ~1-2 minutes (pip install only).
 # For faster cold starts (<30s), use a custom Docker image with Monarch pre-installed.
 DEFAULT_SETUP_COMMANDS = """
 set -ex
 
 # Install torchmonarch from PyPI
-pip install torchmonarch-nightly
+uv pip install --system torchmonarch-nightly
 
 echo "Done installing Monarch"
 """
-
-# Default Docker image - PyTorch with CUDA on Ubuntu 22.04 (has compatible libibverbs)
 DEFAULT_IMAGE_ID = "docker:pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime"
 
 
@@ -81,15 +78,19 @@ def _attach_to_workers_wrapper(name: str, ca: str, workers: List[str]):
 
 class SkyPilotJob(JobTrait):
     """
-    A job scheduler that uses SkyPilot to provision cloud instances.
+    SkyPilotJob to provision and manage Monarch workers K8s and cloud VMs.
 
-    SkyPilot supports multiple cloud providers (AWS, GCP, Azure, Lambda, etc.)
-    and Kubernetes, and can automatically select the cheapest available option.
+    SkyPilot supports multiple backends - Kubernetes and VMs on AWS, GCP, Azure,
+    CoreWeave, Nebius, and 20+ other clouds.
 
     This implementation:
     1. Uses sky.launch() to provision cloud instances with specified resources
     2. Runs Monarch workers on each node via a startup script
     3. Connects to workers using their IP addresses from the cluster handle
+
+    Caveats:
+      * For Kubernetes, the driver/client must be run inside the same cluster.
+        TOOD(romilb): Explore if loadbalancer can be used to connect to workers.
 
     Example:
         >>> import sky
@@ -198,12 +199,10 @@ class SkyPilotJob(JobTrait):
         # Set resources, using default image_id if not specified
         resources = self._resources
         if resources is not None:
-            # If no image_id specified, use the default PyTorch image
             if resources.image_id is None:
                 resources = resources.copy(image_id=DEFAULT_IMAGE_ID)
             task.set_resources(resources)
         else:
-            # No resources specified, create default with image_id
             task.set_resources(sky.Resources(image_id=DEFAULT_IMAGE_ID))
 
         # Generate cluster name if not provided
@@ -229,9 +228,9 @@ class SkyPilotJob(JobTrait):
         logger.info(f"SkyPilot cluster '{cluster_name}' launched successfully")
         
         # Wait for the job to be RUNNING (setup complete, run started)
-        self._wait_for_job_running(cluster_name, job_id, timeout=300)
+        self._wait_for_job_running(cluster_name, job_id, timeout=JOB_TIMEOUT)
     
-    def _wait_for_job_running(self, cluster_name: str, job_id: int, timeout: int = 300) -> None:
+    def _wait_for_job_running(self, cluster_name: str, job_id: int, timeout: int = JOB_TIMEOUT) -> None:
         """Wait for the SkyPilot job to reach RUNNING status (setup complete)."""
         start_time = time.time()
         poll_interval = 10  # seconds
@@ -301,9 +300,9 @@ except Exception as e:
         escaped_code = python_code.replace("'", "'\"'\"'")
         # Set timeout env vars
         env_vars = " ".join([
-            "export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=5m",
-            "export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=5m",
-            "export HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE=5m",
+            f"export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT={JOB_TIMEOUT}s",
+            f"export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT={JOB_TIMEOUT}s",
+            f"export HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE={JOB_TIMEOUT}s",
         ])
         return f"{env_vars} && {self._python_exe} -c '{escaped_code}'"
 

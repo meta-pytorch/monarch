@@ -9,11 +9,4 @@ from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJ
 from monarch._src.job.slurm import SlurmJob
 
 # Define exports
-__all__ = [
-    "JobTrait",
-    "job_load",
-    "job_loads",
-    "JobState",
-    "LocalJob",
-    "SlurmJob",
-]
+__all__ = ["JobTrait", "job_load", "job_loads", "JobState", "LocalJob", "SlurmJob"]
