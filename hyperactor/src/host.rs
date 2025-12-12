@@ -1042,7 +1042,7 @@ impl<A> ProcManager for ProcessProcManager<A>
 where
     // Agent actor runs in the proc (`Actor`) and must be
     // referenceable (`Referable`).
-    A: Actor + Referable,
+    A: Actor + Referable + Sync,
 {
     type Handle = ProcessHandle<A>;
 
