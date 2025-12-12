@@ -38,6 +38,11 @@ class DTensorRef:
         self._fake: Optional[torch._subclasses.FakeTensor] = getattr(
             tensor, "_fake", None
         )
+        # Capture mesh reference from tensor if available
+        self._mesh_ref: Optional[int] = None
+        if hasattr(tensor, "mesh") and tensor.mesh is not None:
+            self._mesh_ref = getattr(tensor.mesh, "ref", None)
+
         if self._fake is not None:
             self._storage_id: Optional[torch.types._int] = id(
                 self._fake.untyped_storage()

@@ -30,7 +30,7 @@ declare_attrs! {
     /// Message delivery timeout
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT".to_string()),
-        py_name: None,
+        py_name: Some("message_delivery_timeout".to_string()),
     })
     pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -131,7 +131,7 @@ declare_attrs! {
     /// waits indefinitely.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT".to_string()),
-        py_name: None,
+        py_name: Some("host_spawn_ready_timeout".to_string()),
     })
     pub attr HOST_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
 }
