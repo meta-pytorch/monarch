@@ -117,12 +117,19 @@ static NEXT_LOCAL_RANK: AtomicUsize = AtomicUsize::new(0);
 /// procs.
 ///
 /// Procs are also responsible for maintaining the local supervision hierarchy.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Proc {
     inner: Arc<ProcState>,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for Proc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Proc")
+            .field("proc_id", &self.inner.proc_id)
+            .finish()
+    }
+}
+
 struct ProcState {
     /// The proc's id. This should be globally unique, but is not (yet)
     /// for local-only procs.
@@ -1701,12 +1708,20 @@ impl ActorType {
 /// to access the underlying instance.
 ///
 /// InstanceCell is reference counted and cloneable.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct InstanceCell {
     inner: Arc<InstanceCellState>,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for InstanceCell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstanceCell")
+            .field("actor_id", &self.inner.actor_id)
+            .field("actor_type", &self.inner.actor_type)
+            .finish()
+    }
+}
+
 struct InstanceCellState {
     /// The actor's id.
     actor_id: ActorId,
