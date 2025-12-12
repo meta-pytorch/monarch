@@ -11,12 +11,13 @@ This directory contains a standalone integration for running Monarch workloads o
 - Hyperscalers: AWS, GCP, Azure
 - Neoclouds: CoreWeave, Nebius, and [20+ other clouds](https://docs.skypilot.co/en/latest/getting-started/installation.html)
 
-## Installation
+## Quickstart
+
+Prerequisites: Install SkyPilot and verify GPUs are available.
+<details>
+<summary><strong>SkyPilot Installation</strong></summary>
 
 ```bash
-# Install Monarch
-pip install torchmonarch-nightly
-
 # Install SkyPilot with your preferred backend
 pip install skypilot[kubernetes]  # For Kubernetes
 pip install skypilot[aws]         # For AWS
@@ -25,69 +26,32 @@ pip install skypilot[all]         # For all clouds
 
 # Verify SkyPilot setup
 sky check
+
+# Verify GPUs available
+sky show-gpus --infra kubernetes
 ```
 
-TODO(romilb): Link to SkyPilot docs for k8s setup
+For more details, see the [SkyPilot documentation](https://docs.skypilot.co/en/latest/getting-started/installation.html).
 
-## Quick Start
+</details>
 
-```python
-import sky
-from skypilot_job import SkyPilotJob
-from monarch.actor import Actor, endpoint
 
-class MyActor(Actor):
-    @endpoint
-    def hello(self) -> str:
-        return "Hello from the cloud!"
-
-# Create a SkyPilot job with 2 nodes
-job = SkyPilotJob(
-    meshes={"workers": 2},
-    resources=sky.Resources(
-        cloud=sky.Kubernetes(),  # or sky.AWS(), sky.GCP(), etc.
-        accelerators="H100:1",
-    ),
-    cluster_name="my-monarch-cluster",
-    idle_minutes_to_autostop=10,
-    down_on_autostop=True,
-)
-
-# Launch and connect
-state = job.state()
-hosts = state.workers
-
-# Spawn processes and actors
-procs = hosts.spawn_procs(per_host={"gpus": 1})
-actors = procs.spawn("my_actors", MyActor)
-
-# Use your actors
-results = actors.hello.call().get()
-print(results)  # ["Hello from the cloud!", "Hello from the cloud!"]
-
-# Clean up
-job.kill()
-```
-
-## Running the Example
+Run this command from your local machine to run the getting started example:
 
 ```bash
-cd examples/skypilot
-
-# Run on Kubernetes
-python getting_started.py --cloud kubernetes --num-hosts 2
-
-# Run on AWS
-python getting_started.py --cloud aws --num-hosts 2 --accelerator "A100:1"
-
-# Run on GCP
-python getting_started.py --cloud gcp --num-hosts 2 --accelerator "A100:1"
+sky launch monarch_getting_started.sky.yaml -c monarch-demo
 ```
 
-Example output:
-```
-$ python skypilot_getting_started.py --num-hosts 2 --gpus-per-host 1 --cluster-name monarch-skypilot-test
+SkyPilot will:
+1. Launch a Kubernetes pod
+2. Install dependencies
+3. Sync the example directory with the pod
+4. Run `skypilot_getting_started.py` in the pod and stream the logs
 
+<details>
+<summary><strong>Example Output</strong></summary>
+
+```
 ============================================================
 Monarch Getting Started with SkyPilot
 ============================================================
@@ -151,29 +115,76 @@ Cluster 'monarch-skypilot-test' terminated
     Cluster terminated.
 ```
 
-## Default Image
+</details>
 
-By default, `SkyPilotJob` uses the `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime` Docker image which has compatible system libraries for `torchmonarch-nightly`. TODO(romilb): mention image requirements.
 
-## Faster Cold Starts with SkyPilot's cluster reuse
+<details>
+<summary><strong>Running from within the Kubernetes cluster</strong></summary>
 
-TODO(romilb): Validate if this works:
-```python
-job = SkyPilotJob(
-    ...,
-    idle_minutes_to_autostop=30,  # Keep cluster alive
-)
+If you are already in the Kubernetes cluster you'd like to run workers on, you can directly run `skypilot_getting_started.py`.
+
+```bash
+python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --gpus "H200:8"
 ```
 
-TODO(romilb): Benchmark pre-baked container images
+</details>
 
-## Network Requirements
+## SkyPilotJob Class
+
+SkyPilotJob allows you to run Monarch on Kubernetes and cloud VMs via SkyPilot.
+
+Example usage:
+
+```python
+import sky
+from skypilot_job import SkyPilotJob
+from monarch.actor import Actor, endpoint
+
+class MyActor(Actor):
+    @endpoint
+    def hello(self) -> str:
+        return "Hello from the cloud!"
+
+# Create a SkyPilot job with 2 nodes
+job = SkyPilotJob(
+    meshes={"workers": 2},
+    resources=sky.Resources(
+        cloud=sky.Kubernetes(),  # or sky.AWS(), sky.GCP(), etc.
+        accelerators="H100:1",
+    ),
+    cluster_name="my-monarch-cluster",
+    idle_minutes_to_autostop=10,
+    down_on_autostop=True,
+)
+
+# Launch and connect
+state = job.state()
+hosts = state.workers
+
+# Spawn processes and actors
+procs = hosts.spawn_procs(per_host={"gpus": 1})
+actors = procs.spawn("my_actors", MyActor)
+
+# Use your actors
+results = actors.hello.call().get()
+print(results)  # ["Hello from the cloud!", "Hello from the cloud!"]
+
+# Clean up
+job.kill()
+```
+
+### Network Requirements
 
 The client must have direct network connectivity to the worker nodes:
 - **Kubernetes**: Run the client inside the same cluster (e.g., in a pod)
 - **Cloud VMs**: Ensure security groups allow inbound traffic on port 22222
 
-## Troubleshooting
+
+### Default Image
+
+By default, `SkyPilotJob` uses the `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime` Docker image which has compatible system libraries for `torchmonarch-nightly`.
+
+## Troubleshooting tips
 
 **Check SkyPilot setup:**
 ```bash
