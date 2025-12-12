@@ -128,9 +128,12 @@ class Endpoint(ABC, Generic[P, R]):
             The method name, or "unknown" if not available
         """
         method_specifier = self._call_name()
-        if hasattr(method_specifier, "name"):
-            # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
-            return method_specifier.name
+        match method_specifier:
+            case MethodSpecifier.Init():
+                return "__init__"
+            case MethodSpecifier.ReturnsResponse() | MethodSpecifier.ExplicitPort():
+                # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
+                return method_specifier.name
         return "unknown"
 
     def _with_telemetry(
@@ -423,7 +426,7 @@ class EndpointProperty(Generic[P, R]):
         method: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
         explicit_response_port: bool,
-        instrument: bool = False,
+        instrument: bool = True,
     ) -> None: ...
 
     @overload
@@ -432,7 +435,7 @@ class EndpointProperty(Generic[P, R]):
         method: Callable[Concatenate[Any, P], R],
         propagator: Propagator,
         explicit_response_port: bool,
-        instrument: bool = False,
+        instrument: bool = True,
     ) -> None: ...
 
     def __init__(
@@ -440,7 +443,7 @@ class EndpointProperty(Generic[P, R]):
         method: Any,
         propagator: Propagator,
         explicit_response_port: bool,
-        instrument: bool = False,
+        instrument: bool = True,
     ) -> None:
         self._method = method
         self._propagator = propagator
@@ -510,7 +513,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[False] = False,
-    instrument: bool = False,
+    instrument: bool = True,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -520,7 +523,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[False] = False,
-    instrument: bool = False,
+    instrument: bool = True,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -529,7 +532,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[False] = False,
-    instrument: bool = False,
+    instrument: bool = True,
 ) -> EndpointIfy: ...
 
 
@@ -539,7 +542,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[True],
-    instrument: bool = False,
+    instrument: bool = True,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -549,7 +552,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[True],
-    instrument: bool = False,
+    instrument: bool = True,
 ) -> EndpointProperty[P, R]: ...
 
 
@@ -558,7 +561,7 @@ def endpoint(
     *,
     propagate: Propagator = None,
     explicit_response_port: Literal[True],
-    instrument: bool = False,
+    instrument: bool = True,
 ) -> PortedEndpointIfy: ...
 
 
@@ -567,7 +570,7 @@ def endpoint(
     *,
     propagate: Any = None,
     explicit_response_port: bool = False,
-    instrument: bool = False,
+    instrument: bool = True,
 ) -> Any:
     if method is None:
         return functools.partial(

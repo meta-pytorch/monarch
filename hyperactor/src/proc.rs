@@ -966,6 +966,12 @@ pub struct Instance<A: Actor> {
     inner: Arc<InstanceState<A>>,
 }
 
+impl<A: Actor> fmt::Debug for Instance<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Instance").field("inner", &"..").finish()
+    }
+}
+
 struct InstanceState<A: Actor> {
     /// The proc that owns this instance.
     proc: Proc,

@@ -40,6 +40,12 @@ endpoint_choose_latency_histogram: Histogram = METER.create_histogram(
     description="Latency of endpoint choose operations in microseconds",
 )
 
+# Histogram for measuring endpoint message size
+endpoint_message_size_histogram: Histogram = METER.create_histogram(
+    name="endpoint_message_size",
+    description="Size of endpoint messages",
+)
+
 # Counters for measuring endpoint errors
 endpoint_call_error_counter: Counter = METER.create_counter(
     name="endpoint_call_error.count",

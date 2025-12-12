@@ -29,6 +29,7 @@ use base64::prelude::*;
 use futures::StreamExt;
 use futures::stream;
 use humantime::format_duration;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
@@ -265,6 +266,44 @@ async fn halt<R>() -> R {
     unreachable!()
 }
 
+/// Bootstrap a host in this process, returning a handle to the mesh agent:
+///
+/// - `addr`: the listening address of the host; this is used to bind the frontend address;
+/// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
+/// - `config`: optional runtime config overlay.
+pub async fn host(
+    addr: ChannelAddr,
+    command: Option<BootstrapCommand>,
+    config: Option<Attrs>,
+) -> anyhow::Result<ActorHandle<HostMeshAgent>> {
+    if let Some(attrs) = config {
+        hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
+        tracing::debug!("bootstrap: installed Runtime config snapshot (Host)");
+    } else {
+        tracing::debug!("bootstrap: no config snapshot provided (Host)");
+    }
+
+    let command = match command {
+        Some(command) => command,
+        None => BootstrapCommand::current()?,
+    };
+    let manager = BootstrapProcManager::new(command)?;
+
+    let host = Host::new(manager, addr).await?;
+    let addr = host.addr().clone();
+    let system_proc = host.system_proc().clone();
+    let host_mesh_agent = system_proc
+        .spawn::<HostMeshAgent>("agent", HostMeshAgent::new(HostAgentMode::Process(host)))?;
+
+    tracing::info!(
+        "serving host at {}, agent: {}",
+        addr,
+        host_mesh_agent.bind::<HostMeshAgent>()
+    );
+
+    Ok(host_mesh_agent)
+}
+
 /// Bootstrap configures how a mesh process starts up.
 ///
 /// Both `Proc` and `Host` variants may include an optional
@@ -275,7 +314,7 @@ async fn halt<R>() -> R {
 /// back to environment/default values.
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub enum Bootstrap {
-    /// "v1" proc bootstrap
+    /// Bootstrap as a "v1" proc
     Proc {
         /// The ProcId of the proc to be bootstrapped.
         proc_id: ProcId,
@@ -295,8 +334,8 @@ pub enum Bootstrap {
         config: Option<Attrs>,
     },
 
-    /// Host bootstrap. This sets up a new `Host`, managed by a
-    /// [`crate::v1::host_mesh::mesh_agent::HostMeshAgent`].
+    /// Bootstrap as a "v1" host bootstrap. This sets up a new `Host`,
+    /// managed by a [`crate::v1::host_mesh::mesh_agent::HostMeshAgent`].
     Host {
         /// The address on which to serve the host.
         addr: ChannelAddr,
@@ -310,6 +349,7 @@ pub enum Bootstrap {
         config: Option<Attrs>,
     },
 
+    /// Bootstrap as a legacy "v0" proc.
     #[default]
     V0ProcMesh, // pass through to the v0 allocator
 }
@@ -453,12 +493,10 @@ impl Bootstrap {
 
                 let proc = Proc::new(proc_id.clone(), proc_sender.into_boxed());
 
-                let span = entered.exit();
-
                 let agent_handle = ok!(ProcMeshAgent::boot_v1(proc.clone())
-                    .instrument(span.clone())
-                    .await
                     .map_err(|e| HostError::AgentSpawnFailure(proc_id, e)));
+
+                let span = entered.exit();
 
                 // Finally serve the proc on the same transport as the backend address,
                 // and call back.
@@ -477,35 +515,7 @@ impl Bootstrap {
                 command,
                 config,
             } => {
-                if let Some(attrs) = config {
-                    hyperactor_config::global::set(
-                        hyperactor_config::global::Source::Runtime,
-                        attrs,
-                    );
-                    tracing::debug!("bootstrap: installed Runtime config snapshot (Host)");
-                } else {
-                    tracing::debug!("bootstrap: no config snapshot provided (Host)");
-                }
-
-                let command = match command {
-                    Some(command) => command,
-                    None => ok!(BootstrapCommand::current()),
-                };
-                let manager = BootstrapProcManager::new(command).unwrap();
-
-                let host = ok!(Host::new(manager, addr).await);
-                let addr = host.addr().clone();
-                let system_proc = host.system_proc().clone();
-                let host_mesh_agent = ok!(system_proc.spawn::<HostMeshAgent>(
-                    "agent",
-                    HostMeshAgent::new(HostAgentMode::Process(host)),
-                ));
-
-                tracing::info!(
-                    "serving host at {}, agent: {}",
-                    addr,
-                    host_mesh_agent.bind::<HostMeshAgent>()
-                );
+                ok!(host(addr, command, config).await);
                 halt().await
             }
             Bootstrap::V0ProcMesh => bootstrap_v0_proc_mesh().await,
@@ -3806,5 +3816,27 @@ mod tests {
             }
             other => panic!("expected Stopped(7), got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_host_bootstrap() {
+        use crate::proc_mesh::mesh_agent::NewClientInstanceClient;
+        use crate::v1::host_mesh::mesh_agent::GetLocalProcClient;
+
+        // Create a local instance just to call the local bootstrap actor.
+        // We should find a way to avoid this for local handles.
+        let temp_proc = Proc::local();
+        let (temp_instance, _) = temp_proc.instance("temp").unwrap();
+
+        let handle = host(any_addr_for_test(), Some(BootstrapCommand::test()), None)
+            .await
+            .unwrap();
+
+        let local_proc = handle.get_local_proc(&temp_instance).await.unwrap();
+        let _local_instance = local_proc
+            .new_client_instance(&temp_instance)
+            .await
+            .unwrap();
     }
 }

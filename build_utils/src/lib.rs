@@ -657,14 +657,24 @@ pub fn link_libstdcpp_static() {
             if output.status.success() {
                 String::from_utf8(output.stdout).ok().and_then(|s| {
                     let path = PathBuf::from(s.trim());
-                    path.parent().map(|p| p.to_path_buf())
+                    path.parent().and_then(|p| {
+                        // parent() returns Some("") for relative paths with one component:
+                        // https://doc.rust-lang.org/stable/std/path/struct.PathBuf.html#method.parent
+                        if p == Path::new("") {
+                            None
+                        } else {
+                            Some(p.to_path_buf())
+                        }
+                    })
                 })
             } else {
                 None
             }
         });
     if let Some(gcc_lib_path) = gcc_lib_path {
-        println!("cargo:rustc-link-search=native={}", gcc_lib_path.display());
+        if !gcc_lib_path.as_os_str().is_empty() {
+            println!("cargo:rustc-link-search=native={}", gcc_lib_path.display());
+        }
     }
     println!("cargo:rustc-link-lib=static=stdc++");
 }

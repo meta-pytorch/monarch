@@ -693,16 +693,13 @@ impl<A: Actor> Clone for ActorHandle<A> {
 /// `Referable` so that you can hand out restricted or stable APIs
 /// while still using the same remote messaging machinery.
 ///
-/// Implementing this trait means the type:
-/// - can be identified (`Named`) so the runtime knows what it is,
-/// - is safe to pass across threads (`Send + Sync`),
-/// - and can be carried in [`ActorRef<T>`] values across process
-///   boundaries.
+/// Implementing this trait means the type can be identified (`Named`)
+/// so the runtime knows what it is.
 ///
-/// In contrast, [`RemoteSpawn`] is the trait that marks *actors*
+///  In contrast, [`RemoteSpawn`] is the trait that marks *actors*
 /// that can actually be **spawned remotely**. A behavior may be a
 /// `Referable` but is never a `RemoteSpawn`.
-pub trait Referable: Named + Send + Sync {}
+pub trait Referable: Named {}
 
 /// Binds determines how an actor's ports are bound to a specific
 /// reference type.

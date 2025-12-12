@@ -24,7 +24,9 @@ let actor_ref: ActorRef<MyActor> = ActorRef::attest(actor_id);
 
 > **Note**: While `ActorRef::attest` can be used to construct a reference from an `ActorId`, it should generally be avoided. Instead, prefer using the `ActorRef` returned from `ActorHandle::bind()`, which guarantees that the actor is actually running and bound to a mailbox. `attest` is unsafe in the sense that it bypasses that guarantee.
 
-Unlike `ActorHandle<A>`, an `ActorRef` is just a reference — it doesn’t guarantee that the actor is currently running. It's primarily used for routing and type-safe messaging across `Proc`s.
+> **Note**: The `Referable` trait only requires that `A` provides a static name via `Named`. It does not impose `Send` or `Sync` bounds—those are added at specific call sites that need them.
+
+Unlike `ActorHandle<A>`, an `ActorRef` is just a reference — it doesn't guarantee that the actor is currently running. It's primarily used for routing and type-safe messaging across `Proc`s.
 
 ### Definition
 ```rust

@@ -76,7 +76,7 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
 )
-from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
+from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event, PySpan
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
@@ -93,6 +93,7 @@ from monarch._src.actor.endpoint import (
     Selection,
 )
 from monarch._src.actor.future import Future
+from monarch._src.actor.metrics import endpoint_message_size_histogram
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
@@ -557,6 +558,12 @@ class ActorEndpoint(Endpoint[P, R]):
         """
         self._check_arguments(args, kwargs)
         objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+
+        # Record the message size with method name attribute
+        endpoint_message_size_histogram.record(
+            len(buffer), {"method": self._get_method_name()}
+        )
+
         if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
             message = PythonMessage(
                 PythonMessageKind.CallMethod(
@@ -564,7 +571,7 @@ class ActorEndpoint(Endpoint[P, R]):
                 ),
                 buffer,
             )
-            instant_event(f"sending {self._method_name()} message")
+            instant_event(f"sending {self._get_method_name()} message")
             self._actor_mesh.cast(
                 message, selection, context().actor_instance._as_rust()
             )
@@ -574,18 +581,7 @@ class ActorEndpoint(Endpoint[P, R]):
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _full_name(self) -> str:
-        return f"{self._mesh_name}.{self._method_name()}()"
-
-    def _method_name(self) -> str:
-        method_name = "unknown"
-        match self._name:
-            case MethodSpecifier.Init():
-                method_name = "__init__"
-            case MethodSpecifier.ReturnsResponse(name=method_name):
-                pass
-            case MethodSpecifier.ExplicitPort(name=method_name):
-                pass
-        return method_name
+        return f"{self._mesh_name}.{self._get_method_name()}()"
 
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
@@ -1110,11 +1106,13 @@ class _Actor:
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
     ) -> None:
-        method_name = None
         MESSAGES_HANDLED.add(1)
 
         # Initialize method_name before try block so it's always defined
         method_name = "unknown"
+        # Initialize endpoint_span before try block so it's always defined
+        # In the case that `the_method` raises an exception, we will exit the span
+        endpoint_span: PySpan | None = None
 
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
@@ -1187,28 +1185,36 @@ class _Actor:
 
             if inspect.iscoroutinefunction(the_method):
                 if should_instrument:
-                    with TRACER.start_as_current_span(
-                        method_name,
-                        attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                    ):
-                        result = await the_method(*args, **kwargs)
+                    # We generally want to use the context manager for entering/exiting
+                    # spans, but we want to introduce as little overhead as possible
+                    # here so we will manually enter and exit this span.
+                    endpoint_span = PySpan(
+                        method_name, actor_id=str(ctx.actor_instance.actor_id)
+                    )
+                    result = await the_method(*args, **kwargs)
+                    endpoint_span.exit()
                 else:
                     result = await the_method(*args, **kwargs)
                 self._maybe_exit_debugger()
             else:
                 with fake_sync_state():
                     if should_instrument:
-                        with TRACER.start_as_current_span(
-                            method_name,
-                            attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                        ):
-                            result = the_method(*args, **kwargs)
+                        # We generally want to use the context manager for entering/exiting
+                        # spans, but we want to introduce as little overhead as possible
+                        # here so we will manually enter and exit this span.
+                        endpoint_span = PySpan(
+                            method_name, actor_id=str(ctx.actor_instance.actor_id)
+                        )
+                        result = the_method(*args, **kwargs)
+                        endpoint_span.exit()
                     else:
                         result = the_method(*args, **kwargs)
                     self._maybe_exit_debugger()
 
             response_port.send(result)
         except Exception as e:
+            if endpoint_span is not None:
+                endpoint_span.exit()
             log_endpoint_exception(e, method_name)
             self._post_mortem_debug(e.__traceback__)
             response_port.exception(
@@ -1218,6 +1224,8 @@ class _Actor:
                 )
             )
         except BaseException as e:
+            if endpoint_span is not None:
+                endpoint_span.exit()
             self._post_mortem_debug(e.__traceback__)
             # A BaseException can be thrown in the case of a Rust panic.
             # In this case, we need a way to signal the panic to the Rust side.

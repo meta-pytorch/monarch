@@ -861,6 +861,22 @@ fn initialize_logging_with_log_prefix_impl(
 
         if use_unified {
             let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+
+            let mut max_level = None;
+            let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
+
+            if sqlite_enabled {
+                match create_sqlite_sink() {
+                    Ok(sink) => {
+                        max_level = Some(tracing::level_filters::LevelFilter::TRACE);
+                        sinks.push(Box::new(sink));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create SqliteSink: {}", e);
+                    }
+                }
+            }
+
             sinks.push(Box::new(sinks::glog::GlogSink::new(
                 writer(),
                 prefix_env_var.clone(),
@@ -868,7 +884,9 @@ fn initialize_logging_with_log_prefix_impl(
             )));
 
             if let Err(err) = registry
-                .with(trace_dispatcher::TraceEventDispatcher::new(sinks, None))
+                .with(trace_dispatcher::TraceEventDispatcher::new(
+                    sinks, max_level,
+                ))
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);

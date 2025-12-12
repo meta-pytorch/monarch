@@ -334,7 +334,7 @@ class ProcMesh(MeshTrait):
             actor_mesh,
             self._region.as_shape(),
             self,
-            self._controller_controller,
+            self._controller_controller or instance._controller_controller,
             *args,
             **kwargs,
         )
