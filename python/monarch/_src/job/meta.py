@@ -50,6 +50,34 @@ class _MASTSpec(NamedTuple):
     meshes: List[Tuple[str, int, str]]
     workspace: Dict[Union[Path, str], str]
     env: Dict[str, str]
+    # Additional scheduler args for TorchX Mast Scheduler
+    runningTimeoutSec: int | None
+    jobOwnerUnixname: str | None
+    useStrictName: bool | None
+    mounts: list[str] | None
+    localityConstraints: list[str] | None
+    useDataConstraintsForJobPlacement: bool | None
+    enableGracefulPreemption: bool | None
+    enableLegacy: bool | None
+    flexPoolId: str | None
+    perpetualRun: bool | None
+    jobPriority: str | None
+    jobType: str | None
+    modelTypeName: str | None
+    redundantNodes: int | None
+    hpcBaseImagePackage: str | None
+    monitoringConfig: str | None
+    tags: list[str] | None
+    checkpointAgentPkg: str | None
+    replicateRoles: list[str] | None
+    modelEntityId: str | None
+    flowTier: str | None
+    gracefulPreemptionTimeoutSecs: int | None
+    maxJobFailures: int | None
+    stalenessHours: int | None
+    disableTcLsstStickiness: bool | None
+    hpcJobPriorityBand: str | None
+    opecTag: str | None
 
 
 MONARCH_PORT: int = 26600
@@ -81,7 +109,35 @@ class MASTJob(JobTrait):
         hpcClusterUuid: str = "MastProdCluster",
         packages: Sequence[str] = (),
         timeout_sec=3600,
-        env: Optional[Dict[str, str]] = None,
+        env: Dict[str, str] | None = None,
+        # Additional optional scheduler args
+        runningTimeoutSec: int | None = None,
+        jobOwnerUnixname: str | None = None,
+        useStrictName: bool | None = None,
+        mounts: list[str] | None = None,
+        localityConstraints: list[str] | None = None,
+        useDataConstraintsForJobPlacement: bool | None = None,
+        enableGracefulPreemption: bool | None = None,
+        enableLegacy: bool | None = None,
+        flexPoolId: str | None = None,
+        perpetualRun: bool | None = None,
+        jobPriority: str | None = None,
+        jobType: str | None = None,
+        modelTypeName: str | None = None,
+        redundantNodes: int | None = None,
+        hpcBaseImagePackage: str | None = None,
+        monitoringConfig: str | None = None,
+        tags: list[str] | None = None,
+        checkpointAgentPkg: str | None = None,
+        replicateRoles: list[str] | None = None,
+        modelEntityId: str | None = None,
+        flowTier: str | None = None,
+        gracefulPreemptionTimeoutSecs: int | None = None,
+        maxJobFailures: int | None = None,
+        stalenessHours: int | None = None,
+        disableTcLsstStickiness: bool | None = None,
+        hpcJobPriorityBand: str | None = None,
+        opecTag: str | None = None,
     ):
         super().__init__()
         self._name: Optional[str] = None
@@ -95,6 +151,33 @@ class MASTJob(JobTrait):
             [],
             {},
             env or {},
+            runningTimeoutSec,
+            jobOwnerUnixname,
+            useStrictName,
+            mounts,
+            localityConstraints,
+            useDataConstraintsForJobPlacement,
+            enableGracefulPreemption,
+            enableLegacy,
+            flexPoolId,
+            perpetualRun,
+            jobPriority,
+            jobType,
+            modelTypeName,
+            redundantNodes,
+            hpcBaseImagePackage,
+            monitoringConfig,
+            tags,
+            checkpointAgentPkg,
+            replicateRoles,
+            modelEntityId,
+            flowTier,
+            gracefulPreemptionTimeoutSecs,
+            maxJobFailures,
+            stalenessHours,
+            disableTcLsstStickiness,
+            hpcJobPriorityBand,
+            opecTag,
         )
         self._handle: Optional[str] = None
 
@@ -130,16 +213,14 @@ class MASTJob(JobTrait):
                 BatchJob(self).dump(str(path))
                 workspace.dirs[temp_dir] = ".monarch"
 
+            # Build scheduler_args from _spec, excluding internal monarch fields
+            exclude_fields = {"packages", "timeout_sec", "meshes", "workspace", "env"}
             config = Config(
                 scheduler="mast_conda",
                 scheduler_args={
-                    k: getattr(self._spec, k)
-                    for k in (
-                        "hpcIdentity",
-                        "hpcJobOncall",
-                        "rmAttribution",
-                        "hpcClusterUuid",
-                    )
+                    k: v
+                    for k, v in self._spec._asdict().items()
+                    if k not in exclude_fields and v is not None
                 },
                 appdef=appdef,
                 workspace=workspace,
