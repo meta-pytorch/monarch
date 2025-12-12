@@ -21,7 +21,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
 
     // Auto-detect ROCm vs CUDA using build_utils
-    let (is_rocm, compute_home, _rocm_version) =
+    let (is_rocm, compute_home, rocm_version) =
         if let Ok(rocm_home) = build_utils::validate_rocm_installation() {
             let version = build_utils::get_rocm_version(&rocm_home).unwrap_or((6, 0));
             println!(
@@ -72,7 +72,7 @@ fn main() {
         if bridge_cpp_hipified.exists() {
             let content = std::fs::read_to_string(&bridge_cpp_hipified)
                 .expect("Failed to read hipified bridge.cpp");
-            let patched = content
+            let mut patched = content
                 // Fix include path to use hipified header
                 .replace("#include \"bridge.h\"", "#include \"bridge_hip.h\"")
                 // Replace all cudaStream_t with hipStream_t
@@ -80,6 +80,14 @@ fn main() {
                 // Patch dlopen library name for RCCL
                 .replace("libnccl.so", "librccl.so")
                 .replace("libnccl.so.2", "librccl.so");
+
+            if rocm_version.0 < 7 {
+                patched = patched.replace(
+                    "LOOKUP_NCCL_ENTRY(ncclCommInitRankScalable)",
+                    "// LOOKUP_NCCL_ENTRY(ncclCommInitRankScalable)"
+                );
+            }
+
             std::fs::write(&bridge_cpp_hipified, patched)
                 .expect("Failed to write patched bridge.cpp");
         }
@@ -132,8 +140,13 @@ fn main() {
         // Communicator creation and management
         .allowlist_function("ncclCommInitRank")
         .allowlist_function("ncclCommInitAll")
-        .allowlist_function("ncclCommInitRankConfig")
-        .allowlist_function("ncclCommInitRankScalable")
+        .allowlist_function("ncclCommInitRankConfig");
+    // It is missing in ROCm 6.x (RCCL based on NCCL < 2.20)
+    if !is_rocm || rocm_version.0 >= 7 {
+        builder = builder.allowlist_function("ncclCommInitRankScalable");
+    }
+
+    builder = builder
         .allowlist_function("ncclCommSplit")
         .allowlist_function("ncclCommFinalize")
         .allowlist_function("ncclCommDestroy")
