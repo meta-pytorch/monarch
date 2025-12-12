@@ -93,6 +93,7 @@ from monarch._src.actor.endpoint import (
     Selection,
 )
 from monarch._src.actor.future import Future
+from monarch._src.actor.metrics import endpoint_message_size_histogram
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
@@ -557,6 +558,12 @@ class ActorEndpoint(Endpoint[P, R]):
         """
         self._check_arguments(args, kwargs)
         objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+
+        # Record the message size with method name attribute
+        endpoint_message_size_histogram.record(
+            len(buffer), {"method": self._get_method_name()}
+        )
+
         if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
             message = PythonMessage(
                 PythonMessageKind.CallMethod(
@@ -564,7 +571,7 @@ class ActorEndpoint(Endpoint[P, R]):
                 ),
                 buffer,
             )
-            instant_event(f"sending {self._method_name()} message")
+            instant_event(f"sending {self._get_method_name()} message")
             self._actor_mesh.cast(
                 message, selection, context().actor_instance._as_rust()
             )
@@ -574,18 +581,7 @@ class ActorEndpoint(Endpoint[P, R]):
         return Extent(shape.labels, shape.ndslice.sizes)
 
     def _full_name(self) -> str:
-        return f"{self._mesh_name}.{self._method_name()}()"
-
-    def _method_name(self) -> str:
-        method_name = "unknown"
-        match self._name:
-            case MethodSpecifier.Init():
-                method_name = "__init__"
-            case MethodSpecifier.ReturnsResponse(name=method_name):
-                pass
-            case MethodSpecifier.ExplicitPort(name=method_name):
-                pass
-        return method_name
+        return f"{self._mesh_name}.{self._get_method_name()}()"
 
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)

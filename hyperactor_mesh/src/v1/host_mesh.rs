@@ -71,7 +71,7 @@ declare_attrs! {
     /// meshes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("mesh_proc_spawn_max_idle".to_string()),
     })
     pub attr PROC_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 

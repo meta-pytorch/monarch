@@ -146,3 +146,91 @@ def test_codec_max_frame_length_with_increased_limit() -> None:
         result = chunker.process_chunks.call_one(chunks).get()
 
         assert result == 10
+
+
+def test_duration_config_basic() -> None:
+    """Test setting and getting Duration configuration values."""
+    # Test with seconds format
+    with configured(
+        host_spawn_ready_timeout="300s",
+        message_delivery_timeout="60s",
+        mesh_proc_spawn_max_idle="120s",
+    ) as config:
+        assert config["host_spawn_ready_timeout"] == "5m"
+        assert config["message_delivery_timeout"] == "1m"
+        assert config["mesh_proc_spawn_max_idle"] == "2m"
+
+    # Verify values are restored to defaults after context exits
+    config = get_global_config()
+    assert config["host_spawn_ready_timeout"] == "30s"
+    assert config["message_delivery_timeout"] == "30s"
+    assert config["mesh_proc_spawn_max_idle"] == "30s"
+
+
+def test_duration_config_formats() -> None:
+    """Test Duration configuration with different humantime formats."""
+    test_cases = [
+        ("30s", "30s"),  # seconds
+        ("5m", "5m"),  # minutes
+        ("2h", "2h"),  # hours
+        ("90s", "1m 30s"),  # overflow seconds to minutes
+        ("1h 30m", "1h 30m"),  # compound duration with space
+        ("1h30m", "1h 30m"),  # compound duration without space
+    ]
+
+    for input_val, expected_val in test_cases:
+        with configured(host_spawn_ready_timeout=input_val) as config:
+            assert config["host_spawn_ready_timeout"] == expected_val
+
+
+def test_duration_config_invalid_format() -> None:
+    """Test that invalid Duration formats raise errors."""
+    with pytest.raises(TypeError, match="Invalid duration format"):
+        with configured(host_spawn_ready_timeout="invalid"):
+            pass
+
+    with pytest.raises(TypeError, match="Invalid duration format"):
+        with configured(message_delivery_timeout="30"):  # missing unit
+            pass
+
+    with pytest.raises(TypeError, match="Invalid duration format"):
+        with configured(mesh_proc_spawn_max_idle="abc123"):
+            pass
+
+
+def test_duration_config_type_error() -> None:
+    """Test that non-string values for Duration config raise TypeError."""
+    with pytest.raises(TypeError):
+        with configured(host_spawn_ready_timeout=30):  # type: ignore
+            pass
+
+    with pytest.raises(TypeError):
+        with configured(message_delivery_timeout=30.5):  # type: ignore
+            pass
+
+
+def test_duration_config_multiple() -> None:
+    """Test setting multiple Duration configs together with other configs."""
+    with configured(
+        default_transport=ChannelTransport.TcpWithLocalhost,
+        host_spawn_ready_timeout="10m",
+        message_delivery_timeout="5m",
+        mesh_proc_spawn_max_idle="2m",
+        enable_log_forwarding=True,
+        tail_log_lines=100,
+    ) as config:
+        assert config["default_transport"] == ChannelTransport.TcpWithLocalhost
+        assert config["host_spawn_ready_timeout"] == "10m"
+        assert config["message_delivery_timeout"] == "5m"
+        assert config["mesh_proc_spawn_max_idle"] == "2m"
+        assert config["enable_log_forwarding"]
+        assert config["tail_log_lines"] == 100
+
+    # Verify all values are restored
+    config = get_global_config()
+    assert config["default_transport"] == ChannelTransport.Unix
+    assert config["host_spawn_ready_timeout"] == "30s"
+    assert config["message_delivery_timeout"] == "30s"
+    assert config["mesh_proc_spawn_max_idle"] == "30s"
+    assert not config["enable_log_forwarding"]
+    assert config["tail_log_lines"] == 0
