@@ -14,10 +14,10 @@ Prerequisites:
 
 Usage:
     # Run on Kubernetes with 2 nodes, 8 GPUs per node
-    python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --gpus "H200:8"
+    python examples/skypilot/skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --gpus "H200:8"
 
     # Run on cloud VMs
-    python skypilot_getting_started.py --cloud <aws/gcp/azure/...> --num-hosts 2 --gpus-per-host 1 --gpus "H100:1"
+    python examples/skypilot/skypilot_getting_started.py --cloud <aws/gcp/azure/...> --num-hosts 2 --gpus-per-host 1 --gpus "H100:1"
 """
 
 import argparse

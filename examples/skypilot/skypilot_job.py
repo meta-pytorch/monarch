@@ -125,7 +125,7 @@ class SkyPilotJob(JobTrait):
             resources: SkyPilot Resources specification for the instances.
                        If None, uses SkyPilot defaults.
             cluster_name: Name for the SkyPilot cluster. If None, auto-generated.
-            monarch_port: Port for TCP communication between Monarch workers.
+            monarch_port: Port bootstrapping communication between Monarch workers.
             idle_minutes_to_autostop: If set, cluster will autostop after this
                                       many minutes of idleness.
             down_on_autostop: If True, tear down cluster on autostop instead of

@@ -6,7 +6,47 @@ This directory contains a standalone integration for running Monarch workloads o
 
 `SkyPilotJob` provisions cloud instances (or K8s pods) and starts Monarch workers on them, allowing you to run distributed Monarch actors across multiple machines.
 
-**Supported platforms:**
+### Architecture
+
+```mermaid
+flowchart TB
+    subgraph laptop["💻 Your Laptop"]
+        user["$ sky launch monarch_getting_started.sky.yaml"]
+    end
+
+    subgraph k8s["☸️ Kubernetes Cluster"]
+        subgraph driver["Driver Pod"]
+            script["skypilot_getting_started.py"]
+            skyjob["SkyPilotJob"]
+        end
+        
+        subgraph workers["Worker Pods (provisioned by SkyPilot)"]
+            subgraph w1["Worker Pod 0"]
+                mw1["Monarch Worker"]
+            end
+            subgraph w2["Worker Pod 1"]
+                mw2["Monarch Worker"]
+            end
+        end
+    end
+
+    user -->|"SkyPilot launches"| driver
+    script --> skyjob
+    skyjob -->|"provisions via SkyPilot"| workers
+    skyjob <-->|"TCP :22222"| mw1
+    skyjob <-->|"TCP :22222"| mw2
+    mw1
+    mw2
+```
+
+**How it works:**
+1. You run `sky launch` from your laptop to start the driver pod
+2. The driver runs `skypilot_getting_started.py` which creates a `SkyPilotJob`
+3. `SkyPilotJob` provisions GPU worker pods via SkyPilot
+4. The driver connects to Monarch workers over TCP (port 22222)
+5. Actors are spawned on each GPU and execute your distributed code
+
+**Supported infra:**
 - Kubernetes (any cluster)
 - Hyperscalers: AWS, GCP, Azure
 - Neoclouds: CoreWeave, Nebius, and [20+ other clouds](https://docs.skypilot.co/en/latest/getting-started/installation.html)
@@ -117,6 +157,11 @@ Cluster 'monarch-skypilot-test' terminated
 
 </details>
 
+When done, clean up with:
+```bash
+sky down monarch-demo
+```
+
 
 <details>
 <summary><strong>Running from within the Kubernetes cluster</strong></summary>
@@ -125,6 +170,33 @@ If you are already in the Kubernetes cluster you'd like to run workers on, you c
 
 ```bash
 python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --gpus "H200:8"
+```
+
+</details>
+
+<details>
+
+### Running the DDP Jupyter Notebook
+
+To run the `skypilot_ddp.ipynb` notebook interactively, first launch a driver pod and then connect via SSH port forwarding:
+
+```bash
+# 1. Launch a driver pod (without running a script)
+sky launch monarch_getting_started.sky.yaml -c monarch-demo
+
+# 2. SSH into the pod with port forwarding for Jupyter
+sky ssh monarch-demo -L 8888:localhost:8888
+
+# 3. Inside the pod, start Jupyter Notebook (no token required)
+cd ~/sky_workdir
+jupyter notebook --no-browser --port=8888 --ip=0.0.0.0 --NotebookApp.token='' --NotebookApp.password=''
+```
+
+Then open http://localhost:8888 in your browser and run `skypilot_ddp.ipynb`.
+
+When done, clean up with:
+```bash
+sky down monarch-demo
 ```
 
 </details>
