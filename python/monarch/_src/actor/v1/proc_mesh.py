@@ -41,14 +41,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shap
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
 )
-from monarch._src.actor.actor_mesh import (
-    _Actor,
-    _Lazy,
-    _this_host_for_fake_in_process_host,
-    Actor,
-    ActorMesh,
-    context,
-)
+from monarch._src.actor.actor_mesh import _Actor, _Lazy, Actor, ActorMesh, context
 from monarch._src.actor.allocator import AllocHandle, SimAllocator
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
@@ -154,15 +147,7 @@ class ProcMesh(MeshTrait):
             raise NotImplementedError(
                 "`ProcMesh.host_mesh` is not yet supported for non-singleton proc meshes."
             )
-        elif self._host_mesh.is_fake_in_process:
-            host_mesh = _this_host_for_fake_in_process_host.try_get()
-            assert host_mesh is not None, (
-                "Attempted to get `_this_host_for_fake_in_process_host` before the root client context "
-                "initialized it. This should not be possible."
-            )
-            return host_mesh
-        else:
-            return self._host(0)
+        return self._host(0)
 
     @property
     def _ndslice(self) -> Slice:
@@ -434,6 +419,18 @@ class ProcMesh(MeshTrait):
         # want it to close once.
         if not self._stopped:
             await self.stop()
+
+    @classmethod
+    def _from_rust(cls, hy_proc_mesh: HyProcMesh, host_mesh: "HostMesh") -> "ProcMesh":
+        """
+        Create a HostMesh from a Rust HyProcMesh and its parent HostMesh.
+        """
+        return cls._from_initialized_hy_proc_mesh(
+            hy_proc_mesh,
+            host_mesh,
+            hy_proc_mesh.region,
+            hy_proc_mesh.region,
+        )
 
     @classmethod
     def _from_initialized_hy_proc_mesh(

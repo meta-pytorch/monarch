@@ -266,7 +266,10 @@ async fn halt<R>() -> R {
     unreachable!()
 }
 
-/// Bootstrap a host in this process, returning a handle to the mesh agent:
+/// Bootstrap a host in this process, returning a handle to the mesh agent.
+///
+/// To obtain the local proc, use `GetLocalProc` on the returned host mesh agent,
+/// then use `GetProc` on the returned proc mesh agent.
 ///
 /// - `addr`: the listening address of the host; this is used to bind the frontend address;
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];

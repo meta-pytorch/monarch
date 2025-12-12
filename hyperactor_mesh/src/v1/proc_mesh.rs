@@ -104,7 +104,8 @@ pub struct ProcRef {
 }
 
 impl ProcRef {
-    pub(crate) fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcMeshAgent>) -> Self {
+    /// Create a new proc ref from the provided id, create rank and agent.
+    pub fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcMeshAgent>) -> Self {
         Self {
             proc_id,
             create_rank,
@@ -697,6 +698,20 @@ impl ProcMeshRef {
             root_region,
             root_comm_actor,
         })
+    }
+
+    /// Create a singleton ProcMeshRef, given the provided ProcRef and name.
+    /// This is used to support creating local singleton proc meshes to support `this_proc()`
+    /// in python client actors.
+    pub fn new_singleton(name: Name, proc_ref: ProcRef) -> Self {
+        Self {
+            name,
+            region: Extent::unity().into(),
+            ranks: Arc::new(vec![proc_ref]),
+            host_mesh: None,
+            root_region: None,
+            root_comm_actor: None,
+        }
     }
 
     pub(crate) fn root_comm_actor(&self) -> Option<&ActorRef<CommActor>> {

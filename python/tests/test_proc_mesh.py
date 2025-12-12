@@ -20,7 +20,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, Al
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
 from monarch._src.actor.actor_mesh import (
-    _root_proc_mesh,
+    _client_context,
     Actor,
     ActorMesh,
     context,
@@ -297,11 +297,11 @@ def test_context_proc_mesh_in_controller_spawns_actor_in_client_os_process() -> 
 
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_proc_meshes() -> None:
-    orig_get_root_proc_mesh = _root_proc_mesh.get
-    with patch.object(_root_proc_mesh, "get") as mock_get_root_proc_mesh, patch.object(
+    orig_get_client_context = _client_context.get
+    with patch.object(_client_context, "get") as mock_get_client_context, patch.object(
         monarch._src.actor.host_mesh, "fake_in_process_host"
     ) as mock_fake_in_process_host:
-        mock_get_root_proc_mesh.side_effect = orig_get_root_proc_mesh
+        mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():
             time.sleep(0.1)
@@ -316,7 +316,7 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
         for t in threads:
             t.join()
 
-        assert mock_get_root_proc_mesh.call_count == 100
+        assert mock_get_client_context.call_count == 100
         # If this test is run in isolation, the local host mesh will
         # be created once. But if it runs with other tests, the host mesh
         # will have already been initialized and the function never gets
