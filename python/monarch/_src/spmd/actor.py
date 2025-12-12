@@ -100,7 +100,11 @@ class SPMDActor(Actor):
         """
         Set up distributed training environment and execute the training script.
 
+        Phase B: Used when parsing torchrun and running scripts directly as monarch actors.
+
         Args:
+            master_addr: Master node address for distributed training
+            master_port: Master node port for distributed training
             script_args: Arguments for the training script. First element is either
                 "-m" (for module execution) or the script path, followed by script arguments.
 
@@ -108,9 +112,14 @@ class SPMDActor(Actor):
             True on successful execution.
 
         Raises:
-            ValueError: If no script or module is specified.
+            ValueError: If no script or module specified.
         """
         self._setup_env(master_addr, master_port)
+
+        # Change to workspace directory if available
+        workspace_dir = os.environ.get("WORKSPACE_DIR")
+        if workspace_dir and os.path.exists(workspace_dir):
+            os.chdir(workspace_dir)
 
         if script_args and script_args[0] == "-m":
             module_name = script_args[1]
@@ -124,3 +133,35 @@ class SPMDActor(Actor):
             raise ValueError("No script or module specified")
 
         return True
+
+    @endpoint
+    def run_command(
+        self,
+        entrypoint: str,
+        args: list[str],
+        env: dict[str, str],
+    ) -> bool:
+        """
+        Execute a command via subprocess.
+
+        Phase A: Used for running full torchrun command as-is on each host.
+
+        Args:
+            entrypoint: Command to run (e.g., "bash")
+            args: Arguments to the command (e.g., ["-c", "torchrun ..."])
+            env: Environment variables to set
+
+        Returns:
+            True on successful execution
+        """
+        import subprocess
+
+        # Apply environment variables
+        os.environ.update(env)
+
+        # Execute the command
+        cmd = [entrypoint] + args
+        print(f"[SPMDActor] Executing: {' '.join(cmd[:5])}...")  # First 5 elements
+
+        result = subprocess.run(cmd, check=True)
+        return result.returncode == 0

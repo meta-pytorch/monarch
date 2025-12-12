@@ -9,9 +9,12 @@ import argparse
 import json
 import sys
 
+from monarch.job.spmd import (  # @manual=//monarch/python/monarch/job:job
+    create_job_for_scheduler,
+    SPMDJob,
+)
 from monarch.tools.commands import (
     bounce,
-    component_args_from_cli,
     create,
     debug,
     info,
@@ -25,7 +28,6 @@ from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/con
 )
 
 from monarch.tools.debug_env import _get_debug_server_host, _get_debug_server_port
-from torchx.specs.finder import get_component
 
 
 def config_from_cli_args(args: argparse.Namespace) -> Config:
@@ -163,6 +165,49 @@ class DebugCmd:
         debug(args.host, args.port)
 
 
+class ServeCmd:
+    """
+    Parse and cache a torchx command for monarch execution.
+
+    Example:
+        monarch serve torchx run -s conda_mast -j1x8 train.py -- --lr 0.001
+    """
+
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "torchx_args",
+            nargs=argparse.REMAINDER,
+            help="torchx command arguments (e.g., 'run -s mast_conda -j1x8 train.py -- --lr 0.001')",
+        )
+
+    def run(self, args: argparse.Namespace) -> None:
+        # Use the Python API to create the SPMDJob
+        try:
+            spmd_job = SPMDJob.serve_from_command(args.torchx_args)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            print(
+                "\nUsage: monarch serve torchx run -s SCHEDULER [-cfg ARGS] COMPONENT [COMPONENT_ARGS]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error: Unexpected error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # Print job details
+        print(f"Scheduler: {spmd_job._scheduler}")
+        print(f"Component: {spmd_job._appdef.roles[0].name if spmd_job._appdef.roles else 'unknown'}")
+        print(f"Num hosts: {spmd_job._appdef.roles[0].num_replicas if spmd_job._appdef.roles else 0}")
+        if spmd_job._workspace:
+            print(f"Workspace: {spmd_job._workspace}")
+
+        # Launch job (calls apply + caches)
+        print(f"\nLaunching {spmd_job._scheduler} job...")
+        spmd_job.state()
+        print("✓ Job launched successfully and cached to .monarch/job_state.pkl")
+
+
 def get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Monarch CLI")
     subparser = parser.add_subparsers(title="COMMANDS")
@@ -172,6 +217,7 @@ def get_parser() -> argparse.ArgumentParser:
         "info": InfoCmd(),
         "kill": KillCmd(),
         "debug": DebugCmd(),
+        "serve": ServeCmd(),
         # --- placeholder subcommands (not yet implemented) ---
         "bounce": BounceCmd(),
         "stop": StopCmd(),
