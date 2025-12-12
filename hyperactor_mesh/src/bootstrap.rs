@@ -2402,6 +2402,7 @@ mod tests {
     use crate::v1::ActorMesh;
     use crate::v1::host_mesh::HostMesh;
     use crate::v1::testactor;
+    use crate::v1::testing;
 
     // Helper: Avoid repeating
     // `ChannelAddr::any(ChannelTransport::Unix)`.
@@ -3603,13 +3604,9 @@ mod tests {
         unsafe {
             std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
         }
-        // Create a "root" direct addressed proc.
-        let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-            .await
-            .unwrap();
         // Create an actor instance we'll use to send and receive
         // messages.
-        let (instance, _handle) = proc.instance("client").unwrap();
+        let instance = testing::instance().await;
 
         // Configure a ProcessAllocator with the bootstrap binary.
         let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(

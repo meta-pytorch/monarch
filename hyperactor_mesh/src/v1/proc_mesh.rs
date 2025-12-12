@@ -21,6 +21,7 @@ use std::time::Duration;
 use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::Handler;
 use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
@@ -66,6 +67,7 @@ use crate::proc_mesh::mesh_agent::ReconfigurableMailboxSender;
 use crate::resource;
 use crate::resource::GetRankStatus;
 use crate::resource::Status;
+use crate::supervision::SupervisionFailureMessage;
 use crate::v1;
 use crate::v1::ActorMesh;
 use crate::v1::ActorMeshRef;
@@ -202,12 +204,15 @@ pub struct ProcMesh {
 }
 
 impl ProcMesh {
-    async fn create(
-        cx: &impl context::Actor,
+    async fn create<C: context::Actor>(
+        cx: &C,
         name: Name,
         allocation: ProcMeshAllocation,
         spawn_comm_actor: bool,
-    ) -> v1::Result<Self> {
+    ) -> v1::Result<Self>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         let comm_actor_name = if spawn_comm_actor {
             Some(Name::new("comm").unwrap())
         } else {
@@ -245,8 +250,8 @@ impl ProcMesh {
         if let Some(comm_actor_name) = comm_actor_name {
             // CommActor satisfies `Actor + Referable`, so it can be
             // spawned and safely referenced via ActorRef<CommActor>.
-            let comm_actor_mesh = proc_mesh
-                .spawn_with_name::<CommActor>(cx, comm_actor_name, &Default::default())
+            let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
+                .spawn_with_name(cx, comm_actor_name, &Default::default())
                 .await?;
             let address_book: HashMap<_, _> = comm_actor_mesh
                 .iter()
@@ -267,13 +272,16 @@ impl ProcMesh {
         Ok(proc_mesh)
     }
 
-    pub(crate) async fn create_owned_unchecked(
-        cx: &impl context::Actor,
+    pub(crate) async fn create_owned_unchecked<C: context::Actor>(
+        cx: &C,
         name: Name,
         extent: Extent,
         hosts: HostMeshRef,
         ranks: Vec<ProcRef>,
-    ) -> v1::Result<Self> {
+    ) -> v1::Result<Self>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         Self::create(
             cx,
             name,
@@ -295,23 +303,29 @@ impl ProcMesh {
     /// Allocate a new ProcMesh from the provided alloc.
     /// Allocate does not require an owning actor because references are not owned.
     #[track_caller]
-    pub async fn allocate(
-        cx: &impl context::Actor,
+    pub async fn allocate<C: context::Actor>(
+        cx: &C,
         alloc: Box<dyn Alloc + Send + Sync + 'static>,
         name: &str,
-    ) -> v1::Result<Self> {
+    ) -> v1::Result<Self>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         let caller = Location::caller();
         Self::allocate_inner(cx, alloc, Name::new(name)?, caller).await
     }
 
     // Use allocate_inner to set field mesh_name in span
     #[hyperactor::instrument(fields(proc_mesh=name.to_string()))]
-    async fn allocate_inner(
-        cx: &impl context::Actor,
+    async fn allocate_inner<C: context::Actor>(
+        cx: &C,
         mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
         name: Name,
         caller: &'static Location<'static>,
-    ) -> v1::Result<Self> {
+    ) -> v1::Result<Self>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         let alloc_id = Self::alloc_counter().fetch_add(1, Ordering::Relaxed) + 1;
         tracing::info!(
             name = "ProcMeshStatus",
@@ -857,14 +871,15 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
-    pub async fn spawn<A: RemoteSpawn>(
+    pub async fn spawn<A: RemoteSpawn, C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         name: &str,
         params: &A::Params,
     ) -> v1::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
+        C::A: Handler<SupervisionFailureMessage>,
     {
         self.spawn_with_name(cx, Name::new(name)?, params).await
     }
@@ -876,14 +891,15 @@ impl ProcMeshRef {
     ///
     /// Note: avoid using service actors if possible; the mechanism will
     /// be replaced by an actor registry.
-    pub async fn spawn_service<A: RemoteSpawn>(
+    pub async fn spawn_service<A: RemoteSpawn, C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         name: &str,
         params: &A::Params,
     ) -> v1::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
+        C::A: Handler<SupervisionFailureMessage>,
     {
         self.spawn_with_name(cx, Name::new_reserved(name)?, params)
             .await
@@ -902,19 +918,24 @@ impl ProcMeshRef {
     ///   inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
+    /// - `C::A: Handler<SupervisionFailureMessage>` - in order to spawn actors,
+    ///   the actor must accept messages of type `SupervisionFailureMessage`. This
+    ///   is delivered when the actors spawned in the mesh have a failure that
+    ///   isn't handled.
     #[hyperactor::instrument(fields(
         host_mesh=self.host_mesh_name().map(|n| n.to_string()),
         proc_mesh=self.name.to_string(),
         actor_name=name.to_string(),
     ))]
-    pub(crate) async fn spawn_with_name<A: RemoteSpawn>(
+    pub(crate) async fn spawn_with_name<A: RemoteSpawn, C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         name: Name,
         params: &A::Params,
     ) -> v1::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
+        C::A: Handler<SupervisionFailureMessage>,
     {
         tracing::info!(
             name = "ProcMeshStatus",
@@ -938,12 +959,15 @@ impl ProcMeshRef {
         result
     }
 
-    async fn spawn_with_name_inner<A: RemoteSpawn>(
+    async fn spawn_with_name_inner<A: RemoteSpawn, C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         name: Name,
         params: &A::Params,
-    ) -> v1::Result<ActorMesh<A>> {
+    ) -> v1::Result<ActorMesh<A>>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         let remote = Remote::collect();
         // `RemoteSpawn` + `remote!(A)` ensure that `A` has a
         // `SpawnableActor` entry in this registry, so
@@ -1050,6 +1074,7 @@ impl ProcMeshRef {
                 Err(Error::ActorSpawnError { statuses: legacy })
             }
         }?;
+        // TODO: use the SupervisionFailureMessage port that was added as a requirement here.
         // Spawn a unique mesh manager for each actor mesh, so the type of the
         // mesh can be preserved.
         let controller = ActorMeshController::<A>::new(mesh.deref().clone());
@@ -1210,6 +1235,7 @@ impl view::RankedSliceable for ProcMeshRef {
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::Instance;
     use ndslice::ViewExt;
     use ndslice::extent;
     use timed_test::async_timed_test;
@@ -1263,7 +1289,11 @@ mod tests {
 
         for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             let err = proc_mesh
-                .spawn::<testactor::FailingCreateTestActor>(instance, "testfail", &())
+                .spawn::<testactor::FailingCreateTestActor, Instance<testing::TestRootClient>>(
+                    instance,
+                    "testfail",
+                    &(),
+                )
                 .await
                 .unwrap_err();
             let statuses = err.into_actor_spawn_error().unwrap();

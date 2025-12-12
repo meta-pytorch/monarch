@@ -457,6 +457,7 @@ mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
     use hyperactor::channel::ChannelTransport;
+    use hyperactor_mesh::actor_mesh::RootActorMesh;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
@@ -522,9 +523,8 @@ mod tests {
         let instance = global_root_client();
 
         // Spawn actor mesh with RsyncActors
-        let actor_mesh = proc_mesh
-            .spawn::<RsyncActor>(&instance, "rsync_test", &())
-            .await?;
+        let actor_mesh: RootActorMesh<RsyncActor> =
+            proc_mesh.spawn(&instance, "rsync_test", &()).await?;
 
         // Test rsync_mesh function - this coordinates rsync operations across the mesh
         let results = rsync_mesh(
