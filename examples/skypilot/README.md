@@ -20,7 +20,7 @@ flowchart TB
             skyjob["SkyPilotJob"]
         end
         
-        subgraph workers["Worker Pods (provisioned by SkyPilot)"]
+        subgraph workers["Worker&nbsp;Pods&nbsp;(SkyPilot&nbsp;clusters)"]
             subgraph w1["Worker Pod 0"]
                 mw1["Monarch Worker"]
             end
@@ -32,7 +32,7 @@ flowchart TB
 
     user -->|"SkyPilot launches"| driver
     script --> skyjob
-    skyjob -->|"provisions via SkyPilot"| workers
+    skyjob -->|"provisioned via SkyPilot"| workers
     skyjob <-->|"TCP :22222"| mw1
     skyjob <-->|"TCP :22222"| mw2
     mw1
@@ -174,8 +174,6 @@ python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-h
 
 </details>
 
-<details>
-
 ### Running the DDP Jupyter Notebook
 
 To run the `skypilot_ddp.ipynb` notebook interactively, first launch a driver pod and then connect via SSH port forwarding:
@@ -187,19 +185,17 @@ sky launch monarch_getting_started.sky.yaml -c monarch-demo
 # 2. SSH into the pod with port forwarding for Jupyter
 sky ssh monarch-demo -L 8888:localhost:8888
 
-# 3. Inside the pod, start Jupyter Notebook (no token required)
+# 3. Inside the pod, start Jupyter Notebook
 cd ~/sky_workdir
 jupyter notebook --no-browser --port=8888 --ip=0.0.0.0 --NotebookApp.token='' --NotebookApp.password=''
 ```
 
-Then open http://localhost:8888 in your browser and run `skypilot_ddp.ipynb`.
+Then open http://localhost:8888 in your browser and open `skypilot_ddp.ipynb`.
 
 When done, clean up with:
 ```bash
 sky down monarch-demo
 ```
-
-</details>
 
 ## SkyPilotJob Class
 
