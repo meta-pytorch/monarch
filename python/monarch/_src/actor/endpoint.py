@@ -128,9 +128,12 @@ class Endpoint(ABC, Generic[P, R]):
             The method name, or "unknown" if not available
         """
         method_specifier = self._call_name()
-        if hasattr(method_specifier, "name"):
-            # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
-            return method_specifier.name
+        match method_specifier:
+            case MethodSpecifier.Init():
+                return "__init__"
+            case MethodSpecifier.ReturnsResponse() | MethodSpecifier.ExplicitPort():
+                # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
+                return method_specifier.name
         return "unknown"
 
     def _with_telemetry(

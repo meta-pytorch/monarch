@@ -178,20 +178,39 @@ class CommandHistory:
         ):
             if result is not None:
                 results_list = result if isinstance(result, list) else [result]
-                for tensor_ref in results_list:
-                    fake = tensor_ref._fake
-                    ir.update_tensor(
-                        tensor_ref._storage_id,
-                        tensor_ref.ref,
-                        fake.dtype,
-                        tuple(fake.shape),
-                        worker_rank,
-                        stream_name,
-                        command_id,
-                        mutate=mutate,
-                        borrow_src_tensor_ref=borrow_src_tensor_ref,
-                        tensor_size=tensor_ref._size,
-                    )
+                for item in results_list:
+                    # Handle tuples recursively - some operations return tuples.
+                    if isinstance(item, tuple):
+                        for sub_item in item:
+                            _process_tensor_results(
+                                sub_item,
+                                worker_rank,
+                                stream_name,
+                                command_id,
+                                mutate=mutate,
+                                borrow_src_tensor_ref=borrow_src_tensor_ref,
+                            )
+                    # Only process items that have _fake attribute (i.e., are tensor references)
+                    elif hasattr(item, "_fake"):
+                        fake = item._fake
+                        # Extract mesh reference from DTensorRef (captured at creation time)
+                        mesh_ref = getattr(item, "_mesh_ref", None)
+
+                        ir.update_tensor(
+                            item._storage_id,
+                            item.ref,
+                            fake.dtype,
+                            tuple(fake.shape),
+                            worker_rank,
+                            stream_name,
+                            command_id,
+                            mutate=mutate,
+                            borrow_src_tensor_ref=borrow_src_tensor_ref,
+                            tensor_size=item._size,
+                            mesh_ref=mesh_ref,
+                        )
+                    # Skip non-tensor items (like borrow handles, strings, etc.)
+                    # These don't need IR tracking
 
         assert msg is not None
         stream_name = src_stream_name = dst_stream_name = ""
@@ -330,7 +349,7 @@ class CommandHistory:
                     command_type,
                     devices,
                     control_dependencies,
-                    traceback.format_list(tb),
+                    tb,
                 )
 
         assert ranks is not None
@@ -366,7 +385,7 @@ class CommandHistory:
                     command_type,
                     devices,
                     control_dependencies,
-                    traceback.format_list(tb),
+                    tb,
                 )
             src_tensor = getattr(msg, "tensor", None)
             if src_tensor is not None:
@@ -389,6 +408,7 @@ class CommandHistory:
                         dst_stream_name,
                         tuple(res._fake.size()),
                     )
+
                     for rank, dst_stream_name in dst_rank_stream_pairs:
                         _process_tensor_results(res, rank, dst_stream_name, command_id)
 
@@ -397,12 +417,9 @@ class CommandHistory:
             for ref in refs:
                 stream_name = ir._data.tensorref_to_stream[ref]
                 # Do not call _insert_node() since we do not need DeleteRefs for the control DAG
-                ir.delete_tensor(
-                    ref,
-                    flattened_ranks,
-                    stream_name,
-                    command_id,
-                )
+                ir.delete_tensor(ref, flattened_ranks, stream_name, command_id, tb)
+        if dag_item_type == "Exit":
+            ir.convert_devices_to_meshes()
 
     def step(self, iter_count: int, dump: bool = False) -> None:
         if dump:
