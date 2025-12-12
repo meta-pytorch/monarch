@@ -42,4 +42,7 @@ jobs:
         setup_tensor_engine
 
         # Build monarch (CUDA version)
-        python setup.py bdist_wheel
+        python -m build --no-isolation --wheel
+
+        # Fix permissions for artifact upload
+        chmod -R 755 dist/

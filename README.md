@@ -3,12 +3,18 @@
 **Monarch** is a distributed programming framework for PyTorch based on scalable
 actor messaging. It provides:
 
-1. Remote actors with scalable messaging: Actors are grouped into collections called meshes and messages can be broadcast to all members.
-2. Fault tolerance through supervision trees: Actors and processes form a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery.
-3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided transfers based on libibverbs
-4. Distributed tensors: actors can work with tensor objects sharded across processes
+1. Remote actors with scalable messaging: Actors are grouped into collections
+   called meshes and messages can be broadcast to all members.
+2. Fault tolerance through supervision trees: Actors and processes form a tree
+   and failures propagate up the tree, providing good default error behavior and
+   enabling fine-grained fault recovery.
+3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in
+   a process, with the one-sided transfers based on libibverbs
+4. Distributed tensors: actors can work with tensor objects sharded across
+   processes
 
-Monarch code imperatively describes how to create processes and actors using a simple python API:
+Monarch code imperatively describes how to create processes and actors using a
+simple python API:
 
 ```python
 from monarch.actor import Actor, endpoint, this_host
@@ -33,8 +39,9 @@ fut = trainers.train.call(step=0)
 fut.get()
 ```
 
-
-The [introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html) provides an introduction to using these features.
+The
+[introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html)
+provides an introduction to using these features.
 
 > ⚠️ **Early Development Warning** Monarch is currently in an experimental
 > stage. You should expect bugs, incomplete features, and APIs that may change
@@ -45,16 +52,21 @@ The [introduction to monarch concepts](https://meta-pytorch.org/monarch/generate
 
 ## 📖 Documentation
 
-View Monarch's hosted documentation [at this link](https://meta-pytorch.org/monarch/).
+View Monarch's hosted documentation
+[at this link](https://meta-pytorch.org/monarch/).
 
 ## Installation
-Note for running distributed tensors and RDMA, the local torch version must match the version that monarch was built with.
-Stable and nightly distributions require libmxl and libibverbs (runtime).
+
+Note for running distributed tensors and RDMA, the local torch version must
+match the version that monarch was built with. Stable and nightly distributions
+require libmxl and libibverbs (runtime).
 
 ## Fedora
+
 `sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel`
 
 ## Ubuntu
+
 `sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev`
 
 ### Stable
@@ -64,14 +76,15 @@ Stable and nightly distributions require libmxl and libibverbs (runtime).
 torchmonarch stable is built with the latest stable torch.
 
 ### Nightly
+
 `pip install torchmonarch-nightly`
 
 torchmonarch-nightly is built with torch nightly.
 
 ### Build and Install from Source
 
-If you're building Monarch from source, you should be building it with the nightly PyTorch as well for ABI compatibility.
-
+If you're building Monarch from source, you should be building it with the
+nightly PyTorch as well for ABI compatibility.
 
 #### On Fedora distributions
 
@@ -161,10 +174,11 @@ pip list | grep monarch
 
 #### On non-CUDA machines
 
-You can also build Monarch to run on non-CUDA machines, e.g. locally on a MacOS system.
+You can also build Monarch to run on non-CUDA machines, e.g. locally on a MacOS
+system.
 
-Note that this does not support tensor engine, which is tied to CUDA and RDMA (via ibverbs).
-
+Note that this does not support tensor engine, which is tied to CUDA and RDMA
+(via ibverbs).
 
 ```sh
 
@@ -180,8 +194,6 @@ rustup default nightly
 # Install build dependencies
 pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
 pip install -r build-requirements.txt
-# Install test dependencies
-pip install -r python/tests/requirements.txt
 
 # Build and install Monarch
 USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
@@ -192,10 +204,10 @@ USE_TENSOR_ENGINE=0 pip install --no-build-isolation -e .
 pip list | grep monarch
 ```
 
-
 ## Running examples
 
-Check out the `examples/` directory for demonstrations of how to use Monarch's APIs.
+Check out the `examples/` directory for demonstrations of how to use Monarch's
+APIs.
 
 We'll be adding more examples as we stabilize and polish functionality!
 
@@ -205,6 +217,7 @@ We have both Rust and Python unit tests. Rust tests are run with `cargo-nextest`
 and Python tests are run with `pytest`.
 
 Rust tests:
+
 ```sh
 # We use cargo-nextest to run our tests, as they can provide strong process isolation
 # between every test.
@@ -213,12 +226,14 @@ Rust tests:
 cargo install cargo-nextest --locked
 cargo nextest run
 ```
+
 cargo-nextest supports all of the filtering flags of "cargo test".
 
 Python tests:
+
 ```sh
-# Make sure to install test dependencies first
-pip install -r python/tests/requirements.txt
+# Install test dependencies if not already installed
+pip install -e '.[test]'
 # Run unit tests. consider -s for more verbose output
 pytest python/tests/ -v -m "not oss_skip"
 ```
