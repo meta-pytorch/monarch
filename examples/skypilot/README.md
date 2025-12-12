@@ -1,4 +1,4 @@
-# Monarch SkyPilot Integration
+# Running Monarch on Kubernetes and cloud VMs via SkyPilot
 
 This directory contains a standalone integration for running Monarch workloads on **Kubernetes and cloud VMs** via [SkyPilot](https://github.com/skypilot-org/skypilot).
 

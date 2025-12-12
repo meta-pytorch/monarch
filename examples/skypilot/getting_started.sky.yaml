@@ -5,7 +5,7 @@
 #
 # Usage:
 #   cd monarch/examples/skypilot
-#   sky launch run_getting_started.yaml -c monarch-demo
+#   sky launch getting_started.sky.yaml -c monarch-demo
 #
 # To view logs:
 #   sky logs monarch-demo
