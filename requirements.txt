@@ -1,5 +1,4 @@
 pyzmq
-requests
 numpy
 pyre-extensions
 typing-extensions>=4.12
