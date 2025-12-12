@@ -52,7 +52,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
-from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
@@ -1355,7 +1355,7 @@ def _is_ref_or_mailbox(x: object) -> bool:
     return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
-def _pickle(obj: object) -> bytes | FrozenBuffer:
+def _pickle(obj: object) -> Buffer:
     _, buff = flatten(obj, _is_mailbox)
     return buff
 
@@ -1649,7 +1649,7 @@ class RootClientActor(Actor):
         return True
 
     @staticmethod
-    def _pickled_init_args() -> FrozenBuffer:
+    def _pickled_init_args() -> Buffer:
         args = (
             ActorInitArgs(RootClientActor, None, None, RootClientActor.name, None, ()),
         )

@@ -37,7 +37,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
     UnflattenArg,
 )
-from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
@@ -407,7 +407,7 @@ def _cast_call_method_indirect(
     selection: str,
     client: MeshClient,
     seq: Seq,
-    args_kwargs_tuple: FrozenBuffer,
+    args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
 ) -> Tuple[str, int]:
     unflatten_args = [
@@ -427,7 +427,7 @@ def _cast_call_method_indirect(
 
 def actor_send(
     endpoint: ActorEndpoint,
-    args_kwargs_tuple: FrozenBuffer,
+    args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
     selection: str,
@@ -469,7 +469,7 @@ def actor_send(
 
 def _actor_send(
     endpoint: ActorEndpoint,
-    args_kwargs_tuple: FrozenBuffer,
+    args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
     selection: str,
@@ -503,7 +503,7 @@ def _actor_send(
     client._request_status()
 
 
-def actor_rref(endpoint, args_kwargs_tuple: FrozenBuffer, refs: Sequence[Any]):
+def actor_rref(endpoint, args_kwargs_tuple: Buffer, refs: Sequence[Any]):
     chosen_stream = stream._active
     fake_result, dtensors, mutates, mesh = dtensor_check(
         endpoint._propagate,
