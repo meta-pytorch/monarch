@@ -24,19 +24,19 @@ use crate::v1::proc_mesh::ProcMeshRef;
 #[hyperactor::export]
 pub(crate) struct ActorMeshController<A>
 where
-    A: Referable,
+    A: Referable + Send,
 {
     mesh: ActorMeshRef<A>,
 }
 
-impl<A: Referable> ActorMeshController<A> {
+impl<A: Referable + Send> ActorMeshController<A> {
     /// Create a new mesh controller based on the provided reference.
     pub(crate) fn new(mesh: ActorMeshRef<A>) -> Self {
         Self { mesh }
     }
 }
 
-impl<A: Referable> Debug for ActorMeshController<A> {
+impl<A: Referable + Send> Debug for ActorMeshController<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MeshController")
             .field("mesh", &self.mesh)
@@ -45,7 +45,7 @@ impl<A: Referable> Debug for ActorMeshController<A> {
 }
 
 #[async_trait]
-impl<A: Referable> Actor for ActorMeshController<A> {
+impl<A: Referable + Send> Actor for ActorMeshController<A> {
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,

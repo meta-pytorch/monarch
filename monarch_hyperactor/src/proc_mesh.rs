@@ -86,7 +86,7 @@ impl From<ProcMesh> for TrackedProcMesh {
 }
 
 impl TrackedProcMesh {
-    pub async fn spawn<A: RemoteSpawn>(
+    pub async fn spawn<A: RemoteSpawn + Sync>(
         &self,
         cx: &impl context::Actor,
         actor_name: &str,
