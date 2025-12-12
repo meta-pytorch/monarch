@@ -379,6 +379,8 @@ class MemoryViewer:
 
     def dump(self, path: str) -> None:
         for segment in self.snapshot["segments"]:
+            # print(segment) # Note: Use this to debug memory snapshot address
+            # TODO: modify address definition
             sz = segment["total_size"] = segment["allocated_size"]
             segment["blocks"].append(
                 {

@@ -36,6 +36,10 @@ def configure(
     enable_log_forwarding: bool = ...,
     enable_file_capture: bool = ...,
     tail_log_lines: int = ...,
+    codec_max_frame_length: int = ...,
+    message_delivery_timeout: str = ...,
+    host_spawn_ready_timeout: str = ...,
+    mesh_proc_spawn_max_idle: str = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -44,6 +48,23 @@ def configure(
     setting the default channel transport and optional logging
     behaviour (forwarding, file capture, and how many lines to tail),
     plus any additional CONFIG-marked keys passed via **kwargs.
+
+    Args:
+        default_transport: Default channel transport for communication
+        enable_log_forwarding: Whether to forward logs from actors
+        enable_file_capture: Whether to capture file output
+        tail_log_lines: Number of log lines to tail
+        codec_max_frame_length: Maximum frame length for codec (bytes)
+        message_delivery_timeout: Timeout for message delivery (e.g., "30s", "5m")
+        host_spawn_ready_timeout: Timeout for host spawn readiness (e.g., "30s")
+        mesh_proc_spawn_max_idle: Maximum idle time for spawning procs (e.g., "30s")
+        **kwargs: Additional configuration keys
+
+    Duration values should use humantime format strings:
+        - "30s" for 30 seconds
+        - "5m" for 5 minutes
+        - "2h" for 2 hours
+        - "1h 30m" for 1 hour 30 minutes
 
     Historically this API is named ``configure(...)``; conceptually it
     acts as "set runtime config for this process".

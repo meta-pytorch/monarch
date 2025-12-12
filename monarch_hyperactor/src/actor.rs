@@ -1265,6 +1265,7 @@ mod tests {
         let port_ref = PortRef::<PythonMessage>::attest_reducible(
             id!(world[0].client[0][123]),
             Some(reducer_spec),
+            None,
         );
         let message = PythonMessage {
             kind: PythonMessageKind::CallMethod {

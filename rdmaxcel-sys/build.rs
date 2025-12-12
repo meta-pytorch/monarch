@@ -200,7 +200,7 @@ fn main() {
                 build
                     .file(&c_source_path)
                     .include(format!("{}/src", manifest_dir))
-                    .include(&rdma_include)
+                    .include(rdma_include)
                     .flag("-fPIC");
 
                 // Add CUDA include paths - reuse the paths we already found for bindgen
@@ -220,7 +220,7 @@ fn main() {
                     .file(&cpp_source_path)
                     .file(&driver_api_cpp_path)
                     .include(format!("{}/src", manifest_dir))
-                    .include(&rdma_include)
+                    .include(rdma_include)
                     .flag("-fPIC")
                     .cpp(true)
                     .flag("-std=c++14");

@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::time::Duration;
 
 use hyperactor::Named;
 use hyperactor::channel::ChannelTransport;
@@ -35,6 +36,47 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::channel::PyChannelTransport;
+
+/// Python wrapper for Duration, using humantime format strings.
+///
+/// This type bridges between Python strings (e.g., "30s", "5m") and
+/// Rust's `std::time::Duration`. It uses the `humantime` crate for
+/// parsing and formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PyDuration(pub Duration);
+
+impl From<PyDuration> for Duration {
+    fn from(d: PyDuration) -> Self {
+        d.0
+    }
+}
+
+impl From<Duration> for PyDuration {
+    fn from(d: Duration) -> Self {
+        PyDuration(d)
+    }
+}
+
+impl<'py> FromPyObject<'py> for PyDuration {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let duration = humantime::parse_duration(&s).map_err(|e| {
+            PyValueError::new_err(format!("Invalid duration format '{}': {}", s, e))
+        })?;
+        Ok(PyDuration(duration))
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyDuration {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let formatted = humantime::format_duration(self.0).to_string();
+        formatted.into_bound_py_any(py)
+    }
+}
 
 // Declare monarch-specific configuration keys
 declare_attrs! {
@@ -300,6 +342,7 @@ macro_rules! declare_py_config_type {
 }
 
 declare_py_config_type!(PyChannelTransport as ChannelTransport);
+declare_py_config_type!(PyDuration as Duration);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
 );
