@@ -482,6 +482,13 @@ impl ProcessAlloc {
         self.created.push(ShortUuid::generate());
         let create_key = &self.created[index];
 
+        // Capture config and pass to child via Bootstrap::V0ProcMesh
+        let client_config = hyperactor_config::global::attrs();
+        let bootstrap = bootstrap::Bootstrap::V0ProcMesh {
+            config: Some(client_config),
+        };
+        bootstrap.to_env(&mut cmd);
+
         cmd.env(
             bootstrap::BOOTSTRAP_ADDR_ENV,
             self.bootstrap_addr.to_string(),
