@@ -50,15 +50,18 @@ jobs:
         export MONARCH_PACKAGE_NAME="torchmonarch-nightly"
         export MONARCH_VERSION=$(date +'%Y.%m.%d')
 
-        python setup.py bdist_wheel
+        python -m build --no-isolation --wheel
+
+        # Fix permissions for artifact upload
+        chmod -R 755 dist/
 
         # hacky until the right distribution wheel can be made...
         find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
         ls -la dist/
 
         # Run tests
-        install_python_test_dependencies
         pip install dist/*.whl
+        install_python_test_dependencies
         python -c "import monarch"
   publish:
     name: Publish to PyPI

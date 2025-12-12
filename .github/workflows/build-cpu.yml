@@ -34,4 +34,7 @@ jobs:
         pip install -r build-requirements.txt
 
         # Build monarch (No tensor engine, CPU version)
-        USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+        USE_TENSOR_ENGINE=0 python -m build --no-isolation --wheel
+
+        # Fix permissions for artifact upload
+        chmod -R 755 dist/

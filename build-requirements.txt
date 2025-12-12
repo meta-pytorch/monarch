@@ -1,4 +1,5 @@
-setuptools
+setuptools>=64
 setuptools-rust
 wheel
 numpy
+build
