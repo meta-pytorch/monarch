@@ -8,6 +8,7 @@ Examples
 - :doc:`distributed_tensors.py <distributed_tensors>`: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
 - :doc:`debugging.py <debugging>`: Shows how to use the Monarch debugger to debug a distributed program
 - `Multinode Slurm Tutorial <https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html>`_: Multinode distributed training tutorial using Monarch and Slurm to run an SPMD training job.
+- `SkyPilot Integration <https://github.com/pytorch-labs/monarch/tree/main/examples/skypilot>`_: Run Monarch on Kubernetes and cloud VMs via SkyPilot.
 
 .. toctree::
    :hidden:

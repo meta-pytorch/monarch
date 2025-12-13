@@ -82,3 +82,4 @@ We welcome contributions from the community! If you're interested in contributin
 - [Demo notebook](https://github.com/meta-pytorch/monarch/blob/main/examples/presentation/presentation.ipynb)
 - [DevX Pytorch tutorial](https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html)
 - [Lightning Monarch blog](https://lightning.ai/meta-ai/environments/large-scale-interactive-training-with-monarch)
+- [Running on Kubernetes via SkyPilot](https://github.com/meta-pytorch/monarch/tree/main/examples/skypilot)
