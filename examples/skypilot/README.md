@@ -1,10 +1,10 @@
 # Running Monarch on Kubernetes and cloud VMs via SkyPilot
 
-This directory contains a standalone integration for running Monarch workloads on **Kubernetes and cloud VMs** via [SkyPilot](https://github.com/skypilot-org/skypilot).
+This directory contains examples for running Monarch workloads on **Kubernetes and cloud VMs** via [SkyPilot](https://github.com/skypilot-org/skypilot).
 
 ## Overview
 
-`SkyPilotJob` provisions cloud instances (or K8s pods) and starts Monarch workers on them, allowing you to run distributed Monarch actors across multiple machines.
+`SkyPilotJob` provisions cloud instances (or K8s pods) and starts Monarch workers on them, allowing you to run distributed Monarch actors across multiple Kubernetes pods.
 
 ### Architecture
 
