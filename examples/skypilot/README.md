@@ -184,7 +184,7 @@ To run the `skypilot_ddp.ipynb` notebook interactively, first launch a driver po
 sky launch monarch_getting_started.sky.yaml -c monarch-demo
 
 # 2. SSH into the pod with port forwarding for Jupyter
-sky ssh monarch-demo -L 8888:localhost:8888
+ssh monarch-demo -L 8888:localhost:8888
 
 # 3. Inside the pod, start Jupyter Notebook
 cd ~/sky_workdir
