@@ -81,9 +81,29 @@ Run this command from your local machine to run the getting started example:
 ```bash
 sky launch monarch_getting_started.sky.yaml -c monarch-demo
 ```
-**💡 Tip:** Run `sky show-gpus --infra kubernetes` to see available GPUs in your cluster, then edit `--accelerator` and `--num-hosts` in the `run` section of the YAML to match your resources.
 
-SkyPilot will:
+<details>
+<summary><strong>💡 Customizing the run (GPU count, CPU-only mode, etc.)</strong></summary>
+
+Run `sky show-gpus --infra kubernetes` to see available GPUs in your cluster, then customize with environment variables:
+
+```bash
+# Custom GPU configuration
+sky launch monarch_getting_started.sky.yaml -c monarch-demo \
+  --env NUM_HOSTS=4 \
+  --env GPUS_PER_HOST=8 \
+  --env ACCELERATOR="H100:8"
+
+# CPU-only mode (no GPUs required)
+sky launch monarch_getting_started.sky.yaml -c monarch-demo \
+  --env GPUS_PER_HOST=0 \
+  --env ACCELERATOR=none
+```
+
+</details>
+
+
+On running `sky launch`, SkyPilot will:
 1. Launch a Kubernetes pod
 2. Install dependencies
 3. Sync the example directory with the pod
@@ -170,7 +190,11 @@ sky down monarch-demo
 If you are already in the Kubernetes cluster you'd like to run workers on, you can directly run `skypilot_getting_started.py`.
 
 ```bash
-python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --gpus "H200:8"
+# With GPUs
+python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --accelerator "H200:8"
+
+# CPU-only (no GPUs)
+python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 0 --accelerator none
 ```
 
 </details>

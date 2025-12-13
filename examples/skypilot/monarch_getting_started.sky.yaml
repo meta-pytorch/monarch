@@ -5,7 +5,10 @@
 #
 # Usage:
 #   cd monarch/examples/skypilot
-#   sky launch getting_started.sky.yaml -c monarch-demo
+#   sky launch monarch_getting_started.sky.yaml -c monarch-demo
+#
+#   # For CPU-only clusters (no GPUs):
+#   sky launch monarch_getting_started.sky.yaml -c monarch-demo --env GPUS_PER_HOST=0 --env ACCELERATOR=none
 #
 # To view logs:
 #   sky logs monarch-demo
@@ -22,6 +25,13 @@ resources:
   cloud: kubernetes # Optional, remove or change to your preferred cloud provider
   cpus: 2+ # No GPUs needed for the driver script
   image_id: docker:pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
+
+# Environment variables for configuring the example
+# Override with: sky launch ... --env NUM_HOSTS=4 --env GPUS_PER_HOST=8
+envs:
+  NUM_HOSTS: 2           # Number of worker nodes to provision
+  GPUS_PER_HOST: 1       # GPUs per worker (set to 0 for CPU-only)
+  ACCELERATOR: "H200:1"  # SkyPilot GPU spec (set to "none" for CPU-only). Keep quantity aligned with GPUS_PER_HOST.
 
 # Sync the current directory (examples/skypilot) to the cluster
 workdir: .
@@ -64,17 +74,17 @@ setup: |
   echo "=== Setup complete ==="
 
 run: |  
-  echo "=== Running Monarch Getting Started with SkyPilot ==="  
+  echo "=== Running Monarch Getting Started with SkyPilot ==="
+  echo "Configuration: NUM_HOSTS=$NUM_HOSTS, GPUS_PER_HOST=$GPUS_PER_HOST, ACCELERATOR=$ACCELERATOR"
 
   # Run the getting started example
-  # This will launch a SkyPilot cluster with Monarch workers.
-  # Change the arguments to your desired values.
+  # Uses environment variables set above (can be overridden with --env)
   python skypilot_getting_started.py \
     --cloud kubernetes \
-    --num-hosts 2 \
-    --gpus-per-host 1 \
+    --num-hosts $NUM_HOSTS \
+    --gpus-per-host $GPUS_PER_HOST \
     --cluster-name monarch-workers \
-    --accelerator "H200:1"
+    --accelerator "$ACCELERATOR"
   
   echo "=== Example ran successfully ==="
 

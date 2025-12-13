@@ -18,6 +18,9 @@ Usage:
 
     # Run on cloud VMs
     python examples/skypilot/skypilot_getting_started.py --cloud <aws/gcp/azure/...> --num-hosts 2 --gpus-per-host 1 --gpus "H100:1"
+
+    # Run on CPU-only cluster (no GPUs)
+    python examples/skypilot/skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 0 --accelerator none
 """
 
 import argparse
@@ -143,14 +146,20 @@ def main():
     )
     args = parser.parse_args()
 
+    # Determine if running in CPU-only mode
+    cpu_only = args.gpus_per_host == 0 or args.accelerator.lower() == "none"
+
     print("=" * 60)
     print("Monarch Getting Started with SkyPilot")
     print("=" * 60)
     print(f"\nConfiguration:")
     print(f"  Cloud: {args.cloud}")
     print(f"  Hosts: {args.num_hosts}")
-    print(f"  GPUs per host: {args.gpus_per_host}")
-    print(f"  Accelerator: {args.accelerator}")
+    if cpu_only:
+        print(f"  Mode: CPU-only (no GPUs)")
+    else:
+        print(f"  GPUs per host: {args.gpus_per_host}")
+        print(f"  Accelerator: {args.accelerator}")
     print(f"  Cluster name: {args.cluster_name}")
     if args.region:
         print(f"  Region: {args.region}")
@@ -161,8 +170,10 @@ def main():
     # Build resources specification
     resources_kwargs = {
         "cloud": get_cloud(args.cloud),
-        "accelerators": args.accelerator,
     }
+    # Only request GPUs if not in CPU-only mode
+    if not cpu_only:
+        resources_kwargs["accelerators"] = args.accelerator
     if args.region:
         resources_kwargs["region"] = args.region
     
@@ -191,8 +202,12 @@ def main():
         # ====================================================================
 
         print("\n[3] Spawning processes on cloud hosts...")
-        # Create a process mesh - GPU processes per host
-        procs: ProcMesh = hosts.spawn_procs(per_host={"gpus": args.gpus_per_host})
+        # Create a process mesh
+        if cpu_only:
+            # CPU-only mode: spawn 1 CPU process per host
+            procs: ProcMesh = hosts.spawn_procs(per_host={"procs": 1})
+        else:
+            procs: ProcMesh = hosts.spawn_procs(per_host={"gpus": args.gpus_per_host})
         print(f"    Process mesh extent: {procs.extent}")
 
         # Spawn counter actors
