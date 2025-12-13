@@ -81,6 +81,7 @@ Run this command from your local machine to run the getting started example:
 ```bash
 sky launch monarch_getting_started.sky.yaml -c monarch-demo
 ```
+**💡 Tip:** Run `sky show-gpus --infra kubernetes` to see available GPUs in your cluster, then edit `--accelerator` and `--num-hosts` in the `run` section of the YAML to match your resources.
 
 SkyPilot will:
 1. Launch a Kubernetes pod
