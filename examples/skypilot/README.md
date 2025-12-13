@@ -188,7 +188,8 @@ ssh monarch-demo -L 8888:localhost:8888
 
 # 3. Inside the pod, start Jupyter Notebook
 cd ~/sky_workdir
-jupyter notebook --no-browser --port=8888 --ip=0.0.0.0 --NotebookApp.token='' --NotebookApp.password=''
+uv pip install --system jupyter
+jupyter notebook --no-browser --port=8888 --ip=0.0.0.0 --NotebookApp.token='' --NotebookApp.password='' --allow-root
 ```
 
 Then open http://localhost:8888 in your browser and open `skypilot_ddp.ipynb`.
