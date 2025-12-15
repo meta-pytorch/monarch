@@ -44,6 +44,9 @@ impl Named for ShoppingListActor {
     }
 }
 ```
+
+> **Note:** The `Referable` trait itself only requires `Named`. It does not automatically provide `Send` or `Sync` bounds. If your actor needs to be passed across threads or stored in shared contexts, those bounds will be enforced at the specific call sites that require them.
+
 If `spawn = true`, the macro also emits:
 ```rust
 impl RemoteSpawn for ShoppingListActor {}

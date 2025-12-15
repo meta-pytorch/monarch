@@ -27,6 +27,7 @@ use hyperactor::clock::RealClock;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::v1::actor_mesh::ActorMesh;
 use hyperactor_mesh::v1::host_mesh::HostMesh;
 use ndslice::Point;
 use ndslice::ViewExt;
@@ -79,10 +80,7 @@ async fn main() {
         .await
         .unwrap();
 
-    let actor_mesh = proc_mesh
-        .spawn::<TestActor>(instance, "test", &())
-        .await
-        .unwrap();
+    let actor_mesh: ActorMesh<TestActor> = proc_mesh.spawn(instance, "test", &()).await.unwrap();
 
     loop {
         let mut received = HashSet::new();
