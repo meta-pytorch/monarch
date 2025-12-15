@@ -261,7 +261,7 @@ impl ProcMeshAgent {
         Ok((proc, handle))
     }
 
-    pub(crate) async fn boot_v1(proc: Proc) -> Result<ActorHandle<Self>, anyhow::Error> {
+    pub(crate) fn boot_v1(proc: Proc) -> Result<ActorHandle<Self>, anyhow::Error> {
         let agent = ProcMeshAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
@@ -770,6 +770,27 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
                 e
             );
         }
+        Ok(())
+    }
+}
+
+/// A local handler to get a new client instance on the proc.
+/// This is used to create root client instances.
+#[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
+pub struct NewClientInstance {
+    #[reply]
+    pub client_instance: PortHandle<Instance<()>>,
+}
+
+#[async_trait]
+impl Handler<NewClientInstance> for ProcMeshAgent {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        NewClientInstance { client_instance }: NewClientInstance,
+    ) -> anyhow::Result<()> {
+        let (instance, _handle) = self.proc.instance("client")?;
+        client_instance.send(instance)?;
         Ok(())
     }
 }

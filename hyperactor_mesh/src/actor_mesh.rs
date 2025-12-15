@@ -633,6 +633,7 @@ pub(crate) mod test_util {
 
     use super::*;
     use crate::comm::multicast::CastInfo;
+    use crate::supervision::SupervisionFailureMessage;
 
     // This can't be defined under a `#[cfg(test)]` because there needs to
     // be an entry in the spawnable actor registry in the executable
@@ -844,6 +845,16 @@ pub(crate) mod test_util {
             }
         }
     }
+    #[async_trait]
+    impl Handler<SupervisionFailureMessage> for ProxyActor {
+        async fn handle(
+            &mut self,
+            _cx: &Context<Self>,
+            message: SupervisionFailureMessage,
+        ) -> Result<(), anyhow::Error> {
+            panic!("unhandled supervision failure: {}", message);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -959,7 +970,7 @@ mod tests {
 
                 let (undeliverable_msg_tx, _) = mesh.client().open_port();
                 let actor_mesh: RootActorMesh<PingPongActor> = mesh
-                    .spawn::<PingPongActor>(&instance, "ping-pong", &(Some(undeliverable_msg_tx.bind()), None, None))
+                    .spawn(&instance, "ping-pong", &(Some(undeliverable_msg_tx.bind()), None, None))
                     .await
                     .unwrap();
 
@@ -995,7 +1006,7 @@ mod tests {
                 let instance = $crate::v1::testing::instance().await;
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (undeliverable_tx, _undeliverable_rx) = proc_mesh.client().open_port();
-                let actor_mesh = proc_mesh.spawn::<PingPongActor>(&instance, "pingpong", &(Some(undeliverable_tx.bind()), None, None)).await.unwrap();
+                let actor_mesh: RootActorMesh<PingPongActor> = proc_mesh.spawn(&instance, "pingpong", &(Some(undeliverable_tx.bind()), None, None)).await.unwrap();
                 let slice = actor_mesh.shape().slice();
 
                 let mut futures = Vec::new();
@@ -1304,7 +1315,7 @@ mod tests {
             let mut events = mesh.events().unwrap();
 
             let actor_mesh: RootActorMesh<PingPongActor> = mesh
-                .spawn::<PingPongActor>(
+                .spawn(
                     &instance,
                     "ping-pong",
                     &(
@@ -1379,10 +1390,8 @@ mod tests {
             let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
             let mut events = mesh.events().unwrap();
 
-            let actor_mesh = mesh
-                .spawn::<TestActor>(&instance, "reply-then-fail", &())
-                .await
-                .unwrap();
+            let actor_mesh: RootActorMesh<TestActor> =
+                mesh.spawn(&instance, "reply-then-fail", &()).await.unwrap();
 
             // `GetRank` with `false` means exit with error after
             // replying with rank.
@@ -1446,7 +1455,7 @@ mod tests {
             let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
             let mesh_one: RootActorMesh<PingPongActor> = mesh
-                .spawn::<PingPongActor>(
+                .spawn(
                     &instance,
                     "mesh_one",
                     &(
@@ -1459,7 +1468,7 @@ mod tests {
                 .unwrap();
 
             let mesh_two: RootActorMesh<PingPongActor> = mesh
-                .spawn::<PingPongActor>(
+                .spawn(
                     &instance,
                     "mesh_two",
                     &(
@@ -1975,10 +1984,8 @@ mod tests {
                 .spawn(instance, "test", Extent::unity())
                 .await
                 .unwrap();
-            let actor_mesh = proc_mesh
-                .spawn::<v1::testactor::TestActor>(instance, "test", &())
-                .await
-                .unwrap();
+            let actor_mesh: v1::ActorMesh<v1::testactor::TestActor> =
+                proc_mesh.spawn(instance, "test", &()).await.unwrap();
 
             let actor_mesh_v0: RootActorMesh<'_, _> = actor_mesh.clone().into();
 

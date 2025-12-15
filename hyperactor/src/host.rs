@@ -127,6 +127,7 @@ pub struct Host<M> {
     router: DialMailboxRouter,
     manager: M,
     service_proc: Proc,
+    local_proc: Proc,
     frontend_rx: Option<ChannelRx<MessageEnvelope>>,
 }
 
@@ -151,10 +152,14 @@ impl<M: ProcManager> Host<M> {
         let service_proc_id = ProcId::Direct(frontend_addr.clone(), "service".to_string());
         let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
 
+        let local_proc_id = ProcId::Direct(frontend_addr.clone(), "local".to_string());
+        let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
+
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
             backend_addr = backend_addr.to_string(),
             service_proc_id = service_proc_id.to_string(),
+            local_proc_id = local_proc_id.to_string(),
             "serving host"
         );
 
@@ -165,6 +170,7 @@ impl<M: ProcManager> Host<M> {
             router,
             manager,
             service_proc,
+            local_proc,
             frontend_rx: Some(frontend_rx),
         };
 
@@ -191,8 +197,15 @@ impl<M: ProcManager> Host<M> {
     }
 
     /// The system proc associated with this host.
+    /// This is used to run host-level system services like host managers.
     pub fn system_proc(&self) -> &Proc {
         &self.service_proc
+    }
+
+    /// The local proc associated with this host.
+    /// This is the local proc used in processes that are also hosts.
+    pub fn local_proc(&self) -> &Proc {
+        &self.local_proc
     }
 
     /// Spawn a new process with the given `name`. On success, the proc has been
@@ -257,7 +270,8 @@ impl<M: ProcManager> Host<M> {
 
     fn forwarder(&self) -> ProcOrDial {
         ProcOrDial {
-            proc: self.service_proc.clone(),
+            service_proc: self.service_proc.clone(),
+            local_proc: self.local_proc.clone(),
             dialer: self.router.clone(),
         }
     }
@@ -267,7 +281,8 @@ impl<M: ProcManager> Host<M> {
 /// the dial mailbox router.
 #[derive(Clone)]
 struct ProcOrDial {
-    proc: Proc,
+    service_proc: Proc,
+    local_proc: Proc,
     dialer: DialMailboxRouter,
 }
 
@@ -277,8 +292,10 @@ impl MailboxSender for ProcOrDial {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if envelope.dest().actor_id().proc_id() == self.proc.proc_id() {
-            self.proc.post_unchecked(envelope, return_handle);
+        if envelope.dest().actor_id().proc_id() == self.service_proc.proc_id() {
+            self.service_proc.post_unchecked(envelope, return_handle);
+        } else if envelope.dest().actor_id().proc_id() == self.local_proc.proc_id() {
+            self.local_proc.post_unchecked(envelope, return_handle);
         } else {
             self.dialer.post_unchecked(envelope, return_handle)
         }

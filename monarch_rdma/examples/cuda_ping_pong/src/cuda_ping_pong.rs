@@ -66,7 +66,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
-use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
@@ -78,6 +77,7 @@ use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::extent;
+use hyperactor_mesh::proc_mesh::global_root_client;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
@@ -697,7 +697,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
         device_2_ibv_config = IbverbsConfig::default();
     }
 
-    let (instance, _) = Proc::local().instance("test").unwrap();
+    let instance = global_root_client();
 
     // Create process allocator for spawning actors
     let mut alloc = ProcessAllocator::new(Command::new(

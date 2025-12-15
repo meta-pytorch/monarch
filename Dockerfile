@@ -1,46 +1,26 @@
-# Pre-reqs:
-#  1. podman (shown below) or just docker
-#     $ dnf install -y podman podman-docker
-#  2. NVIDIA container toolkit
-#     $ dnf install -y nvidia-container-toolkit
-#
-# Build:
-#  $ cd ~/monarch
-#  $ export TAG_NAME=$USER-dev
-#  $ docker build --network=host \
-#     -t monarch:$TAG_NAME \
-#     -f Dockerfile .
-#
-# Build (with http proxy):
-#  $ docker build --network=host \
-#     --build-arg=http_proxy=$http_proxy \
-#     --build-arg=https_proxy=$https_proxy \
-#     -t monarch:$TAG_NAME \
-#     -f Dockerfile .
-#
-ARG http_proxy
-ARG https_proxy
+# Override on build from CI.
+ARG PYTORCH_NIGHTLY_TAG=2.10.0.dev20251115-cuda12.6-cudnn9-devel
 
-FROM pytorch/pytorch:2.7.0-cuda12.6-cudnn9-devel
-WORKDIR /monarch
+# Build from latest pytorch nightly base image; should be relatively in sync with torchmonarch-nightly and pytorch-nightly.
+FROM ghcr.io/pytorch/pytorch-nightly:${PYTORCH_NIGHTLY_TAG}
 
-# export http proxy env vars if build-args are provided
-RUN if [ -n "${http_proxy}" ]; then export http_proxy=${http_proxy}; fi && \
-    if [ -n "${https_proxy}" ]; then export https_proxy=${https_proxy}; fi
+SHELL ["/bin/bash", "-c"]
 
-# Install native dependencies
+# System dependencies.
 RUN apt-get update -y && \
-    apt-get -y install curl clang liblzma-dev libunwind-dev
+    apt-get install curl clang liblzma-dev libunwind-dev libibverbs-dev librdmacm-dev protobuf-compiler -y
 
-# Install Rust
-ENV PATH="/root/.cargo/bin:${PATH}"
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# Install monarch-nightly.
+RUN pip install torchmonarch-nightly
 
-# Install Python deps as a separate layer to avoid rebuilding if deps do not change
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install torchx-nightly w/ kubernetes.
+RUN pip install torchx-nightly[kubernetes]
 
-# Install monarch
-COPY . .
-RUN cargo install --path monarch_hyperactor
-RUN pip install .
+# Path
+ENV LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/torch/lib:/opt/conda/lib:$LD_LIBRARY_PATH
+
+# Install VIM (nice to have on client for debugging; not necessary).
+RUN apt-get update && apt-get install vim -y
+
+# Install kubectl (nice to have on client for debugging; not necessary).
+RUN curl -LO https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin
