@@ -507,6 +507,27 @@ pub enum ChannelAddr {
     /// A unix domain socket address. Supports both absolute path names as
     ///  well as "abstract" names per https://manpages.debian.org/unstable/manpages/unix.7.en.html#Abstract_sockets
     Unix(net::unix::SocketAddr),
+
+    /// A pair of addresses, one for the client and one for the server:
+    ///   - The client should dial to the `dial_to` address.
+    ///   - The server should bind to the `bind_to` address.
+    ///
+    /// The user is responsible for ensuring the traffic to the `dial_to` address
+    /// is routed to the `bind_to` address.
+    ///
+    /// This is useful for scenarios where the network is confgiured in a way,
+    /// that the bound address is not directly accessible from the client.
+    ///
+    /// For example, in AWS, the client could be provided with the public IP
+    /// address, yet the server is bound to a private IP address or simply
+    /// INADDR_ANY. Traffic to the public IP address is mapped to the private
+    /// IP address through network address translation (NAT).
+    Alias {
+        /// The address to which the client should dial to.
+        dial_to: Box<ChannelAddr>,
+        /// The address to which the server should bind to.
+        bind_to: Box<ChannelAddr>,
+    },
 }
 
 impl From<SocketAddr> for ChannelAddr {
@@ -604,6 +625,9 @@ impl ChannelAddr {
             Self::Local(_) => ChannelTransport::Local,
             Self::Sim(addr) => ChannelTransport::Sim(Box::new(addr.transport())),
             Self::Unix(_) => ChannelTransport::Unix,
+            // bind_to's transport is what is actually used in communcation.
+            // Therefore we use its transport to represent the Alias.
+            Self::Alias { bind_to, .. } => bind_to.transport(),
         }
     }
 }
@@ -616,6 +640,9 @@ impl fmt::Display for ChannelAddr {
             Self::Local(index) => write!(f, "local:{}", index),
             Self::Sim(sim_addr) => write!(f, "sim:{}", sim_addr),
             Self::Unix(addr) => write!(f, "unix:{}", addr),
+            Self::Alias { dial_to, bind_to } => {
+                write!(f, "alias:dial_to={};bind_to={}", dial_to, bind_to)
+            }
         }
     }
 }
@@ -636,6 +663,11 @@ impl FromStr for ChannelAddr {
             Some(("metatls", rest)) => net::meta::parse(rest).map_err(|e| e.into()),
             Some(("sim", rest)) => sim::parse(rest).map_err(|e| e.into()),
             Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
+            Some(("alias", _)) => Err(anyhow::anyhow!(
+                "detect possible alias address, but we currently do not support \
+                parsing alias' string representation since we only want to \
+                support parsing its zmq url format."
+            )),
             Some((r#type, _)) => Err(anyhow::anyhow!("no such channel type: {type}")),
             None => Err(anyhow::anyhow!("no channel type specified")),
         }
@@ -649,7 +681,38 @@ impl ChannelAddr {
     /// - inproc://endpoint-name (equivalent to local)
     /// - ipc://path (equivalent to unix)
     /// - metatls://hostname:port or metatls://*:port
+    /// - Alias format: dial_to_url@bind_to_url (e.g., tcp://host:port@tcp://host:port)
+    ///   Note: Alias format is currently only supported for TCP addresses
     pub fn from_zmq_url(address: &str) -> Result<Self, anyhow::Error> {
+        // Check for Alias format: dial_to_url@bind_to_url
+        // The @ character separates two valid ZMQ URLs
+        if let Some(at_pos) = address.find('@') {
+            let dial_to_str = &address[..at_pos];
+            let bind_to_str = &address[at_pos + 1..];
+
+            // Validate that both addresses use TCP scheme
+            if !dial_to_str.starts_with("tcp://") {
+                return Err(anyhow::anyhow!(
+                    "alias format is only supported for TCP addresses, got dial_to: {}",
+                    dial_to_str
+                ));
+            }
+            if !bind_to_str.starts_with("tcp://") {
+                return Err(anyhow::anyhow!(
+                    "alias format is only supported for TCP addresses, got bind_to: {}",
+                    bind_to_str
+                ));
+            }
+
+            let dial_to = Self::from_zmq_url(dial_to_str)?;
+            let bind_to = Self::from_zmq_url(bind_to_str)?;
+
+            return Ok(Self::Alias {
+                dial_to: Box::new(dial_to),
+                bind_to: Box::new(bind_to),
+            });
+        }
+
         // Try ZMQ-style URL format first (scheme://...)
         let (scheme, address) = address.split_once("://").ok_or_else(|| {
             anyhow::anyhow!("address must be in url form scheme://endppoint {}", address)
@@ -840,6 +903,7 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         ChannelAddr::MetaTls(meta_addr) => ChannelTxKind::MetaTls(net::meta::dial(meta_addr)?),
         ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
         ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
+        ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
     Ok(ChannelTx { inner })
 }
@@ -852,6 +916,19 @@ pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     let caller = Location::caller();
+    serve_inner(addr).map(|(addr, inner)| {
+        tracing::debug!(
+            name = "serve",
+            %addr,
+            %caller,
+        );
+        (addr, ChannelRx { inner })
+    })
+}
+
+fn serve_inner<M: RemoteMessage>(
+    addr: ChannelAddr,
+) -> Result<(ChannelAddr, ChannelRxKind<M>), ChannelError> {
     match addr {
         ChannelAddr::Tcp(addr) => {
             let (addr, rx) = net::tcp::serve::<M>(addr)?;
@@ -877,15 +954,15 @@ pub fn serve<M: RemoteMessage>(
             "invalid local addr: {}",
             a
         ))),
+        ChannelAddr::Alias { dial_to, bind_to } => {
+            let (bound_addr, rx) = serve_inner::<M>(*bind_to)?;
+            let alias_addr = ChannelAddr::Alias {
+                dial_to,
+                bind_to: Box::new(bound_addr),
+            };
+            Ok((alias_addr, rx))
+        }
     }
-    .map(|(addr, inner)| {
-        tracing::debug!(
-            name = "serve",
-            %addr,
-            %caller,
-        );
-        (addr, ChannelRx { inner })
-    })
 }
 
 /// Serve on the local address. The server is turned down
@@ -1054,6 +1131,48 @@ mod tests {
         assert!(ChannelAddr::from_zmq_url("tcp://invalid-port").is_err());
         assert!(ChannelAddr::from_zmq_url("metatls://no-port").is_err());
         assert!(ChannelAddr::from_zmq_url("inproc://not-a-number").is_err());
+    }
+
+    #[test]
+    fn test_zmq_style_alias_channel_addr() {
+        // Test Alias format: dial_to_url@bind_to_url
+        // The format is: dial_to_url@bind_to_url where both are valid ZMQ URLs
+        // Note: Alias format is only supported for TCP addresses
+
+        // Test Alias with tcp on both sides
+        let alias_addr = ChannelAddr::from_zmq_url("tcp://127.0.0.1:9000@tcp://[::]:8800").unwrap();
+        match alias_addr {
+            ChannelAddr::Alias { dial_to, bind_to } => {
+                assert_eq!(
+                    *dial_to,
+                    ChannelAddr::Tcp("127.0.0.1:9000".parse().unwrap())
+                );
+                assert_eq!(*bind_to, ChannelAddr::Tcp("[::]:8800".parse().unwrap()));
+            }
+            _ => panic!("Expected Alias"),
+        }
+
+        // Test error: alias with non-tcp dial_to (not supported)
+        assert!(
+            ChannelAddr::from_zmq_url("metatls://example.com:443@tcp://127.0.0.1:8080").is_err()
+        );
+
+        // Test error: alias with non-tcp bind_to (not supported)
+        assert!(
+            ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080@metatls://example.com:443").is_err()
+        );
+
+        // Test error: invalid dial_to URL in Alias
+        assert!(ChannelAddr::from_zmq_url("invalid://scheme@tcp://127.0.0.1:8080").is_err());
+
+        // Test error: invalid bind_to URL in Alias
+        assert!(ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080@invalid://scheme").is_err());
+
+        // Test error: missing port in dial_to
+        assert!(ChannelAddr::from_zmq_url("tcp://host@tcp://127.0.0.1:8080").is_err());
+
+        // Test error: missing port in bind_to
+        assert!(ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080@tcp://example.com").is_err());
     }
 
     #[tokio::test]
