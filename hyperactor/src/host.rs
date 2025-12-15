@@ -120,7 +120,6 @@ pub enum HostError {
 
 /// A host, managing the lifecycle of several procs, and their backend
 /// routing, as described in this module's documentation.
-#[derive(Debug)]
 pub struct Host<M> {
     procs: HashSet<String>,
     frontend_addr: ChannelAddr,
@@ -280,7 +279,7 @@ impl<M: ProcManager> Host<M> {
 
 /// A router used to route to the system proc, or else fall back to
 /// the dial mailbox router.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ProcOrDial {
     service_proc: Proc,
     local_proc: Proc,
@@ -766,7 +765,6 @@ where
 ///
 /// **Type parameter:** `A` is constrained by the `ProcHandle::Agent`
 /// bound (`Actor + Referable`).
-#[derive(Debug)]
 pub struct LocalHandle<A: Actor + Referable> {
     proc_id: ProcId,
     addr: ChannelAddr,

@@ -1094,7 +1094,7 @@ impl fmt::Debug for ProcMesh {
                 .debug_struct("ProcMesh::V0")
                 .field("shape", shape)
                 .field("ranks", ranks)
-                .field("client_proc", client_proc)
+                .field("client_proc", &"<Proc>")
                 .field("client", &"<Instance>")
                 // Skip the alloc field since it doesn't implement Debug
                 .finish(),
