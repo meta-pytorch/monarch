@@ -8,6 +8,7 @@
 
 //! The mesh agent actor that manages a host.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
@@ -22,6 +23,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
+use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::Proc;
 use hyperactor::ProcId;
@@ -74,6 +76,14 @@ impl HostAgentMode {
         }
     }
 
+    fn local_proc(&self) -> &Proc {
+        #[allow(clippy::match_same_arms)]
+        match self {
+            HostAgentMode::Process(host) => host.local_proc(),
+            HostAgentMode::Local(host) => host.local_proc(),
+        }
+    }
+
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
@@ -110,6 +120,8 @@ struct ProcCreationState {
 pub struct HostMeshAgent {
     host: Option<HostAgentMode>,
     created: HashMap<Name, ProcCreationState>,
+    /// Stores the lazily initialized proc mesh agent for the local proc.
+    local_mesh_agent: OnceCell<anyhow::Result<ActorHandle<ProcMeshAgent>>>,
 }
 
 impl HostMeshAgent {
@@ -118,6 +130,7 @@ impl HostMeshAgent {
         Self {
             host: Some(host),
             created: HashMap::new(),
+            local_mesh_agent: OnceCell::new(),
         }
     }
 }
@@ -448,6 +461,35 @@ impl Handler<resource::List> for HostMeshAgent {
     }
 }
 
+/// A local-only message to access the "local" proc on the host.
+/// This is used to bootstrap the root mesh process client on the
+/// local singleton host mesh.
+#[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
+pub struct GetLocalProc {
+    #[reply]
+    pub proc_mesh_agent: PortHandle<ActorHandle<ProcMeshAgent>>,
+}
+
+#[async_trait]
+impl Handler<GetLocalProc> for HostMeshAgent {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        GetLocalProc { proc_mesh_agent }: GetLocalProc,
+    ) -> anyhow::Result<()> {
+        let agent = self.local_mesh_agent.get_or_init(|| {
+            ProcMeshAgent::boot_v1(self.host.as_ref().unwrap().local_proc().clone())
+        });
+
+        match agent {
+            Err(e) => anyhow::bail!("error booting local proc: {}", e),
+            Ok(agent) => proc_mesh_agent.send(agent.clone())?,
+        };
+
+        Ok(())
+    }
+}
+
 /// A trampoline actor that spawns a [`Host`], and sends a reference to the
 /// corresponding [`HostMeshAgent`] to the provided reply port.
 ///
@@ -481,7 +523,8 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
 
     async fn new((transport, reply_port, command, local): Self::Params) -> anyhow::Result<Self> {
         let host = if local {
-            let spawn: ProcManagerSpawnFn = Box::new(|proc| Box::pin(ProcMeshAgent::boot_v1(proc)));
+            let spawn: ProcManagerSpawnFn =
+                Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
             let manager = LocalProcManager::new(spawn);
             let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Local(host)

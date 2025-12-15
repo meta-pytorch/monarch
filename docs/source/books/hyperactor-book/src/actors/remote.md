@@ -74,7 +74,11 @@ pub struct SpawnableActor {
 
 Users never construct a `SpawnableActor` manually; these records are generated automatically by the `remote!` macro.
 
-The reason `remote!(MyActor)` works is that it only requires `MyActor: RemoteSpawn`. You can provide that either with an explicit `impl RemoteSpawn for MyActor`, or you get it for free from the blanket `impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A`. In both cases, `remote!` can safely plug `<MyActor as RemoteSpawn>::gspawn` into the `SpawnableActor` record it generates.
+The reason `remote!(MyActor)` works is that it only requires `MyActor: RemoteSpawn`. You can provide that either with an explicit `impl RemoteSpawn for MyActor`, or you get it for free from the blanket `impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A`.
+
+> **Note:** `Referable` itself only requires `Named`, not `Send + Sync`. The `Actor` trait already provides `Send`, but `Sync` must be added explicitly at call sites that require it.
+
+In both cases, `remote!` can safely plug `<MyActor as RemoteSpawn>::gspawn` into the `SpawnableActor` record it generates.
 
 ## The `Remote` registry
 

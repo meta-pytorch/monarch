@@ -32,6 +32,8 @@ use hyperactor::Unbind;
 use hyperactor::clock::Clock as _;
 use hyperactor::clock::RealClock;
 #[cfg(test)]
+use hyperactor::context;
+#[cfg(test)]
 use hyperactor::mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::global::Source;
@@ -306,7 +308,7 @@ pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
 /// Cast to the actor mesh, and verify that all actors are reached.
 pub async fn assert_casting_correctness(
     actor_mesh: &ActorMeshRef<TestActor>,
-    instance: &Instance<()>,
+    instance: &impl context::Actor,
 ) {
     let (port, mut rx) = mailbox::open_port(instance);
     actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();

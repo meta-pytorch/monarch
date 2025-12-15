@@ -27,6 +27,7 @@ use hyperactor::context;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::v1::ActorMesh;
 use hyperactor_mesh::v1::ActorMeshRef;
 use hyperactor_mesh::v1::host_mesh::HostMesh;
 use ndslice::ViewExt;
@@ -251,9 +252,8 @@ async fn main() -> Result<ExitCode> {
         .await?;
 
     let params = PhilosopherActorParams { size: group_size };
-    let actor_mesh = proc_mesh
-        .spawn::<PhilosopherActor>(&instance, "philosopher", &params)
-        .await?;
+    let actor_mesh: ActorMesh<PhilosopherActor> =
+        proc_mesh.spawn(&instance, "philosopher", &params).await?;
     let (dining_message_handle, mut dining_message_rx) = instance.open_port();
     actor_mesh
         .cast(

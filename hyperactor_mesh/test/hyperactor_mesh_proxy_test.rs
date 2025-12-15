@@ -20,7 +20,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::PortRef;
-use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
 use hyperactor_mesh::Mesh;
@@ -29,6 +28,8 @@ use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
+use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
@@ -159,6 +160,17 @@ impl Handler<Echo> for ProxyActor {
     }
 }
 
+#[async_trait]
+impl Handler<SupervisionFailureMessage> for ProxyActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: SupervisionFailureMessage,
+    ) -> Result<(), anyhow::Error> {
+        message.default_handler(cx)
+    }
+}
+
 async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::Error> {
     let mut cmd = Command::new(PathBuf::from(&exe_path));
     cmd.arg("--bootstrap");
@@ -175,7 +187,7 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
         .await
         .unwrap();
 
-    let (instance, _) = Proc::local().instance("client").unwrap();
+    let instance = global_root_client();
 
     let mut proc_mesh = ProcMesh::allocate(alloc).await?;
     let actor_mesh: RootActorMesh<'_, ProxyActor> = proc_mesh

@@ -32,6 +32,7 @@ pub mod resource;
 pub mod router;
 pub mod shared_cell;
 pub mod shortuuid;
+pub mod supervision;
 #[cfg(target_os = "linux")]
 mod systemd;
 pub mod test_utils;
