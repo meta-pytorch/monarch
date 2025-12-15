@@ -10,7 +10,11 @@ import contextlib
 
 import monarch
 import pytest
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+
+from monarch._rust_bindings.monarch_hyperactor.channel import (
+    ChannelTransport,
+    ChannelTransportConfig,
+)
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_proc
 from monarch.config import configured, get_global_config
@@ -34,12 +38,14 @@ def test_get_set_transport() -> None:
         ChannelTransport.MetaTlsWithHostname,
     ):
         with configured(default_transport=transport) as config:
-            assert config["default_transport"] == transport
+            assert config["default_transport"] == ChannelTransportConfig(transport)
     # Succeed even if we don't specify the transport, but does not change the
     # previous value.
     with configured() as config:
-        assert config["default_transport"] == ChannelTransport.Unix
-    with pytest.raises(TypeError):
+        assert config["default_transport"] == ChannelTransportConfig(
+            ChannelTransport.Unix
+        )
+    with pytest.raises(ValueError):
         with configured(default_transport="unix"):  # type: ignore
             pass
     with pytest.raises(TypeError):
@@ -47,6 +53,25 @@ def test_get_set_transport() -> None:
             pass
     with pytest.raises(TypeError):
         with configured(default_transport={}):  # type: ignore
+            pass
+
+
+def test_get_set_explicit_transport() -> None:
+    # Test explicit transport with a TCP address
+    with configured(default_transport="explicit:tcp://127.0.0.1:8080") as config:
+        # The config value is a ChannelTransportConfig, so compare string representation
+        assert config["default_transport"] == ChannelTransportConfig(
+            "explicit:tcp://127.0.0.1:8080"
+        )
+
+    # Test that invalid explicit transport strings raise an error
+    with pytest.raises(ValueError):
+        with configured(default_transport="explicit:invalid"):
+            pass
+
+    # Test that random strings (not explicit format) raise an error
+    with pytest.raises(ValueError):
+        with configured(default_transport="random_string"):
             pass
 
 
@@ -64,13 +89,15 @@ def test_get_set_multiple() -> None:
             assert config["enable_log_forwarding"]
             assert config["enable_file_capture"]
             assert config["tail_log_lines"] == 100
-            assert config["default_transport"] == ChannelTransport.TcpWithLocalhost
+            assert config["default_transport"] == ChannelTransportConfig(
+                ChannelTransport.TcpWithLocalhost
+            )
     # Make sure the previous values are restored.
     config = get_global_config()
     assert not config["enable_log_forwarding"]
     assert not config["enable_file_capture"]
     assert config["tail_log_lines"] == 0
-    assert config["default_transport"] == ChannelTransport.Unix
+    assert config["default_transport"] == ChannelTransportConfig(ChannelTransport.Unix)
 
 
 # This test tries to allocate too much memory for the GitHub actions
@@ -219,7 +246,9 @@ def test_duration_config_multiple() -> None:
         enable_log_forwarding=True,
         tail_log_lines=100,
     ) as config:
-        assert config["default_transport"] == ChannelTransport.TcpWithLocalhost
+        assert config["default_transport"] == ChannelTransportConfig(
+            ChannelTransport.TcpWithLocalhost
+        )
         assert config["host_spawn_ready_timeout"] == "10m"
         assert config["message_delivery_timeout"] == "5m"
         assert config["mesh_proc_spawn_max_idle"] == "2m"
@@ -228,7 +257,7 @@ def test_duration_config_multiple() -> None:
 
     # Verify all values are restored
     config = get_global_config()
-    assert config["default_transport"] == ChannelTransport.Unix
+    assert config["default_transport"] == ChannelTransportConfig(ChannelTransport.Unix)
     assert config["host_spawn_ready_timeout"] == "30s"
     assert config["message_delivery_timeout"] == "30s"
     assert config["mesh_proc_spawn_max_idle"] == "30s"

@@ -53,7 +53,10 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.channel import (
+    ChannelTransport,
+    ChannelTransportConfig,
+)
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
@@ -410,7 +413,7 @@ def context() -> Context:
     return c
 
 
-_transport: Optional[ChannelTransport] = None
+_transport: Optional[ChannelTransportConfig] = None
 _transport_lock = threading.Lock()
 
 
@@ -424,17 +427,33 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
     Currently only one transport type may be enabled at one time.
     In the future we may allow multiple to be enabled.
 
+    Supported transport values:
+        - ChannelTransport enum: ChannelTransport.Unix, ChannelTransport.TcpWithHostname, etc.
+        - string short cuts for the ChannelTransport enum:
+            - "tcp": ChannelTransport.TcpWithHostname
+            - "ipc": ChannelTransport.Unix
+            - "metatls": ChannelTransport.MetaTlsWithIpV6
+            - "metatls-hostname": ChannelTransport.MetaTlsWithHostname
+        - string for explicit transport. e.g.:
+            - "explicit:tcp://127.0.0.1:8080"
+
     For Meta usage, use metatls-hostname
     """
     if isinstance(transport, str):
-        transport = {
+        # Handle string shortcuts for the ChannelTransport enum,
+        resolved = {
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
             "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
         }.get(transport)
-        if transport is None:
-            raise ValueError(f"unknown transport: {transport}")
+        if resolved is not None:
+            transport_config = ChannelTransportConfig(resolved)
+        else:
+            transport_config = ChannelTransportConfig(transport)
+    else:
+        # ChannelTransport enum
+        transport_config = ChannelTransportConfig(transport)
 
     if _context.get(None) is not None:
         raise RuntimeError(
@@ -445,14 +464,14 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
 
     global _transport
     with _transport_lock:
-        if _transport is not None and _transport != transport:
+        if _transport is not None and _transport != transport_config:
             raise RuntimeError(
                 f"Only one transport type may be enabled at one time. "
                 f"Currently enabled transport type is `{_transport}`. "
-                f"Attempted to enable transport type `{transport}`."
+                f"Attempted to enable transport type `{transport_config}`."
             )
-        _transport = transport
-    configure(default_transport=transport)
+        _transport = transport_config
+    configure(default_transport=transport_config)
 
 
 @dataclass
