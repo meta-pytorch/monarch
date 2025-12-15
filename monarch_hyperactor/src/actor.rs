@@ -43,6 +43,7 @@ use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::default_transport;
 use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::router;
+use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use pyo3::IntoPyObjectExt;
@@ -83,7 +84,6 @@ use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::signal_safe_block_on;
 use crate::supervision::MeshFailure;
-use crate::supervision::SupervisionFailureMessage;
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Serialize, Deserialize, Named)]

@@ -11,6 +11,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
 use hyperactor::context;
@@ -27,6 +28,7 @@ use hyperactor_mesh::proc_mesh::global_root_client;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellPool;
 use hyperactor_mesh::shared_cell::SharedCellRef;
+use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use monarch_types::PickledPyObject;
 use ndslice::Shape;
 use pyo3::IntoPyObjectExt;
@@ -86,12 +88,15 @@ impl From<ProcMesh> for TrackedProcMesh {
 }
 
 impl TrackedProcMesh {
-    pub async fn spawn<A: RemoteSpawn + Sync>(
+    pub async fn spawn<A: RemoteSpawn + Sync, C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         actor_name: &str,
         params: &A::Params,
-    ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error> {
+    ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         let mesh = self.cell.borrow()?;
         let actor = mesh.spawn(cx, actor_name, params).await?;
         Ok(self.children.insert(actor))

@@ -281,21 +281,6 @@ class HostMesh(MeshTrait):
             is_fake_in_process=False,
         )
 
-    def _local_proc_mesh(self) -> "ProcMesh":
-        """
-        Returns the local singleton proc mesh for this host.
-
-        This is the proc mesh that contains the root client actor.
-        It's a singleton proc mesh (no dimensions) spawned on the host's local_proc.
-        """
-        # Create a singleton proc mesh on this host
-        return self._spawn_nonblocking(
-            name="local_proc",
-            per_host=Extent([], []),
-            setup=None,
-            _attach_controller_controller=False,
-        )
-
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return HostMesh._from_initialized_hy_host_mesh, (
             self._initialized_mesh(),
