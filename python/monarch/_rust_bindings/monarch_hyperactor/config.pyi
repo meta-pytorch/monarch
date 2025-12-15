@@ -12,7 +12,10 @@ Type hints for the monarch_hyperactor.config Rust bindings.
 
 from typing import Any, Dict
 
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.channel import (
+    ChannelTransport,
+    ChannelTransportConfig,
+)
 
 def reload_config_from_env() -> None:
     """
@@ -32,7 +35,7 @@ def reset_config_to_defaults() -> None:
     ...
 
 def configure(
-    default_transport: ChannelTransport = ...,
+    default_transport: ChannelTransportConfig | ChannelTransport | str = ...,
     enable_log_forwarding: bool = ...,
     enable_file_capture: bool = ...,
     tail_log_lines: int = ...,
@@ -50,7 +53,10 @@ def configure(
     plus any additional CONFIG-marked keys passed via **kwargs.
 
     Args:
-        default_transport: Default channel transport for communication
+        default_transport: Default channel transport for communication. Can be:
+            - A ChannelTransportConfig object
+            - A ChannelTransport enum value (e.g., ChannelTransport.Unix)
+            - A string for explicit transport (e.g., "explicit::tcp://127.0.0.1:8080")
         enable_log_forwarding: Whether to forward logs from actors
         enable_file_capture: Whether to capture file output
         tail_log_lines: Number of log lines to tail

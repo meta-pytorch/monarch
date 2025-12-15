@@ -14,10 +14,15 @@ use hyperactor::channel::MetaTlsAddr;
 use hyperactor::channel::TcpMode;
 use hyperactor::channel::TlsMode;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Python binding for [`hyperactor::channel::ChannelTransport`]
+///
+/// This enum represents the basic transport types that can be represented
+/// as simple enum variants. For more complex transports like `Explicit`,
+/// use string-based configuration via `PyChannelTransportConfig`.
 #[pyclass(
     name = "ChannelTransport",
     module = "monarch._rust_bindings.monarch_hyperactor.channel",
@@ -59,6 +64,94 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
                 transport
             ))),
         }
+    }
+}
+
+/// A wrapper for ChannelTransport that can be created from either a
+/// PyChannelTransport enum or a string (for explicit transport).
+///
+/// We need this wrapper because Python's enum type does not support attaching
+/// data to enum variants like Rust does.
+#[pyclass(
+    name = "ChannelTransportConfig",
+    module = "monarch._rust_bindings.monarch_hyperactor.channel"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PyChannelTransportConfig {
+    inner: ChannelTransport,
+}
+
+#[pymethods]
+impl PyChannelTransportConfig {
+    /// Create a new PyChannelTransportConfig from either a ChannelTransport enum
+    /// or a string representation.
+    ///
+    /// Examples:
+    ///     PyChannelTransportConfig(ChannelTransport.Unix)
+    ///     PyChannelTransportConfig("explicit:tcp://127.0.0.1:8080")
+    #[new]
+    pub fn new(transport: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // First try to extract as PyChannelTransportConfig (for when passing an existing config)
+        if let Ok(config) = transport.extract::<PyChannelTransportConfig>() {
+            return Ok(config);
+        }
+
+        // Then try to extract as PyChannelTransport enum
+        if let Ok(py_transport) = transport.extract::<PyChannelTransport>() {
+            return Ok(PyChannelTransportConfig {
+                inner: py_transport.into(),
+            });
+        }
+
+        // Then try to extract as a string and parse it
+        if let Ok(transport_str) = transport.extract::<String>() {
+            if !transport_str.starts_with("explicit:") {
+                return Err(PyValueError::new_err(format!(
+                    "string argument only supports explicit transport with \
+                    address in the zmq url format (e.g., 'explicit:tcp://127.0.0.1:8080'); \
+                    but got: {}",
+                    transport_str,
+                )));
+            }
+            let addr_str = transport_str.strip_prefix("explicit:").unwrap();
+            let addr = ChannelAddr::from_zmq_url(addr_str).map_err(|e| {
+                PyValueError::new_err(format!(
+                    "invalid address string used for explicit transport '{}': {}",
+                    addr_str, e
+                ))
+            })?;
+            return Ok(PyChannelTransportConfig {
+                inner: ChannelTransport::Explicit(addr),
+            });
+        }
+
+        Err(PyTypeError::new_err(
+            "expected ChannelTransport enum, ChannelTransportConfig, or str",
+        ))
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyChannelTransportConfig({:?})", self.inner)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl From<PyChannelTransportConfig> for ChannelTransport {
+    fn from(config: PyChannelTransportConfig) -> Self {
+        config.inner
+    }
+}
+
+impl From<ChannelTransport> for PyChannelTransportConfig {
+    fn from(transport: ChannelTransport) -> Self {
+        PyChannelTransportConfig { inner: transport }
     }
 }
 
@@ -149,6 +242,7 @@ impl From<PyChannelTransport> for ChannelTransport {
 #[pymodule]
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyChannelTransport>()?;
+    hyperactor_mod.add_class::<PyChannelTransportConfig>()?;
     hyperactor_mod.add_class::<PyChannelAddr>()?;
     Ok(())
 }
