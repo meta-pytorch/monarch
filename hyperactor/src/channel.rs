@@ -356,6 +356,9 @@ pub enum ChannelTransport {
 
     /// Transport over unix domain socket.
     Unix,
+
+    /// Use a specific channel address for transport.
+    Explicit(ChannelAddr),
 }
 
 impl fmt::Display for ChannelTransport {
@@ -366,6 +369,7 @@ impl fmt::Display for ChannelTransport {
             Self::Local => write!(f, "local"),
             Self::Sim(transport) => write!(f, "sim({})", transport),
             Self::Unix => write!(f, "unix"),
+            Self::Explicit(addr) => write!(f, "explicit({})", addr),
         }
     }
 }
@@ -400,6 +404,11 @@ impl FromStr for ChannelTransport {
                 let mode = inner.parse()?;
                 Ok(ChannelTransport::MetaTls(mode))
             }
+            s if s.starts_with("explicit(") && s.ends_with(")") => Err(anyhow::anyhow!(
+                "detect possible explicit transport, but we currently do not \
+                    support parsing explicit's string representation since we
+                    only want to support the zmq_url format."
+            )),
             unknown => Err(anyhow::anyhow!("unknown channel transport: {}", unknown)),
         }
     }
@@ -433,6 +442,7 @@ impl ChannelTransport {
             ChannelTransport::Local => false,
             ChannelTransport::Sim(_) => false,
             ChannelTransport::Unix => false,
+            ChannelTransport::Explicit(addr) => addr.transport().is_remote(),
         }
     }
 }
@@ -598,6 +608,7 @@ impl ChannelAddr {
             ChannelTransport::Sim(transport) => sim::any(*transport),
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
+            ChannelTransport::Explicit(addr) => addr,
         }
     }
 
