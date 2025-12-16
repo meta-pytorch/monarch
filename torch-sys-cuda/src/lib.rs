@@ -6,16 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// When building tests, we need to link against libpython because test binaries
-// are standalone executables. Regular library builds for Python extensions should
-// NOT link libpython (they get symbols from the interpreter that loads them).
-#[cfg(test)]
-#[link(name = "python3.11")]
-// SAFETY: This extern block only declares that we want to link against libpython3.11
-// for test binaries. It doesn't declare any actual foreign functions, so there are
-// no unsafe operations being performed here.
-unsafe extern "C" {}
-
 /// A companion to the `torch-sys` crate that provides bindings for
 /// CUDA-specific functionality from libtorch. This crate is separated out to
 /// make it easier for clients who want to avoid compiling CUDA code.
