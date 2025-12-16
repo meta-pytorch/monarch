@@ -795,6 +795,26 @@ impl Handler<NewClientInstance> for ProcMeshAgent {
     }
 }
 
+/// A handler to get a clone of the proc managed by this agent.
+/// This is used to obtain the local proc from a host mesh.
+#[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
+pub struct GetProc {
+    #[reply]
+    pub proc: PortHandle<Proc>,
+}
+
+#[async_trait]
+impl Handler<GetProc> for ProcMeshAgent {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        GetProc { proc }: GetProc,
+    ) -> anyhow::Result<()> {
+        proc.send(self.proc.clone())?;
+        Ok(())
+    }
+}
+
 /// A mailbox sender that initially queues messages, and then relays them to
 /// an underlying sender once configured.
 #[derive(Clone)]

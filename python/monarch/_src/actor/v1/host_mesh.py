@@ -266,6 +266,36 @@ class HostMesh(MeshTrait):
             None,
         )
 
+    @classmethod
+    def _from_rust(cls, hy_host_mesh: HyHostMesh) -> "HostMesh":
+        """
+        Create a HostMesh from a Rust HyHostMesh.
+
+        This is used when the host was bootstrapped via bootstrap_host()
+        instead of being allocated through an allocator.
+        """
+        return cls._from_initialized_hy_host_mesh(
+            hy_host_mesh,
+            hy_host_mesh.region,
+            stream_logs=False,
+            is_fake_in_process=False,
+        )
+
+    def _local_proc_mesh(self) -> "ProcMesh":
+        """
+        Returns the local singleton proc mesh for this host.
+
+        This is the proc mesh that contains the root client actor.
+        It's a singleton proc mesh (no dimensions) spawned on the host's local_proc.
+        """
+        # Create a singleton proc mesh on this host
+        return self._spawn_nonblocking(
+            name="local_proc",
+            per_host=Extent([], []),
+            setup=None,
+            _attach_controller_controller=False,
+        )
+
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return HostMesh._from_initialized_hy_host_mesh, (
             self._initialized_mesh(),
@@ -347,21 +377,6 @@ class HostMesh(MeshTrait):
             return True
 
         return Future(coro=task())
-
-
-def fake_in_process_host() -> "HostMesh":
-    """
-    Create a host mesh for testing and development using a local allocator.
-
-    Returns:
-        HostMesh: A host mesh configured with local allocation for in-process use.
-    """
-    return HostMesh.allocate_nonblocking(
-        "fake_host",
-        Extent([], []),
-        LocalAllocator(),
-        bootstrap_cmd=_bootstrap_cmd(),
-    )
 
 
 def hosts_from_config(name: str) -> HostMesh:

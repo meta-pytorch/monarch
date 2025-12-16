@@ -520,6 +520,8 @@ impl PythonActor {
         })
     }
 
+    /// Bootstrap the root client actor, creating a new proc for it.
+    /// This is the legacy entry point that creates its own proc.
     pub(crate) fn bootstrap_client(py: Python<'_>) -> (&'static Instance<Self>, ActorHandle<Self>) {
         static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
@@ -530,8 +532,21 @@ impl PythonActor {
         )
         .unwrap();
 
+        Self::bootstrap_client_inner(py, client_proc, &ROOT_CLIENT_INSTANCE)
+    }
+
+    /// Bootstrap the client proc, storing the root client instance in given static.
+    /// This is passed in because we require storage, as the instance is shared.
+    /// This can be simplified when we remove v0.
+    pub(crate) fn bootstrap_client_inner(
+        py: Python<'_>,
+        client_proc: Proc,
+        root_client_instance: &'static OnceLock<Instance<PythonActor>>,
+    ) -> (&'static Instance<Self>, ActorHandle<Self>) {
         // Make this proc reachable through the global router, so that we can use the
         // same client in both direct-addressed and ranked-addressed modes.
+        //
+        // DEPRECATE after v0 removal
         router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
 
         let actor_mesh_mod = py
@@ -557,7 +572,7 @@ impl PythonActor {
             )
             .expect("root instance create");
 
-        ROOT_CLIENT_INSTANCE
+        root_client_instance
             .set(client)
             .map_err(|_| "already initialized root client instance")
             .unwrap();
@@ -577,7 +592,7 @@ impl PythonActor {
             )
             .expect("initialize root client");
 
-        let instance = ROOT_CLIENT_INSTANCE.get().unwrap();
+        let instance = root_client_instance.get().unwrap();
 
         get_tokio_runtime().spawn(async move {
             let mut signal_rx = signal_rx;
@@ -626,7 +641,7 @@ impl PythonActor {
             instance.proc().handle_supervision_event(event);
         });
 
-        (ROOT_CLIENT_INSTANCE.get().unwrap(), handle)
+        (root_client_instance.get().unwrap(), handle)
     }
 }
 
