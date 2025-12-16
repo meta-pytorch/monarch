@@ -11,7 +11,7 @@ import subprocess
 import sys
 import sysconfig
 
-from setuptools import Command, find_packages, setup
+from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.extension import Extension
 
@@ -95,15 +95,69 @@ def detect_cxx11_abi():
     return 1
 
 
-# Get torch paths and settings
-torch_paths = find_torch_paths()
-TORCH_LIB_PATH = torch_paths["lib_path"]
-torch_include_paths = torch_paths["include_paths"]
-CUDA_HOME = find_cuda_home()
-cxx11_abi = detect_cxx11_abi()
+# Check if tensor_engine feature is enabled
+# Set to "0" to skip building CUDA/tensor components and avoid torch dependency
+USE_TENSOR_ENGINE = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
+
+# Get torch paths and settings (only if needed for tensor_engine)
+# Torch might not be available in two scenarios:
+# 1. Building without tensor_engine (USE_TENSOR_ENGINE=0)
+# 2. Running 'uv sync' or 'pip install' before torch is installed (build happens before dependencies)
+if USE_TENSOR_ENGINE:
+    try:
+        torch_paths = find_torch_paths()
+        TORCH_LIB_PATH = torch_paths["lib_path"]
+        torch_include_paths = torch_paths["include_paths"]
+        CUDA_HOME = find_cuda_home()
+        cxx11_abi = detect_cxx11_abi()
+        TORCH_AVAILABLE = True
+
+        # Log successful torch detection
+        print("=" * 80)
+        print("✓ Building WITH tensor_engine (CUDA/GPU support)")
+        print(f"  - PyTorch found at: {TORCH_LIB_PATH}")
+        print(
+            f"  - CUDA_HOME: {CUDA_HOME if CUDA_HOME else 'Not found (CPU-only build)'}"
+        )
+        print(f"  - C++11 ABI: {'enabled' if cxx11_abi else 'disabled'}")
+        print("=" * 80)
+    except RuntimeError as e:
+        # Torch not installed yet - auto-disable tensor_engine
+        # This can happen during pip installs with build isolation
+        print("=" * 80)
+        print(
+            "WARNING: torch not found, automatically disabling tensor_engine features"
+        )
+        print(f"Reason: {e}")
+        print("")
+        print("If you intended to build with tensor_engine:")
+        print("  1. Install torch first: uv pip install torch")
+        print("  2. Then install monarch: uv pip install -e .")
+        print("")
+        print("To explicitly build without tensor_engine:")
+        print("  USE_TENSOR_ENGINE=0 uv pip install -e .")
+        print("=" * 80)
+
+        # Auto-disable tensor_engine to allow build to proceed
+        USE_TENSOR_ENGINE = False
+        TORCH_LIB_PATH = None
+        torch_include_paths = []
+        CUDA_HOME = None
+        cxx11_abi = 1  # Default to new ABI
+        TORCH_AVAILABLE = False
+else:
+    # Building without tensor_engine - torch not needed
+    print("=" * 80)
+    print("Building WITHOUT tensor_engine (CPU-only, no CUDA support)")
+    print("This is expected for USE_TENSOR_ENGINE=0 builds")
+    print("=" * 80)
+    TORCH_LIB_PATH = None
+    torch_include_paths = []
+    CUDA_HOME = None
+    cxx11_abi = 1
+    TORCH_AVAILABLE = False
 
 USE_CUDA = CUDA_HOME is not None
-USE_TENSOR_ENGINE = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
 
 
 def create_torch_extension(name, sources):
@@ -111,7 +165,7 @@ def create_torch_extension(name, sources):
     return Extension(
         name,
         sources,
-        extra_compile_args=["-g", "-O3"],
+        extra_compile_args=["-std=c++17", "-g", "-O3"],
         libraries=["dl", "c10", "torch", "torch_cpu", "torch_python"],
         library_dirs=[TORCH_LIB_PATH],
         include_dirs=[
@@ -128,11 +182,16 @@ if USE_CUDA:
     monarch_cpp_src.append("python/monarch/common/mock_cuda.cpp")
 
 # Create C++ extensions using standard Extension instead of CppExtension
-common_C = create_torch_extension("monarch.common._C", monarch_cpp_src)
-controller_C = create_torch_extension(
-    "monarch.gradient._gradient_generator",
-    ["python/monarch/gradient/_gradient_generator.cpp"],
-)
+# Only create if torch is available
+if TORCH_AVAILABLE:
+    common_C = create_torch_extension("monarch.common._C", monarch_cpp_src)
+    controller_C = create_torch_extension(
+        "monarch.gradient._gradient_generator",
+        ["python/monarch/gradient/_gradient_generator.cpp"],
+    )
+else:
+    common_C = None
+    controller_C = None
 
 ENABLE_MSG_LOGGING = (
     "--cfg=enable_hyperactor_message_logging"
@@ -142,18 +201,31 @@ ENABLE_MSG_LOGGING = (
 
 ENABLE_TRACING_UNSTABLE = "--cfg=tracing_unstable"
 
-os.environ.update(
-    {
-        "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}",
-        "RUSTFLAGS": " ".join(
-            ["-Zthreads=16", ENABLE_MSG_LOGGING, ENABLE_TRACING_UNSTABLE]
-        ),
-        "LIBTORCH_LIB": TORCH_LIB_PATH,
-        "LIBTORCH_INCLUDE": ":".join(torch_include_paths),
-        "_GLIBCXX_USE_CXX11_ABI": str(cxx11_abi),
-        "TORCH_SYS_USE_PYTORCH_APIS": "0",
-    }
-)
+# Set environment variables for Rust build (only if torch is available)
+if TORCH_AVAILABLE:
+    os.environ.update(
+        {
+            "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}",
+            "RUSTFLAGS": " ".join(
+                ["-Zthreads=16", ENABLE_MSG_LOGGING, ENABLE_TRACING_UNSTABLE]
+            ),
+            "LIBTORCH_LIB": TORCH_LIB_PATH,
+            "LIBTORCH_INCLUDE": ":".join(torch_include_paths),
+            "_GLIBCXX_USE_CXX11_ABI": str(cxx11_abi),
+            "TORCH_SYS_USE_PYTORCH_APIS": "0",
+        }
+    )
+else:
+    # Minimal environment when torch is not available
+    os.environ.update(
+        {
+            "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}",
+            "RUSTFLAGS": " ".join(
+                ["-Zthreads=16", ENABLE_MSG_LOGGING, ENABLE_TRACING_UNSTABLE]
+            ),
+            "_GLIBCXX_USE_CXX11_ABI": str(cxx11_abi),
+        }
+    )
 if USE_CUDA:
     os.environ.update(
         {
@@ -197,12 +269,6 @@ class Clean(Command):
 
         subprocess.run(["cargo", "clean"])
 
-
-with open("requirements.txt") as f:
-    reqs = f.read()
-
-with open("README.md", encoding="utf8") as f:
-    readme = f.read()
 
 if sys.platform.startswith("linux"):
     # Always include the active env's lib (Conda-safe)
@@ -255,8 +321,9 @@ if not SKIP_LEGACY_BUILDS:
     rust_extensions.append(
         RustBin(
             target="process_allocator",
-            path="monarch_hyperactor/Cargo.toml",
+            path="monarch_hyperactor_bin/Cargo.toml",
             debug=False,
+            args=["--bin", "process_allocator"],
         )
     )
 
@@ -275,38 +342,13 @@ rust_extensions.append(
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "monarch")
 package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
 
+# Filter out None extensions (when torch is not available)
+ext_modules = [ext for ext in [controller_C, common_C] if ext is not None]
+
 setup(
     name=package_name,
     version=package_version,
-    packages=find_packages(
-        where="python",
-        exclude=["python/tests.*", "python/tests"],
-    ),
-    package_dir={"": "python"},
-    python_requires=">= 3.10",
-    install_requires=reqs.strip().split("\n"),
-    extras_require={
-        "examples": [
-            "bs4",
-            "ipython",
-        ],
-    },
-    license="BSD-3-Clause",
-    author="Meta",
-    author_email="oncall+monarch@xmail.facebook.com",
-    description="Monarch: Single controller library",
-    long_description=readme,
-    long_description_content_type="text/markdown",
-    ext_modules=[
-        controller_C,
-        common_C,
-    ],
-    entry_points={
-        "console_scripts": [
-            "monarch=monarch.tools.cli:main",
-            "monarch_bootstrap=monarch._src.actor.bootstrap_main:invoke_main",
-        ],
-    },
+    ext_modules=ext_modules,
     rust_extensions=rust_extensions,
     cmdclass={
         "build_ext": build_ext,

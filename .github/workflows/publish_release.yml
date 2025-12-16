@@ -44,7 +44,7 @@ jobs:
         # Setup Tensor Engine dependencies
         setup_tensor_engine
 
-        cargo install --path monarch_hyperactor
+        cargo install --path monarch_hyperactor_bin
 
         # Build wheel
         export MONARCH_PACKAGE_NAME="torchmonarch"

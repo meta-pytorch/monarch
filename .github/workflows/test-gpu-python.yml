@@ -36,8 +36,8 @@ jobs:
         # Source common setup functions
         source scripts/common-setup.sh
 
-        # Setup test environment
-        setup_test_environment
+        # Setup conda environment
+        setup_conda_environment
 
         # Setup Tensor Engine dependencies
         setup_tensor_engine
@@ -52,13 +52,15 @@ jobs:
         # Install the built wheel from artifact
         install_wheel_from_artifact
 
+        # Install test dependencies (without triggering a build)
+        install_python_test_dependencies
+
         # tests the type_assert statements in test_python_actor are correct
         # pyre currently does not check these assertions
         pyright python/tests/test_python_actors.py
 
         # Run GPU Python tests split into 10 groups sequentially
         # Each group runs separately with process cleanup in between
-        pip install pytest-split
 
         # Run tests with test_actor_error disabled
         run_test_groups 0

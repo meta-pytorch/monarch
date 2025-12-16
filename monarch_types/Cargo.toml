@@ -10,7 +10,7 @@ license = "BSD-3-Clause"
 [dependencies]
 derive_more = { version = "1.0.0", features = ["full"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.24", features = ["anyhow", "extension-module", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 
@@ -18,3 +18,6 @@ serde_bytes = "0.11"
 anyhow = "1.0.98"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+
+[features]
+default = []
