@@ -283,8 +283,9 @@ impl PySerialized {
         Ok(Self {
             inner: Serialized::serialize(message).map_err(|err| {
                 PyRuntimeError::new_err(format!(
-                    "failed to serialize message ({:?}) to Serialized: {}",
-                    message, err
+                    "failed to serialize message of type {} to Serialized: {}",
+                    std::any::type_name::<M>(),
+                    err
                 ))
             })?,
             port: M::port(),
