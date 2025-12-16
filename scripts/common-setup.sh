@@ -20,6 +20,14 @@ setup_conda_environment() {
     python -m pip install --upgrade pip
 }
 
+# Install uv for fast package management
+install_uv() {
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+    uv --version
+}
+
 # Install system-level dependencies
 install_system_dependencies() {
     echo "Installing system dependencies..."
@@ -49,7 +57,7 @@ setup_rust_toolchain() {
 # Install Python test dependencies
 install_python_test_dependencies() {
     echo "Installing test dependencies..."
-    pip install -r python/tests/requirements.txt
+    pip install pytest pytest-timeout pytest-asyncio pytest-xdist pyright pytest-split
     dnf install -y rsync # required for code sync tests
 }
 
@@ -109,12 +117,13 @@ setup_pytorch_with_headers() {
     ls -la "$LIBTORCH_ROOT/lib/lib"*.so | head -5 || echo "No .so files found"
 }
 
-# Common setup for build workflows (environment + system deps + rust)
+# Common setup for build workflows (environment + system deps + rust + uv)
 setup_build_environment() {
     local python_version=${1:-3.10}
     setup_conda_environment "${python_version}"
     install_system_dependencies
     setup_rust_toolchain
+    install_uv
 }
 
 # Detect and configure CUDA environment for linking

@@ -13,6 +13,7 @@ members = [
     "monarch_conda",
     "monarch_extension",
     "monarch_hyperactor",
+    "monarch_hyperactor_bin",
     "monarch_messages",
     "monarch_perfetto_trace",
     "monarch_rdma",

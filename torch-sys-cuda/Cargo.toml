@@ -13,7 +13,7 @@ derive_more = { version = "1.0.0", features = ["full"] }
 fxhash = "0.2.1"
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 nccl-sys = { path = "../nccl-sys" }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.24", features = ["anyhow", "extension-module", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.12"
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
@@ -23,5 +23,4 @@ build_utils = { path = "../build_utils" }
 pyo3-build-config = "0.24.2"
 
 [features]
-cuda = []
-default = ["cuda"]
+default = []
