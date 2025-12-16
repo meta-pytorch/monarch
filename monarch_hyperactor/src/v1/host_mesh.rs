@@ -15,7 +15,7 @@ use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::host;
-use hyperactor_mesh::proc_mesh::default_transport;
+use hyperactor_mesh::proc_mesh::default_bind_spec;
 use hyperactor_mesh::proc_mesh::mesh_agent::GetProcClient;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::v1::ProcMeshRef;
@@ -274,7 +274,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
     };
 
     PyPythonTask::new(async move {
-        let host_mesh_agent = host(default_transport().any(), Some(bootstrap_cmd), None)
+        let host_mesh_agent = host(default_bind_spec().any(), Some(bootstrap_cmd), None)
             .await
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
