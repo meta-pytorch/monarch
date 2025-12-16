@@ -64,6 +64,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
+use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
@@ -420,9 +421,8 @@ impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
     pub fn new<'py>(kind: PythonMessageKind, message: Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(buff) = message.extract::<Bound<'py, FrozenBuffer>>() {
-            let frozen = buff.borrow_mut();
-            return Ok(PythonMessage::new_from_buf(kind, frozen.inner.clone()));
+        if let Ok(mut buff) = message.extract::<PyRefMut<'py, Buffer>>() {
+            return Ok(PythonMessage::new_from_buf(kind, buff.take_part()));
         } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
             return Ok(PythonMessage::new_from_buf(
                 kind,

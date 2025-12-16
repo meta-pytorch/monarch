@@ -108,7 +108,6 @@ def test_buffer_read_write() -> None:
 
 def test_pickle_to_buffer() -> None:
     x = [bytes(100000)]
-    b = Buffer()
     args, b = flatten(x, lambda x: False)
-    y = unflatten(b, args)
+    y = unflatten(b.freeze(), args)
     assert x == y
