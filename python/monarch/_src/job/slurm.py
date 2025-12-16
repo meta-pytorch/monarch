@@ -56,6 +56,7 @@ class SlurmJob(JobTrait):
         gpus_per_node: Optional[int] = None,
         cpus_per_task: Optional[int] = None,
         mem: Optional[str] = None,
+        job_start_timeout: Optional[int] = None,
     ) -> None:
         """
         Args:
@@ -72,6 +73,8 @@ class SlurmJob(JobTrait):
                       Defaults to True for predictable performance and resource isolation,
                       but may increase queue times and waste resources if nodes are underutilized.
             gpus_per_node: Number of GPUs to request per node. If None, no GPU resources are requested.
+            job_start_timeout: Maximum time in seconds to wait for the SLURM job to start running.
+                      This should account for potential queueing delays. If None (default), waits indefinitely.
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._meshes = meshes
@@ -87,6 +90,7 @@ class SlurmJob(JobTrait):
         self._gpus_per_node = gpus_per_node
         self._cpus_per_task = cpus_per_task
         self._mem = mem
+        self._job_start_timeout = job_start_timeout
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
@@ -149,9 +153,9 @@ class SlurmJob(JobTrait):
             and self._gpus_per_node is not None
         ):
             gpus_per_task = self._gpus_per_node // self._ntasks_per_node
-            assert (
-                self._partition
-            ), "Slurm partition must be set for jobs that share nodes with other jobs"
+            assert self._partition, (
+                "Slurm partition must be set for jobs that share nodes with other jobs"
+            )
             self.share_node(
                 tasks_per_node=self._ntasks_per_node,
                 gpus_per_task=gpus_per_task,
@@ -221,7 +225,7 @@ class SlurmJob(JobTrait):
             return None
 
     def _wait_for_job_start(
-        self, job_id: str, expected_nodes: int, timeout: int = 300
+        self, job_id: str, expected_nodes: int, timeout: Optional[int] = None
     ) -> List[str]:
         """
         Wait for the SLURM job to start and return the allocated hostnames.
@@ -232,7 +236,7 @@ class SlurmJob(JobTrait):
         start_time = time.time()
 
         try:
-            while time.time() - start_time < timeout:
+            while timeout is None or time.time() - start_time < timeout:
                 job_info = self._get_job_info_json(job_id)
 
                 if not job_info:
@@ -285,7 +289,9 @@ class SlurmJob(JobTrait):
             if job_id is None:
                 raise RuntimeError("SLURM job ID is not set")
             total_nodes = sum(self._meshes.values())
-            self._all_hostnames = self._wait_for_job_start(job_id, total_nodes)
+            self._all_hostnames = self._wait_for_job_start(
+                job_id, total_nodes, timeout=self._job_start_timeout
+            )
 
         # Distribute the allocated hostnames among meshes
         host_meshes = {}
@@ -323,6 +329,7 @@ class SlurmJob(JobTrait):
             and spec._gpus_per_node == self._gpus_per_node
             and spec._cpus_per_task == self._cpus_per_task
             and spec._mem == self._mem
+            and spec._job_start_timeout == self._job_start_timeout
             and self._jobs_active()
         )
 
