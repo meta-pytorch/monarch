@@ -101,3 +101,15 @@ class BootstrapCommand:
         ...
 
     def __repr__(self) -> str: ...
+
+def bootstrap_host(
+    bootstrap_cmd: BootstrapCommand | None,
+) -> PythonTask[(HostMesh, ProcMesh, Instance)]:
+    """
+    Bootstrap a host mesh in this process, returning the host mesh,
+    proc mesh, and client instance.
+
+    Arguments:
+    - `bootstrap_cmd`: The bootstrap command to use to bootstrap the host.
+    """
+    ...

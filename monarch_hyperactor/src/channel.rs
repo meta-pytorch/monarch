@@ -8,16 +8,21 @@
 
 use std::str::FromStr;
 
+use hyperactor::channel::BindSpec;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::MetaTlsAddr;
 use hyperactor::channel::TcpMode;
 use hyperactor::channel::TlsMode;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Python binding for [`hyperactor::channel::ChannelTransport`]
+///
+/// This enum represents the basic transport types that can be represented
+/// as simple enum variants. For explicit addresses, use `PyBindSpec`.
 #[pyclass(
     name = "ChannelTransport",
     module = "monarch._rust_bindings.monarch_hyperactor.channel",
@@ -59,6 +64,83 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
                 transport
             ))),
         }
+    }
+}
+
+/// Python binding for [`hyperactor::channel::BindSpec`]
+#[pyclass(
+    name = "BindSpec",
+    module = "monarch._rust_bindings.monarch_hyperactor.channel"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PyBindSpec {
+    inner: BindSpec,
+}
+
+#[pymethods]
+impl PyBindSpec {
+    /// Create a new PyBindSpec from a ChannelTransport enum, a string representation,
+    /// or another PyBindSpec object.
+    ///
+    /// Examples:
+    ///     PyBindSpec(ChannelTransport.Unix)
+    ///     PyBindSpec("tcp://127.0.0.1:8080")
+    ///     PyBindSpec(PyBindSpec(ChannelTransport.Unix))
+    #[new]
+    pub fn new(spec: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // First try to extract as PyBindSpec (for when passing an existing spec)
+        if let Ok(bind_spec) = spec.extract::<PyBindSpec>() {
+            return Ok(bind_spec);
+        }
+
+        // Then try to extract as PyChannelTransport enum
+        if let Ok(py_transport) = spec.extract::<PyChannelTransport>() {
+            let transport: ChannelTransport = py_transport.into();
+            return Ok(PyBindSpec {
+                inner: BindSpec::Any(transport),
+            });
+        }
+
+        // Then try to extract as a string and parse it as a ZMQ URL
+        if let Ok(spec_str) = spec.extract::<String>() {
+            let addr = ChannelAddr::from_zmq_url(&spec_str).map_err(|e| {
+                PyValueError::new_err(format!(
+                    "invalid ZMQ URL for address binding '{}': {}",
+                    spec_str, e
+                ))
+            })?;
+            return Ok(PyBindSpec {
+                inner: BindSpec::Addr(addr),
+            });
+        }
+
+        Err(PyTypeError::new_err(
+            "expected ChannelTransport enum, BindSpec, or str",
+        ))
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyBindSpec({:?})", self.inner)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl From<PyBindSpec> for BindSpec {
+    fn from(spec: PyBindSpec) -> Self {
+        spec.inner
+    }
+}
+
+impl From<BindSpec> for PyBindSpec {
+    fn from(spec: BindSpec) -> Self {
+        PyBindSpec { inner: spec }
     }
 }
 
@@ -149,6 +231,7 @@ impl From<PyChannelTransport> for ChannelTransport {
 #[pymodule]
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyChannelTransport>()?;
+    hyperactor_mod.add_class::<PyBindSpec>()?;
     hyperactor_mod.add_class::<PyChannelAddr>()?;
     Ok(())
 }
