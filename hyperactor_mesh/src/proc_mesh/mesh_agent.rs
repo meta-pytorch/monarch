@@ -213,7 +213,6 @@ pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSu
 }
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
-#[derive(Debug)]
 #[hyperactor::export(
     handlers=[
         MeshAgentMessage,

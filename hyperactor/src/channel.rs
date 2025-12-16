@@ -107,7 +107,7 @@ pub enum TxStatus {
 
 /// The transmit end of an M-typed channel.
 #[async_trait]
-pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
+pub trait Tx<M: RemoteMessage> {
     /// Post a message; returning failed deliveries on the return channel, if provided.
     /// If provided, the sender is dropped when the message has been
     /// enqueued at the channel endpoint.
@@ -154,7 +154,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
 
 /// The receive end of an M-typed channel.
 #[async_trait]
-pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
+pub trait Rx<M: RemoteMessage> {
     /// Receive the next message from the channel. If the channel returns
     /// an error it is considered broken and should be discarded.
     async fn recv(&mut self) -> Result<M, ChannelError>;
@@ -163,7 +163,6 @@ pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
     fn addr(&self) -> ChannelAddr;
 }
 
-#[derive(Debug)]
 struct MpscTx<M: RemoteMessage> {
     tx: mpsc::UnboundedSender<M>,
     addr: ChannelAddr,
@@ -205,7 +204,6 @@ impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
     }
 }
 
-#[derive(Debug)]
 struct MpscRx<M: RemoteMessage> {
     rx: mpsc::UnboundedReceiver<M>,
     addr: ChannelAddr,
@@ -739,13 +737,19 @@ impl ChannelAddr {
 }
 
 /// Universal channel transmitter.
-#[derive(Debug)]
 pub struct ChannelTx<M: RemoteMessage> {
     inner: ChannelTxKind<M>,
 }
 
+impl<M: RemoteMessage> fmt::Debug for ChannelTx<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChannelTx")
+            .field("addr", &self.addr())
+            .finish()
+    }
+}
+
 /// Universal channel transmitter.
-#[derive(Debug)]
 enum ChannelTxKind<M: RemoteMessage> {
     Local(local::LocalTx<M>),
     Tcp(net::NetTx<M>),
@@ -788,13 +792,19 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
 }
 
 /// Universal channel receiver.
-#[derive(Debug)]
 pub struct ChannelRx<M: RemoteMessage> {
     inner: ChannelRxKind<M>,
 }
 
+impl<M: RemoteMessage> fmt::Debug for ChannelRx<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChannelRx")
+            .field("addr", &self.addr())
+            .finish()
+    }
+}
+
 /// Universal channel receiver.
-#[derive(Debug)]
 enum ChannelRxKind<M: RemoteMessage> {
     Local(local::LocalRx<M>),
     Tcp(net::NetRx<M>),

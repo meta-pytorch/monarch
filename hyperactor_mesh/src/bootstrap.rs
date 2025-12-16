@@ -315,7 +315,7 @@ pub async fn host(
 /// available to the child. Interpretation and application of that
 /// snapshot is up to the child process; if omitted, the child falls
 /// back to environment/default values.
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Bootstrap {
     /// Bootstrap as a "v1" proc
     Proc {
@@ -353,8 +353,19 @@ pub enum Bootstrap {
     },
 
     /// Bootstrap as a legacy "v0" proc.
-    #[default]
-    V0ProcMesh, // pass through to the v0 allocator
+    V0ProcMesh {
+        /// Optional config snapshot (`hyperactor_config::Attrs`)
+        /// captured by the parent. If present, the child installs it
+        /// as the `ClientOverride` layer so the parent's effective config
+        /// takes precedence over Env/Defaults.
+        config: Option<Attrs>,
+    },
+}
+
+impl Default for Bootstrap {
+    fn default() -> Self {
+        Bootstrap::V0ProcMesh { config: None }
+    }
 }
 
 impl Bootstrap {
@@ -521,7 +532,7 @@ impl Bootstrap {
                 ok!(host(addr, command, config).await);
                 halt().await
             }
-            Bootstrap::V0ProcMesh => bootstrap_v0_proc_mesh().await,
+            Bootstrap::V0ProcMesh { config } => bootstrap_v0_proc_mesh(config).await,
         }
     }
 
@@ -2145,7 +2156,19 @@ pub async fn bootstrap() -> anyhow::Error {
 /// - `HYPERACTOR_MESH_BOOTSTRAP_ADDR`: the channel address to which Process2Allocator messages
 ///   should be sent.
 /// - `HYPERACTOR_MESH_INDEX`: an index used to identify this process to the allocator.
-async fn bootstrap_v0_proc_mesh() -> anyhow::Error {
+async fn bootstrap_v0_proc_mesh(config: Option<Attrs>) -> anyhow::Error {
+    // Apply config before entering the nested scope
+    if let Some(attrs) = config {
+        hyperactor_config::global::set(hyperactor_config::global::Source::ClientOverride, attrs);
+        tracing::debug!("bootstrap: installed ClientOverride config snapshot (V0ProcMesh)");
+    } else {
+        tracing::debug!("bootstrap: no config snapshot provided (V0ProcMesh)");
+    }
+    tracing::info!(
+        "bootstrap_v0_proc_mesh config:\n{}",
+        hyperactor_config::global::attrs()
+    );
+
     pub async fn go() -> Result<(), anyhow::Error> {
         let procs = Arc::new(tokio::sync::Mutex::new(Vec::<Proc>::new()));
         let procs_for_cleanup = procs.clone();
@@ -2438,7 +2461,10 @@ mod tests {
             // Sanity: the decoded variant is what we expect.
             match (&value, &round) {
                 (Bootstrap::Proc { config: None, .. }, Bootstrap::Proc { config: None, .. }) => {}
-                (Bootstrap::V0ProcMesh, Bootstrap::V0ProcMesh) => {}
+                (
+                    Bootstrap::V0ProcMesh { config: None },
+                    Bootstrap::V0ProcMesh { config: None },
+                ) => {}
                 _ => panic!("decoded variant mismatch: got {:?}", round),
             }
         }
@@ -2473,7 +2499,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bootstrap_env_roundtrip_with_config_proc_and_host() {
+    fn test_bootstrap_config_snapshot_roundtrip() {
         // Build a small, distinctive Attrs snapshot.
         let mut attrs = Attrs::new();
         attrs[MESH_TAIL_LOG_LINES] = 123;
@@ -2513,6 +2539,23 @@ mod tests {
             let decoded = Bootstrap::from_env_safe_string(&env_str).expect("decode bootstrap");
             match &decoded {
                 Bootstrap::Host { config, .. } => {
+                    let cfg = config.as_ref().expect("expected Some(attrs)");
+                    assert_eq!(cfg[MESH_TAIL_LOG_LINES], 123);
+                    assert!(!cfg[MESH_BOOTSTRAP_ENABLE_PDEATHSIG]);
+                }
+                other => panic!("unexpected variant after roundtrip: {:?}", other),
+            }
+        }
+
+        // V0ProcMesh case
+        {
+            let original = Bootstrap::V0ProcMesh {
+                config: Some(attrs.clone()),
+            };
+            let env_str = original.to_env_safe_string().expect("encode bootstrap");
+            let decoded = Bootstrap::from_env_safe_string(&env_str).expect("decode bootstrap");
+            match &decoded {
+                Bootstrap::V0ProcMesh { config } => {
                     let cfg = config.as_ref().expect("expected Some(attrs)");
                     assert_eq!(cfg[MESH_TAIL_LOG_LINES], 123);
                     assert!(!cfg[MESH_BOOTSTRAP_ENABLE_PDEATHSIG]);

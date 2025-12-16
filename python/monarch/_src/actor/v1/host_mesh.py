@@ -364,6 +364,21 @@ class HostMesh(MeshTrait):
         return Future(coro=task())
 
 
+def fake_in_process_host() -> "HostMesh":
+    """
+    Create a host mesh for testing and development using a local allocator.
+
+    Returns:
+        HostMesh: A host mesh configured with local allocation for in-process use.
+    """
+    return HostMesh.allocate_nonblocking(
+        "fake_host",
+        Extent([], []),
+        LocalAllocator(),
+        bootstrap_cmd=_bootstrap_cmd(),
+    )
+
+
 def hosts_from_config(name: str) -> HostMesh:
     """
     Get the host mesh 'name' from the monarch configuration for the project.

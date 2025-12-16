@@ -279,7 +279,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
         let host_mesh_name = hyperactor_mesh::v1::Name::new_reserved("local").unwrap();
-        let host_mesh = HostMeshRef::from_host_agents(host_mesh_name, vec![host_mesh_agent.bind()])
+        let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
         // We require a temporary instance to make a call to the host/proc agent.

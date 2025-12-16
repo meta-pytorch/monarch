@@ -26,6 +26,7 @@ from monarch._src.actor.v1 import enabled as v1_enabled
 from monarch._src.actor.v1.host_mesh import (
     _bootstrap_cmd,  # noqa: F401
     create_local_host_mesh as create_local_host_mesh_v1,
+    fake_in_process_host as fake_in_process_host_v1,
     host_mesh_from_alloc as host_mesh_from_alloc_v1,
     HostMesh as HostMeshV1,
     hosts_from_config as hosts_from_config_v1,
@@ -214,7 +215,7 @@ if v1_enabled or TYPE_CHECKING:
     this_host = this_host_v1
     this_proc = this_proc_v1
     create_local_host_mesh = create_local_host_mesh_v1
-    fake_in_process_host = this_host_v1
+    fake_in_process_host = fake_in_process_host_v1
     HostMesh = HostMeshV1
     hosts_from_config = hosts_from_config_v1
     host_mesh_from_alloc = host_mesh_from_alloc_v1

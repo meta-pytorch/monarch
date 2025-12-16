@@ -983,7 +983,6 @@ pub enum LogForwardMessage {
 }
 
 /// A log forwarder that receives the log from its parent process and forward it back to the client
-#[derive(Debug)]
 #[hyperactor::export(
     spawn = true,
     handlers = [LogForwardMessage {cast = true}],

@@ -199,7 +199,15 @@ pub fn log_file_path(
     env: env::Env,
     suffix: Option<&str>,
 ) -> Result<(String, String), anyhow::Error> {
-    let suffix = suffix.map(|s| format!("_{}", s)).unwrap_or_default();
+    let suffix = suffix
+        .map(|s| {
+            if s.is_empty() {
+                String::new()
+            } else {
+                format!("_{}", s)
+            }
+        })
+        .unwrap_or_default();
     match env {
         env::Env::Local | env::Env::MastEmulator => {
             let username = if whoami::username().is_empty() {

@@ -13,7 +13,6 @@ use super::*;
 /// A [`DurableMailboxSender`] is a [`MailboxSender`] that writes messages to a write-ahead log
 /// before the receiver consume any of them. It allows the receiver to recover from crashes by
 /// replaying the log. It supports any implementation of [`MailboxSender`].
-#[derive(Debug)]
 struct DurableMailboxSender(Buffer<MessageEnvelope>);
 
 impl DurableMailboxSender {
@@ -133,7 +132,7 @@ pub mod log {
     /// crash without requesting resending the messages. The log is append-only and the messages are
     /// persisted in order with sequence ids.
     #[async_trait]
-    pub trait MessageLog<M: RemoteMessage>: Sync + Send + Debug {
+    pub trait MessageLog<M: RemoteMessage>: Sync + Send {
         /// The type of the stream returned from read operations on this log.
         type Stream<'a>: Stream<Item = Result<(SeqId, M), MessageLogError>> + Send
         where
@@ -177,7 +176,7 @@ pub mod test_utils {
     use super::*;
 
     /// An in-memory log for testing.
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     pub struct TestLog<M: RemoteMessage> {
         queue: Arc<Mutex<VecDeque<(SeqId, M)>>>,
         current_seq_id: Arc<Mutex<SeqId>>,

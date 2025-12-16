@@ -760,6 +760,15 @@ impl HostMeshRef {
         })
     }
 
+    /// Create a unit HostMeshRef from a host mesh agent.
+    pub fn from_host_agent(name: Name, agent: ActorRef<HostMeshAgent>) -> v1::Result<Self> {
+        Ok(Self {
+            name,
+            region: Extent::unity().into(),
+            ranks: Arc::new(vec![HostRef::try_from(agent)?]),
+        })
+    }
+
     /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
     /// of the procs to spawn on each host.
     ///

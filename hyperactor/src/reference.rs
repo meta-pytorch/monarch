@@ -738,7 +738,7 @@ impl FromStr for ActorId {
 }
 
 /// ActorRefs are typed references to actors.
-#[derive(Debug, Named)]
+#[derive(Named)]
 pub struct ActorRef<A: Referable> {
     pub(crate) actor_id: ActorId,
     // fn() -> A so that the struct remains Send
@@ -834,6 +834,16 @@ impl<'de, A: Referable> Deserialize<'de> for ActorRef<A> {
             actor_id,
             phantom: PhantomData,
         })
+    }
+}
+
+// Implement Debug manually, without requiring A: Debug
+impl<A: Referable> fmt::Debug for ActorRef<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActorRef")
+            .field("actor_id", &self.actor_id)
+            .field("type", &std::any::type_name::<A>())
+            .finish()
     }
 }
 

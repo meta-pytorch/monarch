@@ -132,7 +132,6 @@ impl TryFrom<Run> for (Range<usize>, u32) {
 /// directly; all iteration and slicing APIs present a dense logical
 /// view.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)] // only if T implements
-#[serde(tag = "rep", rename_all = "snake_case")]
 enum Rep<T> {
     /// Fully expanded representation: one element per rank.
     ///
@@ -1705,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dense_round_trip() {
+    fn test_dense_round_trip_json() {
         // Build a simple dense mesh of 5 integers.
         let region: Region = extent!(x = 5).into();
         let dense = ValueMesh::new(region.clone(), vec![1, 2, 3, 4, 5]).unwrap();
@@ -1718,16 +1717,27 @@ mod tests {
         // Dense meshes should stay dense on the wire: check the
         // tagged variant.
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        // enum tag is nested: {"rep": {"rep":"dense", ...}}
-        let tag = v
-            .get("rep")
-            .and_then(|o| o.get("rep"))
-            .and_then(|s| s.as_str());
-        assert_eq!(tag, Some("dense"));
+        // enum tag is nested: {"rep": {"Dense":{...}}
+        let tag = v.get("rep").and_then(|o| o.get("Dense"));
+        assert!(tag.is_some(), "json is {}", json);
     }
 
     #[test]
-    fn test_compressed_round_trip() {
+    fn test_dense_round_trip_bincode() {
+        // Build a simple dense mesh of 5 integers.
+        let region: Region = extent!(x = 5).into();
+        let dense = ValueMesh::new(region.clone(), vec![1, 2, 3, 4, 5]).unwrap();
+
+        let encoded = bincode::serialize(&dense).unwrap();
+        let restored: ValueMesh<i32> = bincode::deserialize(&encoded).unwrap();
+
+        assert_eq!(dense, restored);
+        // Dense meshes should stay dense on the wire.
+        assert!(matches!(restored.rep, Rep::Dense { .. }));
+    }
+
+    #[test]
+    fn test_compressed_round_trip_json() {
         // Build a dense mesh, compress it, and verify it stays
         // compressed on the wire.
         let region: Region = extent!(x = 10).into();
@@ -1742,12 +1752,26 @@ mod tests {
 
         // Compressed meshes should stay compressed on the wire.
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        // enum tag is nested: {"rep": {"rep":"compressed", ...}}
-        let tag = v
-            .get("rep")
-            .and_then(|o| o.get("rep"))
-            .and_then(|s| s.as_str());
-        assert_eq!(tag, Some("compressed"));
+        // enum tag is nested: {"rep": {"Compressed": {...}}
+        let tag = v.get("rep").and_then(|o| o.get("Compressed"));
+        assert!(tag.is_some(), "json is {}", json);
+    }
+
+    #[test]
+    fn test_compressed_round_trip_bincode() {
+        // Build a dense mesh, compress it, and verify it stays
+        // compressed on the wire.
+        let region: Region = extent!(x = 10).into();
+        let mut mesh = ValueMesh::new(region.clone(), vec![1, 1, 1, 2, 2, 3, 3, 3, 3, 3]).unwrap();
+        mesh.compress_adjacent_in_place();
+
+        let encoded = bincode::serialize(&mesh).unwrap();
+        let restored: ValueMesh<i32> = bincode::deserialize(&encoded).unwrap();
+
+        // Logical equality preserved.
+        assert_eq!(mesh, restored);
+        // Compressed meshes should stay compressed on the wire.
+        assert!(matches!(restored.rep, Rep::Compressed { .. }));
     }
 
     #[test]
