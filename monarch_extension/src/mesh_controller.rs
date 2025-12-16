@@ -47,7 +47,7 @@ use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use hyperactor_mesh_macros::sel;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
-use monarch_hyperactor::buffers::FrozenBuffer;
+use monarch_hyperactor::buffers::Buffer;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -567,10 +567,10 @@ impl History {
             let exe = remote_exception
                 .call1((exception.backtrace, traceback, rank))
                 .unwrap();
-            let data: FrozenBuffer = pickle.call1((exe,)).unwrap().extract().unwrap();
+            let mut data: Buffer = pickle.call1((exe,)).unwrap().extract().unwrap();
             PythonMessage::new_from_buf(
                 PythonMessageKind::Exception { rank: Some(rank) },
-                data.inner,
+                data.take_part(),
             )
         }));
 

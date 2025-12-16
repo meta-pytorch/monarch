@@ -12,7 +12,6 @@ use std::ffi::c_int;
 use std::ffi::c_void;
 
 use bytes::Buf;
-use bytes::BytesMut;
 use hyperactor::Named;
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
@@ -20,78 +19,84 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyBytesMethods;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_multipart::Part;
+
+/// Wrapper that keeps Py<PyBytes> alive while allowing zero-copy access to its memory
+struct KeepPyBytesAlive {
+    _py_bytes: Py<PyBytes>,
+    ptr: *const u8,
+    len: usize,
+}
+
+impl KeepPyBytesAlive {
+    fn new(py_bytes: Py<PyBytes>) -> Self {
+        let (ptr, len) = Python::with_gil(|py| {
+            let bytes_ref = py_bytes.as_bytes(py);
+            (bytes_ref.as_ptr(), bytes_ref.len())
+        });
+        Self {
+            _py_bytes: py_bytes,
+            ptr,
+            len,
+        }
+    }
+}
+
+impl AsRef<[u8]> for KeepPyBytesAlive {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: ptr is valid as long as py_bytes is alive (kept alive by Py<PyBytes>)
+        // Python won't free the memory until the Py<PyBytes> refcount reaches 0
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+// SAFETY: Py<PyBytes> is Send/Sync for immutable bytes
+unsafe impl Send for KeepPyBytesAlive {}
+// SAFETY: Py<PyBytes> is Send/Sync for immutable bytes
+unsafe impl Sync for KeepPyBytesAlive {}
 
 /// A mutable buffer for reading and writing bytes data.
 ///
-/// The `Buffer` struct provides an interface for accumulating byte data that can be written to
-/// and then frozen into an immutable `FrozenBuffer` for reading. It uses the `bytes::BytesMut`
-/// internally for efficient memory management.
+/// The `Buffer` struct provides an interface for accumulating byte data from Python `bytes` objects
+/// that can be converted into a `Part` for zero-copy multipart message serialization.
+/// It accumulates references to Python bytes objects without copying.
 ///
 /// # Examples
 ///
 /// ```python
 /// from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 ///
-/// # Create a new buffer with default capacity (4096 bytes)
+/// # Create a new buffer
 /// buffer = Buffer()
 ///
 /// # Write some data
 /// data = b"Hello, World!"
 /// bytes_written = buffer.write(data)
 ///
-/// # Check length
-/// print(len(buffer))  # 13
-///
-/// # Freeze for reading
-/// frozen = buffer.freeze()
-/// content = frozen.read()
+/// # Use in multipart serialization
+/// # The buffer accumulates multiple writes as separate fragments
 /// ```
 #[pyclass(subclass, module = "monarch._rust_bindings.monarch_hyperactor.buffers")]
-#[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
+#[derive(Clone, Default)]
 pub struct Buffer {
-    pub(crate) inner: bytes::BytesMut,
-}
-
-impl Buffer {
-    /// Consumes the Buffer and returns the underlying BytesMut.
-    /// This allows zero-copy access to the raw buffer data.
-    pub fn into_inner(self) -> bytes::BytesMut {
-        self.inner
-    }
-}
-
-impl<T> From<T> for Buffer
-where
-    T: Into<BytesMut>,
-{
-    fn from(value: T) -> Self {
-        Self {
-            inner: value.into(),
-        }
-    }
+    inner: Vec<Py<PyBytes>>,
 }
 
 #[pymethods]
 impl Buffer {
     /// Creates a new empty buffer with specified initial capacity.
     ///
-    /// # Arguments
-    /// * `size` - Initial capacity in bytes (default: 4096)
     ///
     /// # Returns
     /// A new empty `Buffer` instance with the specified capacity.
     #[new]
-    #[pyo3(signature=(size=4096))]
-    fn new(size: usize) -> Self {
-        Self {
-            inner: bytes::BytesMut::with_capacity(size),
-        }
+    fn new() -> Self {
+        Self { inner: Vec::new() }
     }
 
     /// Writes bytes data to the buffer.
     ///
-    /// Appends the provided bytes to the end of the buffer, extending its capacity
-    /// if necessary.
+    /// This keeps a reference to the Python bytes object without copying.
     ///
     /// # Arguments
     /// * `buff` - The bytes object to write to the buffer
@@ -100,23 +105,53 @@ impl Buffer {
     /// The number of bytes written (always equal to the length of input bytes)
     fn write<'py>(&mut self, buff: &Bound<'py, PyBytes>) -> usize {
         let bytes_written = buff.as_bytes().len();
-        self.inner.extend_from_slice(buff.as_bytes());
+        self.inner.push(buff.clone().unbind());
         bytes_written
     }
 
-    /// Freezes this buffer into an immutable `FrozenBuffer`.
+    /// Returns the total number of bytes in the buffer.
     ///
-    /// This operation consumes the mutable buffer's contents, transferring ownership
-    /// to a new `FrozenBuffer` that can only be read from. The original buffer
-    /// becomes empty after this operation.
+    /// This iterates over all accumulated PyBytes fragments and sums their lengths.
     ///
     /// # Returns
-    /// A new `FrozenBuffer` containing all the data that was in this buffer
+    /// The total number of bytes stored in the buffer
+    fn __len__(&self) -> usize {
+        Python::with_gil(|py| self.inner.iter().map(|b| b.as_bytes(py).len()).sum())
+    }
+
+    /// Freezes the buffer, converting it into an immutable `FrozenBuffer` for reading.
+    ///
+    /// This consumes all accumulated PyBytes and converts them into a contiguous bytes buffer.
+    /// After freezing, the original buffer is cleared.
+    ///
+    /// This operation should avoided in hot paths as it creates a copy in order to concatenate
+    /// bytes that are fragmented in memory into a single series of contiguous bytes
+    ///
+    /// # Returns
+    /// A new `FrozenBuffer` containing all the bytes that were written to this buffer
     fn freeze(&mut self) -> FrozenBuffer {
-        let buff = std::mem::take(&mut self.inner);
+        let part = self.take_part();
         FrozenBuffer {
-            inner: buff.freeze(),
+            inner: part.into_bytes(),
         }
+    }
+}
+
+impl Buffer {
+    /// Converts accumulated `PyBytes` objects to [`Part`] for zero-copy multipart messages.
+    /// After calling, the buffer is empty.
+    pub fn take_part(&mut self) -> Part {
+        let inner = std::mem::take(&mut self.inner);
+
+        Part::from_fragments(
+            inner
+                .into_iter()
+                .map(|py_bytes| {
+                    let wrapper = KeepPyBytesAlive::new(py_bytes);
+                    bytes::Bytes::from_owner(wrapper)
+                })
+                .collect::<Vec<_>>(),
+        )
     }
 }
 
