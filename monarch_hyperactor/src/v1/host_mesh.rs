@@ -9,11 +9,20 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
+use hyperactor::Instance;
+use hyperactor::Proc;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
+use hyperactor_mesh::bootstrap::host;
+use hyperactor_mesh::proc_mesh::default_bind_spec;
+use hyperactor_mesh::proc_mesh::mesh_agent::GetProcClient;
 use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::v1::ProcMeshRef;
 use hyperactor_mesh::v1::host_mesh::HostMesh;
 use hyperactor_mesh::v1::host_mesh::HostMeshRef;
+use hyperactor_mesh::v1::host_mesh::mesh_agent::GetLocalProcClient;
+use hyperactor_mesh::v1::proc_mesh::ProcRef;
 use ndslice::View;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
@@ -24,6 +33,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyType;
 
+use crate::actor::PythonActor;
 use crate::actor::to_py_error;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
@@ -240,6 +250,76 @@ impl PyHostMeshRefImpl {
     }
 }
 
+/// Static storage for the root client instance when using host-based bootstrap.
+static ROOT_CLIENT_INSTANCE_FOR_HOST: OnceLock<Instance<PythonActor>> = OnceLock::new();
+
+/// Bootstrap the client host and root client actor.
+///
+/// This creates a proper Host with BootstrapProcManager, spawns the root client
+/// actor on the Host's local_proc.
+///
+/// Returns a tuple of (HostMesh, ProcMesh, PyInstance) where:
+/// - PyHostMesh: the bootstrapped (local) host mesh; and
+/// - PyProcMesh: the local ProcMesh on this HostMesh; and
+/// - PyInstance: the root client actor instance, on the ProcMesh.
+///
+/// The HostMesh is served on the default transport.
+///
+/// This should be called only once, at process initialization
+#[pyfunction]
+fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPythonTask> {
+    let bootstrap_cmd = match bootstrap_cmd {
+        Some(cmd) => cmd.to_rust(),
+        None => BootstrapCommand::current().map_err(|e| PyException::new_err(e.to_string()))?,
+    };
+
+    PyPythonTask::new(async move {
+        let host_mesh_agent = host(default_bind_spec().any(), Some(bootstrap_cmd), None)
+            .await
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        let host_mesh_name = hyperactor_mesh::v1::Name::new_reserved("local").unwrap();
+        let host_mesh = HostMeshRef::from_host_agents(host_mesh_name, vec![host_mesh_agent.bind()])
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        // We require a temporary instance to make a call to the host/proc agent.
+        let temp_proc = Proc::local();
+        let (temp_instance, _) = temp_proc
+            .instance("temp")
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        let local_proc_agent = host_mesh_agent
+            .get_local_proc(&temp_instance)
+            .await
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        let proc_mesh_name = hyperactor_mesh::v1::Name::new_reserved("local").unwrap();
+        let proc_mesh = ProcMeshRef::new_singleton(
+            proc_mesh_name,
+            ProcRef::new(
+                local_proc_agent.actor_id().proc_id().clone(),
+                0,
+                local_proc_agent.bind(),
+            ),
+        );
+
+        let local_proc = local_proc_agent
+            .get_proc(&temp_instance)
+            .await
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        let (instance, _handle) = Python::with_gil(|py| {
+            PythonActor::bootstrap_client_inner(py, local_proc, &ROOT_CLIENT_INSTANCE_FOR_HOST)
+        });
+
+        Ok((
+            PyHostMesh::new_ref(host_mesh),
+            PyProcMesh::new_ref(proc_mesh),
+            PyInstance::from(instance),
+        ))
+    })
+}
+
 #[pyfunction]
 fn py_host_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PyHostMesh> {
     let r: PyResult<HostMeshRef> = bincode::deserialize(bytes.as_bytes())
@@ -254,6 +334,14 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
         "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh",
     )?;
     hyperactor_mod.add_function(f)?;
+
+    let f2 = wrap_pyfunction!(bootstrap_host, hyperactor_mod)?;
+    f2.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh",
+    )?;
+    hyperactor_mod.add_function(f2)?;
+
     hyperactor_mod.add_class::<PyHostMesh>()?;
     hyperactor_mod.add_class::<PyBootstrapCommand>()?;
     Ok(())

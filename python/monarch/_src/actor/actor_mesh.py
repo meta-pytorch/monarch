@@ -53,7 +53,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
@@ -264,6 +264,9 @@ class Context:
     @staticmethod
     def _root_client_context() -> "Context": ...
 
+    @staticmethod
+    def _from_instance(instance: Instance) -> "Context": ...
+
 
 _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
@@ -307,9 +310,12 @@ def _init_context_log_handler() -> None:
     logging.Logger.addHandler = _patched_addHandler
 
 
-def _set_context(c: Context) -> None:
+def _set_context(c: Context) -> contextvars.Token[Context]:
     _init_context_log_handler()
-    _context.set(c)
+    return _context.set(c)
+
+def _reset_context(c: contextvars.Token[Context]):
+    _context.reset(c)
 
 
 T = TypeVar("T")
@@ -331,15 +337,34 @@ class _Lazy(Generic[T]):
         return self._val
 
 
-def _init_this_host_for_fake_in_process_host() -> "HostMesh":
-    from monarch._src.actor.host_mesh import create_local_host_mesh
+def _init_client_context() -> Context:
+    """
+    Create a client context that bootstraps an actor instance running on a real
+    local proc mesh on a real local host mesh.
+    """
+    from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import bootstrap_host
+    from monarch._src.actor.host_mesh import HostMesh
+    from monarch._src.actor.proc_mesh import ProcMesh
+    from monarch._src.actor.v1.host_mesh import _bootstrap_cmd
 
-    return create_local_host_mesh()
+    rust_host_mesh, rust_proc_mesh, py_instance = bootstrap_host(
+        _bootstrap_cmd()
+    ).block_on()
+
+    ctx = Context._from_instance(py_instance)
+    # Set the context here to avoid recursive context creation:
+    token = _set_context(ctx)
+    try:
+        py_host_mesh = HostMesh._from_rust(rust_host_mesh)
+        py_proc_mesh = ProcMesh._from_rust(rust_proc_mesh, py_host_mesh)
+    finally:
+        _reset_context(token)
+
+    ctx.actor_instance.proc_mesh = py_proc_mesh
+    return ctx
 
 
-_this_host_for_fake_in_process_host: _Lazy["HostMesh"] = _Lazy(
-    _init_this_host_for_fake_in_process_host
-)
+_client_context: _Lazy[Context] = _Lazy(_init_client_context)
 
 
 def shutdown_context() -> "Future[None]":
@@ -355,9 +380,10 @@ def shutdown_context() -> "Future[None]":
     """
     from monarch._src.actor.future import Future
 
-    local_host = _this_host_for_fake_in_process_host.try_get()
-    if local_host is not None:
-        return local_host.shutdown()
+    client_host_ctx = _client_context.try_get()
+    if client_host_ctx is not None:
+        host_mesh = client_host_ctx.actor_instance.proc_mesh.host_mesh
+        return host_mesh.shutdown()
 
     # Nothing to shutdown - return a completed future
     async def noop() -> None:
@@ -366,51 +392,30 @@ def shutdown_context() -> "Future[None]":
     return Future(coro=noop())
 
 
-def _init_root_proc_mesh() -> "ProcMesh":
-    from monarch._src.actor.host_mesh import fake_in_process_host
-
-    return fake_in_process_host()._spawn_nonblocking(
-        name="root_client_proc_mesh",
-        per_host=Extent([], []),
-        setup=None,
-        _attach_controller_controller=False,  # can't attach the controller controller because it doesn't exist yet
-    )
-
-
-_root_proc_mesh: _Lazy["ProcMesh"] = _Lazy(_init_root_proc_mesh)
-
-
 def context() -> Context:
     c = _context.get(None)
     if c is None:
-        c = Context._root_client_context()
-        _set_context(c)
-
-        from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
         from monarch._src.actor.v1 import enabled as v1_enabled
 
         if not v1_enabled:
+            from monarch._src.actor.host_mesh import create_local_host_mesh
+
+            c = Context._root_client_context()
+            _set_context(c)
             c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
                 _get_controller_controller()
             )
 
             c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
         else:
-            c.actor_instance.proc_mesh = _root_proc_mesh.get()
-
-            # This needs to be initialized when the root client context is initialized.
-            # Otherwise, it will be initialized inside an actor endpoint running inside
-            # a fake in-process host. That will fail with an "unroutable mesh" error,
-            # because the hyperactor Proc being used to spawn the local host mesh
-            # won't have the correct type of forwarder.
-            _this_host_for_fake_in_process_host.get()
-
-            c.actor_instance._controller_controller = _get_controller_controller()[1]
+            c = _client_context.get()
+            _set_context(c)
+            _, c.actor_instance._controller_controller = _get_controller_controller()
     return c
 
 
-_transport: Optional[ChannelTransport] = None
+_transport: Optional[BindSpec] = None
 _transport_lock = threading.Lock()
 
 
@@ -424,17 +429,33 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
     Currently only one transport type may be enabled at one time.
     In the future we may allow multiple to be enabled.
 
+    Supported transport values:
+        - ChannelTransport enum: ChannelTransport.Unix, ChannelTransport.TcpWithHostname, etc.
+        - string short cuts for the ChannelTransport enum:
+            - "tcp": ChannelTransport.TcpWithHostname
+            - "ipc": ChannelTransport.Unix
+            - "metatls": ChannelTransport.MetaTlsWithIpV6
+            - "metatls-hostname": ChannelTransport.MetaTlsWithHostname
+        - ZMQ-style URL format string for explicit address, e.g.:
+            - "tcp://127.0.0.1:8080"
+
     For Meta usage, use metatls-hostname
     """
     if isinstance(transport, str):
-        transport = {
+        # Handle string shortcuts for the ChannelTransport enum,
+        resolved = {
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
             "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
         }.get(transport)
-        if transport is None:
-            raise ValueError(f"unknown transport: {transport}")
+        if resolved is not None:
+            transport_config = BindSpec(resolved)
+        else:
+            transport_config = BindSpec(transport)
+    else:
+        # ChannelTransport enum
+        transport_config = BindSpec(transport)
 
     if _context.get(None) is not None:
         raise RuntimeError(
@@ -445,14 +466,16 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
 
     global _transport
     with _transport_lock:
-        if _transport is not None and _transport != transport:
+        if _transport is not None and _transport != transport_config:
             raise RuntimeError(
                 f"Only one transport type may be enabled at one time. "
                 f"Currently enabled transport type is `{_transport}`. "
-                f"Attempted to enable transport type `{transport}`."
+                f"Attempted to enable transport type `{transport_config}`."
             )
-        _transport = transport
-    configure(default_transport=transport)
+        _transport = transport_config
+    # pyre-ignore[6]: BindSpec is accepted by configure. We just do not expose
+    # it in the method's signature since BindSpec is not a public type.
+    configure(default_transport=transport_config)
 
 
 @dataclass

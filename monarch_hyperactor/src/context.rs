@@ -126,6 +126,17 @@ impl PyContext {
             rank: Extent::unity().point_of_rank(0).unwrap(),
         })
     }
+
+    /// Create a context from an existing instance.
+    /// This is used when the root client was bootstrapped via bootstrap_host()
+    /// instead of the default bootstrap_client().
+    #[staticmethod]
+    fn _from_instance(py: Python<'_>, instance: PyInstance) -> PyResult<PyContext> {
+        Ok(PyContext {
+            instance: instance.into_pyobject(py)?.into(),
+            rank: Extent::unity().point_of_rank(0).unwrap(),
+        })
+    }
 }
 
 impl PyContext {

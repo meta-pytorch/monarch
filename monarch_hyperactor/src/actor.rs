@@ -27,7 +27,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
-use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -40,7 +39,7 @@ use hyperactor_config::Attrs;
 use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
 use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::proc_mesh::default_transport;
+use hyperactor_mesh::proc_mesh::default_bind_spec;
 use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::SupervisionFailureMessage;
@@ -521,18 +520,33 @@ impl PythonActor {
         })
     }
 
+    /// Bootstrap the root client actor, creating a new proc for it.
+    /// This is the legacy entry point that creates its own proc.
     pub(crate) fn bootstrap_client(py: Python<'_>) -> (&'static Instance<Self>, ActorHandle<Self>) {
         static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
         let client_proc = Proc::direct_with_default(
-            ChannelAddr::any(default_transport()),
+            default_bind_spec().any(),
             "mesh_root_client_proc".into(),
             router::global().clone().boxed(),
         )
         .unwrap();
 
+        Self::bootstrap_client_inner(py, client_proc, &ROOT_CLIENT_INSTANCE)
+    }
+
+    /// Bootstrap the client proc, storing the root client instance in given static.
+    /// This is passed in because we require storage, as the instance is shared.
+    /// This can be simplified when we remove v0.
+    pub(crate) fn bootstrap_client_inner(
+        py: Python<'_>,
+        client_proc: Proc,
+        root_client_instance: &'static OnceLock<Instance<PythonActor>>,
+    ) -> (&'static Instance<Self>, ActorHandle<Self>) {
         // Make this proc reachable through the global router, so that we can use the
         // same client in both direct-addressed and ranked-addressed modes.
+        //
+        // DEPRECATE after v0 removal
         router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
 
         let actor_mesh_mod = py
@@ -558,7 +572,7 @@ impl PythonActor {
             )
             .expect("root instance create");
 
-        ROOT_CLIENT_INSTANCE
+        root_client_instance
             .set(client)
             .map_err(|_| "already initialized root client instance")
             .unwrap();
@@ -578,7 +592,7 @@ impl PythonActor {
             )
             .expect("initialize root client");
 
-        let instance = ROOT_CLIENT_INSTANCE.get().unwrap();
+        let instance = root_client_instance.get().unwrap();
 
         get_tokio_runtime().spawn(async move {
             let mut signal_rx = signal_rx;
@@ -627,7 +641,7 @@ impl PythonActor {
             instance.proc().handle_supervision_event(event);
         });
 
-        (ROOT_CLIENT_INSTANCE.get().unwrap(), handle)
+        (root_client_instance.get().unwrap(), handle)
     }
 }
 
