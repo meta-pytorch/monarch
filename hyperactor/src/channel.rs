@@ -445,6 +445,65 @@ impl AttrValue for ChannelTransport {
     }
 }
 
+/// Specifies how to bind a channel server.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+pub enum BindSpec {
+    /// Bind to any available address for the given transport.
+    Any(ChannelTransport),
+
+    /// Bind to a specific channel address.
+    Addr(ChannelAddr),
+}
+
+impl BindSpec {
+    /// Return an "any" address for this bind spec.
+    pub fn any(&self) -> ChannelAddr {
+        match self {
+            BindSpec::Any(transport) => ChannelAddr::any(transport.clone()),
+            BindSpec::Addr(addr) => addr.clone(),
+        }
+    }
+}
+
+impl From<ChannelTransport> for BindSpec {
+    fn from(transport: ChannelTransport) -> Self {
+        BindSpec::Any(transport)
+    }
+}
+
+impl From<ChannelAddr> for BindSpec {
+    fn from(addr: ChannelAddr) -> Self {
+        BindSpec::Addr(addr)
+    }
+}
+
+impl fmt::Display for BindSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Any(transport) => write!(f, "any({})", transport),
+            Self::Addr(addr) => write!(f, "addr({})", addr),
+        }
+    }
+}
+
+impl AttrValue for BindSpec {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(s: &str) -> Result<Self, anyhow::Error> {
+        if let Some(inner) = s.strip_prefix("addr(").and_then(|s| s.strip_suffix(")")) {
+            let addr = ChannelAddr::from_str(inner)?;
+            Ok(BindSpec::Addr(addr))
+        } else if let Some(inner) = s.strip_prefix("any(").and_then(|s| s.strip_suffix(")")) {
+            let transport = ChannelTransport::from_str(inner)?;
+            Ok(BindSpec::Any(transport))
+        } else {
+            Err(anyhow::anyhow!("invalid bind spec: {}", s))
+        }
+    }
+}
+
 /// The type of (TCP) hostnames.
 pub type Hostname = String;
 

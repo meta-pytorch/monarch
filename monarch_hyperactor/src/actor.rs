@@ -27,7 +27,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
-use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -40,7 +39,7 @@ use hyperactor_config::Attrs;
 use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
 use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::proc_mesh::default_transport;
+use hyperactor_mesh::proc_mesh::default_bind_spec;
 use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::SupervisionFailureMessage;
@@ -525,7 +524,7 @@ impl PythonActor {
         static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
         let client_proc = Proc::direct_with_default(
-            ChannelAddr::any(default_transport()),
+            default_bind_spec().any(),
             "mesh_root_client_proc".into(),
             router::global().clone().boxed(),
         )
