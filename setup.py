@@ -267,7 +267,9 @@ rust_extensions.append(
         binding=Binding.PyO3,
         path="monarch_extension/Cargo.toml",
         debug=False,
-        features=["tensor_engine"] if USE_TENSOR_ENGINE else [],
+        features=["extension-module", "tensor_engine"]
+        if USE_TENSOR_ENGINE
+        else ["extension-module"],
         args=[] if USE_TENSOR_ENGINE else ["--no-default-features"],
     )
 )

@@ -25,3 +25,4 @@ pyo3-build-config = "0.24.2"
 [features]
 cuda = []
 default = ["cuda"]
+extension-module = ["monarch_types/extension-module", "pyo3/extension-module", "torch-sys2/extension-module"]
