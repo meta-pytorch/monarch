@@ -23,16 +23,15 @@ fn main() {
     let python_config = pyo3_build_config::get();
 
     // Add Python library directory to search path
+    // This allows the linker to find libpython when needed by test binaries
     if let Some(lib_dir) = &python_config.lib_dir {
         println!("cargo::rustc-link-search=native={}", lib_dir);
         python_lib_dir = Some(lib_dir.clone());
     }
 
-    // On some platforms, we may need to explicitly link against Python
-    // PyO3 handles the complexity of determining when this is needed
-    if let Some(lib_name) = &python_config.lib_name {
-        println!("cargo::rustc-link-lib={}", lib_name);
-    }
+    // Do NOT link against libpython in the build script!
+    // Library crates for Python extensions should not have DT_NEEDED for libpython.
+    // Test binaries that need libpython use #[cfg(test)] #[link] in lib.rs instead.
 
     // Statically link libstdc++ to avoid runtime dependency on system libstdc++
     build_utils::link_libstdcpp_static();
