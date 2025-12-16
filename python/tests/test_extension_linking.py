@@ -78,7 +78,7 @@ class TestExtensionLinking(unittest.TestCase):
             f"Expected to find libc.so in dependencies, but got: {needed_libs}",
         )
 
-        print(f"✓ Extension correctly built without libpython dependency")
+        print("✓ Extension correctly built without libpython dependency")
         print(f"  Extension: {extension_path}")
         print(f"  Dependencies: {needed_libs}")
 
