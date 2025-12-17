@@ -559,6 +559,7 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor::context;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
@@ -585,6 +586,7 @@ mod tests {
     use crate::alloc::LocalAllocator;
     use crate::proc_mesh::SharedSpawnable;
     use crate::v1;
+    use crate::v1::testing;
 
     struct Edge<T> {
         from: T,
@@ -840,8 +842,8 @@ mod tests {
             forward_port: tx.bind(),
         };
         let instance = crate::v1::testing::instance().await;
-        let actor_mesh = Arc::clone(&proc_mesh)
-            .spawn::<TestActor>(&instance, dest_actor_name, &params)
+        let actor_mesh: RootActorMesh<TestActor> = Arc::clone(&proc_mesh)
+            .spawn(&instance, dest_actor_name, &params)
             .await
             .unwrap();
 
@@ -906,7 +908,7 @@ mod tests {
 
     async fn execute_cast_and_reply(
         ranks: Vec<ActorRef<TestActor>>,
-        instance: &Instance<()>,
+        instance: &impl context::Actor,
         mut reply1_rx: PortReceiver<u64>,
         mut reply2_rx: PortReceiver<MyReply>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
@@ -1002,7 +1004,7 @@ mod tests {
 
     async fn execute_cast_and_accum(
         ranks: Vec<ActorRef<TestActor>>,
-        instance: &Instance<()>,
+        instance: &impl context::Actor,
         mut reply1_rx: PortReceiver<u64>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     ) {
@@ -1046,7 +1048,7 @@ mod tests {
     }
 
     struct MeshSetupV1 {
-        instance: &'static Instance<()>,
+        instance: &'static Instance<testing::TestRootClient>,
         actor_mesh_ref: v1::ActorMeshRef<TestActor>,
         reply1_rx: PortReceiver<u64>,
         reply2_rx: PortReceiver<MyReply>,
@@ -1079,7 +1081,11 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_mesh = proc_mesh.spawn(&instance, "test", &params).await.unwrap();
+        let actor_name = v1::Name::new("test").expect("valid test name");
+        let actor_mesh = proc_mesh
+            .spawn_with_name(&instance, actor_name, &params)
+            .await
+            .unwrap();
         let actor_mesh_ref = actor_mesh.deref().clone();
 
         let (reply_port_handle0, _) = open_port::<String>(instance);

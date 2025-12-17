@@ -748,6 +748,27 @@ pub fn setup_cpp_static_libs() -> CppStaticLibsConfig {
     config
 }
 
+/// Set rpath for Python library directory
+///
+/// This emits cargo directives to add the Python library directory to the rpath,
+/// allowing binaries to find libpython at runtime. This is safe to call
+/// unconditionally - when building extension modules with pyo3's extension-module
+/// feature, the rpath won't cause issues since libpython won't be linked anyway.
+///
+/// Note: This function only works in OSS builds (Cargo). In BUCK builds, it's a no-op
+/// since BUCK handles library paths differently.
+pub fn set_python_rpath() {
+    // pyo3-build-config is only available in OSS builds (Cargo), not in BUCK builds
+    #[cfg(not(fbcode_build))]
+    {
+        let python_config = pyo3_build_config::get();
+
+        if let Some(lib_dir) = &python_config.lib_dir {
+            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

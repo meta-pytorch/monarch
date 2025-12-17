@@ -83,7 +83,6 @@ pub mod test_utils {
     use hyperactor::HandleClient;
     use hyperactor::Handler;
     use hyperactor::Instance;
-    use hyperactor::Proc;
     use hyperactor::RefClient;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelTransport;
@@ -95,6 +94,7 @@ pub mod test_utils {
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
+    use hyperactor_mesh::proc_mesh::global_root_client;
     use ndslice::extent;
 
     use crate::IbverbsConfig;
@@ -602,7 +602,7 @@ pub mod test_utils {
                 .await
                 .unwrap();
 
-            let (instance, _) = Proc::local().instance("test").unwrap();
+            let instance = global_root_client();
 
             let proc_mesh_1 = Box::leak(Box::new(ProcMesh::allocate(alloc_1).await.unwrap()));
             let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> = proc_mesh_1

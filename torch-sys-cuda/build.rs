@@ -52,4 +52,9 @@ fn main() {
     } else {
         println!("cargo::rustc-link-search=native={}/lib64", compute_home);
     }
+    // Set up Python rpath for runtime linking
+    build_utils::set_python_rpath();
+
+    // Statically link libstdc++ to avoid runtime dependency on system libstdc++
+    build_utils::link_libstdcpp_static();
 }

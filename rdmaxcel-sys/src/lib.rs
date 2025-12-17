@@ -16,67 +16,13 @@ mod inner {
     #![allow(unused_attributes)]
     #![allow(dead_code)] // bindgen generates many functions we may not use
     #[cfg(not(cargo))]
+    use crate::ibv_wc_flags;
+    #[cfg(not(cargo))]
     use crate::ibv_wc_opcode;
     #[cfg(not(cargo))]
     use crate::ibv_wc_status;
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
-    // Manually define ibv_wc_flags as a bitfield (bindgen can't generate it from static const)
-    // Only needed in fbcode builds - OSS/cargo builds have bindgen generate these from enums
-    #[cfg(not(cargo))]
-    #[repr(transparent)]
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-    pub struct ibv_wc_flags(pub u32);
-
-    #[cfg(not(cargo))]
-    impl ibv_wc_flags {
-        pub const IBV_WC_GRH: Self = Self(1 << 0);
-        pub const IBV_WC_WITH_IMM: Self = Self(1 << 1);
-        pub const IBV_WC_IP_CSUM_OK: Self = Self(1 << 2);
-        pub const IBV_WC_WITH_INV: Self = Self(1 << 3);
-        pub const IBV_WC_TM_SYNC_REQ: Self = Self(1 << 4);
-        pub const IBV_WC_TM_MATCH: Self = Self(1 << 5);
-        pub const IBV_WC_TM_DATA_VALID: Self = Self(1 << 6);
-    }
-
-    #[cfg(not(cargo))]
-    impl std::ops::BitAnd for ibv_wc_flags {
-        type Output = Self;
-        fn bitand(self, rhs: Self) -> Self {
-            Self(self.0 & rhs.0)
-        }
-    }
-
-    // Manually define ibv_access_flags as a bitfield (bindgen can't generate it from static const)
-    // Only needed in fbcode builds - OSS/cargo builds have bindgen generate these from enums
-    #[cfg(not(cargo))]
-    #[repr(transparent)]
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-    pub struct ibv_access_flags(pub u32);
-
-    #[cfg(not(cargo))]
-    impl ibv_access_flags {
-        pub const IBV_ACCESS_LOCAL_WRITE: Self = Self(1 << 0);
-        pub const IBV_ACCESS_REMOTE_WRITE: Self = Self(1 << 1);
-        pub const IBV_ACCESS_REMOTE_READ: Self = Self(1 << 2);
-        pub const IBV_ACCESS_REMOTE_ATOMIC: Self = Self(1 << 3);
-        pub const IBV_ACCESS_MW_BIND: Self = Self(1 << 4);
-        pub const IBV_ACCESS_ZERO_BASED: Self = Self(1 << 5);
-        pub const IBV_ACCESS_ON_DEMAND: Self = Self(1 << 6);
-        pub const IBV_ACCESS_HUGETLB: Self = Self(1 << 7);
-        pub const IBV_ACCESS_RELAXED_ORDERING: Self = Self(1 << 8);
-        pub const IBV_ACCESS_FLUSH_GLOBAL: Self = Self(1 << 9);
-        pub const IBV_ACCESS_FLUSH_PERSISTENT: Self = Self(1 << 10);
-    }
-
-    #[cfg(not(cargo))]
-    impl std::ops::BitOr for ibv_access_flags {
-        type Output = Self;
-        fn bitor(self, rhs: Self) -> Self {
-            Self(self.0 | rhs.0)
-        }
-    }
 
     #[repr(C, packed(1))]
     #[derive(Debug, Default, Clone, Copy)]

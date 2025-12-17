@@ -43,6 +43,7 @@ use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::default_transport;
 use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::router;
+use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use pyo3::IntoPyObjectExt;
@@ -63,6 +64,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
+use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
@@ -83,7 +85,6 @@ use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::signal_safe_block_on;
 use crate::supervision::MeshFailure;
-use crate::supervision::SupervisionFailureMessage;
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Serialize, Deserialize, Named)]
@@ -420,9 +421,8 @@ impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
     pub fn new<'py>(kind: PythonMessageKind, message: Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(buff) = message.extract::<Bound<'py, FrozenBuffer>>() {
-            let frozen = buff.borrow_mut();
-            return Ok(PythonMessage::new_from_buf(kind, frozen.inner.clone()));
+        if let Ok(mut buff) = message.extract::<PyRefMut<'py, Buffer>>() {
+            return Ok(PythonMessage::new_from_buf(kind, buff.take_part()));
         } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
             return Ok(PythonMessage::new_from_buf(
                 kind,

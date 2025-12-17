@@ -357,10 +357,10 @@ impl PyRdmaManager {
             PyPythonTask::new(async move {
                 // Spawns the `RdmaManagerActor` on the target proc_mesh.
                 // This allows the `RdmaController` to run on any node while real RDMA operations occur on appropriate hardware.
-                let actor_mesh = tracked_proc_mesh
+                let actor_mesh: SharedCell<RootActorMesh<RdmaManagerActor>> = tracked_proc_mesh
                     // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
                     // TODO - make IbverbsConfig configurable
-                    .spawn::<RdmaManagerActor>(client.deref(), "rdma_manager", &None)
+                    .spawn(client.deref(), "rdma_manager", &None)
                     .await
                     .map_err(|err| PyException::new_err(err.to_string()))?;
 
@@ -373,10 +373,10 @@ impl PyRdmaManager {
         } else {
             let proc_mesh = proc_mesh.downcast::<PyProcMeshV1>()?.borrow().mesh_ref()?;
             PyPythonTask::new(async move {
-                let actor_mesh = proc_mesh
+                let actor_mesh: hyperactor_mesh::v1::ActorMesh<RdmaManagerActor> = proc_mesh
                     // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
                     // TODO - make IbverbsConfig configurable
-                    .spawn_service::<RdmaManagerActor>(client.deref(), "rdma_manager", &None)
+                    .spawn_service(client.deref(), "rdma_manager", &None)
                     .await
                     .map_err(|err| PyException::new_err(err.to_string()))?;
 

@@ -6,14 +6,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::Bind;
-use hyperactor::Named;
-use hyperactor::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use serde::Deserialize;
-use serde::Serialize;
 
 #[pyclass(
     name = "SupervisionError",
@@ -60,13 +56,6 @@ impl SupervisionError {
             format!("SupervisionError('{}')", self.message)
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
-pub struct SupervisionFailureMessage {
-    pub actor_mesh_name: Option<String>,
-    pub rank: Option<usize>,
-    pub event: ActorSupervisionEvent,
 }
 
 // TODO: find out how to extend a Python exception and have internal data.

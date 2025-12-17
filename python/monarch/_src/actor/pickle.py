@@ -135,12 +135,12 @@ class _Unpickler(pickle.Unpickler):
         return self._values[pid]
 
 
-def flatten(obj: Any, filter: Callable[[Any], bool]) -> Tuple[List[Any], FrozenBuffer]:
+def flatten(obj: Any, filter: Callable[[Any], bool]) -> Tuple[List[Any], Buffer]:
     buffer = Buffer()
     pickler = _Pickler(filter, buffer)
     pickler.dump(obj)
 
-    return pickler._saved, buffer.freeze()
+    return pickler._saved, buffer
 
 
 def unflatten(data: FrozenBuffer | bytes, values: Iterable[Any]) -> Any:
