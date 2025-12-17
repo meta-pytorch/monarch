@@ -348,16 +348,16 @@ def _init_client_context() -> Context:
     from monarch._src.actor.proc_mesh import ProcMesh
     from monarch._src.actor.v1.host_mesh import _bootstrap_cmd
 
-    rust_host_mesh, rust_proc_mesh, py_instance = bootstrap_host(
+    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
         _bootstrap_cmd()
     ).block_on()
 
-    ctx = Context._from_instance(py_instance)
+    ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
     # Set the context here to avoid recursive context creation:
     token = _set_context(ctx)
     try:
-        py_host_mesh = HostMesh._from_rust(rust_host_mesh)
-        py_proc_mesh = ProcMesh._from_rust(rust_proc_mesh, py_host_mesh)
+        py_host_mesh = HostMesh._from_rust(hy_host_mesh)
+        py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, py_host_mesh)
     finally:
         _reset_context(token)
 
