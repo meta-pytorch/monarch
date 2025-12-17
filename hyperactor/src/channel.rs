@@ -445,6 +445,73 @@ impl AttrValue for ChannelTransport {
     }
 }
 
+/// Specifies how to bind a channel server.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+pub enum BindSpec {
+    /// Bind to any available address for the given transport.
+    Any(ChannelTransport),
+
+    /// Bind to a specific channel address.
+    Addr(ChannelAddr),
+}
+
+impl BindSpec {
+    /// Return an "any" address for this bind spec.
+    pub fn binding_addr(&self) -> ChannelAddr {
+        match self {
+            BindSpec::Any(transport) => ChannelAddr::any(transport.clone()),
+            BindSpec::Addr(addr) => addr.clone(),
+        }
+    }
+}
+
+impl From<ChannelTransport> for BindSpec {
+    fn from(transport: ChannelTransport) -> Self {
+        BindSpec::Any(transport)
+    }
+}
+
+impl From<ChannelAddr> for BindSpec {
+    fn from(addr: ChannelAddr) -> Self {
+        BindSpec::Addr(addr)
+    }
+}
+
+impl fmt::Display for BindSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Any(transport) => write!(f, "{}", transport),
+            Self::Addr(addr) => write!(f, "{}", addr),
+        }
+    }
+}
+
+impl FromStr for BindSpec {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(transport) = ChannelTransport::from_str(s) {
+            Ok(BindSpec::Any(transport))
+        } else if let Ok(addr) = ChannelAddr::from_zmq_url(s) {
+            Ok(BindSpec::Addr(addr))
+        } else if let Ok(addr) = ChannelAddr::from_str(s) {
+            Ok(BindSpec::Addr(addr))
+        } else {
+            Err(anyhow::anyhow!("invalid bind spec: {}", s))
+        }
+    }
+}
+
+impl AttrValue for BindSpec {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(s: &str) -> Result<Self, anyhow::Error> {
+        Self::from_str(s)
+    }
+}
+
 /// The type of (TCP) hostnames.
 pub type Hostname = String;
 
@@ -1272,6 +1339,42 @@ mod tests {
             .parse()
             .unwrap(),
         ]
+    }
+
+    #[test]
+    fn test_bind_spec_from_str() {
+        // Test parsing ChannelTransport strings -> BindSpec::Any
+        assert_eq!(
+            BindSpec::from_str("tcp").unwrap(),
+            BindSpec::Any(ChannelTransport::Tcp(TcpMode::Hostname))
+        );
+        assert_eq!(
+            BindSpec::from_str("metatls(Hostname)").unwrap(),
+            BindSpec::Any(ChannelTransport::MetaTls(TlsMode::Hostname))
+        );
+
+        // Test parsing ChannelAddr strings -> BindSpec::Addr
+        assert_eq!(
+            BindSpec::from_str("tcp:127.0.0.1:8080").unwrap(),
+            BindSpec::Addr(ChannelAddr::Tcp("127.0.0.1:8080".parse().unwrap()))
+        );
+
+        // Test parsing ZMQ URL format -> BindSpec::Addr
+        assert_eq!(
+            BindSpec::from_str("tcp://127.0.0.1:9000").unwrap(),
+            BindSpec::Addr(ChannelAddr::Tcp("127.0.0.1:9000".parse().unwrap()))
+        );
+        assert_eq!(
+            BindSpec::from_str("tcp://127.0.0.1:9000@tcp://[::1]:7200").unwrap(),
+            BindSpec::Addr(
+                ChannelAddr::from_zmq_url("tcp://127.0.0.1:9000@tcp://[::1]:7200").unwrap()
+            )
+        );
+
+        // Test error cases
+        assert!(BindSpec::from_str("invalid_spec").is_err());
+        assert!(BindSpec::from_str("unknown://scheme").is_err());
+        assert!(BindSpec::from_str("").is_err());
     }
 
     #[tokio::test]
