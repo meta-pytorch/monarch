@@ -274,7 +274,7 @@ impl HostMesh {
             std::process::exit(1);
         }
 
-        let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).any();
+        let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
         let host = Host::new(manager, addr).await?;
@@ -311,11 +311,11 @@ impl HostMesh {
             std::process::exit(1);
         }
 
-        let transport = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT);
+        let bind_spec = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT);
         let mut hosts = Vec::with_capacity(extent.num_ranks());
         for _ in 0..extent.num_ranks() {
             // Note: this can be racy. Possibly we should have a callback channel.
-            let addr = transport.any();
+            let addr = bind_spec.binding_addr();
             let bootstrap = Bootstrap::Host {
                 addr: addr.clone(),
                 command: Some(command.clone()),

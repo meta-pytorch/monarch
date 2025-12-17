@@ -288,7 +288,9 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             .instance("temp")
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let local_proc_agent = host_mesh_agent
+        let local_proc_agent: hyperactor::ActorHandle<
+            hyperactor_mesh::proc_mesh::mesh_agent::ProcMeshAgent,
+        > = host_mesh_agent
             .get_local_proc(&temp_instance)
             .await
             .map_err(|e| PyException::new_err(e.to_string()))?;

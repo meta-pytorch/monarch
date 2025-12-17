@@ -8,6 +8,7 @@
 
 from typing import Any, final
 
+from monarc._src.actor.actor_mesh import Instance as PyInstance
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
@@ -104,7 +105,7 @@ class BootstrapCommand:
 
 def bootstrap_host(
     bootstrap_cmd: BootstrapCommand | None,
-) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
+) -> PythonTask[tuple[HostMesh, ProcMesh, PyInstance]]:
     """
     Bootstrap a host mesh in this process, returning the host mesh,
     proc mesh, and client instance.

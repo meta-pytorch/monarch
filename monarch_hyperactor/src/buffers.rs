@@ -12,86 +12,124 @@ use std::ffi::c_int;
 use std::ffi::c_void;
 
 use bytes::Buf;
+use bytes::Bytes;
 use bytes::BytesMut;
 use hyperactor::Named;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyBytesMethods;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_multipart::Part;
+
+declare_attrs! {
+    /// Threshold below which writes are copied into a contiguous buffer.
+    /// Writes >= this size are stored as zero-copy references.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("MONARCH_HYPERACTOR_SMALL_WRITE_THRESHOLD".to_string()),
+        py_name: None,
+    })
+    pub attr SMALL_WRITE_THRESHOLD: usize = 256;
+}
+
+/// Wrapper that keeps Py<PyBytes> alive while allowing zero-copy access to its memory
+struct KeepPyBytesAlive {
+    _py_bytes: Py<PyBytes>,
+    ptr: *const u8,
+    len: usize,
+}
+
+impl KeepPyBytesAlive {
+    fn new(py_bytes: Py<PyBytes>) -> Self {
+        let (ptr, len) = Python::with_gil(|py| {
+            let bytes_ref = py_bytes.as_bytes(py);
+            (bytes_ref.as_ptr(), bytes_ref.len())
+        });
+        Self {
+            _py_bytes: py_bytes,
+            ptr,
+            len,
+        }
+    }
+}
+
+impl AsRef<[u8]> for KeepPyBytesAlive {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: ptr is valid as long as py_bytes is alive (kept alive by Py<PyBytes>)
+        // Python won't free the memory until the Py<PyBytes> refcount reaches 0
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+// SAFETY: Py<PyBytes> is Send/Sync for immutable bytes
+unsafe impl Send for KeepPyBytesAlive {}
+// SAFETY: Py<PyBytes> is Send/Sync for immutable bytes
+unsafe impl Sync for KeepPyBytesAlive {}
+
+/// A fragment of data in the buffer, either a copy or a reference.
+#[derive(Clone)]
+enum Fragment {
+    /// Small writes that were copied into a contiguous buffer
+    Copy(Bytes),
+    /// Large writes stored as references to Python bytes
+    Reference(Py<PyBytes>),
+}
 
 /// A mutable buffer for reading and writing bytes data.
 ///
-/// The `Buffer` struct provides an interface for accumulating byte data that can be written to
-/// and then frozen into an immutable `FrozenBuffer` for reading. It uses the `bytes::BytesMut`
-/// internally for efficient memory management.
+/// The `Buffer` struct provides a hybrid interface for accumulating byte data:
+/// - Small writes (< 256 bytes) are copied into a contiguous buffer to minimize fragment overhead
+/// - Large writes (>= 256 bytes) are stored as zero-copy references to Python bytes objects
+///
+/// This approach balances the overhead of per-fragment processing against the cost of copying data.
 ///
 /// # Examples
 ///
 /// ```python
 /// from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 ///
-/// # Create a new buffer with default capacity (4096 bytes)
+/// # Create a new buffer
 /// buffer = Buffer()
 ///
-/// # Write some data
-/// data = b"Hello, World!"
-/// bytes_written = buffer.write(data)
-///
-/// # Check length
-/// print(len(buffer))  # 13
-///
-/// # Freeze for reading
-/// frozen = buffer.freeze()
-/// content = frozen.read()
+/// # Write some data - small writes are batched, large writes are zero-copy
+/// buffer.write(b"small")  # copied into pending buffer
+/// buffer.write(b"x" * 1000)  # stored as zero-copy reference
 /// ```
 #[pyclass(subclass, module = "monarch._rust_bindings.monarch_hyperactor.buffers")]
-#[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
+#[derive(Clone)]
 pub struct Buffer {
-    pub(crate) inner: bytes::BytesMut,
-}
-
-impl Buffer {
-    /// Consumes the Buffer and returns the underlying BytesMut.
-    /// This allows zero-copy access to the raw buffer data.
-    pub fn into_inner(self) -> bytes::BytesMut {
-        self.inner
-    }
-}
-
-impl<T> From<T> for Buffer
-where
-    T: Into<BytesMut>,
-{
-    fn from(value: T) -> Self {
-        Self {
-            inner: value.into(),
-        }
-    }
+    /// Finalized fragments in write order
+    fragments: Vec<Fragment>,
+    /// Accumulator for pending small writes
+    pending: BytesMut,
+    /// Threshold below which writes are copied into a contiguous buffer.
+    /// Writes >= this size are stored as zero-copy references.
+    threshold: usize,
 }
 
 #[pymethods]
 impl Buffer {
-    /// Creates a new empty buffer with specified initial capacity.
-    ///
-    /// # Arguments
-    /// * `size` - Initial capacity in bytes (default: 4096)
+    /// Creates a new empty buffer.
     ///
     /// # Returns
-    /// A new empty `Buffer` instance with the specified capacity.
+    /// A new empty `Buffer` instance.
     #[new]
-    #[pyo3(signature=(size=4096))]
-    fn new(size: usize) -> Self {
+    fn new() -> Self {
         Self {
-            inner: bytes::BytesMut::with_capacity(size),
+            fragments: Vec::new(),
+            pending: BytesMut::new(),
+            threshold: hyperactor_config::global::get(SMALL_WRITE_THRESHOLD),
         }
     }
 
     /// Writes bytes data to the buffer.
     ///
-    /// Appends the provided bytes to the end of the buffer, extending its capacity
-    /// if necessary.
+    /// Small writes (< 256 bytes) are copied into a contiguous buffer.
+    /// Large writes (>= 256 bytes) are stored as zero-copy references.
     ///
     /// # Arguments
     /// * `buff` - The bytes object to write to the buffer
@@ -100,23 +138,92 @@ impl Buffer {
     /// The number of bytes written (always equal to the length of input bytes)
     fn write<'py>(&mut self, buff: &Bound<'py, PyBytes>) -> usize {
         let bytes_written = buff.as_bytes().len();
-        self.inner.extend_from_slice(buff.as_bytes());
+
+        if bytes_written < self.threshold {
+            self.pending.extend_from_slice(buff.as_bytes());
+        } else {
+            self.flush_pending();
+            self.fragments
+                .push(Fragment::Reference(buff.clone().unbind()));
+        }
         bytes_written
     }
 
-    /// Freezes this buffer into an immutable `FrozenBuffer`.
+    /// Returns the total number of bytes in the buffer.
     ///
-    /// This operation consumes the mutable buffer's contents, transferring ownership
-    /// to a new `FrozenBuffer` that can only be read from. The original buffer
-    /// becomes empty after this operation.
+    /// This sums the lengths of all fragments (both copied and zero-copy) plus pending bytes.
     ///
     /// # Returns
-    /// A new `FrozenBuffer` containing all the data that was in this buffer
+    /// The total number of bytes stored in the buffer
+    fn __len__(&self) -> usize {
+        let fragments_len: usize = Python::with_gil(|py| {
+            self.fragments
+                .iter()
+                .map(|frag| match frag {
+                    Fragment::Copy(bytes) => bytes.len(),
+                    Fragment::Reference(py_bytes) => py_bytes.as_bytes(py).len(),
+                })
+                .sum()
+        });
+        fragments_len + self.pending.len()
+    }
+
+    /// Freezes the buffer, converting it into an immutable `FrozenBuffer` for reading.
+    ///
+    /// This consumes all accumulated PyBytes and converts them into a contiguous bytes buffer.
+    /// After freezing, the original buffer is cleared.
+    ///
+    /// This operation should avoided in hot paths as it creates a copy in order to concatenate
+    /// bytes that are fragmented in memory into a single series of contiguous bytes
+    ///
+    /// # Returns
+    /// A new `FrozenBuffer` containing all the bytes that were written to this buffer
     fn freeze(&mut self) -> FrozenBuffer {
-        let buff = std::mem::take(&mut self.inner);
+        let part = self.take_part();
         FrozenBuffer {
-            inner: buff.freeze(),
+            inner: part.into_bytes(),
         }
+    }
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self {
+            fragments: Vec::new(),
+            pending: BytesMut::new(),
+            threshold: hyperactor_config::global::get(SMALL_WRITE_THRESHOLD),
+        }
+    }
+}
+
+impl Buffer {
+    fn flush_pending(&mut self) {
+        if !self.pending.is_empty() {
+            let bytes = std::mem::take(&mut self.pending).freeze();
+            self.fragments.push(Fragment::Copy(bytes));
+        }
+    }
+
+    /// Converts accumulated data to [`Part`] for zero-copy multipart messages.
+    ///
+    /// Flushes any pending small writes and converts all fragments to bytes::Bytes.
+    pub fn take_part(&mut self) -> Part {
+        self.flush_pending();
+
+        let fragments = std::mem::take(&mut self.fragments);
+
+        Part::from_fragments(
+            fragments
+                .into_iter()
+                .map(|frag| match frag {
+                    Fragment::Copy(bytes) => bytes,
+                    Fragment::Reference(py_bytes) => {
+                        let wrapper = KeepPyBytesAlive::new(py_bytes);
+                        bytes::Bytes::from_owner(wrapper)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
     }
 }
 

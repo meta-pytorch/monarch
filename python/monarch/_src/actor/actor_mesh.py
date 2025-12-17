@@ -52,8 +52,8 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
-from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
@@ -416,7 +416,7 @@ def context() -> Context:
     return c
 
 
-_transport: Optional[ChannelTransport] = None
+_transport: Optional[BindSpec] = None
 _transport_lock = threading.Lock()
 
 
@@ -430,17 +430,33 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
     Currently only one transport type may be enabled at one time.
     In the future we may allow multiple to be enabled.
 
+    Supported transport values:
+        - ChannelTransport enum: ChannelTransport.Unix, ChannelTransport.TcpWithHostname, etc.
+        - string short cuts for the ChannelTransport enum:
+            - "tcp": ChannelTransport.TcpWithHostname
+            - "ipc": ChannelTransport.Unix
+            - "metatls": ChannelTransport.MetaTlsWithIpV6
+            - "metatls-hostname": ChannelTransport.MetaTlsWithHostname
+        - ZMQ-style URL format string for explicit address, e.g.:
+            - "tcp://127.0.0.1:8080"
+
     For Meta usage, use metatls-hostname
     """
     if isinstance(transport, str):
-        transport = {
+        # Handle string shortcuts for the ChannelTransport enum,
+        resolved = {
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
             "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
         }.get(transport)
-        if transport is None:
-            raise ValueError(f"unknown transport: {transport}")
+        if resolved is not None:
+            transport_config = BindSpec(resolved)
+        else:
+            transport_config = BindSpec(transport)
+    else:
+        # ChannelTransport enum
+        transport_config = BindSpec(transport)
 
     if _context.get(None) is not None:
         raise RuntimeError(
@@ -451,14 +467,16 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
 
     global _transport
     with _transport_lock:
-        if _transport is not None and _transport != transport:
+        if _transport is not None and _transport != transport_config:
             raise RuntimeError(
                 f"Only one transport type may be enabled at one time. "
                 f"Currently enabled transport type is `{_transport}`. "
-                f"Attempted to enable transport type `{transport}`."
+                f"Attempted to enable transport type `{transport_config}`."
             )
-        _transport = transport
-    configure(default_transport=transport)
+        _transport = transport_config
+    # pyre-ignore[6]: BindSpec is accepted by configure. We just do not expose
+    # it in the method's signature since BindSpec is not a public type.
+    configure(default_transport=transport_config)
 
 
 @dataclass
@@ -1361,7 +1379,7 @@ def _is_ref_or_mailbox(x: object) -> bool:
     return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
-def _pickle(obj: object) -> bytes | FrozenBuffer:
+def _pickle(obj: object) -> Buffer:
     _, buff = flatten(obj, _is_mailbox)
     return buff
 
@@ -1655,7 +1673,7 @@ class RootClientActor(Actor):
         return True
 
     @staticmethod
-    def _pickled_init_args() -> FrozenBuffer:
+    def _pickled_init_args() -> Buffer:
         args = (
             ActorInitArgs(RootClientActor, None, None, RootClientActor.name, None, ()),
         )

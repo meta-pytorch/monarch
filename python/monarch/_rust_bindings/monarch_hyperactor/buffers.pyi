@@ -130,36 +130,29 @@ class Buffer:
     """
     A mutable buffer for reading and writing bytes data.
 
-    The `Buffer` struct provides an interface for accumulating byte data that can be written to
-    and then frozen into an immutable `FrozenBuffer` for reading. It uses the `bytes::BytesMut`
-    internally for efficient memory management.
+    The `Buffer` struct provides an interface for accumulating byte data from Python `bytes` objects
+    that can be converted into a `Part` for zero-copy multipart message serialization.
+    It accumulates references to Python bytes objects without copying.
 
     Examples:
         ```python
         from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 
-        # Create a new buffer with default capacity (4096 bytes)
+        # Create a new buffer
         buffer = Buffer()
 
         # Write some data
         data = b"Hello, World!"
         bytes_written = buffer.write(data)
 
-        # Check length
-        print(len(buffer))  # 13
-
-        # Freeze for reading
-        frozen = buffer.freeze()
-        content = frozen.read()
+        # Use in multipart serialization
+        # The buffer accumulates multiple writes as separate fragments
         ```
     """
 
-    def __init__(self, size: int = 4096) -> None:
+    def __init__(self) -> None:
         """
-        Create a new empty buffer with specified initial capacity.
-
-        Arguments:
-        - `size`: Initial capacity in bytes (default: 4096)
+        Create a new empty buffer.
         """
         ...
 
@@ -167,8 +160,7 @@ class Buffer:
         """
         Write bytes data to the buffer.
 
-        Appends the provided bytes to the end of the buffer, extending its capacity
-        if necessary.
+        This keeps a reference to the Python bytes object without copying.
 
         Arguments:
         - `buff`: The bytes object to write to the buffer
@@ -180,10 +172,12 @@ class Buffer:
 
     def __len__(self) -> int:
         """
-        Return the number of bytes remaining in the buffer.
+        Return the total number of bytes in the buffer.
+
+        This iterates over all accumulated PyBytes fragments and sums their lengths.
 
         Returns:
-        The number of bytes that can be read from the buffer
+        The total number of bytes stored in the buffer
         """
         ...
 
@@ -194,6 +188,9 @@ class Buffer:
         This operation consumes the mutable buffer's contents, transferring ownership
         to a new `FrozenBuffer` that can only be read from. The original buffer
         becomes empty after this operation.
+
+        This operation should generally be avoided in hot paths as it creates copies in order to concatenate
+        bytes that are potentially fragmented in memory into a single contiguous series of bytes
 
         Returns:
         A new `FrozenBuffer` containing all the data that was in this buffer
