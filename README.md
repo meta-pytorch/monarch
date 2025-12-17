@@ -3,12 +3,18 @@
 **Monarch** is a distributed programming framework for PyTorch based on scalable
 actor messaging. It provides:
 
-1. Remote actors with scalable messaging: Actors are grouped into collections called meshes and messages can be broadcast to all members.
-2. Fault tolerance through supervision trees: Actors and processes form a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery.
-3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided transfers based on libibverbs
-4. Distributed tensors: actors can work with tensor objects sharded across processes
+1. Remote actors with scalable messaging: Actors are grouped into collections
+   called meshes and messages can be broadcast to all members.
+2. Fault tolerance through supervision trees: Actors and processes form a tree
+   and failures propagate up the tree, providing good default error behavior and
+   enabling fine-grained fault recovery.
+3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in
+   a process, with the one-sided transfers based on libibverbs
+4. Distributed tensors: actors can work with tensor objects sharded across
+   processes
 
-Monarch code imperatively describes how to create processes and actors using a simple python API:
+Monarch code imperatively describes how to create processes and actors using a
+simple python API:
 
 ```python
 from monarch.actor import Actor, endpoint, this_host
@@ -33,8 +39,9 @@ fut = trainers.train.call(step=0)
 fut.get()
 ```
 
-
-The [introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html) provides an introduction to using these features.
+The
+[introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html)
+provides an introduction to using these features.
 
 > ⚠️ **Early Development Warning** Monarch is currently in an experimental
 > stage. You should expect bugs, incomplete features, and APIs that may change
@@ -45,83 +52,111 @@ The [introduction to monarch concepts](https://meta-pytorch.org/monarch/generate
 
 ## 📖 Documentation
 
-View Monarch's hosted documentation [at this link](https://meta-pytorch.org/monarch/).
+View Monarch's hosted documentation
+[at this link](https://meta-pytorch.org/monarch/).
 
 ## Installation
-Note for running distributed tensors and RDMA, the local torch version must match the version that monarch was built with.
-Stable and nightly distributions require libmxl and libibverbs (runtime).
 
-## Fedora
-`sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel`
+### Installing from Pre-built Wheels
 
-## Ubuntu
-`sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev`
+Monarch provides pre-built wheels that work regardless of what version of
+PyTorch you have installed:
 
-### Stable
+#### Stable
 
-`pip install torchmonarch`
+```sh
+pip install torchmonarch
+```
 
-torchmonarch stable is built with the latest stable torch.
+#### Nightly
 
-### Nightly
-`pip install torchmonarch-nightly`
-
-torchmonarch-nightly is built with torch nightly.
+```sh
+pip install torchmonarch-nightly
+```
 
 ### Build and Install from Source
 
-If you're building Monarch from source, you should be building it with the nightly PyTorch as well for ABI compatibility.
+**Note**: Building from source requires additional system dependencies. These
+are needed at **build time** only, not at runtime.
 
-
-#### On Fedora distributions
+Monarch uses `uv` for fast, reliable Python package management. If you don't
+have `uv` installed:
 
 ```sh
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Or on macOS
+brew install uv
+```
 
-# Create and activate the conda environment
-conda create -n monarchenv python=3.10 -y
-conda activate monarchenv
+**Configuring PyTorch Index**: By default, Monarch builds with PyTorch from the
+`pytorch-cu128` index (CUDA 12.8). To use a different CUDA version:
 
+- Edit `[tool.uv.sources]` in `pyproject.toml` to point to a different index
+  (e.g., `pytorch-cu126`, `pytorch-cu130`, or `pytorch-cpu`)
+- Or use `--extra-index-url` when running uv:
+  ```sh
+  uv sync --extra-index-url https://download.pytorch.org/whl/cu126
+  ```
+
+#### Understanding Tensor Engine
+
+Monarch includes
+[distributed tensor](https://meta-pytorch.org/monarch/generated/examples/getting_started.html#distributed-tensors)
+and
+[RDMA](https://meta-pytorch.org/monarch/generated/examples/getting_started.html#point-to-point-rdma)
+APIs. Since these are hardware-specific, it can be useful to develop with a
+lighter-weight version of Monarch (actors only) by setting
+`USE_TENSOR_ENGINE=0`.
+
+By default, Monarch builds with tensor_engine enabled. To build without it:
+
+```sh
+USE_TENSOR_ENGINE=0 uv sync
+```
+
+**Note**: Building without tensor_engine means you won't have access to the
+distributed tensor or RDMA APIs.
+
+#### Build Dependencies by Platform
+
+##### On Fedora distributions
+
+```sh
 # Install nightly rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup toolchain install nightly
 rustup default nightly
 
 # Install non-python dependencies
-conda install libunwind -y
+sudo dnf install libunwind -y
 
 # Install the correct cuda and cuda-toolkit versions for your machine
 sudo dnf install cuda-toolkit-12-8 cuda-12-8
 
 # Install clang-devel, nccl-devel, and libstdc++-static
 sudo dnf install clang-devel libnccl-devel libstdc++-static
-# Or, in some environments, the following may be necessary instead
-conda install -c conda-forge clangdev nccl
-conda update -n monarchenv --all -c conda-forge -y
 
-# If you are building with RDMA support, build monarch with `USE_TENSOR_ENGINE=1 pip install --no-build-isolation .` and dnf install the following packages
+# Install RDMA libraries (needed for tensor_engine builds)
 sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
 
-# Install build dependencies
-pip install -r torch-requirements.txt -r build-requirements.txt
-# Install test dependencies
-pip install -r python/tests/requirements.txt
-
-# Build and install Monarch
-pip install --no-build-isolation .
-# or setup for development
-pip install --no-build-isolation -e .
-
-# Verify installation
-pip list | grep monarch
-```
-
-#### On Ubuntu distributions
-
-```sh
-# Clone the repository and navigate to it
+# Clone and sync dependencies
 git clone https://github.com/meta-pytorch/monarch.git
 cd monarch
 
+# Install in development mode with all dependencies
+uv sync
+
+# Or install without tensor_engine
+USE_TENSOR_ENGINE=0 uv sync
+
+# Verify installation
+uv run python -c "from monarch import actor; print('Monarch installed successfully')"
+```
+
+##### On Ubuntu distributions
+
+```sh
 # Install nightly rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
@@ -129,9 +164,7 @@ rustup toolchain install nightly
 rustup default nightly
 
 # Install Ubuntu-specific system dependencies
-sudo apt install -y ninja-build
-sudo apt install -y libunwind-dev
-sudo apt install -y clang
+sudo apt install -y ninja-build libunwind-dev clang
 
 # Set clang as the default C/C++ compiler
 export CC=clang
@@ -140,62 +173,71 @@ export CXX=clang++
 # Install the correct cuda and cuda-toolkit versions for your machine
 sudo apt install -y cuda-toolkit-12-8 cuda-12-8
 
-# Install build dependencies
-pip install -r torch-requirements.txt -r build-requirements.txt
-# Install test dependencies
-pip install -r python/tests/requirements.txt
+# Install RDMA libraries (needed for tensor_engine builds)
+sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev
 
-# Build and install Monarch (with tensor engine support)
-pip install --no-build-isolation .
+# Clone and sync dependencies
+git clone https://github.com/meta-pytorch/monarch.git
+cd monarch
 
-# or
-# Build and install Monarch (without tensor engine support)
-USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
+# Install in development mode with all dependencies
+uv sync
 
-# or setup for development
-pip install --no-build-isolation -e .
+# Or install without tensor_engine (CPU-only)
+USE_TENSOR_ENGINE=0 uv sync
 
 # Verify installation
-pip list | grep monarch
+uv run python -c "from monarch import actor; print('Monarch installed successfully')"
 ```
 
-#### On non-CUDA machines
+##### On non-CUDA machines
 
-You can also build Monarch to run on non-CUDA machines, e.g. locally on a MacOS system.
+You can also build Monarch on non-CUDA machines (e.g., macOS laptops) for
+CPU-only usage.
 
-Note that this does not support tensor engine, which is tied to CUDA and RDMA (via ibverbs).
-
+Note that this does not support tensor_engine, which requires CUDA and RDMA
+libraries.
 
 ```sh
-
-# Create and activate the conda environment
-conda create -n monarchenv python=3.10 -y
-conda activate monarchenv
-
 # Install nightly rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup toolchain install nightly
 rustup default nightly
 
-# Install build dependencies
-pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
-pip install -r build-requirements.txt
-# Install test dependencies
-pip install -r python/tests/requirements.txt
+# Clone and sync dependencies (without tensor_engine)
+git clone https://github.com/meta-pytorch/monarch.git
+cd monarch
 
-# Build and install Monarch
-USE_TENSOR_ENGINE=0 pip install --no-build-isolation .
-# or setup for development
-USE_TENSOR_ENGINE=0 pip install --no-build-isolation -e .
+# Install without tensor engine (CPU-only)
+USE_TENSOR_ENGINE=0 uv sync
 
 # Verify installation
-pip list | grep monarch
+uv run python -c "from monarch import actor; print('Monarch installed successfully')"
 ```
 
+#### Alternative: Using pip
+
+If you prefer to use pip instead of uv:
+
+```sh
+# After installing system dependencies (see above)
+
+# Install build dependencies
+
+# Build and install Monarch
+pip install .
+
+# Or for development
+pip install -e .
+
+# Without tensor_engine
+USE_TENSOR_ENGINE=0 pip install -e .
+```
 
 ## Running examples
 
-Check out the `examples/` directory for demonstrations of how to use Monarch's APIs.
+Check out the `examples/` directory for demonstrations of how to use Monarch's
+APIs.
 
 We'll be adding more examples as we stabilize and polish functionality!
 
@@ -204,22 +246,56 @@ We'll be adding more examples as we stabilize and polish functionality!
 We have both Rust and Python unit tests. Rust tests are run with `cargo-nextest`
 and Python tests are run with `pytest`.
 
-Rust tests:
+### Rust tests
+
+**Important:** Monarch's Rust code uses PyO3 to interface with Python, which
+means the Rust binaries need to link against Python libraries. Before running
+Rust tests, you need to have a Python environment activated (conda, venv, or
+uv):
+
 ```sh
-# We use cargo-nextest to run our tests, as they can provide strong process isolation
+# If using uv (recommended)
+uv sync  # This creates and activates a virtual environment
+uv run cargo nextest run  # Run tests within the uv environment
+
+# Or if using conda
+conda activate monarchenv
+cargo nextest run
+
+# Or if using venv
+source .venv/bin/activate
+cargo nextest run
+```
+
+Without an active Python environment, you'll get Python linking errors like:
+
+```
+error: could not find native static library `python3.12`, perhaps an -L flag is missing?
+```
+
+**Installing cargo-nextest:**
+
+```sh
+# We use cargo-nextest to run our tests, as they provide strong process isolation
 # between every test.
 # Here we install it from source, but you can instead use a pre-built binary described
 # here: https://nexte.st/docs/installation/pre-built-binaries/
 cargo install cargo-nextest --locked
-cargo nextest run
 ```
+
 cargo-nextest supports all of the filtering flags of "cargo test".
 
-Python tests:
+### Python tests
+
 ```sh
-# Make sure to install test dependencies first
-pip install -r python/tests/requirements.txt
-# Run unit tests. consider -s for more verbose output
+# Install test dependencies (if not already installed via uv sync)
+uv sync --extra test
+
+# Run unit tests with uv
+uv run pytest python/tests/ -v -m "not oss_skip"
+
+# Or if using pip
+pip install -e '.[test]'
 pytest python/tests/ -v -m "not oss_skip"
 ```
 

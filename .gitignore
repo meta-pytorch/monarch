@@ -6,10 +6,12 @@ python/**/*.html
 python/**/*.pkl
 python/**/__pycache__
 python/monarch.egg-info/*
+python/torchmonarch.egg-info/*
 *.egg
 build/*
 dist/*
 monarch.egg-info/*
+torchmonarch.egg-info/*
 
 .ipynb_checkpoints
 .monarch
@@ -33,3 +35,5 @@ docs/_build/**
 docs/build/**
 docs/**/generated/**
 */sg_execution_times.rst
+
+.venv/**

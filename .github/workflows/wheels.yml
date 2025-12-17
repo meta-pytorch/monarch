@@ -49,6 +49,7 @@ jobs:
         # Build wheel
         export MONARCH_PACKAGE_NAME="torchmonarch-nightly"
         export MONARCH_VERSION=$(date +'%Y.%m.%d')
+        export MONARCH_BUILD_MESH_ONLY=0
 
         python setup.py bdist_wheel
 

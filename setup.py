@@ -10,41 +10,78 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+from typing import Dict, List, Optional
 
-from setuptools import Command, find_packages, setup
+from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.extension import Extension
 
 from setuptools_rust import Binding, RustBin, RustExtension
 
 
-# Helper functions to find torch without importing it
-def find_torch_paths():
-    """Find torch installation paths without importing torch"""
-    spec = importlib.util.find_spec("torch")
-    if not spec or not spec.origin:
-        raise RuntimeError("torch not found - please install PyTorch first")
+# Helper functions for finding paths on installed packages
+def get_torch_config() -> Optional[Dict[str, any]]:
+    """
+    Detect torch installation and return configuration dict.
+    Returns None if torch is not available.
 
-    base = os.path.dirname(spec.origin)
-    lib_path = os.path.join(base, "lib")
-    include_path = os.path.join(base, "include")
+    Returns:
+        Dictionary with keys: lib_path, include_paths, cxx11_abi
+        or None if torch is not found
+    """
+    try:
+        spec = importlib.util.find_spec("torch")
+        if not spec or not spec.origin:
+            return None
 
-    # Get all include paths (similar to torch.utils.cpp_extension.include_paths())
-    include_paths = [include_path]
+        base = os.path.dirname(spec.origin)
+        lib_path = os.path.join(base, "lib")
+        include_path = os.path.join(base, "include")
+        include_paths = [include_path]
 
-    # Add torch/csrc includes if available
-    torch_csrc_include = os.path.join(include_path, "torch", "csrc", "api", "include")
-    if os.path.exists(torch_csrc_include):
-        include_paths.append(torch_csrc_include)
+        # Add torch/csrc includes if available
+        torch_csrc_include = os.path.join(
+            include_path, "torch", "csrc", "api", "include"
+        )
+        if os.path.exists(torch_csrc_include):
+            include_paths.append(torch_csrc_include)
 
-    return {"lib_path": lib_path, "include_paths": include_paths}
+        # Detect C++11 ABI
+        cxx11_abi = 1  # Default to new ABI
+        for lib_name in ["libtorch_cpu.so", "libtorch.so", "libc10.so"]:
+            lib_file = os.path.join(lib_path, lib_name)
+            if os.path.exists(lib_file):
+                try:
+                    result = subprocess.run(
+                        ["nm", "-D", lib_file],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if result.returncode == 0:
+                        cxx11_abi = 1 if "__cxx11" in result.stdout else 0
+                        break
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+
+        return {
+            "lib_path": lib_path,
+            "include_paths": include_paths,
+            "cxx11_abi": cxx11_abi,
+        }
+    except Exception:
+        return None
 
 
-def find_cuda_home():
-    """Find CUDA installation without importing torch"""
+def get_cuda_home() -> Optional[str]:
+    """
+    Find CUDA installation.
+
+    Returns:
+        Path to CUDA installation or None if not found
+    """
     # Check environment variable first
     cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
-
     if cuda_home and os.path.exists(cuda_home):
         return cuda_home
 
@@ -54,10 +91,8 @@ def find_cuda_home():
             ["which", "nvcc"], capture_output=True, text=True, timeout=5
         )
         if nvcc_path.returncode == 0:
-            # Get directory containing bin/nvcc
             nvcc = nvcc_path.stdout.strip()
-            cuda_home = os.path.dirname(os.path.dirname(nvcc))
-            return cuda_home
+            return os.path.dirname(os.path.dirname(nvcc))
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
@@ -69,99 +104,181 @@ def find_cuda_home():
     return None
 
 
-def detect_cxx11_abi():
-    """Detect if torch uses C++11 ABI by examining library symbols"""
-    paths = find_torch_paths()
-    lib_path = paths["lib_path"]
+# Build config detection
+torch_config = get_torch_config()
+cuda_home = get_cuda_home()
+use_tensor_engine = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
 
-    # Try to find a torch library to check
-    for lib_name in ["libtorch_cpu.so", "libtorch.so", "libc10.so"]:
-        lib_file = os.path.join(lib_path, lib_name)
-        if os.path.exists(lib_file):
-            try:
-                result = subprocess.run(
-                    ["nm", "-D", lib_file], capture_output=True, text=True, timeout=10
-                )
-                if result.returncode == 0:
-                    # Check for __cxx11 namespace which indicates new ABI
-                    if "__cxx11" in result.stdout:
-                        return 1  # New ABI
-                    else:
-                        return 0  # Old ABI
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
+if use_tensor_engine and not torch_config:
+    print("=" * 80)
+    print("ERROR: tensor_engine build requested but torch is not available!")
+    print("")
+    print("To fix this:")
+    print("  1. Install torch first: pip install torch")
+    print("  2. Then rebuild")
+    print("")
+    print("OR build without tensor_engine:")
+    print("  USE_TENSOR_ENGINE=0 pip install -e .")
+    print("=" * 80)
+    sys.exit(1)
 
-    # Default to new ABI if we can't determine
-    return 1
+build_tensor_engine = use_tensor_engine and torch_config is not None
+build_cuda = build_tensor_engine and cuda_home is not None
+
+print("=" * 80)
+if build_tensor_engine:
+    print("✓ Building WITH tensor_engine (CUDA/GPU support)")
+    print(f"  - PyTorch: {torch_config['lib_path']}")
+    print(f"  - CUDA: {cuda_home if build_cuda else 'Not found (CPU-only)'}")
+    print(f"  - C++11 ABI: {'enabled' if torch_config['cxx11_abi'] else 'disabled'}")
+else:
+    print("Building WITHOUT tensor_engine (CPU-only, no CUDA support)")
+print("=" * 80)
+
+# Set PYO3_PYTHON for Rust binaries
+if "PYO3_PYTHON" not in os.environ:
+    os.environ["PYO3_PYTHON"] = sys.executable
+
+# Set Rust and C++ flags
+rustflags = ["-Zthreads=16", "--cfg=tracing_unstable"]
+if os.environ.get("ENABLE_MESSAGE_LOGGING"):
+    rustflags.append("--cfg=enable_hyperactor_message_logging")
+
+env_vars = {"RUSTFLAGS": " ".join(rustflags)}
+
+if build_tensor_engine:
+    cxx11_abi = torch_config["cxx11_abi"]
+    env_vars.update(
+        {
+            "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}",
+            "LIBTORCH_LIB": torch_config["lib_path"],
+            "LIBTORCH_INCLUDE": ":".join(torch_config["include_paths"]),
+            "_GLIBCXX_USE_CXX11_ABI": str(cxx11_abi),
+            "TORCH_SYS_USE_PYTORCH_APIS": "0",
+        }
+    )
+else:
+    env_vars["CXXFLAGS"] = "-D_GLIBCXX_USE_CXX11_ABI=1"
+
+if build_cuda:
+    env_vars["CUDA_HOME"] = cuda_home
+
+os.environ.update(env_vars)
+
+# RPATH configuration for Linux
+if sys.platform.startswith("linux"):
+    conda_lib = os.path.join(sys.prefix, "lib")
+    ldlib = sysconfig.get_config_var("LDLIBRARY") or ""
+    libdir = sysconfig.get_config_var("LIBDIR") or ""
+
+    py_lib = ""
+    if libdir and ldlib:
+        cand = os.path.join(libdir, ldlib)
+        if os.path.exists(cand) and os.path.realpath(libdir) != os.path.realpath(
+            conda_lib
+        ):
+            py_lib = libdir
+
+    rpath_flags = [
+        "-C",
+        "link-arg=-Wl,--enable-new-dtags",
+        "-C",
+        "link-arg=-Wl,-z,origin",
+        "-C",
+        "link-arg=-Wl,-rpath,$ORIGIN",
+        "-C",
+        "link-arg=-Wl,-rpath,$ORIGIN/..",
+        "-C",
+        "link-arg=-Wl,-rpath,$ORIGIN/../../..",
+        "-C",
+        f"link-arg=-Wl,-rpath,{conda_lib}",
+        "-L",
+        conda_lib,
+    ]
+    if py_lib:
+        rpath_flags += ["-C", f"link-arg=-Wl,-rpath,{py_lib}"]
+
+    cur_rustflags = os.environ.get("RUSTFLAGS", "")
+    os.environ["RUSTFLAGS"] = (cur_rustflags + " " + " ".join(rpath_flags)).strip()
 
 
-# Get torch paths and settings
-torch_paths = find_torch_paths()
-TORCH_LIB_PATH = torch_paths["lib_path"]
-torch_include_paths = torch_paths["include_paths"]
-CUDA_HOME = find_cuda_home()
-cxx11_abi = detect_cxx11_abi()
+# Extension Creation
+def create_cpp_extension(name: str, sources: List[str]) -> Extension:
+    """
+    Create a C++ extension with torch dependencies.
 
-USE_CUDA = CUDA_HOME is not None
-USE_TENSOR_ENGINE = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
+    Args:
+        name: Extension module name (e.g., "monarch.common._C")
+        sources: List of source file paths
 
-
-def create_torch_extension(name, sources):
-    """Helper to create a C++ extension with torch dependencies"""
+    Returns:
+        Extension object configured for torch
+    """
     return Extension(
         name,
         sources,
-        extra_compile_args=["-g", "-O3"],
+        extra_compile_args=["-std=c++17", "-g", "-O3"],
         libraries=["dl", "c10", "torch", "torch_cpu", "torch_python"],
-        library_dirs=[TORCH_LIB_PATH],
+        library_dirs=[torch_config["lib_path"]],
         include_dirs=[
             os.path.dirname(os.path.abspath(__file__)),
             sysconfig.get_config_var("INCLUDEDIR"),
         ]
-        + torch_include_paths,
-        runtime_library_dirs=[TORCH_LIB_PATH] if sys.platform != "win32" else [],
+        + torch_config["include_paths"],
+        runtime_library_dirs=[torch_config["lib_path"]]
+        if sys.platform != "win32"
+        else [],
     )
 
 
-monarch_cpp_src = ["python/monarch/common/init.cpp"]
-if USE_CUDA:
-    monarch_cpp_src.append("python/monarch/common/mock_cuda.cpp")
+# C++ extensions
+ext_modules = []
+if build_tensor_engine:
+    cpp_sources = ["python/monarch/common/init.cpp"]
+    if build_cuda:
+        cpp_sources.append("python/monarch/common/mock_cuda.cpp")
 
-# Create C++ extensions using standard Extension instead of CppExtension
-common_C = create_torch_extension("monarch.common._C", monarch_cpp_src)
-controller_C = create_torch_extension(
-    "monarch.gradient._gradient_generator",
-    ["python/monarch/gradient/_gradient_generator.cpp"],
-)
-
-ENABLE_MSG_LOGGING = (
-    "--cfg=enable_hyperactor_message_logging"
-    if os.environ.get("ENABLE_MESSAGE_LOGGING")
-    else ""
-)
-
-ENABLE_TRACING_UNSTABLE = "--cfg=tracing_unstable"
-
-os.environ.update(
-    {
-        "CXXFLAGS": f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}",
-        "RUSTFLAGS": " ".join(
-            ["-Zthreads=16", ENABLE_MSG_LOGGING, ENABLE_TRACING_UNSTABLE]
+    ext_modules = [
+        create_cpp_extension("monarch.common._C", cpp_sources),
+        create_cpp_extension(
+            "monarch.gradient._gradient_generator",
+            ["python/monarch/gradient/_gradient_generator.cpp"],
         ),
-        "LIBTORCH_LIB": TORCH_LIB_PATH,
-        "LIBTORCH_INCLUDE": ":".join(torch_include_paths),
-        "_GLIBCXX_USE_CXX11_ABI": str(cxx11_abi),
-        "TORCH_SYS_USE_PYTORCH_APIS": "0",
-    }
-)
-if USE_CUDA:
-    os.environ.update(
-        {
-            "CUDA_HOME": CUDA_HOME,
-        }
+    ]
+
+# Rust extensions
+rust_extensions = []
+
+# Legacy process_allocator binary (optional)
+skip_legacy_builds = os.environ.get("MONARCH_BUILD_MESH_ONLY", "1") == "1"
+if not skip_legacy_builds:
+    rust_extensions.append(
+        RustBin(
+            target="process_allocator",
+            path="monarch_hyperactor/Cargo.toml",
+            debug=False,
+            args=["--bin", "process_allocator", "--no-default-features"],
+        )
     )
 
+# Main Python extension (always built)
+rust_features = ["extension-module"]
+if build_tensor_engine:
+    rust_features.append("tensor_engine")
 
+rust_extensions.append(
+    RustExtension(
+        "monarch._rust_bindings",
+        binding=Binding.PyO3,
+        path="monarch_extension/Cargo.toml",
+        debug=False,
+        features=rust_features,
+        args=[] if build_tensor_engine else ["--no-default-features"],
+    )
+)
+
+
+# Clean command
 class Clean(Command):
     user_options = []
 
@@ -182,13 +299,9 @@ class Clean(Command):
                 match = pat.match(wildcard)
                 if match:
                     if match.group(1):
-                        # Marker is found and stop reading .gitignore.
                         break
-                    # Ignore lines which begin with '#'.
                 else:
-                    # Don't remove absolute paths from the system
                     wildcard = wildcard.lstrip("./")
-
                     for filename in glob.glob(wildcard):
                         try:
                             os.remove(filename)
@@ -198,117 +311,14 @@ class Clean(Command):
         subprocess.run(["cargo", "clean"])
 
 
-with open("requirements.txt") as f:
-    reqs = f.read()
-
-with open("README.md", encoding="utf8") as f:
-    readme = f.read()
-
-if sys.platform.startswith("linux"):
-    # Always include the active env's lib (Conda-safe)
-    conda_lib = os.path.join(sys.prefix, "lib")
-
-    # Only use LIBDIR if it actually contains the current libpython
-    ldlib = sysconfig.get_config_var("LDLIBRARY") or ""
-    libdir = sysconfig.get_config_var("LIBDIR") or ""
-    py_lib = ""
-    if libdir and ldlib:
-        cand = os.path.join(libdir, ldlib)
-        if os.path.exists(cand) and os.path.realpath(libdir) != os.path.realpath(
-            conda_lib
-        ):
-            py_lib = libdir
-
-    # Prefer sidecar .so next to the extension; then the conda env;
-    # then (optionally) py_lib
-    flags = [
-        "-C",
-        "link-arg=-Wl,--enable-new-dtags",
-        "-C",
-        "link-arg=-Wl,-z,origin",
-        "-C",
-        "link-arg=-Wl,-rpath,$ORIGIN",
-        "-C",
-        "link-arg=-Wl,-rpath,$ORIGIN/..",
-        "-C",
-        "link-arg=-Wl,-rpath,$ORIGIN/../../..",
-        "-C",
-        "link-arg=-Wl,-rpath," + conda_lib,
-        # Add the conda lib to the search path for the linker, as libraries like
-        # libunwind may be installed there.
-        "-L",
-        conda_lib,
-    ]
-    if py_lib:
-        flags += ["-C", "link-arg=-Wl,-rpath," + py_lib]
-
-    cur = os.environ.get("RUSTFLAGS", "")
-    os.environ["RUSTFLAGS"] = (cur + " " + " ".join(flags)).strip()
-
-# Check if MONARCH_BUILD_MESH_ONLY=1 to skip legacy builds
-SKIP_LEGACY_BUILDS = os.environ.get("MONARCH_BUILD_MESH_ONLY", "0") == "1"
-
-rust_extensions = []
-
-# Legacy builds (kept for tests that still depend on them)
-if not SKIP_LEGACY_BUILDS:
-    rust_extensions.append(
-        RustBin(
-            target="process_allocator",
-            path="monarch_hyperactor/Cargo.toml",
-            debug=False,
-        )
-    )
-
-# Main extension (always built)
-rust_extensions.append(
-    RustExtension(
-        "monarch._rust_bindings",
-        binding=Binding.PyO3,
-        path="monarch_extension/Cargo.toml",
-        debug=False,
-        features=["extension-module", "tensor_engine"]
-        if USE_TENSOR_ENGINE
-        else ["extension-module"],
-        args=[] if USE_TENSOR_ENGINE else ["--no-default-features"],
-    )
-)
-
-package_name = os.environ.get("MONARCH_PACKAGE_NAME", "monarch")
+# Actual Setup
+package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
 package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
 
 setup(
     name=package_name,
     version=package_version,
-    packages=find_packages(
-        where="python",
-        exclude=["python/tests.*", "python/tests"],
-    ),
-    package_dir={"": "python"},
-    python_requires=">= 3.10",
-    install_requires=reqs.strip().split("\n"),
-    extras_require={
-        "examples": [
-            "bs4",
-            "ipython",
-        ],
-    },
-    license="BSD-3-Clause",
-    author="Meta",
-    author_email="oncall+monarch@xmail.facebook.com",
-    description="Monarch: Single controller library",
-    long_description=readme,
-    long_description_content_type="text/markdown",
-    ext_modules=[
-        controller_C,
-        common_C,
-    ],
-    entry_points={
-        "console_scripts": [
-            "monarch=monarch.tools.cli:main",
-            "monarch_bootstrap=monarch._src.actor.bootstrap_main:invoke_main",
-        ],
-    },
+    ext_modules=ext_modules,
     rust_extensions=rust_extensions,
     cmdclass={
         "build_ext": build_ext,

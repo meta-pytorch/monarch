@@ -49,6 +49,7 @@ jobs:
         # Build wheel
         export MONARCH_PACKAGE_NAME="torchmonarch"
         export MONARCH_VERSION="${{ github.event.inputs.version }}"
+        export MONARCH_BUILD_MESH_ONLY=0
         python setup.py bdist_wheel
 
         # hacky until the right distribution wheel can be made...
