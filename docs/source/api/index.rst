@@ -12,5 +12,6 @@ The :doc:`monarch.rdma` package provides RDMA support for high-performance netwo
    :maxdepth: 2
 
    monarch.actor
+   monarch.config
    monarch
    monarch.rdma
