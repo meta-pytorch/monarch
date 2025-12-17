@@ -1185,10 +1185,11 @@ async def test_actor_mesh_stop() -> None:
     await am_1.log.call("hello 2")
     await cast(ActorMesh, am_1).stop()
 
-    with pytest.raises(
-        SupervisionError,
-        match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
-    ):
+    match = re.compile(
+        r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
+        flags=re.MULTILINE,
+    )
+    with pytest.raises(SupervisionError, match=match):
         await am_1.print.call("hello 1")
 
     await am_2.print.call("hello 3")
@@ -1257,6 +1258,15 @@ def test_mesh_len():
     proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 12})
     s = proc_mesh.spawn("sleep_actor", SleepActor)
     assert 12 == len(s)
+
+
+def test_long_endpoint_completes() -> None:
+    """Tests that a mesh with endpoints that take a long time to complete still
+    complete and don't hit supervision errors"""
+    pm = this_host().spawn_procs(per_host={"gpus": 1})
+    sleeper = pm.spawn("sleep", SleepActor)
+    # Sleep for 60 seconds and then complete without an exception.
+    sleeper.sleep.call(60).get()
 
 
 class UndeliverableMessageReceiver(Actor):
