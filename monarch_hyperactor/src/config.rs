@@ -21,7 +21,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use hyperactor::Named;
-use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::BindSpec;
 use hyperactor_config::AttrValue;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -30,12 +30,13 @@ use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::ErasedKey;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global::Source;
+use pyo3::conversion::IntoPyObject;
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::channel::PyChannelTransport;
+use crate::channel::PyBindSpec;
 
 /// Python wrapper for Duration, using humantime format strings.
 ///
@@ -289,9 +290,9 @@ inventory::collect!(PythonConfigTypeInfo);
 /// like `String` that are convertible directly to/from PyObjects,
 /// you can just use `declare_py_config_type!(String)`. For types
 /// that must first be converted to/from a rust python wrapper
-/// (e.g., keys with type `ChannelTransport` must use `PyChannelTransport`
+/// (e.g., keys with type `BindSpec` must use `PyBindSpec`
 /// as an intermediate step), the usage is
-/// `declare_py_config_type!(PyChannelTransport as ChannelTransport)`.
+/// `declare_py_config_type!(PyBindSpec as BindSpec)`.
 macro_rules! declare_py_config_type {
     ($($ty:ty),+ $(,)?) => {
         hyperactor::paste! {
@@ -341,7 +342,7 @@ macro_rules! declare_py_config_type {
     };
 }
 
-declare_py_config_type!(PyChannelTransport as ChannelTransport);
+declare_py_config_type!(PyBindSpec as BindSpec);
 declare_py_config_type!(PyDuration as Duration);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
@@ -367,9 +368,19 @@ declare_py_config_type!(
 fn configure(py: Python<'_>, kwargs: Option<HashMap<String, PyObject>>) -> PyResult<()> {
     kwargs
         .map(|kwargs| {
-            kwargs
-                .into_iter()
-                .try_for_each(|(key, val)| configure_kwarg(py, &key, val))
+            kwargs.into_iter().try_for_each(|(key, val)| {
+                // Special handling for default_transport: convert ChannelTransport
+                // enum or string to PyBindSpec before processing
+                let val = if key == "default_transport" {
+                    PyBindSpec::new(val.bind(py))?
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind()
+                } else {
+                    val
+                };
+                configure_kwarg(py, &key, val)
+            })
         })
         .transpose()?;
     Ok(())

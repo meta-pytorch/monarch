@@ -30,6 +30,7 @@ use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
+use hyperactor::channel::BindSpec;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
@@ -96,11 +97,24 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_DEFAULT_TRANSPORT".to_string()),
         py_name: Some("default_transport".to_string()),
     })
-    pub attr DEFAULT_TRANSPORT: ChannelTransport = ChannelTransport::Unix;
+    pub attr DEFAULT_TRANSPORT: BindSpec = BindSpec::Any(ChannelTransport::Unix);
 }
 
-/// Get the default transport type to use across the application.
+/// Temporary: used to support the legacy allocator-based V1 bootstrap. Should
+/// be removed once we fully migrate to simple bootstrap.
+///
+/// Get the default transport to use across the application. Panic if BindSpec::Addr
+/// is set as default transport. Since we expect BindSpec::Addr to be used only
+/// with simple bootstrap, we should not see this panic in production.
 pub fn default_transport() -> ChannelTransport {
+    match default_bind_spec() {
+        BindSpec::Any(transport) => transport,
+        BindSpec::Addr(addr) => panic!("default_bind_spec() returned BindSpec::Addr({addr})"),
+    }
+}
+
+/// Get the default bind spec to use across the application.
+pub fn default_bind_spec() -> BindSpec {
     global::get_cloned(DEFAULT_TRANSPORT)
 }
 
@@ -187,7 +201,7 @@ pub fn global_root_client() -> &'static Instance<GlobalClientActor> {
     )> = OnceLock::new();
     &GLOBAL_INSTANCE.get_or_init(|| {
         let client_proc = Proc::direct_with_default(
-            ChannelAddr::any(default_transport()),
+            default_bind_spec().binding_addr(),
             "mesh_root_client_proc".into(),
             router::global().clone().boxed(),
         )
@@ -1085,12 +1099,7 @@ impl fmt::Display for ProcMesh {
 impl fmt::Debug for ProcMesh {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            ProcMeshKind::V0 {
-                shape,
-                ranks,
-                client_proc,
-                ..
-            } => f
+            ProcMeshKind::V0 { shape, ranks, .. } => f
                 .debug_struct("ProcMesh::V0")
                 .field("shape", shape)
                 .field("ranks", ranks)

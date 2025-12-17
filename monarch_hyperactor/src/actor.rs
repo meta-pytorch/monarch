@@ -27,7 +27,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
-use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -40,7 +39,7 @@ use hyperactor_config::Attrs;
 use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
 use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::proc_mesh::default_transport;
+use hyperactor_mesh::proc_mesh::default_bind_spec;
 use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::SupervisionFailureMessage;
@@ -64,6 +63,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
+use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
@@ -420,9 +420,8 @@ impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
     pub fn new<'py>(kind: PythonMessageKind, message: Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(buff) = message.extract::<Bound<'py, FrozenBuffer>>() {
-            let frozen = buff.borrow_mut();
-            return Ok(PythonMessage::new_from_buf(kind, frozen.inner.clone()));
+        if let Ok(mut buff) = message.extract::<PyRefMut<'py, Buffer>>() {
+            return Ok(PythonMessage::new_from_buf(kind, buff.take_part()));
         } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
             return Ok(PythonMessage::new_from_buf(
                 kind,
@@ -525,7 +524,7 @@ impl PythonActor {
         static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
         let client_proc = Proc::direct_with_default(
-            ChannelAddr::any(default_transport()),
+            default_bind_spec().binding_addr(),
             "mesh_root_client_proc".into(),
             router::global().clone().boxed(),
         )
