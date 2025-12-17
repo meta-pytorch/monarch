@@ -15,11 +15,7 @@ import cloudpickle
 import monarch._src.actor.host_mesh
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
-from monarch._src.actor.actor_mesh import (
-    _this_host_for_fake_in_process_host,
-    Actor,
-    context,
-)
+from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import (
     create_local_host_mesh,
@@ -209,13 +205,11 @@ def test_this_host_on_controllers_can_spawn_actual_os_processes() -> None:
 
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_host_meshes() -> None:
-    orig_get_in_process_host = _this_host_for_fake_in_process_host.get
-    with patch.object(
-        _this_host_for_fake_in_process_host, "get"
-    ) as mock_get_in_process_host, patch.object(
+    orig_get_client_context = _client_context.get
+    with patch.object(_client_context, "get") as mock_get_client_context, patch.object(
         monarch._src.actor.host_mesh, "create_local_host_mesh"
     ) as mock_create_local:
-        mock_get_in_process_host.side_effect = orig_get_in_process_host
+        mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():
             time.sleep(0.1)
@@ -230,7 +224,7 @@ def test_root_client_does_not_leak_host_meshes() -> None:
         for t in threads:
             t.join()
 
-        assert mock_get_in_process_host.call_count == 100
+        assert mock_get_client_context.call_count == 100
         # If this test is run in isolation, the local host mesh will
         # be created once. But if it runs with other tests, the host mesh
         # will have already been initialized and the function never gets

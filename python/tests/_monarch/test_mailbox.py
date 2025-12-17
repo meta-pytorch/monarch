@@ -196,8 +196,8 @@ async def test_reducer() -> None:
         ins._as_rust(),
     )
 
-    messge = await receiver.recv_task().with_timeout(seconds=5)
-    value = pickle.loads(messge.message)
+    m = await receiver.recv_task().with_timeout(seconds=5)
+    value = pickle.loads(m.message)
     assert "[reduced](start+msg0)" in value
 
     #  Note: occasionally test would hang without this stop

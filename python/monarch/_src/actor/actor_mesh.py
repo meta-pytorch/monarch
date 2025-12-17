@@ -264,6 +264,9 @@ class Context:
     @staticmethod
     def _root_client_context() -> "Context": ...
 
+    @staticmethod
+    def _from_instance(instance: Instance) -> "Context": ...
+
 
 _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
@@ -307,9 +310,13 @@ def _init_context_log_handler() -> None:
     logging.Logger.addHandler = _patched_addHandler
 
 
-def _set_context(c: Context) -> None:
+def _set_context(c: Context) -> contextvars.Token[Context]:
     _init_context_log_handler()
-    _context.set(c)
+    return _context.set(c)
+
+
+def _reset_context(c: contextvars.Token[Context]) -> None:
+    _context.reset(c)
 
 
 T = TypeVar("T")
@@ -331,15 +338,34 @@ class _Lazy(Generic[T]):
         return self._val
 
 
-def _init_this_host_for_fake_in_process_host() -> "HostMesh":
-    from monarch._src.actor.host_mesh import create_local_host_mesh
+def _init_client_context() -> Context:
+    """
+    Create a client context that bootstraps an actor instance running on a real
+    local proc mesh on a real local host mesh.
+    """
+    from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import bootstrap_host
+    from monarch._src.actor.host_mesh import HostMesh
+    from monarch._src.actor.proc_mesh import ProcMesh
+    from monarch._src.actor.v1.host_mesh import _bootstrap_cmd
 
-    return create_local_host_mesh()
+    rust_host_mesh, rust_proc_mesh, py_instance = bootstrap_host(
+        _bootstrap_cmd()
+    ).block_on()
+
+    ctx = Context._from_instance(py_instance)
+    # Set the context here to avoid recursive context creation:
+    token = _set_context(ctx)
+    try:
+        py_host_mesh = HostMesh._from_rust(rust_host_mesh)
+        py_proc_mesh = ProcMesh._from_rust(rust_proc_mesh, py_host_mesh)
+    finally:
+        _reset_context(token)
+
+    ctx.actor_instance.proc_mesh = py_proc_mesh
+    return ctx
 
 
-_this_host_for_fake_in_process_host: _Lazy["HostMesh"] = _Lazy(
-    _init_this_host_for_fake_in_process_host
-)
+_client_context: _Lazy[Context] = _Lazy(_init_client_context)
 
 
 def shutdown_context() -> "Future[None]":
@@ -355,9 +381,10 @@ def shutdown_context() -> "Future[None]":
     """
     from monarch._src.actor.future import Future
 
-    local_host = _this_host_for_fake_in_process_host.try_get()
-    if local_host is not None:
-        return local_host.shutdown()
+    client_host_ctx = _client_context.try_get()
+    if client_host_ctx is not None:
+        host_mesh = client_host_ctx.actor_instance.proc_mesh.host_mesh
+        return host_mesh.shutdown()
 
     # Nothing to shutdown - return a completed future
     async def noop() -> None:
@@ -366,47 +393,26 @@ def shutdown_context() -> "Future[None]":
     return Future(coro=noop())
 
 
-def _init_root_proc_mesh() -> "ProcMesh":
-    from monarch._src.actor.host_mesh import fake_in_process_host
-
-    return fake_in_process_host()._spawn_nonblocking(
-        name="root_client_proc_mesh",
-        per_host=Extent([], []),
-        setup=None,
-        _attach_controller_controller=False,  # can't attach the controller controller because it doesn't exist yet
-    )
-
-
-_root_proc_mesh: _Lazy["ProcMesh"] = _Lazy(_init_root_proc_mesh)
-
-
 def context() -> Context:
     c = _context.get(None)
     if c is None:
-        c = Context._root_client_context()
-        _set_context(c)
-
-        from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
         from monarch._src.actor.v1 import enabled as v1_enabled
 
         if not v1_enabled:
+            from monarch._src.actor.host_mesh import create_local_host_mesh
+
+            c = Context._root_client_context()
+            _set_context(c)
             c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
                 _get_controller_controller()
             )
 
             c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
         else:
-            c.actor_instance.proc_mesh = _root_proc_mesh.get()
-
-            # This needs to be initialized when the root client context is initialized.
-            # Otherwise, it will be initialized inside an actor endpoint running inside
-            # a fake in-process host. That will fail with an "unroutable mesh" error,
-            # because the hyperactor Proc being used to spawn the local host mesh
-            # won't have the correct type of forwarder.
-            _this_host_for_fake_in_process_host.get()
-
-            c.actor_instance._controller_controller = _get_controller_controller()[1]
+            c = _client_context.get()
+            _set_context(c)
+            _, c.actor_instance._controller_controller = _get_controller_controller()
     return c
 
 

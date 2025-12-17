@@ -266,6 +266,21 @@ class HostMesh(MeshTrait):
             None,
         )
 
+    @classmethod
+    def _from_rust(cls, hy_host_mesh: HyHostMesh) -> "HostMesh":
+        """
+        Create a HostMesh from a Rust HyHostMesh.
+
+        This is used when the host was bootstrapped via bootstrap_host()
+        instead of being allocated through an allocator.
+        """
+        return cls._from_initialized_hy_host_mesh(
+            hy_host_mesh,
+            hy_host_mesh.region,
+            stream_logs=False,
+            is_fake_in_process=False,
+        )
+
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return HostMesh._from_initialized_hy_host_mesh, (
             self._initialized_mesh(),

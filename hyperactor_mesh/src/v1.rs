@@ -28,6 +28,7 @@ pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Named;
+use hyperactor::ProcId;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::reference;
@@ -149,6 +150,9 @@ pub enum Error {
     #[error("error spawning controller actor for mesh {0}: {1}")]
     ControllerActorSpawnError(Name, anyhow::Error),
 
+    #[error("proc {0} must be direct-addressable")]
+    RankedProc(ProcId),
+
     #[error("error: {0} does not exist")]
     NotExist(Name),
 
@@ -253,7 +257,7 @@ impl Name {
     }
 
     /// Create a Reserved `Name` with no uuid. Only for use by system actors.
-    pub(crate) fn new_reserved(name: impl Into<String>) -> Result<Self> {
+    pub fn new_reserved(name: impl Into<String>) -> Result<Self> {
         Ok(Self::new_with_uuid(name, None)?)
     }
 

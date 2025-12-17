@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7da0353e3138258986cf2598af0836656a1f7c3399a9ffa18ca93cf983b3e64c # shrinks to extent = Extent { inner: ExtentData { labels: ["d/0"], sizes: [1] } }
