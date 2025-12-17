@@ -589,8 +589,8 @@ mod tests {
         let proc_mesh = &meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        let actor_mesh = proc_mesh
-            .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
+        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_with_name(instance, child_name.clone(), &())
             .await
             .unwrap();
 
@@ -659,8 +659,8 @@ mod tests {
         let proc_mesh = &meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        let actor_mesh = proc_mesh
-            .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
+        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_with_name(instance, child_name.clone(), &())
             .await
             .unwrap();
 
@@ -724,8 +724,8 @@ mod tests {
         let proc_mesh = &meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        let actor_mesh = proc_mesh
-            .spawn_with_name::<testactor::TestActor>(instance, child_name.clone(), &())
+        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_with_name(instance, child_name.clone(), &())
             .await
             .unwrap();
         let sliced = actor_mesh
@@ -795,10 +795,8 @@ mod tests {
             .spawn(instance, "test", Extent::unity())
             .await
             .unwrap();
-        let actor_mesh = proc_mesh
-            .spawn::<testactor::TestActor>(instance, "test", &())
-            .await
-            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            proc_mesh.spawn(instance, "test", &()).await.unwrap();
 
         let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
         actor_mesh
@@ -862,8 +860,8 @@ mod tests {
         let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
         let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
 
-        let ping_mesh = ping_proc_mesh
-            .spawn::<PingPongActor>(
+        let ping_mesh: ActorMesh<PingPongActor> = ping_proc_mesh
+            .spawn(
                 instance,
                 "ping",
                 &(Some(undeliverable_port.bind()), None, None),
@@ -871,8 +869,8 @@ mod tests {
             .await
             .unwrap();
 
-        let pong_mesh = pong_proc_mesh
-            .spawn::<PingPongActor>(instance, "pong", &(None, None, None))
+        let pong_mesh: ActorMesh<PingPongActor> = pong_proc_mesh
+            .spawn(instance, "pong", &(None, None, None))
             .await
             .unwrap();
 
@@ -966,10 +964,8 @@ mod tests {
 
         // Spawn SleepActors across the mesh that will block longer
         // than timeout
-        let sleep_mesh = proc_mesh
-            .spawn::<testactor::SleepActor>(instance, "sleepers", &())
-            .await
-            .unwrap();
+        let sleep_mesh: ActorMesh<testactor::SleepActor> =
+            proc_mesh.spawn(instance, "sleepers", &()).await.unwrap();
 
         // Send each actor a message to sleep for 5 seconds (longer
         // than 1-second timeout)
@@ -1049,10 +1045,8 @@ mod tests {
 
         // Spawn TestActors - these stop cleanly (no blocking
         // operations)
-        let actor_mesh = proc_mesh
-            .spawn::<testactor::TestActor>(instance, "test_actors", &())
-            .await
-            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            proc_mesh.spawn(instance, "test_actors", &()).await.unwrap();
 
         let expected_actors = actor_mesh.values().count();
         assert!(expected_actors > 0, "Should have spawned some actors");

@@ -271,6 +271,49 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                     mock_info.assert_called()
                     self.assertEqual(mock_info.call_count, 4)
 
+    async def test_server_ready_already_terminal(self) -> None:
+        # Test that we handle servers that are already in a terminal state
+        for terminal_state in [AppState.SUCCEEDED, AppState.FAILED, AppState.CANCELLED]:
+            with self.subTest(terminal_state=terminal_state):
+                with mock.patch(
+                    CMD_INFO,
+                    side_effect=[
+                        server(terminal_state),
+                    ],
+                ) as mock_info:
+                    server_info = await server_ready(
+                        "slurm:///123",
+                        check_interval=_5_MS,
+                    )
+
+                    self.assertIsNotNone(server_info)
+                    self.assertEqual(server_info.state, terminal_state)
+                    mock_info.assert_called()
+                    self.assertEqual(mock_info.call_count, 1)
+
+    async def test_server_ready_transient_unknown_state(self) -> None:
+        # Test that we handle transient UNKNOWN states (e.g., during k8s state transitions)
+        # and wait for them to resolve to a stable state
+        with mock.patch(
+            CMD_INFO,
+            side_effect=[
+                server(AppState.PENDING),
+                server(AppState.UNKNOWN),  # transient state during transition
+                server(AppState.UNKNOWN),  # might happen multiple times
+                server(AppState.RUNNING),  # eventually resolves
+            ],
+        ) as mock_info:
+            server_info = await server_ready(
+                "slurm:///123",
+                check_interval=_5_MS,
+            )
+
+            self.assertIsNotNone(server_info)
+            self.assertTrue(server_info.is_running)
+            self.assertEqual(server_info.state, AppState.RUNNING)
+            # Called 4 times: PENDING, UNKNOWN, UNKNOWN, RUNNING
+            self.assertEqual(mock_info.call_count, 4)
+
     async def test_server_ready_running_but_mesh_not_running(self) -> None:
         def no_host_server(state: AppState, name: str = UNUSED) -> ServerSpec:
             mesh_x = MeshSpec(name="x", num_hosts=2, host_type=UNUSED, gpus=-1)

@@ -666,8 +666,8 @@ mod tests {
         let instance = global_root_client();
 
         // Spawn actor mesh with CodeSyncManager actors
-        let actor_mesh = proc_mesh
-            .spawn::<CodeSyncManager>(&instance, "code_sync_test", &params)
+        let actor_mesh: RootActorMesh<CodeSyncManager> = proc_mesh
+            .spawn(&instance, "code_sync_test", &params)
             .await?;
 
         // Create workspace configuration

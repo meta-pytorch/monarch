@@ -9,6 +9,11 @@
 from enum import Enum
 
 class ChannelTransport(Enum):
+    """
+    Enum representing basic transport types for channels.
+    For explicit address binding, use BindSpec instead.
+    """
+
     TcpWithLocalhost = "tcp(localhost)"
     TcpWithHostname = "tcp(hostname)"
     MetaTlsWithHostname = "metatls(hostname)"
@@ -16,6 +21,27 @@ class ChannelTransport(Enum):
     Local = "local"
     Unix = "unix"
     # Sim  # TODO add support
+
+class BindSpec:
+    """
+    Specify how to bind a channel server.
+
+    Can be created from either a ChannelTransport enum for "any" binding,
+    or a ZMQ-style URL string for explicit address.
+
+    Note: This class is for internal use only. Users should pass ChannelTransport
+    enum directly or use the ZMQ-style URL string for explicit address.
+    """
+
+    def __init__(self, spec: ChannelTransport | str) -> None: ...
+    """
+        Basic transport types supported by ChannelTransport should be used directly as enum values.
+        For explicit address binding, use a ZMQ-style URL string. e.g.:
+        - "tcp://127.0.0.1:8080"
+    """
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
 
 class ChannelAddr:
     @staticmethod

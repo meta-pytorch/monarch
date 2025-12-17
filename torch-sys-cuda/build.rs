@@ -5,16 +5,18 @@
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
-
 //! This build script configures platform detection for torch-sys-cuda.
 //! The crate is now pure Rust, using nccl-sys for CUDA/HIP type bindings.
 //! No C++ compilation is needed.
-
 #[cfg(target_os = "macos")]
 fn main() {}
-
 #[cfg(not(target_os = "macos"))]
 fn main() {
+    // Set up Python rpath for runtime linking
+    build_utils::set_python_rpath();
+    // Statically link libstdc++ to avoid runtime dependency on system libstdc++
+    build_utils::link_libstdcpp_static();
+
     // Declare custom cfg options to avoid warnings
     println!("cargo::rustc-check-cfg=cfg(rocm)");
     println!("cargo::rustc-check-cfg=cfg(rocm_6_x)");

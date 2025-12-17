@@ -32,7 +32,7 @@ def reset_config_to_defaults() -> None:
     ...
 
 def configure(
-    default_transport: ChannelTransport = ...,
+    default_transport: ChannelTransport | str = ...,
     enable_log_forwarding: bool = ...,
     enable_file_capture: bool = ...,
     tail_log_lines: int = ...,
@@ -50,7 +50,9 @@ def configure(
     plus any additional CONFIG-marked keys passed via **kwargs.
 
     Args:
-        default_transport: Default channel transport for communication
+        default_transport: Default channel transport for communication. Can be:
+            - A ChannelTransport enum value (e.g., ChannelTransport.Unix)
+            - A explicit address string in the ZMQ-style URL format (e.g., "tcp://127.0.0.1:8080")
         enable_log_forwarding: Whether to forward logs from actors
         enable_file_capture: Whether to capture file output
         tail_log_lines: Number of log lines to tail

@@ -7,6 +7,7 @@
  */
 
 use hyperactor::Actor;
+use hyperactor::Handler;
 use hyperactor::accum::ReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
@@ -16,6 +17,8 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
+
+use crate::supervision::SupervisionFailureMessage;
 
 pub mod mesh_agent;
 
@@ -259,7 +262,7 @@ impl HostMesh {
             std::process::exit(1);
         }
 
-        let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).any();
+        let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
         let host = Host::new(manager, addr).await?;
@@ -296,11 +299,11 @@ impl HostMesh {
             std::process::exit(1);
         }
 
-        let transport = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT);
+        let bind_spec = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT);
         let mut hosts = Vec::with_capacity(extent.num_ranks());
         for _ in 0..extent.num_ranks() {
             // Note: this can be racy. Possibly we should have a callback channel.
-            let addr = transport.any();
+            let addr = bind_spec.binding_addr();
             let bootstrap = Bootstrap::Host {
                 addr: addr.clone(),
                 command: Some(command.clone()),
@@ -360,23 +363,29 @@ impl HostMesh {
     /// [`shutdown`](Self::shutdown) to deterministically tear them
     /// down. If you skip shutdown, `Drop` will attempt best-effort
     /// cleanup only. Do not rely on `Drop` for correctness.
-    pub async fn allocate(
-        cx: &impl context::Actor,
+    pub async fn allocate<C: context::Actor>(
+        cx: &C,
         alloc: Box<dyn Alloc + Send + Sync>,
         name: &str,
         bootstrap_params: Option<BootstrapCommand>,
-    ) -> v1::Result<Self> {
+    ) -> v1::Result<Self>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         Self::allocate_inner(cx, alloc, Name::new(name)?, bootstrap_params).await
     }
 
     // Use allocate_inner to set field mesh_name in span
     #[hyperactor::instrument(fields(host_mesh=name.to_string()))]
-    async fn allocate_inner(
-        cx: &impl context::Actor,
+    async fn allocate_inner<C: context::Actor>(
+        cx: &C,
         alloc: Box<dyn Alloc + Send + Sync>,
         name: Name,
         bootstrap_params: Option<BootstrapCommand>,
-    ) -> v1::Result<Self> {
+    ) -> v1::Result<Self>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Attempt");
         let transport = alloc.transport();
         let extent = alloc.extent().clone();
@@ -389,7 +398,7 @@ impl HostMesh {
 
         let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port();
         let _trampoline_actor_mesh = proc_mesh
-            .spawn::<HostMeshAgentProcMeshTrampoline>(
+            .spawn::<HostMeshAgentProcMeshTrampoline, C>(
                 cx,
                 "host_mesh_trampoline",
                 &(transport, mesh_agents.bind(), bootstrap_params, is_local),
@@ -731,22 +740,28 @@ impl HostMeshRef {
     /// Currently, spawn issues direct calls to each host agent. This will be fixed by
     /// maintaining a comm actor on the host service procs themselves.
     #[allow(clippy::result_large_err)]
-    pub async fn spawn(
+    pub async fn spawn<C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         name: &str,
         per_host: Extent,
-    ) -> v1::Result<ProcMesh> {
+    ) -> v1::Result<ProcMesh>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         self.spawn_inner(cx, Name::new(name)?, per_host).await
     }
 
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
-    async fn spawn_inner(
+    async fn spawn_inner<C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
-    ) -> v1::Result<ProcMesh> {
+    ) -> v1::Result<ProcMesh>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
         let result = self.spawn_inner_inner(cx, proc_mesh_name, per_host).await;
@@ -763,12 +778,15 @@ impl HostMeshRef {
         result
     }
 
-    async fn spawn_inner_inner(
+    async fn spawn_inner_inner<C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
-    ) -> v1::Result<ProcMesh> {
+    ) -> v1::Result<ProcMesh>
+    where
+        C::A: Handler<SupervisionFailureMessage>,
+    {
         let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
         let host_labels = self.region.labels().iter().collect::<HashSet<_>>();
         if !per_host_labels

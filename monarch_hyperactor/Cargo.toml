@@ -60,8 +60,12 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 buck-resources = "1"
 dir-diff = "0.3"
 
+[build-dependencies]
+build_utils = { path = "../build_utils" }
+
 [features]
 default = []
+extension-module = ["monarch_types/extension-module", "pyo3/extension-module"]
 packaged_rsync = []
 
 [lints]

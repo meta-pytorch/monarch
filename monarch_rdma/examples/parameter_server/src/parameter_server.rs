@@ -65,7 +65,6 @@ use hyperactor::Instance;
 use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
-use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
@@ -79,6 +78,7 @@ use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::proc_mesh::global_root_client;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
@@ -475,7 +475,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // As normal, create a proc mesh for the parameter server.
     tracing::info!("creating parameter server proc mesh...");
 
-    let (instance, _) = Proc::local().instance("client").unwrap();
+    let instance = global_root_client();
 
     let mut alloc = ProcessAllocator::new(Command::new(
         buck_resources::get("monarch/monarch_rdma/examples/parameter_server/bootstrap").unwrap(),

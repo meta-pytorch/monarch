@@ -17,9 +17,12 @@ use std::sync::atomic::Ordering;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::future::join_all;
+use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::Context;
+use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
@@ -27,6 +30,7 @@ use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
+use hyperactor::channel::BindSpec;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
@@ -78,6 +82,7 @@ use crate::proc_mesh::mesh_agent::update_event_actor_id;
 use crate::reference::ProcMeshId;
 use crate::router;
 use crate::shortuuid::ShortUuid;
+use crate::supervision::SupervisionFailureMessage;
 use crate::v1;
 use crate::v1::Name;
 
@@ -92,11 +97,24 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_DEFAULT_TRANSPORT".to_string()),
         py_name: Some("default_transport".to_string()),
     })
-    pub attr DEFAULT_TRANSPORT: ChannelTransport = ChannelTransport::Unix;
+    pub attr DEFAULT_TRANSPORT: BindSpec = BindSpec::Any(ChannelTransport::Unix);
 }
 
-/// Get the default transport type to use across the application.
+/// Temporary: used to support the legacy allocator-based V1 bootstrap. Should
+/// be removed once we fully migrate to simple bootstrap.
+///
+/// Get the default transport to use across the application. Panic if BindSpec::Addr
+/// is set as default transport. Since we expect BindSpec::Addr to be used only
+/// with simple bootstrap, we should not see this panic in production.
 pub fn default_transport() -> ChannelTransport {
+    match default_bind_spec() {
+        BindSpec::Any(transport) => transport,
+        BindSpec::Addr(addr) => panic!("default_bind_spec() returned BindSpec::Addr({addr})"),
+    }
+}
+
+/// Get the default bind spec to use across the application.
+pub fn default_bind_spec() -> BindSpec {
     global::get_cloned(DEFAULT_TRANSPORT)
 }
 
@@ -156,14 +174,34 @@ pub(crate) fn get_global_supervision_sink() -> Option<PortHandle<ActorSupervisio
     sink_cell().read().unwrap().clone()
 }
 
+#[derive(Debug)]
+pub struct GlobalClientActor;
+
+impl Actor for GlobalClientActor {}
+
+#[async_trait]
+impl Handler<SupervisionFailureMessage> for GlobalClientActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        message: SupervisionFailureMessage,
+    ) -> anyhow::Result<()> {
+        tracing::error!("supervision failure reached global client: {}", message);
+        panic!("supervision failure reached global client: {}", message);
+    }
+}
+
 /// Context use by root client to send messages.
 /// This mailbox allows us to open ports before we know which proc the
 /// messages will be sent to.
-pub fn global_root_client() -> &'static Instance<()> {
-    static GLOBAL_INSTANCE: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
+pub fn global_root_client() -> &'static Instance<GlobalClientActor> {
+    static GLOBAL_INSTANCE: OnceLock<(
+        Instance<GlobalClientActor>,
+        ActorHandle<GlobalClientActor>,
+    )> = OnceLock::new();
     &GLOBAL_INSTANCE.get_or_init(|| {
         let client_proc = Proc::direct_with_default(
-            ChannelAddr::any(default_transport()),
+            default_bind_spec().binding_addr(),
             "mesh_root_client_proc".into(),
             router::global().clone().boxed(),
         )
@@ -173,8 +211,11 @@ pub fn global_root_client() -> &'static Instance<()> {
         // same client in both direct-addressed and ranked-addressed modes.
         router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
 
-        let (client, handle) = client_proc
-            .instance("client")
+        // The work_rx messages loop is ignored. v0 will support Handler<SupervisionFailureMessage>,
+        // but it doesn't actually handle the messages.
+        // This is fine because v0 doesn't use this supervision mechanism anyway.
+        let (client, handle, _, _, _) = client_proc
+            .actor_instance::<GlobalClientActor>("client")
             .expect("root instance create");
 
         // Bind the global root client's undeliverable port and
@@ -192,7 +233,7 @@ pub fn global_root_client() -> &'static Instance<()> {
         // was present at the time of receipt, which helps diagnose
         // lost or misrouted events.
         let (_undeliverable_tx, undeliverable_rx) =
-            client.bind_actor_port::<Undeliverable<MessageEnvelope>>();
+            client.open_port::<Undeliverable<MessageEnvelope>>();
         hyperactor::mailbox::supervise_undeliverable_messages_with(
             undeliverable_rx,
             crate::proc_mesh::get_global_supervision_sink,
@@ -607,14 +648,15 @@ impl ProcMesh {
     ///   Referable`.
     /// - `A::Params: RemoteMessage` — params must be serializable to
     ///   cross proc boundaries when launching each actor.
-    pub async fn spawn<A: RemoteSpawn>(
+    pub async fn spawn<A: RemoteSpawn, C: context::Actor>(
         &self,
-        cx: &impl context::Actor,
+        cx: &C,
         actor_name: &str,
         params: &A::Params,
     ) -> Result<RootActorMesh<'_, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
+        C::A: Handler<SupervisionFailureMessage>,
     {
         match &self.inner {
             ProcMeshKind::V0 {
@@ -957,28 +999,30 @@ impl ProcEvents {
 pub trait SharedSpawnable {
     // `Actor`: the type actually runs in the mesh;
     // `Referable`: so we can hand back ActorRef<A> in RootActorMesh
-    async fn spawn<A: RemoteSpawn>(
+    async fn spawn<A: RemoteSpawn, C: context::Actor>(
         self,
-        cx: &impl context::Actor,
+        cx: &C,
         actor_name: &str,
         params: &A::Params,
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
-        A::Params: RemoteMessage;
+        A::Params: RemoteMessage,
+        C::A: Handler<SupervisionFailureMessage>;
 }
 
 #[async_trait]
 impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D {
     // `Actor`: the type actually runs in the mesh;
     // `Referable`: so we can hand back ActorRef<A> in RootActorMesh
-    async fn spawn<A: RemoteSpawn>(
+    async fn spawn<A: RemoteSpawn, C: context::Actor>(
         self,
-        cx: &impl context::Actor,
+        cx: &C,
         actor_name: &str,
         params: &A::Params,
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
+        C::A: Handler<SupervisionFailureMessage>,
     {
         match &self.deref().inner {
             ProcMeshKind::V0 {
@@ -1055,16 +1099,11 @@ impl fmt::Display for ProcMesh {
 impl fmt::Debug for ProcMesh {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            ProcMeshKind::V0 {
-                shape,
-                ranks,
-                client_proc,
-                ..
-            } => f
+            ProcMeshKind::V0 { shape, ranks, .. } => f
                 .debug_struct("ProcMesh::V0")
                 .field("shape", shape)
                 .field("ranks", ranks)
-                .field("client_proc", client_proc)
+                .field("client_proc", &"<Proc>")
                 .field("client", &"<Instance>")
                 // Skip the alloc field since it doesn't implement Debug
                 .finish(),
@@ -1194,10 +1233,8 @@ mod tests {
 
         let instance = crate::v1::testing::instance().await;
 
-        let mut actors = mesh
-            .spawn::<TestActor>(&instance, "failing", &())
-            .await
-            .unwrap();
+        let mut actors: RootActorMesh<TestActor> =
+            mesh.spawn(&instance, "failing", &()).await.unwrap();
         let mut actor_events = actors.events().unwrap();
 
         actors
@@ -1249,10 +1286,8 @@ mod tests {
         let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
         let instance = crate::v1::testing::instance().await;
-        mesh.spawn::<TestActor>(&instance, "dup", &())
-            .await
-            .unwrap();
-        let result = mesh.spawn::<TestActor>(&instance, "dup", &()).await;
+        let _: RootActorMesh<TestActor> = mesh.spawn(&instance, "dup", &()).await.unwrap();
+        let result: Result<RootActorMesh<TestActor>, _> = mesh.spawn(&instance, "dup", &()).await;
         assert!(result.is_err());
     }
 
@@ -1278,10 +1313,8 @@ mod tests {
                 .unwrap();
             let proc_mesh_v0: ProcMesh = proc_mesh.detach().into();
 
-            let actor_mesh = proc_mesh_v0
-                .spawn::<v1::testactor::TestActor>(instance, "test", &())
-                .await
-                .unwrap();
+            let actor_mesh: RootActorMesh<v1::testactor::TestActor> =
+                proc_mesh_v0.spawn(instance, "test", &()).await.unwrap();
 
             let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
             actor_mesh

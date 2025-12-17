@@ -31,8 +31,11 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
+use hyperactor::actor::ActorErrorKind;
+use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
+use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
@@ -40,10 +43,11 @@ use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::selection::Selection;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
+use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use hyperactor_mesh_macros::sel;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
-use monarch_hyperactor::buffers::FrozenBuffer;
+use monarch_hyperactor::buffers::Buffer;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -563,10 +567,10 @@ impl History {
             let exe = remote_exception
                 .call1((exception.backtrace, traceback, rank))
                 .unwrap();
-            let data: FrozenBuffer = pickle.call1((exe,)).unwrap().extract().unwrap();
+            let mut data: Buffer = pickle.call1((exe,)).unwrap().extract().unwrap();
             PythonMessage::new_from_buf(
                 PythonMessageKind::Exception { rank: Some(rank) },
-                data.inner,
+                data.take_part(),
             )
         }));
 
@@ -927,5 +931,26 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
             }
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<SupervisionFailureMessage> for MeshControllerActor {
+    async fn handle(
+        &mut self,
+        this: &Context<Self>,
+        message: SupervisionFailureMessage,
+    ) -> anyhow::Result<()> {
+        // If an actor spawned by this one fails, we can't handle it. We fail
+        // ourselves with a chained error and bubble up to the next owner.
+        let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
+            this.self_id().clone(),
+            None,
+            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                message.event.clone(),
+            ))),
+            None,
+        )));
+        Err(anyhow::Error::new(err))
     }
 }

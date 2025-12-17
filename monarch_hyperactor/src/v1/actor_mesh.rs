@@ -28,6 +28,7 @@ use hyperactor_mesh::bootstrap::ProcStatus;
 use hyperactor_mesh::dashmap::DashMap;
 use hyperactor_mesh::proc_mesh::mesh_agent::ActorState;
 use hyperactor_mesh::resource;
+use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use hyperactor_mesh::v1::Name;
 use hyperactor_mesh::v1::actor_mesh::ActorMesh;
 use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
@@ -61,7 +62,6 @@ use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
-use crate::supervision::SupervisionFailureMessage;
 use crate::supervision::Unhealthy;
 
 struct RootHealthState {

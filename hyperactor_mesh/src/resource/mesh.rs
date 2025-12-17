@@ -115,4 +115,18 @@ mod test {
     }
 
     hyperactor::assert_behaves!(TestMeshController as Controller<TestMesh>);
+
+    #[test]
+    fn test_state_serialize_and_deserialize_with_bincode() {
+        let region: ndslice::Region = ndslice::extent!(x = 5).into();
+        let num_ranks = region.num_ranks();
+        let data = State {
+            statuses: ValueMesh::new(region, vec![Status::Running; num_ranks]).unwrap(),
+            state: 0,
+        };
+        let encoded = bincode::serialize(&data).expect("serialization failed");
+        let decoded: State<i32> = bincode::deserialize(&encoded).expect("deserialization failed");
+        assert_eq!(decoded.state, data.state);
+        assert_eq!(decoded.statuses, data.statuses);
+    }
 }

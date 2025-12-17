@@ -10,16 +10,31 @@
 
 //! This module contains common testing utilities.
 
+use std::sync::OnceLock;
+
+use async_trait::async_trait;
+use hyperactor::Actor;
+use hyperactor::Context;
+use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor::actor::ActorError;
+use hyperactor::actor::ActorErrorKind;
+use hyperactor::actor::ActorStatus;
+use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
 use hyperactor::id;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::PortReceiver;
+use hyperactor::proc::WorkCell;
+use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Extent;
 use tokio::process::Command;
 use tokio::sync::OnceCell;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::alloc::Alloc;
 use crate::alloc::AllocSpec;
@@ -27,26 +42,114 @@ use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
 use crate::alloc::ProcessAllocator;
 use crate::proc_mesh::default_transport;
+use crate::supervision::SupervisionFailureMessage;
 use crate::v1::ProcMesh;
 use crate::v1::host_mesh::HostMesh;
 
+#[derive(Debug)]
+pub struct TestRootClient {
+    signal_rx: PortReceiver<Signal>,
+    supervision_rx: PortReceiver<ActorSupervisionEvent>,
+    work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
+}
+
+impl Actor for TestRootClient {}
+
+#[async_trait]
+impl Handler<SupervisionFailureMessage> for TestRootClient {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        msg: SupervisionFailureMessage,
+    ) -> Result<(), anyhow::Error> {
+        // If a supervision failure reaches the root test client, the test has
+        // failed.
+        tracing::error!("got supervision event from child: {}", msg);
+        panic!("got supervision event from child: {}", msg);
+    }
+}
+
+impl TestRootClient {
+    fn run(mut self, instance: &'static Instance<Self>) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let err = 'messages: loop {
+                tokio::select! {
+                    work = self.work_rx.recv() => {
+                        let work = work.expect("inconsistent work queue state");
+                        if let Err(err) = work.handle(&mut self, instance).await {
+                            for supervision_event in self.supervision_rx.drain() {
+                                if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                                    break 'messages err;
+                                }
+                            }
+                            let kind = ActorErrorKind::processing(err);
+                            break ActorError {
+                                actor_id: Box::new(instance.self_id().clone()),
+                                kind: Box::new(kind),
+                            };
+                        }
+                    }
+                    _ = self.signal_rx.recv() => {
+                        // TODO: do we need any signal handling for the root client?
+                    }
+                    Ok(supervision_event) = self.supervision_rx.recv() => {
+                        if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                            break err;
+                        }
+                    }
+                };
+            };
+            let event = match *err.kind {
+                ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
+                _ => {
+                    let status = ActorStatus::generic_failure(err.kind.to_string());
+                    ActorSupervisionEvent::new(
+                        instance.self_id().clone(),
+                        Some("testclient".into()),
+                        status,
+                        None,
+                    )
+                }
+            };
+            instance.proc().handle_supervision_event(event);
+        })
+    }
+}
+
 /// Returns a new test instance; it is initialized lazily.
-pub async fn fresh_instance() -> Instance<()> {
+pub async fn fresh_instance() -> &'static Instance<TestRootClient> {
+    static INSTANCE: OnceLock<Instance<TestRootClient>> = OnceLock::new();
     let proc = Proc::direct(ChannelTransport::Unix.any(), "testproc".to_string())
         .await
         .unwrap();
-    let (actor, _handle) = proc.instance("testclient").unwrap();
-    actor
+    let (actor, _handle, supervision_rx, signal_rx, work_rx) =
+        proc.actor_instance("testclient").unwrap();
+    // Use the OnceLock to get a 'static lifetime for the instance.
+    INSTANCE
+        .set(actor)
+        .map_err(|_| "already initialized root client instance")
+        .unwrap();
+    let instance = INSTANCE.get().unwrap();
+    let client = TestRootClient {
+        signal_rx,
+        supervision_rx,
+        work_rx,
+    };
+    client.run(instance);
+    instance
 }
 
 /// Returns the singleton test instance; it is initialized lazily.
-pub async fn instance() -> &'static Instance<()> {
-    static INSTANCE: OnceCell<Instance<()>> = OnceCell::const_new();
+pub async fn instance() -> &'static Instance<TestRootClient> {
+    static INSTANCE: OnceCell<&'static Instance<TestRootClient>> = OnceCell::const_new();
     INSTANCE.get_or_init(fresh_instance).await
 }
 
 #[cfg(fbcode_build)]
-pub async fn proc_meshes(cx: &impl context::Actor, extent: Extent) -> Vec<ProcMesh> {
+pub async fn proc_meshes<C: context::Actor>(cx: &C, extent: Extent) -> Vec<ProcMesh>
+where
+    C::A: Handler<SupervisionFailureMessage>,
+{
     let mut meshes = Vec::new();
 
     meshes.push({
@@ -113,13 +216,45 @@ pub async fn allocs(extent: Extent) -> Vec<Box<dyn Alloc + Send + Sync>> {
     ]
 }
 
-/// Create a local proc mesh with the provided extent, returning the
-/// mesh itself, the controller actor, and the router.
-pub async fn local_proc_mesh(extent: Extent) -> (ProcMesh, Instance<()>, DialMailboxRouter) {
+/// Create a TestRootClient, and make the router it uses available.
+async fn fresh_instance_with_router() -> (
+    &'static Instance<TestRootClient>,
+    &'static DialMailboxRouter,
+) {
+    static INSTANCE: OnceLock<(Instance<TestRootClient>, DialMailboxRouter)> = OnceLock::new();
     let router = DialMailboxRouter::new();
     let proc = Proc::new(id!(test[0]), router.boxed());
-    let (actor, _handle) = proc.instance("controller").unwrap();
+    let (actor, _handle, supervision_rx, signal_rx, work_rx) =
+        proc.actor_instance("testclient").unwrap();
+    // Use the OnceLock to get a 'static lifetime for the instance.
+    INSTANCE
+        .set((actor, router))
+        .map_err(|_| "already initialized root client instance")
+        .unwrap();
+    let (instance, router) = INSTANCE.get().unwrap();
+    let client = TestRootClient {
+        signal_rx,
+        supervision_rx,
+        work_rx,
+    };
+    client.run(instance);
+    (instance, router)
+}
 
+/// Create a local proc mesh with the provided extent, returning the
+/// mesh itself, the controller actor, and the router.
+pub async fn local_proc_mesh(
+    extent: Extent,
+) -> (
+    ProcMesh,
+    &'static Instance<TestRootClient>,
+    &'static DialMailboxRouter,
+) {
+    static INSTANCE: OnceCell<(
+        &'static Instance<TestRootClient>,
+        &'static DialMailboxRouter,
+    )> = OnceCell::const_new();
+    let (actor, router) = INSTANCE.get_or_init(fresh_instance_with_router).await;
     let alloc = LocalAllocator
         .allocate(AllocSpec {
             extent,
@@ -131,7 +266,7 @@ pub async fn local_proc_mesh(extent: Extent) -> (ProcMesh, Instance<()>, DialMai
         .await
         .unwrap();
     (
-        ProcMesh::allocate(&actor, Box::new(alloc), "test")
+        ProcMesh::allocate(actor, Box::new(alloc), "test")
             .await
             .unwrap(),
         actor,
