@@ -315,7 +315,7 @@ def _set_context(c: Context) -> contextvars.Token[Context]:
     return _context.set(c)
 
 
-def _reset_context(c: contextvars.Token[Context]):
+def _reset_context(c: contextvars.Token[Context]) -> None:
     _context.reset(c)
 
 

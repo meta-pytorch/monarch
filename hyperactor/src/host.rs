@@ -77,6 +77,7 @@ use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::context;
 use crate::mailbox::BoxableMailboxSender;
+use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::MailboxClient;
@@ -135,14 +136,27 @@ impl<M: ProcManager> Host<M> {
     /// Serve a host using the provided ProcManager, on the provided `addr`.
     /// On success, the host will multiplex messages for procs on the host
     /// on the address of the host.
-    #[crate::instrument(fields(addr=addr.to_string()))]
     pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
+        Self::new_with_default(manager, addr, None).await
+    }
+
+    /// Like [`new`], serves a host using the provided ProcManager, on the provided `addr`.
+    /// Unknown destinations are forwarded to the default sender.
+    #[crate::instrument(fields(addr=addr.to_string()))]
+    pub async fn new_with_default(
+        manager: M,
+        addr: ChannelAddr,
+        default_sender: Option<BoxedMailboxSender>,
+    ) -> Result<Self, HostError> {
         let (frontend_addr, frontend_rx) = channel::serve(addr)?;
 
         // We set up a cascade of routers: first, the outer router supports
         // sending to the the system proc, while the dial router manages dialed
         // connections.
-        let router = DialMailboxRouter::new();
+        let router = match default_sender {
+            Some(d) => DialMailboxRouter::new_with_default(d),
+            None => DialMailboxRouter::new(),
+        };
 
         // Establish a backend channel on the preferred transport. We currently simply
         // serve the same router on both.

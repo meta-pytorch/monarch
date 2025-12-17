@@ -104,7 +104,7 @@ class BootstrapCommand:
 
 def bootstrap_host(
     bootstrap_cmd: BootstrapCommand | None,
-) -> PythonTask[(HostMesh, ProcMesh, Instance)]:
+) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
     """
     Bootstrap a host mesh in this process, returning the host mesh,
     proc mesh, and client instance.
