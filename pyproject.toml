@@ -1,5 +1,61 @@
-[tool.pytest.ini_options]
+# Build system configuration - PEP 517/518
+# Note: When using --no-build-isolation (required for wheel builds due to torch
+# detection), these deps must be manually installed via build-requirements.txt.
+# However, [build-system.requires] is still needed for standard editable installs
+# like `pip install -e '.[test]'` which don't use --no-build-isolation.
+[build-system]
+requires = ["setuptools>=64", "setuptools-rust", "wheel", "numpy"]
+build-backend = "setuptools.build_meta"
 
+[project]
+name = "monarch"
+version = "0.0.1"
+description = "Monarch: Single controller library"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "Meta", email = "oncall+monarch@xmail.facebook.com"}
+]
+
+dependencies = [
+    "pyzmq",
+    "requests",
+    "numpy",
+    "pyre-extensions",
+    "typing-extensions>=4.12",
+    "cloudpickle",
+    "torchx-nightly",
+    "lark",
+    "tabulate",
+    "opentelemetry-api",
+    "clusterscope",
+]
+
+[project.optional-dependencies]
+examples = [
+    "bs4",
+    "ipython",
+]
+test = [
+    "pytest",
+    "pytest-timeout",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pyright",
+]
+
+[project.scripts]
+monarch = "monarch.tools.cli:main"
+monarch_bootstrap = "monarch._src.actor.bootstrap_main:invoke_main"
+
+[tool.setuptools]
+packages = {find = {where = ["python"], exclude = ["tests*", "tests.*"]}}
+
+[tool.setuptools.package-dir]
+"" = "python"
+
+[tool.pytest.ini_options]
 markers = [
     "oss_skip: marks tests to skip in OSS CI",
 ]

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import sysconfig
 
-from setuptools import Command, find_packages, setup
+from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.extension import Extension
 
@@ -198,12 +198,6 @@ class Clean(Command):
         subprocess.run(["cargo", "clean"])
 
 
-with open("requirements.txt") as f:
-    reqs = f.read()
-
-with open("README.md", encoding="utf8") as f:
-    readme = f.read()
-
 if sys.platform.startswith("linux"):
     # Always include the active env's lib (Conda-safe)
     conda_lib = os.path.join(sys.prefix, "lib")
@@ -280,35 +274,10 @@ package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
 setup(
     name=package_name,
     version=package_version,
-    packages=find_packages(
-        where="python",
-        exclude=["python/tests.*", "python/tests"],
-    ),
-    package_dir={"": "python"},
-    python_requires=">= 3.10",
-    install_requires=reqs.strip().split("\n"),
-    extras_require={
-        "examples": [
-            "bs4",
-            "ipython",
-        ],
-    },
-    license="BSD-3-Clause",
-    author="Meta",
-    author_email="oncall+monarch@xmail.facebook.com",
-    description="Monarch: Single controller library",
-    long_description=readme,
-    long_description_content_type="text/markdown",
     ext_modules=[
         controller_C,
         common_C,
     ],
-    entry_points={
-        "console_scripts": [
-            "monarch=monarch.tools.cli:main",
-            "monarch_bootstrap=monarch._src.actor.bootstrap_main:invoke_main",
-        ],
-    },
     rust_extensions=rust_extensions,
     cmdclass={
         "build_ext": build_ext,
