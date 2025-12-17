@@ -595,7 +595,6 @@ class ActorEndpoint(Endpoint[P, R]):
                 ),
                 buffer,
             )
-            instant_event(f"sending {self._get_method_name()} message")
             self._actor_mesh.cast(
                 message, selection, context().actor_instance._as_rust()
             )
