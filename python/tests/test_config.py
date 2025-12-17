@@ -94,6 +94,7 @@ def test_get_set_multiple() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
+@pytest.mark.skip(reason="local procs now bypass channels -- they dispatch directly")
 def test_codec_max_frame_length_exceeds_default() -> None:
     """Test that sending 10 chunks of 1GiB fails with default 10 GiB
     limit."""
@@ -131,6 +132,7 @@ def test_codec_max_frame_length_exceeds_default() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
+@pytest.mark.skip(reason="local procs now bypass channels -- they dispatch directly")
 def test_codec_max_frame_length_with_increased_limit() -> None:
     """Test that we can successfully send 10 chunks of 1GiB each with
     100 GiB limit."""

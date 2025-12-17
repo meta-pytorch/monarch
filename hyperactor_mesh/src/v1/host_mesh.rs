@@ -147,6 +147,18 @@ impl HostRef {
     }
 }
 
+impl TryFrom<ActorRef<HostMeshAgent>> for HostRef {
+    type Error = v1::Error;
+
+    fn try_from(value: ActorRef<HostMeshAgent>) -> Result<Self, v1::Error> {
+        let proc_id = value.actor_id().proc_id();
+        match proc_id.as_direct() {
+            Some((addr, _)) => Ok(HostRef(addr.clone())),
+            None => Err(v1::Error::RankedProc(proc_id.clone())),
+        }
+    }
+}
+
 impl std::fmt::Display for HostRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -732,6 +744,29 @@ impl HostMeshRef {
             region: extent!(hosts = hosts.len()).into(),
             ranks: Arc::new(hosts.into_iter().map(HostRef).collect()),
         }
+    }
+
+    /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
+    pub fn from_host_agents(name: Name, agents: Vec<ActorRef<HostMeshAgent>>) -> v1::Result<Self> {
+        Ok(Self {
+            name,
+            region: extent!(hosts = agents.len()).into(),
+            ranks: Arc::new(
+                agents
+                    .into_iter()
+                    .map(HostRef::try_from)
+                    .collect::<v1::Result<_>>()?,
+            ),
+        })
+    }
+
+    /// Create a unit HostMeshRef from a host mesh agent.
+    pub fn from_host_agent(name: Name, agent: ActorRef<HostMeshAgent>) -> v1::Result<Self> {
+        Ok(Self {
+            name,
+            region: Extent::unity().into(),
+            ranks: Arc::new(vec![HostRef::try_from(agent)?]),
+        })
     }
 
     /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
