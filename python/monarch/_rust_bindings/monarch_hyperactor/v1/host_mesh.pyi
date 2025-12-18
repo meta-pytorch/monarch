@@ -113,3 +113,16 @@ def bootstrap_host(
     - `bootstrap_cmd`: The bootstrap command to use to bootstrap the host.
     """
     ...
+
+def shutdown_local_host_mesh() -> PythonTask[None]:
+    """
+    Shutdown the local host mesh created by bootstrap_host().
+
+    Sends ShutdownHost message to the local host mesh agent with:
+    - timeout: 10 seconds grace period before SIGTERM escalation
+    - max_in_flight: 16 concurrent child terminations
+
+    Raises:
+        RuntimeError: If no local host mesh exists (bootstrap_host not called)
+    """
+    ...
