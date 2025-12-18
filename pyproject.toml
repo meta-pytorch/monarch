@@ -73,6 +73,7 @@ python-downloads = "automatic"  # Automatically download Python if needed
 examples = [
     "bs4",
     "ipython",
+    "psutil",
 ]
 test = [
     "pytest",
