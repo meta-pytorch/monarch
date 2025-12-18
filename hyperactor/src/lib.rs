@@ -142,6 +142,8 @@ pub use hyperactor_telemetry::declare_static_timer;
 pub use hyperactor_telemetry::key_value;
 pub use hyperactor_telemetry::kv_pairs;
 #[doc(inline)]
+pub use init::get_runtime;
+#[doc(inline)]
 pub use init::initialize;
 #[doc(inline)]
 pub use init::initialize_with_current_runtime;

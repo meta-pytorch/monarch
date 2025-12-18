@@ -380,11 +380,20 @@ def shutdown_context() -> "Future[None]":
                       completion.
     """
     from monarch._src.actor.future import Future
+    from monarch._src.actor.v1 import enabled as v1_enabled
 
-    client_host_ctx = _client_context.try_get()
-    if client_host_ctx is not None:
-        host_mesh = client_host_ctx.actor_instance.proc_mesh.host_mesh
-        return host_mesh.shutdown()
+    if v1_enabled:
+        try:
+            from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
+                shutdown_local_host_mesh,
+            )
+
+            # This function blocks and then exits the process
+            shutdown_local_host_mesh()
+            # Never reached
+        except RuntimeError:
+            # No local host mesh to shutdown
+            pass
 
     # Nothing to shutdown - return a completed future
     async def noop() -> None:
