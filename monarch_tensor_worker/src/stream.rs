@@ -2034,13 +2034,12 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            let result = allclose(
+            // rustfmt-ignore
+            allclose(
                 &factory_float_tensor(data, "cpu".parse().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap();
-            // rustfmt-ignore
-            result
+            .unwrap()
         }
 
         #[allow(dead_code)]
