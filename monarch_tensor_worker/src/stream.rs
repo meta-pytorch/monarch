@@ -785,7 +785,7 @@ impl StreamActor {
         // Resolve args and kwargs
         let py_args: Vec<PyTree<PyArg>> = args_tuple
             .iter()
-            .map(|item| resolve(item))
+            .map(&resolve)
             .collect::<Result<_, CallFunctionError>>()?;
 
         let py_kwargs: HashMap<String, PyTree<PyArg>> = kwargs_dict
