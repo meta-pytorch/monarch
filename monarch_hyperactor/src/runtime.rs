@@ -97,10 +97,38 @@ fn get_main_thread_native_id() -> i64 {
     })
 }
 
+/// Returns the current thread's native ID in a cross-platform way.
+#[cfg(target_os = "linux")]
+fn get_current_thread_id() -> i64 {
+    nix::unistd::gettid().as_raw() as i64
+}
+
+/// Returns the current thread's native ID in a cross-platform way.
+#[cfg(target_os = "macos")]
+fn get_current_thread_id() -> i64 {
+    let mut tid: u64 = 0;
+    // pthread_threadid_np with thread=0 (null pthread_t) gets the current thread's ID.
+    unsafe {
+        let ret = libc::pthread_threadid_np(0, &mut tid);
+        debug_assert_eq!(
+            ret, 0,
+            "pthread_threadid_np failed with error code: {}",
+            ret
+        );
+    }
+    // macOS thread IDs are u64 so we need to convert to i64.
+    debug_assert!(tid <= i64::MAX as u64, "thread ID {} exceeds i64::MAX", tid);
+    tid as i64
+}
+
+/// Returns the current thread's native ID in a cross-platform way.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("get_current_thread_id is only implemented for Linux and macOS");
+
 /// Returns true if the current thread is the main Python thread.
 /// Compares the current thread's native ID against the main Python thread's native ID.
 pub fn is_main_thread() -> bool {
-    let current_tid = nix::unistd::gettid().as_raw() as i64;
+    let current_tid = get_current_thread_id();
     current_tid == get_main_thread_native_id()
 }
 
