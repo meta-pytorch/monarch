@@ -1256,7 +1256,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use proptest::prelude::*;
-    use proptest::test_runner::TestRunner;
 
     use crate::selection::EvalOpts;
     use crate::strategy::gen_selection;
@@ -1272,26 +1271,22 @@ mod tests {
         //       cc 8eeb877d0ae01955610362f0b8b5fce502a5b3ea58ed1fcbde7767b185474a79
         //   Test failed: empty range 3:4:1.
         #[cfg_attr(not(fbcode_build), ignore)]
-        fn test_reshape_selection((slice, fanout_limit) in gen_slice(4, 64).prop_flat_map(|slice| {
-            let max_dimension_size = slice.sizes().iter().max().unwrap();
-            (1..=*max_dimension_size).prop_map(move |fanout_limit| (slice.clone(), fanout_limit))
-        })) {
+        fn test_reshape_selection((slice, fanout_limit, selection) in gen_slice(4, 64).prop_flat_map(|slice| {
             let shape = slice.sizes().to_vec();
-
-            let mut runner = TestRunner::default();
-            let selection = gen_selection(4, shape.clone(), 0).new_tree(&mut runner).unwrap().current();
-
+            let max_dimension_size = *slice.sizes().iter().max().unwrap();
+            (Just(slice), 1..=max_dimension_size, gen_selection(4, shape, 0))
+        })) {
             let original_selected_ranks = selection
                 .eval(&EvalOpts::strict(), &slice)
                 .unwrap()
                 .collect::<BTreeSet<_>>();
 
             let reshaped_slice = reshape_with_limit(&slice, Limit::from(fanout_limit));
-            let reshaped_selection = reshape_selection(selection, &slice, &reshaped_slice).ok().unwrap();
+            let reshaped_selection = reshape_selection(selection.clone(), &slice, &reshaped_slice).ok().unwrap();
 
             let folded_selected_ranks = reshaped_selection
-            .eval(&EvalOpts::strict(), &reshaped_slice)?
-            .collect::<BTreeSet<_>>();
+                .eval(&EvalOpts::strict(), &reshaped_slice)?
+                .collect::<BTreeSet<_>>();
 
             prop_assert_eq!(original_selected_ranks, folded_selected_ranks);
         }
