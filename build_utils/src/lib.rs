@@ -21,6 +21,8 @@ use std::process::Command;
 use glob::glob;
 use which::which;
 
+pub mod rocm;
+
 /// Python script to extract Python paths from sysconfig
 pub const PYTHON_PRINT_DIRS: &str = r"
 import sysconfig

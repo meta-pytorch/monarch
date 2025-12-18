@@ -2995,7 +2995,6 @@ mod tests {
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!root_1_1_state.load(Ordering::SeqCst));
         assert!(!root_1_1_1_state.load(Ordering::SeqCst));
         assert!(!root_2_state.load(Ordering::SeqCst));
