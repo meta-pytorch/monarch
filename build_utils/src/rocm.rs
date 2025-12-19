@@ -305,9 +305,15 @@ fn patch_rdmaxcel_cpp_rocm6(content: &str) -> String {
         .replace("static_cast<CUdeviceptr>", "reinterpret_cast<hipDeviceptr_t>")
         .replace("static_cast<hipDeviceptr_t>", "reinterpret_cast<hipDeviceptr_t>");
 
-    // Apply constant and type replacements
+    // Apply constant replacements
     result = apply_replacements(&result, CUDA_CONSTANT_REPLACEMENTS);
-    result = apply_replacements(&result, CUDA_TYPE_REPLACEMENTS);
+    
+    // Apply type replacements - but NOT hipMemRangeHandleType (doesn't exist in ROCm 6.x)
+    result = result.replace("CUresult", "hipError_t");
+    result = result.replace("CUdevice device", "hipDevice_t device");
+    
+    // ROCm 6.x doesn't have hipMemRangeHandleType - use int as placeholder
+    result = result.replace("CUmemRangeHandleType", "int /* ROCm 6.x: no hipMemRangeHandleType */");
     
     // For ROCm 6.x, replace the dmabuf constant with HSA placeholder
     result = result.replace("hipMemRangeHandleTypeDmaBufFd", "0 /* HSA dmabuf */");
@@ -328,8 +334,12 @@ fn patch_driver_api_h_rocm6(content: &str) -> String {
         );
     }
     
-    // Apply type replacements only - do NOT rename wrapper function declarations
-    result = apply_replacements(&result, CUDA_TYPE_REPLACEMENTS);
+    // Apply type replacements - but NOT hipMemRangeHandleType (doesn't exist in ROCm 6.x)
+    result = result.replace("CUresult", "hipError_t");
+    result = result.replace("CUdevice device", "hipDevice_t device");
+    
+    // ROCm 6.x doesn't have hipMemRangeHandleType - use int as placeholder
+    result = result.replace("CUmemRangeHandleType", "int /* ROCm 6.x: no hipMemRangeHandleType */");
     
     result
 }
@@ -357,8 +367,12 @@ fn patch_driver_api_cpp_rocm6(content: &str) -> String {
     // Apply struct member access replacements
     result = apply_replacements(&result, MEMBER_ACCESS_REPLACEMENTS);
     
-    // Apply type replacements
-    result = apply_replacements(&result, CUDA_TYPE_REPLACEMENTS);
+    // Apply type replacements - but NOT hipMemRangeHandleType (doesn't exist in ROCm 6.x)
+    result = result.replace("CUresult", "hipError_t");
+    result = result.replace("CUdevice device", "hipDevice_t device");
+    
+    // ROCm 6.x doesn't have hipMemRangeHandleType - use int as placeholder
+    result = result.replace("CUmemRangeHandleType", "int /* ROCm 6.x: no hipMemRangeHandleType */");
     
     // Fix const_cast for HtoD
     result = result.replace(
@@ -394,7 +408,7 @@ hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
     int* handle,
     hipDeviceptr_t dptr,
     size_t size,
-    hipMemRangeHandleType handleType,
+    int handleType,
     unsigned long long flags) {
   (void)handleType;
   (void)flags;
@@ -416,6 +430,18 @@ hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
       handle, dptr, size, handleType, flags);
 }"#;
     result = result.replace(old_wrapper2, hsa_wrapper);
+    
+    // Handle if the type was already replaced with int placeholder
+    let old_wrapper3 = r#"hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
+    int* handle,
+    hipDeviceptr_t dptr,
+    size_t size,
+    int /* ROCm 6.x: no hipMemRangeHandleType */ handleType,
+    unsigned long long flags) {
+  return rdmaxcel::DriverAPI::get()->hipMemGetHandleForAddressRange_(
+      handle, dptr, size, handleType, flags);
+}"#;
+    result = result.replace(old_wrapper3, hsa_wrapper);
 
     result
 }
