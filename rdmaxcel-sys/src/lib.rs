@@ -148,6 +148,10 @@ pub use inner::*;
 // ROCm/HIP Compatibility Aliases
 // =============================================================================
 // These allow monarch_rdma to use CUDA names transparently on ROCm builds.
+//
+// IMPORTANT: The C++ wrapper functions keep their rdmaxcel_cu* names for API
+// stability on both ROCm 6.x and ROCm 7+. Only the internal implementations
+// differ (HSA vs native HIP).
 
 // --- Basic Type Aliases ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
@@ -207,72 +211,75 @@ pub const CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD: i32 = 0;
 #[cfg(rocm_7_plus)]
 pub use inner::hipMemRangeHandleTypeDmaBufFd as CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD;
 
+// =============================================================================
+// Driver API Wrapper Functions
+// =============================================================================
+// The C++ exports rdmaxcel_cu* names for both ROCm 6.x and 7+.
+// These are re-exported directly without renaming.
+
 // --- Driver Init/Device Functions ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipInit as rdmaxcel_cuInit;
+pub use inner::rdmaxcel_cuInit;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipDeviceGet as rdmaxcel_cuDeviceGet;
+pub use inner::rdmaxcel_cuDeviceGet;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipDeviceGetCount as rdmaxcel_cuDeviceGetCount;
+pub use inner::rdmaxcel_cuDeviceGetCount;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipPointerGetAttribute as rdmaxcel_cuPointerGetAttribute;
+pub use inner::rdmaxcel_cuPointerGetAttribute;
 
 // --- Context Functions ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipCtxCreate as rdmaxcel_cuCtxCreate_v2;
+pub use inner::rdmaxcel_cuCtxCreate_v2;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipCtxSetCurrent as rdmaxcel_cuCtxSetCurrent;
+pub use inner::rdmaxcel_cuCtxSetCurrent;
 
 // --- Error Handling Functions ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipGetErrorString as rdmaxcel_cuGetErrorString;
+pub use inner::rdmaxcel_cuGetErrorString;
 
 // --- Memory Management Functions ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemGetAllocationGranularity as rdmaxcel_cuMemGetAllocationGranularity;
+pub use inner::rdmaxcel_cuMemGetAllocationGranularity;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemCreate as rdmaxcel_cuMemCreate;
+pub use inner::rdmaxcel_cuMemCreate;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemAddressReserve as rdmaxcel_cuMemAddressReserve;
+pub use inner::rdmaxcel_cuMemAddressReserve;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemMap as rdmaxcel_cuMemMap;
+pub use inner::rdmaxcel_cuMemMap;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemSetAccess as rdmaxcel_cuMemSetAccess;
+pub use inner::rdmaxcel_cuMemSetAccess;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemUnmap as rdmaxcel_cuMemUnmap;
+pub use inner::rdmaxcel_cuMemUnmap;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemAddressFree as rdmaxcel_cuMemAddressFree;
+pub use inner::rdmaxcel_cuMemAddressFree;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemRelease as rdmaxcel_cuMemRelease;
+pub use inner::rdmaxcel_cuMemRelease;
 
 // --- Memory Copy/Set Functions ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemcpyHtoD as rdmaxcel_cuMemcpyHtoD_v2;
+pub use inner::rdmaxcel_cuMemcpyHtoD_v2;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemcpyDtoH as rdmaxcel_cuMemcpyDtoH_v2;
+pub use inner::rdmaxcel_cuMemcpyDtoH_v2;
 
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_hipMemsetD8 as rdmaxcel_cuMemsetD8_v2;
+pub use inner::rdmaxcel_cuMemsetD8_v2;
 
 // --- Dmabuf Function ---
-// ROCm 7+: direct alias to HIP function
-#[cfg(rocm_7_plus)]
-pub use inner::rdmaxcel_hipMemGetHandleForAddressRange as rdmaxcel_cuMemGetHandleForAddressRange;
-
-// ROCm 6.x: uses the CUDA-compatible wrapper we added in build.rs that internally calls HSA
-#[cfg(rocm_6_x)]
+// Both ROCm 6.x and 7+ export rdmaxcel_cuMemGetHandleForAddressRange from C++
+// (ROCm 6.x uses HSA internally, ROCm 7+ uses native hipMemGetHandleForAddressRange)
+#[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::rdmaxcel_cuMemGetHandleForAddressRange;
 
 // =============================================================================
