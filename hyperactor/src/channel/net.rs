@@ -149,7 +149,11 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
         if let Err(mpsc::error::SendError((message, return_channel, _))) =
             self.sender.send((message, return_channel, RealClock.now()))
         {
-            let _ = return_channel.send(SendError(ChannelError::Closed, message));
+            let _ = return_channel.send(SendError {
+                error: ChannelError::Closed,
+                message,
+                reason: None,
+            });
         }
     }
 }
@@ -948,7 +952,14 @@ mod tests {
 
             let (return_tx, return_rx) = oneshot::channel();
             tx.try_post(123, return_tx);
-            assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
+            assert_matches!(
+                return_rx.await,
+                Ok(SendError {
+                    error: ChannelError::Closed,
+                    message: 123,
+                    ..
+                })
+            );
         }
 
         Ok(())
@@ -1016,7 +1027,14 @@ mod tests {
 
             let (return_tx, return_rx) = oneshot::channel();
             tx.try_post(123, return_tx);
-            assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
+            assert_matches!(
+                return_rx.await,
+                Ok(SendError {
+                    error: ChannelError::Closed,
+                    message: 123,
+                    ..
+                })
+            );
         }
     }
 
@@ -1047,7 +1065,7 @@ mod tests {
             let message = "a".repeat(default_size_in_bytes + 1024);
             tx.try_post(message.clone(), return_channel);
             let returned = return_receiver.await.unwrap();
-            assert_eq!(message, returned.1);
+            assert_eq!(message, returned.message);
         }
     }
 
@@ -1108,7 +1126,14 @@ mod tests {
 
             let (return_tx, return_rx) = oneshot::channel();
             tx.try_post(123, return_tx);
-            assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
+            assert_matches!(
+                return_rx.await,
+                Ok(SendError {
+                    error: ChannelError::Closed,
+                    message: 123,
+                    ..
+                })
+            );
         }
     }
 

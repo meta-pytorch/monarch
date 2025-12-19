@@ -802,18 +802,10 @@ impl MailboxSender for UndeliverableMailboxSender {
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
-        _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let sender_name = envelope.sender.name();
-        let mut error_str = "".to_string();
-        if !envelope.errors.is_empty() {
-            error_str = envelope
-                .errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
-        }
+        let error_str = envelope.error_msg().unwrap_or("".to_string());
         // The undeliverable message was unable to be delivered back to the
         // sender for some reason
         tracing::error!(
@@ -823,6 +815,7 @@ impl MailboxSender for UndeliverableMailboxSender {
             dest = envelope.dest.to_string(),
             headers = envelope.headers().to_string(), // todo: implement tracing::Value for Attrs
             data = envelope.data().to_string(),
+            return_handle = %return_handle,
             "message not delivered, {}",
             error_str,
         );
@@ -1144,11 +1137,15 @@ impl MailboxClient {
             // Set up for delivery failure.
             let return_handle_0 = return_handle.clone();
             tokio::spawn(async move {
-                let result = return_receiver.await;
-                if let Ok(SendError(e, message)) = result {
+                if let Ok(SendError {
+                    error,
+                    message,
+                    reason,
+                }) = return_receiver.await
+                {
                     message.undeliverable(
                         DeliveryError::BrokenLink(format!(
-                            "failed to enqueue in MailboxClient when processing buffer: {e}"
+                            "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason:?}"
                         )),
                         return_handle_0,
                     );

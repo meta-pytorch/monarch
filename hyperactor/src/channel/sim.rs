@@ -280,7 +280,11 @@ impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
             Err(err) => {
                 if let Some(return_channel) = return_channel {
                     return_channel
-                        .send(SendError(err.into(), message))
+                        .send(SendError {
+                            error: err.into(),
+                            message,
+                            reason: None,
+                        })
                         .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
                 }
 
@@ -312,7 +316,11 @@ impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
                 if let Err(err) = result {
                     if let Some(return_channel) = return_channel {
                         return_channel
-                            .send(SendError(err.into(), message))
+                            .send(SendError {
+                                error: err.into(),
+                                message,
+                                reason: None,
+                            })
                             .unwrap_or_else(|m| {
                                 tracing::warn!("failed to deliver SendError: {}", m)
                             });
@@ -322,7 +330,11 @@ impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
             Err(err) => {
                 if let Some(return_channel) = return_channel {
                     return_channel
-                        .send(SendError(err.into(), message))
+                        .send(SendError {
+                            error: err.into(),
+                            message,
+                            reason: None,
+                        })
                         .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
                 }
             }

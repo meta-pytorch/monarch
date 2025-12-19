@@ -87,12 +87,20 @@ pub enum ChannelError {
 
 /// An error that occurred during send. Returns the message that failed to send.
 #[derive(thiserror::Error, Debug)]
-#[error("{0}")]
-pub struct SendError<M: RemoteMessage>(#[source] pub ChannelError, pub M);
+#[error("{error} for reason {reason:?}")]
+pub struct SendError<M: RemoteMessage> {
+    /// Inner channel error
+    #[source]
+    pub error: ChannelError,
+    /// Message that couldn't be sent
+    pub message: M,
+    /// Reason that message couldn't be sent, if any.
+    pub reason: Option<String>,
+}
 
 impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
     fn from(error: SendError<M>) -> Self {
-        error.0
+        error.error
     }
 }
 
@@ -189,7 +197,11 @@ impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
         if let Err(mpsc::error::SendError(message)) = self.tx.send(message) {
             if let Some(return_channel) = return_channel {
                 return_channel
-                    .send(SendError(ChannelError::Closed, message))
+                    .send(SendError {
+                        error: ChannelError::Closed,
+                        message,
+                        reason: None,
+                    })
                     .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
             }
         }
@@ -1315,7 +1327,14 @@ mod tests {
                     break result;
                 }
             };
-            assert_matches!(result, Ok(SendError(ChannelError::Closed, 123)));
+            assert_matches!(
+                result,
+                Ok(SendError {
+                    error: ChannelError::Closed,
+                    message: 123,
+                    reason: None
+                })
+            );
         }
     }
 
@@ -1410,7 +1429,11 @@ mod tests {
             drop(rx);
             assert_matches!(
                 tx.send(123).await.unwrap_err(),
-                SendError(ChannelError::Closed, 123)
+                SendError {
+                    error: ChannelError::Closed,
+                    message: 123,
+                    ..
+                }
             );
         }
     }
