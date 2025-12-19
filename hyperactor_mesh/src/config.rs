@@ -23,7 +23,7 @@ declare_attrs! {
     /// the limit so no dimension needs to be folded.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE".to_string()),
-        py_name: None,
+        py_name: Some("max_cast_dimension_size".to_string()),
     })
     pub attr MAX_CAST_DIMENSION_SIZE: usize = usize::MAX;
 }

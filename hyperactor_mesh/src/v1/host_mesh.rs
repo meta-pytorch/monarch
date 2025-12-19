@@ -82,13 +82,13 @@ declare_attrs! {
     /// meshes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_PROC_STOP_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("proc_stop_max_idle".to_string()),
     })
     pub attr PROC_STOP_MAX_IDLE: Duration = Duration::from_secs(30);
 
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("get_proc_state_max_idle".to_string()),
     })
     pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
@@ -1639,6 +1639,15 @@ mod tests {
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_mins(1),
         );
+
+        // Unset env vars that were mirrored by TestOverride, so child
+        // processes don't inherit them. This allows Runtime layer to
+        // override ClientOverride. SAFETY: Single-threaded test under
+        // global config lock.
+        unsafe {
+            std::env::remove_var("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT");
+            std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT");
+        }
 
         let instance = testing::instance().await;
 
