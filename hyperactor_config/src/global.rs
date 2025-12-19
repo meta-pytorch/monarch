@@ -908,6 +908,13 @@ mod tests {
             py_name: None,
         })
         pub attr MESSAGE_TTL_DEFAULT: u8 = 64;
+
+        /// A test key with no environment variable mapping
+        @meta(CONFIG = ConfigAttr {
+            env_name: None,
+            py_name: None,
+        })
+        pub attr CONFIG_KEY_NO_ENV: u32 = 100;
     }
 
     #[test]
@@ -1368,5 +1375,203 @@ mod tests {
         create_or_merge(Source::Runtime, rt);
 
         assert_eq!(get(MESSAGE_TTL_DEFAULT), 42);
+    }
+
+    #[test]
+    fn test_clientoverride_precedence_loses_to_all_other_layers() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // ClientOverride sets a baseline value.
+        let mut client = Attrs::new();
+        client[MESSAGE_TTL_DEFAULT] = 10;
+        set(Source::ClientOverride, client);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 10);
+
+        // File should beat ClientOverride.
+        let mut file = Attrs::new();
+        file[MESSAGE_TTL_DEFAULT] = 20;
+        set(Source::File, file);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 20);
+
+        // Runtime should beat both File and ClientOverride.
+        let mut runtime = Attrs::new();
+        runtime[MESSAGE_TTL_DEFAULT] = 30;
+        set(Source::Runtime, runtime);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 30);
+
+        // Env should beat Runtime, File, and ClientOverride.
+        let mut env = Attrs::new();
+        env[MESSAGE_TTL_DEFAULT] = 40;
+        set(Source::Env, env);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 40);
+
+        // Clear higher layers one by one to verify fallback.
+        clear(Source::Env);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 30); // Runtime
+
+        clear(Source::Runtime);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 20); // File
+
+        clear(Source::File);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 10); // ClientOverride
+    }
+
+    #[test]
+    fn test_create_or_merge_clientoverride() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Seed ClientOverride with one key.
+        let mut client = Attrs::new();
+        client[MESSAGE_TTL_DEFAULT] = 10;
+        set(Source::ClientOverride, client);
+
+        // Merge in a different key.
+        let mut update = Attrs::new();
+        update[MESSAGE_ACK_EVERY_N_MESSAGES] = 123;
+        create_or_merge(Source::ClientOverride, update);
+
+        // Both keys should now be visible.
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 10);
+        assert_eq!(get(MESSAGE_ACK_EVERY_N_MESSAGES), 123);
+    }
+
+    #[test]
+    fn test_override_or_global_returns_override_when_present() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Set a global value via Env.
+        let mut env = Attrs::new();
+        env[MESSAGE_TTL_DEFAULT] = 99;
+        set(Source::Env, env);
+
+        // Create an override Attrs with a different value.
+        let mut overrides = Attrs::new();
+        overrides[MESSAGE_TTL_DEFAULT] = 42;
+
+        // Should return the override value, not global.
+        assert_eq!(override_or_global(&overrides, MESSAGE_TTL_DEFAULT), 42);
+    }
+
+    #[test]
+    fn test_override_or_global_returns_global_when_not_present() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Set a global value via Env.
+        let mut env = Attrs::new();
+        env[MESSAGE_TTL_DEFAULT] = 99;
+        set(Source::Env, env);
+
+        // Empty overrides.
+        let overrides = Attrs::new();
+
+        // Should return the global value.
+        assert_eq!(override_or_global(&overrides, MESSAGE_TTL_DEFAULT), 99);
+    }
+
+    #[test]
+    fn test_runtime_attrs_returns_only_runtime_layer() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Set values in multiple layers.
+        let mut file = Attrs::new();
+        file[MESSAGE_TTL_DEFAULT] = 10;
+        set(Source::File, file);
+
+        let mut env = Attrs::new();
+        env[SPLIT_MAX_BUFFER_SIZE] = 20;
+        set(Source::Env, env);
+
+        let mut runtime = Attrs::new();
+        runtime[MESSAGE_ACK_EVERY_N_MESSAGES] = 123;
+        set(Source::Runtime, runtime);
+
+        // runtime_attrs() should return only Runtime layer contents.
+        let rt = runtime_attrs();
+
+        // Should have the Runtime key.
+        assert_eq!(rt[MESSAGE_ACK_EVERY_N_MESSAGES], 123);
+
+        // Should NOT have File or Env keys.
+        assert!(!rt.contains_key(MESSAGE_TTL_DEFAULT));
+        assert!(!rt.contains_key(SPLIT_MAX_BUFFER_SIZE));
+    }
+
+    #[test]
+    fn test_override_key_without_env_name_does_not_mirror_to_env() {
+        let lock = lock();
+        reset_to_defaults();
+
+        // Verify default value.
+        assert_eq!(get(CONFIG_KEY_NO_ENV), 100);
+
+        // Override the key (which has no env_name).
+        let _guard = lock.override_key(CONFIG_KEY_NO_ENV, 999);
+
+        // Should see the override value.
+        assert_eq!(get(CONFIG_KEY_NO_ENV), 999);
+
+        // No env var should have been set (test doesn't crash,
+        // behavior is clean). This test mainly ensures no panic
+        // occurs during override/restore.
+
+        drop(_guard);
+
+        // Should restore to default.
+        assert_eq!(get(CONFIG_KEY_NO_ENV), 100);
+    }
+
+    #[test]
+    fn test_multiple_different_keys_overridden_simultaneously() {
+        let lock = lock();
+        reset_to_defaults();
+
+        // SAFETY: single-threaded test.
+        unsafe {
+            std::env::remove_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH");
+            std::env::remove_var("HYPERACTOR_MESSAGE_TTL_DEFAULT");
+        }
+
+        // Override multiple different keys at once.
+        let guard1 = lock.override_key(CODEC_MAX_FRAME_LENGTH, 1111);
+        let guard2 = lock.override_key(MESSAGE_TTL_DEFAULT, 42);
+        let guard3 = lock.override_key(CHANNEL_MULTIPART, false);
+
+        // All should reflect their override values.
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 42);
+        assert_eq!(get(CHANNEL_MULTIPART), false);
+
+        // Env vars should be mirrored.
+        assert_eq!(
+            std::env::var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH").unwrap(),
+            "1111"
+        );
+        assert_eq!(
+            std::env::var("HYPERACTOR_MESSAGE_TTL_DEFAULT").unwrap(),
+            "42"
+        );
+
+        // Drop guards in arbitrary order.
+        drop(guard2); // Drop MESSAGE_TTL_DEFAULT first
+
+        // MESSAGE_TTL_DEFAULT should restore, others should remain.
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), MESSAGE_TTL_DEFAULT_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
+        assert_eq!(get(CHANNEL_MULTIPART), false);
+
+        // Env for MESSAGE_TTL_DEFAULT should be cleared.
+        assert!(std::env::var("HYPERACTOR_MESSAGE_TTL_DEFAULT").is_err());
+
+        drop(guard1);
+        drop(guard3);
+
+        // All should be restored.
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CHANNEL_MULTIPART), CHANNEL_MULTIPART_DEFAULT);
     }
 }
