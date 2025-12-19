@@ -1,5 +1,5 @@
 """
-SkyPilotJob for Monarch.
+Monarch JobTrait implementation for SkyPilot.
 
 SkyPilotJob allows running Monarch on Kubernetes and cloud VMs via SkyPilot. 
 
@@ -40,7 +40,7 @@ if not logger.handlers:
 logger.propagate = False
 
 # Default port for Monarch TCP communication
-DEFAULT_MONARCH_PORT = 22222
+MONARCH_WORKER_PORT = 22222
 
 # Timeout for waiting for the job to reach RUNNING status.
 JOB_TIMEOUT = 300 # seconds
@@ -110,9 +110,9 @@ class SkyPilotJob(JobTrait):
         meshes: Dict[str, int],
         resources: Optional["sky.Resources"] = None,
         cluster_name: Optional[str] = None,
-        monarch_port: int = DEFAULT_MONARCH_PORT,
+        monarch_port: int = MONARCH_WORKER_PORT,
         idle_minutes_to_autostop: Optional[int] = None,
-        down_on_autostop: bool = False,
+        down_on_autostop: bool = True,
         python_exe: str = "python",
         setup_commands: Optional[str] = None,
         workdir: Optional[str] = None,
@@ -129,7 +129,9 @@ class SkyPilotJob(JobTrait):
             idle_minutes_to_autostop: If set, cluster will autostop after this
                                       many minutes of idleness.
             down_on_autostop: If True, tear down cluster on autostop instead of
-                              just stopping it.
+                              just stopping it. On Kubernetes, autostop is not 
+                              supported and this must be set to True. Pods will
+                              be deleted when the SkyPilot cluster is downed.
             python_exe: Python executable to use for worker processes.
             setup_commands: Optional setup commands to run before starting workers.
                            If None, uses DEFAULT_SETUP_COMMANDS which installs
