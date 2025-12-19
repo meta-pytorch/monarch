@@ -201,6 +201,10 @@ impl<'py> IntoPyObject<'py> for PyDuration {
 // Declare monarch-specific configuration keys
 declare_attrs! {
     /// Use a single asyncio runtime for all Python actors, rather than one per actor
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_SHARED_ASYNCIO_RUNTIME".to_string()),
+        py_name: Some("shared_asyncio_runtime".to_string()),
+    })
     pub attr SHARED_ASYNCIO_RUNTIME: bool = false;
 }
 

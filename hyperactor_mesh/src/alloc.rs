@@ -70,7 +70,7 @@ declare_attrs! {
     /// us to bind the port to the host's public IP address.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY".to_string()),
-        py_name: None,
+        py_name: Some("remote_alloc_bind_to_inaddr_any".to_string()),
     })
     pub attr REMOTE_ALLOC_BIND_TO_INADDR_ANY: bool = false;
 
@@ -89,7 +89,7 @@ declare_attrs! {
     // TODO: remove this env var, and make it part of alloc spec instead.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_REMOTE_ALLOC_BOOTSTRAP_ADDR".to_string()),
-        py_name: None,
+        py_name: Some("remote_alloc_bootstrap_addr".to_string()),
     })
     pub attr REMOTE_ALLOC_BOOTSTRAP_ADDR: String;
 
@@ -104,7 +104,7 @@ declare_attrs! {
     /// ports are allowed to be used.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE".to_string()),
-        py_name: None,
+        py_name: Some("remote_alloc_allowed_port_range".to_string()),
     })
     pub attr REMOTE_ALLOC_ALLOWED_PORT_RANGE: Range<u16>;
 }

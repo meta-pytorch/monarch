@@ -144,7 +144,7 @@ declare_attrs! {
     /// "false")`.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG".to_string()),
-        py_name: None,
+        py_name: Some("mesh_bootstrap_enable_pdeathsig".to_string()),
     })
     pub attr MESH_BOOTSTRAP_ENABLE_PDEATHSIG: bool = true;
 
@@ -154,7 +154,7 @@ declare_attrs! {
     /// file descriptor load).
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_TERMINATE_CONCURRENCY".to_string()),
-        py_name: None,
+        py_name: Some("mesh_terminate_concurrency".to_string()),
     })
     pub attr MESH_TERMINATE_CONCURRENCY: usize = 16;
 
@@ -163,7 +163,7 @@ declare_attrs! {
     /// the child to exit before escalating to SIGKILL.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_TERMINATE_TIMEOUT".to_string()),
-        py_name: None,
+        py_name: Some("mesh_terminate_timeout".to_string()),
     })
     pub attr MESH_TERMINATE_TIMEOUT: Duration = Duration::from_secs(10);
 }
