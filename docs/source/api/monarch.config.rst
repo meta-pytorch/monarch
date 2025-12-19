@@ -159,6 +159,62 @@ Timeouts
     spawn operation fails. This prevents hung or stuck process creation from
     waiting indefinitely.
 
+``process_exit_timeout``
+    Timeout for waiting on process exit during shutdown.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"10s"``
+    - **Environment**: ``HYPERACTOR_PROCESS_EXIT_TIMEOUT``
+
+``stop_actor_timeout``
+    Timeout for gracefully stopping actors.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"10s"``
+    - **Environment**: ``HYPERACTOR_STOP_ACTOR_TIMEOUT``
+
+``cleanup_timeout``
+    Timeout for cleanup operations during shutdown.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"3s"``
+    - **Environment**: ``HYPERACTOR_CLEANUP_TIMEOUT``
+
+``actor_spawn_max_idle``
+    Maximum idle time between updates while spawning actors in a proc mesh.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"30s"``
+    - **Environment**: ``HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE``
+
+``get_actor_state_max_idle``
+    Maximum idle time for actor state queries.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"1m"``
+    - **Environment**: ``HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE``
+
+``proc_stop_max_idle``
+    Maximum idle time between updates while stopping procs.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"30s"``
+    - **Environment**: ``HYPERACTOR_MESH_PROC_STOP_MAX_IDLE``
+
+``get_proc_state_max_idle``
+    Maximum idle time for proc state queries.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"1m"``
+    - **Environment**: ``HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE``
+
+``mesh_terminate_timeout``
+    Timeout per child during graceful mesh termination.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"10s"``
+    - **Environment**: ``HYPERACTOR_MESH_TERMINATE_TIMEOUT``
+
 
 Logging
 -------
@@ -212,6 +268,198 @@ Logging
         with configured(tail_log_lines=100):
             mesh = this_host().spawn_procs(per_host={"workers": 4})
 
+``read_log_buffer``
+    Buffer size for reading logs (in bytes).
+
+    - **Type**: ``int``
+    - **Default**: ``100``
+    - **Environment**: ``HYPERACTOR_READ_LOG_BUFFER``
+
+``force_file_log``
+    Force file-based logging regardless of environment.
+
+    - **Type**: ``bool``
+    - **Default**: ``False``
+    - **Environment**: ``HYPERACTOR_FORCE_FILE_LOG``
+
+``prefix_with_rank``
+    Prefix log lines with rank information.
+
+    - **Type**: ``bool``
+    - **Default**: ``True``
+    - **Environment**: ``HYPERACTOR_PREFIX_WITH_RANK``
+
+
+Message Handling
+----------------
+
+``message_ack_time_interval``
+    Time interval for message acknowledgments.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"500ms"``
+    - **Environment**: ``HYPERACTOR_MESSAGE_ACK_TIME_INTERVAL``
+
+``message_ack_every_n_messages``
+    Acknowledge every N messages.
+
+    - **Type**: ``int``
+    - **Default**: ``1000``
+    - **Environment**: ``HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES``
+
+``message_ttl_default``
+    Default message time-to-live (number of hops).
+
+    - **Type**: ``int``
+    - **Default**: ``64``
+    - **Environment**: ``HYPERACTOR_MESSAGE_TTL_DEFAULT``
+
+``split_max_buffer_size``
+    Maximum buffer size for message splitting (number of fragments).
+
+    - **Type**: ``int``
+    - **Default**: ``5``
+    - **Environment**: ``HYPERACTOR_SPLIT_MAX_BUFFER_SIZE``
+
+``split_max_buffer_age``
+    Maximum age for split message buffers.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"50ms"``
+    - **Environment**: ``HYPERACTOR_SPLIT_MAX_BUFFER_AGE``
+
+``channel_net_rx_buffer_full_check_interval``
+    Network receive buffer check interval.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"5s"``
+    - **Environment**: ``HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL``
+
+``message_latency_sampling_rate``
+    Sampling rate for message latency tracking (0.0 to 1.0).
+
+    - **Type**: ``float``
+    - **Default**: ``0.01``
+    - **Environment**: ``HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE``
+
+    A value of ``0.01`` means 1% of messages are sampled. Use ``1.0`` for
+    100% sampling (all messages) or ``0.0`` to disable sampling.
+
+``enable_client_seq_assignment``
+    Enable client-side sequence assignment for messages.
+
+    - **Type**: ``bool``
+    - **Default**: ``False``
+    - **Environment**: ``HYPERACTOR_ENABLE_CLIENT_SEQ_ASSIGNMENT``
+
+
+Message Encoding
+----------------
+
+``default_encoding``
+    Default message encoding format.
+
+    - **Type**: ``str``
+    - **Default**: ``"serde_multipart"``
+    - **Environment**: ``HYPERACTOR_DEFAULT_ENCODING``
+
+    Supported values:
+
+    - ``"bincode"`` - Binary encoding
+    - ``"serde_json"`` - JSON encoding
+    - ``"serde_multipart"`` - Multipart encoding (default)
+
+
+Mesh Bootstrap
+--------------
+
+``mesh_bootstrap_enable_pdeathsig``
+    Enable parent-death signal for spawned processes.
+
+    - **Type**: ``bool``
+    - **Default**: ``True``
+    - **Environment**: ``HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG``
+
+    When ``True``, child processes receive SIGTERM if their parent dies,
+    preventing orphaned processes.
+
+``mesh_terminate_concurrency``
+    Maximum concurrent terminations during mesh shutdown.
+
+    - **Type**: ``int``
+    - **Default**: ``16``
+    - **Environment**: ``HYPERACTOR_MESH_TERMINATE_CONCURRENCY``
+
+
+Runtime and Buffering
+----------------------
+
+``shared_asyncio_runtime``
+    Share asyncio runtime across actors.
+
+    - **Type**: ``bool``
+    - **Default**: ``False``
+    - **Environment**: ``MONARCH_HYPERACTOR_SHARED_ASYNCIO_RUNTIME``
+
+``small_write_threshold``
+    Threshold below which writes are copied (in bytes).
+
+    - **Type**: ``int``
+    - **Default**: ``256``
+    - **Environment**: ``MONARCH_HYPERACTOR_SMALL_WRITE_THRESHOLD``
+
+    Writes smaller than this threshold are copied into a contiguous buffer.
+    Writes at or above this size are stored as zero-copy references.
+
+
+Mesh Configuration
+------------------
+
+``max_cast_dimension_size``
+    Maximum dimension size for cast operations.
+
+    - **Type**: ``int``
+    - **Default**: ``usize::MAX`` (platform-dependent)
+    - **Environment**: ``HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE``
+
+
+Remote Allocation
+-----------------
+
+``remote_allocator_heartbeat_interval``
+    Heartbeat interval for remote allocator.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"5m"``
+    - **Environment**: ``HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL``
+
+``remote_alloc_bind_to_inaddr_any``
+    Bind remote allocators to INADDR_ANY (0.0.0.0).
+
+    - **Type**: ``bool``
+    - **Default**: ``False``
+    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY``
+
+``remote_alloc_bootstrap_addr``
+    Bootstrap address for remote allocators.
+
+    - **Type**: ``str``
+    - **Default**: None (no default)
+    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_BOOTSTRAP_ADDR``
+
+    Example: ``"tcp://127.0.0.1:9000"``
+
+``remote_alloc_allowed_port_range``
+    Allowed port range for remote allocators.
+
+    - **Type**: ``str`` or ``tuple[int, int]``
+    - **Default**: None (no default)
+    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE``
+
+    Can be specified as a string (``"8000..9000"``) or tuple (``(8000,
+    9000)``).
+
+
 Validation and Error Handling
 -----------------------------
 
@@ -219,12 +467,14 @@ Validation and Error Handling
 
 * Unknown keys raise ``ValueError``.
 * Type mismatches raise ``TypeError`` (for example, passing a string instead
-  of ``ChannelTransport`` for ``default_transport`` or a non-bool to logging
-  flags).
+  of ``ChannelTransport`` for ``default_transport``, a non-bool to logging
+  flags, or an integer instead of a string for duration parameters).
+* Invalid values raise ``TypeError`` (for example, invalid encoding names,
+  invalid port ranges, or malformed duration strings).
 * Duration strings must follow
   `humantime <https://docs.rs/humantime/latest/humantime/>`_ syntax;
-  invalid strings or non-string values trigger ``TypeError`` with a message
-  that highlights the bad value.
+  invalid strings trigger ``TypeError`` with a message that highlights the
+  bad value.
 
 Normalization
 ~~~~~~~~~~~~~
