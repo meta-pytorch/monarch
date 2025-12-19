@@ -1640,6 +1640,15 @@ mod tests {
             Duration::from_mins(1),
         );
 
+        // Unset env vars that were mirrored by TestOverride, so child
+        // processes don't inherit them. This allows Runtime layer to
+        // override ClientOverride. SAFETY: Single-threaded test under
+        // global config lock.
+        unsafe {
+            std::env::remove_var("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT");
+            std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT");
+        }
+
         let instance = testing::instance().await;
 
         let proc_meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
