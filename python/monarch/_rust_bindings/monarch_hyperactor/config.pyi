@@ -82,7 +82,7 @@ def configure(
 
     For complete parameter documentation, see the Python wrapper
     `monarch.config.configure()` which provides the same interface
-    with detailed descriptions of all 39 configuration parameters
+    with detailed descriptions of all 37 configuration parameters
     organized into logical categories (transport, logging, message
     handling, mesh bootstrap, allocation, proc/host mesh timeouts,
     etc.).
