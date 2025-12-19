@@ -82,13 +82,13 @@ declare_attrs! {
     /// meshes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_PROC_STOP_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("proc_stop_max_idle".to_string()),
     })
     pub attr PROC_STOP_MAX_IDLE: Duration = Duration::from_secs(30);
 
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("get_proc_state_max_idle".to_string()),
     })
     pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
