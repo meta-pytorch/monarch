@@ -6,329 +6,440 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! Build script for rdmaxcel-sys
+//!
+//! Supports both CUDA and ROCm backends. ROCm support requires hipification
+//! of CUDA sources and version-specific patches.
+
 use std::env;
-use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 #[cfg(target_os = "macos")]
 fn main() {}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Get rdma-core config from cpp_static_libs (includes are used, links emitted by monarch_extension)
-    let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
-    let rdma_include = &cpp_static_libs_config.rdma_include;
+    // Declare cfg flags
+    println!("cargo::rustc-check-cfg=cfg(cargo)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_6_x)");
+    println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
 
-    // Link against dl for dynamic loading
+    let platform = detect_platform();
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let src_dir = manifest_dir.join("src");
+    
+    // Get RDMA includes from monarch_cpp_static_libs
+    let cpp_libs = build_utils::CppStaticLibsConfig::from_env();
+
+    // Setup linking
     println!("cargo:rustc-link-lib=dl");
+    println!("cargo:rustc-link-search=native={}", platform.lib_dir());
+    platform.emit_link_libs();
 
-    // Tell cargo to invalidate the built crate whenever the wrapper changes
-    println!("cargo:rerun-if-changed=src/rdmaxcel.h");
-    println!("cargo:rerun-if-changed=src/rdmaxcel.c");
-    println!("cargo:rerun-if-changed=src/rdmaxcel.cpp");
-    println!("cargo:rerun-if-changed=src/driver_api.h");
-    println!("cargo:rerun-if-changed=src/driver_api.cpp");
+    // Setup rerun triggers
+    for f in &["rdmaxcel.h", "rdmaxcel.c", "rdmaxcel.cpp", "rdmaxcel.cu", "driver_api.h", "driver_api.cpp"] {
+        println!("cargo:rerun-if-changed=src/{}", f);
+    }
 
-    // Validate CUDA installation and get CUDA home path
-    let cuda_home = match build_utils::validate_cuda_installation() {
-        Ok(home) => home,
-        Err(_) => {
-            build_utils::print_cuda_error_help();
-            std::process::exit(1);
+    // Build
+    if let Ok(out_dir) = env::var("OUT_DIR") {
+        let out_path = PathBuf::from(&out_dir);
+        let sources = platform.prepare_sources(&src_dir, &out_path);
+        
+        let python_config = build_utils::python_env_dirs_with_interpreter("python3")
+            .unwrap_or(build_utils::PythonConfig { include_dir: None, lib_dir: None });
+
+        generate_bindings(&sources, &platform, &cpp_libs.rdma_include, &python_config, &out_path);
+        compile_c(&sources, &platform, &cpp_libs.rdma_include);
+        compile_cpp(&sources, &platform, &cpp_libs.rdma_include, &python_config);
+        compile_gpu(&sources, &platform, &cpp_libs.rdma_include, &manifest_dir, &out_path);
+    }
+
+    println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", platform.include_dir());
+    println!("cargo:rustc-cfg=cargo");
+}
+
+// =============================================================================
+// Platform abstraction
+// =============================================================================
+
+enum Platform {
+    Cuda { home: String },
+    Rocm { home: String, version: (u32, u32) },
+}
+
+impl Platform {
+    fn include_dir(&self) -> String {
+        match self {
+            Platform::Cuda { home } | Platform::Rocm { home, .. } => format!("{}/include", home),
         }
-    };
+    }
 
-    // Get the directory of the current crate
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
-        // For buck2 run, we know the package is in fbcode/monarch/rdmaxcel-sys
-        // Get the fbsource directory from the current directory path
-        let current_dir = std::env::current_dir().expect("Failed to get current directory");
-        let current_path = current_dir.to_string_lossy();
+    fn lib_dir(&self) -> String {
+        match self {
+            Platform::Cuda { home } => build_utils::get_cuda_lib_dir(),
+            Platform::Rocm { home, .. } => {
+                build_utils::get_rocm_lib_dir().expect("Failed to get ROCm lib dir")
+            }
+        }
+    }
 
-        // Find the fbsource part of the path
-        if let Some(fbsource_pos) = current_path.find("fbsource") {
-            let fbsource_path = &current_path[..fbsource_pos + "fbsource".len()];
-            format!("{}/fbcode/monarch/rdmaxcel-sys", fbsource_path)
+    fn compiler(&self) -> String {
+        match self {
+            Platform::Cuda { home } => format!("{}/bin/nvcc", home),
+            Platform::Rocm { home, .. } => format!("{}/bin/hipcc", home),
+        }
+    }
+
+    fn is_rocm(&self) -> bool {
+        matches!(self, Platform::Rocm { .. })
+    }
+
+    fn rocm_version(&self) -> (u32, u32) {
+        match self {
+            Platform::Rocm { version, .. } => *version,
+            Platform::Cuda { .. } => (0, 0),
+        }
+    }
+
+    fn emit_link_libs(&self) {
+        match self {
+            Platform::Cuda { .. } => {
+                // CUDA: static runtime, dlopen driver API
+                println!("cargo:rustc-link-lib=static=cudart_static");
+                println!("cargo:rustc-link-lib=rt");
+                println!("cargo:rustc-link-lib=pthread");
+            }
+            Platform::Rocm { .. } => {
+                // ROCm: all driver API via dlopen
+                // Note: hipcc-compiled code still requires libamdhip64.so at runtime
+            }
+        }
+    }
+
+    fn prepare_sources(&self, src_dir: &PathBuf, out_path: &PathBuf) -> Sources {
+        match self {
+            Platform::Cuda { .. } => Sources {
+                dir: src_dir.clone(),
+                header: src_dir.join("rdmaxcel.h"),
+                c_source: src_dir.join("rdmaxcel.c"),
+                cpp_source: src_dir.join("rdmaxcel.cpp"),
+                gpu_source: src_dir.join("rdmaxcel.cu"),
+                driver_api: src_dir.join("driver_api.cpp"),
+            },
+            Platform::Rocm { version, .. } => {
+                let hip_dir = out_path.join("hipified_src");
+                hipify_sources(src_dir, &hip_dir, *version);
+                Sources {
+                    dir: hip_dir.clone(),
+                    header: hip_dir.join("rdmaxcel_hip.h"),
+                    c_source: hip_dir.join("rdmaxcel_hip.c"),
+                    cpp_source: hip_dir.join("rdmaxcel_hip.cpp"),
+                    gpu_source: hip_dir.join("rdmaxcel.hip"),
+                    driver_api: hip_dir.join("driver_api_hip.cpp"),
+                }
+            }
+        }
+    }
+
+    fn add_defines(&self, build: &mut cc::Build) {
+        if let Platform::Rocm { version, .. } = self {
+            build.define("__HIP_PLATFORM_AMD__", "1");
+            build.define("USE_ROCM", "1");
+            if version.0 >= 7 {
+                build.define("ROCM_7_PLUS", "1");
+            } else {
+                build.define("ROCM_6_X", "1");
+            }
+        }
+    }
+
+    fn clang_defines(&self) -> Vec<String> {
+        match self {
+            Platform::Cuda { .. } => vec![],
+            Platform::Rocm { version, .. } => {
+                let mut defs = vec![
+                    "-D__HIP_PLATFORM_AMD__=1".into(),
+                    "-DUSE_ROCM=1".into(),
+                ];
+                if version.0 >= 7 {
+                    defs.push("-DROCM_7_PLUS=1".into());
+                } else {
+                    defs.push("-DROCM_6_X=1".into());
+                }
+                defs
+            }
+        }
+    }
+
+    fn compiler_args(&self) -> Vec<String> {
+        match self {
+            Platform::Cuda { .. } => vec![
+                "--compiler-options".into(),
+                "-fPIC".into(),
+                "-std=c++14".into(),
+                "--expt-extended-lambda".into(),
+                "-Xcompiler".into(),
+                "-fPIC".into(),
+            ],
+            Platform::Rocm { version, .. } => {
+                let mut args = vec![
+                    "-std=c++14".into(),
+                    "-D__HIP_PLATFORM_AMD__=1".into(),
+                    "-DUSE_ROCM=1".into(),
+                ];
+                if version.0 >= 7 {
+                    args.push("-DROCM_7_PLUS=1".into());
+                } else {
+                    args.push("-DROCM_6_X=1".into());
+                }
+                args
+            }
+        }
+    }
+}
+
+struct Sources {
+    dir: PathBuf,
+    header: PathBuf,
+    c_source: PathBuf,
+    cpp_source: PathBuf,
+    gpu_source: PathBuf,
+    driver_api: PathBuf,
+}
+
+// =============================================================================
+// Platform detection
+// =============================================================================
+
+fn detect_platform() -> Platform {
+    // Try ROCm first (ROCm systems may also have CUDA installed)
+    if let Ok(home) = build_utils::validate_rocm_installation() {
+        let version = build_utils::get_rocm_version(&home).unwrap_or((6, 0));
+        println!("cargo:warning=Using HIP/ROCm {}.{} from {}", version.0, version.1, home);
+        
+        if version.0 >= 7 {
+            println!("cargo:rustc-cfg=rocm_7_plus");
         } else {
-            // If we can't find fbsource in the path, just use the current directory
-            format!("{}/src", current_dir.to_string_lossy())
+            println!("cargo:rustc-cfg=rocm_6_x");
         }
-    });
-
-    // Create the absolute path to the header file
-    let header_path = format!("{}/src/rdmaxcel.h", manifest_dir);
-
-    // Check if the header file exists
-    if !Path::new(&header_path).exists() {
-        panic!("Header file not found at {}", header_path);
+        
+        return Platform::Rocm { home, version };
     }
 
-    // Start building the bindgen configuration
+    // Fall back to CUDA
+    if let Ok(home) = build_utils::validate_cuda_installation() {
+        println!("cargo:warning=Using CUDA from {}", home);
+        return Platform::Cuda { home };
+    }
+
+    eprintln!("Error: Neither CUDA nor ROCm installation found!");
+    build_utils::print_cuda_error_help();
+    std::process::exit(1);
+}
+
+// =============================================================================
+// Hipification (ROCm only)
+// =============================================================================
+
+fn hipify_sources(src_dir: &PathBuf, hip_dir: &PathBuf, version: (u32, u32)) {
+    println!("cargo:warning=Hipifying sources to {}...", hip_dir.display());
+
+    let files: Vec<PathBuf> = [
+        "lib.rs", "rdmaxcel.h", "rdmaxcel.c", "rdmaxcel.cpp", 
+        "rdmaxcel.cu", "test_rdmaxcel.c", "driver_api.h", "driver_api.cpp"
+    ].iter()
+        .map(|f| src_dir.join(f))
+        .filter(|p| p.exists())
+        .collect();
+
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let project_root = manifest_dir.parent().expect("Failed to find project root");
+
+    build_utils::run_hipify_torch(project_root, &files, hip_dir)
+        .expect("hipify_torch failed");
+
+    // Apply version-specific patches
+    if version.0 >= 7 {
+        build_utils::rocm::patch_hipified_files_rocm7(hip_dir)
+            .expect("ROCm 7+ patching failed");
+    } else {
+        build_utils::rocm::patch_hipified_files_rocm6(hip_dir)
+            .expect("ROCm 6.x patching failed");
+    }
+
+    build_utils::rocm::validate_hipified_files(hip_dir)
+        .expect("Hipified file validation failed");
+}
+
+// =============================================================================
+// Compilation
+// =============================================================================
+
+fn generate_bindings(
+    sources: &Sources,
+    platform: &Platform,
+    rdma_include: &str,
+    python_config: &build_utils::PythonConfig,
+    out_path: &PathBuf,
+) {
     let mut builder = bindgen::Builder::default()
-        // The input header we would like to generate bindings for
-        .header(&header_path)
-        .clang_arg("-x")
-        .clang_arg("c++")
-        .clang_arg("-std=c++14")
+        .header(sources.header.to_string_lossy())
+        .clang_arg("-x").clang_arg("c++").clang_arg("-std=c++14")
+        .clang_arg(format!("-I{}", platform.include_dir()))
+        .clang_arg(format!("-I{}", rdma_include))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Allow the specified functions, types, and variables
-        .allowlist_function("ibv_.*")
-        .allowlist_function("mlx5dv_.*")
-        .allowlist_function("mlx5_wqe_.*")
-        .allowlist_function("create_qp")
-        .allowlist_function("create_mlx5dv_.*")
-        .allowlist_function("register_cuda_memory")
-        .allowlist_function("db_ring")
-        .allowlist_function("cqe_poll")
-        .allowlist_function("send_wqe")
-        .allowlist_function("recv_wqe")
-        .allowlist_function("launch_db_ring")
-        .allowlist_function("launch_cqe_poll")
-        .allowlist_function("launch_send_wqe")
-        .allowlist_function("launch_recv_wqe")
-        .allowlist_function("rdma_get_active_segment_count")
-        .allowlist_function("rdma_get_all_segment_info")
-        .allowlist_function("register_segments")
-        .allowlist_function("deregister_segments")
-        .allowlist_function("rdmaxcel_cu.*")
-        .allowlist_function("get_cuda_pci_address_from_ptr")
-        .allowlist_function("rdmaxcel_print_device_info")
-        .allowlist_function("rdmaxcel_error_string")
-        .allowlist_function("rdmaxcel_qp_.*")
-        .allowlist_function("rdmaxcel_register_segment_scanner")
-        .allowlist_function("poll_cq_with_cache")
-        .allowlist_function("completion_cache_.*")
-        .allowlist_type("ibv_.*")
-        .allowlist_type("mlx5dv_.*")
-        .allowlist_type("mlx5_wqe_.*")
-        .allowlist_type("cqe_poll_result_t")
-        .allowlist_type("wqe_params_t")
-        .allowlist_type("cqe_poll_params_t")
+        // Functions
+        .allowlist_function("ibv_.*").allowlist_function("mlx5dv_.*")
+        .allowlist_function("create_qp").allowlist_function("create_mlx5dv_.*")
+        .allowlist_function("register_cuda_memory").allowlist_function("register_hip_memory")
+        .allowlist_function("db_ring").allowlist_function("cqe_poll")
+        .allowlist_function("send_wqe").allowlist_function("recv_wqe")
+        .allowlist_function("launch_.*").allowlist_function("rdma_get_.*")
+        .allowlist_function("pt_.*_allocator_compatibility")
+        .allowlist_function("register_segments").allowlist_function("deregister_segments")
+        .allowlist_function("register_dmabuf_buffer")
+        .allowlist_function("get_.*_pci_address_from_ptr")
+        .allowlist_function("rdmaxcel_.*")
+        .allowlist_function("completion_cache_.*").allowlist_function("poll_cq_with_cache")
+        // Types
+        .allowlist_type("rdmaxcel_.*").allowlist_type("completion_.*")
+        .allowlist_type("poll_context.*").allowlist_type("rdma_qp_type_t")
+        .allowlist_type("CU.*").allowlist_type("hip.*").allowlist_type("hsa_status_t")
+        .allowlist_type("ibv_.*").allowlist_type("mlx5.*")
+        .allowlist_type("cqe_poll_.*").allowlist_type("wqe_params_t")
         .allowlist_type("rdma_segment_info_t")
-        .allowlist_type("rdmaxcel_scanned_segment_t")
-        .allowlist_type("rdmaxcel_qp_t")
-        .allowlist_type("rdmaxcel_qp")
-        .allowlist_type("completion_cache_t")
-        .allowlist_type("completion_cache")
-        .allowlist_type("poll_context_t")
-        .allowlist_type("poll_context")
-        .allowlist_type("rdmaxcel_segment_scanner_fn")
-        .allowlist_var("MLX5_.*")
-        .allowlist_var("IBV_.*")
-        // Block specific types that are manually defined in lib.rs
-        .blocklist_type("ibv_wc")
-        .blocklist_type("mlx5_wqe_ctrl_seg")
-        // Apply the same bindgen flags as in the BUCK file
-        .bitfield_enum("ibv_access_flags")
-        .bitfield_enum("ibv_qp_attr_mask")
-        .bitfield_enum("ibv_wc_flags")
-        .bitfield_enum("ibv_send_flags")
+        // Vars
+        .allowlist_var("CUDA_SUCCESS").allowlist_var("CU_.*")
+        .allowlist_var("hipSuccess").allowlist_var("HIP_.*")
+        .allowlist_var("HSA_STATUS_SUCCESS")
+        .allowlist_var("MLX5_.*").allowlist_var("IBV_.*").allowlist_var("RDMA_QP_TYPE_.*")
+        // Config
+        .blocklist_type("ibv_wc").blocklist_type("mlx5_wqe_ctrl_seg")
+        .bitfield_enum("ibv_access_flags").bitfield_enum("ibv_qp_attr_mask")
+        .bitfield_enum("ibv_wc_flags").bitfield_enum("ibv_send_flags")
         .bitfield_enum("ibv_port_cap_flags")
-        .constified_enum_module("ibv_qp_type")
-        .constified_enum_module("ibv_qp_state")
-        .constified_enum_module("ibv_port_state")
-        .constified_enum_module("ibv_wc_opcode")
-        .constified_enum_module("ibv_wr_opcode")
-        .constified_enum_module("ibv_wc_status")
-        .derive_default(true)
-        .prepend_enum_name(false);
+        .constified_enum_module("ibv_qp_type").constified_enum_module("ibv_qp_state")
+        .constified_enum_module("ibv_port_state").constified_enum_module("ibv_wc_opcode")
+        .constified_enum_module("ibv_wr_opcode").constified_enum_module("ibv_wc_status")
+        .derive_default(true).prepend_enum_name(false);
 
-    // Add CUDA include path (we already validated it exists)
-    let cuda_include_path = format!("{}/include", cuda_home);
-    println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", cuda_include_path);
-    builder = builder.clang_arg(format!("-I{}", cuda_include_path));
-
-    // Add rdma-core include path from nccl-static-sys
-    builder = builder.clang_arg(format!("-I{}", rdma_include));
-
-    // Include headers and libs from the active environment.
-    let python_config = match build_utils::python_env_dirs_with_interpreter("python3") {
-        Ok(config) => config,
-        Err(_) => {
-            eprintln!("Warning: Failed to get Python environment directories");
-            build_utils::PythonConfig {
-                include_dir: None,
-                lib_dir: None,
-            }
-        }
-    };
-
-    if let Some(include_dir) = &python_config.include_dir {
-        builder = builder.clang_arg(format!("-I{}", include_dir));
+    for def in platform.clang_defines() {
+        builder = builder.clang_arg(def);
     }
-    if let Some(lib_dir) = &python_config.lib_dir {
-        println!("cargo:rustc-link-search=native={}", lib_dir);
-        println!("cargo:metadata=LIB_PATH={}", lib_dir);
+    
+    if let Some(ref dir) = python_config.include_dir {
+        builder = builder.clang_arg(format!("-I{}", dir));
     }
 
-    // Get CUDA library directory and emit link directives
-    let cuda_lib_dir = build_utils::get_cuda_lib_dir();
-    println!("cargo:rustc-link-search=native={}", cuda_lib_dir);
-    // Note: libcuda is now loaded dynamically via dlopen in driver_api.cpp
-    // Link cudart statically (CUDA Runtime API)
-    println!("cargo:rustc-link-lib=static=cudart_static");
-    // cudart_static requires linking against librt and libpthread
-    println!("cargo:rustc-link-lib=rt");
-    println!("cargo:rustc-link-lib=pthread");
-    println!("cargo:rustc-link-lib=dl");
+    builder.generate()
+        .expect("Unable to generate bindings")
+        .write_to_file(out_path.join("bindings.rs"))
+        .expect("Couldn't write bindings");
+}
 
-    // Note: We no longer link against libtorch/c10 since segment scanning
-    // is now done via a callback registered from the extension crate.
+fn compile_c(sources: &Sources, platform: &Platform, rdma_include: &str) {
+    if !sources.c_source.exists() { return; }
+    
+    let mut build = cc::Build::new();
+    build
+        .file(&sources.c_source)
+        .include(&sources.dir)
+        .include(platform.include_dir())
+        .include(rdma_include)
+        .flag("-fPIC");
+    
+    platform.add_defines(&mut build);
+    build.compile("rdmaxcel");
+}
 
-    // Generate bindings
-    let bindings = builder.generate().expect("Unable to generate bindings");
+fn compile_cpp(
+    sources: &Sources,
+    platform: &Platform,
+    rdma_include: &str,
+    python_config: &build_utils::PythonConfig,
+) {
+    if !sources.cpp_source.exists() { return; }
+    
+    let mut build = cc::Build::new();
+    build
+        .file(&sources.cpp_source)
+        .include(&sources.dir)
+        .include(platform.include_dir())
+        .include(rdma_include)
+        .flag("-fPIC")
+        .cpp(true)
+        .flag("-std=c++14");
+    
+    if sources.driver_api.exists() {
+        build.file(&sources.driver_api);
+    }
+    
+    platform.add_defines(&mut build);
+    
+    if platform.is_rocm() {
+        build.flag("-Wno-deprecated-declarations");
+    }
+    
+    if let Some(ref dir) = python_config.include_dir {
+        build.include(dir);
+    }
+    
+    build.compile("rdmaxcel_cpp");
+    build_utils::link_libstdcpp_static();
+}
 
-    // Write the bindings to the $OUT_DIR/bindings.rs file
-    match env::var("OUT_DIR") {
-        Ok(out_dir) => {
-            // Export OUT_DIR so dependent crates can find our compiled libraries
-            println!("cargo:out_dir={}", out_dir);
+fn compile_gpu(
+    sources: &Sources,
+    platform: &Platform,
+    rdma_include: &str,
+    manifest_dir: &PathBuf,
+    out_path: &PathBuf,
+) {
+    if !sources.gpu_source.exists() { return; }
 
-            let out_path = PathBuf::from(&out_dir);
-            match bindings.write_to_file(out_path.join("bindings.rs")) {
-                Ok(_) => {
-                    println!("cargo:rustc-cfg=cargo");
-                    println!("cargo:rustc-check-cfg=cfg(cargo)");
-                }
-                Err(e) => eprintln!("Warning: Couldn't write bindings: {}", e),
-            }
+    let build_dir = format!("{}/target/cuda_build", manifest_dir.display());
+    std::fs::create_dir_all(&build_dir).expect("Failed to create build directory");
 
-            // Compile the C source file
-            let c_source_path = format!("{}/src/rdmaxcel.c", manifest_dir);
-            if Path::new(&c_source_path).exists() {
-                let mut build = cc::Build::new();
-                build
-                    .file(&c_source_path)
-                    .include(format!("{}/src", manifest_dir))
-                    .include(rdma_include)
-                    .flag("-fPIC");
+    let obj_path = format!("{}/rdmaxcel_cuda.o", build_dir);
+    let lib_path = format!("{}/librdmaxcel_cuda.a", build_dir);
 
-                // Add CUDA include paths - reuse the paths we already found for bindgen
-                build.include(&cuda_include_path);
+    let mut args = vec![
+        "-c".to_string(),
+        sources.gpu_source.to_string_lossy().to_string(),
+        "-o".to_string(),
+        obj_path.clone(),
+        "-fPIC".to_string(),
+        format!("-I{}", platform.include_dir()),
+        format!("-I{}", sources.dir.display()),
+        format!("-I{}", rdma_include),
+        "-I/usr/include".to_string(),
+        "-I/usr/include/infiniband".to_string(),
+    ];
+    args.extend(platform.compiler_args());
 
-                build.compile("rdmaxcel");
-            } else {
-                panic!("C source file not found at {}", c_source_path);
-            }
+    let output = Command::new(platform.compiler())
+        .args(&args)
+        .output()
+        .expect("Failed to run GPU compiler");
 
-            // Compile the C++ source file
-            let cpp_source_path = format!("{}/src/rdmaxcel.cpp", manifest_dir);
-            let driver_api_cpp_path = format!("{}/src/driver_api.cpp", manifest_dir);
-            if Path::new(&cpp_source_path).exists() && Path::new(&driver_api_cpp_path).exists() {
-                let mut cpp_build = cc::Build::new();
-                cpp_build
-                    .file(&cpp_source_path)
-                    .file(&driver_api_cpp_path)
-                    .include(format!("{}/src", manifest_dir))
-                    .include(rdma_include)
-                    .flag("-fPIC")
-                    .cpp(true)
-                    .flag("-std=c++14");
+    if !output.status.success() {
+        panic!(
+            "GPU compilation failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-                // Add CUDA include paths
-                cpp_build.include(&cuda_include_path);
+    let ar_output = Command::new("ar")
+        .args(["rcs", &lib_path, &obj_path])
+        .output();
 
-                // Add Python include path if available
-                if let Some(include_dir) = &python_config.include_dir {
-                    cpp_build.include(include_dir);
-                }
-
-                cpp_build.compile("rdmaxcel_cpp");
-
-                // Statically link libstdc++ to avoid runtime dependency on system libstdc++
-                build_utils::link_libstdcpp_static();
-            } else {
-                if !Path::new(&cpp_source_path).exists() {
-                    panic!("C++ source file not found at {}", cpp_source_path);
-                }
-                if !Path::new(&driver_api_cpp_path).exists() {
-                    panic!(
-                        "Driver API C++ source file not found at {}",
-                        driver_api_cpp_path
-                    );
-                }
-            }
-            // Compile the CUDA source file
-            let cuda_source_path = format!("{}/src/rdmaxcel.cu", manifest_dir);
-            if Path::new(&cuda_source_path).exists() {
-                // Use the CUDA home path we already validated
-                let nvcc_path = format!("{}/bin/nvcc", cuda_home);
-
-                // Set up fixed output directory - use a predictable path instead of dynamic OUT_DIR
-                let cuda_build_dir = format!("{}/target/cuda_build", manifest_dir);
-                std::fs::create_dir_all(&cuda_build_dir)
-                    .expect("Failed to create CUDA build directory");
-
-                let cuda_obj_path = format!("{}/rdmaxcel_cuda.o", cuda_build_dir);
-                let cuda_lib_path = format!("{}/librdmaxcel_cuda.a", cuda_build_dir);
-
-                // Use nvcc to compile the CUDA file
-                let nvcc_output = std::process::Command::new(&nvcc_path)
-                    .args([
-                        "-c",
-                        &cuda_source_path,
-                        "-o",
-                        &cuda_obj_path,
-                        "--compiler-options",
-                        "-fPIC",
-                        "-std=c++14",
-                        "--expt-extended-lambda",
-                        "-Xcompiler",
-                        "-fPIC",
-                        &format!("-I{}", cuda_include_path),
-                        &format!("-I{}/src", manifest_dir),
-                        &format!("-I{}", rdma_include),
-                    ])
-                    .output();
-
-                match nvcc_output {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            eprintln!("nvcc stderr: {}", String::from_utf8_lossy(&output.stderr));
-                            eprintln!("nvcc stdout: {}", String::from_utf8_lossy(&output.stdout));
-                            panic!("Failed to compile CUDA source with nvcc");
-                        }
-                        println!("cargo:rerun-if-changed={}", cuda_source_path);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to run nvcc: {}", e);
-                        panic!("nvcc not found or failed to execute");
-                    }
-                }
-
-                // Create static library from the compiled CUDA object
-                let ar_output = std::process::Command::new("ar")
-                    .args(["rcs", &cuda_lib_path, &cuda_obj_path])
-                    .output();
-
-                match ar_output {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            eprintln!("ar stderr: {}", String::from_utf8_lossy(&output.stderr));
-                            panic!("Failed to create CUDA static library with ar");
-                        }
-                        // Emit metadata so dependent crates can find this library
-                        println!("cargo:rustc-link-lib=static=rdmaxcel_cuda");
-                        println!("cargo:rustc-link-search=native={}", cuda_build_dir);
-
-                        // Copy the library to OUT_DIR as well for Cargo dependency mechanism
-                        if let Err(e) =
-                            std::fs::copy(&cuda_lib_path, format!("{}/librdmaxcel_cuda.a", out_dir))
-                        {
-                            eprintln!("Warning: Failed to copy CUDA library to OUT_DIR: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to run ar: {}", e);
-                        panic!("ar not found or failed to execute");
-                    }
-                }
-            } else {
-                panic!("CUDA source file not found at {}", cuda_source_path);
-            }
-        }
-        Err(_) => {
-            println!("Note: OUT_DIR not set, skipping bindings file generation");
+    if let Ok(out) = ar_output {
+        if out.status.success() {
+            println!("cargo:rustc-link-lib=static=rdmaxcel_cuda");
+            println!("cargo:rustc-link-search=native={}", build_dir);
+            let _ = std::fs::copy(&lib_path, out_path.join("librdmaxcel_cuda.a"));
         }
     }
 }
