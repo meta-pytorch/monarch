@@ -9,7 +9,6 @@
 import pickle
 from typing import Any, Callable, cast, Coroutine, Iterable, List, TYPE_CHECKING, Union
 
-import monarch
 import pytest
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
@@ -26,8 +25,8 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocSpec,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
-from monarch._src.actor.allocator import LocalAllocator
-from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcessAllocator
+from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
+from monarch._src.actor.proc_mesh import _get_bootstrap_args
 
 
 if TYPE_CHECKING:

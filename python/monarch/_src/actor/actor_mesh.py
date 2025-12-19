@@ -76,7 +76,7 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
 )
-from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event, PySpan
+from monarch._rust_bindings.monarch_hyperactor.telemetry import PySpan
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
@@ -109,7 +109,6 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
-    from monarch._src.actor.host_mesh import HostMesh
     from monarch._src.actor.proc_mesh import _ControllerController, ProcMesh
 from monarch._src.actor.telemetry import get_monarch_tracer
 
@@ -344,9 +343,8 @@ def _init_client_context() -> Context:
     local proc mesh on a real local host mesh.
     """
     from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import bootstrap_host
-    from monarch._src.actor.host_mesh import HostMesh
+    from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
-    from monarch._src.actor.v1.host_mesh import _bootstrap_cmd
 
     hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
         _bootstrap_cmd()
@@ -380,18 +378,16 @@ def shutdown_context() -> "Future[None]":
                       completion.
     """
     from monarch._src.actor.future import Future
-    from monarch._src.actor.v1 import enabled as v1_enabled
 
-    if v1_enabled:
-        try:
-            from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
-                shutdown_local_host_mesh,
-            )
+    try:
+        from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
+            shutdown_local_host_mesh,
+        )
 
-            return Future(coro=shutdown_local_host_mesh())
-        except RuntimeError:
-            # No local host mesh to shutdown
-            pass
+        return Future(coro=shutdown_local_host_mesh())
+    except RuntimeError:
+        # No local host mesh to shutdown
+        pass
 
     # Nothing to shutdown - return a completed future
     async def noop() -> None:
@@ -404,22 +400,10 @@ def context() -> Context:
     c = _context.get(None)
     if c is None:
         from monarch._src.actor.proc_mesh import _get_controller_controller
-        from monarch._src.actor.v1 import enabled as v1_enabled
 
-        if not v1_enabled:
-            from monarch._src.actor.host_mesh import create_local_host_mesh
-
-            c = Context._root_client_context()
-            _set_context(c)
-            c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
-                _get_controller_controller()
-            )
-
-            c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
-        else:
-            c = _client_context.get()
-            _set_context(c)
-            _, c.actor_instance._controller_controller = _get_controller_controller()
+        c = _client_context.get()
+        _set_context(c)
+        _, c.actor_instance._controller_controller = _get_controller_controller()
     return c
 
 

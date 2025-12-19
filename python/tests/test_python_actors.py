@@ -48,6 +48,7 @@ from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
+    _bootstrap_cmd,
     create_local_host_mesh,
     fake_in_process_host,
     HostMesh,
@@ -55,7 +56,6 @@ from monarch._src.actor.host_mesh import (
     this_proc,
 )
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, get_or_spawn_controller
-from monarch._src.actor.v1.host_mesh import _bootstrap_cmd
 from monarch._src.job.job import LoginJob, ProcessState
 
 from monarch.actor import (

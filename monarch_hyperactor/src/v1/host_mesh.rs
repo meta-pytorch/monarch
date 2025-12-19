@@ -98,7 +98,7 @@ impl PyBootstrapCommand {
     }
 
     pub fn default<'py>(py: Python<'py>) -> PyResult<Bound<'py, Self>> {
-        py.import("monarch._src.actor.v1.host_mesh")?
+        py.import("monarch._src.actor.host_mesh")?
             .getattr("_bootstrap_cmd")?
             .call0()?
             .downcast::<PyBootstrapCommand>()
