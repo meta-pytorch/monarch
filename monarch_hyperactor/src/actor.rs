@@ -1032,6 +1032,16 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
         cx: &Context<Self>,
         message: SupervisionFailureMessage,
     ) -> anyhow::Result<()> {
+        // If the message is not about a failure, don't call __supervise__.
+        // This includes messages like "stop", because those are not errors that
+        // need to be propagated.
+        if !message.event.actor_status.is_failed() {
+            tracing::info!(
+                "ignoring non-failure supervision event from child: {}",
+                message
+            );
+            return Ok(());
+        }
         Python::with_gil(|py| {
             let instance = self.instance.get_or_insert_with(|| {
                 let instance: crate::context::PyInstance = cx.into();

@@ -58,3 +58,10 @@ impl std::fmt::Display for SupervisionFailureMessage {
         )
     }
 }
+
+// Shared between mesh types.
+#[derive(Debug, Clone)]
+pub(crate) enum Unhealthy {
+    StreamClosed(SupervisionFailureMessage), // Event stream closed
+    Crashed(SupervisionFailureMessage),      // Bad health event received
+}
