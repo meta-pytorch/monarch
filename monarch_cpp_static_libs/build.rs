@@ -254,11 +254,8 @@ fn emit_link_directives(rdma_build_dir: &Path) {
     );
     println!("cargo:rustc-link-search=native={}", rdma_util_dir.display());
 
-    // Static libraries - use whole-archive for rdma-core static libraries
-    println!("cargo:rustc-link-arg=-Wl,--whole-archive");
     println!("cargo:rustc-link-lib=static=mlx5");
     println!("cargo:rustc-link-lib=static=ibverbs");
-    println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
 
     // rdma_util helper library
     println!("cargo:rustc-link-lib=static=rdma_util");
