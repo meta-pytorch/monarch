@@ -13,7 +13,7 @@ import pytest
 
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-from monarch.actor import Actor, endpoint, this_proc
+from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured, get_global_config
 
 
@@ -94,7 +94,6 @@ def test_get_set_multiple() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
-@pytest.mark.skip(reason="local procs now bypass channels -- they dispatch directly")
 def test_codec_max_frame_length_exceeds_default() -> None:
     """Test that sending 10 chunks of 1GiB fails with default 10 GiB
     limit."""
@@ -117,8 +116,10 @@ def test_codec_max_frame_length_exceeds_default() -> None:
 
     with override_fault_hook():
         # Try to send 10 chunks of 1GiB each with default 10 GiB limit
-        # This should fail due to serialization overhead
-        proc = this_proc()
+        # This should fail due to serialization overhead.
+        # Spawn in separate proc so messages are serialized via Unix
+        # sockets
+        proc = this_host().spawn_procs()
 
         # Create 10 chunks, 1GiB each (total 10GiB)
         chunks = [bytes(oneGiB) for _ in range(10)]
@@ -132,7 +133,6 @@ def test_codec_max_frame_length_exceeds_default() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
-@pytest.mark.skip(reason="local procs now bypass channels -- they dispatch directly")
 def test_codec_max_frame_length_with_increased_limit() -> None:
     """Test that we can successfully send 10 chunks of 1GiB each with
     100 GiB limit."""
@@ -156,7 +156,9 @@ def test_codec_max_frame_length_with_increased_limit() -> None:
 
     # Set the frame limit to confidently handle 10GiB
     with configured(codec_max_frame_length=oneHundredGiB):
-        proc = this_proc()
+        # Spawn in separate proc so messages are serialized via Unix
+        # sockets
+        proc = this_host().spawn_procs()
 
         # Create 10 chunks, 1GiB each (total 10GiB)
         chunks = [bytes(oneGiB) for _ in range(10)]
