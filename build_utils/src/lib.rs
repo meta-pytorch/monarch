@@ -385,11 +385,8 @@ impl CppStaticLibsConfig {
         println!("cargo::rustc-link-search=native={}", self.rdma_lib_dir);
         println!("cargo::rustc-link-search=native={}", self.rdma_util_dir);
 
-        // Use whole-archive for rdma-core static libraries
-        println!("cargo::rustc-link-arg=-Wl,--whole-archive");
         println!("cargo::rustc-link-lib=static=mlx5");
         println!("cargo::rustc-link-lib=static=ibverbs");
-        println!("cargo::rustc-link-arg=-Wl,--no-whole-archive");
 
         // rdma_util helper library
         println!("cargo::rustc-link-lib=static=rdma_util");
