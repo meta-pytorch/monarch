@@ -591,6 +591,9 @@ impl PythonActor {
                 .expect("create RootClientActor init message"),
             )
             .expect("initialize root client");
+        // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
+        // are bound.
+        let _client_ref = handle.bind::<PythonActor>();
 
         let instance = root_client_instance.get().unwrap();
 
@@ -603,16 +606,28 @@ impl PythonActor {
                     work = work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut actor, instance).await {
-                            for supervision_event in supervision_rx.drain() {
-                                if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                    break 'messages err;
-                                }
-                            }
                             let kind = ActorErrorKind::processing(err);
-                            break ActorError {
+                            let err = ActorError {
                                 actor_id: Box::new(instance.self_id().clone()),
                                 kind: Box::new(kind),
                             };
+                            // Give the actor a chance to handle the error produced
+                            // in its own message handler. This is important because
+                            // we want Undeliverable<MessageEnvelope>, which returns
+                            // an Err typically, to create a supervision event and
+                            // call __supervise__.
+                            let supervision_event = actor_error_to_event(instance, &actor, err);
+                            // If the immediate supervision event isn't handled, continue with
+                            // exiting the loop.
+                            // Else, continue handling messages.
+                            if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                                for supervision_event in supervision_rx.drain() {
+                                    if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                                        break 'messages err;
+                                    }
+                                }
+                                break err;
+                            }
                         }
                     }
                     _ = signal_rx.recv() => {
@@ -625,23 +640,39 @@ impl PythonActor {
                     }
                 };
             };
-            let event = match *err.kind {
-                ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
-                _ => {
-                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                    let status = ActorStatus::Failed(error_kind);
-                    ActorSupervisionEvent::new(
-                        instance.self_id().clone(),
-                        actor.display_name(),
-                        status,
-                        None,
-                    )
-                }
-            };
-            instance.proc().handle_supervision_event(event);
+            let event = actor_error_to_event(instance, &actor, err);
+            // The proc supervision handler will send to ProcMeshAgent, which
+            // just records it in v1. We want to crash instead, as nothing will
+            // monitor the client ProcMeshAgent for now.
+            tracing::error!(
+                "{}: could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
+                instance.self_id(),
+                event,
+            );
+
+            std::process::exit(1);
         });
 
         (root_client_instance.get().unwrap(), handle)
+    }
+}
+
+fn actor_error_to_event(
+    instance: &Instance<PythonActor>,
+    actor: &PythonActor,
+    err: ActorError,
+) -> ActorSupervisionEvent {
+    match *err.kind {
+        ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
+        _ => {
+            let status = ActorStatus::generic_failure(err.kind.to_string());
+            ActorSupervisionEvent::new(
+                instance.self_id().clone(),
+                actor.display_name(),
+                status,
+                None,
+            )
+        }
     }
 }
 

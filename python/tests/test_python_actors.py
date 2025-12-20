@@ -1176,28 +1176,6 @@ async def test_sync_workspace() -> None:
 
 
 @pytest.mark.timeout(120)
-async def test_actor_mesh_stop() -> None:
-    # This test doesn't want the client process to crash during testing.
-    pm = this_host().spawn_procs(per_host={"gpus": 2})
-    am_1 = pm.spawn("printer", Printer)
-    am_2 = pm.spawn("printer2", Printer)
-    await am_1.print.call("hello 1")
-    await am_1.log.call("hello 2")
-    await cast(ActorMesh, am_1).stop()
-
-    with pytest.raises(
-        SupervisionError,
-        match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
-    ):
-        await am_1.print.call("hello 1")
-
-    await am_2.print.call("hello 3")
-    await am_2.log.call("hello 4")
-
-    await pm.stop()
-
-
-@pytest.mark.timeout(120)
 async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am = pm.spawn("printer", Printer)
