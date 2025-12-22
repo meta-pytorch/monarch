@@ -68,6 +68,8 @@ pub fn get_tokio_runtime<'l>() -> std::sync::MappedRwLockReadGuard<'l, tokio::ru
 
 #[pyfunction]
 pub fn shutdown_tokio_runtime() {
+    hyperactor_telemetry::shutdown_telemetry();
+
     // It is important to not hold the GIL while calling this function.
     // Other runtime threads may be waiting to acquire it and we will never get to shutdown.
     if let Some(x) = INSTANCE.write().unwrap().take() {
