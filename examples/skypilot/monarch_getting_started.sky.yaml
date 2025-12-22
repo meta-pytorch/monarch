@@ -79,7 +79,7 @@ run: |
 
   # Run the getting started example
   # Uses environment variables set above (can be overridden with --env)
-  python skypilot_getting_started.py \
+  python skypilot_quickstart_driver.py \
     --cloud kubernetes \
     --num-hosts $NUM_HOSTS \
     --gpus-per-host $GPUS_PER_HOST \
@@ -87,4 +87,3 @@ run: |
     --accelerator "$ACCELERATOR"
   
   echo "=== Example ran successfully ==="
-

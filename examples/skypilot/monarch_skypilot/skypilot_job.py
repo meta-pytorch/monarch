@@ -10,7 +10,6 @@ Requirements:
 
 import logging
 import os
-import sys
 import time
 from typing import Dict, List, Optional, TYPE_CHECKING
 
@@ -34,10 +33,6 @@ except ImportError:
 
 
 logger: logging.Logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    logger.addHandler(logging.StreamHandler(sys.stderr))
-logger.propagate = False
 
 # Default port for Monarch TCP communication
 MONARCH_WORKER_PORT = 22222
@@ -62,11 +57,9 @@ DEFAULT_IMAGE_ID = "docker:pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime"
 
 
 def _configure_transport() -> None:
-    """Configure the Monarch transport. Deferred import to avoid import errors."""
-    from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-    from monarch._rust_bindings.monarch_hyperactor.config import configure
-
-    configure(default_transport=ChannelTransport.TcpWithHostname)
+    """Configure the Monarch transport using the public API."""
+    from monarch.actor import enable_transport
+    enable_transport("tcp")
 
 
 def _attach_to_workers_wrapper(name: str, ca: str, workers: List[str]):
@@ -94,7 +87,7 @@ class SkyPilotJob(JobTrait):
 
     Example:
         >>> import sky
-        >>> from skypilot_job import SkyPilotJob
+        >>> from monarch_skypilot import SkyPilotJob
         >>>
         >>> job = SkyPilotJob(
         ...     meshes={"trainers": 2},
@@ -170,6 +163,20 @@ class SkyPilotJob(JobTrait):
         self._launched_cluster_name: Optional[str] = None
         self._node_ips: List[str] = []
 
+    def _cleanup_on_failure(self) -> None:
+        """Clean up cluster resources on failure."""
+        if self._launched_cluster_name:
+            try:
+                logger.warning(f"Cleaning up cluster '{self._launched_cluster_name}' after failure")
+                request_id = sky.down(self._launched_cluster_name)
+                sky.get(request_id)
+                logger.info(f"Cluster '{self._launched_cluster_name}' cleaned up")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup cluster: {cleanup_error}")
+            finally:
+                self._launched_cluster_name = None
+                self._node_ips.clear()
+
     def _create(self, client_script: Optional[str]) -> None:
         """Launch a SkyPilot cluster and start Monarch workers."""
         if client_script is not None:
@@ -209,6 +216,9 @@ class SkyPilotJob(JobTrait):
 
         # Generate cluster name if not provided
         cluster_name = self._cluster_name or f"monarch-{os.getpid()}"
+        
+        # Set early so cleanup can work if later steps fail
+        self._launched_cluster_name = cluster_name
 
         logger.info(f"Launching SkyPilot cluster '{cluster_name}' with {total_nodes} nodes")
 
@@ -224,13 +234,18 @@ class SkyPilotJob(JobTrait):
             job_id, handle = sky.get(request_id)
         except Exception as e:
             logger.error(f"Failed to launch SkyPilot cluster: {e}")
+            self._cleanup_on_failure()
             raise RuntimeError(f"Failed to launch SkyPilot cluster: {e}") from e
 
-        self._launched_cluster_name = cluster_name
         logger.info(f"SkyPilot cluster '{cluster_name}' launched successfully")
         
         # Wait for the job to be RUNNING (setup complete, run started)
-        self._wait_for_job_running(cluster_name, job_id, timeout=JOB_TIMEOUT)
+        try:
+            self._wait_for_job_running(cluster_name, job_id, timeout=JOB_TIMEOUT)
+        except Exception as e:
+            logger.error(f"Job failed to reach RUNNING status: {e}")
+            self._cleanup_on_failure()
+            raise
     
     def _wait_for_job_running(self, cluster_name: str, job_id: int, timeout: int = JOB_TIMEOUT) -> None:
         """Wait for the SkyPilot job to reach RUNNING status (setup complete)."""

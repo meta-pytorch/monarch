@@ -16,7 +16,7 @@ flowchart TB
 
     subgraph k8s["☸️ Kubernetes Cluster"]
         subgraph driver["Driver Pod"]
-            script["skypilot_getting_started.py"]
+            script["skypilot_quickstart_driver.py"]
             skyjob["SkyPilotJob"]
         end
         
@@ -41,7 +41,7 @@ flowchart TB
 
 **How it works:**
 1. You run `sky launch` from your laptop to start the driver pod
-2. The driver runs `skypilot_getting_started.py` which creates a `SkyPilotJob`
+2. The driver runs `skypilot_quickstart_driver.py` which creates a `SkyPilotJob`
 3. `SkyPilotJob` provisions GPU worker pods via SkyPilot
 4. The driver connects to Monarch workers over TCP (port 22222)
 5. Actors are spawned on each GPU and execute your distributed code
@@ -107,7 +107,7 @@ On running `sky launch`, SkyPilot will:
 1. Launch a Kubernetes pod
 2. Install dependencies
 3. Sync the example directory with the pod
-4. Run `skypilot_getting_started.py` in the pod and stream the logs
+4. Run `skypilot_quickstart_driver.py` in the pod and stream the logs
 
 <details>
 <summary><strong>Example Output</strong></summary>
@@ -187,14 +187,14 @@ sky down monarch-demo
 <details>
 <summary><strong>Running from within the Kubernetes cluster</strong></summary>
 
-If you are already in the Kubernetes cluster you'd like to run workers on, you can directly run `skypilot_getting_started.py`.
+If you are already in the Kubernetes cluster you'd like to run workers on, you can directly run `skypilot_quickstart_driver.py`.
 
 ```bash
 # With GPUs
-python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --accelerator "H200:8"
+python skypilot_quickstart_driver.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --accelerator "H200:8"
 
 # CPU-only (no GPUs)
-python skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 0 --accelerator none
+python skypilot_quickstart_driver.py --cloud kubernetes --num-hosts 2 --gpus-per-host 0 --accelerator none
 ```
 
 </details>
@@ -231,7 +231,7 @@ Example usage:
 
 ```python
 import sky
-from skypilot_job import SkyPilotJob
+from monarch_skypilot import SkyPilotJob
 from monarch.actor import Actor, endpoint
 
 class MyActor(Actor):
@@ -301,4 +301,3 @@ sky ssh <cluster-name>
 sky down <cluster-name>
 sky down --all  # Remove all clusters
 ```
-

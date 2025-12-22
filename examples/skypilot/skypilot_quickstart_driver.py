@@ -14,13 +14,13 @@ Prerequisites:
 
 Usage:
     # Run on Kubernetes with 2 nodes, 8 GPUs per node
-    python examples/skypilot/skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --gpus "H200:8"
+    python skypilot_quickstart_driver.py --cloud kubernetes --num-hosts 2 --gpus-per-host 8 --accelerator "H200:8"
 
     # Run on cloud VMs
-    python examples/skypilot/skypilot_getting_started.py --cloud <aws/gcp/azure/...> --num-hosts 2 --gpus-per-host 1 --gpus "H100:1"
+    python skypilot_quickstart_driver.py --cloud <aws/gcp/azure/...> --num-hosts 2 --gpus-per-host 1 --accelerator "H100:1"
 
     # Run on CPU-only cluster (no GPUs)
-    python examples/skypilot/skypilot_getting_started.py --cloud kubernetes --num-hosts 2 --gpus-per-host 0 --accelerator none
+    python skypilot_quickstart_driver.py --cloud kubernetes --num-hosts 2 --gpus-per-host 0 --accelerator none
 """
 
 import argparse
@@ -52,7 +52,7 @@ except ImportError as e:
     sys.exit(1)
 
 # Import SkyPilotJob from the local package
-from skypilot_job import SkyPilotJob
+from monarch_skypilot import SkyPilotJob
 
 # ============================================================================
 # Step 1: Define actors
