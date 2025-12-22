@@ -1544,7 +1544,7 @@ mod tests {
         // All should reflect their override values.
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
         assert_eq!(get(MESSAGE_TTL_DEFAULT), 42);
-        assert_eq!(get(CHANNEL_MULTIPART), false);
+        assert!(!get(CHANNEL_MULTIPART));
 
         // Env vars should be mirrored.
         assert_eq!(
