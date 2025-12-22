@@ -67,6 +67,7 @@ use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use lazy_static::lazy_static;
@@ -101,6 +102,35 @@ use crate::config::MONARCH_LOG_SUFFIX;
 use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
 use crate::sqlite::get_reloadable_sqlite_layer;
+
+static SHUTDOWN_HOOKS: OnceLock<Mutex<Vec<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
+
+fn get_shutdown_hooks() -> &'static Mutex<Vec<Box<dyn FnOnce() + Send>>> {
+    SHUTDOWN_HOOKS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Register a callback to be invoked during telemetry shutdown.
+/// This is useful for components that need to flush buffers or clean up
+/// before the process exits.
+pub(crate) fn register_shutdown_hook<F>(hook: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    if let Ok(mut hooks) = get_shutdown_hooks().lock() {
+        hooks.push(Box::new(hook));
+    }
+}
+
+/// Shutdown the telemetry system, invoking all registered shutdown hooks.
+/// This should be called before process exit to ensure all telemetry is flushed.
+/// Safe to call multiple times; hooks are only invoked once.
+pub fn shutdown_telemetry() {
+    if let Ok(mut hooks) = get_shutdown_hooks().lock() {
+        for hook in hooks.drain(..) {
+            hook();
+        }
+    }
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TelemetrySample {
