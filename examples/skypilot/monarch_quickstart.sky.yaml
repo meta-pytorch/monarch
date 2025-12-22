@@ -1,14 +1,14 @@
-# SkyPilot YAML for running the Monarch Getting Started example.
+# SkyPilot YAML for running the Monarch Quickstart example.
 #
 # This YAML file syncs the example directory, installs dependencies,
-# and runs the getting started example.
+# and runs the quickstart example.
 #
 # Usage:
 #   cd monarch/examples/skypilot
-#   sky launch monarch_getting_started.sky.yaml -c monarch-demo
+#   sky launch monarch_quickstart.sky.yaml -c monarch-demo
 #
 #   # For CPU-only clusters (no GPUs):
-#   sky launch monarch_getting_started.sky.yaml -c monarch-demo --env GPUS_PER_HOST=0 --env ACCELERATOR=none
+#   sky launch monarch_quickstart.sky.yaml -c monarch-demo --env GPUS_PER_HOST=0 --env ACCELERATOR=none
 #
 # To view logs:
 #   sky logs monarch-demo
@@ -19,7 +19,7 @@
 # To tear down:
 #   sky down monarch-demo
 
-name: monarch-getting-started
+name: monarch-quickstart
 
 resources:
   cloud: kubernetes # Optional, remove or change to your preferred cloud provider
@@ -74,7 +74,7 @@ setup: |
   echo "=== Setup complete ==="
 
 run: |  
-  echo "=== Running Monarch Getting Started with SkyPilot ==="
+  echo "=== Running Monarch Quickstart with SkyPilot ==="
   echo "Configuration: NUM_HOSTS=$NUM_HOSTS, GPUS_PER_HOST=$GPUS_PER_HOST, ACCELERATOR=$ACCELERATOR"
 
   # Run the getting started example

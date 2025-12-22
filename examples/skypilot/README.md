@@ -11,7 +11,7 @@ This directory contains examples for running Monarch workloads on **Kubernetes a
 ```mermaid
 flowchart TB
     subgraph laptop["💻 Your Laptop"]
-        user["$ sky launch monarch_getting_started.sky.yaml"]
+        user["$ sky launch monarch_quickstart.sky.yaml"]
     end
 
     subgraph k8s["☸️ Kubernetes Cluster"]
@@ -79,7 +79,7 @@ For more details, see the [SkyPilot documentation](https://docs.skypilot.co/en/l
 Run this command from your local machine to run the getting started example:
 
 ```bash
-sky launch monarch_getting_started.sky.yaml -c monarch-demo
+sky launch monarch_quickstart.sky.yaml -c monarch-demo
 ```
 
 <details>
@@ -89,13 +89,13 @@ Run `sky show-gpus --infra kubernetes` to see available GPUs in your cluster, th
 
 ```bash
 # Custom GPU configuration
-sky launch monarch_getting_started.sky.yaml -c monarch-demo \
+sky launch monarch_quickstart.sky.yaml -c monarch-demo \
   --env NUM_HOSTS=4 \
   --env GPUS_PER_HOST=8 \
   --env ACCELERATOR="H100:8"
 
 # CPU-only mode (no GPUs required)
-sky launch monarch_getting_started.sky.yaml -c monarch-demo \
+sky launch monarch_quickstart.sky.yaml -c monarch-demo \
   --env GPUS_PER_HOST=0 \
   --env ACCELERATOR=none
 ```
@@ -205,7 +205,7 @@ To run the `skypilot_ddp.ipynb` notebook interactively, first launch a driver po
 
 ```bash
 # 1. Launch a driver pod (without running a script)
-sky launch monarch_getting_started.sky.yaml -c monarch-demo
+sky launch monarch_quickstart.sky.yaml -c monarch-demo
 
 # 2. SSH into the pod with port forwarding for Jupyter
 ssh monarch-demo -L 8888:localhost:8888
