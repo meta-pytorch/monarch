@@ -385,6 +385,8 @@ def test_train_script_job_state_regular():
         assert "batch_launched_hosts False" in result.stdout
 
 
+@pytest.mark.oss_skip
+# TODO T249481440: Fix this test
 def test_train_script_job_state_batch():
     """
     Test that the train.py script picks up the 'batch_launched_hosts' in batch mode.
