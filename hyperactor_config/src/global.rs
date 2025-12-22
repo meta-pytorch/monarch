@@ -1544,7 +1544,7 @@ mod tests {
         // All should reflect their override values.
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
         assert_eq!(get(MESSAGE_TTL_DEFAULT), 42);
-        assert_eq!(get(CHANNEL_MULTIPART), false);
+        assert!(!get(CHANNEL_MULTIPART));
 
         // Env vars should be mirrored.
         assert_eq!(
@@ -1562,7 +1562,7 @@ mod tests {
         // MESSAGE_TTL_DEFAULT should restore, others should remain.
         assert_eq!(get(MESSAGE_TTL_DEFAULT), MESSAGE_TTL_DEFAULT_DEFAULT);
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
-        assert_eq!(get(CHANNEL_MULTIPART), false);
+        assert!(!get(CHANNEL_MULTIPART));
 
         // Env for MESSAGE_TTL_DEFAULT should be cleared.
         assert!(std::env::var("HYPERACTOR_MESSAGE_TTL_DEFAULT").is_err());
