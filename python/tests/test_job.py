@@ -395,11 +395,10 @@ def test_train_script_job_state_batch():
     try:
         job = LocalJob(("batch_launched_hosts",))
         job.apply(client_script=train_script)
+        status = job.process.wait()
         stdout = open(os.path.join(job._log_dir, "stdout.log"), "r").read()
         stderr = open(os.path.join(job._log_dir, "stderr.log"), "r").read()
-        assert (
-            0 == job.process.wait()
-        ), f"Job failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        assert status == 0, f"Job failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
         assert "batch_launched_hosts True" in stdout
         # look in job._log_dir for the stdout file which will have the batch_lauched_hosts True
     finally:
