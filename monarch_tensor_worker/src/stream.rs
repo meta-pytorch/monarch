@@ -978,7 +978,7 @@ impl StreamActor {
         let x: u64 = params.seq.into();
         let message = LocalStateBrokerMessage::Set(x as usize, state);
 
-        let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
+        let broker = BrokerId::new(params.broker_id).resolve(cx).await;
         broker
             .send(message)
             .map_err(|e| CallFunctionError::Error(e.into()))?;

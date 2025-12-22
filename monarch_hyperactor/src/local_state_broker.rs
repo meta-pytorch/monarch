@@ -75,9 +75,34 @@ impl BrokerId {
     pub fn new(broker_id: (String, usize)) -> Self {
         BrokerId(broker_id.0, broker_id.1)
     }
-    pub fn resolve<A: Actor>(self, cx: &Context<A>) -> Option<ActorHandle<LocalStateBrokerActor>> {
+
+    /// Resolve the broker with exponential backoff retry.
+    /// Broker creation can race with messages that will use the broker,
+    /// so we retry with exponential backoff before panicking.
+    /// A better solution would be to figure out some way to get the real broker reference threaded to the client,  but
+    /// that is more difficult to figure out right now.
+    pub async fn resolve<A: Actor>(
+        self,
+        cx: &Context<'_, A>,
+    ) -> ActorHandle<LocalStateBrokerActor> {
+        use std::time::Duration;
+
+        let broker_name = format!("{:?}", self);
         let actor_id = ActorId(cx.proc().proc_id().clone(), self.0, self.1);
         let actor_ref: ActorRef<LocalStateBrokerActor> = ActorRef::attest(actor_id);
-        actor_ref.downcast_handle(cx)
+
+        let mut delay_ms = 1;
+        loop {
+            if let Some(handle) = actor_ref.downcast_handle(cx) {
+                return handle;
+            }
+
+            if delay_ms > 8192 {
+                panic!("Failed to resolve broker {} after retries", broker_name);
+            }
+
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            delay_ms *= 2;
+        }
     }
 }

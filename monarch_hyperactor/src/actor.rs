@@ -307,7 +307,7 @@ impl PythonMessage {
                 id,
                 unflatten_args,
             } => {
-                let broker = BrokerId::new(local_state_broker).resolve(cx).unwrap();
+                let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
                 broker.send(LocalStateBrokerMessage::Get(id, send))?;
                 let state = recv.recv().await?;
