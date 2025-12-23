@@ -306,8 +306,7 @@ impl PySerialized {
 
 /// Wrapper around an instance of an actor that provides utilities to implement
 /// a python actor. This helps by allowing users to specialize the actor to the
-/// message type they want to handle. [`PickledMessageClientActor``] is a specialization of this
-/// for handling messages that are serialized to bytes using pickle.
+/// message type they want to handle.
 pub struct InstanceWrapper<M: RemoteMessage> {
     instance: Instance<()>,
     message_receiver: PortReceiver<M>,
