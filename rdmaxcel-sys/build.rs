@@ -17,7 +17,7 @@ fn main() {}
 fn main() {
     // Get rdma-core config from cpp_static_libs (includes are used, links emitted by monarch_extension)
     let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
-    let rdma_include = &cpp_static_libs_config.rdma_include;
+    let rdma_include = &cpp_static_libs_config.rdma_include_dir;
 
     // Link against dl for dynamic loading
     println!("cargo:rustc-link-lib=dl");
