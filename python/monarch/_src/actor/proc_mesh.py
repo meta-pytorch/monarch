@@ -36,6 +36,7 @@ from typing import (
 from urllib.parse import urlparse
 from weakref import WeakSet
 
+from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -43,7 +44,15 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shap
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
 )
-from monarch._src.actor.actor_mesh import _Actor, _Lazy, Actor, ActorMesh, context
+from monarch._src.actor.actor_mesh import (
+    _Actor,
+    _create_endpoint_message,
+    _Lazy,
+    Actor,
+    ActorInitArgs,
+    ActorMesh,
+    context,
+)
 from monarch._src.actor.allocator import AllocHandle, SimAllocator
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
@@ -367,18 +376,40 @@ class ProcMesh(MeshTrait):
         actor_mesh = HyProcMesh.spawn_async(
             pm, instance._as_rust(), name, _Actor, emulated=False
         )
-        service = ActorMesh._create(
-            Class,
-            name,
-            actor_mesh,
-            self._region.as_shape(),
-            self,
-            self._controller_controller or instance._controller_controller,
-            *args,
-            **kwargs,
+        # Inlined ActorMesh._create implementation
+        mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)
+
+        # We don't start the supervision polling loop until the first call to
+        # supervision_event, which needs an Instance. Initialize here so events
+        # can be collected even without any endpoints being awaited.
+        supervision_display_name = (
+            f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
         )
-        instance._add_child(service)
-        return cast(TActor, service)
+        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
+
+        # send __init__ message to the mesh to initialize the user defined
+        # python actor object.
+        message = _create_endpoint_message(
+            MethodSpecifier.Init(),
+            inspect.signature(Class.__init__),
+            (
+                ActorInitArgs(
+                    cast(Type[Actor], mesh._class),
+                    self,
+                    self._controller_controller or instance._controller_controller,
+                    name,
+                    context().actor_instance._as_creator(),
+                    args,
+                ),
+            ),
+            kwargs,
+            None,
+            self,
+        )
+        mesh._inner.cast(message, "all", instance._as_rust())
+
+        instance._add_child(mesh)
+        return cast(TActor, mesh)
 
     @property
     def _device_mesh(self) -> "DeviceMesh":
