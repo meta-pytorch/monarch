@@ -30,6 +30,7 @@ time it is used.
 
 if TYPE_CHECKING:
     from monarch._src.actor.actor_mesh import ActorEndpoint, Port, Selection
+    from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 
@@ -68,13 +69,13 @@ def shim(
 
 
 @shim(module="monarch.mesh_controller")
-def actor_send(
-    endpoint: "ActorEndpoint[..., ...]",
+def create_actor_message(
+    method_name: "MethodSpecifier",
+    proc_mesh: "Optional[Any]",
     args_kwargs_tuple: Buffer,
     refs: "Sequence[Any]",
     port: "Optional[Port[Any]]",
-    selection: "Selection",
-) -> None: ...
+) -> "Any": ...
 
 
 @shim(module="monarch.mesh_controller")

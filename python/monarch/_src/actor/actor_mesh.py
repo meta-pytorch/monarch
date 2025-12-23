@@ -100,7 +100,7 @@ from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
 
-from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
+from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer
 from typing_extensions import Self
@@ -529,6 +529,69 @@ class _SingletonActorAdapator:
         return PythonTask.from_coroutine(empty())
 
 
+def _check_endpoint_arguments(
+    method_name: MethodSpecifier,
+    signature: inspect.Signature,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> None:
+    """
+    Check that the arguments match the expected signature for the endpoint.
+
+    For Init methods, the message args contain an ActorInitArgs wrapper, so we
+    unpack it and validate the actual constructor arguments.
+    For ExplicitPort methods, the signature expects (self, port, *args, **kwargs),
+    so we bind with two None placeholders for self and port.
+    For other methods, the signature expects (self, *args, **kwargs),
+    so we bind with one None placeholder for self.
+    """
+    match method_name:
+        case MethodSpecifier.Init():
+            # For Init, args[0] is ActorInitArgs which wraps the real constructor args
+            if len(args) != 1 or not isinstance(args[0], ActorInitArgs):
+                raise TypeError("Init message must contain exactly one ActorInitArgs")
+            init_args = args[0]
+            # Validate the actual constructor arguments against the signature
+            signature.bind(None, *init_args.args, **kwargs)
+        case MethodSpecifier.ExplicitPort():
+            signature.bind(None, None, *args, **kwargs)
+        case _:
+            signature.bind(None, *args, **kwargs)
+
+
+def _create_endpoint_message(
+    method_name: MethodSpecifier,
+    signature: inspect.Signature,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+    port: "Optional[Port[Any]]",
+    proc_mesh: "Optional[ProcMesh]",
+) -> PythonMessage:
+    """
+    Create a PythonMessage for sending to an actor endpoint.
+
+    Checks arguments, flattens them, and creates the appropriate message based on
+    whether the arguments contain monarch references.
+
+    Returns:
+        PythonMessage ready to be sent to the actor mesh
+    """
+    _check_endpoint_arguments(method_name, signature, args, kwargs)
+    objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+
+    if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
+        message = PythonMessage(
+            PythonMessageKind.CallMethod(
+                method_name, None if port is None else port._port_ref
+            ),
+            buffer,
+        )
+    else:
+        message = create_actor_message(method_name, proc_mesh, buffer, objects, port)
+
+    return message
+
+
 class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
@@ -539,7 +602,6 @@ class ActorEndpoint(Endpoint[P, R]):
         name: MethodSpecifier,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
-        explicit_response_port: bool,
     ) -> None:
         super().__init__(propagator)
         self._actor_mesh = actor_mesh
@@ -548,16 +610,9 @@ class ActorEndpoint(Endpoint[P, R]):
         self._shape = shape
         self._proc_mesh = proc_mesh
         self._signature: inspect.Signature = inspect.signature(impl)
-        self._explicit_response_port = explicit_response_port
 
     def _call_name(self) -> MethodSpecifier:
         return self._name
-
-    def _check_arguments(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:
-        if self._explicit_response_port:
-            self._signature.bind(None, None, *args, **kwargs)
-        else:
-            self._signature.bind(None, *args, **kwargs)
 
     def _send(
         self,
@@ -571,26 +626,16 @@ class ActorEndpoint(Endpoint[P, R]):
 
         This sends the message to all actors but does not wait for any result.
         """
-        self._check_arguments(args, kwargs)
-        objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        message = _create_endpoint_message(
+            self._name, self._signature, args, kwargs, port, self._proc_mesh
+        )
 
         # Record the message size with method name attribute
         endpoint_message_size_histogram.record(
-            len(buffer), {"method": self._get_method_name()}
+            len(message.message), {"method": self._get_method_name()}
         )
 
-        if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
-            message = PythonMessage(
-                PythonMessageKind.CallMethod(
-                    self._name, None if port is None else port._port_ref
-                ),
-                buffer,
-            )
-            self._actor_mesh.cast(
-                message, selection, context().actor_instance._as_rust()
-            )
-        else:
-            actor_send(self, buffer, objects, port, selection)
+        self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
         shape = self._shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
@@ -608,7 +653,7 @@ class ActorEndpoint(Endpoint[P, R]):
         return (p, r)
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
-        self._check_arguments(args, kwargs)
+        _check_endpoint_arguments(self._name, self._signature, args, kwargs)
         refs, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
 
         return actor_rref(self, buffer, refs)
@@ -649,7 +694,6 @@ def as_endpoint(
         kind(not_an_endpoint._name),
         getattr(not_an_endpoint._ref, not_an_endpoint._name),
         propagate,
-        explicit_response_port,
     )
 
 
@@ -1457,7 +1501,6 @@ class ActorMesh(MeshTrait, Generic[T]):
                         kind(attr_name),
                         attr_value._method,
                         attr_value._propagator,
-                        attr_value._explicit_response_port,
                     ),
                 )
                 if inspect.iscoroutinefunction(attr_value._method):
@@ -1497,7 +1540,6 @@ class ActorMesh(MeshTrait, Generic[T]):
         name: MethodSpecifier,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
-        explicit_response_port: bool,
     ) -> Any:
         return ActorEndpoint(
             self._inner,
@@ -1507,7 +1549,6 @@ class ActorMesh(MeshTrait, Generic[T]):
             name,
             impl,
             propagator,
-            explicit_response_port,
         )
 
     @classmethod
@@ -1544,7 +1585,6 @@ class ActorMesh(MeshTrait, Generic[T]):
             MethodSpecifier.Init(),
             null_func,
             None,
-            False,
         )
         send(
             ep,

@@ -33,6 +33,7 @@ from monarch._rust_bindings.monarch_extension import client
 from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.actor import (
+    MethodSpecifier,
     PythonMessage,
     PythonMessageKind,
     UnflattenArg,
@@ -402,14 +403,13 @@ class RemoteException(Exception):
             return "<exception formatting RemoteException>"
 
 
-def _cast_call_method_indirect(
-    endpoint: ActorEndpoint,
-    selection: str,
+def _create_call_method_indirect_message(
+    method_name: "MethodSpecifier",
     client: MeshClient,
     seq: Seq,
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
-) -> Tuple[str, int]:
+) -> Tuple[PythonMessage, Tuple[str, int]]:
     unflatten_args = [
         UnflattenArg.PyObject if isinstance(ref, Tensor) else UnflattenArg.Mailbox
         for ref in refs
@@ -417,21 +417,20 @@ def _cast_call_method_indirect(
     broker_id: Tuple[str, int] = client._mesh_controller.broker_id
     actor_msg = PythonMessage(
         PythonMessageKind.CallMethodIndirect(
-            endpoint._name, broker_id, seq, unflatten_args
+            method_name, broker_id, seq, unflatten_args
         ),
         args_kwargs_tuple,
     )
-    endpoint._actor_mesh.cast(actor_msg, selection, context().actor_instance._as_rust())
-    return broker_id
+    return (actor_msg, broker_id)
 
 
-def actor_send(
-    endpoint: ActorEndpoint,
+def create_actor_message(
+    method_name: MethodSpecifier,
+    proc_mesh: Optional["ProcMesh"],
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
-    selection: str,
-):
+) -> PythonMessage:
     tensors = [ref for ref in refs if isinstance(ref, Tensor)]
     # we have some monarch references, we need to ensure their
     # proc_mesh matches that of the tensors we sent to it
@@ -445,7 +444,7 @@ def actor_send(
         # TODO: move propagators into Endpoint abstraction and run the propagator to get the
         # mutates
         checker.check_permission(())
-    selected_device_mesh = endpoint._proc_mesh and endpoint._proc_mesh._device_mesh
+    selected_device_mesh = proc_mesh and proc_mesh._device_mesh
     if selected_device_mesh is not checker.mesh:
         raise ValueError(
             f"monarch Tensors sent to an actor must be located on the same process as the actor. However {checker.mesh} is not {selected_device_mesh}."
@@ -454,12 +453,11 @@ def actor_send(
 
     client = cast(MeshClient, checker.mesh.client)
 
-    _actor_send(
-        endpoint,
+    return _create_actor_message(
+        method_name,
         args_kwargs_tuple,
         refs,
         port,
-        selection,
         client,
         checker.mesh,
         tensors,
@@ -467,17 +465,16 @@ def actor_send(
     )
 
 
-def _actor_send(
-    endpoint: ActorEndpoint,
+def _create_actor_message(
+    method_name: MethodSpecifier,
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
-    selection: str,
     client: MeshClient,
     mesh: DeviceMesh,
     tensors: List[Tensor],
     chosen_stream: Stream,
-):
+) -> PythonMessage:
     stream_ref = chosen_stream._to_ref(client)
     fut = (port, mesh._ndslice) if port is not None else None
 
@@ -491,8 +488,8 @@ def _actor_send(
     # The message to the generic actor tells it to first wait on the broker to get the local arguments
     # from the stream, then it will run the actor method, and send the result to response port.
 
-    broker_id = _cast_call_method_indirect(
-        endpoint, selection, client, ident, args_kwargs_tuple, refs
+    actor_msg, broker_id = _create_call_method_indirect_message(
+        method_name, client, ident, args_kwargs_tuple, refs
     )
     worker_msg = SendResultOfActorCall(ident, broker_id, tensors, [], stream_ref)
     client.send(mesh._ndslice, worker_msg)
@@ -501,6 +498,7 @@ def _actor_send(
     # enough work to count this future as finished,
     # and all potential errors have been reported
     client._request_status()
+    return actor_msg
 
 
 def actor_rref(endpoint, args_kwargs_tuple: Buffer, refs: Sequence[Any]):
@@ -528,9 +526,10 @@ def actor_rref(endpoint, args_kwargs_tuple: Buffer, refs: Sequence[Any]):
     if len(result_dtensors) == 0:
         result_msg = None
 
-    broker_id = _cast_call_method_indirect(
-        endpoint, "all", mesh.client, seq, args_kwargs_tuple, refs
+    actor_msg, broker_id = _create_call_method_indirect_message(
+        endpoint._name, mesh.client, seq, args_kwargs_tuple, refs
     )
+    endpoint._actor_mesh.cast(actor_msg, "all", context().actor_instance._as_rust())
     # note the device mesh has to be defined regardles so the remote functions
     # can invoke mesh.rank("...")
 
