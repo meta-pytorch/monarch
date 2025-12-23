@@ -29,8 +29,8 @@ time it is used.
 """
 
 if TYPE_CHECKING:
-    from monarch._src.actor.actor_mesh import ActorEndpoint, Port, Selection
     from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
+    from monarch._src.actor.actor_mesh import ActorEndpoint, Port, Selection
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 
