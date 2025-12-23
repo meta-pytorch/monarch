@@ -704,6 +704,27 @@ fn initialize_logging_with_log_prefix_impl(
                 }
             }
 
+            if hyperactor_config::global::get(sinks::perfetto::PERFETTO_TRACE_MODE)
+                != sinks::perfetto::PerfettoTraceMode::Off
+            {
+                let exec_id = env::execution_id();
+                let process_name = std::env::var("HYPERACTOR_PROCESS_NAME")
+                    .unwrap_or_else(|_| "client".to_string());
+                match sinks::perfetto::PerfettoFileSink::new(
+                    sinks::perfetto::default_trace_dir(),
+                    &exec_id,
+                    &process_name,
+                ) {
+                    Ok(sink) => {
+                        max_level = Some(tracing::level_filters::LevelFilter::TRACE);
+                        sinks.push(Box::new(sink));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create PerfettoFileSink: {}", e);
+                    }
+                }
+            }
+
             {
                 if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
                     use crate::meta;
