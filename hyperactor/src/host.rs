@@ -1356,7 +1356,6 @@ mod tests {
             ChannelAddr::any(host.addr().transport()),
             "test".to_string(),
         )
-        .await
         .unwrap();
         let (client_inst, _h) = client.instance("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();

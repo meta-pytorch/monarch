@@ -117,11 +117,9 @@ impl TestRootClient {
 }
 
 /// Returns a new test instance; it is initialized lazily.
-pub async fn fresh_instance() -> &'static Instance<TestRootClient> {
+pub fn fresh_instance() -> &'static Instance<TestRootClient> {
     static INSTANCE: OnceLock<Instance<TestRootClient>> = OnceLock::new();
-    let proc = Proc::direct(ChannelTransport::Unix.any(), "testproc".to_string())
-        .await
-        .unwrap();
+    let proc = Proc::direct(ChannelTransport::Unix.any(), "testproc".to_string()).unwrap();
     let (actor, _handle, supervision_rx, signal_rx, work_rx) =
         proc.actor_instance("testclient").unwrap();
     // Use the OnceLock to get a 'static lifetime for the instance.
@@ -140,9 +138,9 @@ pub async fn fresh_instance() -> &'static Instance<TestRootClient> {
 }
 
 /// Returns the singleton test instance; it is initialized lazily.
-pub async fn instance() -> &'static Instance<TestRootClient> {
-    static INSTANCE: OnceCell<&'static Instance<TestRootClient>> = OnceCell::const_new();
-    INSTANCE.get_or_init(fresh_instance).await
+pub fn instance() -> &'static Instance<TestRootClient> {
+    static INSTANCE: OnceLock<&'static Instance<TestRootClient>> = OnceLock::new();
+    INSTANCE.get_or_init(fresh_instance)
 }
 
 #[cfg(fbcode_build)]
@@ -291,7 +289,7 @@ pub async fn host_mesh(extent: Extent) -> HostMesh {
         .await
         .unwrap();
 
-    HostMesh::allocate(instance().await, Box::new(alloc), "test", None)
+    HostMesh::allocate(instance(), Box::new(alloc), "test", None)
         .await
         .unwrap()
 }

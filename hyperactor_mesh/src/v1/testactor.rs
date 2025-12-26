@@ -290,7 +290,7 @@ impl Handler<GetConfigAttrs> for TestActor {
 /// and all actors are assigned the correct ranks. We also test
 /// slicing the mesh.
 pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
-    let instance = testing::instance().await;
+    let instance = testing::instance();
     // Verify casting to the root actor mesh
     assert_casting_correctness(&actor_mesh, instance).await;
 

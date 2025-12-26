@@ -595,7 +595,6 @@ impl Drop for HostMesh {
                     ChannelTransport::Unix.any(),
                     "hostmesh-drop".to_string(),
                 )
-                    .await
                 {
                     Err(e) => {
                         tracing::warn!(
@@ -1394,7 +1393,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         for alloc in testing::allocs(extent!(replicas = 4)).await {
             let mut host_mesh = HostMesh::allocate(instance, alloc, "test", None)
@@ -1522,16 +1521,16 @@ mod tests {
             children.push(cmd.spawn().unwrap());
         }
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
         let proc_mesh = host_mesh
-            .spawn(&testing::instance().await, "test", Extent::unity())
+            .spawn(&testing::instance(), "test", Extent::unity())
             .await
             .unwrap();
 
         let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn(&testing::instance().await, "test", &())
+            .spawn(&testing::instance(), "test", &())
             .await
             .unwrap();
 
@@ -1568,7 +1567,7 @@ mod tests {
         }
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         let err = host_mesh
             .spawn(&instance, "test", Extent::unity())
@@ -1613,7 +1612,7 @@ mod tests {
         }
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         let err = host_mesh
             .spawn(&instance, "test", Extent::unity())
@@ -1649,7 +1648,7 @@ mod tests {
             std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT");
         }
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         let proc_meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
         let proc_mesh = proc_meshes.get(1).unwrap();

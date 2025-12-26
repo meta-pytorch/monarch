@@ -598,9 +598,7 @@ mod tests {
             .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .unwrap();
 
-        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string())
-            .await
-            .unwrap();
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let name = Name::new("proc1").unwrap();

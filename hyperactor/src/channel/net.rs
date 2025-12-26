@@ -276,6 +276,7 @@ pub(crate) mod unix {
     }
 
     /// Listen and serve connections on this socket address.
+    /// This function panics if thread-local tokio runtime is not set.
     pub fn serve<M: RemoteMessage>(
         addr: SocketAddr,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {

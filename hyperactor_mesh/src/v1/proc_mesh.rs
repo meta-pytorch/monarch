@@ -1287,7 +1287,7 @@ mod tests {
     async fn test_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             testactor::assert_mesh_shape(proc_mesh.spawn(instance, "test", &()).await.unwrap())
@@ -1300,7 +1300,7 @@ mod tests {
     async fn test_failing_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             let err = proc_mesh

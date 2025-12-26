@@ -3536,9 +3536,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn bootstrap_handle_terminate_graceful() {
         // Create a root direct-addressed proc + client instance.
-        let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-            .await
-            .unwrap();
+        let root =
+            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
         let (instance, _handle) = root.instance("client").unwrap();
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
@@ -3600,9 +3599,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn bootstrap_handle_kill_forced() {
         // Root proc + client instance (so the child can dial back).
-        let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-            .await
-            .unwrap();
+        let root =
+            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
         let (instance, _handle) = root.instance("client").unwrap();
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
@@ -3655,7 +3653,7 @@ mod tests {
         }
         // Create an actor instance we'll use to send and receive
         // messages.
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         // Configure a ProcessAllocator with the bootstrap binary.
         let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
