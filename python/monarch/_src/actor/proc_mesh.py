@@ -104,33 +104,113 @@ TActor = TypeVar("TActor", bound=Actor)
 class SetupActor(Actor):
     """
     A helper actor to set up the actor mesh with user defined setup method.
+    Also runs registered startup functions (e.g., for mock propagation).
+
+    This actor uses an async endpoint and wraps synchronous user setup functions
+    with fake_sync_state() to properly handle the async context.
     """
 
-    def __init__(self, env: Callable[[], None]) -> None:
-        self._setup_method = env
+    # List of startup functions that are called when spawning a SetupActor.
+    # Each function returns Optional[Callable[[], None]] - a callable to run on
+    # the remote process. The callable handles its own serialization via __reduce_ex__.
+    # Returns None if there's no work to do.
+    _startup_functions: List[Callable[[], Optional[Callable[[], None]]]] = []
 
-    @endpoint
-    def setup(self) -> None:
+    @classmethod
+    def register_startup_function(
+        cls,
+        func: Callable[[], Optional[Callable[[], None]]],
+    ) -> None:
         """
-        Call the user defined setup method with the monarch context.
+        Register a startup function.
+
+        The function is called when spawning a SetupActor. It should return:
+        - None if there's no work to do
+        - A Callable[[], None] that will be run on the remote process.
+          The callable is responsible for its own serialization via __reduce_ex__.
         """
-        self._setup_method()
+        cls._startup_functions.append(func)
 
+    @staticmethod
+    def startup_actor_from_setup_function(
+        pm: "ProcMesh",
+        hy_proc_mesh: "Shared[HyProcMesh]",
+        setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
+        run_startup_functions: bool = True,
+    ) -> Optional["SetupActor"]:
+        """
+        Factory method that decides if a SetupActor is needed.
 
-class AsyncSetupActor(Actor):
-    """
-    A helper actor to set up the actor mesh with user defined setup method.
-    """
+        Creates a SetupActor only if there's work to do: user setup function
+        or registered startup functions with work.
 
-    def __init__(self, env: Callable[[], Awaitable[None]]) -> None:
-        self._setup_method = env
+        Args:
+            pm: The ProcMesh to spawn the actor on.
+            hy_proc_mesh: The underlying hyperactor proc mesh.
+            setup: Optional user-provided setup function.
+            run_startup_functions: Whether to run startup functions. Set to False
+                for the root proc mesh to avoid propagating mocks to it.
+        """
+        # Collect callables from all registered startup functions
+        startup_callables: List[Callable[[], None]] = []
+        if run_startup_functions:
+            for func in SetupActor._startup_functions:
+                callable_to_run = func()
+                if callable_to_run is not None:
+                    startup_callables.append(callable_to_run)
+
+        has_work = setup is not None or bool(startup_callables)
+
+        if not has_work:
+            return None
+
+        return pm._spawn_nonblocking_on(
+            hy_proc_mesh,
+            "setup",
+            SetupActor,
+            setup,
+            startup_callables if startup_callables else None,
+        )
+
+    def __init__(
+        self,
+        user_setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
+        startup_callables: Optional[List[Callable[[], None]]] = None,
+    ) -> None:
+        self._user_setup = user_setup
+        self._startup_callables = startup_callables
+        self._is_async: bool = user_setup is not None and inspect.iscoroutinefunction(
+            user_setup
+        )
 
     @endpoint
     async def setup(self) -> None:
         """
-        Call the user defined setup method with the monarch context.
+        Run setup on the remote process:
+        1. First run startup callables (always sync, wrapped with fake_sync_state)
+        2. Then run user's setup method (sync or async)
         """
-        await self._setup_method()
+        from monarch._src.actor.sync_state import fake_sync_state
+
+        # Run startup callables first (always synchronous)
+        # Use local variable so pyre can narrow the type after the None check
+        startup_callables = self._startup_callables
+        if startup_callables is not None:
+            with fake_sync_state():
+                for callable_fn in startup_callables:
+                    callable_fn()
+
+        # Run user setup
+        # Use local variable so pyre can narrow the type after the None check
+        user_setup = self._user_setup
+        if user_setup is not None:
+            if self._is_async:
+                # pyre-ignore[12]: user_setup is Awaitable here due to _is_async check
+                await user_setup()
+            else:
+                with fake_sync_state():
+                    # pyre-ignore[29]: user_setup is callable here
+                    user_setup()
 
 
 try:
@@ -284,6 +364,9 @@ class ProcMesh(MeshTrait):
         If __init__ fails, the actor will be stopped and a supervision event will
         be raised.
         """
+        from monarch._src.actor.mock import get_actor_class
+
+        Class = cast(Type[TActor], get_actor_class(cast(Type[Actor], Class)))
         return self._spawn_nonblocking(name, Class, *args, **kwargs)
 
     @property
@@ -318,7 +401,7 @@ class ProcMesh(MeshTrait):
         async def task(
             pm: "ProcMesh",
             hy_proc_mesh_task: "Shared[HyProcMesh]",
-            setup_actor: "SetupActor | AsyncSetupActor | None",
+            setup_actor: "SetupActor | None",
             stream_log_to_client: bool,
         ) -> HyProcMesh:
             hy_proc_mesh = await hy_proc_mesh_task
@@ -333,17 +416,13 @@ class ProcMesh(MeshTrait):
 
             return hy_proc_mesh
 
-        setup_actor = None
-        if setup is not None:
-            actor_type = (
-                AsyncSetupActor if inspect.iscoroutinefunction(setup) else SetupActor
-            )
-            # The SetupActor needs to be spawned outside of `task` for now,
-            # since spawning a python actor requires a blocking call to
-            # pickle the proc mesh, and we can't do that from the tokio runtime.
-            setup_actor = pm._spawn_nonblocking_on(
-                hy_proc_mesh, "setup", actor_type, setup
-            )
+        # Use SetupActor factory to handle setup function and startup functions.
+        # The SetupActor needs to be spawned outside of `task` for now,
+        # since spawning a python actor requires a blocking call to
+        # pickle the proc mesh, and we can't do that from the tokio runtime.
+        setup_actor = SetupActor.startup_actor_from_setup_function(
+            pm, hy_proc_mesh, setup, run_startup_functions=_attach_controller_controller
+        )
 
         pm._proc_mesh = PythonTask.from_coroutine(
             task(pm, hy_proc_mesh, setup_actor, host_mesh.stream_logs)
