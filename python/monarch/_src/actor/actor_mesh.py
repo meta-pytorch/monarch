@@ -109,7 +109,7 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
-    from monarch._src.actor.proc_mesh import _ControllerController, ProcMesh
+    from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
 from monarch._src.actor.telemetry import get_monarch_tracer
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -135,6 +135,26 @@ class Point(HyPoint, collections.abc.Mapping):
 
 @rust_struct("monarch_hyperactor::context::Instance")
 class Instance(abc.ABC):
+    # Optional tensor engine factory for mocking. When set, this is used
+    # instead of the real tensor engine when spawning device meshes.
+    _mock_tensor_engine_factory: Optional[Callable[["ProcMesh"], "DeviceMesh"]] = None
+
+    def spawn_tensor_engine(self, proc_mesh: "ProcMesh") -> "DeviceMesh":
+        """
+        Spawn a tensor engine for this actor.
+
+        If a mock tensor engine factory is set, use it. Otherwise, use the
+        real tensor engine from mesh_controller.
+        """
+        if self._mock_tensor_engine_factory is not None:
+            return self._mock_tensor_engine_factory(proc_mesh)
+
+        # pyre-ignore[21]: mesh_controller may not be visible to pyre in this target
+        from monarch.mesh_controller import spawn_tensor_engine as real_spawn
+
+        # pyre-ignore[16]: spawn_tensor_engine is defined in mesh_controller
+        return real_spawn(proc_mesh)
+
     @abstractproperty
     def _mailbox(self) -> Mailbox:
         """
@@ -1200,6 +1220,16 @@ class _Actor:
                     ins.class_name = f"{Class.__module__}.{Class.__qualname__}"
                     try:
                         self.instance = Class(*args, **kwargs)
+                        # Check if there's a tensor engine mock registered for this actor class.
+                        # If so, set _mock_tensor_engine_factory on the Instance for use by
+                        # Instance.spawn_tensor_engine().
+                        from monarch._src.actor.mock import get_tensor_engine_factory
+
+                        mock_factory = get_tensor_engine_factory(Class)
+                        if mock_factory is not None:
+                            ins._mock_tensor_engine_factory = (
+                                lambda proc_mesh: mock_factory(proc_mesh)
+                            )
                         self._maybe_exit_debugger()
                     except Exception as e:
                         self._saved_error = ActorError(

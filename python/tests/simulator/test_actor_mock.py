@@ -12,7 +12,7 @@ import pytest
 
 from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.mock import _registry, get_actor_class, patch_actor
+from monarch._src.actor.mock import _actor_registry, get_actor_class, patch_actor
 
 
 class OriginalActor(Actor):
@@ -81,7 +81,7 @@ class MockInnerActor(Actor):
 class TestActorMock(unittest.TestCase):
     def setUp(self) -> None:
         # Clear registry between tests
-        _registry.clear()
+        _actor_registry.clear()
 
     def test_patch_actor_as_context_manager(self) -> None:
         # Setup: Verify original actor is used initially
@@ -188,29 +188,29 @@ class TestActorMock(unittest.TestCase):
 
     def test_patch_actor_exit_removes_registry_entry(self) -> None:
         # Setup: Verify registry is empty
-        self.assertEqual(len(_registry), 0)
+        self.assertEqual(len(_actor_registry), 0)
 
         # Execute: Use patch and verify registry behavior
         with patch_actor(OriginalActor, MockActor):
             # Assert: Registry contains the patch (using class as key, not __name__)
-            self.assertIn(OriginalActor, _registry)
-            self.assertEqual(_registry[OriginalActor], MockActor)
+            self.assertIn(OriginalActor, _actor_registry)
+            self.assertEqual(_actor_registry[OriginalActor], MockActor)
 
         # Assert: Registry entry is cleaned up after exit
-        self.assertNotIn(OriginalActor, _registry)
-        self.assertEqual(len(_registry), 0)
+        self.assertNotIn(OriginalActor, _actor_registry)
+        self.assertEqual(len(_actor_registry), 0)
 
     def test_patch_actor_exception_cleanup(self) -> None:
         # Setup: Verify initial state
         self.assertEqual(get_actor_class(OriginalActor), OriginalActor)
-        self.assertEqual(len(_registry), 0)
+        self.assertEqual(len(_actor_registry), 0)
 
         # Execute: Use patch that raises exception
         try:
             with patch_actor(OriginalActor, MockActor):
                 # Assert: Patch is active
                 self.assertEqual(get_actor_class(OriginalActor), MockActor)
-                self.assertIn(OriginalActor, _registry)
+                self.assertIn(OriginalActor, _actor_registry)
                 # Raise exception to test cleanup
                 raise ValueError("Test exception")
         except ValueError:
@@ -219,14 +219,14 @@ class TestActorMock(unittest.TestCase):
         # Assert: Original actor is restored even after exception
         self.assertEqual(get_actor_class(OriginalActor), OriginalActor)
         # Assert: Registry is cleaned up even after exception
-        self.assertNotIn(OriginalActor, _registry)
-        self.assertEqual(len(_registry), 0)
+        self.assertNotIn(OriginalActor, _actor_registry)
+        self.assertEqual(len(_actor_registry), 0)
 
 
 class TestActorMockAsync(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         # Clear registry between tests
-        _registry.clear()
+        _actor_registry.clear()
 
     async def test_patch_actor_as_async_decorator(self) -> None:
         # Setup: Define an async function to be decorated
@@ -263,25 +263,25 @@ class TestActorMockAsync(unittest.IsolatedAsyncioTestCase):
 class TestMockRegistryPropagation(unittest.TestCase):
     def setUp(self) -> None:
         # Clear registry between tests
-        _registry.clear()
+        _actor_registry.clear()
 
     def test_mock_registry_state_get_and_set(self) -> None:
         """
         Test that mock registry state can be captured and restored.
 
         This is the core mechanism for propagating mocks to remote processes:
-        1. Capture registry state with get_mock_registry_state()
+        1. Capture registry state with get_actor_mock_registry_state()
         2. Transfer state to remote process (via SetupActor)
-        3. Restore state with set_mock_registry_state()
+        3. Restore state with set_actor_mock_registry_state()
         """
         from monarch._src.actor.mock import (
-            get_mock_registry_state,
-            set_mock_registry_state,
+            get_actor_mock_registry_state,
+            set_actor_mock_registry_state,
         )
 
         # Setup: Verify registry is initially empty
-        self.assertEqual(len(_registry), 0)
-        initial_state = get_mock_registry_state()
+        self.assertEqual(len(_actor_registry), 0)
+        initial_state = get_actor_mock_registry_state()
         self.assertEqual(len(initial_state), 0)
 
         # Execute: Patch an actor and capture the state
@@ -290,25 +290,25 @@ class TestMockRegistryPropagation(unittest.TestCase):
             self.assertEqual(get_actor_class(InnerActor), MockInnerActor)
 
             # Capture the registry state (this is what would be sent to remote process)
-            captured_state = get_mock_registry_state()
+            captured_state = get_actor_mock_registry_state()
             self.assertEqual(len(captured_state), 1)
             # Registry now uses class objects as keys, not __name__ strings
             self.assertIn(InnerActor, captured_state)
             self.assertEqual(captured_state[InnerActor], MockInnerActor)
 
         # After exiting the context, the registry should be empty
-        self.assertEqual(len(_registry), 0)
+        self.assertEqual(len(_actor_registry), 0)
         self.assertEqual(get_actor_class(InnerActor), InnerActor)
 
         # Execute: Restore the captured state (simulating what SetupActor does)
-        set_mock_registry_state(captured_state)
+        set_actor_mock_registry_state(captured_state)
 
         # Assert: The mock should now be active again
         self.assertEqual(get_actor_class(InnerActor), MockInnerActor)
-        self.assertEqual(len(_registry), 1)
+        self.assertEqual(len(_actor_registry), 1)
 
         # Cleanup
-        _registry.clear()
+        _actor_registry.clear()
 
 
 class OuterActor(Actor):
@@ -334,7 +334,7 @@ class TestMockPropagationEndToEnd(unittest.TestCase):
 
     def setUp(self) -> None:
         # Clear registry between tests
-        _registry.clear()
+        _actor_registry.clear()
 
     # pyre-ignore[56]: Pyre cannot infer type of pytest.mark.timeout decorator
     @pytest.mark.timeout(60)

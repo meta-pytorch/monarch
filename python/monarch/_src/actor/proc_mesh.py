@@ -497,12 +497,12 @@ class ProcMesh(MeshTrait):
                 "DeviceMesh is not available because tensor_engine was not compiled (USE_TENSOR_ENGINE=0)"
             )
 
-        # type: ignore[21]
-        from monarch.mesh_controller import spawn_tensor_engine  # @manual
+        from monarch._src.actor.actor_mesh import context
 
         if self._maybe_device_mesh is None:
-            # type: ignore[21]
-            self._maybe_device_mesh = spawn_tensor_engine(self)
+            # Use the actor instance's spawn_tensor_engine method, which handles
+            # mock vs real tensor engine decision.
+            self._maybe_device_mesh = context().actor_instance.spawn_tensor_engine(self)
         return self._maybe_device_mesh
 
     # pyre-ignore

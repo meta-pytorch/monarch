@@ -38,6 +38,9 @@ pub struct PyInstance {
     class_name: Option<String>,
     #[pyo3(get, set, name = "creator")]
     creator: Option<PyObject>,
+
+    #[pyo3(get, set, name = "_mock_tensor_engine_factory")]
+    mock_tensor_engine_factory: Option<PyObject>,
 }
 
 impl Clone for PyInstance {
@@ -51,6 +54,7 @@ impl Clone for PyInstance {
             name: self.name.clone(),
             class_name: self.class_name.clone(),
             creator: self.creator.clone(),
+            mock_tensor_engine_factory: self.mock_tensor_engine_factory.clone(),
         }
     }
 }
@@ -95,6 +99,7 @@ impl<I: context::Actor<A = PythonActor>> From<I> for PyInstance {
             name: "root".to_string(),
             class_name: None,
             creator: None,
+            mock_tensor_engine_factory: None,
         }
     }
 }
