@@ -191,12 +191,26 @@ class MockController:
                 tensors, unflatten = flatten(
                     fake_result, lambda x: isinstance(x, torch.Tensor)
                 )
-                fake_result = unflatten(
-                    torch.zeros(
-                        t.size(), dtype=t.dtype, device=t.device, requires_grad=False
-                    )
-                    for t in tensors
-                )
+
+                def create_zeros(t: torch.Tensor) -> torch.Tensor:
+                    """Create zeros tensor, falling back to CPU if CUDA fails."""
+                    try:
+                        return torch.zeros(
+                            t.size(),
+                            dtype=t.dtype,
+                            device=t.device,
+                            requires_grad=False,
+                        )
+                    except Exception:
+                        # CUDA not functional, use CPU instead
+                        return torch.zeros(
+                            t.size(),
+                            dtype=t.dtype,
+                            device="cpu",
+                            requires_grad=False,
+                        )
+
+                fake_result = unflatten(create_zeros(t) for t in tensors)
             for _ in iter_ranks(ranks):
                 self.responses.append(
                     self.history.future_completed(msg.ident, fake_result)

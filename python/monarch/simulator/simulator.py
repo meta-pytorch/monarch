@@ -53,7 +53,11 @@ from monarch.simulator.command_history import CommandHistory, DTensorRef
 from monarch.simulator.config import META_VAL
 from monarch.simulator.ir import IRGraph
 from monarch.simulator.mock_controller import MockController
-from monarch.simulator.profiling import RuntimeEstimator, RuntimeProfiler
+from monarch.simulator.profiling import (
+    FakeRuntimeProfiler,
+    RuntimeEstimator,
+    RuntimeProfiler,
+)
 from monarch.simulator.task import Borrow, EventTask, Task
 from monarch.simulator.tensor import FakeTensorTracker
 from monarch.simulator.trace import (
@@ -167,7 +171,25 @@ class Simulator:
             )
 
         self.runtime = RuntimeEstimator()
-        self.runtime_profiler = RuntimeProfiler(world_size=torch.cuda.device_count())
+        # Use FakeRuntimeProfiler when CUDA is not available or not functional
+        use_real_profiler = False
+        cuda_device_count = 0
+        try:
+            cuda_device_count = torch.cuda.device_count()
+            if cuda_device_count > 0 and torch.cuda.is_available():
+                # Try a small CUDA operation and sync to verify CUDA actually works
+                test_tensor = torch.zeros(1, device="cuda")
+                # Force synchronization to catch any deferred CUDA errors
+                torch.cuda.synchronize()
+                del test_tensor
+                use_real_profiler = True
+        except Exception:
+            pass
+
+        if use_real_profiler:
+            self.runtime_profiler = RuntimeProfiler(world_size=cuda_device_count)
+        else:
+            self.runtime_profiler = FakeRuntimeProfiler(world_size=world_size)
         self.events: List[TraceEvent] = []
         self.command_id = 0
         self.fake_tensor_tracker = FakeTensorTracker()
