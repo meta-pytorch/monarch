@@ -49,7 +49,6 @@ opentelemetry = "0.29"
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 pyo3-async-runtimes = { version = "0.24", features = ["attributes", "tokio-runtime"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
-serde_bytes = "0.11"
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 tempfile = "3.22"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
