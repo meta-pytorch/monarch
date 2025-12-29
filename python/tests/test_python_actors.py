@@ -1179,6 +1179,9 @@ async def test_sync_workspace() -> None:
 async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am = pm.spawn("printer", Printer)
+    # Make sure the actor is initialized first, else the stop and init can
+    # race and the message becomes undeliverable.
+    await am.print.call("hello world")
 
     await cast(ActorMesh, am).stop()
     await pm.stop()
