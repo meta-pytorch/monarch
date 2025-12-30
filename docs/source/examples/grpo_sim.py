@@ -6,6 +6,17 @@
 
 # pyre-strict
 
+"""
+Simulation of GRPO without Tensor Engine
+=====================================
+Demonstrates working with grpo_actor.py to show that GRPO can be simulated
+without real GPUs.
+
+Run with::
+
+    buck2 run //monarch/docs/source/examples:grpo_sim
+"""
+
 import asyncio
 from typing import Any, Dict, Optional
 
