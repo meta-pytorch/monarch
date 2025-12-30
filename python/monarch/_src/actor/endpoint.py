@@ -125,16 +125,14 @@ class Endpoint(ABC, Generic[P, R]):
         Extract method name from this endpoint's method specifier.
 
         Returns:
-            The method name, or "unknown" if not available
+            The method name
         """
-        method_specifier = self._call_name()
-        match method_specifier:
-            case MethodSpecifier.Init():
-                return "__init__"
-            case MethodSpecifier.ReturnsResponse() | MethodSpecifier.ExplicitPort():
-                # pyre-ignore[16]: MethodSpecifier subclasses ReturnsResponse and ExplicitPort have .name
-                return method_specifier.name
-        return "unknown"
+        call_name = self._call_name()
+        if isinstance(call_name, MethodSpecifier):
+            return call_name.name
+        else:
+            # could happen for class Remote https://fburl.com/code/4ny98bul
+            return "unknown"
 
     def _with_telemetry(
         self,
