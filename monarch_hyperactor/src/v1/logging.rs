@@ -28,6 +28,7 @@ use pyo3::types::PyString;
 use crate::context::PyInstance;
 use crate::logging::LoggerRuntimeActor;
 use crate::logging::LoggerRuntimeMessage;
+use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::v1::proc_mesh::PyProcMesh;
 
@@ -432,11 +433,17 @@ fn format_traceback<'py>(py: Python<'py>, err: PyErr) -> String {
 }
 
 #[pyfunction]
-fn log_endpoint_exception<'py>(py: Python<'py>, e: PyObject, endpoint: PyObject) {
+fn log_endpoint_exception<'py>(
+    py: Python<'py>,
+    e: PyObject,
+    endpoint: PyObject,
+    actor_id: PyActorId,
+) {
     let pyerr = PyErr::from_value(e.into_bound(py));
     let exception_str = format_traceback(py, pyerr);
     let endpoint = endpoint.into_bound(py).to_string();
     tracing::info!(
+        actor_id = actor_id.inner.to_string(),
         %endpoint,
         "exception occurred in endpoint: {}",
         exception_str,

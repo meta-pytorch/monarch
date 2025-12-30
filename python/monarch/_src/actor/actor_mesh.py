@@ -1301,7 +1301,7 @@ class _Actor:
         except Exception as e:
             if endpoint_span is not None:
                 endpoint_span.exit()
-            log_endpoint_exception(e, method_name)
+            log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
             self._post_mortem_debug(e.__traceback__)
             response_port.exception(
                 ActorError(
