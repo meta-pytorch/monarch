@@ -175,35 +175,15 @@ pub struct RdmaManagerActor {
 
 impl Drop for RdmaManagerActor {
     fn drop(&mut self) {
-        // Helper function to manually destroy QP and CQs
+        // Helper function to destroy QP resources
         // We can't use Drop on RdmaQueuePair because it derives Clone
-        fn destroy_queue_pair(qp: &RdmaQueuePair, context: &str) {
+        // Note: rdmaxcel_qp_destroy handles destroying both the QP and its CQs internally,
+        // so we must NOT call ibv_destroy_cq separately (would cause double-free/SIGSEGV)
+        fn destroy_queue_pair(qp: &RdmaQueuePair, _context: &str) {
             unsafe {
                 if qp.qp != 0 {
                     let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
                     rdmaxcel_sys::rdmaxcel_qp_destroy(rdmaxcel_qp);
-                }
-                if qp.send_cq != 0 {
-                    let result =
-                        rdmaxcel_sys::ibv_destroy_cq(qp.send_cq as *mut rdmaxcel_sys::ibv_cq);
-                    if result != 0 {
-                        tracing::debug!(
-                            "ibv_destroy_cq (send) returned {} for {} (may be busy during shutdown)",
-                            result,
-                            context
-                        );
-                    }
-                }
-                if qp.recv_cq != 0 {
-                    let result =
-                        rdmaxcel_sys::ibv_destroy_cq(qp.recv_cq as *mut rdmaxcel_sys::ibv_cq);
-                    if result != 0 {
-                        tracing::debug!(
-                            "ibv_destroy_cq (recv) returned {} for {} (may be busy during shutdown)",
-                            result,
-                            context
-                        );
-                    }
                 }
             }
         }
