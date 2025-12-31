@@ -52,6 +52,7 @@ use crate::context::PyInstance;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
+use crate::runtime::signal_safe_block_on;
 
 #[derive(Clone, Debug)]
 #[pyclass(
@@ -251,6 +252,8 @@ pub(super) struct PythonPortHandle {
 impl PythonPortHandle {
     // TODO(pzhang) Use instance after its required by PortHandle.
     fn send(&self, _instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
+        let message = resolve_pending_pickle_blocking(message)?;
+
         self.inner
             .send(message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
@@ -289,6 +292,8 @@ impl PythonPortRef {
     }
 
     fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
+        let message = resolve_pending_pickle_blocking(message)?;
+
         self.inner
             .send(instance.deref(), message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
@@ -418,6 +423,8 @@ impl PythonOncePortHandle {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
 
+        let message = resolve_pending_pickle_blocking(message)?;
+
         port.send(message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
         Ok(())
@@ -464,6 +471,8 @@ impl PythonOncePortRef {
         let Some(port_ref) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
         };
+
+        let message = resolve_pending_pickle_blocking(message)?;
 
         port_ref
             .send(instance.deref(), message)
@@ -646,6 +655,24 @@ inventory::submit! {
 }
 
 py_global!(point, "monarch._src.actor.actor_mesh", "Point");
+
+fn resolve_pending_pickle_blocking(mut message: PythonMessage) -> PyResult<PythonMessage> {
+    // TODO(slurye): Cleanly handle PendingPickle objects sent directly over ports. This is new
+    // code but it isn't a regression -- PendingPickle objects are only created for objects that,
+    // in earlier commits, either (a) already had to be awaited explicitly in the tokio runtime
+    // before pickling, or (b) already had to be explicitly blocked on outside the tokio runtime
+    // before pickling. Any use case that worked before should still work now.
+    if let Some(pending_pickle_state) = message.pending_pickle_state.take() {
+        message.message = Python::with_gil(|py| {
+            signal_safe_block_on(
+                py,
+                pending_pickle_state.resolve(message.message.into_bytes()),
+            )
+        })??;
+    }
+
+    Ok(message)
+}
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyMailbox>()?;
