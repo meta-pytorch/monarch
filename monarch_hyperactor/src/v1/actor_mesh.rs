@@ -762,7 +762,7 @@ impl PythonActorMeshImpl {
 fn py_actor_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
     let r: PyResult<ActorMeshRef<PythonActor>> =
         bincode::deserialize(bytes.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()));
-    r.map(|r| PythonActorMesh::from_impl(Box::new(PythonActorMeshImpl::new_ref(r))))
+    r.map(|r| PythonActorMesh::from_impl(Arc::new(PythonActorMeshImpl::new_ref(r))))
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {

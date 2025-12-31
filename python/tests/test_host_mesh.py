@@ -110,6 +110,7 @@ def test_pickle() -> None:
     host = create_local_host_mesh(
         Extent(["replicas", "hosts"], [2, 4]),
     )
+    host.initialized.get()
     _unused, pickled = flatten(host, lambda _: False)
     unpickled = unflatten(pickled.freeze(), _unused)
     assert isinstance(unpickled, HostMesh)
@@ -149,6 +150,7 @@ def test_shutdown_sliced_host_mesh_throws_exception() -> None:
 @pytest.mark.timeout(60)
 def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
     hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    hm.initialized.get()
     hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
     with pytest.raises(RuntimeError):
         hm_unpickled.shutdown().get()

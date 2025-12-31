@@ -48,6 +48,7 @@ use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
 use crate::proc_mesh::Keepalive;
+use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
@@ -111,7 +112,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
 pub(crate) struct PythonActorMesh {
-    inner: Box<dyn ActorMeshProtocol>,
+    inner: Arc<dyn ActorMeshProtocol>,
 }
 
 impl PythonActorMesh {
@@ -120,10 +121,10 @@ impl PythonActorMesh {
         F: Future<Output = PyResult<Box<dyn ActorMeshProtocol>>> + Send + 'static,
     {
         PythonActorMesh {
-            inner: Box::new(AsyncActorMesh::new_queue(f, supervised)),
+            inner: Arc::new(AsyncActorMesh::new_queue(f, supervised)),
         }
     }
-    pub(crate) fn from_impl(inner: Box<dyn ActorMeshProtocol>) -> Self {
+    pub(crate) fn from_impl(inner: Arc<dyn ActorMeshProtocol>) -> Self {
         PythonActorMesh { inner }
     }
 }
@@ -154,7 +155,9 @@ impl PythonActorMesh {
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
         let inner = self.inner.new_with_region(region)?;
-        Ok(PythonActorMesh { inner })
+        Ok(PythonActorMesh {
+            inner: Arc::from(inner),
+        })
     }
 
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
@@ -186,7 +189,7 @@ impl PythonActorMesh {
     fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
         let r: PyResult<PythonActorMeshRef> = bincode::deserialize(bytes.as_bytes())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
-        r.map(|r| PythonActorMesh { inner: Box::new(r) })
+        r.map(|r| PythonActorMesh { inner: Arc::new(r) })
     }
 }
 
@@ -627,7 +630,7 @@ impl AsyncActorMesh {
 impl ActorMeshProtocol for AsyncActorMesh {
     fn cast(
         &self,
-        message: PythonMessage,
+        mut message: PythonMessage,
         selection: Selection,
         instance: &PyInstance,
     ) -> PyResult<()> {
@@ -638,7 +641,13 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
                 _ => None,
             };
-            let result = async { mesh.await?.cast(message, selection, &instance) }.await;
+            let result = async {
+                if let Some(pickle_state) = message.pending_pickle_state.take() {
+                    message.message = pickle_state.resolve(message.message.into_bytes()).await?;
+                }
+                mesh.await?.cast(message, selection, &instance)
+            }
+            .await;
             match (port, result) {
                 (Some(p), Err(pyerr)) => Python::with_gil(|py: Python<'_>| {
                     let port_ref = match p {
@@ -670,9 +679,27 @@ impl ActorMeshProtocol for AsyncActorMesh {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let mesh = self.mesh.clone();
-        let mesh = py.allow_threads(|| get_tokio_runtime().block_on(mesh));
-        mesh?.__reduce__(py)
+        let fut = self.mesh.clone();
+        match fut.peek().cloned() {
+            Some(mesh) => mesh?.__reduce__(py),
+            None => {
+                let ident = py
+                    .import("monarch._rust_bindings.monarch_hyperactor.actor_mesh")?
+                    .getattr("py_identity")?;
+                let fut = self.mesh.clone();
+                Ok((
+                    ident,
+                    (PendingPickle::from_future(
+                        async move {
+                            let mesh = PythonActorMesh::from_impl(fut.await?);
+                            Python::with_gil(|py| mesh.into_py_any(py))
+                        }
+                        .boxed(),
+                    )?,)
+                        .into_bound_py_any(py)?,
+                ))
+            }
+        }
     }
 
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
@@ -688,7 +715,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
             }
         });
         PyPythonTask::new(async move {
-            let mut event = rx
+            let event = rx
                 .await
                 .map_err(|e| PyValueError::new_err(e.to_string()))??
                 .supervision_event(&instance)?
@@ -723,10 +750,14 @@ impl ActorMeshProtocol for AsyncActorMesh {
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
         let mesh = self.mesh.clone();
         let instance = Python::with_gil(|_py| instance.clone());
-        PyPythonTask::new(async move {
-            let task = mesh.await?.stop(&instance)?.take_task()?;
-            task.await
-        })
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.push(async move {
+            let result = async move { mesh.await?.stop(&instance)?.take_task()?.await }.await;
+            if tx.send(result).is_err() {
+                panic!("oneshot failed");
+            }
+        });
+        PyPythonTask::new(async move { rx.await.map_err(anyhow::Error::from)? })
     }
 
     fn initialized<'py>(&self) -> PyResult<PyPythonTask> {
@@ -770,7 +801,18 @@ impl From<ActorSupervisionEvent> for PyActorSupervisionEvent {
     }
 }
 
+#[pyfunction]
+fn py_identity(obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    Ok(obj)
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
+    let f = wrap_pyfunction!(py_identity, hyperactor_mod)?;
+    f.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.actor_mesh",
+    )?;
+    hyperactor_mod.add_function(f)?;
     hyperactor_mod.add_class::<PythonActorMesh>()?;
     hyperactor_mod.add_class::<PythonActorMeshImpl>()?;
     hyperactor_mod.add_class::<PyActorSupervisionEvent>()?;

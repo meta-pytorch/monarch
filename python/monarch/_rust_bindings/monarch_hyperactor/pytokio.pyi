@@ -6,7 +6,6 @@
 
 # pyre-strict
 
-import asyncio
 from typing import (
     Any,
     Awaitable,
@@ -14,7 +13,8 @@ from typing import (
     Coroutine,
     Generator,
     Generic,
-    NoReturn,
+    List,
+    Optional,
     Sequence,
     Tuple,
     TypeVar,
@@ -91,9 +91,23 @@ class Shared(Generic[T]):
     """
     def __await__(self) -> Generator[Any, Any, T]: ...
     def block_on(self) -> T: ...
+    def poll(self) -> Optional[T]:
+        """
+        If the task has completed, return the result. Otherwise, return None.
+        This is useful because it allows us to get the result of the task
+        without blocking the tokio runtime.
+        """
+        ...
     def task(self) -> PythonTask[T]:
         """
         Create a one-use Task that awaits on this if you want to use other PythonTask apis like with_timeout.
+        """
+        ...
+    @classmethod
+    def from_value(cls, value: T) -> "Shared[T]":
+        """
+        Create a Shared that has already completed with the given value. It will return that
+        value the first time poll is called.
         """
         ...
 
@@ -102,3 +116,21 @@ def is_tokio_thread() -> bool:
     Returns true if the current thread is a tokio worker thread (and block_on will fail).
     """
     ...
+
+class PendingPickle:
+    """
+    Represents an object that we are eventually going to pickle,
+    but we can't yet because it hasn't been fully initialized.
+    """
+    def __init__(self, fut: Shared[T]) -> None: ...
+
+class PendingPickleState:
+    """
+    A special class used to allow deferring the full pickling of an object.
+    It contains a list of objects that were returned by the filter in a call
+    to `flatten`, and the filter itself. Crucially, some of these objects
+    may be futures that need to be awaited in an asynchronous context.
+    """
+    def __init__(
+        self, unflatten_values: List[Any], flatten_filter: Callable[[Any], bool]
+    ) -> None: ...

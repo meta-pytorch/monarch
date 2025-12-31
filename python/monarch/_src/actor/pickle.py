@@ -8,13 +8,12 @@
 
 import collections.abc as abc
 import io
-import os
 import pickle
 import sys
 import types
 from collections import ChainMap
 from contextlib import ExitStack
-from typing import Any, Callable, Iterable, List, Sequence, Tuple
+from typing import Any, Callable, Iterable, List, Tuple
 
 import cloudpickle
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
