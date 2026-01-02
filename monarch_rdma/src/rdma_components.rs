@@ -1150,7 +1150,7 @@ impl RdmaQueuePair {
                     lkey,
                 };
                 let mut wr = rdmaxcel_sys::ibv_recv_wr {
-                    wr_id: wr_id.into(),
+                    wr_id,
                     sg_list: &mut sge as *mut _,
                     num_sge: 1,
                     ..Default::default()
@@ -1175,7 +1175,7 @@ impl RdmaQueuePair {
                     lkey,
                 };
                 let mut wr = rdmaxcel_sys::ibv_send_wr {
-                    wr_id: wr_id.into(),
+                    wr_id,
                     next: std::ptr::null_mut(),
                     sg_list: &mut sge as *mut _,
                     num_sge: 1,
@@ -1254,7 +1254,7 @@ impl RdmaQueuePair {
                 laddr,
                 lkey,
                 length,
-                wr_id: wr_id.into(),
+                wr_id,
                 signaled,
                 op_type: op_type_val,
                 raddr,
