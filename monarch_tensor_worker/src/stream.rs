@@ -1839,9 +1839,8 @@ impl StreamMessageHandler for StreamActor {
         reference: Ref,
         value: WireValue,
     ) -> Result<()> {
-        let pyobj = Python::with_gil(|py| -> PyResult<PyObject> {
-            Ok(value.into_pyobject(py)?.unbind().into())
-        })?;
+        let pyobj =
+            Python::with_gil(|py| -> PyResult<PyObject> { Ok(value.into_pyobject(py)?.unbind()) })?;
         self.env.insert(reference, Ok(pyobj));
         Ok(())
     }
