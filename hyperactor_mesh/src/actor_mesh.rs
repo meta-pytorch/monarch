@@ -911,7 +911,7 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let actor_mesh: RootActorMesh<'_, ProxyActor> = proc_mesh.spawn(&instance, "proxy", &()).await.unwrap();
                 let proxy_actor = actor_mesh.get(0).unwrap();
@@ -938,7 +938,7 @@ mod tests {
                     .await
                     .unwrap();
 
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn(&instance, "echo", &()).await.unwrap();
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
@@ -965,7 +965,7 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
                 let (undeliverable_msg_tx, _) = mesh.client().open_port();
@@ -1003,7 +1003,7 @@ mod tests {
                     .await
                     .unwrap();
 
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (undeliverable_tx, _undeliverable_rx) = proc_mesh.client().open_port();
                 let actor_mesh: RootActorMesh<PingPongActor> = proc_mesh.spawn(&instance, "pingpong", &(Some(undeliverable_tx.bind()), None, None)).await.unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
                     .await
                     .unwrap();
 
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn(&instance, "echo", &()).await.unwrap();
                 let dont_simulate_error = true;
@@ -1094,7 +1094,7 @@ mod tests {
                     .await
                     .unwrap();
 
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn(&instance, "echo", &()).await.unwrap();
 
@@ -1116,7 +1116,7 @@ mod tests {
             #[tokio::test]
             async fn test_inter_proc_mesh_comms() {
                 let mut meshes = Vec::new();
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 for _ in 0..2 {
                     let alloc = $allocator
                         .allocate(AllocSpec {
@@ -1179,7 +1179,7 @@ mod tests {
                     .await
                     .unwrap();
 
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
 
                 let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
@@ -1244,7 +1244,7 @@ mod tests {
                     .await
                     .unwrap();
 
-                let instance = $crate::v1::testing::instance().await;
+                let instance = $crate::v1::testing::instance();
                 let mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (reply_port_handle, mut reply_port_receiver) = mesh.client().open_port::<usize>();
                 let reply_port = reply_port_handle.bind();
@@ -1309,7 +1309,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let instance = crate::v1::testing::instance().await;
+            let instance = crate::v1::testing::instance();
             let monkey = alloc.chaos_monkey();
             let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
             let mut events = mesh.events().unwrap();
@@ -1384,7 +1384,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let instance = crate::v1::testing::instance().await;
+            let instance = crate::v1::testing::instance();
 
             let stop = alloc.stopper();
             let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
@@ -1451,7 +1451,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let instance = crate::v1::testing::instance().await;
+            let instance = crate::v1::testing::instance();
             let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
             let mesh_one: RootActorMesh<PingPongActor> = mesh
@@ -1578,7 +1578,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let instance = crate::v1::testing::instance().await;
+            let instance = crate::v1::testing::instance();
             let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
             let mut proc_events = proc_mesh.events().unwrap();
             let actor_mesh: RootActorMesh<TestActor> =
@@ -1668,7 +1668,7 @@ mod tests {
             // SAFETY: Not multithread safe.
             unsafe { std::env::set_var("HYPERACTOR_MESH_ROUTER_NO_GLOBAL_FALLBACK", "1") };
 
-            let instance = crate::v1::testing::instance().await;
+            let instance = crate::v1::testing::instance();
             let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
             let mut proc_events = proc_mesh.events().unwrap();
             let mut actor_mesh: RootActorMesh<'_, ProxyActor> =
@@ -1722,6 +1722,7 @@ mod tests {
         use hyperactor::channel::serve;
         use hyperactor::clock::Clock;
         use hyperactor::clock::RealClock;
+        use ndslice::Extent;
         use ndslice::Selection;
 
         use crate::Mesh;
@@ -1823,30 +1824,29 @@ mod tests {
             #[test]
             fn test_reshaped_actor_mesh_cast(extent in gen_extent(1..=4, 8)) {
                 let runtime = make_tokio_runtime();
-                let alloc = runtime.block_on(LocalAllocator
-                    .allocate(AllocSpec {
-                        extent,
-                        constraints: Default::default(),
-                        proc_name: None,
-                        transport: ChannelTransport::Local,
-                        proc_allocation_mode: Default::default(),
-                    }))
-                    .unwrap();
-                let instance = runtime.block_on(crate::v1::testing::instance());
-                let proc_mesh = runtime.block_on(ProcMesh::allocate(alloc)).unwrap();
-
-                let addr = ChannelAddr::any(ChannelTransport::Unix);
-
-                let actor_mesh: RootActorMesh<EchoActor> =
-                    runtime.block_on(proc_mesh.spawn(&instance, "echo", &addr)).unwrap();
-
-                let mut runner = TestRunner::default();
-                let selection = gen_selection(4, actor_mesh.shape().slice().sizes().to_vec(), 0)
-                    .new_tree(&mut runner)
-                    .unwrap()
-                    .current();
-
-                runtime.block_on(validate_cast(&actor_mesh, actor_mesh.proc_mesh().client(), addr, selection));
+                async fn inner(extent: Extent) {
+                    let alloc = LocalAllocator
+                        .allocate(AllocSpec {
+                            extent,
+                            constraints: Default::default(),
+                            proc_name: None,
+                            transport: ChannelTransport::Local,
+                            proc_allocation_mode: Default::default(),
+                        }).await
+                        .unwrap();
+                    let instance = crate::v1::testing::instance();
+                    let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
+                    let addr = ChannelAddr::any(ChannelTransport::Unix);
+                    let actor_mesh: RootActorMesh<EchoActor> =
+                        proc_mesh.spawn(&instance, "echo", &addr).await.unwrap();
+                    let mut runner = TestRunner::default();
+                    let selection = gen_selection(4, actor_mesh.shape().slice().sizes().to_vec(), 0)
+                        .new_tree(&mut runner)
+                        .unwrap()
+                        .current();
+                    validate_cast(&actor_mesh, actor_mesh.proc_mesh().client(), addr, selection).await;
+                }
+                runtime.block_on(inner(extent));
             }
         }
 
@@ -1857,71 +1857,74 @@ mod tests {
             #[test]
             fn test_reshaped_actor_mesh_slice_cast(extent in gen_extent(1..=4, 8)) {
                 let runtime = make_tokio_runtime();
-                let alloc = runtime.block_on(LocalAllocator
-                    .allocate(AllocSpec {
-                        extent: extent.clone(),
-                        constraints: Default::default(),
-                        proc_name: None,
-                        transport: ChannelTransport::Local,
-                        proc_allocation_mode: Default::default(),
-                    }))
-                    .unwrap();
-                let instance = runtime.block_on(crate::v1::testing::instance());
-                let proc_mesh = runtime.block_on(ProcMesh::allocate(alloc)).unwrap();
+                async fn inner(extent: Extent) {
+                    let alloc = LocalAllocator
+                        .allocate(AllocSpec {
+                            extent: extent.clone(),
+                            constraints: Default::default(),
+                            proc_name: None,
+                            transport: ChannelTransport::Local,
+                            proc_allocation_mode: Default::default(),
+                        }).await
+                        .unwrap();
+                    let instance = crate::v1::testing::instance();
+                    let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
 
-                let addr = ChannelAddr::any(ChannelTransport::Unix);
+                    let addr = ChannelAddr::any(ChannelTransport::Unix);
 
-                let actor_mesh: RootActorMesh<EchoActor> =
-                    runtime.block_on(proc_mesh.spawn(&instance, "echo", &addr)).unwrap();
-
-
-                let first_label = extent.labels().first().unwrap();
-                let slice = actor_mesh.select(first_label, 0..extent.size(first_label).unwrap()).unwrap();
-
-                // Unfortunately we must do things this way due to borrow checker reasons
-                let slice = if extent.len() >= 2 {
-                    let label = &extent.labels()[1];
-                    let size = extent.size(label).unwrap();
-                    let start = if size > 1 { 1 } else { 0 };
-                    let end = (if size > 1 { size - 1 } else { 1 }).max(start + 1);
-                    slice.select(label, start..end).unwrap()
-                } else {
-                    slice
-                };
-
-                let slice = if extent.len() >= 3 {
-                    let label = &extent.labels()[2];
-                    let size = extent.size(label).unwrap();
-                    let start = if size > 1 { 1 } else { 0 };
-                    let end = (if size > 1 { size - 1 } else { 1 }).max(start + 1);
-                    slice.select(label, start..end).unwrap()
-                } else {
-                    slice
-                };
-
-                let slice = if extent.len() >= 4 {
-                    let label = &extent.labels()[3];
-                    let size = extent.size(label).unwrap();
-                    let start = if size > 1 { 1 } else { 0 };
-                    let end = (if size > 1 { size - 1 } else { 1 }).max(start + 1);
-                    slice.select(label, start..end).unwrap()
-                } else {
-                    slice
-                };
+                    let actor_mesh: RootActorMesh<EchoActor> =
+                        proc_mesh.spawn(&instance, "echo", &addr).await.unwrap();
 
 
-                let mut runner = TestRunner::default();
-                let selection = gen_selection(4, slice.shape().slice().sizes().to_vec(), 0)
-                    .new_tree(&mut runner)
-                    .unwrap()
-                    .current();
+                    let first_label = extent.labels().first().unwrap();
+                    let slice = actor_mesh.select(first_label, 0..extent.size(first_label).unwrap()).unwrap();
 
-                runtime.block_on(validate_cast(
-                    &slice,
-                    actor_mesh.proc_mesh().client(),
-                    addr,
-                    selection
-                ));
+                    // Unfortunately we must do things this way due to borrow checker reasons
+                    let slice = if extent.len() >= 2 {
+                        let label = &extent.labels()[1];
+                        let size = extent.size(label).unwrap();
+                        let start = if size > 1 { 1 } else { 0 };
+                        let end = (if size > 1 { size - 1 } else { 1 }).max(start + 1);
+                        slice.select(label, start..end).unwrap()
+                    } else {
+                        slice
+                    };
+
+                    let slice = if extent.len() >= 3 {
+                        let label = &extent.labels()[2];
+                        let size = extent.size(label).unwrap();
+                        let start = if size > 1 { 1 } else { 0 };
+                        let end = (if size > 1 { size - 1 } else { 1 }).max(start + 1);
+                        slice.select(label, start..end).unwrap()
+                    } else {
+                        slice
+                    };
+
+                    let slice = if extent.len() >= 4 {
+                        let label = &extent.labels()[3];
+                        let size = extent.size(label).unwrap();
+                        let start = if size > 1 { 1 } else { 0 };
+                        let end = (if size > 1 { size - 1 } else { 1 }).max(start + 1);
+                        slice.select(label, start..end).unwrap()
+                    } else {
+                        slice
+                    };
+
+
+                    let mut runner = TestRunner::default();
+                    let selection = gen_selection(4, slice.shape().slice().sizes().to_vec(), 0)
+                        .new_tree(&mut runner)
+                        .unwrap()
+                        .current();
+
+                    validate_cast(
+                        &slice,
+                        actor_mesh.proc_mesh().client(),
+                        addr,
+                        selection
+                    ).await;
+                }
+                runtime.block_on(inner(extent));
             }
         }
 
@@ -1932,35 +1935,38 @@ mod tests {
              #[test]
              fn test_reshaped_actor_mesh_cast_with_selection(extent in gen_extent(1..=4, 8)) {
                 let runtime = make_tokio_runtime();
-                let alloc = runtime.block_on(LocalAllocator
-                    .allocate(AllocSpec {
-                        extent,
-                        constraints: Default::default(),
-                        proc_name: None,
-                        transport: ChannelTransport::Local,
-                        proc_allocation_mode: Default::default(),
-                    }))
-                    .unwrap();
-                let instance = runtime.block_on(crate::v1::testing::instance());
-                let proc_mesh = runtime.block_on(ProcMesh::allocate(alloc)).unwrap();
+                async fn inner(extent: Extent) {
+                    let alloc = LocalAllocator
+                        .allocate(AllocSpec {
+                            extent,
+                            constraints: Default::default(),
+                            proc_name: None,
+                            transport: ChannelTransport::Local,
+                            proc_allocation_mode: Default::default(),
+                        }).await
+                        .unwrap();
+                    let instance = crate::v1::testing::instance();
+                    let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
 
-                let addr = ChannelAddr::any(ChannelTransport::Unix);
+                    let addr = ChannelAddr::any(ChannelTransport::Unix);
 
-                let actor_mesh: RootActorMesh<EchoActor> =
-                    runtime.block_on(proc_mesh.spawn(&instance, "echo", &addr)).unwrap();
+                    let actor_mesh: RootActorMesh<EchoActor> =
+                        proc_mesh.spawn(&instance, "echo", &addr).await.unwrap();
 
-                let mut runner = TestRunner::default();
-                let selection = gen_selection(4, actor_mesh.shape().slice().sizes().to_vec(), 0)
-                    .new_tree(&mut runner)
-                    .unwrap()
-                    .current();
+                    let mut runner = TestRunner::default();
+                    let selection = gen_selection(4, actor_mesh.shape().slice().sizes().to_vec(), 0)
+                        .new_tree(&mut runner)
+                        .unwrap()
+                        .current();
 
-                runtime.block_on(validate_cast(
-                    &actor_mesh,
-                    actor_mesh.proc_mesh().client(),
-                    addr,
-                    selection
-                ));
+                    validate_cast(
+                        &actor_mesh,
+                        actor_mesh.proc_mesh().client(),
+                        addr,
+                        selection
+                    ).await;
+                }
+                runtime.block_on(inner(extent));
             }
         }
     }
@@ -1978,7 +1984,7 @@ mod tests {
         #[tokio::test]
         #[cfg(fbcode_build)]
         async fn test_basic() {
-            let instance = v1::testing::instance().await;
+            let instance = v1::testing::instance();
             let host_mesh = v1::testing::host_mesh(extent!(host = 4)).await;
             let proc_mesh = host_mesh
                 .spawn(instance, "test", Extent::unity())

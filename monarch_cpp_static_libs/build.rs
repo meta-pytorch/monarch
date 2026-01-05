@@ -145,8 +145,8 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
     let build_dir = rdma_core_dir.join("build");
 
     // Check if already built (Must include ccan check now)
-    if build_dir.join("lib/statics/libibverbs.a").exists() 
-        && build_dir.join("ccan/libccan.a").exists() 
+    if build_dir.join("lib/statics/libibverbs.a").exists()
+        && build_dir.join("ccan/libccan.a").exists()
     {
         println!("cargo:warning=rdma-core already built");
         return build_dir;
@@ -248,36 +248,32 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
 fn emit_link_directives(rdma_build_dir: &Path) {
     let rdma_static_dir = rdma_build_dir.join("lib/statics");
     let rdma_util_dir = rdma_build_dir.join("util");
-    let rdma_ccan_dir = rdma_build_dir.join("ccan");
 
-    // Emit search paths
-    println!(
-        "cargo:rustc-link-search=native={}",
-        rdma_static_dir.display()
-    );
-    println!("cargo:rustc-link-search=native={}", rdma_util_dir.display());
-    println!("cargo:rustc-link-search=native={}", rdma_ccan_dir.display());
+    // Link directly to the specific .a files we built, rather than using search paths.
+    // This avoids any path ordering issues where the linker might find system libraries
+    // or libraries built with different flags (e.g., ENABLE_RESOLVE_NEIGH=1).
+    let libmlx5_path = rdma_static_dir.join("libmlx5.a");
+    let libibverbs_path = rdma_static_dir.join("libibverbs.a");
+    let librdma_util_path = rdma_util_dir.join("librdma_util.a");
 
-    // Static libraries - use whole-archive for rdma-core static libraries
-    println!("cargo:rustc-link-arg=-Wl,--whole-archive");
-    println!("cargo:rustc-link-lib=static=mlx5");
-    println!("cargo:rustc-link-lib=static=ibverbs");
-    println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
-
-    // Helper libraries
-    println!("cargo:rustc-link-lib=static=rdma_util");
-    println!("cargo:rustc-link-lib=static=ccan");
+    println!("cargo:rustc-link-arg={}", libmlx5_path.display());
+    println!("cargo:rustc-link-arg={}", libibverbs_path.display());
+    println!("cargo:rustc-link-arg={}", librdma_util_path.display());
 
     // Export metadata for dependent crates
-    // UPDATED: Using single colon 'cargo:key=value' is more compatible with build scripts
-    // that read metadata via DEP_PKG_KEY env vars.
     println!(
-        "cargo:RDMA_INCLUDE={}",
+        "cargo::metadata=RDMA_INCLUDE_DIR={}",
         rdma_build_dir.join("include").display()
     );
-    println!("cargo:RDMA_LIB_DIR={}", rdma_static_dir.display());
-    println!("cargo:RDMA_UTIL_DIR={}", rdma_util_dir.display());
-    println!("cargo:RDMA_CCAN_DIR={}", rdma_ccan_dir.display());
+
+    // Export library paths as a semicolon-separated list
+    let lib_paths = format!(
+        "{};{};{}",
+        libmlx5_path.display(),
+        libibverbs_path.display(),
+        librdma_util_path.display()
+    );
+    println!("cargo::metadata=RDMA_STATIC_LIBRARIES={}", lib_paths);
 
     // Re-run if build scripts change
     println!("cargo:rerun-if-changed=build.rs");

@@ -200,7 +200,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let instance = crate::v1::testing::instance().await;
+        let instance = crate::v1::testing::instance();
 
         let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
 

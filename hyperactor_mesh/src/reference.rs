@@ -341,7 +341,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let instance = crate::v1::testing::instance().await;
+        let instance = crate::v1::testing::instance();
         let ping_proc_mesh = ProcMesh::allocate(alloc_ping).await.unwrap();
         let ping_mesh: RootActorMesh<MeshPingPongActor> = ping_proc_mesh
             .spawn(

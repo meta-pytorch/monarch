@@ -25,12 +25,13 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(rocm_6_x)");
     println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
 
+    // Get rdma-core config from cpp_static_libs (includes are used, links emitted by monarch_extension)
+    let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
+    let rdma_include = &cpp_static_libs_config.rdma_include_dir;
+
     let platform = detect_platform();
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("src");
-    
-    // Get RDMA includes from monarch_cpp_static_libs
-    let cpp_libs = build_utils::CppStaticLibsConfig::from_env();
 
     // Setup linking
     println!("cargo:rustc-link-lib=dl");
@@ -46,14 +47,14 @@ fn main() {
     if let Ok(out_dir) = env::var("OUT_DIR") {
         let out_path = PathBuf::from(&out_dir);
         let sources = platform.prepare_sources(&src_dir, &out_path);
-        
+
         let python_config = build_utils::python_env_dirs_with_interpreter("python3")
             .unwrap_or(build_utils::PythonConfig { include_dir: None, lib_dir: None });
 
-        generate_bindings(&sources, &platform, &cpp_libs.rdma_include, &python_config, &out_path);
-        compile_c(&sources, &platform, &cpp_libs.rdma_include);
-        compile_cpp(&sources, &platform, &cpp_libs.rdma_include, &python_config);
-        compile_gpu(&sources, &platform, &cpp_libs.rdma_include, &manifest_dir, &out_path);
+        generate_bindings(&sources, &platform, rdma_include, &python_config, &out_path);
+        compile_c(&sources, &platform, rdma_include);
+        compile_cpp(&sources, &platform, rdma_include, &python_config);
+        compile_gpu(&sources, &platform, rdma_include, &manifest_dir, &out_path);
     }
 
     println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", platform.include_dir());
@@ -78,8 +79,8 @@ impl Platform {
 
     fn lib_dir(&self) -> String {
         match self {
-            Platform::Cuda { home } => build_utils::get_cuda_lib_dir(),
-            Platform::Rocm { home, .. } => {
+            Platform::Cuda { .. } => build_utils::get_cuda_lib_dir(),
+            Platform::Rocm { .. } => {
                 build_utils::get_rocm_lib_dir().expect("Failed to get ROCm lib dir")
             }
         }
@@ -218,13 +219,13 @@ fn detect_platform() -> Platform {
     if let Ok(home) = build_utils::validate_rocm_installation() {
         let version = build_utils::get_rocm_version(&home).unwrap_or((6, 0));
         println!("cargo:warning=Using HIP/ROCm {}.{} from {}", version.0, version.1, home);
-        
+
         if version.0 >= 7 {
             println!("cargo:rustc-cfg=rocm_7_plus");
         } else {
             println!("cargo:rustc-cfg=rocm_6_x");
         }
-        
+
         return Platform::Rocm { home, version };
     }
 
@@ -247,7 +248,7 @@ fn hipify_sources(src_dir: &PathBuf, hip_dir: &PathBuf, version: (u32, u32)) {
     println!("cargo:warning=Hipifying sources to {}...", hip_dir.display());
 
     let files: Vec<PathBuf> = [
-        "lib.rs", "rdmaxcel.h", "rdmaxcel.c", "rdmaxcel.cpp", 
+        "lib.rs", "rdmaxcel.h", "rdmaxcel.c", "rdmaxcel.cpp",
         "rdmaxcel.cu", "test_rdmaxcel.c", "driver_api.h", "driver_api.cpp"
     ].iter()
         .map(|f| src_dir.join(f))
@@ -328,7 +329,7 @@ fn generate_bindings(
     for def in platform.clang_defines() {
         builder = builder.clang_arg(def);
     }
-    
+
     if let Some(ref dir) = python_config.include_dir {
         builder = builder.clang_arg(format!("-I{}", dir));
     }
@@ -341,7 +342,7 @@ fn generate_bindings(
 
 fn compile_c(sources: &Sources, platform: &Platform, rdma_include: &str) {
     if !sources.c_source.exists() { return; }
-    
+
     let mut build = cc::Build::new();
     build
         .file(&sources.c_source)
@@ -349,7 +350,7 @@ fn compile_c(sources: &Sources, platform: &Platform, rdma_include: &str) {
         .include(platform.include_dir())
         .include(rdma_include)
         .flag("-fPIC");
-    
+
     platform.add_defines(&mut build);
     build.compile("rdmaxcel");
 }
@@ -361,7 +362,7 @@ fn compile_cpp(
     python_config: &build_utils::PythonConfig,
 ) {
     if !sources.cpp_source.exists() { return; }
-    
+
     let mut build = cc::Build::new();
     build
         .file(&sources.cpp_source)
@@ -371,21 +372,21 @@ fn compile_cpp(
         .flag("-fPIC")
         .cpp(true)
         .flag("-std=c++14");
-    
+
     if sources.driver_api.exists() {
         build.file(&sources.driver_api);
     }
-    
+
     platform.add_defines(&mut build);
-    
+
     if platform.is_rocm() {
         build.flag("-Wno-deprecated-declarations");
     }
-    
+
     if let Some(ref dir) = python_config.include_dir {
         build.include(dir);
     }
-    
+
     build.compile("rdmaxcel_cpp");
     build_utils::link_libstdcpp_static();
 }

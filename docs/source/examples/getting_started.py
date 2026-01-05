@@ -145,8 +145,8 @@ print(counters.get_value.call().get())
 # ==============
 # When we created our processes before, we spawned them on `this_host()` -- the machine
 # running the top-level script. For larger jobs, monarch controls many machines. How these
-# machines are obtained depends on the scheduling system (slurm, kubernetes, etc), but these
-# schedulers are typically encapsulated in a config file.
+# machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.),
+# but these schedulers are typically encapsulated in a config file.
 
 from monarch.actor import context, HostMesh, hosts_from_config
 

@@ -7,8 +7,8 @@ Most users won't do that by hand — they'll write Python like this:
 ```python
 import asyncio
 
-from monarch._src.actor.v1.host_mesh import this_host
-from monarch._src.actor.v1.proc_mesh import ProcMesh  # Optional, for typing
+from monarch._src.actor.host_mesh import this_host
+from monarch._src.actor.proc_mesh import ProcMesh  # Optional, for typing
 from monarch._src.actor.actor import Actor
 from monarch._src.actor.endpoint import endpoint
 
@@ -29,7 +29,7 @@ def train_with_mesh():
 When you write code like:
 
 ```python
-from monarch._src.actor.v1.host_mesh import this_host
+from monarch._src.actor.host_mesh import this_host
 
 host = this_host()
 ```
@@ -85,7 +85,6 @@ def context() -> Context:
 
         from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
-        from monarch._src.actor.v1 import enabled as v1_enabled
 
         c.actor_instance.proc_mesh = _root_proc_mesh.get() # (2) give it a proc mesh
         _this_host_for_fake_in_process_host.get() # (3) make sure a host exists

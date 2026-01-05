@@ -77,7 +77,11 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
             Err(err) => {
                 if let Some(return_channel) = return_channel {
                     return_channel
-                        .send(SendError(err.into(), message))
+                        .send(SendError {
+                            error: err.into(),
+                            message,
+                            reason: None,
+                        })
                         .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
                 }
                 return;
@@ -86,7 +90,11 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
         if self.tx.send(data).is_err() {
             if let Some(return_channel) = return_channel {
                 return_channel
-                    .send(SendError(ChannelError::Closed, message))
+                    .send(SendError {
+                        error: ChannelError::Closed,
+                        message,
+                        reason: None,
+                    })
                     .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
             }
         }
@@ -186,7 +194,14 @@ mod tests {
 
         let (return_tx, return_rx) = oneshot::channel();
         tx.try_post(123, return_tx);
-        assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
+        assert_matches!(
+            return_rx.await,
+            Ok(SendError {
+                error: ChannelError::Closed,
+                message: 123,
+                ..
+            })
+        );
     }
 
     #[tokio::test]

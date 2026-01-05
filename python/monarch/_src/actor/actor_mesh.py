@@ -76,7 +76,7 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
 )
-from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event, PySpan
+from monarch._rust_bindings.monarch_hyperactor.telemetry import PySpan
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
@@ -100,7 +100,7 @@ from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
 
-from monarch._src.actor.tensor_engine_shim import actor_rref, actor_send
+from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer
 from typing_extensions import Self
@@ -109,8 +109,7 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
     from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
-    from monarch._src.actor.host_mesh import HostMesh
-    from monarch._src.actor.proc_mesh import _ControllerController, ProcMesh
+    from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
 from monarch._src.actor.telemetry import get_monarch_tracer
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -136,6 +135,26 @@ class Point(HyPoint, collections.abc.Mapping):
 
 @rust_struct("monarch_hyperactor::context::Instance")
 class Instance(abc.ABC):
+    # Optional tensor engine factory for mocking. When set, this is used
+    # instead of the real tensor engine when spawning device meshes.
+    _mock_tensor_engine_factory: Optional[Callable[["ProcMesh"], "DeviceMesh"]] = None
+
+    def spawn_tensor_engine(self, proc_mesh: "ProcMesh") -> "DeviceMesh":
+        """
+        Spawn a tensor engine for this actor.
+
+        If a mock tensor engine factory is set, use it. Otherwise, use the
+        real tensor engine from mesh_controller.
+        """
+        if self._mock_tensor_engine_factory is not None:
+            return self._mock_tensor_engine_factory(proc_mesh)
+
+        # pyre-ignore[21]: mesh_controller may not be visible to pyre in this target
+        from monarch.mesh_controller import spawn_tensor_engine as real_spawn
+
+        # pyre-ignore[16]: spawn_tensor_engine is defined in mesh_controller
+        return real_spawn(proc_mesh)
+
     @abstractproperty
     def _mailbox(self) -> Mailbox:
         """
@@ -264,6 +283,9 @@ class Context:
     @staticmethod
     def _root_client_context() -> "Context": ...
 
+    @staticmethod
+    def _from_instance(instance: Instance) -> "Context": ...
+
 
 _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
     "monarch.actor_mesh._context"
@@ -307,9 +329,13 @@ def _init_context_log_handler() -> None:
     logging.Logger.addHandler = _patched_addHandler
 
 
-def _set_context(c: Context) -> None:
+def _set_context(c: Context) -> contextvars.Token[Context]:
     _init_context_log_handler()
-    _context.set(c)
+    return _context.set(c)
+
+
+def _reset_context(c: contextvars.Token[Context]) -> None:
+    _context.reset(c)
 
 
 T = TypeVar("T")
@@ -331,15 +357,33 @@ class _Lazy(Generic[T]):
         return self._val
 
 
-def _init_this_host_for_fake_in_process_host() -> "HostMesh":
-    from monarch._src.actor.host_mesh import create_local_host_mesh
+def _init_client_context() -> Context:
+    """
+    Create a client context that bootstraps an actor instance running on a real
+    local proc mesh on a real local host mesh.
+    """
+    from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import bootstrap_host
+    from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
+    from monarch._src.actor.proc_mesh import ProcMesh
 
-    return create_local_host_mesh()
+    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
+        _bootstrap_cmd()
+    ).block_on()
+
+    ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
+    # Set the context here to avoid recursive context creation:
+    token = _set_context(ctx)
+    try:
+        py_host_mesh = HostMesh._from_rust(hy_host_mesh)
+        py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, py_host_mesh)
+    finally:
+        _reset_context(token)
+
+    ctx.actor_instance.proc_mesh = py_proc_mesh
+    return ctx
 
 
-_this_host_for_fake_in_process_host: _Lazy["HostMesh"] = _Lazy(
-    _init_this_host_for_fake_in_process_host
-)
+_client_context: _Lazy[Context] = _Lazy(_init_client_context)
 
 
 def shutdown_context() -> "Future[None]":
@@ -355,9 +399,15 @@ def shutdown_context() -> "Future[None]":
     """
     from monarch._src.actor.future import Future
 
-    local_host = _this_host_for_fake_in_process_host.try_get()
-    if local_host is not None:
-        return local_host.shutdown()
+    try:
+        from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
+            shutdown_local_host_mesh,
+        )
+
+        return Future(coro=shutdown_local_host_mesh())
+    except RuntimeError:
+        # No local host mesh to shutdown
+        pass
 
     # Nothing to shutdown - return a completed future
     async def noop() -> None:
@@ -366,47 +416,14 @@ def shutdown_context() -> "Future[None]":
     return Future(coro=noop())
 
 
-def _init_root_proc_mesh() -> "ProcMesh":
-    from monarch._src.actor.host_mesh import fake_in_process_host
-
-    return fake_in_process_host()._spawn_nonblocking(
-        name="root_client_proc_mesh",
-        per_host=Extent([], []),
-        setup=None,
-        _attach_controller_controller=False,  # can't attach the controller controller because it doesn't exist yet
-    )
-
-
-_root_proc_mesh: _Lazy["ProcMesh"] = _Lazy(_init_root_proc_mesh)
-
-
 def context() -> Context:
     c = _context.get(None)
     if c is None:
-        c = Context._root_client_context()
-        _set_context(c)
-
-        from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
-        from monarch._src.actor.v1 import enabled as v1_enabled
 
-        if not v1_enabled:
-            c.actor_instance.proc_mesh, c.actor_instance._controller_controller = (
-                _get_controller_controller()
-            )
-
-            c.actor_instance.proc_mesh._host_mesh = create_local_host_mesh()  # type: ignore
-        else:
-            c.actor_instance.proc_mesh = _root_proc_mesh.get()
-
-            # This needs to be initialized when the root client context is initialized.
-            # Otherwise, it will be initialized inside an actor endpoint running inside
-            # a fake in-process host. That will fail with an "unroutable mesh" error,
-            # because the hyperactor Proc being used to spawn the local host mesh
-            # won't have the correct type of forwarder.
-            _this_host_for_fake_in_process_host.get()
-
-            c.actor_instance._controller_controller = _get_controller_controller()[1]
+        c = _client_context.get()
+        _set_context(c)
+        _, c.actor_instance._controller_controller = _get_controller_controller()
     return c
 
 
@@ -532,6 +549,69 @@ class _SingletonActorAdapator:
         return PythonTask.from_coroutine(empty())
 
 
+def _check_endpoint_arguments(
+    method_name: MethodSpecifier,
+    signature: inspect.Signature,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> None:
+    """
+    Check that the arguments match the expected signature for the endpoint.
+
+    For Init methods, the message args contain an ActorInitArgs wrapper, so we
+    unpack it and validate the actual constructor arguments.
+    For ExplicitPort methods, the signature expects (self, port, *args, **kwargs),
+    so we bind with two None placeholders for self and port.
+    For other methods, the signature expects (self, *args, **kwargs),
+    so we bind with one None placeholder for self.
+    """
+    match method_name:
+        case MethodSpecifier.Init():
+            # For Init, args[0] is ActorInitArgs which wraps the real constructor args
+            if len(args) != 1 or not isinstance(args[0], ActorInitArgs):
+                raise TypeError("Init message must contain exactly one ActorInitArgs")
+            init_args = args[0]
+            # Validate the actual constructor arguments against the signature
+            signature.bind(None, *init_args.args, **kwargs)
+        case MethodSpecifier.ExplicitPort():
+            signature.bind(None, None, *args, **kwargs)
+        case _:
+            signature.bind(None, *args, **kwargs)
+
+
+def _create_endpoint_message(
+    method_name: MethodSpecifier,
+    signature: inspect.Signature,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+    port: "Optional[Port[Any]]",
+    proc_mesh: "Optional[ProcMesh]",
+) -> PythonMessage:
+    """
+    Create a PythonMessage for sending to an actor endpoint.
+
+    Checks arguments, flattens them, and creates the appropriate message based on
+    whether the arguments contain monarch references.
+
+    Returns:
+        PythonMessage ready to be sent to the actor mesh
+    """
+    _check_endpoint_arguments(method_name, signature, args, kwargs)
+    objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+
+    if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
+        message = PythonMessage(
+            PythonMessageKind.CallMethod(
+                method_name, None if port is None else port._port_ref
+            ),
+            buffer,
+        )
+    else:
+        message = create_actor_message(method_name, proc_mesh, buffer, objects, port)
+
+    return message
+
+
 class ActorEndpoint(Endpoint[P, R]):
     def __init__(
         self,
@@ -542,7 +622,6 @@ class ActorEndpoint(Endpoint[P, R]):
         name: MethodSpecifier,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
-        explicit_response_port: bool,
     ) -> None:
         super().__init__(propagator)
         self._actor_mesh = actor_mesh
@@ -551,16 +630,9 @@ class ActorEndpoint(Endpoint[P, R]):
         self._shape = shape
         self._proc_mesh = proc_mesh
         self._signature: inspect.Signature = inspect.signature(impl)
-        self._explicit_response_port = explicit_response_port
 
     def _call_name(self) -> MethodSpecifier:
         return self._name
-
-    def _check_arguments(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:
-        if self._explicit_response_port:
-            self._signature.bind(None, None, *args, **kwargs)
-        else:
-            self._signature.bind(None, *args, **kwargs)
 
     def _send(
         self,
@@ -574,27 +646,16 @@ class ActorEndpoint(Endpoint[P, R]):
 
         This sends the message to all actors but does not wait for any result.
         """
-        self._check_arguments(args, kwargs)
-        objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        message = _create_endpoint_message(
+            self._name, self._signature, args, kwargs, port, self._proc_mesh
+        )
 
         # Record the message size with method name attribute
         endpoint_message_size_histogram.record(
-            len(buffer), {"method": self._get_method_name()}
+            len(message.message), {"method": self._get_method_name()}
         )
 
-        if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
-            message = PythonMessage(
-                PythonMessageKind.CallMethod(
-                    self._name, None if port is None else port._port_ref
-                ),
-                buffer,
-            )
-            instant_event(f"sending {self._get_method_name()} message")
-            self._actor_mesh.cast(
-                message, selection, context().actor_instance._as_rust()
-            )
-        else:
-            actor_send(self, buffer, objects, port, selection)
+        self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
         shape = self._shape
         return Extent(shape.labels, shape.ndslice.sizes)
 
@@ -612,7 +673,7 @@ class ActorEndpoint(Endpoint[P, R]):
         return (p, r)
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
-        self._check_arguments(args, kwargs)
+        _check_endpoint_arguments(self._name, self._signature, args, kwargs)
         refs, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
 
         return actor_rref(self, buffer, refs)
@@ -653,7 +714,6 @@ def as_endpoint(
         kind(not_an_endpoint._name),
         getattr(not_an_endpoint._ref, not_an_endpoint._name),
         propagate,
-        explicit_response_port,
     )
 
 
@@ -1160,6 +1220,16 @@ class _Actor:
                     ins.class_name = f"{Class.__module__}.{Class.__qualname__}"
                     try:
                         self.instance = Class(*args, **kwargs)
+                        # Check if there's a tensor engine mock registered for this actor class.
+                        # If so, set _mock_tensor_engine_factory on the Instance for use by
+                        # Instance.spawn_tensor_engine().
+                        from monarch._src.actor.mock import get_tensor_engine_factory
+
+                        mock_factory = get_tensor_engine_factory(Class)
+                        if mock_factory is not None:
+                            ins._mock_tensor_engine_factory = (
+                                lambda proc_mesh: mock_factory(proc_mesh)
+                            )
                         self._maybe_exit_debugger()
                     except Exception as e:
                         self._saved_error = ActorError(
@@ -1461,7 +1531,6 @@ class ActorMesh(MeshTrait, Generic[T]):
                         kind(attr_name),
                         attr_value._method,
                         attr_value._propagator,
-                        attr_value._explicit_response_port,
                     ),
                 )
                 if inspect.iscoroutinefunction(attr_value._method):
@@ -1501,7 +1570,6 @@ class ActorMesh(MeshTrait, Generic[T]):
         name: MethodSpecifier,
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
-        explicit_response_port: bool,
     ) -> Any:
         return ActorEndpoint(
             self._inner,
@@ -1511,7 +1579,6 @@ class ActorMesh(MeshTrait, Generic[T]):
             name,
             impl,
             propagator,
-            explicit_response_port,
         )
 
     @classmethod
@@ -1548,7 +1615,6 @@ class ActorMesh(MeshTrait, Generic[T]):
             MethodSpecifier.Init(),
             null_func,
             None,
-            False,
         )
         send(
             ep,

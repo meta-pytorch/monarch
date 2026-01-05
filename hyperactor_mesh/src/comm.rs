@@ -841,7 +841,7 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let instance = crate::v1::testing::instance().await;
+        let instance = crate::v1::testing::instance();
         let actor_mesh: RootActorMesh<TestActor> = Arc::clone(&proc_mesh)
             .spawn(&instance, dest_actor_name, &params)
             .await
@@ -1059,7 +1059,7 @@ mod tests {
     where
         A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
     {
-        let instance = v1::testing::instance().await;
+        let instance = v1::testing::instance();
 
         let extent = extent!(replica = 4, host = 4, gpu = 4);
         let alloc = LocalAllocator

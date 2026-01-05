@@ -785,7 +785,7 @@ impl StreamActor {
         // Resolve args and kwargs
         let py_args: Vec<PyTree<PyArg>> = args_tuple
             .iter()
-            .map(|item| resolve(item))
+            .map(&resolve)
             .collect::<Result<_, CallFunctionError>>()?;
 
         let py_kwargs: HashMap<String, PyTree<PyArg>> = kwargs_dict
@@ -978,7 +978,7 @@ impl StreamActor {
         let x: u64 = params.seq.into();
         let message = LocalStateBrokerMessage::Set(x as usize, state);
 
-        let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
+        let broker = BrokerId::new(params.broker_id).resolve(cx).await;
         broker
             .send(message)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
@@ -1839,9 +1839,8 @@ impl StreamMessageHandler for StreamActor {
         reference: Ref,
         value: WireValue,
     ) -> Result<()> {
-        let pyobj = Python::with_gil(|py| -> PyResult<PyObject> {
-            Ok(value.into_pyobject(py)?.unbind().into())
-        })?;
+        let pyobj =
+            Python::with_gil(|py| -> PyResult<PyObject> { Ok(value.into_pyobject(py)?.unbind()) })?;
         self.env.insert(reference, Ok(pyobj));
         Ok(())
     }
@@ -2034,13 +2033,12 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            let result = allclose(
+            // rustfmt-ignore
+            allclose(
                 &factory_float_tensor(data, "cpu".parse().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap();
-            // rustfmt-ignore
-            result
+            .unwrap()
         }
 
         #[allow(dead_code)]

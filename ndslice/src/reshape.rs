@@ -578,6 +578,12 @@ pub fn reshape_selection(
                     original_dimension_n_size: usize,
                     new_dimension_n_size: usize,
                 ) -> Vec<Selection> {
+                    // Clamp end to the original dimension size to avoid computing
+                    // reshaped coordinates for out-of-bounds indices.
+                    // This is necessary because Selection allows Range end > dim_size
+                    // (the indices beyond the dimension are simply not selected).
+                    let end = end.map(|e| e.min(original_dimension_n_size));
+
                     let dimension_n_plus_one_start = start / new_dimension_n_size;
                     let dimension_n_plus_one_end = end.map(|end| {
                         if end % new_dimension_n_size == 0 {
@@ -1256,7 +1262,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use proptest::prelude::*;
-    use proptest::test_runner::TestRunner;
 
     use crate::selection::EvalOpts;
     use crate::strategy::gen_selection;
@@ -1264,23 +1269,16 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig {
-            cases: 20, ..ProptestConfig::default()
+            cases: 100,
+            ..ProptestConfig::default()
         })]
         #[test]
-        // TODO: OSS: thread 'reshape::tests::test_reshape_selection' panicked at ndslice/src/reshape.rs:1265:5:
-        //     proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file. (You may need to create it.)
-        //       cc 8eeb877d0ae01955610362f0b8b5fce502a5b3ea58ed1fcbde7767b185474a79
-        //   Test failed: empty range 3:4:1.
         #[cfg_attr(not(fbcode_build), ignore)]
-        fn test_reshape_selection((slice, fanout_limit) in gen_slice(4, 64).prop_flat_map(|slice| {
-            let max_dimension_size = slice.sizes().iter().max().unwrap();
-            (1..=*max_dimension_size).prop_map(move |fanout_limit| (slice.clone(), fanout_limit))
+        fn test_reshape_selection((slice, fanout_limit, selection) in gen_slice(4, 64).prop_flat_map(|slice| {
+                let shape = slice.sizes().to_vec();
+                let max_dimension_size = *slice.sizes().iter().max().unwrap();
+                (Just(slice), 1..=max_dimension_size, gen_selection(4, shape, 0))
         })) {
-            let shape = slice.sizes().to_vec();
-
-            let mut runner = TestRunner::default();
-            let selection = gen_selection(4, shape.clone(), 0).new_tree(&mut runner).unwrap().current();
-
             let original_selected_ranks = selection
                 .eval(&EvalOpts::strict(), &slice)
                 .unwrap()
@@ -1290,8 +1288,8 @@ mod tests {
             let reshaped_selection = reshape_selection(selection, &slice, &reshaped_slice).ok().unwrap();
 
             let folded_selected_ranks = reshaped_selection
-            .eval(&EvalOpts::strict(), &reshaped_slice)?
-            .collect::<BTreeSet<_>>();
+                .eval(&EvalOpts::strict(), &reshaped_slice)?
+                .collect::<BTreeSet<_>>();
 
             prop_assert_eq!(original_selected_ranks, folded_selected_ranks);
         }

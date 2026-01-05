@@ -1231,7 +1231,7 @@ mod tests {
         let mut mesh = ProcMesh::allocate(alloc).await.unwrap();
         let mut events = mesh.events().unwrap();
 
-        let instance = crate::v1::testing::instance().await;
+        let instance = crate::v1::testing::instance();
 
         let mut actors: RootActorMesh<TestActor> =
             mesh.spawn(&instance, "failing", &()).await.unwrap();
@@ -1285,7 +1285,7 @@ mod tests {
             .unwrap();
         let mesh = ProcMesh::allocate(alloc).await.unwrap();
 
-        let instance = crate::v1::testing::instance().await;
+        let instance = crate::v1::testing::instance();
         let _: RootActorMesh<TestActor> = mesh.spawn(&instance, "dup", &()).await.unwrap();
         let result: Result<RootActorMesh<TestActor>, _> = mesh.spawn(&instance, "dup", &()).await;
         assert!(result.is_err());
@@ -1304,7 +1304,7 @@ mod tests {
         #[tokio::test]
         #[cfg(fbcode_build)]
         async fn test_basic() {
-            let instance = v1::testing::instance().await;
+            let instance = v1::testing::instance();
             let ext = extent!(host = 4);
             let host_mesh = v1::testing::host_mesh(ext.clone()).await;
             let proc_mesh = host_mesh

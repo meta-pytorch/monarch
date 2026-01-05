@@ -10,7 +10,8 @@
 //!
 //! This module provides the process-wide configuration store and APIs
 //! to access it. Configuration values are resolved via a **layered
-//! model**: `TestOverride → Runtime → Env → File → Default`.
+//! model**: `TestOverride → Env → Runtime → File → ClientOverride →
+//! Default`.
 //!
 //! - Reads (`get`, `get_cloned`) consult layers in that order, falling
 //!   back to defaults if no explicit value is set.
@@ -21,13 +22,13 @@
 //!   that are removed automatically when the guard drops.
 //! - In normal operation, a parent process can capture its effective
 //!   config via `attrs()` and pass that snapshot to a child during
-//!   bootstrap. The child installs it as a `Runtime` layer so the
-//!   parent's values take precedence over Env/File/Defaults.
+//!   bootstrap. The child installs it as a `ClientOverride` layer.
+//!   Note that Env and Runtime layers will take precedence over this
+//!   inherited configuration.
 //!
 //! This design provides flexibility (easy test overrides, runtime
 //! updates, YAML/Env baselines) while ensuring type safety and
 //! predictable resolution order.
-//!
 //!
 //! # Testing
 //!
@@ -62,7 +63,7 @@ use crate::from_yaml;
 
 /// Configuration source layers in priority order.
 ///
-/// Resolution order is always: **TestOverride -> Runtime -> Env
+/// Resolution order is always: **TestOverride -> Env -> Runtime
 /// -> File -> ClientOverride -> Default**.
 ///
 /// Smaller `priority()` number = higher precedence.
@@ -74,11 +75,11 @@ pub enum Source {
     /// Values loaded from configuration files (e.g., YAML).
     File,
     /// Values read from environment variables at process startup.
-    /// Higher priority than File and ClientOverride, but lower than
-    /// Runtime/TestOverride.
+    /// Higher priority than Runtime, File, and ClientOverride, but
+    /// lower than TestOverride.
     Env,
-    /// Values set programmatically at runtime. Highest stable
-    /// priority layer; only overridden by TestOverride.
+    /// Values set programmatically at runtime. High-priority layer
+    /// but overridden by Env and TestOverride.
     Runtime,
     /// Ephemeral values inserted by tests via
     /// `ConfigLock::override_key`. Always wins over all other
@@ -88,13 +89,14 @@ pub enum Source {
 
 /// Return the numeric priority for a source.
 ///
-/// Smaller number = higher precedence. Matches the documented
-/// order: TestOverride (0) -> Runtime (1) -> Env (2) -> File (3) -> ClientOverride (4).
+/// Smaller number = higher precedence. Matches the documented order:
+/// TestOverride (0) -> Env (1) -> Runtime (2) -> File (3) ->
+/// ClientOverride (4).
 fn priority(s: Source) -> u8 {
     match s {
         Source::TestOverride => 0,
-        Source::Runtime => 1,
-        Source::Env => 2,
+        Source::Env => 1,
+        Source::Runtime => 2,
         Source::File => 3,
         Source::ClientOverride => 4,
     }
@@ -105,9 +107,9 @@ fn priority(s: Source) -> u8 {
 /// `Layers` wraps a vector of [`Layer`]s, always kept sorted by
 /// [`priority`] (lowest number = highest precedence).
 ///
-/// Resolution (`get`, `get_cloned`, `attrs`) consults `ordered`
-/// from front to back, returning the first value found for each
-/// key and falling back to defaults if none are set in any layer.
+/// Resolution (`get`, `get_cloned`, `attrs`) consults `ordered` from
+/// front to back, returning the first value found for each key and
+/// falling back to defaults if none are set in any layer.
 struct Layers {
     /// Kept sorted by `priority` (lowest number first = highest
     /// priority).
@@ -116,18 +118,17 @@ struct Layers {
 
 /// A single configuration layer in the global configuration model.
 ///
-/// Layers are consulted in priority order (`TestOverride → Runtime →
-/// Env → File → Default`) when resolving configuration values. Each
-/// variant holds an [`Attrs`] map of key/value pairs.
+/// Layers are consulted in priority order (`TestOverride → Env →
+/// Runtime → File → ClientOverride → Default`) when resolving
+/// configuration values. Each variant holds an [`Attrs`] map of
+/// key/value pairs.
 ///
 /// The `TestOverride` variant additionally maintains per-key override
-/// stacks to support nested and out-of-order test overrides. These
-/// stacks are currently placeholders for a future refactor; for now,
-/// only the `attrs` field is used.
+/// stacks to support nested and out-of-order test overrides.
 ///
 /// Variants:
-/// - [`Layer::ClientOverride`] - Values set by the config snapshot sent from the client
-///   during proc bootstrap.
+/// - [`Layer::ClientOverride`] - Values set by the config snapshot
+///   sent from the client during proc bootstrap.
 /// - [`Layer::File`] — Values loaded from configuration files.
 /// - [`Layer::Env`] — Values sourced from process environment
 ///   variables.
@@ -136,7 +137,8 @@ struct Layers {
 ///   under [`ConfigLock`].
 ///
 /// Layers are stored in [`Layers::ordered`], kept sorted by their
-/// effective [`Source`] priority (`TestOverride` first, `Default` last).
+/// effective [`Source`] priority (`TestOverride` first, `Default`
+/// last).
 enum Layer {
     /// Values set by the config snapshot sent from the client
     /// during proc bootstrap.
@@ -149,15 +151,16 @@ enum Layer {
     /// installed at startup via [`init_from_env`].
     Env(Attrs),
 
-    /// Values set programmatically at runtime. Stable high-priority
-    /// layer used by parent/child bootstrap and dynamic updates.
+    /// Values set programmatically at runtime. High-priority layer
+    /// used for dynamic updates (e.g., Python `configure()` API), but
+    /// overridden by Env and TestOverride layers.
     Runtime(Attrs),
 
     /// Ephemeral values inserted during tests via
     /// [`ConfigLock::override_key`]. Always takes precedence over all
-    /// other layers. Currently holds both the active `attrs` map and
-    /// a per-key `stacks` table (used to support nested or
-    /// out-of-order test overrides in future refactors).
+    /// other layers. Holds both the active `attrs` map and a per-key
+    /// `stacks` table to support nested and out-of-order test
+    /// overrides.
     TestOverride {
         attrs: Attrs,
         stacks: HashMap<&'static str, OverrideStack>,
@@ -179,10 +182,6 @@ enum Layer {
 ///   first override was applied (or `None` if it did not exist).
 /// - `frames`: The stack of active override frames, with the top
 ///   being the last element in the vector.
-///
-/// The full stack mechanism is not yet active; it is introduced
-/// incrementally to prepare for robust out-of-order test override
-/// restoration.
 struct OverrideStack {
     /// The name of the process environment variable associated with
     /// this configuration key, if any.
@@ -244,9 +243,9 @@ struct OverrideFrame {
 /// Return the [`Source`] corresponding to a given [`Layer`].
 ///
 /// This provides a uniform way to retrieve a layer's logical source
-/// (File, Env, Runtime, or TestOverride) regardless of its internal
-/// representation. Used for sorting layers by priority and for
-/// source-based lookups or removals.
+/// (File, Env, Runtime, TestOverride, or ClientOverride) regardless
+/// of its internal representation. Used for sorting layers by
+/// priority and for source-based lookups or removals.
 fn layer_source(l: &Layer) -> Source {
     match l {
         Layer::File(_) => Source::File,
@@ -301,24 +300,24 @@ fn test_override_index(layers: &Layers) -> Option<usize> {
 
 /// Global layered configuration store.
 ///
-/// This is the single authoritative store for configuration in
-/// the process. It is always present, protected by an `RwLock`,
-/// and holds a [`Layers`] struct containing all active sources.
+/// This is the single authoritative store for configuration in the
+/// process. It is always present, protected by an `RwLock`, and holds
+/// a [`Layers`] struct containing all active sources.
 ///
 /// On startup it is seeded with a single [`Source::Env`] layer
 /// (values loaded from process environment variables). Additional
 /// layers can be installed later via [`set`] or cleared with
-/// [`clear`]. Reads (`get`, `get_cloned`, `attrs`) consult the
-/// layers in priority order.
+/// [`clear`]. Reads (`get`, `get_cloned`, `attrs`) consult the layers
+/// in priority order.
 ///
-/// In tests, a [`Source::TestOverride`] layer is pushed on demand
-/// by [`ConfigLock::override_key`]. This layer always takes
-/// precedence and is automatically removed when the guard drops.
+/// In tests, a [`Source::TestOverride`] layer is pushed on demand by
+/// [`ConfigLock::override_key`]. This layer always takes precedence
+/// and is automatically removed when the guard drops.
 ///
-/// In normal operation, a parent process may capture its config
-/// with [`attrs`] and pass it to a child during bootstrap. The
-/// child installs this snapshot as its [`Source::Runtime`] layer,
-/// ensuring the parent's values override Env/File/Defaults.
+/// In normal operation, a parent process may capture its config with
+/// [`attrs`] and pass it to a child during bootstrap. The child
+/// installs this snapshot as its [`Source::ClientOverride`] layer,
+/// which has the lowest precedence among explicit layers.
 static LAYERS: LazyLock<Arc<RwLock<Layers>>> = LazyLock::new(|| {
     let env = from_env();
     let layers = Layers {
@@ -339,17 +338,15 @@ static OVERRIDE_TOKEN_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Acquire the global configuration lock.
 ///
-/// This lock serializes all mutations of the global
-/// configuration, ensuring they cannot clobber each other. It
-/// returns a [`ConfigLock`] guard, which must be held for the
-/// duration of any mutation (e.g. inserting or overriding
-/// values).
+/// This lock serializes all mutations of the global configuration,
+/// ensuring they cannot clobber each other. It returns a
+/// [`ConfigLock`] guard, which must be held for the duration of any
+/// mutation (e.g. inserting or overriding values).
 ///
-/// Most commonly used in tests, where it provides exclusive
-/// access to push a [`Source::TestOverride`] layer via
-/// [`ConfigLock::override_key`]. The override layer is
-/// automatically removed when the guard drops, restoring the
-/// original state.
+/// Most commonly used in tests, where it provides exclusive access to
+/// push a [`Source::TestOverride`] layer via
+/// [`ConfigLock::override_key`]. The override layer is automatically
+/// removed when the guard drops, restoring the original state.
 ///
 /// # Example
 /// ```rust,ignore
@@ -371,7 +368,7 @@ pub fn lock() -> ConfigLock {
 /// `CONFIG.env_name` (from `@meta(CONFIG = ConfigAttr { … })`) to
 /// determine its mapping. The resulting values are installed as the
 /// [`Source::Env`] layer. Keys without a corresponding environment
-/// variable fall back to defaults or higher-priority sources.
+/// variable fall back to lower-priority sources or defaults.
 ///
 /// Typically invoked once at process startup to overlay config values
 /// from the environment. Repeated calls replace the existing Env
@@ -382,15 +379,13 @@ pub fn init_from_env() {
 
 /// Initialize the global configuration from a YAML file.
 ///
-/// Loads values from the specified YAML file and installs them as
-/// the [`Source::File`] layer. This is the lowest-priority
-/// explicit source: values from Env, Runtime, or TestOverride
-/// layers always take precedence. Keys not present in the file
-/// fall back to their defaults or higher-priority sources.
+/// Loads values from the specified YAML file and installs them as the
+/// [`Source::File`] layer. During resolution, File is consulted after
+/// TestOverride, Env, and Runtime layers, and before ClientOverride
+/// and defaults.
 ///
-/// Typically invoked once at process startup to provide a
-/// baseline configuration. Repeated calls replace the existing
-/// File layer.
+/// Typically invoked once at process startup to provide a baseline
+/// configuration. Repeated calls replace the existing File layer.
 pub fn init_from_yaml<P: AsRef<Path>>(path: P) -> Result<(), anyhow::Error> {
     let file = from_yaml(path)?;
     set(Source::File, file);
@@ -399,9 +394,9 @@ pub fn init_from_yaml<P: AsRef<Path>>(path: P) -> Result<(), anyhow::Error> {
 
 /// Get a key from the global configuration (Copy types).
 ///
-/// Resolution order: TestOverride -> Runtime -> Env -> File ->
-/// Default. Panics if the key has no default and is not set in
-/// any layer.
+/// Resolution order: TestOverride -> Env -> Runtime -> File ->
+/// ClientOverride -> Default. Panics if the key has no default and is
+/// not set in any layer.
 pub fn get<T: AttrValue + Copy>(key: Key<T>) -> T {
     let layers = LAYERS.read().unwrap();
     for layer in &layers.ordered {
@@ -432,9 +427,9 @@ pub fn override_or_global<T: AttrValue + Copy>(overrides: &Attrs, key: Key<T>) -
 
 /// Get a key by cloning the value.
 ///
-/// Resolution order: TestOverride -> Runtime -> Env -> File ->
-/// Default. Panics if the key has no default and is not set in
-/// any layer.
+/// Resolution order: TestOverride -> Env -> Runtime -> File ->
+/// ClientOverride -> Default. Panics if the key has no default and
+/// is not set in any layer.
 pub fn get_cloned<T: AttrValue>(key: Key<T>) -> T {
     try_get_cloned(key)
         .expect("key must have a default")
@@ -443,9 +438,9 @@ pub fn get_cloned<T: AttrValue>(key: Key<T>) -> T {
 
 /// Try to get a key by cloning the value.
 ///
-/// Resolution order: TestOverride -> Runtime -> Env -> File ->
-/// Default. Returns None if the key has no default and is not set in
-/// any layer.
+/// Resolution order: TestOverride -> Env -> Runtime -> File ->
+/// ClientOverride -> Default. Returns None if the key has no default
+/// and is not set in any layer.
 pub fn try_get_cloned<T: AttrValue>(key: Key<T>) -> Option<T> {
     let layers = LAYERS.read().unwrap();
     for layer in &layers.ordered {
@@ -477,16 +472,16 @@ fn make_layer(source: Source, attrs: Attrs) -> Layer {
 
 /// Insert or replace a configuration layer for the given source.
 ///
-/// If a layer with the same [`Source`] already exists, its
-/// contents are replaced with the provided `attrs`. Otherwise a
-/// new layer is added. After insertion, layers are re-sorted so
-/// that higher-priority sources (e.g. [`Source::TestOverride`],
-/// [`Source::Runtime`]) appear before lower-priority ones
-/// ([`Source::Env`], [`Source::File`]).
+/// If a layer with the same [`Source`] already exists, its contents
+/// are replaced with the provided `attrs`. Otherwise a new layer is
+/// added. After insertion, layers are re-sorted so that
+/// higher-priority sources (e.g. [`Source::TestOverride`],
+/// [`Source::Env`]) appear before lower-priority ones
+/// ([`Source::Runtime`], [`Source::File`]).
 ///
 /// This function is used by initialization routines (e.g.
-/// `init_from_env`, `init_from_yaml`) and by tests when
-/// overriding configuration values.
+/// `init_from_env`, `init_from_yaml`) and by tests when overriding
+/// configuration values.
 pub fn set(source: Source, attrs: Attrs) {
     let mut g = LAYERS.write().unwrap();
     if let Some(l) = g.ordered.iter_mut().find(|l| layer_source(l) == source) {
@@ -494,7 +489,7 @@ pub fn set(source: Source, attrs: Attrs) {
     } else {
         g.ordered.push(make_layer(source, attrs));
     }
-    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Runtime < Env < File < ClientOverride
+    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Env < Runtime < File < ClientOverride
 }
 
 /// Insert or update a configuration layer for the given [`Source`].
@@ -521,16 +516,16 @@ pub fn create_or_merge(source: Source, attrs: Attrs) {
     } else {
         g.ordered.push(make_layer(source, attrs));
     }
-    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Runtime < Env < File < ClientOverride
+    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Env < Runtime < File < ClientOverride
 }
 
 /// Remove the configuration layer for the given [`Source`], if
 /// present.
 ///
-/// After this call, values from that source will no longer
-/// contribute to resolution in [`get`], [`get_cloned`], or
-/// [`attrs`]. Defaults and any remaining layers continue to apply
-/// in their normal priority order.
+/// After this call, values from that source will no longer contribute
+/// to resolution in [`get`], [`get_cloned`], or [`attrs`]. Defaults
+/// and any remaining layers continue to apply in their normal
+/// priority order.
 pub fn clear(source: Source) {
     let mut g = LAYERS.write().unwrap();
     g.ordered.retain(|l| layer_source(l) != source);
@@ -540,8 +535,8 @@ pub fn clear(source: Source) {
 /// **(only keys marked with `@meta(CONFIG = ...)`)**.
 ///
 /// Resolution per key:
-/// 1) First explicit value found in layers (TestOverride →
-///    Runtime → Env → File).
+/// 1) First explicit value found in layers (TestOverride → Env →
+///    Runtime → File → ClientOverride).
 /// 2) Otherwise, the key's default (if any).
 ///
 /// Notes:
@@ -552,8 +547,8 @@ pub fn attrs() -> Attrs {
     let layers = LAYERS.read().unwrap();
     let mut merged = Attrs::new();
 
-    // Iterate all declared keys (registered via `declare_attrs!`
-    // + inventory).
+    // Iterate all declared keys (registered via `declare_attrs!` +
+    // inventory).
     for info in inventory::iter::<AttrKeyInfo>() {
         // Skip keys not marked as `CONFIG`.
         if info.meta.get(CONFIG).is_none() {
@@ -571,8 +566,8 @@ pub fn attrs() -> Attrs {
             }
         }
 
-        // If no explicit value, materialize the default if there
-        // is one.
+        // If no explicit value, materialize the default if there is
+        // one.
         let boxed = match chosen {
             Some(b) => b,
             None => {
@@ -622,12 +617,12 @@ pub fn runtime_attrs() -> Attrs {
 
 /// Reset the global configuration to only Defaults (for testing).
 ///
-/// This clears all explicit layers (`File`, `Env`, `Runtime`, and
-/// `TestOverride`). Subsequent lookups will resolve keys entirely
-/// from their declared defaults.
+/// This clears all explicit layers (`File`, `Env`, `Runtime`,
+/// `ClientOverride`, and `TestOverride`). Subsequent lookups will
+/// resolve keys entirely from their declared defaults.
 ///
-/// Note: Should be called while holding [`global::lock`] in
-/// tests, to ensure no concurrent modifications happen.
+/// Note: Should be called while holding [`global::lock`] in tests, to
+/// ensure no concurrent modifications happen.
 pub fn reset_to_defaults() {
     let mut g = LAYERS.write().unwrap();
     g.ordered.clear();
@@ -729,16 +724,16 @@ impl ConfigLock {
 }
 
 /// When a [`ConfigLock`] is dropped, the special
-/// [`Source::TestOverride`] layer (if present) is removed
-/// entirely. This discards all temporary overrides created under
-/// the lock, ensuring they cannot leak into subsequent tests or
-/// callers. Other layers (`Runtime`, `Env`, `File`, and defaults)
+/// [`Source::TestOverride`] layer (if present) is removed entirely.
+/// This discards all temporary overrides created under the lock,
+/// ensuring they cannot leak into subsequent tests or callers. Other
+/// layers (`Runtime`, `Env`, `File`, `ClientOverride`, and defaults)
 /// are left untouched.
 ///
-/// Note: individual values within the TestOverride layer may
-/// already have been restored by [`ConfigValueGuard`]s as they
-/// drop. This final removal guarantees no residual layer remains
-/// once the lock itself is released.
+/// Note: individual values within the TestOverride layer may already
+/// have been restored by [`ConfigValueGuard`]s as they drop. This
+/// final removal guarantees no residual layer remains once the lock
+/// itself is released.
 impl Drop for ConfigLock {
     fn drop(&mut self) {
         let mut guard = LAYERS.write().unwrap();
@@ -748,7 +743,7 @@ impl Drop for ConfigLock {
     }
 }
 
-/// A guard that restores a single configuration value when dropped
+/// A guard that restores a single configuration value when dropped.
 pub struct ConfigValueGuard<'a, T: 'static> {
     key: crate::attrs::Key<T>,
     token: u64,
@@ -838,7 +833,7 @@ impl<T: 'static> Drop for ConfigValueGuard<'_, T> {
                     // No changes to attrs or env here.
                 }
             } // else: token already handled; nothing to do
-        } // &must stack borrow ends here
+        } // &mut stack borrow ends here
 
         // If we emptied the stack for this key, restore env and drop
         // the stack entry.
@@ -867,9 +862,9 @@ mod tests {
     use crate::ConfigAttr;
     use crate::attrs::declare_attrs;
 
-    // Test configuration keys used to exercise the layered config infrastructure.
-    // These mirror hyperactor's config keys but are declared locally to keep
-    // hyperactor_config independent.
+    // Test configuration keys used to exercise the layered config
+    // infrastructure. These mirror hyperactor's config keys but are
+    // declared locally to keep hyperactor_config independent.
 
     declare_attrs! {
         /// Maximum frame length for codec
@@ -913,20 +908,29 @@ mod tests {
             py_name: None,
         })
         pub attr MESSAGE_TTL_DEFAULT: u8 = 64;
+
+        /// A test key with no environment variable mapping
+        @meta(CONFIG = ConfigAttr {
+            env_name: None,
+            py_name: None,
+        })
+        pub attr CONFIG_KEY_NO_ENV: u32 = 100;
     }
 
     #[test]
     fn test_global_config() {
         let config = lock();
 
-        // Reset global config to defaults to avoid interference from other tests
+        // Reset global config to defaults to avoid interference from
+        // other tests
         reset_to_defaults();
 
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
         {
             let _guard = config.override_key(CODEC_MAX_FRAME_LENGTH, 1024);
             assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1024);
-            // The configuration will be automatically restored when _guard goes out of scope
+            // The configuration will be automatically restored when
+            // _guard goes out of scope
         }
 
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
@@ -936,7 +940,8 @@ mod tests {
     fn test_overrides() {
         let config = lock();
 
-        // Reset global config to defaults to avoid interference from other tests
+        // Reset global config to defaults to avoid interference from
+        // other tests
         reset_to_defaults();
 
         // Test the new lock/override API for individual config values
@@ -1047,18 +1052,18 @@ mod tests {
         env[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_secs(40);
         set(Source::Env, env);
 
-        // Runtime beats both.
+        // Runtime layer (but Env beats it).
         let mut rt = Attrs::new();
         rt[MESSAGE_DELIVERY_TIMEOUT] = Duration::from_secs(50);
         set(Source::Runtime, rt);
 
-        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(50));
-
-        // Clearing Runtime should reveal Env again.
-        clear(Source::Runtime);
-
-        // With the Runtime layer gone, Env still wins over File.
         assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(40));
+
+        // Clearing Env should reveal Runtime.
+        clear(Source::Env);
+
+        // With the Env layer gone, Runtime wins over File.
+        assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(50));
     }
 
     #[test]
@@ -1083,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parent_child_snapshot_as_runtime_layer() {
+    fn test_parent_child_snapshot_as_clientoverride_layer() {
         let _lock = lock();
         reset_to_defaults();
 
@@ -1095,12 +1100,13 @@ mod tests {
         let parent_snap = attrs();
 
         // "Child" process: start clean, install parent snapshot as
-        // Runtime.
+        // ClientOverride.
         reset_to_defaults();
-        set(Source::Runtime, parent_snap);
+        set(Source::ClientOverride, parent_snap);
 
-        // Child should observe parent's effective value (as highest
-        // stable layer).
+        // Child should observe parent's effective value from the
+        // ClientOverride layer (since child has no Env/Runtime/File
+        // layers set).
         assert_eq!(get(MESSAGE_ACK_EVERY_N_MESSAGES), 12345);
     }
 
@@ -1151,8 +1157,8 @@ mod tests {
         rt[SPLIT_MAX_BUFFER_SIZE] = 9;
         set(Source::Runtime, rt);
 
-        // Sanity: highest wins.
-        assert_eq!(get(SPLIT_MAX_BUFFER_SIZE), 9);
+        // Sanity: Env wins over Runtime and File.
+        assert_eq!(get(SPLIT_MAX_BUFFER_SIZE), 8);
 
         // Reset clears all explicit layers; defaults apply.
         reset_to_defaults();
@@ -1332,9 +1338,9 @@ mod tests {
     #[test]
     fn test_priority_order() {
         use Source::*;
-        assert!(priority(TestOverride) < priority(Runtime));
-        assert!(priority(Runtime) < priority(Env));
-        assert!(priority(Env) < priority(File));
+        assert!(priority(TestOverride) < priority(Env));
+        assert!(priority(Env) < priority(Runtime));
+        assert!(priority(Runtime) < priority(File));
         assert!(priority(File) < priority(ClientOverride));
     }
 
@@ -1369,5 +1375,203 @@ mod tests {
         create_or_merge(Source::Runtime, rt);
 
         assert_eq!(get(MESSAGE_TTL_DEFAULT), 42);
+    }
+
+    #[test]
+    fn test_clientoverride_precedence_loses_to_all_other_layers() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // ClientOverride sets a baseline value.
+        let mut client = Attrs::new();
+        client[MESSAGE_TTL_DEFAULT] = 10;
+        set(Source::ClientOverride, client);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 10);
+
+        // File should beat ClientOverride.
+        let mut file = Attrs::new();
+        file[MESSAGE_TTL_DEFAULT] = 20;
+        set(Source::File, file);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 20);
+
+        // Runtime should beat both File and ClientOverride.
+        let mut runtime = Attrs::new();
+        runtime[MESSAGE_TTL_DEFAULT] = 30;
+        set(Source::Runtime, runtime);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 30);
+
+        // Env should beat Runtime, File, and ClientOverride.
+        let mut env = Attrs::new();
+        env[MESSAGE_TTL_DEFAULT] = 40;
+        set(Source::Env, env);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 40);
+
+        // Clear higher layers one by one to verify fallback.
+        clear(Source::Env);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 30); // Runtime
+
+        clear(Source::Runtime);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 20); // File
+
+        clear(Source::File);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 10); // ClientOverride
+    }
+
+    #[test]
+    fn test_create_or_merge_clientoverride() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Seed ClientOverride with one key.
+        let mut client = Attrs::new();
+        client[MESSAGE_TTL_DEFAULT] = 10;
+        set(Source::ClientOverride, client);
+
+        // Merge in a different key.
+        let mut update = Attrs::new();
+        update[MESSAGE_ACK_EVERY_N_MESSAGES] = 123;
+        create_or_merge(Source::ClientOverride, update);
+
+        // Both keys should now be visible.
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 10);
+        assert_eq!(get(MESSAGE_ACK_EVERY_N_MESSAGES), 123);
+    }
+
+    #[test]
+    fn test_override_or_global_returns_override_when_present() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Set a global value via Env.
+        let mut env = Attrs::new();
+        env[MESSAGE_TTL_DEFAULT] = 99;
+        set(Source::Env, env);
+
+        // Create an override Attrs with a different value.
+        let mut overrides = Attrs::new();
+        overrides[MESSAGE_TTL_DEFAULT] = 42;
+
+        // Should return the override value, not global.
+        assert_eq!(override_or_global(&overrides, MESSAGE_TTL_DEFAULT), 42);
+    }
+
+    #[test]
+    fn test_override_or_global_returns_global_when_not_present() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Set a global value via Env.
+        let mut env = Attrs::new();
+        env[MESSAGE_TTL_DEFAULT] = 99;
+        set(Source::Env, env);
+
+        // Empty overrides.
+        let overrides = Attrs::new();
+
+        // Should return the global value.
+        assert_eq!(override_or_global(&overrides, MESSAGE_TTL_DEFAULT), 99);
+    }
+
+    #[test]
+    fn test_runtime_attrs_returns_only_runtime_layer() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // Set values in multiple layers.
+        let mut file = Attrs::new();
+        file[MESSAGE_TTL_DEFAULT] = 10;
+        set(Source::File, file);
+
+        let mut env = Attrs::new();
+        env[SPLIT_MAX_BUFFER_SIZE] = 20;
+        set(Source::Env, env);
+
+        let mut runtime = Attrs::new();
+        runtime[MESSAGE_ACK_EVERY_N_MESSAGES] = 123;
+        set(Source::Runtime, runtime);
+
+        // runtime_attrs() should return only Runtime layer contents.
+        let rt = runtime_attrs();
+
+        // Should have the Runtime key.
+        assert_eq!(rt[MESSAGE_ACK_EVERY_N_MESSAGES], 123);
+
+        // Should NOT have File or Env keys.
+        assert!(!rt.contains_key(MESSAGE_TTL_DEFAULT));
+        assert!(!rt.contains_key(SPLIT_MAX_BUFFER_SIZE));
+    }
+
+    #[test]
+    fn test_override_key_without_env_name_does_not_mirror_to_env() {
+        let lock = lock();
+        reset_to_defaults();
+
+        // Verify default value.
+        assert_eq!(get(CONFIG_KEY_NO_ENV), 100);
+
+        // Override the key (which has no env_name).
+        let _guard = lock.override_key(CONFIG_KEY_NO_ENV, 999);
+
+        // Should see the override value.
+        assert_eq!(get(CONFIG_KEY_NO_ENV), 999);
+
+        // No env var should have been set (test doesn't crash,
+        // behavior is clean). This test mainly ensures no panic
+        // occurs during override/restore.
+
+        drop(_guard);
+
+        // Should restore to default.
+        assert_eq!(get(CONFIG_KEY_NO_ENV), 100);
+    }
+
+    #[test]
+    fn test_multiple_different_keys_overridden_simultaneously() {
+        let lock = lock();
+        reset_to_defaults();
+
+        // SAFETY: single-threaded test.
+        unsafe {
+            std::env::remove_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH");
+            std::env::remove_var("HYPERACTOR_MESSAGE_TTL_DEFAULT");
+        }
+
+        // Override multiple different keys at once.
+        let guard1 = lock.override_key(CODEC_MAX_FRAME_LENGTH, 1111);
+        let guard2 = lock.override_key(MESSAGE_TTL_DEFAULT, 42);
+        let guard3 = lock.override_key(CHANNEL_MULTIPART, false);
+
+        // All should reflect their override values.
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), 42);
+        assert!(!get(CHANNEL_MULTIPART));
+
+        // Env vars should be mirrored.
+        assert_eq!(
+            std::env::var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH").unwrap(),
+            "1111"
+        );
+        assert_eq!(
+            std::env::var("HYPERACTOR_MESSAGE_TTL_DEFAULT").unwrap(),
+            "42"
+        );
+
+        // Drop guards in arbitrary order.
+        drop(guard2); // Drop MESSAGE_TTL_DEFAULT first
+
+        // MESSAGE_TTL_DEFAULT should restore, others should remain.
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), MESSAGE_TTL_DEFAULT_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
+        assert!(!get(CHANNEL_MULTIPART));
+
+        // Env for MESSAGE_TTL_DEFAULT should be cleared.
+        assert!(std::env::var("HYPERACTOR_MESSAGE_TTL_DEFAULT").is_err());
+
+        drop(guard1);
+        drop(guard3);
+
+        // All should be restored.
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CHANNEL_MULTIPART), CHANNEL_MULTIPART_DEFAULT);
     }
 }

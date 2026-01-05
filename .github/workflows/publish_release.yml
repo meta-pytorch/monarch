@@ -21,7 +21,7 @@ jobs:
         include:
           - name: 4xlarge
             runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128'
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/cu128'
             gpu-arch-type: "cuda"
             gpu-arch-version: "12.8"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
@@ -49,6 +49,7 @@ jobs:
         # Build wheel
         export MONARCH_PACKAGE_NAME="torchmonarch"
         export MONARCH_VERSION="${{ github.event.inputs.version }}"
+        export MONARCH_BUILD_MESH_ONLY=0
         python setup.py bdist_wheel
 
         # hacky until the right distribution wheel can be made...

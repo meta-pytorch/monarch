@@ -178,12 +178,14 @@ impl<M: RemoteMessage> QueuedMessage<M> {
     /// `Frame::Message<M>` and return it to the original
     /// sender. Falls back to logging if the frame is not a
     /// message or deserialization fails.
-    pub(crate) fn try_return(self) {
+    pub(crate) fn try_return(self, reason: Option<String>) {
         match serde_multipart::deserialize_bincode::<Frame<M>>(self.message) {
             Ok(Frame::Message(_, msg)) => {
-                let _ = self
-                    .return_channel
-                    .send(SendError(ChannelError::Closed, msg));
+                let _ = self.return_channel.send(SendError {
+                    error: ChannelError::Closed,
+                    message: msg,
+                    reason,
+                });
             }
             Ok(_) => {
                 tracing::debug!(
@@ -617,8 +619,7 @@ async fn run<M: RemoteMessage>(
                     mut outbox,
                     mut unacked,
                 },
-            // TODO(T233029051): Return reason through return_channel too.
-            reason: _,
+            reason,
         } => {
             // Close the channel to prevent any further messages from being sent.
             receiver.close();
@@ -628,9 +629,13 @@ async fn run<M: RemoteMessage>(
                 .deque
                 .drain(..)
                 .chain(outbox.deque.drain(..))
-                .for_each(|queued| queued.try_return());
+                .for_each(|queued| queued.try_return(Some(reason.clone())));
             while let Ok((msg, return_channel, _)) = receiver.try_recv() {
-                let _ = return_channel.send(SendError(ChannelError::Closed, msg));
+                let _ = return_channel.send(SendError {
+                    error: ChannelError::Closed,
+                    message: msg,
+                    reason: Some(reason.clone()),
+                });
             }
         }
         _ => (),
@@ -877,17 +882,24 @@ where
                 ),
                 Err((writer, e)) => {
                     debug_assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+                    let error_msg = "oversized frame was rejected. closing channel";
+                    // TODO: It would be good to include the type of the message
+                    // in here somehow, and if it was a PythonMessage, its endpoint.
+                    let reason = format!(
+                        "rejecting oversize frame: len={} > max={}. \
+                                ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
+                        len, max
+                    );
                     tracing::error!(
                         dest = %link.dest(),
                         session_id = session_id,
-                        "rejecting oversize frame: len={} > max={}. \
-                                ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
-                        len,
-                        max
+                        reason
                     );
                     // Reject and return.
-                    outbox.pop_front().expect("not empty").try_return();
-                    let error_msg = "oversized frame was rejected. closing channel";
+                    outbox
+                        .pop_front()
+                        .expect("not empty")
+                        .try_return(Some(reason.clone()));
                     tracing::error!(
                         dest = %link.dest(),
                         session_id = session_id,
@@ -898,7 +910,7 @@ where
                     (
                         State::Closing {
                             deliveries: Deliveries { outbox, unacked },
-                            reason: format!("{log_id}: {error_msg}"),
+                            reason,
                         },
                         Conn::Connected {
                             reader,

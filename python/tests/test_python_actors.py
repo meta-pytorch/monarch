@@ -48,6 +48,7 @@ from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
+    _bootstrap_cmd,
     create_local_host_mesh,
     fake_in_process_host,
     HostMesh,
@@ -55,7 +56,6 @@ from monarch._src.actor.host_mesh import (
     this_proc,
 )
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, get_or_spawn_controller
-from monarch._src.actor.v1.host_mesh import _bootstrap_cmd
 from monarch._src.job.job import LoginJob, ProcessState
 
 from monarch.actor import (
@@ -1176,31 +1176,12 @@ async def test_sync_workspace() -> None:
 
 
 @pytest.mark.timeout(120)
-async def test_actor_mesh_stop() -> None:
-    # This test doesn't want the client process to crash during testing.
-    pm = this_host().spawn_procs(per_host={"gpus": 2})
-    am_1 = pm.spawn("printer", Printer)
-    am_2 = pm.spawn("printer2", Printer)
-    await am_1.print.call("hello 1")
-    await am_1.log.call("hello 2")
-    await cast(ActorMesh, am_1).stop()
-
-    with pytest.raises(
-        SupervisionError,
-        match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
-    ):
-        await am_1.print.call("hello 1")
-
-    await am_2.print.call("hello 3")
-    await am_2.log.call("hello 4")
-
-    await pm.stop()
-
-
-@pytest.mark.timeout(120)
 async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am = pm.spawn("printer", Printer)
+    # Make sure the actor is initialized first, else the stop and init can
+    # race and the message becomes undeliverable.
+    await am.print.call("hello world")
 
     await cast(ActorMesh, am).stop()
     await pm.stop()

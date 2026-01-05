@@ -275,6 +275,7 @@ class Endpoint(ABC, Generic[P, R]):
         start_time: int = time.monotonic_ns()
         # Track throughput at method entry
         method_name: str = self._get_method_name()
+        instant_event(f"calling {method_name} message")
         endpoint_call_throughput_counter.add(1, attributes={"method": method_name})
         p, unranked = self._port()
         r: RankedPortReceiver[R] = unranked.ranked()
@@ -354,6 +355,7 @@ class Endpoint(ABC, Generic[P, R]):
         from monarch._src.actor.actor_mesh import send
 
         method_name: str = self._get_method_name()
+        instant_event(f"broadcasting {method_name} message")
         attributes = {
             "method": method_name,
             "actor_count": 0,  # broadcast doesn't track specific count

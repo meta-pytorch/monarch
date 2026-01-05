@@ -6,158 +6,319 @@
 
 # pyre-strict
 
-import warnings
-from math import prod
-
-from typing import Callable, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Slice
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
+from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
+    BootstrapCommand,
+    HostMesh as HyHostMesh,
+)
+from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
+    ProcMesh as HyProcMesh,
+)
 
-from monarch._src.actor.actor_mesh import context
-from monarch._src.actor.allocator import AllocateMixin, AllocHandle, LocalAllocator
-from monarch._src.actor.proc_mesh import (
-    _get_bootstrap_args,
+from monarch._src.actor.actor_mesh import _Lazy, context
+from monarch._src.actor.allocator import (
+    AllocateMixin,
+    AllocHandle,
+    LocalAllocator,
     ProcessAllocator,
-    ProcMeshV0,
 )
+from monarch._src.actor.future import Future
+from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
-from monarch._src.actor.v1 import enabled as v1_enabled
-from monarch._src.actor.v1.host_mesh import (
-    _bootstrap_cmd,  # noqa: F401
-    create_local_host_mesh as create_local_host_mesh_v1,
-    fake_in_process_host as fake_in_process_host_v1,
-    host_mesh_from_alloc as host_mesh_from_alloc_v1,
-    HostMesh as HostMeshV1,
-    hosts_from_config as hosts_from_config_v1,
-    this_host as this_host_v1,
-    this_proc as this_proc_v1,
-)
 from monarch.tools.config.workspace import Workspace
 
 
-def this_host_v0() -> "HostMeshV0":
+def _bootstrap_cmd() -> BootstrapCommand:
+    cmd, args, bootstrap_env = _get_bootstrap_args()
+    return BootstrapCommand(
+        cmd,
+        None,
+        args if args else [],
+        bootstrap_env,
+    )
+
+
+def this_host() -> "HostMesh":
     """
     The current machine.
 
     This is just shorthand for looking it up via the context
     """
-    host_mesh = context().actor_instance.proc.host_mesh
-    assert isinstance(host_mesh, HostMeshV0), "expected v0 HostMesh, got v1 HostMesh"
-    return host_mesh
+    return this_proc().host_mesh
 
 
-def this_proc_v0() -> "ProcMeshV0":
+def this_proc() -> "ProcMesh":
     """
     The current singleton process that this specific actor is
     running on
     """
-    proc = context().actor_instance.proc
-    assert isinstance(proc, ProcMeshV0), "expected v1 ProcMesh, got v0 ProcMesh"
-    return proc
+    return context().actor_instance.proc
 
 
-def create_local_host_mesh_v0() -> "HostMeshV0":
+def create_local_host_mesh(
+    extent: Optional[Extent] = None, env: Optional[Dict[str, str]] = None
+) -> "HostMesh":
     """
     Create a local host mesh for the current machine.
+
+    Args:
+        name: The name of the host mesh.
+        extent: Optional extent describing the shape of the host mesh.
+                If not provided, `Extent(labels=[], sizes=[])` is used.
+                Other extents allow for local host meshes where each "host" is
+                actually just a local process.
 
     Returns:
         HostMesh: A single-host mesh configured for local process allocation.
     """
-    cmd, args, env = _get_bootstrap_args()
-    return HostMeshV0(Shape.unity(), ProcessAllocator(cmd, args, env))
+
+    cmd, args, bootstrap_env = _get_bootstrap_args()
+    if env is not None:
+        bootstrap_env.update(env)
+
+    return HostMesh.allocate_nonblocking(
+        "local_host",
+        extent if extent is not None else Extent([], []),
+        ProcessAllocator(cmd, args, bootstrap_env),
+        bootstrap_cmd=_bootstrap_cmd(),
+    )
 
 
-class HostMeshV0(MeshTrait):
+class HostMesh(MeshTrait):
     """
     HostMesh represents a collection of compute hosts that can be used to spawn
-    processes and actors. The class requires you to provide your AllocateMixin that
-    interfaces with the underlying resource allocator of your choice.
+    processes and actors.
     """
 
     def __init__(
         self,
-        shape: Shape,
+        hy_host_mesh: Shared[HyHostMesh],
+        region: Region,
+        stream_logs: bool,
+        is_fake_in_process: bool,
+        _initialized_hy_host_mesh: Optional[HyHostMesh],
+        _code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
+    ) -> None:
+        self._initialized_host_mesh = _initialized_hy_host_mesh
+        if not self._initialized_host_mesh:
+
+            async def task(hy_host_mesh_task: Shared[HyHostMesh]) -> HyHostMesh:
+                self._initialized_host_mesh = await hy_host_mesh_task
+                return self._initialized_host_mesh
+
+            hy_host_mesh = PythonTask.from_coroutine(task(hy_host_mesh)).spawn()
+
+        self._hy_host_mesh = hy_host_mesh
+        self._region = region
+        self._stream_logs = stream_logs
+        self._is_fake_in_process = is_fake_in_process
+        self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = _code_sync_proc_mesh
+
+    @classmethod
+    def allocate_nonblocking(
+        cls,
+        name: str,
+        extent: Extent,
         allocator: AllocateMixin,
         alloc_constraints: Optional[AllocConstraints] = None,
-    ) -> None:
-        warnings.warn(
-            (
-                "DEPRECATION WARNING: using a deprecated version of HostMesh. This is going be removed imminently. "
-                "Make sure you aren't running with `MONARCH_V0_WORKAROUND_DO_NOT_USE=1` to get the new version of "
-                "HostMesh."
-            ),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._allocator = allocator
-        self._alloc_constraints = alloc_constraints
-        self._shape = shape
-        self._spawned = 0
+        bootstrap_cmd: Optional[BootstrapCommand] = None,
+    ) -> "HostMesh":
+        spec = AllocSpec(alloc_constraints or AllocConstraints(), **extent)
+        alloc: AllocHandle = allocator.allocate(spec)
 
-    def _alloc(self, hosts: int, gpus: int) -> "AllocHandle":
-        spec: AllocSpec = AllocSpec(
-            self._alloc_constraints or AllocConstraints(), hosts=hosts, gpus=gpus
+        async def task() -> HyHostMesh:
+            return await HyHostMesh.allocate_nonblocking(
+                context().actor_instance._as_rust(),
+                await alloc._hy_alloc,
+                name,
+                bootstrap_cmd,
+            )
+
+        hm = cls(
+            PythonTask.from_coroutine(task()).spawn(),
+            extent.region,
+            alloc.stream_logs,
+            isinstance(allocator, LocalAllocator),
+            None,
+            None,
         )
-        return self._allocator.allocate(spec)
+
+        hm._code_sync_proc_mesh = _Lazy(lambda: hm.spawn_procs(name="code_sync"))
+        return hm
 
     def spawn_procs(
         self,
-        per_host: Optional[Dict[str, int]] = None,
-        bootstrap: Optional[Callable[[], None]] = None,
-    ) -> "ProcMeshV0":
-        """
-        Start new processes on this host mesh. By default this starts one proc
-        on each host in the mesh. Additional procs can be started using `per_host` to
-        specify the local shape, e.g.`
-            per_host = {'gpus': 8}
-        Will create a proc mesh with an additional 'gpus' dimension.
-
-        `bootstrap` is a function that will be run at startup on each proc and can be used to e.g.
-        configure CUDA or NCCL. We guarantee that CUDA has not been initialized before boostrap is called.
-
-        TODO: For now, a new allocator is created for every new ProcMesh.
-        """
-        if per_host is None:
+        per_host: Dict[str, int] | None = None,
+        bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
+        name: str | None = None,
+    ) -> "ProcMesh":
+        if not per_host:
             per_host = {}
-        if self._spawned > 0 and len(self._ndslice) > 1:
-            warnings.warn(
-                "spawning multiple procs on the same host mesh is kinda fake at the moment, there is no guarentee that the two different spawns will be on shared hosts",
-                stacklevel=2,
-            )
-        self._spawned += 1
-        hosts = len(self._ndslice)
-        flat_per_host = prod(per_host.values())
-        alloc_handle = self._alloc(hosts, flat_per_host)
 
-        new_extent = dict(zip(self._labels, self._ndslice.sizes))
+        if not name:
+            name = "anon"
 
-        conflicting_keys = set(per_host.keys()) & set(new_extent.keys())
-        if conflicting_keys:
+        return self._spawn_nonblocking(
+            name,
+            Extent(list(per_host.keys()), list(per_host.values())),
+            bootstrap,
+            True,
+        )
+
+    def _spawn_nonblocking(
+        self,
+        name: str,
+        per_host: Extent,
+        setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
+        _attach_controller_controller: bool,
+    ) -> "ProcMesh":
+        if set(per_host.labels) & set(self._labels):
+            # The rust side will catch this too, but this lets us fail fast
             raise ValueError(
-                f"host mesh already has dims {', '.join(sorted(conflicting_keys))}"
+                f"per_host labels {per_host.labels} overlap with host labels {self._labels}"
             )
 
-        new_extent.update(per_host)
-        return ProcMeshV0.from_alloc(alloc_handle.reshape(new_extent), bootstrap)
+        async def task() -> HyProcMesh:
+            hy_host_mesh = await self._hy_host_mesh
+            return await hy_host_mesh.spawn_nonblocking(
+                context().actor_instance._as_rust(), name, per_host
+            )
+
+        return ProcMesh.from_host_mesh(
+            self,
+            PythonTask.from_coroutine(task()).spawn(),
+            Extent(
+                self._labels + tuple(per_host.labels),
+                self.region.slice().sizes + list(per_host.sizes),
+            ).region,
+            setup,
+            _attach_controller_controller,
+        )
 
     @property
     def _ndslice(self) -> NDSlice:
-        return self._shape.ndslice
+        return self.region.slice()
 
     @property
     def _labels(self) -> Tuple[str, ...]:
-        return tuple(self._shape.labels)
+        return tuple(self.region.labels)
 
-    def _new_with_shape(self, shape: Shape) -> "HostMeshV0":
-        warnings.warn(
-            "Slicing a host mesh is kinda fake at the moment, there is no guarentee that procs in the slice will end up on the corresponding hosts",
-            stacklevel=2,
+    def _new_with_shape(self, shape: Shape) -> "HostMesh":
+        if shape.region == self._region:
+            return self
+
+        initialized_hm: Optional[HyHostMesh] = (
+            None
+            if self._initialized_host_mesh is None
+            else self._initialized_host_mesh.sliced(shape.region)
         )
-        return HostMeshV0(
-            Shape(self._labels, NDSlice.new_row_major(self._ndslice.sizes)),
-            self._allocator,
+
+        async def task() -> HyHostMesh:
+            return (
+                initialized_hm
+                if initialized_hm
+                else (await self._hy_host_mesh).sliced(shape.region)
+            )
+
+        return HostMesh(
+            PythonTask.from_coroutine(task()).spawn(),
+            shape.region,
+            self.stream_logs,
+            self.is_fake_in_process,
+            initialized_hm,
+            None,
         )
+
+    @property
+    def region(self) -> Region:
+        return self._region
+
+    @property
+    def stream_logs(self) -> bool:
+        return self._stream_logs
+
+    @classmethod
+    def _from_initialized_hy_host_mesh(
+        cls,
+        hy_host_mesh: HyHostMesh,
+        region: Region,
+        stream_logs: bool,
+        is_fake_in_process: bool,
+    ) -> "HostMesh":
+        async def task() -> HyHostMesh:
+            return hy_host_mesh
+
+        return HostMesh(
+            PythonTask.from_coroutine(task()).spawn(),
+            region,
+            stream_logs,
+            is_fake_in_process,
+            hy_host_mesh,
+            None,
+        )
+
+    @classmethod
+    def _from_rust(cls, hy_host_mesh: HyHostMesh) -> "HostMesh":
+        """
+        Create a HostMesh from a Rust HyHostMesh.
+
+        This is used when the host was bootstrapped via bootstrap_host()
+        instead of being allocated through an allocator.
+        """
+        return cls._from_initialized_hy_host_mesh(
+            hy_host_mesh,
+            hy_host_mesh.region,
+            stream_logs=False,
+            is_fake_in_process=False,
+        )
+
+    def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
+        return HostMesh._from_initialized_hy_host_mesh, (
+            self._initialized_mesh(),
+            self._region,
+            self.stream_logs,
+            self.is_fake_in_process,
+        )
+
+    @property
+    def is_fake_in_process(self) -> bool:
+        return self._is_fake_in_process
+
+    def __eq__(self, other: "HostMesh") -> bool:
+        # Should we include code sync proc mesh?
+        return (
+            self._initialized_mesh() == other._initialized_mesh()
+            and self._region == other._region
+            and self.stream_logs == other.stream_logs
+            and self.is_fake_in_process == other.is_fake_in_process
+        )
+
+    def _initialized_mesh(self) -> HyHostMesh:
+        if self._initialized_host_mesh is None:
+            self._hy_host_mesh.block_on()
+            assert self._initialized_host_mesh is not None
+        return self._initialized_host_mesh
+
+    def shutdown(self) -> Future[None]:
+        """
+        Shutdown the host mesh and all of its processes. It will throw an exception
+        if this host mesh is a *reference* rather than *owned*, which can happen
+        if this `HostMesh` object was received from a remote actor or if it was
+        produced by slicing.
+
+        Returns:
+            Future[None]: A future that completes when the host mesh has been shut down.
+        """
+
+        async def task() -> None:
+            hy_mesh = await self._hy_host_mesh
+            await hy_mesh.shutdown(context().actor_instance._as_rust())
+
+        return Future(coro=task())
 
     async def sync_workspace(
         self,
@@ -173,20 +334,47 @@ class HostMeshV0(MeshTrait):
             conda: If True, also sync the currently activated conda env.
             auto_reload: If True, automatically reload the workspace on changes.
         """
-        raise NotImplementedError("sync_workspace is not implemented for v0 HostMesh")
+        if self._code_sync_proc_mesh:
+            await self._code_sync_proc_mesh.get()._sync_workspace(
+                workspace, conda, auto_reload
+            )
+        else:
+            raise RuntimeError(
+                "cannot call sync_workspace on a sliced host mesh or one that was sent over an actor endpoint"
+            )
+
+    @property
+    def initialized(self) -> Future[Literal[True]]:
+        """
+        Future completes with 'True' when the `HostMesh` has initialized.
+        Because `HostMesh` are remote objects, there is no guarentee that the `HostMesh` is
+        still usable after this completes, only that at some point in the past it was usable.
+        """
+        hm: Shared[HyHostMesh] = self._hy_host_mesh
+
+        async def task() -> Literal[True]:
+            await hm
+            return True
+
+        return Future(coro=task())
 
 
-def fake_in_process_host_v0() -> "HostMeshV0":
+def fake_in_process_host() -> "HostMesh":
     """
     Create a host mesh for testing and development using a local allocator.
 
     Returns:
         HostMesh: A host mesh configured with local allocation for in-process use.
     """
-    return HostMeshV0(Shape.unity(), LocalAllocator())
+    return HostMesh.allocate_nonblocking(
+        "fake_host",
+        Extent([], []),
+        LocalAllocator(),
+        bootstrap_cmd=_bootstrap_cmd(),
+    )
 
 
-def hosts_from_config_v0(name: str) -> HostMeshV0:
+def hosts_from_config(name: str) -> HostMesh:
     """
     Get the host mesh 'name' from the monarch configuration for the project.
 
@@ -197,33 +385,15 @@ def hosts_from_config_v0(name: str) -> HostMeshV0:
     needs an RFC design.
     """
 
-    shape = Shape(["hosts"], NDSlice.new_row_major([2]))
-    return HostMeshV0(shape, ProcessAllocator(*_get_bootstrap_args()))
-
-
-def host_mesh_from_alloc_v0(
-    name: str, extent: Extent, allocator: AllocateMixin, constraints: AllocConstraints
-) -> HostMeshV0:
-    return HostMeshV0(
-        Shape(extent.labels, Slice.new_row_major(extent.sizes)),
-        allocator,
-        constraints,
+    return HostMesh.allocate_nonblocking(
+        name,
+        Extent(["hosts"], [2]),
+        ProcessAllocator(*_get_bootstrap_args()),
+        bootstrap_cmd=_bootstrap_cmd(),
     )
 
 
-if v1_enabled or TYPE_CHECKING:
-    this_host = this_host_v1
-    this_proc = this_proc_v1
-    create_local_host_mesh = create_local_host_mesh_v1
-    fake_in_process_host = fake_in_process_host_v1
-    HostMesh = HostMeshV1
-    hosts_from_config = hosts_from_config_v1
-    host_mesh_from_alloc = host_mesh_from_alloc_v1
-else:
-    this_host = this_host_v0
-    this_proc = this_proc_v0
-    create_local_host_mesh = create_local_host_mesh_v0
-    fake_in_process_host = fake_in_process_host_v0
-    HostMesh = HostMeshV0
-    hosts_from_config = hosts_from_config_v0
-    host_mesh_from_alloc = host_mesh_from_alloc_v0
+def host_mesh_from_alloc(
+    name: str, extent: Extent, allocator: AllocateMixin, constraints: AllocConstraints
+) -> HostMesh:
+    return HostMesh.allocate_nonblocking(name, extent, allocator, constraints)

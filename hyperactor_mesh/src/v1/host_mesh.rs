@@ -82,13 +82,13 @@ declare_attrs! {
     /// meshes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_PROC_STOP_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("proc_stop_max_idle".to_string()),
     })
     pub attr PROC_STOP_MAX_IDLE: Duration = Duration::from_secs(30);
 
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("get_proc_state_max_idle".to_string()),
     })
     pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
@@ -144,6 +144,18 @@ impl HostRef {
             .shutdown_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
             .await?;
         Ok(())
+    }
+}
+
+impl TryFrom<ActorRef<HostMeshAgent>> for HostRef {
+    type Error = v1::Error;
+
+    fn try_from(value: ActorRef<HostMeshAgent>) -> Result<Self, v1::Error> {
+        let proc_id = value.actor_id().proc_id();
+        match proc_id.as_direct() {
+            Some((addr, _)) => Ok(HostRef(addr.clone())),
+            None => Err(v1::Error::RankedProc(proc_id.clone())),
+        }
     }
 }
 
@@ -583,7 +595,6 @@ impl Drop for HostMesh {
                     ChannelTransport::Unix.any(),
                     "hostmesh-drop".to_string(),
                 )
-                    .await
                 {
                     Err(e) => {
                         tracing::warn!(
@@ -732,6 +743,29 @@ impl HostMeshRef {
             region: extent!(hosts = hosts.len()).into(),
             ranks: Arc::new(hosts.into_iter().map(HostRef).collect()),
         }
+    }
+
+    /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
+    pub fn from_host_agents(name: Name, agents: Vec<ActorRef<HostMeshAgent>>) -> v1::Result<Self> {
+        Ok(Self {
+            name,
+            region: extent!(hosts = agents.len()).into(),
+            ranks: Arc::new(
+                agents
+                    .into_iter()
+                    .map(HostRef::try_from)
+                    .collect::<v1::Result<_>>()?,
+            ),
+        })
+    }
+
+    /// Create a unit HostMeshRef from a host mesh agent.
+    pub fn from_host_agent(name: Name, agent: ActorRef<HostMeshAgent>) -> v1::Result<Self> {
+        Ok(Self {
+            name,
+            region: Extent::unity().into(),
+            ranks: Arc::new(vec![HostRef::try_from(agent)?]),
+        })
     }
 
     /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
@@ -1359,7 +1393,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         for alloc in testing::allocs(extent!(replicas = 4)).await {
             let mut host_mesh = HostMesh::allocate(instance, alloc, "test", None)
@@ -1487,16 +1521,16 @@ mod tests {
             children.push(cmd.spawn().unwrap());
         }
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
         let proc_mesh = host_mesh
-            .spawn(&testing::instance().await, "test", Extent::unity())
+            .spawn(&testing::instance(), "test", Extent::unity())
             .await
             .unwrap();
 
         let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn(&testing::instance().await, "test", &())
+            .spawn(&testing::instance(), "test", &())
             .await
             .unwrap();
 
@@ -1533,7 +1567,7 @@ mod tests {
         }
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         let err = host_mesh
             .spawn(&instance, "test", Extent::unity())
@@ -1578,7 +1612,7 @@ mod tests {
         }
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         let err = host_mesh
             .spawn(&instance, "test", Extent::unity())
@@ -1605,7 +1639,16 @@ mod tests {
             Duration::from_mins(1),
         );
 
-        let instance = testing::instance().await;
+        // Unset env vars that were mirrored by TestOverride, so child
+        // processes don't inherit them. This allows Runtime layer to
+        // override ClientOverride. SAFETY: Single-threaded test under
+        // global config lock.
+        unsafe {
+            std::env::remove_var("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT");
+            std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT");
+        }
+
+        let instance = testing::instance();
 
         let proc_meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
         let proc_mesh = proc_meshes.get(1).unwrap();

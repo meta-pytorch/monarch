@@ -478,7 +478,7 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_actor_mesh_ref_lazy_materialization() {
         // 1) Bring up procs and spawn actors.
-        let instance = testing::instance().await;
+        let instance = testing::instance();
         // Small mesh so the test runs fast, but > page_size so we
         // cross a boundary
         let extent = extent!(replicas = 3, hosts = 2); // 6 ranks
@@ -579,7 +579,7 @@ mod tests {
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
             instance.open_port::<resource::State<ActorState>>();
@@ -649,7 +649,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
             instance.open_port::<resource::State<ActorState>>();
@@ -714,7 +714,7 @@ mod tests {
     async fn test_actor_states_on_sliced_mesh() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
             instance.open_port::<resource::State<ActorState>>();
@@ -789,7 +789,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
         let mut host_mesh = testing::host_mesh(extent!(host = 4)).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", Extent::unity())
@@ -845,7 +845,7 @@ mod tests {
             std::time::Duration::from_secs(1),
         );
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         // Create a proc mesh with 2 replicas.
         let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
@@ -956,7 +956,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         // Create proc mesh with 2 replicas
         let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
@@ -1037,7 +1037,7 @@ mod tests {
     async fn test_actor_mesh_stop_graceful() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         // Create proc mesh with 2 replicas
         let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;

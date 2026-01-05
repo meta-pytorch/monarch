@@ -31,7 +31,7 @@ declare_attrs! {
     /// Writes >= this size are stored as zero-copy references.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("MONARCH_HYPERACTOR_SMALL_WRITE_THRESHOLD".to_string()),
-        py_name: None,
+        py_name: Some("small_write_threshold".to_string()),
     })
     pub attr SMALL_WRITE_THRESHOLD: usize = 256;
 }

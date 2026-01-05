@@ -35,6 +35,3 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
-
-[features]
-extension-module = ["monarch_hyperactor/extension-module", "monarch_messages/extension-module", "monarch_types/extension-module", "pyo3/extension-module", "torch-sys-cuda/extension-module", "torch-sys2/extension-module"]

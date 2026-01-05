@@ -1,5 +1,109 @@
-[tool.pytest.ini_options]
+# Build system configuration - PEP 517/518
+[build-system]
+# Note: torch is required at build time (not just runtime) because:
+#   1. setup.py needs to detect torch installation paths and C++11 ABI
+#   2. C++ extensions (monarch.common._C, gradient_generator) link against libtorch
+#   3. Build-time torch detection determines whether to enable tensor_engine feature
+# The torch index is controlled by [tool.uv.sources] below (e.g., pytorch-cu128)
+requires = ["setuptools>=64", "setuptools-rust", "wheel", "numpy", "torch"]
+build-backend = "setuptools.build_meta"
 
+[project]
+name = "torchmonarch"
+dynamic = ["version"]  # overridden via MONARCH_VERSION env var
+description = "Monarch: Single controller library"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "Meta", email = "oncall+monarch@xmail.facebook.com"}
+]
+
+dependencies = [
+    "pyzmq",
+    "requests",
+    "numpy",
+    "pyre-extensions",
+    "typing-extensions>=4.12",
+    "cloudpickle",
+    "torchx-nightly",
+    "lark",
+    "tabulate",
+    "opentelemetry-api",
+    "clusterscope",
+    "torch",
+]
+
+# PyTorch nightly build indices for different platforms
+# To use a different nightly, change the index in [tool.uv.sources] below
+# or use: uv pip install --extra-index-url https://download.pytorch.org/whl/nightly/{platform} torch
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+# Override with: uv sync --extra-index-url https://download.pytorch.org/whl/nightly/{platform} e.g.
+# uv sync --extra-index-url https://download.pytorch.org/whl/nightly/cu128
+torch = { index = "pytorch-cu128" }
+
+# Configure uv for torch nightly builds
+[tool.uv]
+prerelease = "allow"  # Required for torch nightly builds (pre-release versions)
+required-environments = ["sys_platform == 'linux'"]  # Force resolution for Linux x86_64
+python-preference = "managed"  # Use uv-managed Python installations
+python-downloads = "automatic"  # Automatically download Python if needed
+
+[project.optional-dependencies]
+examples = [
+    "bs4",
+    "ipython",
+    "psutil",
+]
+test = [
+    "pytest",
+    "pytest-timeout",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pyright",
+]
+
+# Modern dependency groups for uv
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-timeout>=2.0",
+    "pytest-asyncio>=0.21",
+    "pytest-xdist>=3.0",
+    "pyright>=1.1",
+]
+
+[project.scripts]
+monarch = "monarch.tools.cli:main"
+monarch_bootstrap = "monarch._src.actor.bootstrap_main:invoke_main"
+
+[tool.setuptools]
+packages = {find = {where = ["python"]}}
+
+[tool.setuptools.package-dir]
+"" = "python"
+
+[tool.pytest.ini_options]
 markers = [
     "oss_skip: marks tests to skip in OSS CI",
 ]

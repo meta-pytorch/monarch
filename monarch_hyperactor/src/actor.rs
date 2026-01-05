@@ -8,7 +8,6 @@
 
 use std::error::Error;
 use std::future::pending;
-use std::sync::Arc;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -57,9 +56,7 @@ use pyo3::types::PyList;
 use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_bytes::ByteBuf;
 use serde_multipart::Part;
-use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
@@ -76,118 +73,10 @@ use crate::metrics::ENDPOINT_ACTOR_COUNT;
 use crate::metrics::ENDPOINT_ACTOR_ERROR;
 use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_ACTOR_PANIC;
-use crate::proc::InstanceWrapper;
 use crate::proc::PyActorId;
-use crate::proc::PyProc;
-use crate::proc::PySerialized;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
-use crate::runtime::signal_safe_block_on;
 use crate::supervision::MeshFailure;
-
-#[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Serialize, Deserialize, Named)]
-pub struct PickledMessage {
-    sender_actor_id: ActorId,
-    message: ByteBuf,
-}
-
-impl std::fmt::Debug for PickledMessage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "PickledMessage(sender_actor_id: {:?} message: {})",
-            self.sender_actor_id,
-            hyperactor::data::HexFmt(self.message.as_slice()),
-        )
-    }
-}
-
-#[pymethods]
-impl PickledMessage {
-    #[new]
-    #[pyo3(signature = (*, sender_actor_id, message))]
-    fn new(sender_actor_id: &PyActorId, message: Vec<u8>) -> Self {
-        Self {
-            sender_actor_id: sender_actor_id.into(),
-            message: ByteBuf::from(message),
-        }
-    }
-
-    #[getter]
-    fn sender_actor_id(&self) -> PyActorId {
-        self.sender_actor_id.clone().into()
-    }
-
-    #[getter]
-    fn message<'a>(&self, py: Python<'a>) -> Bound<'a, PyBytes> {
-        PyBytes::new(py, self.message.as_ref())
-    }
-
-    fn serialize(&self) -> PyResult<PySerialized> {
-        PySerialized::new(self)
-    }
-}
-
-#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-pub struct PickledMessageClientActor {
-    instance: Arc<Mutex<InstanceWrapper<PickledMessage>>>,
-}
-
-#[pymethods]
-impl PickledMessageClientActor {
-    #[new]
-    fn new(proc: &PyProc, actor_name: &str) -> PyResult<Self> {
-        Ok(Self {
-            instance: Arc::new(Mutex::new(InstanceWrapper::new(proc, actor_name)?)),
-        })
-    }
-
-    /// Send a message to any actor that can receive the corresponding serialized message.
-    fn send(&self, actor_id: &PyActorId, message: &PySerialized) -> PyResult<()> {
-        let instance = self.instance.blocking_lock();
-        instance.send(actor_id, message)
-    }
-
-    /// Get the next message from the queue. It will block until a message is received
-    /// or the timeout is reached in which case it will return None
-    /// If the actor has been stopped, this returns an error.
-    #[pyo3(signature = (*, timeout_msec = None))]
-    fn get_next_message<'py>(
-        &mut self,
-        py: Python<'py>,
-        timeout_msec: Option<u64>,
-    ) -> PyResult<PyObject> {
-        let instance = self.instance.clone();
-        let result = signal_safe_block_on(py, async move {
-            instance.lock().await.next_message(timeout_msec).await
-        })?;
-        Python::with_gil(|py| {
-            result
-                .map(|res| res.into_py_any(py))?
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
-        })
-    }
-
-    /// Stop the background task and return any messages that were received.
-    /// TODO: This is currently just aborting the task, we should have a better way to stop it.
-    fn drain_and_stop<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let mut instance = self.instance.blocking_lock();
-        let messages = instance
-            .drain_and_stop()
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?
-            .into_iter()
-            .map(|message| message.into_py_any(py))
-            .collect::<PyResult<Vec<_>>>()?;
-        PyList::new(py, messages)
-    }
-
-    #[getter]
-    fn actor_id(&self) -> PyResult<PyActorId> {
-        let instance = self.instance.blocking_lock();
-        Ok(PyActorId::from(instance.actor_id().clone()))
-    }
-}
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -307,7 +196,7 @@ impl PythonMessage {
                 id,
                 unflatten_args,
             } => {
-                let broker = BrokerId::new(local_state_broker).resolve(cx).unwrap();
+                let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
                 broker.send(LocalStateBrokerMessage::Get(id, send))?;
                 let state = recv.recv().await?;
@@ -520,6 +409,8 @@ impl PythonActor {
         })
     }
 
+    /// Bootstrap the root client actor, creating a new proc for it.
+    /// This is the legacy entry point that creates its own proc.
     pub(crate) fn bootstrap_client(py: Python<'_>) -> (&'static Instance<Self>, ActorHandle<Self>) {
         static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
@@ -530,8 +421,21 @@ impl PythonActor {
         )
         .unwrap();
 
+        Self::bootstrap_client_inner(py, client_proc, &ROOT_CLIENT_INSTANCE)
+    }
+
+    /// Bootstrap the client proc, storing the root client instance in given static.
+    /// This is passed in because we require storage, as the instance is shared.
+    /// This can be simplified when we remove v0.
+    pub(crate) fn bootstrap_client_inner(
+        py: Python<'_>,
+        client_proc: Proc,
+        root_client_instance: &'static OnceLock<Instance<PythonActor>>,
+    ) -> (&'static Instance<Self>, ActorHandle<Self>) {
         // Make this proc reachable through the global router, so that we can use the
         // same client in both direct-addressed and ranked-addressed modes.
+        //
+        // DEPRECATE after v0 removal
         router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
 
         let actor_mesh_mod = py
@@ -557,7 +461,7 @@ impl PythonActor {
             )
             .expect("root instance create");
 
-        ROOT_CLIENT_INSTANCE
+        root_client_instance
             .set(client)
             .map_err(|_| "already initialized root client instance")
             .unwrap();
@@ -576,8 +480,11 @@ impl PythonActor {
                 .expect("create RootClientActor init message"),
             )
             .expect("initialize root client");
+        // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
+        // are bound.
+        let _client_ref = handle.bind::<PythonActor>();
 
-        let instance = ROOT_CLIENT_INSTANCE.get().unwrap();
+        let instance = root_client_instance.get().unwrap();
 
         get_tokio_runtime().spawn(async move {
             let mut signal_rx = signal_rx;
@@ -588,16 +495,28 @@ impl PythonActor {
                     work = work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut actor, instance).await {
-                            for supervision_event in supervision_rx.drain() {
-                                if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                    break 'messages err;
-                                }
-                            }
                             let kind = ActorErrorKind::processing(err);
-                            break ActorError {
+                            let err = ActorError {
                                 actor_id: Box::new(instance.self_id().clone()),
                                 kind: Box::new(kind),
                             };
+                            // Give the actor a chance to handle the error produced
+                            // in its own message handler. This is important because
+                            // we want Undeliverable<MessageEnvelope>, which returns
+                            // an Err typically, to create a supervision event and
+                            // call __supervise__.
+                            let supervision_event = actor_error_to_event(instance, &actor, err);
+                            // If the immediate supervision event isn't handled, continue with
+                            // exiting the loop.
+                            // Else, continue handling messages.
+                            if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                                for supervision_event in supervision_rx.drain() {
+                                    if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                                        break 'messages err;
+                                    }
+                                }
+                                break err;
+                            }
                         }
                     }
                     _ = signal_rx.recv() => {
@@ -610,23 +529,39 @@ impl PythonActor {
                     }
                 };
             };
-            let event = match *err.kind {
-                ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
-                _ => {
-                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                    let status = ActorStatus::Failed(error_kind);
-                    ActorSupervisionEvent::new(
-                        instance.self_id().clone(),
-                        actor.display_name(),
-                        status,
-                        None,
-                    )
-                }
-            };
-            instance.proc().handle_supervision_event(event);
+            let event = actor_error_to_event(instance, &actor, err);
+            // The proc supervision handler will send to ProcMeshAgent, which
+            // just records it in v1. We want to crash instead, as nothing will
+            // monitor the client ProcMeshAgent for now.
+            tracing::error!(
+                "{}: could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
+                instance.self_id(),
+                event,
+            );
+
+            std::process::exit(1);
         });
 
-        (ROOT_CLIENT_INSTANCE.get().unwrap(), handle)
+        (root_client_instance.get().unwrap(), handle)
+    }
+}
+
+fn actor_error_to_event(
+    instance: &Instance<PythonActor>,
+    actor: &PythonActor,
+    err: ActorError,
+) -> ActorSupervisionEvent {
+    match *err.kind {
+        ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
+        _ => {
+            let status = ActorStatus::generic_failure(err.kind.to_string());
+            ActorSupervisionEvent::new(
+                instance.self_id().clone(),
+                actor.display_name(),
+                status,
+                None,
+            )
+        }
     }
 }
 
@@ -1225,8 +1160,6 @@ impl LocalPort {
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
-    hyperactor_mod.add_class::<PickledMessage>()?;
-    hyperactor_mod.add_class::<PickledMessageClientActor>()?;
     hyperactor_mod.add_class::<PythonActorHandle>()?;
     hyperactor_mod.add_class::<PythonMessage>()?;
     hyperactor_mod.add_class::<PythonMessageKind>()?;

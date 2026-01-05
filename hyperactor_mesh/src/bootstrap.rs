@@ -48,6 +48,7 @@ use hyperactor::host::HostError;
 use hyperactor::host::ProcHandle;
 use hyperactor::host::ProcManager;
 use hyperactor::host::TerminateSummary;
+use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
@@ -143,7 +144,7 @@ declare_attrs! {
     /// "false")`.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG".to_string()),
-        py_name: None,
+        py_name: Some("mesh_bootstrap_enable_pdeathsig".to_string()),
     })
     pub attr MESH_BOOTSTRAP_ENABLE_PDEATHSIG: bool = true;
 
@@ -153,7 +154,7 @@ declare_attrs! {
     /// file descriptor load).
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_TERMINATE_CONCURRENCY".to_string()),
-        py_name: None,
+        py_name: Some("mesh_terminate_concurrency".to_string()),
     })
     pub attr MESH_TERMINATE_CONCURRENCY: usize = 16;
 
@@ -162,7 +163,7 @@ declare_attrs! {
     /// the child to exit before escalating to SIGKILL.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_TERMINATE_TIMEOUT".to_string()),
-        py_name: None,
+        py_name: Some("mesh_terminate_timeout".to_string()),
     })
     pub attr MESH_TERMINATE_TIMEOUT: Duration = Duration::from_secs(10);
 }
@@ -266,7 +267,10 @@ async fn halt<R>() -> R {
     unreachable!()
 }
 
-/// Bootstrap a host in this process, returning a handle to the mesh agent:
+/// Bootstrap a host in this process, returning a handle to the mesh agent.
+///
+/// To obtain the local proc, use `GetLocalProc` on the returned host mesh agent,
+/// then use `GetProc` on the returned proc mesh agent.
 ///
 /// - `addr`: the listening address of the host; this is used to bind the frontend address;
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
@@ -289,7 +293,9 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new(manager, addr).await?;
+    // REMOVE(V0): forward unknown destinations to the default sender.
+    let host = Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
+        .await?;
     let addr = host.addr().clone();
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc
@@ -3530,9 +3536,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn bootstrap_handle_terminate_graceful() {
         // Create a root direct-addressed proc + client instance.
-        let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-            .await
-            .unwrap();
+        let root =
+            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
         let (instance, _handle) = root.instance("client").unwrap();
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
@@ -3594,9 +3599,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn bootstrap_handle_kill_forced() {
         // Root proc + client instance (so the child can dial back).
-        let root = hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-            .await
-            .unwrap();
+        let root =
+            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
         let (instance, _handle) = root.instance("client").unwrap();
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
@@ -3649,7 +3653,7 @@ mod tests {
         }
         // Create an actor instance we'll use to send and receive
         // messages.
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         // Configure a ProcessAllocator with the bootstrap binary.
         let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(

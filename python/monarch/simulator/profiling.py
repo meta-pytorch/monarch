@@ -324,6 +324,83 @@ class RuntimeProfiler:
         return clean_ret
 
 
+class FakeRuntimeProfiler:
+    """A fake runtime profiler that uses FakeTensorMode instead of CUDA.
+
+    This profiler can be used when running simulations without actual GPUs.
+    It executes operations using FakeTensorMode and returns dummy timing
+    information, allowing the simulator to function without CUDA.
+    """
+
+    def __init__(self, world_size: int = 8) -> None:
+        self.world_size = world_size
+        self.cached: Dict[Tuple[Any, ...], Any] = {}
+
+    def profile_cmd(self, cmd, ranks) -> List[Any | None]:
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        assert type(cmd).__name__ == "CallFunction"
+        cmd = CommandHistory.convert_msg(cmd)
+        cmd = cmd._replace(function=resolvable_function(cmd.function))
+
+        def dtensor_ref_filter(v: Any):
+            if isinstance(v, DTensorRef):
+                return v.factory
+            return v
+
+        key_filters.append(dtensor_ref_filter)
+        tensors, shape_key = hashable_tensor_flatten((cmd, ranks), {})
+        inputs_group = TensorGroup([t._fake for t in tensors])  # pyre-ignore[16]
+        requires_grads = tuple(t.requires_grad for t in tensors)
+        key = (shape_key, inputs_group.pattern, requires_grads)
+        key_filters.pop()
+
+        if key in self.cached:
+            return self.cached[key]
+
+        # Execute the function using FakeTensorMode instead of real CUDA
+        func = cmd.function.resolve()
+        args = cmd.args
+        kwargs = cmd.kwargs if cmd.kwargs else {}
+
+        def to_fake_tensor(e: Any) -> Any:
+            if isinstance(e, DTensorRef):
+                return e._fake
+            return e
+
+        flat_args, args_spec = pytree.tree_flatten((args, kwargs))
+        flat_args = [to_fake_tensor(a) for a in flat_args]
+        args, kwargs = pytree.tree_unflatten(flat_args, args_spec)
+
+        with FakeTensorMode():
+            with no_dispatch():
+                # Execute the function with fake tensors
+                try:
+                    r = func(*args, **kwargs)
+                except Exception:
+                    # If the function fails, return zeros
+                    r = torch.tensor(0.0)
+
+        # Convert result to DTensorRef format expected by caller
+        count = 2**31
+
+        def tensor_to_dtensor_ref(t: Any) -> Any:
+            nonlocal count
+            if isinstance(t, torch.Tensor):
+                count += 1
+                # pyre-ignore[16]: Dynamically adding ref attribute for tracking
+                t.ref = count
+                return DTensorRef(t)
+            return t
+
+        ret = pytree.tree_map_only(torch.Tensor, tensor_to_dtensor_ref, r)
+        # Return as list of (result, timing) tuples
+        result = [((ret, 0),) for _ in ranks]
+
+        self.cached[key] = result
+        return result
+
+
 def _return_if_exist(attr):
     def decorator(func):
         @functools.wraps(func)

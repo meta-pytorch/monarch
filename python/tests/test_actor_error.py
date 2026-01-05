@@ -13,13 +13,16 @@ import importlib.resources
 import os
 import re
 import subprocess
+from typing import cast
 
 import monarch.actor
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch._src.actor.actor_mesh import ActorMesh
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import Actor, ActorError, endpoint, MeshFailure
+from monarch.config import configured
 
 
 @contextlib.contextmanager
@@ -832,50 +835,106 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
             await proc.spawn("immediate", Intermediate).initialized
 
 
+@pytest.mark.timeout(120)
+async def test_actor_mesh_stop() -> None:
+    class Printer(Actor):
+        @endpoint
+        async def print(self, content: str) -> None:
+            print(f"{content}", flush=True)
+
+    pm = this_host().spawn_procs(per_host={"gpus": 2})
+    am_1 = pm.spawn("printer", Printer)
+    am_2 = pm.spawn("printer2", Printer)
+    await am_1.print.call("hello 1")
+    await cast(ActorMesh, am_1).stop()
+
+    # This will generate an undeliverable message from the client to the printer
+    # actor, and thus would cause the client to hit unhandled_fault_hook. We
+    # ignore that so we can make sure a case with an actor mesh ref would get
+    # the right error message.
+    with override_fault_hook():
+        with pytest.raises(
+            SupervisionError,
+            match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
+        ):
+            await am_1.print.call("hello 2")
+
+    # An independent actor mesh should be fine.
+    await am_2.print.call("hello 3")
+
+    await pm.stop()
+
+
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(120)
 async def test_supervision_with_sending_error() -> None:
     # This test doesn't want the client process to crash during testing.
-    with override_fault_hook():
-        # Messages of length > this will cause a send error and a returned
-        # undeliverable.
-        os.environ["HYPERACTOR_CODEC_MAX_FRAME_LENGTH"] = "50000000"
-        # Limit retries for sending before giving up.
-        os.environ["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT_SECS"] = "5"
+    errors = []
 
-        proc = spawn_procs_on_this_host({"gpus": 1})
-        actor_mesh = proc.spawn("healthy", HealthyActor)
+    def fault_hook(failure):
+        print(f"Fault hook called with {failure}")
+        errors.append(str(failure))
 
-        await actor_mesh.check.call()
+    with override_fault_hook(fault_hook):
+        with configured(
+            # Messages of length > this will cause a send error and a returned
+            # undeliverable.
+            codec_max_frame_length=50000000,
+            # Limit retries for sending before giving up.
+            message_delivery_timeout="5sec",
+        ):
+            proc = spawn_procs_on_this_host({"gpus": 1})
+            actor_mesh = proc.spawn("healthy", HealthyActor)
 
-        # send a small payload to trigger success
-        await actor_mesh.check_with_payload.call(payload="a")
-
-        # The host mesh agent sends or the proc mesh agent sends might break.
-        # Either case is an error that tells us that the send failed.
-        error_msg_regx = (
-            "Actor .* (is unhealthy with reason|exited because of the following reason)|"
-            "actor mesh is stopped due to proc mesh shutdown"
-        )
-
-        # send a large payload to trigger send timeout error
-        error_msg = (
-            r"Endpoint call healthy\.check_with_payload\(\) failed, " + error_msg_regx
-        )
-        with pytest.raises(SupervisionError, match=error_msg):
-            await actor_mesh.check_with_payload.call(payload="a" * 55000000)
-
-        # new call should fail with check of health state of actor mesh
-        error_msg = r"Endpoint call healthy\.check\(\) failed, " + error_msg_regx
-        with pytest.raises(SupervisionError, match=error_msg):
             await actor_mesh.check.call()
 
-        error_msg = (
-            r"Endpoint call healthy\.check_with_payload\(\) failed, " + error_msg_regx
-        )
-        with pytest.raises(SupervisionError, match=error_msg):
+            # send a small payload to trigger success
             await actor_mesh.check_with_payload.call(payload="a")
+
+            # The host mesh agent sends or the proc mesh agent sends might break.
+            # Either case is an error that tells us that the send failed.
+            error_msg_regx = (
+                "Actor .* (is unhealthy with reason|exited because of the following reason)|"
+                "actor mesh is stopped due to proc mesh shutdown"
+            )
+
+            # send a large payload to trigger send timeout error
+            error_msg = (
+                r"Endpoint call healthy\.check_with_payload\(\) failed, "
+                + error_msg_regx
+            )
+            # The returned exception here is about a timeout reaching the host,
+            # but it is actually a send error, and the remote actor is healthy.
+            # The unhandled_fault_hook is called first with a real send error,
+            # which would normally crash the process, tested below.
+            with pytest.raises(SupervisionError, match=error_msg):
+                await actor_mesh.check_with_payload.call(payload="a" * 55000000)
+
+    # The global python actor __supervise__ hook should be called with the
+    # failure containing the send error.
+    assert len(errors) >= 1
+    error_msg = errors[0]
+    # Make sure the error contains a few key things:
+    # * Message from client was undeliverable
+    #   * destination could be multiple actors like agent, healthy, etc. because all pending messages are sent back
+    # * Reason was the message was too big.
+    # In the future, it would be even better to deliver back to the receiver
+    # of the endpoint. That way, the endpoint itself could raise this exception,
+    # rather than hitting a general undeliverable endpoint.
+    # This would require Undeliverable to know about a specific return channel.
+    assert "MeshFailure" in error_msg
+    assert "RootClientActor" in error_msg
+    assert re.search(
+        "a message from .*client.*was undeliverable and returned",
+        error_msg,
+        flags=re.MULTILINE,
+    )
+    assert re.search(
+        "rejecting oversize frame: len=[0-9]+ > max=50000000.*CODEC_MAX_FRAME_LENGTH",
+        error_msg,
+        flags=re.MULTILINE,
+    )
 
 
 async def test_slice_supervision() -> None:

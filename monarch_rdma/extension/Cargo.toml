@@ -25,6 +25,3 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [build-dependencies]
 build_utils = { path = "../../build_utils" }
-
-[features]
-extension-module = ["monarch_hyperactor/extension-module", "pyo3/extension-module"]

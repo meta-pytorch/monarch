@@ -641,24 +641,21 @@ mod tests {
         let client = env.client_1;
 
         let task1 = async {
-            let result = rdma_handle_1
+            rdma_handle_1
                 .write_from(client, rdma_handle_2.clone(), 2)
-                .await;
-            result
+                .await
         };
 
         let task2 = async {
-            let result = rdma_handle_3
+            rdma_handle_3
                 .write_from(client, rdma_handle_4.clone(), 2)
-                .await;
-            result
+                .await
         };
 
         let task3 = async {
-            let result = rdma_handle_5
+            rdma_handle_5
                 .write_from(client, rdma_handle_6.clone(), 2)
-                .await;
-            result
+                .await
         };
         let (_result1, _result2, _result3) = tokio::join!(task1, task2, task3);
 

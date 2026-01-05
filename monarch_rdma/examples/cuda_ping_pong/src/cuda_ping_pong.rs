@@ -333,8 +333,8 @@ impl RemoteSpawn for CudaRdmaActor {
                 0,
                 0,
             ));
-            assert!(dptr as usize % granularity == 0);
-            assert!(padded_size % granularity == 0);
+            assert!((dptr as usize).is_multiple_of(granularity));
+            assert!(padded_size.is_multiple_of(granularity));
 
             // fails if a add cu_check macro; but passes if we don't
             let err = rdmaxcel_sys::rdmaxcel_cuMemMap(

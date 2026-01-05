@@ -44,25 +44,109 @@ def configure(
     message_delivery_timeout: str | None = None,
     host_spawn_ready_timeout: str | None = None,
     mesh_proc_spawn_max_idle: str | None = None,
+    process_exit_timeout: str | None = None,
+    message_ack_time_interval: str | None = None,
+    message_ack_every_n_messages: int | None = None,
+    message_ttl_default: int | None = None,
+    split_max_buffer_size: int | None = None,
+    split_max_buffer_age: str | None = None,
+    stop_actor_timeout: str | None = None,
+    cleanup_timeout: str | None = None,
+    remote_allocator_heartbeat_interval: str | None = None,
+    default_encoding: str | None = None,
+    channel_net_rx_buffer_full_check_interval: str | None = None,
+    message_latency_sampling_rate: float | None = None,
+    enable_client_seq_assignment: bool | None = None,
+    mesh_bootstrap_enable_pdeathsig: bool | None = None,
+    mesh_terminate_concurrency: int | None = None,
+    mesh_terminate_timeout: str | None = None,
+    shared_asyncio_runtime: bool | None = None,
+    small_write_threshold: int | None = None,
+    max_cast_dimension_size: int | None = None,
+    remote_alloc_bind_to_inaddr_any: bool | None = None,
+    remote_alloc_bootstrap_addr: str | None = None,
+    remote_alloc_allowed_port_range: str | tuple[int, int] | None = None,
+    read_log_buffer: int | None = None,
+    force_file_log: bool | None = None,
+    prefix_with_rank: bool | None = None,
+    actor_spawn_max_idle: str | None = None,
+    get_actor_state_max_idle: str | None = None,
+    proc_stop_max_idle: str | None = None,
+    get_proc_state_max_idle: str | None = None,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
 
     This updates the **Runtime** configuration layer from Python, setting
-    transports, logging behavior, and any other CONFIG-marked keys supplied
-    via ``**kwargs``. Duration values should be humantime strings (``"30s"``,
-    ``"5m"``, ``"1h 30m"``).
+    transports, logging behavior, timeouts, and other runtime parameters.
+
+    All duration parameters accept humantime strings like ``"30s"``, ``"5m"``,
+    ``"2h"``, or ``"1h 30m"``.
 
     Args:
-        default_transport: Default channel transport for actor communication.
-        enable_log_forwarding: Forward child stdout/stderr through the mesh.
-        enable_file_capture: Persist child stdout/stderr to per-host files.
-        tail_log_lines: Number of log lines to retain in memory.
-        codec_max_frame_length: Maximum serialized message size in bytes.
-        message_delivery_timeout: Max delivery time (humantime string).
-        host_spawn_ready_timeout: Max host bootstrapping time (humantime).
-        mesh_proc_spawn_max_idle: Max idle time while spawning procs.
-        **kwargs: Additional configuration keys exposed by rust bindings.
+        Transport configuration:
+            default_transport: Default channel transport for actor communication.
+                Can be a ChannelTransport enum or explicit address string.
+
+        Basic logging behavior:
+            enable_log_forwarding: Forward child stdout/stderr through the mesh.
+            enable_file_capture: Persist child stdout/stderr to per-host files.
+            tail_log_lines: Number of log lines to retain in memory.
+
+        Message encoding and delivery:
+            codec_max_frame_length: Maximum serialized message size in bytes.
+            message_delivery_timeout: Max delivery time (humantime).
+
+        Core mesh timeouts:
+            host_spawn_ready_timeout: Max host bootstrapping time (humantime).
+            mesh_proc_spawn_max_idle: Max idle time while spawning procs (humantime).
+
+        Hyperactor timeouts and message handling:
+            process_exit_timeout: Timeout for process exit (humantime).
+            message_ack_time_interval: Time interval for message acknowledgments (humantime).
+            message_ack_every_n_messages: Acknowledge every N messages.
+            message_ttl_default: Default message time-to-live.
+            split_max_buffer_size: Maximum buffer size for message splitting (bytes).
+            split_max_buffer_age: Maximum age for split message buffers (humantime).
+            stop_actor_timeout: Timeout for stopping actors (humantime).
+            cleanup_timeout: Timeout for cleanup operations (humantime).
+            remote_allocator_heartbeat_interval: Heartbeat interval for remote allocator (humantime).
+            default_encoding: Default message encoding ("bincode", "serde_json", or "serde_multipart").
+            channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
+            message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
+            enable_client_seq_assignment: Enable client-side sequence assignment.
+
+        Mesh bootstrap configuration:
+            mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes.
+            mesh_terminate_concurrency: Maximum concurrent terminations during shutdown.
+            mesh_terminate_timeout: Timeout per child during graceful termination (humantime).
+
+        Runtime and buffering:
+            shared_asyncio_runtime: Share asyncio runtime across actors.
+            small_write_threshold: Threshold below which writes are copied (bytes).
+
+        Mesh configuration:
+            max_cast_dimension_size: Maximum dimension size for cast operations.
+
+        Remote allocation:
+            remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY.
+            remote_alloc_bootstrap_addr: Bootstrap address for remote allocators.
+            remote_alloc_allowed_port_range: Allowed port range as "start..end" or (start, end) tuple.
+
+        Logging configuration:
+            read_log_buffer: Buffer size for reading logs (bytes).
+            force_file_log: Force file-based logging regardless of environment.
+            prefix_with_rank: Prefix log lines with rank information.
+
+        Proc mesh timeouts:
+            actor_spawn_max_idle: Maximum idle time while spawning actors (humantime).
+            get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
+
+        Host mesh timeouts:
+            proc_stop_max_idle: Maximum idle time while stopping procs (humantime).
+            get_proc_state_max_idle: Maximum idle time for proc state queries (humantime).
+
+        **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """
 
     params: Dict[str, Any] = dict(kwargs)
@@ -82,6 +166,69 @@ def configure(
         params["host_spawn_ready_timeout"] = host_spawn_ready_timeout
     if mesh_proc_spawn_max_idle is not None:
         params["mesh_proc_spawn_max_idle"] = mesh_proc_spawn_max_idle
+    if process_exit_timeout is not None:
+        params["process_exit_timeout"] = process_exit_timeout
+    if message_ack_time_interval is not None:
+        params["message_ack_time_interval"] = message_ack_time_interval
+    if message_ack_every_n_messages is not None:
+        params["message_ack_every_n_messages"] = message_ack_every_n_messages
+    if message_ttl_default is not None:
+        params["message_ttl_default"] = message_ttl_default
+    if split_max_buffer_size is not None:
+        params["split_max_buffer_size"] = split_max_buffer_size
+    if split_max_buffer_age is not None:
+        params["split_max_buffer_age"] = split_max_buffer_age
+    if stop_actor_timeout is not None:
+        params["stop_actor_timeout"] = stop_actor_timeout
+    if cleanup_timeout is not None:
+        params["cleanup_timeout"] = cleanup_timeout
+    if remote_allocator_heartbeat_interval is not None:
+        params["remote_allocator_heartbeat_interval"] = (
+            remote_allocator_heartbeat_interval
+        )
+    if default_encoding is not None:
+        params["default_encoding"] = default_encoding
+    if channel_net_rx_buffer_full_check_interval is not None:
+        params["channel_net_rx_buffer_full_check_interval"] = (
+            channel_net_rx_buffer_full_check_interval
+        )
+    if message_latency_sampling_rate is not None:
+        params["message_latency_sampling_rate"] = message_latency_sampling_rate
+    if enable_client_seq_assignment is not None:
+        params["enable_client_seq_assignment"] = enable_client_seq_assignment
+    if mesh_bootstrap_enable_pdeathsig is not None:
+        params["mesh_bootstrap_enable_pdeathsig"] = mesh_bootstrap_enable_pdeathsig
+    if mesh_terminate_concurrency is not None:
+        params["mesh_terminate_concurrency"] = mesh_terminate_concurrency
+    if mesh_terminate_timeout is not None:
+        params["mesh_terminate_timeout"] = mesh_terminate_timeout
+    if shared_asyncio_runtime is not None:
+        params["shared_asyncio_runtime"] = shared_asyncio_runtime
+    if small_write_threshold is not None:
+        params["small_write_threshold"] = small_write_threshold
+    if max_cast_dimension_size is not None:
+        params["max_cast_dimension_size"] = max_cast_dimension_size
+    # Forward new alloc config keys
+    if remote_alloc_bind_to_inaddr_any is not None:
+        params["remote_alloc_bind_to_inaddr_any"] = remote_alloc_bind_to_inaddr_any
+    if remote_alloc_bootstrap_addr is not None:
+        params["remote_alloc_bootstrap_addr"] = remote_alloc_bootstrap_addr
+    if remote_alloc_allowed_port_range is not None:
+        params["remote_alloc_allowed_port_range"] = remote_alloc_allowed_port_range
+    if read_log_buffer is not None:
+        params["read_log_buffer"] = read_log_buffer
+    if force_file_log is not None:
+        params["force_file_log"] = force_file_log
+    if prefix_with_rank is not None:
+        params["prefix_with_rank"] = prefix_with_rank
+    if actor_spawn_max_idle is not None:
+        params["actor_spawn_max_idle"] = actor_spawn_max_idle
+    if get_actor_state_max_idle is not None:
+        params["get_actor_state_max_idle"] = get_actor_state_max_idle
+    if proc_stop_max_idle is not None:
+        params["proc_stop_max_idle"] = proc_stop_max_idle
+    if get_proc_state_max_idle is not None:
+        params["get_proc_state_max_idle"] = get_proc_state_max_idle
 
     _configure(**params)
 

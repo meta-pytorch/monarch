@@ -13,7 +13,7 @@ import pytest
 
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-from monarch.actor import Actor, endpoint, this_proc
+from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured, get_global_config
 
 
@@ -116,8 +116,10 @@ def test_codec_max_frame_length_exceeds_default() -> None:
 
     with override_fault_hook():
         # Try to send 10 chunks of 1GiB each with default 10 GiB limit
-        # This should fail due to serialization overhead
-        proc = this_proc()
+        # This should fail due to serialization overhead.
+        # Spawn in separate proc so messages are serialized via Unix
+        # sockets
+        proc = this_host().spawn_procs()
 
         # Create 10 chunks, 1GiB each (total 10GiB)
         chunks = [bytes(oneGiB) for _ in range(10)]
@@ -154,7 +156,9 @@ def test_codec_max_frame_length_with_increased_limit() -> None:
 
     # Set the frame limit to confidently handle 10GiB
     with configured(codec_max_frame_length=oneHundredGiB):
-        proc = this_proc()
+        # Spawn in separate proc so messages are serialized via Unix
+        # sockets
+        proc = this_host().spawn_procs()
 
         # Create 10 chunks, 1GiB each (total 10GiB)
         chunks = [bytes(oneGiB) for _ in range(10)]
@@ -254,3 +258,323 @@ def test_duration_config_multiple() -> None:
     assert config["mesh_proc_spawn_max_idle"] == "30s"
     assert not config["enable_log_forwarding"]
     assert config["tail_log_lines"] == 0
+
+
+# ============================================================================
+# Systematic tests for all 29 new config parameters added
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "param_name,test_value,expected_value,default_value",
+    [
+        # Hyperactor timeouts and message handling
+        ("process_exit_timeout", "20s", "20s", "10s"),
+        ("message_ack_time_interval", "2s", "2s", "500ms"),
+        ("split_max_buffer_age", "100ms", "100ms", "50ms"),
+        ("stop_actor_timeout", "15s", "15s", "10s"),
+        ("cleanup_timeout", "25s", "25s", "3s"),
+        ("remote_allocator_heartbeat_interval", "10m", "10m", "5m"),
+        ("channel_net_rx_buffer_full_check_interval", "200ms", "200ms", "5s"),
+        # Mesh bootstrap config
+        ("mesh_terminate_timeout", "20s", "20s", "10s"),
+        # Proc mesh timeouts
+        ("actor_spawn_max_idle", "45s", "45s", "30s"),
+        ("get_actor_state_max_idle", "90s", "1m 30s", "1m"),
+        # Host mesh timeouts
+        ("proc_stop_max_idle", "45s", "45s", "30s"),
+        ("get_proc_state_max_idle", "90s", "1m 30s", "1m"),
+    ],
+)
+def test_new_duration_params(param_name, test_value, expected_value, default_value):
+    """Test all new duration configuration parameters."""
+    # Verify default value
+    config = get_global_config()
+    assert config[param_name] == default_value
+
+    # Set new value and verify
+    with configured(**{param_name: test_value}) as config:
+        assert config[param_name] == expected_value
+
+    # Verify restoration to default
+    config = get_global_config()
+    assert config[param_name] == default_value
+
+
+@pytest.mark.parametrize(
+    "param_name,test_value,default_value",
+    [
+        # Hyperactor message handling
+        ("message_ack_every_n_messages", 500, 1000),
+        ("message_ttl_default", 20, 64),
+        ("split_max_buffer_size", 2048, 5),
+        # Mesh bootstrap config
+        ("mesh_terminate_concurrency", 32, 16),
+        # Runtime and buffering
+        ("small_write_threshold", 512, 256),
+        # Mesh config (usize::MAX doesn't have a fixed value, skip default check)
+        # Logging config
+        ("read_log_buffer", 16384, 100),
+    ],
+)
+def test_new_integer_params(param_name, test_value, default_value):
+    """Test all new integer configuration parameters."""
+    # Verify default value
+    config = get_global_config()
+    assert config[param_name] == default_value
+
+    # Set new value and verify
+    with configured(**{param_name: test_value}) as config:
+        assert config[param_name] == test_value
+
+    # Verify restoration to default
+    config = get_global_config()
+    assert config[param_name] == default_value
+
+
+@pytest.mark.parametrize(
+    "param_name,default_value",
+    [
+        # Hyperactor message handling
+        ("enable_client_seq_assignment", False),
+        # Mesh bootstrap config
+        ("mesh_bootstrap_enable_pdeathsig", True),
+        # Runtime and buffering
+        ("shared_asyncio_runtime", False),
+        # Remote allocation
+        ("remote_alloc_bind_to_inaddr_any", False),
+        # Logging config
+        ("force_file_log", False),
+        ("prefix_with_rank", True),
+    ],
+)
+def test_new_boolean_params(param_name, default_value):
+    """Test all new boolean configuration parameters."""
+    # Verify default value
+    config = get_global_config()
+    assert config[param_name] == default_value
+
+    # Set to opposite value and verify
+    with configured(**{param_name: not default_value}) as config:
+        assert config[param_name] == (not default_value)
+
+    # Verify restoration to default
+    config = get_global_config()
+    assert config[param_name] == default_value
+
+
+def test_new_float_param_message_latency_sampling_rate():
+    """Test message_latency_sampling_rate float parameter."""
+    # Verify default value (0.01, using approx for f32 precision)
+    config = get_global_config()
+    assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)
+
+    # Test various valid sampling rates
+    test_values = [0.0, 0.1, 0.5, 0.99, 1.0]
+    for rate in test_values:
+        with configured(message_latency_sampling_rate=rate) as config:
+            assert config["message_latency_sampling_rate"] == pytest.approx(
+                rate, rel=1e-5
+            )
+
+    # Verify restoration
+    config = get_global_config()
+    assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)
+
+
+def test_new_encoding_param():
+    """Test default_encoding string parameter with valid encodings."""
+    # Verify default value
+    config = get_global_config()
+    assert config["default_encoding"] == "serde_multipart"
+
+    # Test all valid encodings
+    valid_encodings = ["bincode", "serde_json", "serde_multipart"]
+    for encoding in valid_encodings:
+        with configured(default_encoding=encoding) as config:
+            assert config["default_encoding"] == encoding
+
+    # Verify restoration
+    config = get_global_config()
+    assert config["default_encoding"] == "serde_multipart"
+
+
+def test_new_encoding_param_invalid():
+    """Test that invalid encoding values raise errors."""
+    with pytest.raises(TypeError, match="invalid value"):
+        with configured(default_encoding="invalid_encoding"):
+            pass
+
+    with pytest.raises(TypeError, match="invalid value"):
+        with configured(default_encoding="xml"):
+            pass
+
+
+def test_new_bootstrap_addr_param():
+    """Test remote_alloc_bootstrap_addr string parameter."""
+    # Note: This attribute has no default value, only test setting it
+    test_addr = "tcp://127.0.0.1:9000"
+    with configured(remote_alloc_bootstrap_addr=test_addr) as config:
+        assert config["remote_alloc_bootstrap_addr"] == test_addr
+
+
+def test_new_port_range_param_tuple():
+    """Test remote_alloc_allowed_port_range with tuple format."""
+    # Note: This attribute has no default value, only test setting it
+    with configured(remote_alloc_allowed_port_range=(8000, 9000)) as config:
+        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
+
+
+def test_new_port_range_param_string():
+    """Test remote_alloc_allowed_port_range with string format."""
+    # Test string format
+    with configured(remote_alloc_allowed_port_range="8000..9000") as config:
+        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
+
+    # Test edge cases
+    with configured(remote_alloc_allowed_port_range="1..65535") as config:
+        assert config["remote_alloc_allowed_port_range"] == "1..65535"
+
+
+def test_new_port_range_param_invalid():
+    """Test that invalid port ranges raise errors."""
+    # Invalid tuple: start >= end
+    with pytest.raises(TypeError, match="invalid value"):
+        with configured(remote_alloc_allowed_port_range=(9000, 8000)):
+            pass
+
+    # Invalid string format
+    with pytest.raises(TypeError, match="invalid value"):
+        with configured(remote_alloc_allowed_port_range="invalid"):
+            pass
+
+    with pytest.raises(TypeError, match="invalid value"):
+        with configured(remote_alloc_allowed_port_range="8000-9000"):  # wrong separator
+            pass
+
+
+def test_all_new_params_together():
+    """Test setting all 29 new config parameters simultaneously."""
+    with configured(
+        # Hyperactor timeouts and message handling
+        process_exit_timeout="20s",
+        message_ack_time_interval="2s",
+        message_ack_every_n_messages=500,
+        message_ttl_default=20,
+        split_max_buffer_size=2048,
+        split_max_buffer_age="100ms",
+        stop_actor_timeout="15s",
+        cleanup_timeout="25s",
+        remote_allocator_heartbeat_interval="10s",
+        default_encoding="serde_json",
+        channel_net_rx_buffer_full_check_interval="200ms",
+        message_latency_sampling_rate=0.5,
+        enable_client_seq_assignment=True,
+        # Mesh bootstrap config
+        mesh_bootstrap_enable_pdeathsig=False,
+        mesh_terminate_concurrency=16,
+        mesh_terminate_timeout="20s",
+        # Runtime and buffering
+        shared_asyncio_runtime=True,
+        small_write_threshold=512,
+        # Mesh config
+        max_cast_dimension_size=2048,
+        # Remote allocation
+        remote_alloc_bind_to_inaddr_any=True,
+        remote_alloc_bootstrap_addr="tcp://127.0.0.1:9000",
+        remote_alloc_allowed_port_range=(8000, 9000),
+        # Logging config
+        read_log_buffer=16384,
+        force_file_log=True,
+        prefix_with_rank=True,
+        # Proc mesh timeouts
+        actor_spawn_max_idle="45s",
+        get_actor_state_max_idle="90s",
+        # Host mesh timeouts
+        proc_stop_max_idle="45s",
+        get_proc_state_max_idle="90s",
+    ) as config:
+        # Verify all values are set correctly
+        assert config["process_exit_timeout"] == "20s"
+        assert config["message_ack_time_interval"] == "2s"
+        assert config["message_ack_every_n_messages"] == 500
+        assert config["message_ttl_default"] == 20
+        assert config["split_max_buffer_size"] == 2048
+        assert config["split_max_buffer_age"] == "100ms"
+        assert config["stop_actor_timeout"] == "15s"
+        assert config["cleanup_timeout"] == "25s"
+        assert config["remote_allocator_heartbeat_interval"] == "10s"
+        assert config["default_encoding"] == "serde_json"
+        assert config["channel_net_rx_buffer_full_check_interval"] == "200ms"
+        assert config["message_latency_sampling_rate"] == pytest.approx(0.5, rel=1e-5)
+        assert config["enable_client_seq_assignment"] is True
+        assert config["mesh_bootstrap_enable_pdeathsig"] is False
+        assert config["mesh_terminate_concurrency"] == 16
+        assert config["mesh_terminate_timeout"] == "20s"
+        assert config["shared_asyncio_runtime"] is True
+        assert config["small_write_threshold"] == 512
+        assert config["max_cast_dimension_size"] == 2048
+        assert config["remote_alloc_bind_to_inaddr_any"] is True
+        assert config["remote_alloc_bootstrap_addr"] == "tcp://127.0.0.1:9000"
+        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
+        assert config["read_log_buffer"] == 16384
+        assert config["force_file_log"] is True
+        assert config["prefix_with_rank"] is True
+        assert config["actor_spawn_max_idle"] == "45s"
+        assert config["get_actor_state_max_idle"] == "1m 30s"
+        assert config["proc_stop_max_idle"] == "45s"
+        assert config["get_proc_state_max_idle"] == "1m 30s"
+
+    # Verify all values are restored to defaults
+    config = get_global_config()
+    assert config["process_exit_timeout"] == "10s"
+    assert config["message_ack_time_interval"] == "500ms"
+    assert config["message_ack_every_n_messages"] == 1000
+    assert config["message_ttl_default"] == 64
+    assert config["split_max_buffer_size"] == 5
+    assert config["split_max_buffer_age"] == "50ms"
+    assert config["stop_actor_timeout"] == "10s"
+    assert config["cleanup_timeout"] == "3s"
+    assert config["remote_allocator_heartbeat_interval"] == "5m"
+    assert config["default_encoding"] == "serde_multipart"
+    assert config["channel_net_rx_buffer_full_check_interval"] == "5s"
+    assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)
+    assert config["enable_client_seq_assignment"] is False
+    assert config["mesh_bootstrap_enable_pdeathsig"] is True
+    assert config["mesh_terminate_concurrency"] == 16
+    assert config["mesh_terminate_timeout"] == "10s"
+    assert config["shared_asyncio_runtime"] is False
+    assert config["small_write_threshold"] == 256
+    # max_cast_dimension_size is usize::MAX, skip checking it
+    assert config["remote_alloc_bind_to_inaddr_any"] is False
+    # remote_alloc_bootstrap_addr and remote_alloc_allowed_port_range have no defaults
+    assert config["read_log_buffer"] == 100
+    assert config["force_file_log"] is False
+    assert config["prefix_with_rank"] is True
+    assert config["actor_spawn_max_idle"] == "30s"
+    assert config["get_actor_state_max_idle"] == "1m"
+    assert config["proc_stop_max_idle"] == "30s"
+    assert config["get_proc_state_max_idle"] == "1m"
+
+
+def test_new_params_type_errors():
+    """Test that type errors are raised for incorrect parameter types."""
+    # Duration param with wrong type
+    with pytest.raises(TypeError):
+        with configured(process_exit_timeout=30):  # type: ignore
+            pass
+
+    # Integer param with wrong type
+    with pytest.raises(TypeError):
+        with configured(message_ack_every_n_messages="100"):  # type: ignore
+            pass
+
+    # Boolean param with wrong type
+    with pytest.raises(TypeError):
+        with configured(enable_client_seq_assignment="true"):  # type: ignore
+            pass
+
+    # Float param with wrong type
+    with pytest.raises(TypeError):
+        with configured(message_latency_sampling_rate="0.5"):  # type: ignore
+            pass

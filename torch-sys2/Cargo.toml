@@ -15,6 +15,3 @@ thiserror = "2.0.12"
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
-
-[features]
-extension-module = ["monarch_types/extension-module", "pyo3/extension-module"]

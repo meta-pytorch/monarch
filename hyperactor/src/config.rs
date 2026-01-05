@@ -37,49 +37,49 @@ declare_attrs! {
     /// Timeout used by allocator for stopping a proc.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_PROCESS_EXIT_TIMEOUT".to_string()),
-        py_name: None,
+        py_name: Some("process_exit_timeout".to_string()),
     })
     pub attr PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Message acknowledgment interval
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESSAGE_ACK_TIME_INTERVAL".to_string()),
-        py_name: None,
+        py_name: Some("message_ack_time_interval".to_string()),
     })
     pub attr MESSAGE_ACK_TIME_INTERVAL: Duration = Duration::from_millis(500);
 
     /// Number of messages after which to send an acknowledgment
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES".to_string()),
-        py_name: None,
+        py_name: Some("message_ack_every_n_messages".to_string()),
     })
     pub attr MESSAGE_ACK_EVERY_N_MESSAGES: u64 = 1000;
 
     /// Default hop Time-To-Live for message envelopes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESSAGE_TTL_DEFAULT".to_string()),
-        py_name: None,
+        py_name: Some("message_ttl_default".to_string()),
     })
     pub attr MESSAGE_TTL_DEFAULT : u8 = 64;
 
     /// Maximum buffer size for split port messages
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE".to_string()),
-        py_name: None,
+        py_name: Some("split_max_buffer_size".to_string()),
     })
     pub attr SPLIT_MAX_BUFFER_SIZE: usize = 5;
 
     /// The maximum time an update can be buffered before being reduced.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_SPLIT_MAX_BUFFER_AGE".to_string()),
-        py_name: None,
+        py_name: Some("split_max_buffer_age".to_string()),
     })
     pub attr SPLIT_MAX_BUFFER_AGE: Duration = Duration::from_millis(50);
 
     /// Timeout used by proc mesh for stopping an actor.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_STOP_ACTOR_TIMEOUT".to_string()),
-        py_name: None,
+        py_name: Some("stop_actor_timeout".to_string()),
     })
     pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -87,7 +87,7 @@ declare_attrs! {
     /// Should be less than the timeout for STOP_ACTOR_TIMEOUT.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_CLEANUP_TIMEOUT".to_string()),
-        py_name: None,
+        py_name: Some("cleanup_timeout".to_string()),
     })
     pub attr CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -96,21 +96,21 @@ declare_attrs! {
     /// deprecation.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
-        py_name: None,
+        py_name: Some("remote_allocator_heartbeat_interval".to_string()),
     })
     pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_mins(5);
 
     /// The default encoding to be used.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_DEFAULT_ENCODING".to_string()),
-        py_name: None,
+        py_name: Some("default_encoding".to_string()),
     })
     pub attr DEFAULT_ENCODING: Encoding = Encoding::Multipart;
 
     /// How often to check for full MPSC channel on NetRx.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL".to_string()),
-        py_name: None,
+        py_name: Some("channel_net_rx_buffer_full_check_interval".to_string()),
     })
     pub attr CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -118,11 +118,15 @@ declare_attrs! {
     /// Set to 0.01 for 1% sampling, 0.1 for 10% sampling, 0.90 for 90% sampling, etc.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE".to_string()),
-        py_name: None,
+        py_name: Some("message_latency_sampling_rate".to_string()),
     })
     pub attr MESSAGE_LATENCY_SAMPLING_RATE: f32 = 0.01;
 
     /// Whether to enable client sequence assignment.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_ENABLE_CLIENT_SEQ_ASSIGNMENT".to_string()),
+        py_name: Some("enable_client_seq_assignment".to_string()),
+    })
     pub attr ENABLE_CLIENT_SEQ_ASSIGNMENT: bool = false;
 
     /// Timeout for [`Host::spawn`] to await proc readiness.

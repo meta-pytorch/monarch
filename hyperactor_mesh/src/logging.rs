@@ -74,21 +74,21 @@ declare_attrs! {
     /// After pause lines will be flushed and reading will resume.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_READ_LOG_BUFFER".to_string()),
-        py_name: None,
+        py_name: Some("read_log_buffer".to_string()),
     })
     pub attr READ_LOG_BUFFER: usize = 100;
 
     /// If enabled, local logs are also written to a file and aggregated
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_FORCE_FILE_LOG".to_string()),
-        py_name: None,
+        py_name: Some("force_file_log".to_string()),
     })
     pub attr FORCE_FILE_LOG: bool = false;
 
     /// Prefixes logs with rank
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_PREFIX_WITH_RANK".to_string()),
-        py_name: None,
+        py_name: Some("prefix_with_rank".to_string()),
     })
     pub attr PREFIX_WITH_RANK: bool = true;
 }

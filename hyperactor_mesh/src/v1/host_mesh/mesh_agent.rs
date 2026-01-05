@@ -20,6 +20,7 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Named;
@@ -328,7 +329,7 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient)]
+#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
 pub struct ShutdownHost {
     /// Grace window: send SIGTERM and wait this long before
     /// escalating.
@@ -597,9 +598,7 @@ mod tests {
             .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
             .unwrap();
 
-        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string())
-            .await
-            .unwrap();
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let name = Name::new("proc1").unwrap();

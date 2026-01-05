@@ -390,10 +390,18 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             alloc = allocator.allocate(spec)
             await alloc.initialized
 
-            with self.assertRaisesRegex(
-                Exception, r"no process has ever been allocated.*"
-            ):
-                await proc_mesh_from_alloc(allocator, spec).initialized
+            # This message gets undeliverable because it is sent to the wrong host
+            # That would normally crash the client
+            original_hook = monarch.actor.unhandled_fault_hook
+            monarch.actor.unhandled_fault_hook = lambda failure: None
+            try:
+                with self.assertRaisesRegex(
+                    Exception, r"no process has ever been allocated.*"
+                ):
+                    await proc_mesh_from_alloc(allocator, spec).initialized
+            finally:
+                # Restore the original hook
+                monarch.actor.unhandled_fault_hook = original_hook
 
     async def test_init_failure(self) -> None:
         class FailInitActor(Actor):

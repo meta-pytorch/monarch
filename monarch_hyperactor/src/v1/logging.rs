@@ -481,7 +481,6 @@ mod tests {
         ensure_python();
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-            .await
             .expect("failed to start root Proc");
 
         let (instance, ..) = proc

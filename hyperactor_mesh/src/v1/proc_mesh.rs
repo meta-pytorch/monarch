@@ -84,13 +84,13 @@ declare_attrs! {
     /// meshes.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("actor_spawn_max_idle".to_string()),
     })
     pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
-        py_name: None,
+        py_name: Some("get_actor_state_max_idle".to_string()),
     })
     pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
@@ -106,7 +106,8 @@ pub struct ProcRef {
 }
 
 impl ProcRef {
-    pub(crate) fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcMeshAgent>) -> Self {
+    /// Create a new proc ref from the provided id, create rank and agent.
+    pub fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcMeshAgent>) -> Self {
         Self {
             proc_id,
             create_rank,
@@ -713,6 +714,20 @@ impl ProcMeshRef {
         })
     }
 
+    /// Create a singleton ProcMeshRef, given the provided ProcRef and name.
+    /// This is used to support creating local singleton proc meshes to support `this_proc()`
+    /// in python client actors.
+    pub fn new_singleton(name: Name, proc_ref: ProcRef) -> Self {
+        Self {
+            name,
+            region: Extent::unity().into(),
+            ranks: Arc::new(vec![proc_ref]),
+            host_mesh: None,
+            root_region: None,
+            root_comm_actor: None,
+        }
+    }
+
     pub(crate) fn root_comm_actor(&self) -> Option<&ActorRef<CommActor>> {
         self.root_comm_actor.as_ref()
     }
@@ -1272,7 +1287,7 @@ mod tests {
     async fn test_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             testactor::assert_mesh_shape(proc_mesh.spawn(instance, "test", &()).await.unwrap())
@@ -1285,7 +1300,7 @@ mod tests {
     async fn test_failing_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
-        let instance = testing::instance().await;
+        let instance = testing::instance();
 
         for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
             let err = proc_mesh
