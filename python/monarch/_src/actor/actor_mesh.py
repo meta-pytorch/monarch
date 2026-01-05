@@ -1187,7 +1187,7 @@ class _Actor:
         MESSAGES_HANDLED.add(1)
 
         # Initialize method_name before try block so it's always defined
-        method_name = "unknown"
+        method_name = method.name
         # Initialize endpoint_span before try block so it's always defined
         # In the case that `the_method` raises an exception, we will exit the span
         endpoint_span: PySpan | None = None
@@ -1204,7 +1204,6 @@ class _Actor:
 
             match method:
                 case MethodSpecifier.Init():
-                    method_name = "__init__"
                     ins = ctx.actor_instance
                     (args,) = args
                     init_args = cast(ActorInitArgs, args)
@@ -1238,12 +1237,11 @@ class _Actor:
                         raise
                     response_port.send(None)
                     return None
-                case MethodSpecifier.ReturnsResponse(name=method_name):
+                case MethodSpecifier.ReturnsResponse():
                     pass
-                case MethodSpecifier.ExplicitPort(name=method_name):
+                case MethodSpecifier.ExplicitPort():
                     args = (response_port, *args)
                     response_port = DroppingPort()
-            assert isinstance(method_name, str)
 
             if self.instance is None:
                 # This could happen because of the following reasons. Both
