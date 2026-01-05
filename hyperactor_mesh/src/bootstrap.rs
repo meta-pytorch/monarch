@@ -552,21 +552,30 @@ impl Bootstrap {
 pub fn install_pdeathsig_kill() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
+        // SAFETY: `getppid()` is a simple libc syscall returning the
+        // parent PID; it has no side effects and does not touch memory.
+        let ppid_before = unsafe { libc::getppid() };
+
         // SAFETY: Calling into libc; does not dereference memory, just
         // asks the kernel to deliver SIGKILL on parent death.
         let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_int) };
         if rc != 0 {
             return Err(io::Error::last_os_error());
         }
-    }
-    // Race-close: if the parent died between our exec and prctl(),
-    // we won't get a signal, so detect that and exit now.
-    //
-    // If getppid() == 1, we've already been reparented (parent gone).
-    // SAFETY: `getppid()` is a simple libc syscall returning the
-    // parent PID; it has no side effects and does not touch memory.
-    if unsafe { libc::getppid() } == 1 {
-        std::process::exit(0);
+
+        // Race-close: if the parent died between our exec and prctl(),
+        // we won't get a signal, so detect that and exit now.
+        //
+        // If the parent PID changed, the parent has died and we've been
+        // reparented. Note: We cannot assume ppid == 1 means the parent
+        // died, as in container environments (e.g., Kubernetes) the parent
+        // may legitimately run as PID 1.
+        // SAFETY: `getppid()` is a simple libc syscall returning the
+        // parent PID; it has no side effects and does not touch memory.
+        let ppid_after = unsafe { libc::getppid() };
+        if ppid_before != ppid_after {
+            std::process::exit(0);
+        }
     }
     Ok(())
 }
