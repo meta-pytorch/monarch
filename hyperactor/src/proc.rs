@@ -13,6 +13,9 @@
 
 use std::any::Any;
 use std::any::TypeId;
+use std::cmp::Ordering as CmpOrdering;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
@@ -24,6 +27,7 @@ use std::panic::AssertUnwindSafe;
 use std::panic::Location;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
@@ -48,6 +52,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::Span;
@@ -85,6 +90,7 @@ use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
+use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxServer as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
@@ -107,6 +113,7 @@ use crate::reference::PortId;
 use crate::reference::ProcId;
 use crate::reference::id;
 use crate::supervision::ActorSupervisionEvent;
+use crate::time::Alarm;
 
 /// This is used to mint new local ranks for [`Proc::local`].
 static NEXT_LOCAL_RANK: AtomicUsize = AtomicUsize::new(0);
@@ -999,6 +1006,10 @@ struct InstanceState<A: Actor> {
 
     /// Used to assign sequence numbers for messages sent from this actor.
     sequencer: Sequencer,
+
+    /// Cached port handle to the timer actor (spawned lazily on first use of
+    /// [Instance::self_message_with_delay]).
+    timer_port: Mutex<Option<PortHandle<ScheduleMessage>>>,
 }
 
 impl<A: Actor> InstanceState<A> {
@@ -1085,6 +1096,7 @@ impl<A: Actor> Instance<A> {
             status_tx,
             sequencer: Sequencer::new(instance_id),
             id: instance_id,
+            timer_port: Mutex::new(None),
         });
         (Self { inner }, actor_loop_receivers, work_rx)
     }
@@ -1179,17 +1191,39 @@ impl<A: Actor> Instance<A> {
         M: Message,
         A: Handler<M>,
     {
-        let port = self.port();
-        let self_id = self.self_id().clone();
-        let clock = self.inner.proc.state().clock.clone();
-        tokio::spawn(async move {
-            clock.non_advancing_sleep(delay).await;
-            if let Err(e) = port.send(message) {
-                // TODO: this is a fire-n-forget thread. We need to
-                // handle errors in a better way.
-                tracing::info!("{}: error sending delayed message: {}", self_id, e);
+        // Get or spawn the timer actor lazily
+        let timer_port = {
+            let mut guard = self.inner.timer_port.lock().unwrap();
+            if guard.is_none() {
+                let clock = self.inner.proc.state().clock.clone();
+                let handle = self
+                    .spawn(TimerActor {
+                        clock,
+                        state: Arc::new(Mutex::new(TimerState {
+                            pending: BinaryHeap::new(),
+                            alarm: Alarm::new(),
+                        })),
+                        task_handle: None,
+                    })
+                    .map_err(|e| {
+                        ActorError::new(self.self_id(), ActorErrorKind::Generic(e.to_string()))
+                    })?;
+                *guard = Some(handle.port());
             }
-        });
+            guard.as_ref().unwrap().clone()
+        };
+
+        // Clone the port handle and create a closure that sends the message
+        let port = self.port::<M>();
+        let send_fn = Box::new(move || port.send(message));
+
+        // Compute the deadline from the current time + delay
+        let deadline = self.inner.proc.state().clock.now() + delay;
+
+        timer_port
+            .send(ScheduleMessage { deadline, send_fn })
+            .map_err(|e| ActorError::new(self.self_id(), ActorErrorKind::mailbox_sender(e)))?;
+
         Ok(())
     }
 
@@ -2165,6 +2199,142 @@ impl<A: Actor> Ports<A> {
                 );
             }
         }
+    }
+}
+
+/// A request to schedule a delayed message.
+/// Uses a boxed closure to erase the message type while capturing the port handle.
+struct ScheduleMessage {
+    deadline: Instant,
+    /// Sends the message; returns error on failure.
+    send_fn: Box<dyn FnOnce() -> Result<(), MailboxSenderError> + Send + Sync>,
+}
+
+impl std::fmt::Debug for ScheduleMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScheduleMessage")
+            .field("deadline", &self.deadline)
+            .finish()
+    }
+}
+
+impl Eq for ScheduleMessage {}
+
+impl PartialEq for ScheduleMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline
+    }
+}
+
+impl Ord for ScheduleMessage {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        self.deadline.cmp(&other.deadline)
+    }
+}
+
+impl PartialOrd for ScheduleMessage {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// State shared between the TimerActor handler and its background task.
+struct TimerState {
+    /// Pending messages sorted by deadline (earliest first via min-heap).
+    pending: BinaryHeap<Reverse<ScheduleMessage>>,
+    alarm: Alarm,
+}
+
+/// Actor that manages delayed message delivery for its parent actor.
+/// Uses the Alarm primitive for efficient timer management.
+///
+/// Design:
+/// - One TimerActor is spawned per parent actor (lazily, on first use)
+/// - Messages are buffered in a priority queue sorted by deadline
+/// - A background task waits on an Alarm, sends due messages, and rearms for the next deadline
+/// - When the parent stops, this child actor is automatically stopped
+struct TimerActor {
+    /// Clock for getting current time.
+    clock: ClockKind,
+    /// Shared state containing pending messages and alarm.
+    state: Arc<Mutex<TimerState>>,
+    /// Handle to the background task that sends messages.
+    task_handle: Option<JoinHandle<()>>,
+}
+
+#[async_trait]
+impl Actor for TimerActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Clone shared state for the background task
+        let actor_id = this.self_id().clone();
+        let state = self.state.clone();
+        let clock = self.clock.clone();
+
+        // Get the sleeper before spawning the task
+        let mut sleeper = self.state.lock().unwrap().alarm.sleeper();
+
+        self.task_handle = Some(tokio::spawn(async move {
+            while sleeper.sleep().await {
+                // Alarm fired, send all due messages
+                let now = clock.now();
+                {
+                    let mut state_guard = state.lock().unwrap();
+
+                    while let Some(Reverse(msg)) = state_guard.pending.peek() {
+                        if msg.deadline <= now {
+                            let Reverse(msg) = state_guard.pending.pop().unwrap();
+                            // Invoke the send closure and log any errors
+                            if let Err(error) = (msg.send_fn)() {
+                                tracing::debug!(
+                                    %actor_id,
+                                    %error,
+                                    "error sending delayed message from TimerActor",
+                                );
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Rearm for next deadline if there are more pending messages.
+                    if let Some(Reverse(earliest)) = state_guard.pending.peek() {
+                        let delay = earliest.deadline.saturating_duration_since(clock.now());
+                        state_guard.alarm.arm(delay);
+                    }
+                }
+            }
+            // sleeper.sleep() returned false -> alarm was dropped
+        }));
+
+        Ok(())
+    }
+
+    async fn cleanup(
+        &mut self,
+        _this: &Instance<Self>,
+        _err: Option<&ActorError>,
+    ) -> Result<(), anyhow::Error> {
+        // Abort the background task
+        if let Some(handle) = self.task_handle.take() {
+            handle.abort();
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ScheduleMessage> for TimerActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        request: ScheduleMessage,
+    ) -> Result<(), anyhow::Error> {
+        let mut state_guard = self.state.lock().unwrap();
+        state_guard.pending.push(Reverse(request));
+        // Fire the alarm to wake the background task, which will recalculate
+        // the next deadline and rearm appropriately.
+        state_guard.alarm.fire();
+        Ok(())
     }
 }
 
@@ -3182,5 +3352,166 @@ mod tests {
             assert_eq!(stacks[0].len(), 1);
             assert_eq!(stacks[0][0].name(), "child_span");
         })
+    }
+
+    // Tests for TimerActor and self_message_with_delay
+
+    /// A simple message for testing delayed self-messages.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct DelayedTestMessage {
+        value: u64,
+    }
+
+    /// Record of a received message with its receipt time.
+    #[derive(Debug, Clone)]
+    struct ReceivedMessage {
+        value: u64,
+        received_at: std::time::Instant,
+    }
+
+    impl ReceivedMessage {
+        /// Asserts that the message was delayed by at least `expected_delay` from `start_time`.
+        /// Allows up to `max_late` additional delay for scheduling variance.
+        fn assert_delay(
+            &self,
+            start_time: std::time::Instant,
+            expected_delay: Duration,
+            max_late: Duration,
+        ) {
+            let actual_delay = self.received_at.duration_since(start_time);
+            let max_delay = expected_delay + max_late;
+            assert!(
+                actual_delay >= expected_delay && actual_delay <= max_delay,
+                "Message (value={}): expected delay >= {:?}, got {:?}",
+                self.value,
+                expected_delay,
+                actual_delay
+            );
+        }
+    }
+
+    /// Actor that uses self_message_with_delay for testing.
+    #[derive(Debug, Default)]
+    struct DelayTestActor {
+        received_messages: Arc<std::sync::Mutex<Vec<ReceivedMessage>>>,
+    }
+
+    impl Actor for DelayTestActor {}
+
+    #[async_trait]
+    impl Handler<DelayedTestMessage> for DelayTestActor {
+        async fn handle(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            message: DelayedTestMessage,
+        ) -> anyhow::Result<()> {
+            self.received_messages
+                .lock()
+                .unwrap()
+                .push(ReceivedMessage {
+                    value: message.value,
+                    received_at: std::time::Instant::now(),
+                });
+            Ok(())
+        }
+    }
+
+    /// Message to trigger sending delayed messages.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct SendDelayedMessage {
+        value: u64,
+        delay_ms: u64,
+    }
+
+    #[async_trait]
+    impl Handler<SendDelayedMessage> for DelayTestActor {
+        async fn handle(
+            &mut self,
+            cx: &crate::Context<Self>,
+            message: SendDelayedMessage,
+        ) -> anyhow::Result<()> {
+            cx.self_message_with_delay(
+                DelayedTestMessage {
+                    value: message.value,
+                },
+                Duration::from_millis(message.delay_ms),
+            )?;
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_self_message_with_delay_basic() {
+        // Test that a delayed message is received after the delay
+        let proc = Proc::local();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let actor = DelayTestActor {
+            received_messages: received.clone(),
+        };
+        let handle = proc.spawn("delay_test", actor).unwrap();
+
+        let start_time = std::time::Instant::now();
+
+        // Send a message that will trigger a delayed self-message
+        handle
+            .send(SendDelayedMessage {
+                value: 42,
+                delay_ms: 50,
+            })
+            .unwrap();
+
+        // Wait for the delay to elapse
+        #[allow(clippy::disallowed_methods)]
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Check received messages
+        let messages = received.lock().unwrap().clone();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].value, 42);
+
+        // Verify the message was delayed by at least 50ms
+        messages[0].assert_delay(
+            start_time,
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_self_message_with_delay_ordering() {
+        // Test that multiple delayed messages arrive in deadline order
+        let proc = Proc::local();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let actor = DelayTestActor {
+            received_messages: received.clone(),
+        };
+        let handle = proc.spawn("delay_test", actor).unwrap();
+
+        let start_time = std::time::Instant::now();
+
+        // Send 5 messages with different delays (out of order)
+        // value -> expected delay: 3->150ms, 1->50ms, 5->250ms, 2->100ms, 4->200ms
+        let expected_delays: [(u64, u64); 5] = [(3, 150), (1, 50), (5, 250), (2, 100), (4, 200)];
+
+        for (value, delay_ms) in expected_delays {
+            handle.send(SendDelayedMessage { value, delay_ms }).unwrap();
+        }
+
+        // Wait for all delays to elapse
+        #[allow(clippy::disallowed_methods)]
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Check that messages arrived in deadline order
+        let messages = received.lock().unwrap().clone();
+        let values: Vec<u64> = messages.iter().map(|m| m.value).collect();
+        assert_eq!(values, vec![1, 2, 3, 4, 5]);
+
+        // Verify each message was delayed by at least the expected duration
+        // Expected order by deadline: 1(50ms), 2(100ms), 3(150ms), 4(200ms), 5(250ms)
+        let expected_delays_ordered: [u64; 5] = [50, 100, 150, 200, 250];
+        for (i, msg) in messages.iter().enumerate() {
+            let expected_delay = Duration::from_millis(expected_delays_ordered[i]);
+            msg.assert_delay(start_time, expected_delay, Duration::from_millis(100));
+        }
     }
 }
