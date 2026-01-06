@@ -71,7 +71,13 @@ pip install torchmonarch
 #### Nightly
 
 ```sh
-pip install torchmonarch-nightly
+pip install --pre torchmonarch
+```
+
+Or install a specific nightly version:
+
+```sh
+pip install torchmonarch==2026.1.6.dev0
 ```
 
 ### Build and Install from Source
