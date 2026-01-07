@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
-use hyperactor::Named;
 use hyperactor::channel::BindSpec;
 use hyperactor_config::AttrValue;
 use hyperactor_config::CONFIG;
@@ -35,6 +34,7 @@ use pyo3::conversion::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use typeuri::Named;
 
 use crate::channel::PyBindSpec;
 

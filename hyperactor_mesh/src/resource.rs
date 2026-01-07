@@ -27,7 +27,6 @@ use enum_as_inner::EnumAsInner;
 use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
@@ -41,6 +40,7 @@ use ndslice::Region;
 use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::bootstrap;
 use crate::v1::Name;
@@ -120,6 +120,7 @@ impl From<bootstrap::ProcStatus> for Status {
 /// instances with the delivered rank.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Default)]
 pub struct Rank(pub Option<usize>);
+hyperactor::register_type!(Rank);
 
 impl Rank {
     /// Create a new rank with the provided value.
@@ -346,14 +347,25 @@ pub struct List {
     #[reply]
     pub reply: PortRef<Vec<Name>>,
 }
+hyperactor::register_type!(List);
 
 /// A trait that bundles a set of types that together define a resource.
 pub trait Resource {
     /// The spec specification for this resource.
-    type Spec: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type Spec: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 
     /// The state for this resource.
-    type State: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type State: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 }
 
 // A behavior defining the interface for a mesh controller.
@@ -607,6 +619,7 @@ pub(crate) struct ProcSpec {
     /// at the `ClientOverride` layer.
     pub(crate) client_config_override: Attrs,
 }
+hyperactor::register_type!(ProcSpec);
 
 impl ProcSpec {
     pub(crate) fn new(client_config_override: Attrs) -> Self {

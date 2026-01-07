@@ -18,7 +18,6 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
@@ -34,6 +33,7 @@ use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
+use typeuri::Named;
 
 pub fn initialize() {
     let subscriber = tracing_subscriber::fmt()

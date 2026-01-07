@@ -17,13 +17,12 @@ use std::sync::LazyLock;
 
 use enum_as_inner::EnumAsInner;
 use hyperactor_macros::AttrValue;
-pub use hyperactor_named::Named;
-pub use hyperactor_named::intern_typename;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+pub use typeuri::Named;
+pub use typeuri::intern_typename;
 
-use crate as hyperactor;
 use crate::config;
 
 #[doc(hidden)]
@@ -123,18 +122,18 @@ static TYPE_INFO_BY_TYPE_ID: LazyLock<HashMap<std::any::TypeId, &'static TypeInf
 /// is required only to improve diagnostics, as it allows a binary to introspect serialized
 /// payloads under type erasure.
 ///
-/// The provided type must implement [`hyperactor::data::Named`], and must be concrete.
+/// The provided type must implement [`typeuri::Named`], and must be concrete.
 #[macro_export]
 macro_rules! register_type {
     ($type:ty) => {
-        hyperactor::submit! {
-            hyperactor::data::TypeInfo {
-                typename: <$type as hyperactor::data::Named>::typename,
-                typehash: <$type as hyperactor::data::Named>::typehash,
-                typeid: <$type as hyperactor::data::Named>::typeid,
-                port: <$type as hyperactor::data::Named>::port,
-                dump: Some(<$type as hyperactor::data::NamedDumpable>::dump),
-                arm_unchecked: <$type as hyperactor::data::Named>::arm_unchecked,
+        $crate::submit! {
+            $crate::data::TypeInfo {
+                typename: <$type as typeuri::Named>::typename,
+                typehash: <$type as typeuri::Named>::typehash,
+                typeid: <$type as typeuri::Named>::typeid,
+                port: <$type as typeuri::Named>::port,
+                dump: Some(<$type as $crate::data::NamedDumpable>::dump),
+                arm_unchecked: <$type as typeuri::Named>::arm_unchecked,
             }
         }
     };
@@ -151,7 +150,7 @@ macro_rules! register_type {
     PartialEq,
     Eq,
     AttrValue,
-    crate::Named,
+    typeuri::Named,
     strum::EnumIter,
     strum::Display,
     strum::EnumString
@@ -568,12 +567,12 @@ mod tests {
     use serde::Serialize;
     use serde_multipart::Part;
     use strum::IntoEnumIterator;
+    use typeuri::Named;
 
     use super::*;
-    use crate as hyperactor; // for macros
-    use crate::Named;
+    // for macros
 
-    #[derive(Named, Serialize, Deserialize)]
+    #[derive(typeuri::Named, Serialize, Deserialize)]
     struct TestStruct;
 
     #[test]
@@ -610,7 +609,7 @@ mod tests {
         );
     }
 
-    #[derive(Named, Serialize, Deserialize, PartialEq, Eq, Debug)]
+    #[derive(typeuri::Named, Serialize, Deserialize, PartialEq, Eq, Debug)]
     struct TestDumpStruct {
         a: String,
         b: u64,
@@ -697,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_arms() {
-        #[derive(Named, Serialize, Deserialize)]
+        #[derive(typeuri::Named, Serialize, Deserialize)]
         enum TestArm {
             #[allow(dead_code)]
             A(u32),

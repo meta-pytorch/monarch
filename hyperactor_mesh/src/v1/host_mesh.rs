@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
@@ -42,6 +41,7 @@ use ndslice::view::Ranked;
 use ndslice::view::RegionParseError;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::Bootstrap;
 use crate::alloc::Alloc;
@@ -96,6 +96,7 @@ declare_attrs! {
 /// A reference to a single host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
 pub struct HostRef(ChannelAddr);
+hyperactor::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
@@ -716,6 +717,7 @@ pub struct HostMeshRef {
     region: Region,
     ranks: Arc<Vec<HostRef>>,
 }
+hyperactor::register_type!(HostMeshRef);
 
 impl HostMeshRef {
     /// Create a new (raw) HostMeshRef from the provided region and associated

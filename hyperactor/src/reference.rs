@@ -41,11 +41,10 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use typeuri::Named;
 
-use crate as hyperactor;
 use crate::Actor;
 use crate::ActorHandle;
-use crate::Named;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::accum::ReducerOpts;
@@ -111,7 +110,7 @@ pub enum ReferenceKind {
     PartialEq,
     Eq,
     Hash,
-    Named,
+    typeuri::Named,
     EnumAsInner
 )]
 pub enum Reference {
@@ -521,7 +520,7 @@ pub type Index = usize;
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct WorldId(pub String);
 
@@ -578,7 +577,7 @@ impl FromStr for WorldId {
     PartialOrd,
     Hash,
     Ord,
-    Named,
+    typeuri::Named,
     EnumAsInner
 )]
 pub enum ProcId {
@@ -655,7 +654,7 @@ impl FromStr for ProcId {
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct ActorId(pub ProcId, pub String, pub Index);
 
@@ -738,7 +737,7 @@ impl FromStr for ActorId {
 }
 
 /// ActorRefs are typed references to actors.
-#[derive(Named)]
+#[derive(typeuri::Named)]
 pub struct ActorRef<A: Referable> {
     pub(crate) actor_id: ActorId,
     // fn() -> A so that the struct remains Send
@@ -904,7 +903,7 @@ impl<A: Referable> Hash for ActorRef<A> {
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct PortId(pub ActorId, pub u64);
 
@@ -990,7 +989,7 @@ impl fmt::Display for PortId {
 
 /// A reference to a remote port. All messages passed through
 /// PortRefs will be serialized.
-#[derive(Debug, Serialize, Deserialize, Derivative, Named)]
+#[derive(Debug, Serialize, Deserialize, Derivative, typeuri::Named)]
 #[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct PortRef<M> {
     port_id: PortId,
@@ -1143,13 +1142,14 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
 }
 
 /// The parameters extracted from [`PortRef`] to [`Bindings`].
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
 pub struct UnboundPort(
     pub PortId,
     pub Option<ReducerSpec>,
     pub Option<ReducerOpts>,
     pub bool, // return_undeliverable
 );
+crate::register_type!(UnboundPort);
 
 impl UnboundPort {
     /// Update the port id of this binding.
@@ -1286,7 +1286,7 @@ impl<M: RemoteMessage> Bind for OncePortRef<M> {
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct GangId(pub WorldId, pub String);
 
@@ -1431,6 +1431,7 @@ mod tests {
     use rand::thread_rng;
 
     use super::*;
+    // for macros
 
     #[test]
     fn test_reference_parse() {
@@ -1571,8 +1572,9 @@ mod tests {
 
     #[test]
     fn test_port_type_annotation() {
-        #[derive(Named, Serialize, Deserialize)]
+        #[derive(typeuri::Named, Serialize, Deserialize)]
         struct MyType;
+        crate::register_type!(MyType);
         let port_id = PortId(
             ActorId(
                 ProcId::Ranked(WorldId("test".into()), 234),

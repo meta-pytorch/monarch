@@ -155,7 +155,7 @@ pub mod test_utils {
         Handler,
         HandleClient,
         RefClient,
-        hyperactor::Named,
+        typeuri::Named,
         serde::Serialize,
         serde::Deserialize,
         Debug

@@ -32,7 +32,6 @@ use humantime::format_duration;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -69,6 +68,7 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::Level;
+use typeuri::Named;
 
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
@@ -181,6 +181,7 @@ pub(crate) const BOOTSTRAP_LOG_CHANNEL: &str = "BOOTSTRAP_LOG_CHANNEL";
 /// the allocator), along with the control message in question.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub(crate) struct Process2Allocator(pub usize, pub Process2AllocatorMessage);
+hyperactor::register_type!(Process2Allocator);
 
 /// Control messages sent from processes to the allocator.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
@@ -198,6 +199,7 @@ pub(crate) enum Process2AllocatorMessage {
 
     Heartbeat,
 }
+hyperactor::register_type!(Process2AllocatorMessage);
 
 /// Messages sent from the allocator to a process.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
@@ -214,6 +216,7 @@ pub(crate) enum Allocator2Process {
     /// exit code
     Exit(i32),
 }
+hyperactor::register_type!(Allocator2Process);
 
 async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: ChannelAddr) {
     let tx = match channel::dial(bootstrap_addr.clone()) {
@@ -1532,6 +1535,7 @@ pub struct BootstrapCommand {
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
 }
+hyperactor::register_type!(BootstrapCommand);
 
 impl BootstrapCommand {
     /// Creates a bootstrap command specification to replicate the

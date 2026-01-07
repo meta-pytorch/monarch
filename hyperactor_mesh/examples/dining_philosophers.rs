@@ -19,7 +19,6 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
@@ -34,6 +33,7 @@ use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
+use typeuri::Named;
 
 #[derive(Debug, Clone, PartialEq)]
 enum ChopstickStatus {

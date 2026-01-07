@@ -9,7 +9,6 @@
 //! Messages used in supervision of actor meshes.
 
 use hyperactor::Bind;
-use hyperactor::Named;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
@@ -17,6 +16,7 @@ use hyperactor::context;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Message about a supervision failure on a mesh of actors instead of a single
 /// actor.
@@ -30,6 +30,7 @@ pub struct SupervisionFailureMessage {
     /// The supervision event on an actor located at mesh + rank.
     pub event: ActorSupervisionEvent,
 }
+hyperactor::register_type!(SupervisionFailureMessage);
 
 impl SupervisionFailureMessage {
     /// Helper function to handle a message to an actor that just wants to forward

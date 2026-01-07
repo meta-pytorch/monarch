@@ -16,9 +16,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use typeuri::Named;
 
-use crate as hyperactor; // for macros
-use crate::Named;
+// for macros
 use crate::config;
 use crate::data::Serialized;
 use crate::reference::Index;
@@ -39,16 +39,25 @@ pub trait Accumulator {
 }
 
 /// Serializable information needed to build a comm reducer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
 pub struct ReducerSpec {
     /// The typehash of the underlying [Self::Reducer] type.
     pub typehash: u64,
     /// The parameters used to build the reducer.
     pub builder_params: Option<Serialized>,
 }
+crate::register_type!(ReducerSpec);
 
 /// Runtime behavior of reducers.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Default)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    typeuri::Named,
+    Default
+)]
 pub struct ReducerOpts {
     /// The maximum interval between updates. When unspecified, a default
     /// interval is used.
@@ -223,7 +232,7 @@ pub(crate) fn resolve_reducer(
         .transpose()
 }
 
-#[derive(Named)]
+#[derive(typeuri::Named)]
 struct SumReducer<T>(PhantomData<T>);
 
 impl<T: std::ops::Add<Output = T> + Copy + 'static> CommReducer for SumReducer<T> {
@@ -261,7 +270,7 @@ pub fn sum<T: std::ops::Add<Output = T> + Copy + Named + 'static>()
     SumAccumulator(PhantomData)
 }
 
-#[derive(Named)]
+#[derive(typeuri::Named)]
 struct MaxReducer<T>(PhantomData<T>);
 
 impl<T: Ord> CommReducer for MaxReducer<T> {
@@ -314,7 +323,7 @@ pub fn max<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = Max<T>
     MaxAccumulator(PhantomData::<T>)
 }
 
-#[derive(Named)]
+#[derive(typeuri::Named)]
 struct MinReducer<T>(PhantomData<T>);
 
 impl<T: Ord> CommReducer for MinReducer<T> {
@@ -369,7 +378,7 @@ pub fn min<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = Min<T>
 
 /// Update from ranks for watermark accumulator, where map' key is the rank, and
 /// map's value is the update from that rank.
-#[derive(Default, Debug, Clone, Serialize, Deserialize, Named)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct WatermarkUpdate<T>(HashMap<Index, T>);
 
 impl<T: Ord> WatermarkUpdate<T> {
@@ -405,7 +414,7 @@ impl<T> From<(Index, T)> for WatermarkUpdate<T> {
 
 /// Merge an old update and a new update. If a rank exists in boths updates,
 /// only keep its value from the new update.
-#[derive(Named)]
+#[derive(typeuri::Named)]
 struct WatermarkUpdateReducer<T>(PhantomData<T>);
 
 impl<T: PartialEq> CommReducer for WatermarkUpdateReducer<T> {
@@ -454,9 +463,9 @@ mod tests {
     use std::fmt::Debug;
 
     use maplit::hashmap;
+    use typeuri::Named;
 
     use super::*;
-    use crate::Named;
 
     fn serialize<T: Serialize + Named>(values: Vec<T>) -> Vec<Serialized> {
         values

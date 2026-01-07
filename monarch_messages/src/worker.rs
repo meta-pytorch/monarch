@@ -23,7 +23,6 @@ use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::reference::ActorId;
@@ -44,6 +43,7 @@ use torch_sys2::BorrowError;
 use torch_sys2::Device;
 use torch_sys2::Layout;
 use torch_sys2::ScalarType;
+use typeuri::Named;
 
 use crate::controller::ControllerActor;
 use crate::controller::Seq;
@@ -562,7 +562,6 @@ pub enum StreamCreationMode {
 /// action associated with the sequence number, or if it was defined by
 /// another action that dependend on the failing one.
 #[derive(Debug, Named)]
-#[named(register = false)]
 pub struct SeqError {
     pub seq: Seq,
     pub error: anyhow::Error,
@@ -578,7 +577,6 @@ impl Display for SeqError {
 /// failed (Error) or because an input to the function already had an error value
 /// DependentError.
 #[derive(Error, Debug, Named)]
-#[named(register = false)]
 pub enum CallFunctionError {
     #[error("{0}")]
     Error(#[from] anyhow::Error),
@@ -951,6 +949,7 @@ pub struct WorkerParams {
     // Actor Ref for the controller that the worker is associated with.
     pub controller_actor: ActorRef<ControllerActor>,
 }
+hyperactor::register_type!(WorkerParams);
 
 hyperactor::behavior!(
     WorkerActor,

@@ -30,9 +30,9 @@ use std::ffi::CStr;
 use std::fmt;
 use std::sync::OnceLock;
 
-use hyperactor::Named;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(
     Default,
@@ -165,6 +165,7 @@ pub struct IbverbsConfig {
     /// `qp_type` - The type of queue pair to create (Auto, Standard, or Mlx5dv).
     pub qp_type: RdmaQpType,
 }
+hyperactor::register_type!(IbverbsConfig);
 
 /// Default RDMA parameters below are based on common values from rdma-core examples
 /// For high-performance or production use, consider tuning
@@ -872,6 +873,7 @@ pub struct RdmaQpInfo {
     /// `psn` - Packet Sequence Number, used for ordering packets
     pub psn: u32,
 }
+hyperactor::register_type!(RdmaQpInfo);
 
 impl std::fmt::Debug for RdmaQpInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -915,6 +917,7 @@ pub struct IbvWc {
     /// `dlid_path_bits` - Destination LID Path Bits
     dlid_path_bits: u8,
 }
+hyperactor::register_type!(IbvWc);
 
 impl From<rdmaxcel_sys::ibv_wc> for IbvWc {
     fn from(wc: rdmaxcel_sys::ibv_wc) -> Self {

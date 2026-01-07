@@ -32,7 +32,6 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 
 use crate as hyperactor;
-use crate::Named;
 use crate::RemoteMessage;
 use crate::channel::sim::SimAddr;
 use crate::simnet::SimNetError;
@@ -138,7 +137,7 @@ pub trait Tx<M: RemoteMessage> {
         self.do_post(message, None);
     }
 
-    /// Send a message synchronously, returning when the messsage has
+    /// Send a message synchronously, returning when the message has
     /// been delivered to the remote end of the channel.
     async fn send(&self, message: M) -> Result<(), SendError<M>> {
         let (tx, rx) = oneshot::channel();
@@ -350,7 +349,16 @@ impl fmt::Display for MetaTlsAddr {
 }
 
 /// Types of channel transports.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    typeuri::Named
+)]
 pub enum ChannelTransport {
     /// Transport over a TCP connection.
     Tcp(TcpMode),
@@ -458,7 +466,16 @@ impl AttrValue for ChannelTransport {
 }
 
 /// Specifies how to bind a channel server.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    typeuri::Named
+)]
 pub enum BindSpec {
     /// Bind to any available address for the given transport.
     Any(ChannelTransport),
@@ -562,7 +579,7 @@ pub type Port = u16;
     Serialize,
     Deserialize,
     Hash,
-    Named
+    typeuri::Named
 )]
 pub enum ChannelAddr {
     /// A socket address used to establish TCP channels. Supports

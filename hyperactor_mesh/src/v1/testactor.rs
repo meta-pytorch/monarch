@@ -25,7 +25,6 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
@@ -42,6 +41,7 @@ use ndslice::Point;
 use ndslice::ViewExt as _;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::comm::multicast::CastInfo;
 #[cfg(test)]

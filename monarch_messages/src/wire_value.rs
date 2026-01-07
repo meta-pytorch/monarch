@@ -8,7 +8,6 @@
 
 use derive_more::From;
 use derive_more::TryInto;
-use hyperactor::Named;
 use monarch_types::PickledPyObject;
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
@@ -19,6 +18,7 @@ use torch_sys2::Device;
 use torch_sys2::Layout;
 use torch_sys2::MemoryFormat;
 use torch_sys2::ScalarType;
+use typeuri::Named;
 
 use crate::worker::Ref;
 
@@ -47,6 +47,7 @@ pub enum WireValue {
     None(()),
     PyObject(PickledPyObject),
 }
+hyperactor::register_type!(WireValue);
 
 impl FromPyObject<'_> for WireValue {
     fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {

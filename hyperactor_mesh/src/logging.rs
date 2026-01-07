@@ -27,7 +27,6 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
@@ -59,6 +58,7 @@ use tokio::sync::RwLock;
 use tokio::sync::watch::Receiver;
 use tokio::task::JoinHandle;
 use tracing::Level;
+use typeuri::Named;
 
 use crate::bootstrap::BOOTSTRAP_LOG_CHANNEL;
 use crate::shortuuid::ShortUuid;
@@ -417,6 +417,7 @@ impl LogSender for LocalLogSender {
 pub struct FileMonitorMessage {
     lines: Vec<String>,
 }
+hyperactor::register_type!(FileMonitorMessage);
 
 /// File appender, coordinates write access to a file via a channel.
 pub struct FileAppender {

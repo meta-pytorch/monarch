@@ -102,7 +102,7 @@ pub trait GetItemCountHandler<
         + Send
         + Sync
         + std::fmt::Debug
-        + hyperactor::Named,
+        + typeuri::Named,
 >: hyperactor::Actor + Send + Sync  {
     async fn get_item_count(
         &mut self,

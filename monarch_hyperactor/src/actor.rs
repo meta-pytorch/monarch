@@ -17,7 +17,6 @@ use hyperactor::ActorId;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
@@ -59,6 +58,7 @@ use serde::Serialize;
 use serde_multipart::Part;
 use tokio::sync::oneshot;
 use tracing::Instrument;
+use typeuri::Named;
 
 use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
@@ -137,6 +137,7 @@ pub enum PythonMessageKind {
         unflatten_args: Vec<UnflattenArg>,
     },
 }
+hyperactor::register_type!(PythonMessageKind);
 
 impl Default for PythonMessageKind {
     fn default() -> Self {
@@ -155,6 +156,7 @@ pub struct PythonMessage {
     pub kind: PythonMessageKind,
     pub message: Part,
 }
+hyperactor::register_type!(PythonMessage);
 
 struct ResolvedCallMethod {
     method: MethodSpecifier,

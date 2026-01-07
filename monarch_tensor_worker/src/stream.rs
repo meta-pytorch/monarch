@@ -27,7 +27,6 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::data::Serialized;
@@ -67,6 +66,7 @@ use torch_sys2::deep_clone;
 use torch_sys2::factory_empty;
 use torch_sys2::factory_zeros;
 use tracing_subscriber::fmt::Subscriber;
+use typeuri::Named;
 
 use crate::ControllerActor;
 use crate::DeviceMesh;
@@ -139,7 +139,6 @@ enum RecordingState {
 /// Messages handled by the stream. Generally these are stream-local versions of
 /// [`crate::WorkerMessage`].
 #[derive(Handler, HandleClient, Debug, Named)]
-#[named(register = false)]
 pub enum StreamMessage {
     CallFunction(
         CallFunctionParams,
@@ -1464,48 +1463,46 @@ impl StreamMessageHandler for StreamActor {
                 .await;
         }
 
-        let result = (|| -> Result<PyTree<PyObject>, CallFunctionError> {
-            if let Some(function) = function {
-                // If a function was provided, use that to resolve the value.
-                tokio::task::block_in_place(|| {
-                    self.call_python_fn_pytree(
-                        cx,
-                        function,
-                        args_kwargs,
-                        &mutates,
-                        device_meshes,
-                        HashMap::new(),
-                    )
-                })
-            } else {
-                // If there's no function provided, there should be exactly one arg
-                // and no kwargs.
-                Python::with_gil(|py| {
-                    let (args, kwargs) = args_kwargs
-                        .to_python(py)
-                        .map_err(|e| CallFunctionError::Error(e.into()))?;
-                    match (args.len(), kwargs.len()) {
-                        (1, 0) => {
-                            let arg = args.get_item(0).map_err(SerializablePyErr::from_fn(py))?;
-                            arg.extract::<PyTree<PyObject>>()
-                                .map_err(SerializablePyErr::from_fn(py))?
-                                .try_into_map(|obj| {
-                                    let bound_obj = obj.bind(py);
-                                    if let Ok(ref_) = Ref::from_py_object(bound_obj) {
-                                        self.ref_to_pyobject(&ref_)
-                                    } else {
-                                        Ok(obj)
-                                    }
-                                })
-                        }
-                        _ => Err(CallFunctionError::TooManyArgsForValue(
-                            format!("args with {} elements", args.len()),
-                            format!("kwargs with {} elements", kwargs.len()),
-                        )),
+        let result = if let Some(function) = function {
+            // If a function was provided, use that to resolve the value.
+            tokio::task::block_in_place(|| {
+                self.call_python_fn_pytree(
+                    cx,
+                    function,
+                    args_kwargs,
+                    &mutates,
+                    device_meshes,
+                    HashMap::new(),
+                )
+            })
+        } else {
+            // If there's no function provided, there should be exactly one arg
+            // and no kwargs.
+            Python::with_gil(|py| {
+                let (args, kwargs) = args_kwargs
+                    .to_python(py)
+                    .map_err(|e| CallFunctionError::Error(e.into()))?;
+                match (args.len(), kwargs.len()) {
+                    (1, 0) => {
+                        let arg = args.get_item(0).map_err(SerializablePyErr::from_fn(py))?;
+                        arg.extract::<PyTree<PyObject>>()
+                            .map_err(SerializablePyErr::from_fn(py))?
+                            .try_into_map(|obj| {
+                                let bound_obj = obj.bind(py);
+                                if let Ok(ref_) = Ref::from_py_object(bound_obj) {
+                                    self.ref_to_pyobject(&ref_)
+                                } else {
+                                    Ok(obj)
+                                }
+                            })
                     }
-                })
-            }
-        })();
+                    _ => Err(CallFunctionError::TooManyArgsForValue(
+                        format!("args with {} elements", args.len()),
+                        format!("kwargs with {} elements", kwargs.len()),
+                    )),
+                }
+            })
+        };
 
         let value = match result {
             Ok(pyobject) => Ok(pyobject),

@@ -11,7 +11,6 @@ use std::ops::Deref;
 
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::shared_cell::SharedCell;
@@ -34,6 +33,7 @@ use pyo3::types::PyTuple;
 use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Segment scanner callback that uses PyTorch's memory snapshot API.
 ///

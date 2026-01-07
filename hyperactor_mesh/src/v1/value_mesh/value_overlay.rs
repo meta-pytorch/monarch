@@ -9,9 +9,9 @@
 use std::fmt;
 use std::ops::Range;
 
-use hyperactor::Named;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Builder error for overlays (structure only; region bounds are
 /// checked at merge time).

@@ -40,7 +40,6 @@ use futures::FutureExt;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_macros::AttrValue;
-use hyperactor_macros::Named;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -51,6 +50,7 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::Span;
+use typeuri::Named as _;
 use uuid::Uuid;
 
 use crate as hyperactor;
@@ -58,7 +58,6 @@ use crate::Actor;
 use crate::ActorRef;
 use crate::Handler;
 use crate::Message;
-use crate::Named as _;
 use crate::RemoteMessage;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
@@ -207,7 +206,7 @@ pub struct ActorTreeSnapshot {
     /// The PID of this actor.
     pub pid: Index,
 
-    /// The type name of the actor. If the actor is [`crate::Named`], then
+    /// The type name of the actor. If the actor is [`typeuri::Named`], then
     /// this is the registered name; otherwise it is the actor type's
     /// [`std::any::type_name`].
     pub type_name: String,
@@ -2024,13 +2023,14 @@ pub struct Ports<A: Actor> {
 }
 
 /// A message's sequencer number infomation.
-#[derive(Serialize, Deserialize, Clone, Named, AttrValue)]
+#[derive(Serialize, Deserialize, Clone, typeuri::Named, AttrValue)]
 pub struct SeqInfo {
     /// Message's session ID
     pub session_id: Uuid,
     /// Message's sequence number in the given session.
     pub seq: u64,
 }
+crate::register_type!(SeqInfo);
 
 impl fmt::Display for SeqInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

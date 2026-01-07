@@ -19,7 +19,6 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
@@ -34,6 +33,7 @@ use ndslice::ViewExt;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Default, Debug)]
 #[hyperactor::export(

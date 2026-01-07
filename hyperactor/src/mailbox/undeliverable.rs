@@ -12,9 +12,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate as hyperactor; // for macros
+// for macros
 use crate::Message;
-use crate::Named;
 use crate::actor::ActorStatus;
 use crate::id;
 use crate::mailbox::DeliveryError;
@@ -27,7 +26,7 @@ use crate::supervision::ActorSupervisionEvent;
 
 /// An undeliverable `M`-typed message (in practice `M` is
 /// [MessageEnvelope]).
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
 pub struct Undeliverable<M: Message>(pub M);
 
 impl<M: Message> Undeliverable<M> {

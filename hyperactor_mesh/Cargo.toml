@@ -84,6 +84,7 @@ tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+typeuri = { version = "0.0.0", path = "../typeuri" }
 zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
 
 [dev-dependencies]

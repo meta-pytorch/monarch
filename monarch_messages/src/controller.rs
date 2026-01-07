@@ -10,7 +10,6 @@ use derive_more::Display;
 use hyperactor::ActorRef;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::RefClient;
 use hyperactor::data::Serialized;
 use hyperactor::reference::ActorId;
@@ -20,6 +19,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::types::PyAnyMethods;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::client::ClientActor;
 use crate::debugger::DebuggerAction;
@@ -236,5 +236,6 @@ pub enum ControllerMessage {
         action: DebuggerAction,
     },
 }
+hyperactor::register_type!(ControllerMessage);
 
 hyperactor::behavior!(ControllerActor, ControllerMessage);
