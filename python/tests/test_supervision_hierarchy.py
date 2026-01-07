@@ -4,14 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
+# pyre-unsafe
 
+import os
+import re
 from threading import Event
 from typing import Callable, Optional, TypeVar
 
 import monarch.actor
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
-
 from monarch.actor import Actor, endpoint, this_host
 
 
@@ -85,15 +86,15 @@ class FaultCapture:
         self.captured_failure = failure
         self.failure_happened.set()
 
-    def assert_fault_occurred(self, expected_substring: Optional[str] = None):
+    def assert_fault_occurred(self, pattern: Optional[str] = None):
         """Assert that a fault was captured, optionally checking the message."""
         assert (
             self.captured_failure is not None
         ), "Expected a fault to be captured, but none occurred"
-        if expected_substring:
+        if pattern:
             report = self.captured_failure.report()
-            assert expected_substring in report, (
-                f"Expected fault message to contain '{expected_substring}', "
+            assert re.search(pattern, report), (
+                f"Expected fault message to contain pattern '{pattern}', "
                 f"but got: {report}"
             )
 
@@ -106,7 +107,7 @@ def test_actor_failure():
         actor = this_host().spawn_procs().spawn("actor", Lambda)
         actor.run.broadcast(error)
 
-    capture.assert_fault_occurred("This occurred because the actor itself failed.")
+    capture.assert_fault_occurred("This occurred because the actor itself failed\\.")
 
 
 def test_proc_failure():
@@ -117,7 +118,10 @@ def test_proc_failure():
         actor = this_host().spawn_procs().spawn("top", Nest)
         actor.kill_nest.call_one().get()
 
-    capture.assert_fault_occurred("nested{'a_dim': 0/1}")
+    # Any actors on the proc mesh can report the proc failure, so it might be
+    # "nested" or it might be other broken actors such as "logger".
+    capture.assert_fault_occurred("(nested|logger-.*)\\{'a_dim': 0/1\\}")
+    capture.assert_fault_occurred("process failure: Killed\\(sig=9\\)")
 
 
 def test_nested_mesh_kills_actor_actor_error():
@@ -131,5 +135,5 @@ def test_nested_mesh_kills_actor_actor_error():
         actor.nested.call_one(error).get()
         print("ERRORED THE ACTOR")
     capture.assert_fault_occurred(
-        "actor <root>.<tests.test_supervision_hierarchy.Nest actor>.<tests.test_supervision_hierarchy.Lambda nested{'a_dim': 0/1}> failed"
+        "actor <root>\\.<.*tests\\.test_supervision_hierarchy\\.Nest actor>\\.<.*tests\\.test_supervision_hierarchy\\.Lambda nested\\{'a_dim': 0/1\\}> failed"
     )

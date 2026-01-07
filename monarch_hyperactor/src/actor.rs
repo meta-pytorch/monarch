@@ -13,14 +13,12 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
-use hyperactor::ProcId;
 use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
@@ -31,14 +29,11 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor::reference::WorldId;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
-use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
-use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
+use hyperactor_mesh::actor_mesh::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::default_bind_spec;
-use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::SupervisionFailureMessage;
 use monarch_types::PickledPyObject;
@@ -586,47 +581,6 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
     })
 }
 
-/// An undeliverable might have its sender address set as the comm actor instead
-/// of the original sender. Update it based on the headers present in the message
-/// so it matches the sender.
-fn update_undeliverable_envelope_for_casting(
-    mut envelope: Undeliverable<MessageEnvelope>,
-) -> Undeliverable<MessageEnvelope> {
-    let old_actor = envelope.0.sender().clone();
-    // v1 casting
-    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER).cloned() {
-        tracing::debug!(
-            actor_id = %old_actor,
-            "PythonActor::handle_undeliverable_message: remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
-        );
-        envelope.0.update_sender(actor_id);
-    // v0 casting
-    } else if let Some(actor_mesh_id) = envelope.0.headers().get(CAST_ACTOR_MESH_ID) {
-        match actor_mesh_id {
-            ActorMeshId::V0(proc_mesh_id, actor_name) => {
-                let actor_id = ActorId(
-                    ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
-                    actor_name.clone(),
-                    0,
-                );
-                tracing::debug!(
-                    actor_id = %old_actor,
-                    "PythonActor::handle_undeliverable_message: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", actor_id
-                );
-                envelope.0.update_sender(actor_id);
-            }
-            ActorMeshId::V1(_) => {
-                tracing::debug!(
-                    "PythonActor::handle_undeliverable_message: headers present but V1 ActorMeshId; leaving actor_id unchanged"
-                );
-            }
-        }
-    } else {
-        // Do nothing, it wasn't from a comm actor.
-    }
-    envelope
-}
-
 #[async_trait]
 impl Actor for PythonActor {
     async fn cleanup(
@@ -705,10 +659,11 @@ impl Actor for PythonActor {
             envelope.0.sender(),
             ins.self_id(),
             "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest actor port = {}",
+            Return address = {}, src actor = {}, dest actor port = {}, envelope headers = {}",
             envelope.0.sender(),
             ins.self_id(),
-            envelope.0.dest()
+            envelope.0.dest(),
+            envelope.0.headers()
         );
 
         let cx = Context::new(ins, envelope.0.headers().clone());
@@ -956,6 +911,16 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
         cx: &Context<Self>,
         message: SupervisionFailureMessage,
     ) -> anyhow::Result<()> {
+        // If the message is not about a failure, don't call __supervise__.
+        // This includes messages like "stop", because those are not errors that
+        // need to be propagated.
+        if !message.event.actor_status.is_failed() {
+            tracing::info!(
+                "ignoring non-failure supervision event from child: {}",
+                message
+            );
+            return Ok(());
+        }
         Python::with_gil(|py| {
             let instance = self.instance.get_or_insert_with(|| {
                 let instance: crate::context::PyInstance = cx.into();
