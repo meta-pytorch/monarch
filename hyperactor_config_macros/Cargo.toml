@@ -16,6 +16,8 @@ proc-macro = true
 edition = "2024"
 
 [dependencies]
-proc-macro2 = { version = "1.0.70", features = ["span-locations"] }
 quote = "1.0.29"
 syn = { version = "2.0.110", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
+
+[dev-dependencies]
+proc-macro2 = { version = "1.0.70", features = ["span-locations"] }
