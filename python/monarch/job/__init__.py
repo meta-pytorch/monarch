@@ -6,7 +6,9 @@
 
 # Re-export the job module directly
 from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
-from monarch._src.job.kubernetes import KubernetesJob
+
+# TODO: Re-enable once we have kubernetes dependencies sorted it out
+# from monarch._src.job.kubernetes import KubernetesJob
 from monarch._src.job.slurm import SlurmJob
 
 # Define exports
@@ -17,5 +19,5 @@ __all__ = [
     "JobState",
     "LocalJob",
     "SlurmJob",
-    "KubernetesJob",
+    # "KubernetesJob",
 ]
