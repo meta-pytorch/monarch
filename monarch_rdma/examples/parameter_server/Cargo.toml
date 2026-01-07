@@ -35,6 +35,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+typeuri = { version = "0.0.0", path = "../../../typeuri" }
 
 [dev-dependencies]
 timed_test = { version = "0.0.0", path = "../../../timed_test" }
