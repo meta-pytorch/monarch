@@ -11,10 +11,10 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Message that can be sent to an EmptyActor.
 #[derive(Serialize, Deserialize, Debug, Named, Clone, Bind, Unbind)]

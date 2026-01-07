@@ -23,7 +23,6 @@ use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::WorldId;
 use hyperactor::data::Serialized;
@@ -37,6 +36,7 @@ use hyperactor::reference::UnboundPort;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
@@ -46,6 +46,7 @@ use crate::comm::multicast::set_cast_info_on_headers;
 /// Parameters to initialize the CommActor
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Default)]
 pub struct CommActorParams {}
+hyperactor::register_type!(CommActorParams);
 
 /// A message buffered due to out-of-order delivery.
 #[derive(Debug)]
@@ -117,6 +118,7 @@ pub enum CommActorMode {
     // TODO: T224926642 Remove this once we are fully onto ActorMeshes.
     ImplicitWithWorldId(WorldId),
 }
+hyperactor::register_type!(CommActorMode);
 
 impl CommActorMode {
     /// Return the peer comm actor for the given rank, given a self id,
@@ -469,11 +471,11 @@ pub mod test_utils {
     use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Named;
     use hyperactor::PortRef;
     use hyperactor::Unbind;
     use serde::Deserialize;
     use serde::Serialize;
+    use typeuri::Named;
 
     use super::*;
 

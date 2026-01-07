@@ -1027,7 +1027,7 @@ impl FromStr for Point {
     }
 }
 
-impl hyperactor_named::Named for Point {
+impl typeuri::Named for Point {
     fn typename() -> &'static str {
         "ndslice::Point"
     }

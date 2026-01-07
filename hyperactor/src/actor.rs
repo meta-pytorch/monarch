@@ -27,12 +27,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use typeuri::Named;
 
 use crate as hyperactor; // for macros
 use crate::ActorRef;
 use crate::Data;
 use crate::Message;
-use crate::Named;
 use crate::RemoteMessage;
 use crate::checkpoint::CheckpointError;
 use crate::checkpoint::Checkpointable;
@@ -433,7 +433,7 @@ impl From<MailboxSenderError> for ActorError {
 ///
 /// These messages are not handled directly by actors; instead, the runtime
 /// handles the various signals.
-#[derive(Clone, Debug, Serialize, Deserialize, Named)]
+#[derive(Clone, Debug, Serialize, Deserialize, typeuri::Named)]
 pub enum Signal {
     /// Stop the actor, after draining messages.
     DrainAndStop,
@@ -444,6 +444,7 @@ pub enum Signal {
     /// The direct child with the given PID was stopped.
     ChildStopped(Index),
 }
+crate::register_type!(Signal);
 
 impl fmt::Display for Signal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -463,7 +464,7 @@ impl fmt::Display for Signal {
     PartialEq,
     Eq,
     Clone,
-    Named,
+    typeuri::Named,
     EnumAsInner
 )]
 pub enum ActorStatus {
@@ -717,7 +718,7 @@ pub trait RemoteHandles<M: RemoteMessage>: Referable {}
 /// ```
 /// # use serde::Serialize;
 /// # use serde::Deserialize;
-/// # use hyperactor::Named;
+/// # use typeuri::Named;
 /// # use hyperactor::Actor;
 ///
 /// // First, define a behavior, based on handling a single message type `()`.

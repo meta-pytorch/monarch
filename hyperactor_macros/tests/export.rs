@@ -11,11 +11,11 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Debug)]
 #[hyperactor::export(

@@ -12,13 +12,13 @@
 
 use derive_more::From;
 use hyperactor::Handler;
-use hyperactor::Named;
 use pyo3::Bound;
 use pyo3::PyResult;
 use pyo3::types::PyModule;
 use pyo3::types::PyModuleMethods;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 pub fn register_python_bindings(debugger: &Bound<'_, PyModule>) -> PyResult<()> {
     debugger.add_class::<DebuggerAction>()?;
@@ -54,6 +54,7 @@ pub enum DebuggerAction {
 pub enum DebuggerMessage {
     Action { action: DebuggerAction },
 }
+hyperactor::register_type!(DebuggerMessage);
 
 hyperactor::behavior!(
     DebuggerActor,

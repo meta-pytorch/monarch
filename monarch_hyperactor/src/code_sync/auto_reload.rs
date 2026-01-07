@@ -13,23 +13,25 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use monarch_types::SerializablePyErr;
 use pyo3::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Message to trigger module reloading
 #[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct AutoReloadMessage {
     pub result: PortRef<Result<(), String>>,
 }
+hyperactor::register_type!(AutoReloadMessage);
 
 /// Parameters for creating an AutoReloadActor
 #[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct AutoReloadParams {}
+hyperactor::register_type!(AutoReloadParams);
 
 /// Simple Rust Actor that wraps the Python AutoReloader class via pyo3
 #[derive(Debug)]

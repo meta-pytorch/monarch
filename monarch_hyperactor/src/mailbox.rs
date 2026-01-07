@@ -13,7 +13,6 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use hyperactor::Mailbox;
-use hyperactor::Named;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
@@ -45,6 +44,7 @@ use pyo3::types::PyTuple;
 use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
@@ -557,7 +557,6 @@ impl Bind for EitherPortRef {
 }
 
 #[derive(Debug, Named)]
-#[named(register = false)]
 struct PythonReducer(PyObject);
 
 impl PythonReducer {

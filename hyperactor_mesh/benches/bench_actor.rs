@@ -14,13 +14,13 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct BenchMessage {

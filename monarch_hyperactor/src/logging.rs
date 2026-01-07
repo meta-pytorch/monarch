@@ -17,7 +17,6 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
@@ -25,6 +24,7 @@ use monarch_types::SerializablePyErr;
 use pyo3::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(
     Debug,

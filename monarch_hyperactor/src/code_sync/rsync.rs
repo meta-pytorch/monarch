@@ -26,7 +26,6 @@ use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
@@ -54,6 +53,7 @@ use tokio::process::Command;
 #[cfg(feature = "packaged_rsync")]
 use tokio::sync::OnceCell;
 use tracing::warn;
+use typeuri::Named;
 
 use crate::code_sync::WorkspaceLocation;
 
@@ -135,6 +135,7 @@ pub struct RsyncResult {
     /// All changes that occurred during the rsync operation
     pub changes: Vec<Change>,
 }
+hyperactor::register_type!(RsyncResult);
 
 impl RsyncResult {
     /// Create an empty rsync result
@@ -335,6 +336,7 @@ pub struct RsyncMessage {
     /// The location of the workspace to sync.
     pub workspace: WorkspaceLocation,
 }
+hyperactor::register_type!(RsyncMessage);
 
 #[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]

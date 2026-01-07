@@ -100,9 +100,9 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use typeuri::Named;
 
 use crate as hyperactor; // for macros
-use crate::Named;
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::accum::Accumulator;
@@ -163,7 +163,7 @@ pub type Data = Vec<u8>;
     Debug,
     Serialize,
     Deserialize,
-    Named,
+    typeuri::Named,
     Clone,
     PartialEq,
     Eq
@@ -194,7 +194,7 @@ pub enum DeliveryError {
 /// An envelope that carries a message destined to a remote actor.
 /// The envelope contains a serialized message along with its destination
 /// and sender.
-#[derive(Debug, Serialize, Deserialize, Clone, Named)]
+#[derive(Debug, Serialize, Deserialize, Clone, typeuri::Named)]
 pub struct MessageEnvelope {
     /// The sender of this message.
     sender: ActorId,
@@ -219,6 +219,7 @@ pub struct MessageEnvelope {
     return_undeliverable: bool,
     // TODO: add typename, source, seq, etc.
 }
+crate::register_type!(MessageEnvelope);
 
 impl MessageEnvelope {
     /// Create a new envelope with the provided sender, destination, and message.
@@ -3075,10 +3076,10 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 16);
     }
 
-    #[derive(Clone, Debug, Serialize, Deserialize, Named)]
+    #[derive(Clone, Debug, Serialize, Deserialize, typeuri::Named)]
     struct TestMessage;
 
-    #[derive(Clone, Debug, Serialize, Deserialize, Named)]
+    #[derive(Clone, Debug, Serialize, Deserialize, typeuri::Named)]
     #[named(name = "some::custom::path")]
     struct TestMessage2;
 
@@ -3093,7 +3094,7 @@ mod tests {
 
     #[test]
     fn test_message_envelope_display() {
-        #[derive(Named, Serialize, Deserialize)]
+        #[derive(typeuri::Named, Serialize, Deserialize)]
         struct MyTest {
             a: u64,
             b: String,

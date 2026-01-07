@@ -62,7 +62,6 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
@@ -88,6 +87,7 @@ use ndslice::selection;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
+use typeuri::Named;
 
 // Constants to control the setup.
 const BUFFER_SIZE: usize = 8;

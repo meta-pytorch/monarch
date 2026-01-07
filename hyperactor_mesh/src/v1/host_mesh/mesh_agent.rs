@@ -23,7 +23,6 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::Proc;
@@ -38,6 +37,7 @@ use hyperactor::host::SingleTerminate;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
+use typeuri::Named;
 
 use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
@@ -340,6 +340,7 @@ pub struct ShutdownHost {
     #[reply]
     pub ack: hyperactor::PortRef<()>,
 }
+hyperactor::register_type!(ShutdownHost);
 
 #[async_trait]
 impl Handler<ShutdownHost> for HostMeshAgent {
@@ -378,6 +379,7 @@ pub struct ProcState {
     pub bootstrap_command: Option<BootstrapCommand>,
     pub proc_status: Option<bootstrap::ProcStatus>,
 }
+hyperactor::register_type!(ProcState);
 
 #[async_trait]
 impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
@@ -555,6 +557,7 @@ pub struct GetHostMeshAgent {
     #[reply]
     pub host_mesh_agent: PortRef<ActorRef<HostMeshAgent>>,
 }
+hyperactor::register_type!(GetHostMeshAgent);
 
 #[async_trait]
 impl Handler<GetHostMeshAgent> for HostMeshAgentProcMeshTrampoline {

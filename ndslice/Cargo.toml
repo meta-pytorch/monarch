@@ -22,7 +22,6 @@ cityhasher = "0.1.0"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 enum-as-inner = "0.6.0"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
-hyperactor_named = { version = "0.0.0", path = "../hyperactor_named" }
 itertools = "0.14.0"
 nom = "8"
 proc-macro2 = { version = "1.0.70", features = ["span-locations"] }
@@ -31,3 +30,4 @@ quote = "1.0.29"
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.12"
+typeuri = { version = "0.0.0", path = "../typeuri" }

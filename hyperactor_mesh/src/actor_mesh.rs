@@ -19,7 +19,6 @@ use hyperactor::Bind;
 use hyperactor::GangId;
 use hyperactor::GangRef;
 use hyperactor::Message;
-use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
@@ -53,6 +52,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
 use tokio::sync::mpsc;
+use typeuri::Named;
 
 use crate::CommActor;
 use crate::Mesh;

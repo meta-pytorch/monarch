@@ -36,11 +36,11 @@ use std::marker::PhantomData;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use typeuri::Named;
 
-use crate as hyperactor;
+// for macros
 use crate::ActorRef;
 use crate::Mailbox;
-use crate::Named;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::actor::Referable;
@@ -172,11 +172,12 @@ impl<M: Unbind> Unbound<M> {
 }
 
 /// Unbound, with its message type M erased through serialization.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
 pub struct ErasedUnbound {
     message: Serialized,
     bindings: Bindings,
 }
+crate::register_type!(ErasedUnbound);
 
 impl ErasedUnbound {
     /// Create an object directly from Serialized without binding.
@@ -219,7 +220,7 @@ impl ErasedUnbound {
 
 /// Type used for indexing an erased unbound.
 /// Has the same serialized representation as `ErasedUnbound`.
-#[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, typeuri::Named)]
 #[serde(from = "ErasedUnbound")]
 pub struct IndexedErasedUnbound<M>(ErasedUnbound, PhantomData<M>);
 
@@ -318,21 +319,30 @@ impl<T: Bind> Bind for Option<T> {
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::PortRef;
-    use hyperactor::id;
-
     use super::*;
+    use crate as hyperactor; // for macros
     use crate::Bind;
+    use crate::PortRef;
     use crate::Unbind;
     use crate::accum::ReducerSpec;
+    use crate::id;
     use crate::reference::UnboundPort;
 
     // Used to demonstrate a user defined reply type.
-    #[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
+    #[derive(Debug, PartialEq, Serialize, Deserialize, typeuri::Named)]
     struct MyReply(String);
 
     // Used to demonstrate a two-way message type.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+    #[derive(
+        Debug,
+        Clone,
+        PartialEq,
+        Serialize,
+        Deserialize,
+        typeuri::Named,
+        Bind,
+        Unbind
+    )]
     struct MyMessage {
         arg0: bool,
         arg1: u32,

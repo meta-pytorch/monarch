@@ -14,7 +14,6 @@ use std::marker::PhantomData;
 use std::str::FromStr;
 
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
@@ -29,6 +28,7 @@ use ndslice::ShapeError;
 use ndslice::selection::ReifySlice;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::CommActor;
 use crate::actor_mesh::CastError;

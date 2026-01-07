@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
 use hyperactor::mailbox::OncePortHandle;
@@ -33,12 +32,12 @@ use torch_sys_cuda::nccl::group_end;
 use torch_sys_cuda::nccl::group_start;
 use torch_sys2::CudaDevice;
 use torch_sys2::TensorCell;
+use typeuri::Named;
 
 /// Messages for NcclCommActor. See the underlying [`Communicator`] APIs for what
 /// these do.
 #[allow(dead_code)]
 #[derive(Handler, HandleClient, Debug, Named)]
-#[named(register = false)]
 pub enum CommMessage {
     AllReduce(TensorCell, ReduceOp, Stream, #[reply] OncePortHandle<Event>),
 

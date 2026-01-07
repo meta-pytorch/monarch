@@ -8,7 +8,6 @@
 
 #![allow(dead_code)]
 
-use hyperactor::Named;
 /// This module defines common types for mesh resources. Meshes are managed as
 /// resources, usually by a controller actor implementing the [`crate::resource`]
 /// behavior.
@@ -18,6 +17,7 @@ use hyperactor::Named;
 use ndslice::Extent;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::resource::Resource;
 use crate::resource::Status;
@@ -45,10 +45,20 @@ pub struct State<S> {
 /// A mesh trait bundles a set of types that together define a mesh resource.
 pub trait Mesh {
     /// The mesh-specific specification for this resource.
-    type Spec: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type Spec: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 
     /// The mesh-specific state for this resource.
-    type State: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type State: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 }
 
 impl<M: Mesh> Resource for M {

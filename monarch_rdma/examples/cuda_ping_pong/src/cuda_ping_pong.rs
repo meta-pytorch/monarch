@@ -64,7 +64,6 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
@@ -86,6 +85,7 @@ use monarch_rdma::cu_check;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
+use typeuri::Named;
 
 /// RDMA parameters structure for CUDA RDMA operations
 #[repr(C)]

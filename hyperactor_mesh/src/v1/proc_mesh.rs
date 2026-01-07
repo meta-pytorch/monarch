@@ -22,7 +22,6 @@ use hyperactor::Actor;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
@@ -52,6 +51,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Notify;
 use tracing::Instrument;
+use typeuri::Named;
 
 use crate::CommActor;
 use crate::alloc::Alloc;
@@ -686,6 +686,7 @@ pub struct ProcMeshRef {
     // it here. For v1, this can be removed since v1 can use any rank.
     pub(crate) root_comm_actor: Option<ActorRef<CommActor>>,
 }
+hyperactor::register_type!(ProcMeshRef);
 
 impl ProcMeshRef {
     /// Create a new ProcMeshRef from the given name, region, ranks, and so on.

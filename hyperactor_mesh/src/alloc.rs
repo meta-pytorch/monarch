@@ -30,7 +30,6 @@ use std::sync::atomic::Ordering;
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
 use hyperactor::WorldId;
@@ -55,6 +54,7 @@ pub use process::ProcessAllocator;
 use serde::Deserialize;
 use serde::Serialize;
 use strum::AsRefStr;
+use typeuri::Named;
 
 use crate::alloc::test_utils::MockAllocWrapper;
 use crate::assign::Ranks;
@@ -665,10 +665,10 @@ pub mod test_utils {
     use hyperactor::Actor;
     use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Named;
     use libc::atexit;
     use tokio::sync::broadcast::Receiver;
     use tokio::sync::broadcast::Sender;
+    use typeuri::Named;
 
     use super::*;
 

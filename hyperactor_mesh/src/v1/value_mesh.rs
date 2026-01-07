@@ -18,7 +18,6 @@ use std::ptr;
 use std::ptr::NonNull;
 
 use futures::Future;
-use hyperactor::Named;
 use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
@@ -29,6 +28,7 @@ use ndslice::view::Ranked;
 use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 mod rle;
 mod value_overlay;

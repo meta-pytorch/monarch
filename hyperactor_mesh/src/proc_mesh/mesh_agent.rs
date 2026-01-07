@@ -27,7 +27,6 @@ use hyperactor::Data;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
@@ -52,6 +51,7 @@ use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::proc_mesh::SupervisionEventState;
@@ -64,6 +64,7 @@ pub enum GspawnResult {
     Success { rank: usize, actor_id: ActorId },
     Error(String),
 }
+hyperactor::register_type!(GspawnResult);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum StopActorResult {
@@ -71,6 +72,7 @@ pub enum StopActorResult {
     Timeout,
     NotFound,
 }
+hyperactor::register_type!(StopActorResult);
 
 #[derive(
     Debug,
@@ -495,6 +497,7 @@ pub struct ActorSpec {
     /// serialized parameters
     pub params_data: Data,
 }
+hyperactor::register_type!(ActorSpec);
 
 /// Actor state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
@@ -506,6 +509,7 @@ pub struct ActorState {
     // TODO status: ActorStatus,
     pub supervision_events: Vec<ActorSupervisionEvent>,
 }
+hyperactor::register_type!(ActorState);
 
 #[async_trait]
 impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {

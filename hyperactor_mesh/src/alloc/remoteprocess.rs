@@ -18,7 +18,6 @@ use dashmap::DashMap;
 use futures::FutureExt;
 use futures::future::join_all;
 use futures::future::select_all;
-use hyperactor::Named;
 use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -57,6 +56,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
+use typeuri::Named;
 
 use crate::alloc::Alloc;
 use crate::alloc::AllocConstraints;
@@ -100,6 +100,7 @@ pub enum RemoteProcessAllocatorMessage {
     /// host are alive.
     HeartBeat,
 }
+hyperactor::register_type!(RemoteProcessAllocatorMessage);
 
 /// Control message sent from local allocator to remote allocator
 /// relaying process state updates.
@@ -118,6 +119,7 @@ pub enum RemoteProcessProcStateMessage {
     /// Heartbeat message to check if client is alive.
     HeartBeat,
 }
+hyperactor::register_type!(RemoteProcessProcStateMessage);
 
 /// Allocator with a service frontend that wraps ProcessAllocator.
 pub struct RemoteProcessAllocator {

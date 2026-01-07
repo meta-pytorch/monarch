@@ -153,11 +153,11 @@ pub fn register_python_bindings(debugger: &Bound<'_, PyModule>) -> PyResult<()> 
 mod tests {
     use hyperactor::ActorId;
     use hyperactor::Mailbox;
-    use hyperactor::Named;
     use hyperactor::data::Serialized;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::Proc;
     use monarch_messages::controller::ControllerMessage;
+    use typeuri::Named;
 
     use super::*;
 
