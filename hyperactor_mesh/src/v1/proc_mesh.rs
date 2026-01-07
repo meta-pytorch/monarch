@@ -686,7 +686,7 @@ pub struct ProcMeshRef {
     // it here. For v1, this can be removed since v1 can use any rank.
     pub(crate) root_comm_actor: Option<ActorRef<CommActor>>,
 }
-hyperactor::register_type!(ProcMeshRef);
+wirevalue::register_type!(ProcMeshRef);
 
 impl ProcMeshRef {
     /// Create a new ProcMeshRef from the given name, region, ranks, and so on.

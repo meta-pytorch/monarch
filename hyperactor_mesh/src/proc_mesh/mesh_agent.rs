@@ -64,7 +64,7 @@ pub enum GspawnResult {
     Success { rank: usize, actor_id: ActorId },
     Error(String),
 }
-hyperactor::register_type!(GspawnResult);
+wirevalue::register_type!(GspawnResult);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum StopActorResult {
@@ -72,7 +72,7 @@ pub enum StopActorResult {
     Timeout,
     NotFound,
 }
-hyperactor::register_type!(StopActorResult);
+wirevalue::register_type!(StopActorResult);
 
 #[derive(
     Debug,
@@ -497,7 +497,7 @@ pub struct ActorSpec {
     /// serialized parameters
     pub params_data: Data,
 }
-hyperactor::register_type!(ActorSpec);
+wirevalue::register_type!(ActorSpec);
 
 /// Actor state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
@@ -509,7 +509,7 @@ pub struct ActorState {
     // TODO status: ActorStatus,
     pub supervision_events: Vec<ActorSupervisionEvent>,
 }
-hyperactor::register_type!(ActorState);
+wirevalue::register_type!(ActorState);
 
 #[async_trait]
 impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {

@@ -96,7 +96,7 @@ declare_attrs! {
 /// A reference to a single host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
 pub struct HostRef(ChannelAddr);
-hyperactor::register_type!(HostRef);
+wirevalue::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
@@ -717,7 +717,7 @@ pub struct HostMeshRef {
     region: Region,
     ranks: Arc<Vec<HostRef>>,
 }
-hyperactor::register_type!(HostMeshRef);
+wirevalue::register_type!(HostMeshRef);
 
 impl HostMeshRef {
     /// Create a new (raw) HostMeshRef from the provided region and associated

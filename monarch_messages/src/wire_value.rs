@@ -47,7 +47,7 @@ pub enum WireValue {
     None(()),
     PyObject(PickledPyObject),
 }
-hyperactor::register_type!(WireValue);
+wirevalue::register_type!(WireValue);
 
 impl FromPyObject<'_> for WireValue {
     fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {

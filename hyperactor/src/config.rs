@@ -16,8 +16,6 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 
-use crate::data::Encoding;
-
 // Declare hyperactor-specific configuration keys
 declare_attrs! {
     /// Maximum frame length for codec
@@ -99,13 +97,6 @@ declare_attrs! {
         py_name: Some("remote_allocator_heartbeat_interval".to_string()),
     })
     pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_mins(5);
-
-    /// The default encoding to be used.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_DEFAULT_ENCODING".to_string()),
-        py_name: Some("default_encoding".to_string()),
-    })
-    pub attr DEFAULT_ENCODING: Encoding = Encoding::Multipart;
 
     /// How often to check for full MPSC channel on NetRx.
     @meta(CONFIG = ConfigAttr {

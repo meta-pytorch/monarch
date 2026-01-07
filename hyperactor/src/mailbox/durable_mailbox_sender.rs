@@ -357,21 +357,21 @@ mod tests {
         durable_mbox.post(
             MessageEnvelope::new_unknown(
                 port1.port_id().clone(),
-                Serialized::serialize(&1u64).unwrap(),
+                wirevalue::Any::serialize(&1u64).unwrap(),
             ),
             monitored_return_handle(),
         );
         durable_mbox.post(
             MessageEnvelope::new_unknown(
                 port2.port_id().clone(),
-                Serialized::serialize(&2u64).unwrap(),
+                wirevalue::Any::serialize(&2u64).unwrap(),
             ),
             monitored_return_handle(),
         );
         durable_mbox.post(
             MessageEnvelope::new_unknown(
                 port1.port_id().clone(),
-                Serialized::serialize(&3u64).unwrap(),
+                wirevalue::Any::serialize(&3u64).unwrap(),
             ),
             monitored_return_handle(),
         );

@@ -949,7 +949,7 @@ pub struct WorkerParams {
     // Actor Ref for the controller that the worker is associated with.
     pub controller_actor: ActorRef<ControllerActor>,
 }
-hyperactor::register_type!(WorkerParams);
+wirevalue::register_type!(WorkerParams);
 
 hyperactor::behavior!(
     WorkerActor,

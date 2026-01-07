@@ -74,7 +74,7 @@ pub struct DoorBell {
     pub dst_ptr: usize,
     pub size: usize,
 }
-hyperactor::register_type!(DoorBell);
+wirevalue::register_type!(DoorBell);
 
 impl DoorBell {
     /// Rings the doorbell to trigger the execution of previously enqueued operations.
@@ -105,7 +105,7 @@ pub struct RdmaBuffer {
     pub size: usize,
     pub device_name: String,
 }
-hyperactor::register_type!(RdmaBuffer);
+wirevalue::register_type!(RdmaBuffer);
 
 impl RdmaBuffer {
     /// Read from the RdmaBuffer into the provided memory.
@@ -484,7 +484,7 @@ pub struct RdmaQueuePair {
     context: usize,        // *mut rdmaxcel_sys::ibv_context,
     config: IbverbsConfig,
 }
-hyperactor::register_type!(RdmaQueuePair);
+wirevalue::register_type!(RdmaQueuePair);
 
 impl RdmaQueuePair {
     /// Applies hardware initialization delay if this is the first operation since RTS.

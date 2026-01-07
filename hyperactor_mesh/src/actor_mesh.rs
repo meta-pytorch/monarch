@@ -865,9 +865,9 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
-    use hyperactor::data::Encoding;
     use hyperactor_config::attrs::Attrs;
     use timed_test::async_timed_test;
+    use wirevalue::Encoding;
 
     use super::*;
     use crate::proc_mesh::ProcEvent;
@@ -887,7 +887,6 @@ mod tests {
             use $crate::comm::multicast::set_cast_info_on_headers;
             use $crate::proc_mesh::SharedSpawnable;
             use std::collections::VecDeque;
-            use hyperactor::data::Serialized;
             use $crate::proc_mesh::default_transport;
 
             use super::*;
@@ -1267,7 +1266,7 @@ mod tests {
                     .port_id(GetRank::port())
                     .send_with_headers(
                         mesh.client(),
-                        Serialized::serialize(&GetRank(true, reply_port)).unwrap(),
+                        wirevalue::Any::serialize(&GetRank(true, reply_port)).unwrap(),
                         headers
                     );
                 assert_eq!(2, reply_port_receiver.recv().await.unwrap());
@@ -1545,7 +1544,7 @@ mod tests {
             }
             // Calculate the frame length for the given message.
             fn frame_length(src: &ActorId, dst: &PortId, pay: &Payload) -> usize {
-                let serialized = Serialized::serialize(pay).unwrap();
+                let serialized = wirevalue::Any::serialize(pay).unwrap();
                 let mut headers = Attrs::new();
                 hyperactor::mailbox::headers::set_send_timestamp(&mut headers);
                 hyperactor::mailbox::headers::set_rust_message_type::<Payload>(&mut headers);
@@ -1566,7 +1565,7 @@ mod tests {
                 std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024");
             };
             let _guard3 =
-                config.override_key(hyperactor::config::DEFAULT_ENCODING, Encoding::Bincode);
+                config.override_key(wirevalue::config::DEFAULT_ENCODING, Encoding::Bincode);
 
             let alloc = process_allocator()
                 .allocate(AllocSpec {
