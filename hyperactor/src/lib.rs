@@ -70,7 +70,6 @@
 pub mod accum;
 pub mod actor;
 pub mod channel;
-pub mod checkpoint;
 pub mod clock;
 pub mod config;
 pub mod context;
