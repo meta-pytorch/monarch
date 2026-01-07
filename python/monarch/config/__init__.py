@@ -67,7 +67,7 @@ def configure(
     max_cast_dimension_size: int | None = None,
     remote_alloc_bind_to_inaddr_any: bool | None = None,
     remote_alloc_bootstrap_addr: str | None = None,
-    remote_alloc_allowed_port_range: str | tuple[int, int] | None = None,
+    remote_alloc_allowed_port_range: slice | None = None,
     read_log_buffer: int | None = None,
     force_file_log: bool | None = None,
     prefix_with_rank: bool | None = None,
@@ -133,7 +133,7 @@ def configure(
         Remote allocation:
             remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY.
             remote_alloc_bootstrap_addr: Bootstrap address for remote allocators.
-            remote_alloc_allowed_port_range: Allowed port range as "start..end" or (start, end) tuple.
+            remote_alloc_allowed_port_range: Allowed port range as slice(start, stop).
 
         Logging configuration:
             read_log_buffer: Buffer size for reading logs (bytes).

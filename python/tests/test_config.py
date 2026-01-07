@@ -281,7 +281,7 @@ def test_duration_config_multiple() -> None:
         ("get_proc_state_max_idle", "90s", "1m 30s", "1m"),
     ],
 )
-def test_new_duration_params(param_name, test_value, expected_value, default_value):
+def test_duration_params(param_name, test_value, expected_value, default_value):
     """Test all new duration configuration parameters."""
     # Verify default value
     config = get_global_config()
@@ -312,7 +312,7 @@ def test_new_duration_params(param_name, test_value, expected_value, default_val
         ("read_log_buffer", 16384, 100),
     ],
 )
-def test_new_integer_params(param_name, test_value, default_value):
+def test_integer_params(param_name, test_value, default_value):
     """Test all new integer configuration parameters."""
     # Verify default value
     config = get_global_config()
@@ -343,7 +343,7 @@ def test_new_integer_params(param_name, test_value, default_value):
         ("prefix_with_rank", True),
     ],
 )
-def test_new_boolean_params(param_name, default_value):
+def test_boolean_params(param_name, default_value):
     """Test all new boolean configuration parameters."""
     # Verify default value
     config = get_global_config()
@@ -358,7 +358,7 @@ def test_new_boolean_params(param_name, default_value):
     assert config[param_name] == default_value
 
 
-def test_new_float_param_message_latency_sampling_rate():
+def test_float_param_message_latency_sampling_rate():
     """Test message_latency_sampling_rate float parameter."""
     # Verify default value (0.01, using approx for f32 precision)
     config = get_global_config()
@@ -377,7 +377,7 @@ def test_new_float_param_message_latency_sampling_rate():
     assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)
 
 
-def test_new_encoding_param():
+def test_encoding_param():
     """Test default_encoding enum parameter with valid encodings."""
     from monarch._rust_bindings.monarch_hyperactor.config import Encoding
 
@@ -396,7 +396,7 @@ def test_new_encoding_param():
     assert config["default_encoding"] == Encoding.Multipart
 
 
-def test_new_encoding_param_invalid():
+def test_encoding_param_invalid():
     """Test that invalid encoding values raise errors."""
     # Strings aren't expected
     with pytest.raises(TypeError):
@@ -409,7 +409,7 @@ def test_new_encoding_param_invalid():
             pass
 
 
-def test_new_bootstrap_addr_param():
+def test_bootstrap_addr_param():
     """Test remote_alloc_bootstrap_addr string parameter."""
     # Note: This attribute has no default value, only test setting it
     test_addr = "tcp://127.0.0.1:9000"
@@ -417,43 +417,73 @@ def test_new_bootstrap_addr_param():
         assert config["remote_alloc_bootstrap_addr"] == test_addr
 
 
-def test_new_port_range_param_tuple():
-    """Test remote_alloc_allowed_port_range with tuple format."""
-    # Note: This attribute has no default value, only test setting it
-    with configured(remote_alloc_allowed_port_range=(8000, 9000)) as config:
-        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
-
-
-def test_new_port_range_param_string():
-    """Test remote_alloc_allowed_port_range with string format."""
-    # Test string format
-    with configured(remote_alloc_allowed_port_range="8000..9000") as config:
-        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
+def test_port_range_param_slice():
+    """Test remote_alloc_allowed_port_range with slice format."""
+    # Test slice format
+    with configured(remote_alloc_allowed_port_range=slice(8000, 9000)) as config:
+        result = config["remote_alloc_allowed_port_range"]
+        assert isinstance(result, slice)
+        assert result.start == 8000
+        assert result.stop == 9000
 
     # Test edge cases
-    with configured(remote_alloc_allowed_port_range="1..65535") as config:
-        assert config["remote_alloc_allowed_port_range"] == "1..65535"
+    with configured(remote_alloc_allowed_port_range=slice(1, 65535)) as config:
+        result = config["remote_alloc_allowed_port_range"]
+        assert result.start == 1
+        assert result.stop == 65535
+
+    # Test empty range
+    with configured(remote_alloc_allowed_port_range=slice(8000, 8000)) as config:
+        result = config["remote_alloc_allowed_port_range"]
+        assert result.start == 8000
+        assert result.stop == 8000
 
 
-def test_new_port_range_param_invalid():
+def test_port_range_param_invalid():
     """Test that invalid port ranges raise errors."""
-    # Invalid tuple: start >= end
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(remote_alloc_allowed_port_range=(9000, 8000)):
+    # Backwards range should raise TypeError (validation error wrapped by macro)
+    with pytest.raises(TypeError, match="start cannot be greater than stop"):
+        with configured(remote_alloc_allowed_port_range=slice(9000, 8000)):
             pass
 
-    # Invalid string format
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(remote_alloc_allowed_port_range="invalid"):
+    # Invalid step values should raise TypeError (validation error wrapped by macro)
+    with pytest.raises(TypeError, match="port ranges require step=None or step=1"):
+        with configured(remote_alloc_allowed_port_range=slice(8000, 9000, 2)):
             pass
 
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(remote_alloc_allowed_port_range="8000-9000"):  # wrong separator
+    # None start should raise TypeError (type validation)
+    with pytest.raises(TypeError, match="slice.start must be set"):
+        with configured(remote_alloc_allowed_port_range=slice(None, 9000)):
+            pass
+
+    # None stop should raise TypeError (type validation)
+    with pytest.raises(TypeError, match="slice.stop must be set"):
+        with configured(remote_alloc_allowed_port_range=slice(8000, None)):
+            pass
+
+    # Negative values should raise TypeError (u16 conversion fails)
+    with pytest.raises(TypeError):
+        with configured(remote_alloc_allowed_port_range=slice(-1, 9000)):
+            pass
+
+    # Out of range values should raise TypeError (u16 conversion fails)
+    with pytest.raises(TypeError):
+        with configured(remote_alloc_allowed_port_range=slice(8000, 70000)):
+            pass
+
+    # Tuples should raise TypeError (wrong type)
+    with pytest.raises(TypeError, match="Port range must be a slice object"):
+        with configured(remote_alloc_allowed_port_range=(8000, 9000)):
+            pass
+
+    # Strings should raise TypeError (wrong type)
+    with pytest.raises(TypeError, match="Port range must be a slice object"):
+        with configured(remote_alloc_allowed_port_range="8000..9000"):
             pass
 
 
-def test_all_new_params_together():
-    """Test setting all 29 new config parameters simultaneously."""
+def test_all_params_together():
+    """Test setting all 29 config parameters simultaneously."""
     from monarch._rust_bindings.monarch_hyperactor.config import Encoding
 
     with configured(
@@ -483,7 +513,7 @@ def test_all_new_params_together():
         # Remote allocation
         remote_alloc_bind_to_inaddr_any=True,
         remote_alloc_bootstrap_addr="tcp://127.0.0.1:9000",
-        remote_alloc_allowed_port_range=(8000, 9000),
+        remote_alloc_allowed_port_range=slice(8000, 9000),
         # Logging config
         read_log_buffer=16384,
         force_file_log=True,
@@ -517,7 +547,10 @@ def test_all_new_params_together():
         assert config["max_cast_dimension_size"] == 2048
         assert config["remote_alloc_bind_to_inaddr_any"] is True
         assert config["remote_alloc_bootstrap_addr"] == "tcp://127.0.0.1:9000"
-        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
+        result = config["remote_alloc_allowed_port_range"]
+        assert isinstance(result, slice)
+        assert result.start == 8000
+        assert result.stop == 9000
         assert config["read_log_buffer"] == 16384
         assert config["force_file_log"] is True
         assert config["prefix_with_rank"] is True
@@ -558,7 +591,7 @@ def test_all_new_params_together():
     assert config["get_proc_state_max_idle"] == "1m"
 
 
-def test_new_params_type_errors():
+def test_params_type_errors():
     """Test that type errors are raised for incorrect parameter types."""
     # Duration param with wrong type
     with pytest.raises(TypeError):

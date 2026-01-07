@@ -457,12 +457,13 @@ Remote Allocation
 ``remote_alloc_allowed_port_range``
     Allowed port range for remote allocators.
 
-    - **Type**: ``str`` or ``tuple[int, int]``
+    - **Type**: ``slice``
     - **Default**: None (no default)
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE``
+    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE`` (accepts ``"8000..9000"``)
 
-    Can be specified as a string (``"8000..9000"``) or tuple (``(8000,
-    9000)``).
+    Specify as a Python slice: ``slice(8000, 9000)`` (stop is exclusive, so
+    this allows ports 8000-8999). Empty ranges are allowed (e.g.,
+    ``slice(8000, 8000)``); backwards ranges are rejected.
 
 
 Validation and Error Handling
