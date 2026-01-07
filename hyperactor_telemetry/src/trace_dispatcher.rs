@@ -11,10 +11,10 @@
 //! thread.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -26,7 +26,10 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
+use crate::register_shutdown_hook;
+
 const QUEUE_CAPACITY: usize = 100_000;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Unified representation of a trace event captured from the tracing layer.
 /// This is captured once on the application thread, then sent to the background
@@ -122,16 +125,11 @@ pub(crate) trait TraceEventSink: Send + 'static {
 /// The trace event dispatcher that captures events once and dispatches to multiple sinks
 /// on a background thread.
 pub struct TraceEventDispatcher {
-    sender: Option<mpsc::SyncSender<TraceEvent>>,
+    sender: mpsc::SyncSender<TraceEvent>,
     /// Separate channel so we are always notified of when the main queue is full and events are being dropped.
-    dropped_sender: Option<mpsc::Sender<TraceEvent>>,
-    _worker_handle: WorkerHandle,
+    dropped_sender: mpsc::Sender<TraceEvent>,
     max_level: Option<tracing::level_filters::LevelFilter>,
     dropped_events: Arc<AtomicU64>,
-}
-
-struct WorkerHandle {
-    join_handle: Option<JoinHandle<()>>,
 }
 
 impl TraceEventDispatcher {
@@ -153,102 +151,117 @@ impl TraceEventDispatcher {
         let dropped_events = Arc::new(AtomicU64::new(0));
         let dropped_events_worker = Arc::clone(&dropped_events);
 
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_flag_worker = Arc::clone(&shutdown_flag);
+
+        let (done_tx, done_rx) = mpsc::sync_channel::<()>(1);
+
         let worker_handle = std::thread::Builder::new()
             .name("telemetry-worker".into())
             .spawn(move || {
-                worker_loop(receiver, dropped_receiver, sinks, dropped_events_worker);
+                worker_loop(
+                    receiver,
+                    dropped_receiver,
+                    sinks,
+                    dropped_events_worker,
+                    shutdown_flag_worker,
+                );
+                let _ = done_tx.send(());
             })
             .expect("failed to spawn telemetry worker thread");
 
+        register_shutdown_hook(move || {
+            shutdown_flag.store(true, Ordering::Release);
+
+            if done_rx.recv_timeout(SHUTDOWN_TIMEOUT).is_err() {
+                eprintln!(
+                    "[telemetry] WARNING: worker thread did not exit within {:?}, continuing shutdown",
+                    SHUTDOWN_TIMEOUT
+                );
+                return;
+            }
+
+            // This join should be instant since done_rx was received
+            if let Err(e) = worker_handle.join() {
+                eprintln!(
+                    "[telemetry] worker thread panicked during shutdown: {:?}",
+                    e
+                );
+            }
+        });
+
         Self {
-            sender: Some(sender),
-            dropped_sender: Some(dropped_sender),
-            _worker_handle: WorkerHandle {
-                join_handle: Some(worker_handle),
-            },
+            sender,
+            dropped_sender,
             max_level,
             dropped_events,
         }
     }
 
     fn send_event(&self, event: TraceEvent) {
-        if let Some(sender) = &self.sender {
-            if let Err(mpsc::TrySendError::Full(_)) = sender.try_send(event) {
-                let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Err(mpsc::TrySendError::Full(_)) = self.sender.try_send(event) {
+            let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
 
-                if dropped == 1 || dropped.is_multiple_of(1000) {
-                    eprintln!(
-                        "[telemetry]: {}  events and log lines dropped que to full queue (capacity: {})",
-                        dropped, QUEUE_CAPACITY
-                    );
-                    self.send_drop_event(dropped);
-                }
+            if dropped == 1 || dropped.is_multiple_of(1000) {
+                eprintln!(
+                    "[telemetry]: {} events and log lines dropped due to full queue (capacity: {})",
+                    dropped, QUEUE_CAPACITY
+                );
+                self.send_drop_event(dropped);
             }
         }
     }
 
     fn send_drop_event(&self, total_dropped: u64) {
-        if let Some(dropped_sender) = &self.dropped_sender {
-            #[cfg(target_os = "linux")]
-            let thread_id_num = {
-                // SAFETY: syscall(SYS_gettid) is always safe to call
-                unsafe { libc::syscall(libc::SYS_gettid) as u64 }
-            };
-            #[cfg(not(target_os = "linux"))]
-            let thread_id_num = {
-                let tid = std::thread::current().id();
-                // SAFETY: ThreadId transmute for non-Linux platforms
-                unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) }
-            };
+        #[cfg(target_os = "linux")]
+        let thread_id_num = {
+            // SAFETY: syscall(SYS_gettid) is always safe to call
+            unsafe { libc::syscall(libc::SYS_gettid) as u64 }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let thread_id_num = {
+            let tid = std::thread::current().id();
+            // SAFETY: ThreadId transmute for non-Linux platforms
+            unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) }
+        };
 
-            let mut fields = IndexMap::new();
-            fields.insert(
-                "message".to_string(),
-                FieldValue::Str(format!(
-                    "Telemetry events and log lines dropped due to full queue (capacity: {}). Worker may be falling behind.",
-                    QUEUE_CAPACITY
-                )),
+        let mut fields = IndexMap::new();
+        fields.insert(
+            "message".to_string(),
+            FieldValue::Str(format!(
+                "Telemetry events and log lines dropped due to full queue (capacity: {}). Worker may be falling behind.",
+                QUEUE_CAPACITY
+            )),
+        );
+        fields.insert("dropped_count".to_string(), FieldValue::U64(total_dropped));
+
+        // We want to just directly construct and send a `TraceEvent::Event` here so we don't need to
+        // reason very hard about whether or not we are creating a DoS loop
+        let drop_event = TraceEvent::Event {
+            name: "dropped events",
+            target: module_path!(),
+            level: tracing::Level::ERROR,
+            fields,
+            timestamp: SystemTime::now(),
+            parent_span: None,
+            thread_id: thread_id_num.to_string(),
+            thread_name: std::thread::current()
+                .name()
+                .unwrap_or_default()
+                .to_string(),
+            module_path: Some(module_path!()),
+            file: Some(file!()),
+            line: Some(line!()),
+        };
+
+        if self.dropped_sender.send(drop_event).is_err() {
+            // Last resort
+            eprintln!(
+                "[telemetry] CRITICAL: {} events and log lines dropped and unable to log to telemetry \
+                 (worker thread may have died). Telemetry system offline.",
+                total_dropped
             );
-            fields.insert("dropped_count".to_string(), FieldValue::U64(total_dropped));
-
-            // We want to just directly construct and send a `TraceEvent::Event` here so we don't need to
-            // reason very hard about whether or not we are creating a DoS loop
-            let drop_event = TraceEvent::Event {
-                name: "dropped events",
-                target: module_path!(),
-                level: tracing::Level::ERROR,
-                fields,
-                timestamp: SystemTime::now(),
-                parent_span: None,
-                thread_id: thread_id_num.to_string(),
-                thread_name: std::thread::current()
-                    .name()
-                    .unwrap_or_default()
-                    .to_string(),
-                module_path: Some(module_path!()),
-                file: Some(file!()),
-                line: Some(line!()),
-            };
-
-            if dropped_sender.send(drop_event).is_err() {
-                // Last resort
-                eprintln!(
-                    "[telemetry] CRITICAL: {} events and log lines dropped and unable to log to telemetry \
-                     (worker thread may have died). Telemetry system offline.",
-                    total_dropped
-                );
-            }
         }
-    }
-}
-
-impl Drop for TraceEventDispatcher {
-    fn drop(&mut self) {
-        // Explicitly drop both senders to close the channels.
-        // The next field to be dropped is `worker_handle` which
-        // will run its own drop impl to join the thread and flush
-        drop(self.sender.take());
-        drop(self.dropped_sender.take());
     }
 }
 
@@ -409,12 +422,13 @@ impl<'a> tracing::field::Visit for FieldVisitor<'a> {
 
 /// Background worker loop that receives events from both regular and priority channels,
 /// and dispatches them to sinks. Priority events are processed first.
-/// Runs until both senders are dropped.
+/// Runs until shutdown_flag is set or senders are dropped.
 fn worker_loop(
     receiver: mpsc::Receiver<TraceEvent>,
     dropped_receiver: mpsc::Receiver<TraceEvent>,
     mut sinks: Vec<Box<dyn TraceEventSink>>,
     dropped_events: Arc<AtomicU64>,
+    shutdown_flag: Arc<AtomicBool>,
 ) {
     const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
     const FLUSH_EVENT_COUNT: usize = 1000;
@@ -451,6 +465,10 @@ fn worker_loop(
     }
 
     loop {
+        if shutdown_flag.load(Ordering::Acquire) {
+            break;
+        }
+
         while let Ok(event) = dropped_receiver.try_recv() {
             dispatch_to_sinks(&mut sinks, event);
             events_since_flush += 1;
@@ -469,6 +487,9 @@ fn worker_loop(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                if shutdown_flag.load(Ordering::Acquire) {
+                    break;
+                }
                 flush_sinks(&mut sinks);
                 last_flush = std::time::Instant::now();
                 events_since_flush = 0;
@@ -494,15 +515,5 @@ fn worker_loop(
             "[telemetry] Telemetry worker shutting down. Total events dropped during session: {}",
             total_dropped
         );
-    }
-}
-
-impl Drop for WorkerHandle {
-    fn drop(&mut self) {
-        if let Some(handle) = self.join_handle.take() {
-            if let Err(e) = handle.join() {
-                eprintln!("[telemetry] worker thread panicked: {:?}", e);
-            }
-        }
     }
 }
