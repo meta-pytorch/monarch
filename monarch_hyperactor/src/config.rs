@@ -74,13 +74,14 @@ impl From<PyEncoding> for hyperactor::data::Encoding {
     }
 }
 
-/// Python wrapper for Range<u16>, using tuple or string format.
+/// Python wrapper for Range<u16>, using Python's slice type.
 ///
-/// This type bridges between Python and Rust's
+/// This type bridges between Python's `slice` and Rust's
 /// `std::ops::Range<u16>`.
-/// Accepts either:
-/// - Tuple: `(8000, 9000)`
-/// - String: `"8000..9000"`
+/// Accepts: `slice(8000, 9000)`
+///
+/// Empty ranges are allowed (e.g., `slice(8000, 8000)`).
+/// Backwards ranges are rejected (e.g., `slice(9000, 8000)`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyPortRange(pub std::ops::Range<u16>);
 
@@ -98,43 +99,56 @@ impl From<std::ops::Range<u16>> for PyPortRange {
 
 impl<'py> FromPyObject<'py> for PyPortRange {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        // Try tuple format first: (start, end)
-        if let Ok((start, end)) = ob.extract::<(u16, u16)>() {
-            if start >= end {
+        // Extract slice(start, stop, step)
+        let slice = ob.downcast::<pyo3::types::PySlice>().map_err(|_| {
+            PyTypeError::new_err("Port range must be a slice object: slice(start, stop)")
+        })?;
+
+        // Validate step is None or 1 (port ranges are continuous, no stepping)
+        let step = slice.getattr("step")?;
+        if !step.is_none() {
+            let step_val: isize = step.extract().map_err(|_| {
+                PyTypeError::new_err("slice.step must be None or 1 for port ranges")
+            })?;
+            if step_val != 1 {
                 return Err(PyValueError::new_err(format!(
-                    "Invalid port range ({}, {}): start must be less than end",
-                    start, end
+                    "Invalid slice step {}: port ranges require step=None or step=1",
+                    step_val
                 )));
             }
-            return Ok(PyPortRange(start..end));
         }
 
-        // Fall back to string format: "start..end"
-        let s: String = ob.extract().map_err(|_| {
-            PyTypeError::new_err(
-                "Port range must be either a tuple (start, end) or string 'start..end'",
-            )
+        // Extract and validate start
+        let start_obj = slice.getattr("start")?;
+        if start_obj.is_none() {
+            return Err(PyTypeError::new_err(
+                "slice.start must be set to an integer in range [0, 65535]",
+            ));
+        }
+        let start = start_obj.extract::<u16>().map_err(|_| {
+            PyTypeError::new_err("slice.start must be an integer in range [0, 65535]")
         })?;
-        let parts: Vec<&str> = s.split("..").collect();
-        if parts.len() != 2 {
+
+        // Extract and validate stop
+        let stop_obj = slice.getattr("stop")?;
+        if stop_obj.is_none() {
+            return Err(PyTypeError::new_err(
+                "slice.stop must be set to an integer in range [0, 65535]",
+            ));
+        }
+        let stop = stop_obj.extract::<u16>().map_err(|_| {
+            PyTypeError::new_err("slice.stop must be an integer in range [0, 65535]")
+        })?;
+
+        // Allow empty ranges (start == stop), reject backwards ranges (start > stop)
+        if start > stop {
             return Err(PyValueError::new_err(format!(
-                "Invalid port range format '{}': expected 'start..end'",
-                s
+                "Invalid port range slice({}, {}): start cannot be greater than stop",
+                start, stop
             )));
         }
-        let start = parts[0].parse::<u16>().map_err(|e| {
-            PyValueError::new_err(format!("Invalid start port '{}': {}", parts[0], e))
-        })?;
-        let end = parts[1].parse::<u16>().map_err(|e| {
-            PyValueError::new_err(format!("Invalid end port '{}': {}", parts[1], e))
-        })?;
-        if start >= end {
-            return Err(PyValueError::new_err(format!(
-                "Invalid port range '{}': start must be less than end",
-                s
-            )));
-        }
-        Ok(PyPortRange(start..end))
+
+        Ok(PyPortRange(start..stop))
     }
 }
 
@@ -144,8 +158,7 @@ impl<'py> IntoPyObject<'py> for PyPortRange {
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let formatted = format!("{}..{}", self.0.start, self.0.end);
-        formatted.into_bound_py_any(py)
+        Ok(pyo3::types::PySlice::new(py, self.0.start as isize, self.0.end as isize, 1).into_any())
     }
 }
 
@@ -639,7 +652,6 @@ mod tests {
     use std::time::Duration;
 
     use pyo3::prelude::*;
-    use pyo3::types::PyDict;
     use pyo3::types::PyString;
     use pyo3::types::PyTuple;
 
@@ -758,70 +770,96 @@ mod tests {
     }
 
     #[test]
-    fn test_pyportrange_parse_tuple_format() {
+    fn test_pyportrange_parse_slice_format() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
+            let slice = pyo3::types::PySlice::new(py, 8000, 9000, 1);
+            let r: PyPortRange = slice.extract().unwrap();
+            assert_eq!(r.0.start, 8000);
+            assert_eq!(r.0.end, 9000);
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_tuples_and_strings() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // Tuples should not work
             let tuple = PyTuple::new(py, [8000u16, 9000u16]).unwrap();
-            let r: PyPortRange = tuple.extract().unwrap();
-            assert_eq!(r.0.start, 8000);
-            assert_eq!(r.0.end, 9000);
-        });
-    }
+            let result: PyResult<PyPortRange> = tuple.extract();
+            assert!(result.is_err());
 
-    #[test]
-    fn test_pyportrange_parse_string_format() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+            // Strings should not work
             let s = PyString::new(py, "8000..9000");
-            let r: PyPortRange = s.extract().unwrap();
+            let result: PyResult<PyPortRange> = s.extract();
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_backwards_range() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // start > stop should be rejected
+            let slice = pyo3::types::PySlice::new(py, 9000, 8000, 1);
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("start cannot be greater than stop"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_invalid_step() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // step != 1 and step != None should be rejected
+            let slice = pyo3::types::PySlice::new(py, 8000, 9000, 2);
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("port ranges require step=None or step=1"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_none_start() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // slice(None, 9000) should be rejected
+            // Create via Python eval since PySlice::new doesn't support None
+            let slice = py.eval(c"slice(None, 9000)", None, None).unwrap();
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("slice.start must be set"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_none_stop() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // slice(8000, None) should be rejected
+            // Create via Python eval since PySlice::new doesn't support None
+            let slice = py.eval(c"slice(8000, None)", None, None).unwrap();
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("slice.stop must be set"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_allow_empty_range() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // start == stop should be allowed (empty range)
+            let slice = pyo3::types::PySlice::new(py, 8000, 8000, 1);
+            let r: PyPortRange = slice.extract().unwrap();
             assert_eq!(r.0.start, 8000);
-            assert_eq!(r.0.end, 9000);
-        });
-    }
-
-    #[test]
-    fn test_pyportrange_reject_invalid_string_format() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            // Missing ".."
-            let s = PyString::new(py, "8000-9000");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-
-            // Not numbers
-            let s = PyString::new(py, "abc..def");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-
-            // Too many parts
-            let s = PyString::new(py, "8000..9000..10000");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-        });
-    }
-
-    #[test]
-    fn test_pyportrange_reject_invalid_ranges() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            // start >= end (tuple format)
-            let tuple = PyTuple::new(py, [9000u16, 8000u16]).unwrap();
-            let result: PyResult<PyPortRange> = tuple.extract();
-            assert!(result.is_err());
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(err_msg.contains("start must be less than end"));
-
-            // start == end (tuple format)
-            let tuple = PyTuple::new(py, [8000u16, 8000u16]).unwrap();
-            let result: PyResult<PyPortRange> = tuple.extract();
-            assert!(result.is_err());
-
-            // start >= end (string format)
-            let s = PyString::new(py, "9000..8000");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(err_msg.contains("start must be less than end"));
+            assert_eq!(r.0.end, 8000);
+            assert!(r.0.is_empty());
         });
     }
 
@@ -832,41 +870,13 @@ mod tests {
             let original = 8000..9000;
             let py_range = PyPortRange(original.clone());
             let py_obj = py_range.into_pyobject(py).unwrap();
-            let s: String = py_obj.extract().unwrap();
-            assert_eq!(s, "8000..9000");
+
+            // Should be a slice object
+            assert!(py_obj.downcast::<pyo3::types::PySlice>().is_ok());
 
             // Parse back
             let back: PyPortRange = py_obj.extract().unwrap();
             assert_eq!(back.0, original);
-        });
-    }
-
-    #[test]
-    fn test_pyportrange_accepts_both_formats() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            // Create a dict with both formats
-            let dict = PyDict::new(py);
-            dict.set_item("tuple_format", (8000u16, 9000u16)).unwrap();
-            dict.set_item("string_format", "8000..9000").unwrap();
-
-            // Both should parse to the same range
-            let r1: PyPortRange = dict
-                .get_item("tuple_format")
-                .unwrap()
-                .unwrap()
-                .extract()
-                .unwrap();
-            let r2: PyPortRange = dict
-                .get_item("string_format")
-                .unwrap()
-                .unwrap()
-                .extract()
-                .unwrap();
-
-            assert_eq!(r1.0, r2.0);
-            assert_eq!(r1.0.start, 8000);
-            assert_eq!(r1.0.end, 9000);
         });
     }
 }
