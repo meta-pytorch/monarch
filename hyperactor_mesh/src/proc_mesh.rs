@@ -71,7 +71,6 @@ use crate::alloc::AllocatedProc;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
-use crate::alloc::serve_with_config;
 use crate::assign::Ranks;
 use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent::GspawnResult;
@@ -420,8 +419,8 @@ impl ProcMesh {
         );
 
         // Ensure that the router is served so that agents may reach us.
-        let (router_channel_addr, router_rx) =
-            serve_with_config(alloc.client_router_addr()).map_err(AllocatorError::Other)?;
+        let (router_channel_addr, router_rx) = channel::serve(alloc.client_router_addr())
+            .map_err(|e| AllocatorError::Other(e.into()))?;
         router.serve(router_rx);
         tracing::info!("router channel started listening on addr: {router_channel_addr}");
 
