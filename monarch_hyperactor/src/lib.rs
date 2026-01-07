@@ -23,6 +23,7 @@ pub mod context;
 pub mod local_state_broker;
 pub mod logging;
 pub mod mailbox;
+pub mod mesh_trait;
 pub mod metrics;
 pub mod ndslice;
 pub mod proc;
