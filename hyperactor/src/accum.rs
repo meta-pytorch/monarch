@@ -48,35 +48,52 @@ pub struct ReducerSpec {
 }
 crate::register_type!(ReducerSpec);
 
-/// Runtime behavior of reducers.
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    typeuri::Named,
-    Default
-)]
-pub struct ReducerOpts {
-    /// The maximum interval between updates. When unspecified, a default
-    /// interval is used.
-    pub max_update_interval: Option<Duration>,
-    /// The initial interval for the first update. When unspecified, defaults to 1ms.
-    /// This allows quick flushing of single messages while using exponential backoff
-    /// to reach max_update_interval for batched messages.
-    pub initial_update_interval: Option<Duration>,
+/// The mode in which a reducer operates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
+pub enum ReducerMode {
+    /// Streaming mode: continuously reduce and emit updates based on buffer size/timeout.
+    Streaming {
+        /// The maximum interval between updates. When unspecified, a default
+        /// interval is used.
+        max_update_interval: Option<Duration>,
+        /// The initial interval for the first update. When unspecified, defaults to 1ms.
+        /// This allows quick flushing of single messages while using exponential backoff
+        /// to reach max_update_interval for batched messages.
+        initial_update_interval: Option<Duration>,
+    },
+    /// Once mode: accumulate exactly `n` values, emit a single reduced update, then tear down.
+    Once(usize),
 }
 
-impl ReducerOpts {
+impl Default for ReducerMode {
+    fn default() -> Self {
+        ReducerMode::Streaming {
+            max_update_interval: None,
+            initial_update_interval: None,
+        }
+    }
+}
+
+impl ReducerMode {
     pub(crate) fn max_update_interval(&self) -> Duration {
-        self.max_update_interval
-            .unwrap_or(hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_AGE))
+        match self {
+            ReducerMode::Streaming {
+                max_update_interval,
+                ..
+            } => max_update_interval
+                .unwrap_or(hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_AGE)),
+            ReducerMode::Once(_) => Duration::MAX,
+        }
     }
 
     pub(crate) fn initial_update_interval(&self) -> Duration {
-        self.initial_update_interval
-            .unwrap_or(Duration::from_millis(1))
+        match self {
+            ReducerMode::Streaming {
+                initial_update_interval,
+                ..
+            } => initial_update_interval.unwrap_or(Duration::from_millis(1)),
+            ReducerMode::Once(_) => Duration::MAX,
+        }
     }
 }
 
