@@ -255,6 +255,11 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
+        // Compute peer count for OncePort splitting. This is the number of
+        // destinations the message will be delivered to, so that the split
+        // port can correctly accumulate responses.
+        let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
+
         // Split ports, if any, and update message with new ports. In this
         // way, children actors will reply to this comm actor's ports, instead
         // of to the original ports provided by parent.
@@ -265,7 +270,12 @@ impl CommActor {
                         ReducerMode::Streaming(opts.clone().unwrap_or_default())
                     }
                     UnboundPortKind::Once => {
-                        anyhow::bail!("onceport splitting not yet supported")
+                        // Only split OncePorts that have an accumulator.
+                        // Without a reducer, pass through unchanged.
+                        if reducer_spec.is_none() {
+                            return Ok(());
+                        }
+                        ReducerMode::Once(peer_count)
                     }
                 };
                 let split = port_id.split(
@@ -508,6 +518,11 @@ pub mod test_utils {
             reply_to1: PortRef<u64>,
             #[binding(include)]
             reply_to2: PortRef<MyReply>,
+        },
+        CastAndReplyOnce {
+            arg: String,
+            #[binding(include)]
+            reply_to: hyperactor::OncePortRef<u64>,
         },
     }
 
@@ -1193,5 +1208,143 @@ mod tests {
 
         let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
         execute_cast_and_accum(ranks, instance, reply1_rx, reply_tos).await;
+    }
+
+    struct OncePortMeshSetup {
+        _proc_mesh: Arc<ProcMesh>,
+        actor_mesh: RootActorMesh<'static, TestActor>,
+        reply_rx: hyperactor::mailbox::OncePortReceiver<u64>,
+        reply_tos: Vec<hyperactor::OncePortRef<u64>>,
+        _reply_port_ref: hyperactor::OncePortRef<u64>,
+    }
+
+    async fn setup_once_port_mesh(reducer_spec: Option<accum::ReducerSpec>) -> OncePortMeshSetup {
+        let extent = extent!(replica = 4, host = 4, gpu = 4);
+        let alloc = LocalAllocator
+            .allocate(AllocSpec {
+                extent: extent.clone(),
+                constraints: Default::default(),
+                proc_name: None,
+                transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
+        let dest_actor_name = "dest_actor";
+        let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
+        let params = TestActorParams {
+            forward_port: tx.bind(),
+        };
+        let instance = crate::v1::testing::instance();
+        let actor_mesh: RootActorMesh<TestActor> = Arc::clone(&proc_mesh)
+            .spawn(&instance, dest_actor_name, &params)
+            .await
+            .unwrap();
+
+        let (reply_port_handle, reply_rx) =
+            hyperactor::mailbox::open_once_port::<u64>(proc_mesh.client());
+        let has_reducer = reducer_spec.is_some();
+        let reply_port_ref = match reducer_spec {
+            Some(spec) => hyperactor::OncePortRef::attest_reducible(
+                reply_port_handle.bind().port_id().clone(),
+                Some(spec),
+            ),
+            None => reply_port_handle.bind(),
+        };
+
+        let message = TestMessage::CastAndReplyOnce {
+            arg: "abc".to_string(),
+            reply_to: reply_port_ref.clone(),
+        };
+
+        let selection = sel!(*);
+        clear_collected_tree();
+        actor_mesh
+            .cast(proc_mesh.client(), selection.clone(), message)
+            .unwrap();
+
+        let mut reply_tos = vec![];
+        for _ in extent.points() {
+            let msg = rx.recv().await.expect("missing");
+            match msg {
+                TestMessage::CastAndReplyOnce { arg, reply_to } => {
+                    assert_eq!(arg, "abc");
+                    if has_reducer {
+                        // With reducer: port is split by comm actor.
+                        assert_ne!(reply_to, reply_port_ref);
+                        assert_eq!(reply_to.port_id().actor_id().name(), "comm");
+                    } else {
+                        // Without reducer: port is passed through unchanged.
+                        assert_eq!(reply_to, reply_port_ref);
+                    }
+                    reply_tos.push(reply_to);
+                }
+                _ => {
+                    panic!("unexpected message: {:?}", msg);
+                }
+            }
+        }
+
+        OncePortMeshSetup {
+            _proc_mesh: proc_mesh,
+            actor_mesh,
+            reply_rx,
+            reply_tos,
+            _reply_port_ref: reply_port_ref,
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_reply_once() {
+        // Test OncePort without accumulator - port is NOT split.
+        // All destinations receive the same original port.
+        // First reply is delivered, others fail at receiver (port closed).
+        let OncePortMeshSetup {
+            actor_mesh,
+            reply_rx,
+            reply_tos,
+            ..
+        } = setup_once_port_mesh(None).await;
+        let proc_mesh_client = actor_mesh.proc_mesh().client();
+
+        // All reply_tos point to the same port (not split).
+        // Only the first message will be delivered successfully.
+        let num_replies = reply_tos.len();
+        for (i, reply_to) in reply_tos.into_iter().enumerate() {
+            reply_to.send(proc_mesh_client, i as u64).unwrap();
+        }
+
+        // OncePort receives exactly one value (the first to arrive)
+        let result = reply_rx.recv().await.unwrap();
+        // The result should be one of the values sent
+        assert!(result < num_replies as u64);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_accum_once() {
+        // Test OncePort splitting with sum accumulator.
+        // Each destination actor replies with its rank.
+        // The sum of all ranks should be received at the original port.
+        let reducer_spec = accum::sum::<u64>().reducer_spec();
+        let OncePortMeshSetup {
+            actor_mesh,
+            reply_rx,
+            reply_tos,
+            ..
+        } = setup_once_port_mesh(reducer_spec).await;
+        let proc_mesh_client = actor_mesh.proc_mesh().client();
+
+        // Each actor replies with its index
+        let mut expected_sum = 0u64;
+        for (i, reply_to) in reply_tos.into_iter().enumerate() {
+            reply_to.send(proc_mesh_client, i as u64).unwrap();
+            expected_sum += i as u64;
+        }
+
+        // OncePort should receive the sum of all responses
+        let result = reply_rx.recv().await.unwrap();
+        assert_eq!(result, expected_sum);
     }
 }
