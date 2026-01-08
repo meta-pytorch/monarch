@@ -45,7 +45,6 @@ use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::actor::Referable;
 use crate::context;
-use crate::data::Serialized;
 
 /// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
 /// and store in [`Bindings`]. The extracted parameters in [`Bindings`] can be
@@ -71,12 +70,12 @@ impl<T: RemoteMessage + Bind + Unbind> Castable for T {}
 /// Information extracted from a message through [Unbind], which can be merged
 /// back to the message through [Bind].
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Bindings(VecDeque<(u64, Serialized)>);
+pub struct Bindings(VecDeque<(u64, wirevalue::Any)>);
 
 impl Bindings {
     /// Push a value into this bindings.
     pub fn push_back<T: Serialize + Named>(&mut self, value: &T) -> anyhow::Result<()> {
-        let ser = Serialized::serialize(value)?;
+        let ser = wirevalue::Any::serialize(value)?;
         self.0.push_back((T::typehash(), ser));
         Ok(())
     }
@@ -117,7 +116,7 @@ impl Bindings {
             if v.0 == T::typehash() {
                 let mut t = v.1.deserialized::<T>()?;
                 f(&mut t)?;
-                v.1 = Serialized::serialize(&t)?;
+                v.1 = wirevalue::Any::serialize(&t)?;
             }
         }
         Ok(())
@@ -174,14 +173,14 @@ impl<M: Unbind> Unbound<M> {
 /// Unbound, with its message type M erased through serialization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
 pub struct ErasedUnbound {
-    message: Serialized,
+    message: wirevalue::Any,
     bindings: Bindings,
 }
-crate::register_type!(ErasedUnbound);
+wirevalue::register_type!(ErasedUnbound);
 
 impl ErasedUnbound {
-    /// Create an object directly from Serialized without binding.
-    pub fn new(message: Serialized) -> Self {
+    /// Create an object directly from Any without binding.
+    pub fn new(message: wirevalue::Any) -> Self {
         Self {
             message,
             bindings: Bindings::default(),
@@ -193,7 +192,7 @@ impl ErasedUnbound {
     // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
     pub fn try_from_message<T: Unbind + Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
         let unbound = Unbound::try_from_message(msg)?;
-        let serialized = Serialized::serialize(&unbound.message)?;
+        let serialized = wirevalue::Any::serialize(&unbound.message)?;
         Ok(Self {
             message: serialized,
             bindings: unbound.bindings,
@@ -370,7 +369,7 @@ mod tests {
             reply1: original_port1.clone(),
         };
 
-        let serialized_my_message = Serialized::serialize(&my_message).unwrap();
+        let serialized_my_message = wirevalue::Any::serialize(&my_message).unwrap();
 
         // convert to ErasedUnbound
         let mut erased = ErasedUnbound::try_from_message(my_message.clone()).unwrap();
@@ -382,11 +381,11 @@ mod tests {
                     [
                         (
                             UnboundPort::typehash(),
-                            Serialized::serialize(&UnboundPort::from(&original_port0)).unwrap(),
+                            wirevalue::Any::serialize(&UnboundPort::from(&original_port0)).unwrap(),
                         ),
                         (
                             UnboundPort::typehash(),
-                            Serialized::serialize(&UnboundPort::from(&original_port1)).unwrap(),
+                            wirevalue::Any::serialize(&UnboundPort::from(&original_port1)).unwrap(),
                         ),
                     ]
                     .into_iter()
@@ -423,11 +422,11 @@ mod tests {
             [
                 (
                     UnboundPort::typehash(),
-                    Serialized::serialize(&UnboundPort::from(&new_port0)).unwrap(),
+                    wirevalue::Any::serialize(&UnboundPort::from(&new_port0)).unwrap(),
                 ),
                 (
                     UnboundPort::typehash(),
-                    Serialized::serialize(&UnboundPort::from(&new_port1)).unwrap(),
+                    wirevalue::Any::serialize(&UnboundPort::from(&new_port1)).unwrap(),
                 ),
             ]
             .into_iter()

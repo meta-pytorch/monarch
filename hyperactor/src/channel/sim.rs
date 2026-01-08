@@ -22,7 +22,6 @@ use super::*;
 use crate::channel;
 use crate::clock::Clock;
 use crate::clock::RealClock;
-use crate::data::Serialized;
 use crate::mailbox::MessageEnvelope;
 use crate::simnet::Dispatcher;
 use crate::simnet::Event;
@@ -123,13 +122,17 @@ impl fmt::Display for SimAddr {
 #[derive(Debug)]
 pub(crate) struct MessageDeliveryEvent {
     dest_addr: ChannelAddr,
-    data: Serialized,
+    data: wirevalue::Any,
     latency: tokio::time::Duration,
 }
 
 impl MessageDeliveryEvent {
     /// Creates a new MessageDeliveryEvent.
-    pub fn new(dest_addr: ChannelAddr, data: Serialized, latency: tokio::time::Duration) -> Self {
+    pub fn new(
+        dest_addr: ChannelAddr,
+        data: wirevalue::Any,
+        latency: tokio::time::Duration,
+    ) -> Self {
         Self {
             dest_addr,
             data,
@@ -223,7 +226,7 @@ impl<M: RemoteMessage> Drop for SimRx<M> {
 
 /// Primarily used for dispatching messages to the correct sender.
 pub struct SimDispatcher {
-    dispatchers: DashMap<ChannelAddr, mpsc::Sender<Serialized>>,
+    dispatchers: DashMap<ChannelAddr, mpsc::Sender<wirevalue::Any>>,
     sender_cache: DashMap<ChannelAddr, Arc<dyn Tx<MessageEnvelope> + Send + Sync>>,
 }
 
@@ -236,7 +239,7 @@ fn create_egress_sender(
 
 #[async_trait]
 impl Dispatcher<ChannelAddr> for SimDispatcher {
-    async fn send(&self, addr: ChannelAddr, data: Serialized) -> Result<(), SimNetError> {
+    async fn send(&self, addr: ChannelAddr, data: wirevalue::Any) -> Result<(), SimNetError> {
         self.dispatchers
             .get(&addr)
             .ok_or_else(|| {
@@ -268,14 +271,14 @@ pub(crate) struct SimTx<M: RemoteMessage> {
 pub(crate) struct SimRx<M: RemoteMessage> {
     /// The destination address, not the full SimAddr.
     addr: ChannelAddr,
-    rx: mpsc::Receiver<Serialized>,
+    rx: mpsc::Receiver<wirevalue::Any>,
     _phantom: PhantomData<M>,
 }
 
 #[async_trait]
 impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        let data = match Serialized::serialize(&message) {
+        let data = match wirevalue::Any::serialize(&message) {
             Ok(data) => data,
             Err(err) => {
                 if let Some(return_channel) = return_channel {
@@ -376,7 +379,7 @@ pub(crate) fn dial<M: RemoteMessage>(addr: SimAddr) -> Result<SimTx<M>, ChannelE
 pub(crate) fn serve<M: RemoteMessage>(
     sim_addr: SimAddr,
 ) -> anyhow::Result<(ChannelAddr, SimRx<M>)> {
-    let (tx, rx) = mpsc::channel::<Serialized>(SIM_LINK_BUF_SIZE);
+    let (tx, rx) = mpsc::channel::<wirevalue::Any>(SIM_LINK_BUF_SIZE);
     // Add tx to sender dispatch.
     SENDER.dispatchers.insert(*sim_addr.addr.clone(), tx);
     // Return the sender.
@@ -447,7 +450,7 @@ mod tests {
 
             let (_, mut rx) = sim::serve::<MessageEnvelope>(dst_addr.clone()).unwrap();
             let tx = sim::dial::<MessageEnvelope>(dst_addr).unwrap();
-            let data = Serialized::serialize(&456).unwrap();
+            let data = wirevalue::Any::serialize(&456).unwrap();
             let sender = id!(world[0].hello);
             let dest = id!(world[1].hello);
             let ext = extent!(region = 1, dc = 1, rack = 4, host = 4, gpu = 8);
@@ -543,7 +546,7 @@ mod tests {
         tx.post(MessageEnvelope::new(
             controller,
             PortId(dest, 0),
-            Serialized::serialize(&456).unwrap(),
+            wirevalue::Any::serialize(&456).unwrap(),
             Attrs::new(),
         ));
         {
@@ -624,14 +627,14 @@ mod tests {
             client_tx.post(MessageEnvelope::new(
                 client.clone(),
                 PortId(dest.clone(), 0),
-                Serialized::serialize(&456).unwrap(),
+                wirevalue::Any::serialize(&456).unwrap(),
                 Attrs::new(),
             ));
             // Send system message
             controller_tx.post(MessageEnvelope::new(
                 controller.clone(),
                 PortId(dest.clone(), 0),
-                Serialized::serialize(&456).unwrap(),
+                wirevalue::Any::serialize(&456).unwrap(),
                 Attrs::new(),
             ));
             // Allow some time for simnet to run
