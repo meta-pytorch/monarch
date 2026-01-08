@@ -43,7 +43,7 @@ use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::selection::Selection;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
-use hyperactor_mesh::supervision::SupervisionFailureMessage;
+use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh_macros::sel;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
@@ -935,12 +935,8 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
 }
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for MeshControllerActor {
-    async fn handle(
-        &mut self,
-        this: &Context<Self>,
-        message: SupervisionFailureMessage,
-    ) -> anyhow::Result<()> {
+impl Handler<MeshFailure> for MeshControllerActor {
+    async fn handle(&mut self, this: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner.
         let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(

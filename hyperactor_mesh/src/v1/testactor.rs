@@ -45,7 +45,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::comm::multicast::CastInfo;
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 use crate::v1::ActorMesh;
 #[cfg(test)]
 use crate::v1::ActorMeshRef;
@@ -303,7 +303,7 @@ impl Handler<GetConfigAttrs> for TestActor {
 /// Replies with None if no supervision event is encountered within a timeout
 /// (10 seconds).
 #[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct NextSupervisionFailure(pub PortRef<Option<SupervisionFailureMessage>>);
+pub struct NextSupervisionFailure(pub PortRef<Option<MeshFailure>>);
 
 /// A small wrapper to handle supervision messages so they don't
 /// need to reach the client. This just wraps and forwards all messages to TestActor.
@@ -313,7 +313,7 @@ pub struct NextSupervisionFailure(pub PortRef<Option<SupervisionFailureMessage>>
     spawn = true,
     handlers = [
         CauseSupervisionEvent { cast = true },
-        SupervisionFailureMessage { cast = true },
+        MeshFailure { cast = true },
         NextSupervisionFailure { cast = true },
     ]
 )]
@@ -321,13 +321,13 @@ pub struct WrapperActor {
     proc_mesh: ProcMeshRef,
     // Needs to be a mesh so we own this actor and have a controller for it.
     mesh: Option<ActorMesh<TestActor>>,
-    supervisor: PortRef<SupervisionFailureMessage>,
+    supervisor: PortRef<MeshFailure>,
     test_name: Name,
 }
 
 #[async_trait]
 impl hyperactor::RemoteSpawn for WrapperActor {
-    type Params = (ProcMeshRef, PortRef<SupervisionFailureMessage>, Name);
+    type Params = (ProcMeshRef, PortRef<MeshFailure>, Name);
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
@@ -406,14 +406,10 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
 }
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for WrapperActor {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        msg: SupervisionFailureMessage,
-    ) -> Result<(), anyhow::Error> {
+impl Handler<MeshFailure> for WrapperActor {
+    async fn handle(&mut self, cx: &Context<Self>, msg: MeshFailure) -> Result<(), anyhow::Error> {
         // All supervision events are considered handled so they don't bubble up
-        // to the client (who isn't listening for SupervisionFailureMessage).
+        // to the client (who isn't listening for MeshFailure).
         tracing::info!("got supervision event from child: {}", msg);
         // Send to a port so the client can view the messages.
         // Ignore the error if there is one.
