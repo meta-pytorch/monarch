@@ -4,26 +4,23 @@
 name = "cuda_ping_pong"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [lib]
 path = "src/cuda_ping_pong.rs"
 test = false
 doctest = false
-edition = "2024"
 
 [[bin]]
 name = "cuda_ping_pong_bootstrap"
 path = "bootstrap.rs"
 test = false
-edition = "2024"
 
 [[bin]]
 name = "cuda_ping_pong_example"
 path = "src/lib.rs"
 test = false
-edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"

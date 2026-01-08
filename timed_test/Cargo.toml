@@ -4,14 +4,13 @@
 name = "timed_test"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [lib]
 test = false
 doctest = false
 proc-macro = true
-edition = "2024"
 
 [[test]]
 name = "timed_test_test"

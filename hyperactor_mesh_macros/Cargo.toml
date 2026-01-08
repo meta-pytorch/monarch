@@ -4,14 +4,13 @@
 name = "hyperactor_mesh_macros"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [lib]
 test = false
 doctest = false
 proc-macro = true
-edition = "2024"
 
 [dependencies]
 ndslice = { version = "0.0.0", path = "../ndslice" }

@@ -251,8 +251,9 @@ impl ProcMesh {
         if let Some(comm_actor_name) = comm_actor_name {
             // CommActor satisfies `Actor + Referable`, so it can be
             // spawned and safely referenced via ActorRef<CommActor>.
+            // It is a system actor that should not have a controller managing it.
             let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
-                .spawn_with_name(cx, comm_actor_name, &Default::default())
+                .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
                 .await?;
             let address_book: HashMap<_, _> = comm_actor_mesh
                 .iter()
@@ -760,7 +761,8 @@ impl ProcMeshRef {
         let agent_name = self.ranks.first().unwrap().agent.actor_id().name();
         // This name must match the ProcMeshAgent name, which can change depending on the allocator.
         // Since we control the agent_name, it is guaranteed to be a valid mesh identifier.
-        ActorMeshRef::new(Name::new_reserved(agent_name).unwrap(), self.clone())
+        // No controller for the ProcMeshAgent mesh.
+        ActorMeshRef::new(Name::new_reserved(agent_name).unwrap(), self.clone(), None)
     }
 
     /// The supervision events of procs in this mesh.
@@ -897,7 +899,9 @@ impl ProcMeshRef {
         A::Params: RemoteMessage,
         C::A: Handler<SupervisionFailureMessage>,
     {
-        self.spawn_with_name(cx, Name::new(name)?, params).await
+        // Spawning from a string is never a system actor.
+        self.spawn_with_name(cx, Name::new(name)?, params, None, false)
+            .await
     }
 
     /// Spawn a 'service' actor. Service actors are *singletons*, using
@@ -917,7 +921,7 @@ impl ProcMeshRef {
         A::Params: RemoteMessage,
         C::A: Handler<SupervisionFailureMessage>,
     {
-        self.spawn_with_name(cx, Name::new_reserved(name)?, params)
+        self.spawn_with_name(cx, Name::new_reserved(name)?, params, None, false)
             .await
     }
 
@@ -943,11 +947,13 @@ impl ProcMeshRef {
         proc_mesh=self.name.to_string(),
         actor_name=name.to_string(),
     ))]
-    pub(crate) async fn spawn_with_name<A: RemoteSpawn, C: context::Actor>(
+    pub async fn spawn_with_name<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
         name: Name,
         params: &A::Params,
+        supervision_display_name: Option<String>,
+        is_system_actor: bool,
     ) -> v1::Result<ActorMesh<A>>
     where
         A::Params: RemoteMessage,
@@ -958,7 +964,9 @@ impl ProcMeshRef {
             status = "ActorMesh::Spawn::Attempt",
         );
         tracing::info!(name = "ActorMeshStatus", status = "Spawn::Attempt");
-        let result = self.spawn_with_name_inner(cx, name, params).await;
+        let result = self
+            .spawn_with_name_inner(cx, name, params, supervision_display_name, is_system_actor)
+            .await;
         match &result {
             Ok(_) => {
                 tracing::info!(
@@ -980,6 +988,8 @@ impl ProcMeshRef {
         cx: &C,
         name: Name,
         params: &A::Params,
+        supervision_display_name: Option<String>,
+        is_system_actor: bool,
     ) -> v1::Result<ActorMesh<A>>
     where
         C::A: Handler<SupervisionFailureMessage>,
@@ -1052,7 +1062,7 @@ impl ProcMeshRef {
         // overlays are applied, it emits a new StatusMesh snapshot.
         // `wait()` loops on it, deciding when the stream is
         // "complete" (no more NotExist) or times out.
-        let mesh = match GetRankStatus::wait(
+        let (statuses, mut mesh) = match GetRankStatus::wait(
             rx,
             self.ranks.len(),
             hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE),
@@ -1066,7 +1076,7 @@ impl ProcMeshRef {
                 // `first_terminating().is_none()` semantics.
                 let has_terminating = statuses.values().any(|s| s.is_terminating());
                 if !has_terminating {
-                    Ok(ActorMesh::new(self.clone(), name))
+                    Ok((statuses, ActorMesh::new(self.clone(), name, None)))
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &statuses,
@@ -1090,13 +1100,23 @@ impl ProcMeshRef {
                 Err(Error::ActorSpawnError { statuses: legacy })
             }
         }?;
-        // TODO: use the SupervisionFailureMessage port that was added as a requirement here.
-        // Spawn a unique mesh manager for each actor mesh, so the type of the
-        // mesh can be preserved.
-        let controller = ActorMeshController::<A>::new(mesh.deref().clone());
-        controller
-            .spawn(cx)
-            .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        // We don't need controllers for a system actor like the CommActor.
+        if !is_system_actor {
+            // Spawn a unique mesh manager for each actor mesh, so the type of the
+            // mesh can be preserved.
+            let controller: ActorMeshController<A> = ActorMeshController::new(
+                mesh.deref().clone(),
+                supervision_display_name,
+                Some(cx.instance().port().bind()),
+                statuses,
+            );
+            let controller = controller
+                .spawn(cx)
+                .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            // Controller and ActorMesh both depend on references from each other, break
+            // the cycle by setting the controller after the fact.
+            mesh.set_controller(Some(controller.bind()));
+        }
         Ok(mesh)
     }
 
@@ -1110,7 +1130,7 @@ impl ProcMeshRef {
         &self,
         cx: &impl context::Actor,
         mesh_name: Name,
-    ) -> v1::Result<()> {
+    ) -> v1::Result<ValueMesh<Status>> {
         tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Attempt");
         tracing::info!(name = "ActorMeshStatus", status = "Stop::Attempt");
         let result = self.stop_actor_by_name_inner(cx, mesh_name).await;
@@ -1131,7 +1151,7 @@ impl ProcMeshRef {
         &self,
         cx: &impl context::Actor,
         mesh_name: Name,
-    ) -> v1::Result<()> {
+    ) -> v1::Result<ValueMesh<Status>> {
         let region = self.region().clone();
         let agent_mesh = self.agent_mesh();
         agent_mesh.cast(
@@ -1184,7 +1204,7 @@ impl ProcMeshRef {
                 // and we're trying to stop the others.
                 let all_stopped = statuses.values().all(|s| s.is_terminating());
                 if all_stopped {
-                    Ok(())
+                    Ok(statuses)
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &statuses,

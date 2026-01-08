@@ -4,13 +4,10 @@
 name = "hyperactor_config"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-hyperactor@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "Core configuration and attribute infrastructure for Hyperactor"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
-
-[lib]
-edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"

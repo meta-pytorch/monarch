@@ -186,7 +186,6 @@ mod tests {
         let expected_lines: HashSet<&str> = indoc! {"
             # export HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE=0.01
             # export HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL=5s
-            # export HYPERACTOR_DEFAULT_ENCODING=serde_multipart
             # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=5m
             # export HYPERACTOR_STOP_ACTOR_TIMEOUT=10s
             # export HYPERACTOR_SPLIT_MAX_BUFFER_SIZE=5
@@ -198,6 +197,10 @@ mod tests {
             export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=1m
             # export HYPERACTOR_CODEC_MAX_FRAME_LENGTH=10737418240
             export HYPERACTOR_CODEC_MAX_FRAME_LENGTH=1024
+            # export HYPERACTOR_CLEANUP_TIMEOUT=3s
+            # export HYPERACTOR_SPLIT_MAX_BUFFER_AGE=50ms
+            # export HYPERACTOR_DEFAULT_ENCODING=serde_multipart
+            # export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=30s
         "}
         .trim_end()
         .lines()

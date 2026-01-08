@@ -4,36 +4,28 @@
 name = "hyperactor_mesh"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
-license = "BSD-3-Clause"
-
-[lib]
 edition = "2024"
+license = "BSD-3-Clause"
 
 [[bin]]
 name = "hyperactor_mesh_test_bootstrap"
 path = "test/bootstrap.rs"
-edition = "2024"
 
 [[bin]]
 name = "hyperactor_mesh_test_remote_process_alloc"
 path = "test/remote_process_alloc.rs"
-edition = "2024"
 
 [[bin]]
 name = "hyperactor_mesh_test_remote_process_allocator"
 path = "test/remote_process_allocator.rs"
-edition = "2024"
 
 [[bin]]
 name = "process_allocator_test_bin"
 path = "test/process_allocator_cleanup/process_allocator_test_bin.rs"
-edition = "2024"
 
 [[bin]]
 name = "process_allocator_test_bootstrap"
 path = "test/process_allocator_cleanup/process_allocator_test_bootstrap.rs"
-edition = "2024"
 
 [[test]]
 name = "process_allocator_cleanup"

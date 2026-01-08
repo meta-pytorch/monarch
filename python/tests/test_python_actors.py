@@ -1240,6 +1240,15 @@ def test_mesh_len():
     assert 12 == len(s)
 
 
+def test_long_endpoint_completes() -> None:
+    """Tests that a mesh with endpoints that take a long time to complete still
+    complete and don't hit supervision errors"""
+    pm = this_host().spawn_procs(per_host={"gpus": 1})
+    sleeper = pm.spawn("sleep", SleepActor)
+    # Sleep for 60 seconds and then complete without an exception.
+    sleeper.sleep.call(60).get()
+
+
 class UndeliverableMessageReceiver(Actor):
     def __init__(self):
         self._messages = asyncio.Queue()

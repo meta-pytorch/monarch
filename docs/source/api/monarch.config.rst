@@ -438,33 +438,6 @@ Remote Allocation
     - **Default**: ``"5m"``
     - **Environment**: ``HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL``
 
-``remote_alloc_bind_to_inaddr_any``
-    Bind remote allocators to INADDR_ANY (0.0.0.0).
-
-    - **Type**: ``bool``
-    - **Default**: ``False``
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY``
-
-``remote_alloc_bootstrap_addr``
-    Bootstrap address for remote allocators.
-
-    - **Type**: ``str``
-    - **Default**: None (no default)
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_BOOTSTRAP_ADDR``
-
-    Example: ``"tcp://127.0.0.1:9000"``
-
-``remote_alloc_allowed_port_range``
-    Allowed port range for remote allocators.
-
-    - **Type**: ``slice``
-    - **Default**: None (no default)
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE`` (accepts ``"8000..9000"``)
-
-    Specify as a Python slice: ``slice(8000, 9000)`` (stop is exclusive, so
-    this allows ports 8000-8999). Empty ranges are allowed (e.g.,
-    ``slice(8000, 8000)``); backwards ranges are rejected.
-
 
 Validation and Error Handling
 -----------------------------

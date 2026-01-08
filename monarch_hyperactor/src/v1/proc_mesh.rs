@@ -9,6 +9,7 @@
 use std::ops::Deref;
 
 use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::v1;
 use hyperactor_mesh::v1::proc_mesh::ProcMesh;
 use hyperactor_mesh::v1::proc_mesh::ProcMeshRef;
 use monarch_types::PickledPyObject;
@@ -91,18 +92,27 @@ impl PyProcMesh {
         })
     }
 
+    #[pyo3(signature = (instance, name, actor, supervision_display_name = None))]
     fn spawn_nonblocking<'py>(
         &self,
         instance: &PyInstance,
         name: String,
         actor: &Bound<'py, PyType>,
+        supervision_display_name: Option<String>,
     ) -> PyResult<PyPythonTask> {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         let proc_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         let mesh_impl = async move {
+            let full_name = v1::Name::new(name).unwrap();
             let actor_mesh = proc_mesh
-                .spawn(instance.deref(), &name, &pickled_type)
+                .spawn_with_name(
+                    instance.deref(),
+                    full_name,
+                    &pickled_type,
+                    supervision_display_name,
+                    false,
+                )
                 .await
                 .map_err(to_py_error)?;
             Ok(PythonActorMesh::from_impl(Box::new(
@@ -113,12 +123,14 @@ impl PyProcMesh {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (proc_mesh, instance, name, actor, emulated, supervision_display_name = None))]
     fn spawn_async(
         proc_mesh: &mut PyShared,
         instance: &PyInstance,
         name: String,
         actor: Py<PyType>,
         emulated: bool,
+        supervision_display_name: Option<String>,
     ) -> PyResult<PyObject> {
         let task = proc_mesh.task()?.take_task()?;
         let instance = instance.clone();
@@ -131,8 +143,15 @@ impl PyProcMesh {
                 Ok((slf.mesh_ref()?.clone(), pickled_type))
             })?;
 
+            let full_name = v1::Name::new(name).unwrap();
             let actor_mesh = proc_mesh
-                .spawn(instance.deref(), &name, &pickled_type)
+                .spawn_with_name(
+                    instance.deref(),
+                    full_name,
+                    &pickled_type,
+                    supervision_display_name,
+                    false,
+                )
                 .await
                 .map_err(anyhow::Error::from)?;
             Ok::<_, PyErr>(Box::new(PythonActorMeshImpl::new_owned(actor_mesh)))

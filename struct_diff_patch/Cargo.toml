@@ -4,13 +4,10 @@
 name = "struct_diff_patch"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-struct_diff_patch@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "diff/patch for Rust structs"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
-
-[lib]
-edition = "2024"
 
 [dependencies]
 paste = "1.0.14"

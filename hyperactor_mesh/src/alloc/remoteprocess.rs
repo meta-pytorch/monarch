@@ -66,10 +66,8 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::alloc::ProcessAllocator;
-use crate::alloc::REMOTE_ALLOC_BOOTSTRAP_ADDR;
 use crate::alloc::process::CLIENT_TRACE_ID_LABEL;
 use crate::alloc::process::ClientContext;
-use crate::alloc::serve_with_config;
 use crate::alloc::with_unspecified_port_or_any;
 use crate::shortuuid::ShortUuid;
 
@@ -325,7 +323,7 @@ impl RemoteProcessAllocator {
     ) {
         tracing::info!("handle allocation request, bootstrap_addr: {bootstrap_addr}");
         // start proc message forwarder
-        let (forwarder_addr, forwarder_rx) = match serve_with_config(forwarder_addr) {
+        let (forwarder_addr, forwarder_rx) = match channel::serve(forwarder_addr) {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("failed to to bootstrap forwarder actor: {}", e);
@@ -629,13 +627,9 @@ impl RemoteProcessAlloc {
         remote_allocator_port: u16,
         initializer: impl RemoteProcessAllocInitializer + Send + Sync + 'static,
     ) -> Result<Self, anyhow::Error> {
-        let alloc_serve_addr =
-            match hyperactor_config::global::try_get_cloned(REMOTE_ALLOC_BOOTSTRAP_ADDR) {
-                Some(addr_str) => addr_str.parse()?,
-                None => ChannelAddr::any(spec.transport.clone()),
-            };
+        let alloc_serve_addr = ChannelAddr::any(spec.transport.clone());
 
-        let (bootstrap_addr, rx) = serve_with_config(alloc_serve_addr)?;
+        let (bootstrap_addr, rx) = channel::serve(alloc_serve_addr)?;
 
         tracing::info!(
             "starting alloc for {} on: {}",

@@ -4,13 +4,12 @@
 name = "tester"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [[bin]]
 name = "tester"
 path = "main.rs"
-edition = "2024"
 
 [dependencies]
 hyperactor_telemetry = { version = "0.0.0", path = ".." }

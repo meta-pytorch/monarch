@@ -410,11 +410,15 @@ impl HostMesh {
         // sub-host dimension of size 1.
 
         let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port();
+        let trampoline_name = Name::new("host_mesh_trampoline").unwrap();
         let _trampoline_actor_mesh = proc_mesh
-            .spawn::<HostMeshAgentProcMeshTrampoline, C>(
+            .spawn_with_name::<HostMeshAgentProcMeshTrampoline, C>(
                 cx,
-                "host_mesh_trampoline",
+                trampoline_name,
                 &(transport, mesh_agents.bind(), bootstrap_params, is_local),
+                None,
+                // The trampoline is a system actor and does not need a controller.
+                true,
             )
             .await?;
 

@@ -227,7 +227,10 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
 #[async_trait]
 impl Handler<resource::Stop> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
-        let host = self.host.as_mut().expect("host present");
+        let host = self
+            .host
+            .as_mut()
+            .ok_or(anyhow::anyhow!("HostMeshAgent has already shut down"))?;
         let manager = host.as_process().map(Host::manager);
         let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
         // We don't remove the proc from the state map, instead we just store
@@ -391,8 +394,7 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
         let manager: Option<&BootstrapProcManager> = self
             .host
             .as_mut()
-            .expect("host")
-            .as_process()
+            .and_then(|h| h.as_process())
             .map(Host::manager);
         let state = match self.created.get(&get_state.name) {
             Some(ProcCreationState {

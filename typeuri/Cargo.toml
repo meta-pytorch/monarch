@@ -4,13 +4,10 @@
 name = "typeuri"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-typeuri@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "Named trait for types with globally unique type URIs"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
-
-[lib]
-edition = "2024"
 
 [dependencies]
 bytes = { version = "1.10", features = ["serde"] }

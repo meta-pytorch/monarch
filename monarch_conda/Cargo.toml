@@ -4,16 +4,12 @@
 name = "monarch_conda"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
-license = "BSD-3-Clause"
-
-[lib]
 edition = "2024"
+license = "BSD-3-Clause"
 
 [[bin]]
 name = "conda_sync_cli"
 path = "src/main.rs"
-edition = "2024"
 
 [dependencies]
 aho-corasick = "1.1.4"

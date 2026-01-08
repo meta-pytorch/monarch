@@ -452,8 +452,18 @@ class ProcMesh(MeshTrait):
             )
 
         instance = context().actor_instance
+        # The default name used has a UUID appended to it that is not useful for debugging.
+        # Replace with this more descriptive name.
+        supervision_display_name = (
+            f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
+        )
         actor_mesh = HyProcMesh.spawn_async(
-            pm, instance._as_rust(), name, _Actor, emulated=False
+            pm,
+            instance._as_rust(),
+            name,
+            _Actor,
+            emulated=False,
+            supervision_display_name=supervision_display_name,
         )
         # Inlined ActorMesh._create implementation
         mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)

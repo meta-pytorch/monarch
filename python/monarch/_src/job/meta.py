@@ -201,7 +201,12 @@ class MASTJob(JobTrait):
             ],
             additional_packages=packages,
             timeout_sec=self._spec.timeout_sec,
-            env=self._spec.env,
+            env={
+                **hyperactor.DEFAULT_NVRT_ENVS,
+                **hyperactor.DEFAULT_NCCL_ENVS,
+                **hyperactor.DEFAULT_TORCH_ENVS,
+                **self._spec.env,
+            },
         )
         with ExitStack() as stack:
             workspace = Workspace(self._spec.workspace)
