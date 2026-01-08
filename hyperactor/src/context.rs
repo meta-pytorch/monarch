@@ -153,7 +153,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                 Ok(true)
             }),
             Some(reducer) => match reducer_mode {
-                ReducerMode::Streaming { .. } => {
+                ReducerMode::Streaming(_) => {
                     let buffer: Arc<Mutex<UpdateBuffer>> =
                         Arc::new(Mutex::new(UpdateBuffer::new(reducer)));
 

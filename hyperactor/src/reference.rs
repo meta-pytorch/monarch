@@ -49,6 +49,7 @@ use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::accum::ReducerMode;
 use crate::accum::ReducerSpec;
+use crate::accum::StreamingReducerOpts;
 use crate::actor::Referable;
 use crate::channel::ChannelAddr;
 use crate::context;
@@ -1141,13 +1142,22 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
     }
 }
 
+/// The kind of unbound port.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+pub enum UnboundPortKind {
+    /// A streaming port, which should be reduced with the provided options.
+    Streaming(Option<StreamingReducerOpts>),
+    /// A OncePort, which must be one-shot aggregated.
+    Once,
+}
+
 /// The parameters extracted from [`PortRef`] to [`Bindings`].
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
 pub struct UnboundPort(
     pub PortId,
     pub Option<ReducerSpec>,
-    pub ReducerMode,
     pub bool, // return_undeliverable
+    pub UnboundPortKind,
 );
 crate::register_type!(UnboundPort);
 
@@ -1160,11 +1170,15 @@ impl UnboundPort {
 
 impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
     fn from(port_ref: &PortRef<M>) -> Self {
+        let kind = match &port_ref.reducer_mode {
+            ReducerMode::Streaming(opts) => UnboundPortKind::Streaming(Some(opts.clone())),
+            ReducerMode::Once(_) => UnboundPortKind::Once,
+        };
         UnboundPort(
             port_ref.port_id.clone(),
             port_ref.reducer_spec.clone(),
-            port_ref.reducer_mode.clone(),
             port_ref.return_undeliverable,
+            kind,
         )
     }
 }
@@ -1177,11 +1191,15 @@ impl<M: RemoteMessage> Unbind for PortRef<M> {
 
 impl<M: RemoteMessage> Bind for PortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let bound = bindings.try_pop_front::<UnboundPort>()?;
-        self.port_id = bound.0;
-        self.reducer_spec = bound.1;
-        self.reducer_mode = bound.2;
-        self.return_undeliverable = bound.3;
+        let UnboundPort(port_id, reducer_spec, return_undeliverable, port_kind) =
+            bindings.try_pop_front::<UnboundPort>()?;
+        self.port_id = port_id;
+        self.reducer_spec = reducer_spec;
+        self.return_undeliverable = return_undeliverable;
+        self.reducer_mode = match port_kind {
+            UnboundPortKind::Streaming(opts) => ReducerMode::Streaming(opts.unwrap_or_default()),
+            UnboundPortKind::Once => ReducerMode::Once(1),
+        };
         Ok(())
     }
 }
