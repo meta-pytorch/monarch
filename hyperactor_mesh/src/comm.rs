@@ -1084,8 +1084,11 @@ mod tests {
             forward_port: tx.bind(),
         };
         let actor_name = v1::Name::new("test").expect("valid test name");
+        // Make this actor a "system" actor to avoid spawning a controller actor.
+        // This test is verifying the whole comm tree, so we want fewer actors
+        // involved.
         let actor_mesh = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params)
+            .spawn_with_name(&instance, actor_name, &params, None, true)
             .await
             .unwrap();
         let actor_mesh_ref = actor_mesh.deref().clone();

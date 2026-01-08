@@ -336,8 +336,6 @@ def test_integer_params(param_name, test_value, default_value):
         ("mesh_bootstrap_enable_pdeathsig", True),
         # Runtime and buffering
         ("shared_asyncio_runtime", False),
-        # Remote allocation
-        ("remote_alloc_bind_to_inaddr_any", False),
         # Logging config
         ("force_file_log", False),
         ("prefix_with_rank", True),
@@ -409,79 +407,6 @@ def test_encoding_param_invalid():
             pass
 
 
-def test_bootstrap_addr_param():
-    """Test remote_alloc_bootstrap_addr string parameter."""
-    # Note: This attribute has no default value, only test setting it
-    test_addr = "tcp://127.0.0.1:9000"
-    with configured(remote_alloc_bootstrap_addr=test_addr) as config:
-        assert config["remote_alloc_bootstrap_addr"] == test_addr
-
-
-def test_port_range_param_slice():
-    """Test remote_alloc_allowed_port_range with slice format."""
-    # Test slice format
-    with configured(remote_alloc_allowed_port_range=slice(8000, 9000)) as config:
-        result = config["remote_alloc_allowed_port_range"]
-        assert isinstance(result, slice)
-        assert result.start == 8000
-        assert result.stop == 9000
-
-    # Test edge cases
-    with configured(remote_alloc_allowed_port_range=slice(1, 65535)) as config:
-        result = config["remote_alloc_allowed_port_range"]
-        assert result.start == 1
-        assert result.stop == 65535
-
-    # Test empty range
-    with configured(remote_alloc_allowed_port_range=slice(8000, 8000)) as config:
-        result = config["remote_alloc_allowed_port_range"]
-        assert result.start == 8000
-        assert result.stop == 8000
-
-
-def test_port_range_param_invalid():
-    """Test that invalid port ranges raise errors."""
-    # Backwards range should raise TypeError (validation error wrapped by macro)
-    with pytest.raises(TypeError, match="start cannot be greater than stop"):
-        with configured(remote_alloc_allowed_port_range=slice(9000, 8000)):
-            pass
-
-    # Invalid step values should raise TypeError (validation error wrapped by macro)
-    with pytest.raises(TypeError, match="port ranges require step=None or step=1"):
-        with configured(remote_alloc_allowed_port_range=slice(8000, 9000, 2)):
-            pass
-
-    # None start should raise TypeError (type validation)
-    with pytest.raises(TypeError, match="slice.start must be set"):
-        with configured(remote_alloc_allowed_port_range=slice(None, 9000)):
-            pass
-
-    # None stop should raise TypeError (type validation)
-    with pytest.raises(TypeError, match="slice.stop must be set"):
-        with configured(remote_alloc_allowed_port_range=slice(8000, None)):
-            pass
-
-    # Negative values should raise TypeError (u16 conversion fails)
-    with pytest.raises(TypeError):
-        with configured(remote_alloc_allowed_port_range=slice(-1, 9000)):
-            pass
-
-    # Out of range values should raise TypeError (u16 conversion fails)
-    with pytest.raises(TypeError):
-        with configured(remote_alloc_allowed_port_range=slice(8000, 70000)):
-            pass
-
-    # Tuples should raise TypeError (wrong type)
-    with pytest.raises(TypeError, match="Port range must be a slice object"):
-        with configured(remote_alloc_allowed_port_range=(8000, 9000)):
-            pass
-
-    # Strings should raise TypeError (wrong type)
-    with pytest.raises(TypeError, match="Port range must be a slice object"):
-        with configured(remote_alloc_allowed_port_range="8000..9000"):
-            pass
-
-
 def test_all_params_together():
     """Test setting all 29 config parameters simultaneously."""
     from monarch._rust_bindings.monarch_hyperactor.config import Encoding
@@ -510,10 +435,6 @@ def test_all_params_together():
         small_write_threshold=512,
         # Mesh config
         max_cast_dimension_size=2048,
-        # Remote allocation
-        remote_alloc_bind_to_inaddr_any=True,
-        remote_alloc_bootstrap_addr="tcp://127.0.0.1:9000",
-        remote_alloc_allowed_port_range=slice(8000, 9000),
         # Logging config
         read_log_buffer=16384,
         force_file_log=True,
@@ -545,12 +466,6 @@ def test_all_params_together():
         assert config["shared_asyncio_runtime"] is True
         assert config["small_write_threshold"] == 512
         assert config["max_cast_dimension_size"] == 2048
-        assert config["remote_alloc_bind_to_inaddr_any"] is True
-        assert config["remote_alloc_bootstrap_addr"] == "tcp://127.0.0.1:9000"
-        result = config["remote_alloc_allowed_port_range"]
-        assert isinstance(result, slice)
-        assert result.start == 8000
-        assert result.stop == 9000
         assert config["read_log_buffer"] == 16384
         assert config["force_file_log"] is True
         assert config["prefix_with_rank"] is True
@@ -580,8 +495,6 @@ def test_all_params_together():
     assert config["shared_asyncio_runtime"] is False
     assert config["small_write_threshold"] == 256
     # max_cast_dimension_size is usize::MAX, skip checking it
-    assert config["remote_alloc_bind_to_inaddr_any"] is False
-    # remote_alloc_bootstrap_addr and remote_alloc_allowed_port_range have no defaults
     assert config["read_log_buffer"] == 100
     assert config["force_file_log"] is False
     assert config["prefix_with_rank"] is True

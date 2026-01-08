@@ -14,12 +14,14 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::GangId;
 use hyperactor::GangRef;
 use hyperactor::Message;
 use hyperactor::PortHandle;
+use hyperactor::ProcId;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
@@ -27,7 +29,9 @@ use hyperactor::WorldId;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
+use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -56,6 +60,7 @@ use typeuri::Named;
 
 use crate::CommActor;
 use crate::Mesh;
+use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::Uslice;
@@ -71,6 +76,45 @@ declare_attrs! {
     /// handling, where the CastMessageEnvelope is serialized, and its content
     /// cannot be inspected.
     pub attr CAST_ACTOR_MESH_ID: ActorMeshId;
+}
+
+/// An undeliverable might have its sender address set as the comm actor instead
+/// of the original sender. Update it based on the headers present in the message
+/// so it matches the sender.
+pub fn update_undeliverable_envelope_for_casting(
+    mut envelope: Undeliverable<MessageEnvelope>,
+) -> Undeliverable<MessageEnvelope> {
+    let old_actor = envelope.0.sender().clone();
+    // v1 casting
+    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER).cloned() {
+        tracing::debug!(
+            actor_id = %old_actor,
+            "remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
+        );
+        envelope.0.update_sender(actor_id);
+    // v0 casting
+    } else if let Some(actor_mesh_id) = envelope.0.headers().get(CAST_ACTOR_MESH_ID) {
+        match actor_mesh_id {
+            ActorMeshId::V0(proc_mesh_id, actor_name) => {
+                let actor_id = ActorId(
+                    ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
+                    actor_name.clone(),
+                    0,
+                );
+                tracing::debug!(
+                    actor_id = %old_actor,
+                    "remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", actor_id
+                );
+                envelope.0.update_sender(actor_id);
+            }
+            ActorMeshId::V1(_) => {
+                tracing::debug!("headers present but V1 ActorMeshId; leaving actor_id unchanged");
+            }
+        }
+    } else {
+        // Do nothing, it wasn't from a comm actor.
+    }
+    envelope
 }
 
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast

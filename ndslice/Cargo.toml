@@ -4,13 +4,10 @@
 name = "ndslice"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-ndslice@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "data structures to support n-d arrays of ranks"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
-
-[lib]
-edition = "2024"
 
 [[bin]]
 name = "fuzz_reshape_selection"

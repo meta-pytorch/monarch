@@ -4,24 +4,21 @@
 name = "parameter_server"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [lib]
 path = "src/parameter_server.rs"
-edition = "2024"
 
 [[bin]]
 name = "parameter_server_bootstrap"
 path = "bootstrap.rs"
 test = false
-edition = "2024"
 
 [[bin]]
 name = "parameter_server_example"
 path = "src/lib.rs"
 test = false
-edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"

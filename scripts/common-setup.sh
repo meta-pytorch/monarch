@@ -182,6 +182,7 @@ run_test_groups() {
   # Backtraces help with debugging remotely.
   export RUST_BACKTRACE=1
   local FAILED_GROUPS=()
+  local TEST_EXIT_CODE=0
   for GROUP in $(seq 1 10); do
     echo "Running test group $GROUP of 10..."
     # Kill any existing Python processes to ensure clean state
@@ -205,12 +206,13 @@ run_test_groups() {
             --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
             --splits=10
     fi
+    TEST_EXIT_CODE=$?
     # Check result and record failures
-    if [[ $? -eq 0 ]]; then
+    if [[ $TEST_EXIT_CODE -eq 0 ]]; then
         echo "✓ Test group $GROUP completed successfully"
     else
-        FAILED_GROUPS+=($GROUP)
-        echo "✗ Test group $GROUP failed with exit code $?"
+        FAILED_GROUPS+=("$GROUP")
+        echo "✗ Test group $GROUP failed with exit code $TEST_EXIT_CODE"
     fi
   done
   # Final cleanup after all groups

@@ -4,7 +4,7 @@
 name = "struct_diff_patch_macros"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-struct_diff_patch_macros@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "derive macros for struct_diff_patch"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
@@ -13,7 +13,6 @@ license = "BSD-3-Clause"
 test = false
 doctest = false
 proc-macro = true
-edition = "2024"
 
 [dependencies]
 proc-macro2 = { version = "1.0.70", features = ["span-locations"] }

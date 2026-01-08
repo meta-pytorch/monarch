@@ -1599,10 +1599,8 @@ class ActorMesh(MeshTrait, Generic[T]):
         # supervision_event, which needs an Instance. Initialize here so events
         # can be collected even without any endpoints being awaited.
         instance = context().actor_instance
-        supervision_display_name = (
-            f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
-        )
-        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
+        # Supervision display name is unused here now, it is set in ProcMesh::spawn.
+        mesh._inner.start_supervision(instance._as_rust(), "")
 
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None

@@ -7,7 +7,7 @@
 import socket
 
 from monarch.actor import Actor, endpoint
-from monarch.job import KubernetesJob
+from monarch.job.kubernetes import KubernetesJob
 
 
 class SimpleActor(Actor):

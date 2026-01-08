@@ -6,32 +6,40 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::marker::PhantomData;
 use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::OnceLock as OnceCell;
 
 use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
+use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::Ranked;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use tokio::sync::watch;
 
 use crate::CommActor;
 use crate::actor_mesh as v0_actor_mesh;
@@ -39,11 +47,16 @@ use crate::comm::multicast;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::reference::ActorMeshId;
 use crate::resource;
+use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::Unhealthy;
 use crate::v1;
 use crate::v1::Error;
 use crate::v1::Name;
 use crate::v1::ProcMeshRef;
 use crate::v1::ValueMesh;
+use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
+use crate::v1::mesh_controller::ActorMeshController;
+use crate::v1::mesh_controller::Subscribe;
 
 /// An ActorMesh is a collection of ranked A-typed actors.
 ///
@@ -54,19 +67,34 @@ pub struct ActorMesh<A: Referable> {
     proc_mesh: ProcMeshRef,
     name: Name,
     current_ref: ActorMeshRef<A>,
+    /// If present, this is the controller for the mesh. The controller ensures
+    /// the mesh is stopped when the actor owning it is stopped, and can provide
+    /// supervision events via subscribing.
+    /// It may not be present for some types of actors, typically system actors
+    /// such as ProcMeshAgent or CommActor.
+    controller: Option<ActorRef<ActorMeshController<A>>>,
 }
 
 // `A: Referable` for the same reason as the struct: the mesh holds
 // `ActorRef<A>`.
 impl<A: Referable> ActorMesh<A> {
-    pub(crate) fn new(proc_mesh: ProcMeshRef, name: Name) -> Self {
-        let current_ref =
-            ActorMeshRef::with_page_size(name.clone(), proc_mesh.clone(), DEFAULT_PAGE);
+    pub(crate) fn new(
+        proc_mesh: ProcMeshRef,
+        name: Name,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
+    ) -> Self {
+        let current_ref = ActorMeshRef::with_page_size(
+            name.clone(),
+            proc_mesh.clone(),
+            DEFAULT_PAGE,
+            controller.clone(),
+        );
 
         Self {
             proc_mesh,
             name,
             current_ref,
+            controller,
         }
     }
 
@@ -79,11 +107,88 @@ impl<A: Referable> ActorMesh<A> {
         self.current_ref.clone()
     }
 
+    pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
+        self.controller = controller.clone();
+        self.current_ref.set_controller(controller);
+    }
+
     /// Stop actors on this mesh across all procs.
-    pub async fn stop(&self, cx: &impl context::Actor) -> v1::Result<()> {
-        self.proc_mesh()
-            .stop_actor_by_name(cx, self.name.clone())
-            .await
+    pub async fn stop(&mut self, cx: &impl context::Actor) -> v1::Result<()> {
+        // Remove the controller as an optimization so all future meshes
+        // created from this one (such as slices) know they are already stopped.
+        // Refs and slices on other machines will still be able to query the
+        // controller and will be sent a notification about this stop by the controller
+        // itself.
+        if let Some(controller) = self.controller.take() {
+            // Send a stop to the controller so it stops monitoring the actors.
+            controller
+                .send(
+                    cx,
+                    resource::Stop {
+                        name: self.name.clone(),
+                    },
+                )
+                .map_err(|e| v1::Error::SendingError(controller.actor_id().clone(), Box::new(e)))?;
+            let region = ndslice::view::Ranked::region(&self.current_ref);
+            let num_ranks = region.num_ranks();
+            // Wait for the controller to report all actors have stopped.
+            let (port, mut rx) = cx.mailbox().open_port();
+
+            controller
+                .send(
+                    cx,
+                    resource::GetState::<resource::mesh::State<()>> {
+                        name: self.name.clone(),
+                        reply: port.bind(),
+                    },
+                )
+                .map_err(|e| v1::Error::SendingError(controller.actor_id().clone(), Box::new(e)))?;
+
+            let statuses = rx.recv().await?;
+            if let Some(state) = &statuses.state {
+                // Check that all actors are in some terminal state.
+                // Failed is ok, because one of these actors may have failed earlier
+                // and we're trying to stop the others.
+                let all_stopped = state.statuses.values().all(|s| s.is_terminating());
+                if all_stopped {
+                    Ok(())
+                } else {
+                    let legacy = mesh_to_rankedvalues_with_default(
+                        &state.statuses,
+                        resource::Status::NotExist,
+                        resource::Status::is_not_exist,
+                        num_ranks,
+                    );
+                    Err(Error::ActorStopError { statuses: legacy })
+                }
+            } else {
+                Err(Error::Other(anyhow::anyhow!(
+                    "non-existent state in GetState reply from controller: {}",
+                    controller.actor_id()
+                )))
+            }?;
+            // Update health state with the new statuses.
+            let mut health_state = self.health_state.lock().expect("lock poisoned");
+            health_state.unhealthy_event =
+                Some(Unhealthy::StreamClosed(SupervisionFailureMessage {
+                    actor_mesh_name: Some(self.name().to_string()),
+                    rank: None,
+                    event: ActorSupervisionEvent::new(
+                        // Use an actor id from the mesh.
+                        ndslice::view::Ranked::get(&self.current_ref, 0)
+                            .unwrap()
+                            .actor_id()
+                            .clone(),
+                        None,
+                        ActorStatus::Stopped,
+                        None,
+                    ),
+                }));
+        }
+        // Also take the controller from the ref, since that is used for
+        // some operations.
+        self.current_ref.controller.take();
+        Ok(())
     }
 }
 
@@ -109,6 +214,7 @@ impl<A: Referable> Clone for ActorMesh<A> {
             proc_mesh: self.proc_mesh.clone(),
             name: self.name.clone(),
             current_ref: self.current_ref.clone(),
+            controller: self.controller.clone(),
         }
     }
 }
@@ -145,11 +251,95 @@ impl<A: Referable> Page<A> {
     }
 }
 
+#[derive(Default)]
+struct HealthState {
+    unhealthy_event: Option<Unhealthy>,
+    crashed_ranks: HashMap<usize, ActorSupervisionEvent>,
+}
+
+impl std::fmt::Debug for HealthState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthState")
+            .field("unhealthy_event", &self.unhealthy_event)
+            .field("crashed_ranks", &self.crashed_ranks)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+enum MessageOrFailure<M: Send + Sync + Clone + Default + 'static> {
+    Message(M),
+    // anyhow::Error and MailboxError are not clone-able, which we need to move
+    // out of a tokio watch Ref.
+    Failure(String),
+    Timeout,
+}
+
+impl<M: Send + Sync + Clone + Default + 'static> Default for MessageOrFailure<M> {
+    fn default() -> Self {
+        Self::Message(M::default())
+    }
+}
+
+/// Turn the single-owner PortReceiver into a watch receiver, which can be
+/// cloned and subscribed to. Requires a default message to pre-populate with.
+/// Option can be used as M to provide a default of None.
+fn into_watch<M: Send + Sync + Clone + Default + 'static>(
+    mut rx: PortReceiver<M>,
+) -> watch::Receiver<MessageOrFailure<M>> {
+    let (sender, receiver) = watch::channel(MessageOrFailure::<M>::default());
+    // Put a timeout here to send a different state change on the watch channel.
+    // This represents that no new message (healthy or unhealthy) has been
+    // received from the sender, and we should assume the sender is dead.
+    let timeout = tokio::time::Duration::from_secs(30);
+    tokio::spawn(async move {
+        loop {
+            let message = match RealClock.timeout(timeout, rx.recv()).await {
+                Ok(Ok(msg)) => MessageOrFailure::Message(msg),
+                Ok(Err(e)) => MessageOrFailure::Failure(e.to_string()),
+                Err(_) => MessageOrFailure::Timeout,
+            };
+            let is_failure = matches!(
+                message,
+                MessageOrFailure::Failure(_) | MessageOrFailure::Timeout
+            );
+            if sender.send(message).is_err() {
+                // After a sending error, exit the task.
+                break;
+            }
+            if is_failure {
+                // No need to keep polling if we've received an error or timeout.
+                break;
+            }
+        }
+    });
+    receiver
+}
+
 /// A reference to a stable snapshot of an [`ActorMesh`].
 pub struct ActorMeshRef<A: Referable> {
     proc_mesh: ProcMeshRef,
     name: Name,
+    /// Reference to a remote controller actor living on the proc that spawned
+    /// the actors in this ref. If None, the actor mesh was already stopped, or
+    /// this is a mesh ref to a "system actor" which has no controller and should
+    /// not be stopped. If Some, the actor mesh may still be stopped, and the
+    /// next_supervision_event function can be used to alert that the mesh has
+    /// stopped.
+    controller: Option<ActorRef<ActorMeshController<A>>>,
 
+    /// Recorded health issues with the mesh, to quickly consult before sending
+    /// out any casted messages. This is a locally updated copy of the authoritative
+    /// state stored on the ActorMeshController.
+    health_state: Arc<std::sync::Mutex<HealthState>>,
+    /// Shared cloneable receiver for supervision events, used by next_supervision_event.
+    /// Not a OnceCell since we need mutable borrows for "watch::Receiver::wait_for"
+    /// mutable borrows of OnceCell are an unstable library feature.
+    receiver: Arc<
+        tokio::sync::Mutex<
+            Option<watch::Receiver<MessageOrFailure<Option<SupervisionFailureMessage>>>>,
+        >,
+    >,
     /// Lazily allocated collection of pages:
     /// - The outer `OnceCell` defers creating the vector until first
     ///   use.
@@ -162,8 +352,6 @@ pub struct ActorMeshRef<A: Referable> {
     pages: OnceCell<Vec<OnceCell<Box<Page<A>>>>>,
     // Page size knob (not serialize; defaults after deserialize).
     page_size: usize,
-
-    _phantom: PhantomData<A>,
 }
 
 impl<A: Referable> ActorMeshRef<A> {
@@ -206,6 +394,45 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
+        // First check if the mesh is already dead before sending out any messages
+        // to a possibly undeliverable actor.
+        let health_state = self
+            .health_state()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let region = Ranked::region(self);
+        match &health_state.unhealthy_event {
+            Some(Unhealthy::StreamClosed(_)) => {
+                return Err(v1::Error::Other(anyhow::anyhow!(
+                    "actor mesh is stopped due to proc mesh shutdown",
+                )));
+            }
+            Some(Unhealthy::Crashed(failure)) => {
+                return Err(v1::Error::Other(anyhow::anyhow!(
+                    "Actor {} is unhealthy with reason: {}",
+                    failure.event.actor_id,
+                    failure.event.actor_status
+                )));
+            }
+            None => {
+                // Further check crashed ranks in case those were updated from another
+                // slice of the same mesh.
+                if let Some(event) = region
+                    .slice()
+                    .iter()
+                    .find_map(|rank| health_state.crashed_ranks.get(&rank).clone())
+                {
+                    return Err(v1::Error::Other(anyhow::anyhow!(
+                        "Actor {} is unhealthy with reason: {}",
+                        event.actor_id,
+                        event.actor_status
+                    )));
+                }
+            }
+        }
+        drop(health_state);
+
+        // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
             self.cast_v0(cx, message, sel, root_comm_actor)
         } else {
@@ -287,24 +514,33 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> v1::Result<ValueMesh<resource::State<ActorState>>> {
         self.proc_mesh.actor_states(cx, self.name.clone()).await
     }
-}
 
-impl<A: Referable> ActorMeshRef<A> {
-    pub(crate) fn new(name: Name, proc_mesh: ProcMeshRef) -> Self {
-        Self::with_page_size(name, proc_mesh, DEFAULT_PAGE)
+    pub(crate) fn new(
+        name: Name,
+        proc_mesh: ProcMeshRef,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
+    ) -> Self {
+        Self::with_page_size(name, proc_mesh, DEFAULT_PAGE, controller)
     }
 
     pub fn name(&self) -> &Name {
         &self.name
     }
 
-    pub(crate) fn with_page_size(name: Name, proc_mesh: ProcMeshRef, page_size: usize) -> Self {
+    pub(crate) fn with_page_size(
+        name: Name,
+        proc_mesh: ProcMeshRef,
+        page_size: usize,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
+    ) -> Self {
         Self {
             proc_mesh,
             name,
+            controller,
+            health_state: Arc::new(std::sync::Mutex::new(HealthState::default())),
+            receiver: Arc::new(tokio::sync::Mutex::new(None)),
             pages: OnceCell::new(),
             page_size: page_size.max(1),
-            _phantom: PhantomData,
         }
     }
 
@@ -315,6 +551,14 @@ impl<A: Referable> ActorMeshRef<A> {
     #[inline]
     fn len(&self) -> usize {
         view::Ranked::region(&self.proc_mesh).num_ranks()
+    }
+
+    pub fn controller(&self) -> &Option<ActorRef<ActorMeshController<A>>> {
+        &self.controller
+    }
+
+    fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
+        self.controller = controller;
     }
 
     fn ensure_pages(&self) -> &Vec<OnceCell<Box<Page<A>>>> {
@@ -351,12 +595,124 @@ impl<A: Referable> ActorMeshRef<A> {
             // directly.
             debug_assert!(rank < self.len(), "rank must be within [0, len)");
             debug_assert!(
-                self.proc_mesh.get(rank).is_some(),
+                ndslice::view::Ranked::get(&self.proc_mesh, rank).is_some(),
                 "proc_mesh must be dense/aligned with this view"
             );
-            let proc_ref = self.proc_mesh.get(rank).expect("rank in-bounds");
+            let proc_ref =
+                ndslice::view::Ranked::get(&self.proc_mesh, rank).expect("rank in-bounds");
             proc_ref.attest(&self.name)
         }))
+    }
+
+    fn health_state(&self) -> &Arc<std::sync::Mutex<HealthState>> {
+        &self.health_state
+    }
+
+    fn init_supervision_receiver(
+        controller: &ActorRef<ActorMeshController<A>>,
+        cx: &impl context::Actor,
+    ) -> watch::Receiver<MessageOrFailure<Option<SupervisionFailureMessage>>> {
+        let (tx, rx) = cx.mailbox().open_port();
+        controller
+            .send(cx, Subscribe(tx.bind()))
+            .expect("failed to send Subscribe");
+        into_watch(rx)
+    }
+
+    /// Returns the next supervision event occurring on this mesh. Await this
+    /// simultaneously with the return result of a message (such as awaiting a reply after a cast)
+    /// to get back a message that indicates the actor that failed, instead of
+    /// waiting forever for a reply.
+    /// If there are multiple simultaneous awaits of next_supervision_event,
+    /// all of them will receive the same event.
+    pub async fn next_supervision_event(
+        &self,
+        cx: &impl context::Actor,
+    ) -> Result<SupervisionFailureMessage, anyhow::Error> {
+        let controller = if let Some(c) = self.controller() {
+            c
+        } else {
+            let health_state = self.health_state.lock().expect("lock poisoned");
+            return match &health_state.unhealthy_event {
+                Some(Unhealthy::StreamClosed(f)) => Ok(f.clone()),
+                Some(Unhealthy::Crashed(f)) => Ok(f.clone()),
+                None => Err(anyhow::anyhow!(
+                    "unexpected healthy state while controller is gone"
+                )),
+            };
+        };
+        let message = {
+            // Make sure to create only one PortReceiver per context.
+            let mut receiver = self.receiver.lock().await;
+            let rx =
+                receiver.get_or_insert_with(|| Self::init_supervision_receiver(controller, cx));
+            let message = rx
+                .wait_for(|message| {
+                    // Filter out messages that do not apply to these ranks. This
+                    // is relevant for slices since we get messages back for the
+                    // whole mesh.
+                    if let MessageOrFailure::Message(message) = message {
+                        if let Some(message) = &message {
+                            if let Some(rank) = &message.rank {
+                                ndslice::view::Ranked::region(self).slice().contains(*rank)
+                            } else {
+                                // If rank is None, it applies to the whole mesh.
+                                true
+                            }
+                        } else {
+                            // Filter out messages that are not failures. These are used
+                            // to ensure the controller is still reachable, but are not
+                            // otherwise interesting.
+                            false
+                        }
+                    } else {
+                        // either failure case is interesting
+                        true
+                    }
+                })
+                .await?;
+            let message = message.clone();
+            match message {
+                MessageOrFailure::Message(message) => {
+                    Ok::<SupervisionFailureMessage, anyhow::Error>(
+                        message.expect("filter excludes any None messages"),
+                    )
+                }
+                MessageOrFailure::Failure(failure) => Err(anyhow::anyhow!("{}", failure)),
+                MessageOrFailure::Timeout => {
+                    // Treat timeout from controller as a supervision failure,
+                    // the controller is unreachable.
+                    Ok(SupervisionFailureMessage {
+                        actor_mesh_name: Some(self.name().to_string()),
+                        rank: None,
+                        event: ActorSupervisionEvent::new(
+                            controller.actor_id().clone(),
+                            None,
+                            ActorStatus::generic_failure(format!(
+                                "timed out reaching controller {} for mesh {}. Assuming controller's proc is dead",
+                                controller.actor_id(),
+                                self.name()
+                            )),
+                            None,
+                        ),
+                    })
+                }
+            }?
+        };
+        // Update the health state now that we have received a message.
+        let rank = message.rank.unwrap_or_default();
+        let event = &message.event;
+        // Make sure not to hold this lock across an await point.
+        let mut health_state = self.health_state.lock().expect("lock poisoned");
+        if let ActorStatus::Failed(_) = event.actor_status {
+            health_state.crashed_ranks.insert(rank, event.clone());
+        }
+        health_state.unhealthy_event = match &event.actor_status {
+            ActorStatus::Failed(_) => Some(Unhealthy::Crashed(message.clone())),
+            ActorStatus::Stopped => Some(Unhealthy::StreamClosed(message.clone())),
+            _ => None,
+        };
+        Ok(message)
     }
 }
 
@@ -365,9 +721,13 @@ impl<A: Referable> Clone for ActorMeshRef<A> {
         Self {
             proc_mesh: self.proc_mesh.clone(),
             name: self.name.clone(),
+            controller: self.controller.clone(),
+            // Cloning does not need to use the same health state, receiver,
+            // or future.
+            health_state: Arc::new(std::sync::Mutex::new(HealthState::default())),
+            receiver: Arc::new(tokio::sync::Mutex::new(None)),
             pages: OnceCell::new(), // No clone cache.
             page_size: self.page_size,
-            _phantom: PhantomData,
         }
     }
 }
@@ -409,7 +769,7 @@ impl<A: Referable> Serialize for ActorMeshRef<A> {
         S: Serializer,
     {
         // Serialize only the fields that don't depend on A
-        (&self.proc_mesh, &self.name).serialize(serializer)
+        (&self.proc_mesh, &self.name, &self.controller).serialize(serializer)
     }
 }
 
@@ -419,8 +779,16 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
     where
         D: Deserializer<'de>,
     {
-        let (proc_mesh, name) = <(ProcMeshRef, Name)>::deserialize(deserializer)?;
-        Ok(ActorMeshRef::with_page_size(name, proc_mesh, DEFAULT_PAGE))
+        let (proc_mesh, name, controller) =
+            <(ProcMeshRef, Name, Option<ActorRef<ActorMeshController<A>>>)>::deserialize(
+                deserializer,
+            )?;
+        Ok(ActorMeshRef::with_page_size(
+            name,
+            proc_mesh,
+            DEFAULT_PAGE,
+            controller,
+        ))
     }
 }
 
@@ -440,17 +808,26 @@ impl<A: Referable> view::Ranked for ActorMeshRef<A> {
 
 impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
     fn sliced(&self, region: Region) -> Self {
+        // The sliced ref will not share the same health state or receiver.
+        // TODO: share to reduce open ports and tasks?
         debug_assert!(region.is_subset(view::Ranked::region(self)));
         let proc_mesh = self.proc_mesh.subset(region).unwrap();
-        Self::with_page_size(self.name.clone(), proc_mesh, self.page_size)
+        Self::with_page_size(
+            self.name.clone(),
+            proc_mesh,
+            self.page_size,
+            self.controller.clone(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
-    use std::collections::HashSet;
 
+    use std::collections::HashSet;
+    use std::ops::Deref;
+
+    use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
@@ -464,8 +841,7 @@ mod tests {
     use tokio::time::Duration;
 
     use super::ActorMesh;
-    use crate::proc_mesh::mesh_agent::ActorState;
-    use crate::resource;
+    use crate::supervision::SupervisionFailureMessage;
     use crate::v1::ActorMeshRef;
     use crate::v1::Name;
     use crate::v1::ProcMesh;
@@ -473,6 +849,12 @@ mod tests {
     use crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
     use crate::v1::testactor;
     use crate::v1::testing;
+
+    #[test]
+    fn test_actor_mesh_ref_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ActorMeshRef<()>>();
+    }
 
     #[tokio::test]
     #[cfg(fbcode_build)]
@@ -494,7 +876,7 @@ mod tests {
         // page 0: ranks [0,1], page 1: [2,3], page 2: [4,5]
         let page_size = 2;
         let amr: ActorMeshRef<testactor::TestActor> =
-            ActorMeshRef::with_page_size(am.name.clone(), pm.clone(), page_size);
+            ActorMeshRef::with_page_size(am.name.clone(), pm.clone(), page_size, None);
         assert_eq!(amr.extent(), extent);
         assert_eq!(amr.region().num_ranks(), 6);
 
@@ -582,62 +964,82 @@ mod tests {
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<resource::State<ActorState>>();
+            instance.open_port::<SupervisionFailureMessage>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_with_name(instance, child_name.clone(), &())
+        // Need to use a wrapper as there's no way to customize the handler for SupervisionFailureMessage
+        // on the client instance. The client would just panic with the message.
+        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+            .spawn(
+                instance,
+                "wrapper",
+                &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
+            )
             .await
             .unwrap();
 
+        // Trigger the supervision error.
         actor_mesh
             .cast(
                 instance,
-                testactor::CauseSupervisionEvent(testactor::SupervisionEventType::Panic),
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::Panic,
+                    send_to_children: true,
+                },
             )
             .unwrap();
 
-        // Wait for the casted message to cause a panic on all actors.
-        // We can't use a reply port because the handler for the message will
-        // by definition not complete and send a reply.
-        #[allow(clippy::disallowed_methods)]
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        // The error will come back on two different pathways:
+        // * on the ActorMeshRef stored in WrapperActor
+        //   as an observable supervision event as a subscriber.
+        // * on the owning actor (WrapperActor here) to be handled.
+        // We test to ensure both have occurred.
 
-        // Now that all ranks have completed, set up a continuous poll of the
-        // status such that when a process switches to unhealthy it sets a
-        // supervision event.
-        let supervision_task = tokio::spawn(async move {
-            let events = actor_mesh.actor_states(&instance).await.unwrap();
-            for state in events.values() {
-                supervisor.send(instance, state.clone()).unwrap();
+        // First test the ActorMeshRef got the event.
+        // Use a NextSupervisionFailure message to get the event from the wrapper
+        // actor.
+        let (failure_port, mut failure_receiver) =
+            instance.open_port::<Option<SupervisionFailureMessage>>();
+        actor_mesh
+            .cast(
+                instance,
+                testactor::NextSupervisionFailure(failure_port.bind()),
+            )
+            .unwrap();
+        let failure = failure_receiver
+            .recv()
+            .await
+            .unwrap()
+            .expect("no supervision event found on ref from wrapper actor");
+        let check_failure = move |failure: SupervisionFailureMessage| {
+            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+            assert_eq!(
+                failure.event.actor_id.name(),
+                child_name.clone().to_string()
+            );
+            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
+                assert!(msg.contains("panic"), "{}", msg);
+                assert!(msg.contains("for testing"), "{}", msg);
+            } else {
+                panic!("actor status is not failed: {}", failure.event.actor_status);
             }
-        });
-        // Make sure the task completes first without a panic.
-        supervision_task.await.unwrap();
+        };
+        check_failure(failure);
 
+        // The wrapper actor should *not* have an event.
+
+        // Wait for a supervision event to reach the wrapper actor.
         for _ in 0..num_replicas {
-            let state = RealClock
+            let failure = RealClock
                 .timeout(Duration::from_secs(10), supervision_receiver.recv())
                 .await
                 .expect("timeout")
                 .unwrap();
-            if let resource::Status::Failed(s) = state.status {
-                assert!(s.contains("supervision events"));
-            } else {
-                panic!("Not failed: {:?}", state.status);
-            }
-            if let Some(ref inner) = state.state {
-                assert!(!inner.supervision_events.is_empty());
-                for event in &inner.supervision_events {
-                    println!("receiving event: {:?}", event);
-                    assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
-                    assert_matches!(event.actor_status, ActorStatus::Failed(_));
-                }
-            }
+            check_failure(failure);
         }
     }
 
@@ -652,60 +1054,81 @@ mod tests {
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<resource::State<ActorState>>();
+            instance.open_port::<SupervisionFailureMessage>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
+        let second_meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
+        let second_proc_mesh = &second_meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_with_name(instance, child_name.clone(), &())
+        // Need to use a wrapper as there's no way to customize the handler for SupervisionFailureMessage
+        // on the client instance. The client would just panic with the message.
+        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+            .spawn(
+                instance,
+                "wrapper",
+                &(
+                    // Need a second set of proc meshes for the inner test actor, so the
+                    // WrapperActor is still alive and gets the message.
+                    second_proc_mesh.deref().clone(),
+                    supervisor,
+                    child_name.clone(),
+                ),
+            )
             .await
             .unwrap();
 
         actor_mesh
             .cast(
                 instance,
-                testactor::CauseSupervisionEvent(testactor::SupervisionEventType::ProcessExit(1)),
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::ProcessExit(1),
+                    send_to_children: true,
+                },
             )
             .unwrap();
 
-        // Wait for the casted message to cause a process exit on all actors.
-        // We can't use a reply port because the handler for the message will
-        // by definition not complete and send a reply.
-        #[allow(clippy::disallowed_methods)]
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-        // Now that all ranks have completed, set up a continuous poll of the
-        // status such that when a process switches to unhealthy it sets a
-        // supervision event.
-        let supervision_task = tokio::spawn(async move {
-            let events = actor_mesh.actor_states(&instance).await.unwrap();
-            for state in events.values() {
-                supervisor.send(instance, state.clone()).unwrap();
-            }
-        });
-        // Make sure the task completes first without a panic.
-        RealClock
-            .timeout(Duration::from_secs(10), supervision_task)
-            .await
-            .expect("timeout")
+        // Same drill as for panic, except this one is for process exit.
+        let (failure_port, mut failure_receiver) =
+            instance.open_port::<Option<SupervisionFailureMessage>>();
+        actor_mesh
+            .cast(
+                instance,
+                testactor::NextSupervisionFailure(failure_port.bind()),
+            )
             .unwrap();
+        let failure = failure_receiver
+            .recv()
+            .await
+            .unwrap()
+            .expect("no supervision event found on ref from wrapper actor");
 
+        let check_failure = move |failure: SupervisionFailureMessage| {
+            // TODO: It can't find the real actor id, so it says the agent failed.
+            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+            assert_eq!(failure.event.actor_id.name(), "mesh");
+            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
+                assert!(
+                    msg.contains("timeout waiting for message from proc mesh agent"),
+                    "{}",
+                    msg
+                );
+            } else {
+                panic!("actor status is not failed: {}", failure.event.actor_status);
+            }
+        };
+        check_failure(failure);
+
+        // Wait for a supervision event to occur on these actors.
         for _ in 0..num_replicas {
-            let state = RealClock
+            let failure = RealClock
                 .timeout(Duration::from_secs(10), supervision_receiver.recv())
                 .await
                 .expect("timeout")
                 .unwrap();
-            assert_matches!(state.status, resource::Status::Timeout(_));
-            let events = state
-                .state
-                .expect("state should be present")
-                .supervision_events;
-            assert_eq!(events.len(), 1);
-            assert_matches!(events[0].actor_status, ActorStatus::Failed(_));
+            check_failure(failure);
         }
     }
 
@@ -717,15 +1140,21 @@ mod tests {
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<resource::State<ActorState>>();
+            instance.open_port::<SupervisionFailureMessage>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_with_name(instance, child_name.clone(), &())
+        // Need to use a wrapper as there's no way to customize the handler for SupervisionFailureMessage
+        // on the client instance. The client would just panic with the message.
+        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+            .spawn(
+                instance,
+                "wrapper",
+                &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
+            )
             .await
             .unwrap();
         let sliced = actor_mesh
@@ -733,52 +1162,30 @@ mod tests {
             .expect("slice should be valid");
         let sliced_replicas = sliced.len();
 
+        // TODO: check that independent slice refs don't get the supervision event.
         sliced
             .cast(
                 instance,
-                testactor::CauseSupervisionEvent(testactor::SupervisionEventType::Panic),
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::Panic,
+                    send_to_children: true,
+                },
             )
             .unwrap();
 
-        // Wait for the casted message to cause a process exit on all actors.
-        // We can't use a reply port because the handler for the message will
-        // by definition not complete and send a reply.
-        #[allow(clippy::disallowed_methods)]
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-        // Now that all ranks have completed, set up a continuous poll of the
-        // status such that when a process switches to unhealthy it sets a
-        // supervision event.
-        let supervision_task = tokio::spawn(async move {
-            let events = sliced.actor_states(&instance).await.unwrap();
-            for state in events.values() {
-                supervisor.send(instance, state.clone()).unwrap();
-            }
-        });
-        // Make sure the task completes first without a panic.
-        RealClock
-            .timeout(Duration::from_secs(10), supervision_task)
-            .await
-            .expect("timeout")
-            .unwrap();
-
         for _ in 0..sliced_replicas {
-            let state = RealClock
+            let supervision_message = RealClock
                 .timeout(Duration::from_secs(10), supervision_receiver.recv())
                 .await
                 .expect("timeout")
                 .unwrap();
-            if let resource::Status::Failed(s) = state.status {
-                assert!(s.contains("supervision events"));
+            let event = supervision_message.event;
+            assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
+            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &event.actor_status {
+                assert!(msg.contains("panic"));
+                assert!(msg.contains("for testing"));
             } else {
-                panic!("Not failed: {:?}", state.status);
-            }
-            if let Some(ref inner) = state.state {
-                assert!(!inner.supervision_events.is_empty());
-                for event in &inner.supervision_events {
-                    assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
-                    assert_matches!(event.actor_status, ActorStatus::Failed(_));
-                }
+                panic!("actor status is not failed: {}", event.actor_status);
             }
         }
     }
@@ -869,7 +1276,7 @@ mod tests {
             .await
             .unwrap();
 
-        let pong_mesh: ActorMesh<PingPongActor> = pong_proc_mesh
+        let mut pong_mesh: ActorMesh<PingPongActor> = pong_proc_mesh
             .spawn(instance, "pong", &(None, None, None))
             .await
             .unwrap();
@@ -964,7 +1371,7 @@ mod tests {
 
         // Spawn SleepActors across the mesh that will block longer
         // than timeout
-        let sleep_mesh: ActorMesh<testactor::SleepActor> =
+        let mut sleep_mesh: ActorMesh<testactor::SleepActor> =
             proc_mesh.spawn(instance, "sleepers", &()).await.unwrap();
 
         // Send each actor a message to sleep for 5 seconds (longer
@@ -1045,8 +1452,12 @@ mod tests {
 
         // Spawn TestActors - these stop cleanly (no blocking
         // operations)
-        let actor_mesh: ActorMesh<testactor::TestActor> =
+        let mut actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test_actors", &()).await.unwrap();
+
+        // Cloned mesh will still have its controller, even if the owned mesh
+        // causes a stop.
+        let mesh_ref = actor_mesh.deref().clone();
 
         let expected_actors = actor_mesh.values().count();
         assert!(expected_actors > 0, "Should have spawned some actors");
@@ -1077,5 +1488,25 @@ mod tests {
             expected_actors,
             stop_duration
         );
+
+        // Check that the next returned supervision event is a Stopped event.
+        // Note that Ref meshes get Stopped events, and Owned meshes do not,
+        // because only the owner can stop them anyway.
+        // Each owned mesh has an implicit ref mesh though, so that is what we
+        // test here.
+        let next_event = actor_mesh.next_supervision_event(instance).await.unwrap();
+        assert_eq!(
+            next_event.actor_mesh_name,
+            Some(mesh_ref.name().to_string())
+        );
+        assert_eq!(next_event.event.actor_status, ActorStatus::Stopped);
+        // Check that a cloned Ref from earlier gets the same event. Every clone
+        // should get the same event, even if it's not a subscriber.
+        let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
+        assert_eq!(
+            next_event.actor_mesh_name,
+            Some(mesh_ref.name().to_string())
+        );
+        assert_eq!(next_event.event.actor_status, ActorStatus::Stopped);
     }
 }

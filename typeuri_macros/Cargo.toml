@@ -4,7 +4,7 @@
 name = "typeuri_macros"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-typeuri-macros@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "Derive macros for typeuri Named trait"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
@@ -13,7 +13,6 @@ license = "BSD-3-Clause"
 test = false
 doctest = false
 proc-macro = true
-edition = "2024"
 
 [dependencies]
 quote = "1.0.29"

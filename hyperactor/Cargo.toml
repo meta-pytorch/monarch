@@ -4,33 +4,26 @@
 name = "hyperactor"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-hyperactor@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "a high-performance, scalable actor framework for cluster computing"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
-[lib]
-edition = "2024"
-
 [[bin]]
 name = "hyperactor_example_channel"
 path = "example/channel.rs"
-edition = "2024"
 
 [[bin]]
 name = "hyperactor_example_derive"
 path = "example/derive.rs"
-edition = "2024"
 
 [[bin]]
 name = "hyperactor_example_stream"
 path = "example/stream.rs"
-edition = "2024"
 
 [[bin]]
 name = "hyperactor_host_test_bootstrap"
 path = "test/host_bootstrap.rs"
-edition = "2024"
 
 [[bench]]
 name = "channel_benchmarks"
