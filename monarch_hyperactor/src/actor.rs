@@ -1141,8 +1141,8 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 #[cfg(test)]
 mod tests {
     use hyperactor::PortRef;
-    use hyperactor::accum::ReducerMode;
     use hyperactor::accum::ReducerSpec;
+    use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::data::Serialized;
     use hyperactor::id;
     use hyperactor::message::ErasedUnbound;
@@ -1167,7 +1167,7 @@ mod tests {
         let port_ref = PortRef::<PythonMessage>::attest_reducible(
             id!(world[0].client[0][123]),
             Some(reducer_spec),
-            ReducerMode::default(),
+            StreamingReducerOpts::default(),
         );
         let message = PythonMessage {
             kind: PythonMessageKind::CallMethod {
