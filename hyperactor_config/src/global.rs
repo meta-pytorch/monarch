@@ -358,7 +358,7 @@ static OVERRIDE_TOKEN_SEQ: AtomicU64 = AtomicU64::new(1);
 pub fn lock() -> ConfigLock {
     static MUTEX: LazyLock<std::sync::Mutex<()>> = LazyLock::new(|| std::sync::Mutex::new(()));
     ConfigLock {
-        _guard: MUTEX.lock().unwrap(),
+        _guard: MUTEX.lock().unwrap_or_else(|e| e.into_inner()),
     }
 }
 
@@ -1573,5 +1573,22 @@ mod tests {
         // All should be restored.
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
         assert_eq!(get(CHANNEL_MULTIPART), CHANNEL_MULTIPART_DEFAULT);
+    }
+
+    #[test]
+    fn test_lock_recovers_after_panic() {
+        let handle = std::thread::spawn(|| {
+            let _lock = lock();
+            panic!("intentional panic while holding ConfigLock");
+        });
+
+        let result = handle.join();
+        assert!(result.is_err(), "thread should have panicked");
+
+        let lock = lock();
+        reset_to_defaults();
+
+        let _guard = lock.override_key(CODEC_MAX_FRAME_LENGTH, 9999);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 9999);
     }
 }
