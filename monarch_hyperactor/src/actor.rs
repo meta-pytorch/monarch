@@ -132,7 +132,7 @@ pub enum PythonMessageKind {
         unflatten_args: Vec<UnflattenArg>,
     },
 }
-hyperactor::register_type!(PythonMessageKind);
+wirevalue::register_type!(PythonMessageKind);
 
 impl Default for PythonMessageKind {
     fn default() -> Self {
@@ -151,7 +151,7 @@ pub struct PythonMessage {
     pub kind: PythonMessageKind,
     pub message: Part,
 }
-hyperactor::register_type!(PythonMessage);
+wirevalue::register_type!(PythonMessage);
 
 struct ResolvedCallMethod {
     method: MethodSpecifier,
@@ -279,7 +279,7 @@ impl std::fmt::Debug for PythonMessage {
             .field("kind", &self.kind)
             .field(
                 "message",
-                &hyperactor::data::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
+                &wirevalue::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
             )
             .finish()
     }
@@ -1141,8 +1141,8 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 #[cfg(test)]
 mod tests {
     use hyperactor::PortRef;
+    use hyperactor::accum::ReducerMode;
     use hyperactor::accum::ReducerSpec;
-    use hyperactor::data::Serialized;
     use hyperactor::id;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
@@ -1161,12 +1161,12 @@ mod tests {
     fn test_python_message_bind_unbind() {
         let reducer_spec = ReducerSpec {
             typehash: 123,
-            builder_params: Some(Serialized::serialize(&"abcdefg12345".to_string()).unwrap()),
+            builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
         let port_ref = PortRef::<PythonMessage>::attest_reducible(
             id!(world[0].client[0][123]),
             Some(reducer_spec),
-            None,
+            ReducerMode::default(),
         );
         let message = PythonMessage {
             kind: PythonMessageKind::CallMethod {

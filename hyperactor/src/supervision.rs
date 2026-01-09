@@ -43,7 +43,7 @@ pub struct ActorSupervisionEvent {
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Attrs>,
 }
-crate::register_type!(ActorSupervisionEvent);
+wirevalue::register_type!(ActorSupervisionEvent);
 
 impl ActorSupervisionEvent {
     /// Create a new supervision event. Timestamp is set to the current time.

@@ -29,7 +29,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
-use hyperactor::data::Serialized;
 use hyperactor::forward;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
@@ -935,7 +934,7 @@ impl StreamActor {
                     })?;
                     pickle_python_result(py, python_result, rank).map_err(CallFunctionError::Error)
                 })?;
-            let ser = Serialized::serialize(&python_message).unwrap();
+            let ser = wirevalue::Any::serialize(&python_message).unwrap();
             self_
                 .controller_actor
                 .fetch_result(cx, seq, Ok(ser))
@@ -1546,7 +1545,7 @@ impl StreamMessageHandler for StreamActor {
             let value = self.call_actor(cx, params).await?;
             let result =
                 Python::with_gil(|py| pickle_python_result(py, value.into_bound(py), self.rank))?;
-            let result = Serialized::serialize(&result).unwrap();
+            let result = wirevalue::Any::serialize(&result).unwrap();
             self.controller_actor
                 .fetch_result(cx, seq, Ok(result))
                 .await?;
