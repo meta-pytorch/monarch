@@ -54,7 +54,7 @@ pub enum DebuggerAction {
 pub enum DebuggerMessage {
     Action { action: DebuggerAction },
 }
-hyperactor::register_type!(DebuggerMessage);
+wirevalue::register_type!(DebuggerMessage);
 
 hyperactor::behavior!(
     DebuggerActor,

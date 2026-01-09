@@ -33,7 +33,6 @@ use crate::accum::ErasedCommReducer;
 use crate::accum::ReducerOpts;
 use crate::accum::ReducerSpec;
 use crate::config;
-use crate::data::Serialized;
 use crate::mailbox;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
@@ -63,7 +62,7 @@ pub trait Actor: Mailbox {
 pub(crate) trait MailboxExt: Mailbox {
     /// Post a message to the provided destination with the provided headers, and data.
     /// All messages posted from actors should use this implementation.
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized, return_undeliverable: bool);
+    fn post(&self, dest: PortId, headers: Attrs, data: wirevalue::Any, return_undeliverable: bool);
 
     /// Split a port, using a provided reducer spec, if provided.
     fn split(
@@ -83,7 +82,7 @@ static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
 
 /// Only actors CanSend because they need a return port.
 impl<T: Actor + Send + Sync> MailboxExt for T {
-    fn post(&self, dest: PortId, headers: Attrs, data: Serialized, return_undeliverable: bool) {
+    fn post(&self, dest: PortId, headers: Attrs, data: wirevalue::Any, return_undeliverable: bool) {
         let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
             let actor_id = self.mailbox().actor_id();
             if CAN_SEND_WARNED_MAILBOXES
@@ -116,7 +115,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         fn post(
             mailbox: &mailbox::Mailbox,
             port_id: PortId,
-            msg: Serialized,
+            msg: wirevalue::Any,
             return_undeliverable: bool,
         ) {
             let mut envelope =
@@ -146,9 +145,9 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             .transpose()?
             .flatten();
         let enqueue: Box<
-            dyn Fn(Serialized) -> Result<(), (Serialized, anyhow::Error)> + Send + Sync,
+            dyn Fn(wirevalue::Any) -> Result<(), (wirevalue::Any, anyhow::Error)> + Send + Sync,
         > = match reducer {
-            None => Box::new(move |serialized: Serialized| {
+            None => Box::new(move |serialized: wirevalue::Any| {
                 post(&mailbox, port_id.clone(), serialized, return_undeliverable);
                 Ok(())
             }),
@@ -207,7 +206,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         .build(),
                 );
 
-                Box::new(move |update: Serialized| {
+                Box::new(move |update: wirevalue::Any| {
                     // Hold the lock until messages are sent. This is to avoid another
                     // invocation of this method trying to send message concurrently and
                     // cause messages delivered out of order.
@@ -242,7 +241,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
 }
 
 struct UpdateBuffer {
-    buffered: Vec<Serialized>,
+    buffered: Vec<wirevalue::Any>,
     reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>,
 }
 
@@ -258,13 +257,13 @@ impl UpdateBuffer {
         self.buffered.is_empty()
     }
 
-    fn pop(&mut self) -> Option<Serialized> {
+    fn pop(&mut self) -> Option<wirevalue::Any> {
         self.buffered.pop()
     }
 
     /// Push a new item to the buffer, and optionally return any items that should
     /// be flushed.
-    fn push(&mut self, serialized: Serialized) -> Option<anyhow::Result<Serialized>> {
+    fn push(&mut self, serialized: wirevalue::Any) -> Option<anyhow::Result<wirevalue::Any>> {
         let limit = hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_SIZE);
 
         self.buffered.push(serialized);
@@ -275,7 +274,7 @@ impl UpdateBuffer {
         }
     }
 
-    fn reduce(&mut self) -> Option<anyhow::Result<Serialized>> {
+    fn reduce(&mut self) -> Option<anyhow::Result<wirevalue::Any>> {
         if self.buffered.is_empty() {
             None
         } else {

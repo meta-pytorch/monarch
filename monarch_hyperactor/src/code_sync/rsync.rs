@@ -135,7 +135,7 @@ pub struct RsyncResult {
     /// All changes that occurred during the rsync operation
     pub changes: Vec<Change>,
 }
-hyperactor::register_type!(RsyncResult);
+wirevalue::register_type!(RsyncResult);
 
 impl RsyncResult {
     /// Create an empty rsync result
@@ -336,7 +336,7 @@ pub struct RsyncMessage {
     /// The location of the workspace to sync.
     pub workspace: WorkspaceLocation,
 }
-hyperactor::register_type!(RsyncMessage);
+wirevalue::register_type!(RsyncMessage);
 
 #[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]

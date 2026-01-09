@@ -244,7 +244,7 @@ pub enum Name {
     /// Reserved names for system actors without UUIDs.
     Reserved(String),
 }
-hyperactor::register_type!(Name);
+wirevalue::register_type!(Name);
 
 // The delimiter between the name and the uuid when a Name::Suffixed is stringified.
 // Actor names must be parseable as an actor identifier. We do not allow this delimiter

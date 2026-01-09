@@ -45,7 +45,7 @@ pub struct CondaSyncResult {
     /// All changes that occurred during the sync operation
     pub changes: HashMap<PathBuf, Action>,
 }
-hyperactor::register_type!(CondaSyncResult);
+wirevalue::register_type!(CondaSyncResult);
 
 #[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
 pub struct CondaSyncMessage {
@@ -58,11 +58,11 @@ pub struct CondaSyncMessage {
     /// Path prefixes to fixup/replace when copying.
     pub path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
 }
-hyperactor::register_type!(CondaSyncMessage);
+wirevalue::register_type!(CondaSyncMessage);
 
 #[derive(Debug, Named, Serialize, Deserialize)]
 pub struct CondaSyncParams {}
-hyperactor::register_type!(CondaSyncParams);
+wirevalue::register_type!(CondaSyncParams);
 
 #[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [CondaSyncMessage { cast = true }])]
