@@ -73,7 +73,7 @@ let logger_mesh = proc_mesh.spawn(cx_instance, "logger", &()).await;
 #[pymethods]
 impl LoggingMeshClient {
     #[staticmethod]
-    fn spawn(instance: &PyInstance, proc_mesh: &PyProcMesh) → PyResult<PyPythonTask> {
+    fn spawn(instance: &PyInstance, proc_mesh: &PyProcMesh) -> PyResult<PyPythonTask> {
         let proc_mesh = proc_mesh.mesh_ref()?;
         let instance = instance.clone();
 
@@ -83,19 +83,24 @@ impl LoggingMeshClient {
                 instance_dispatch!(instance, async move |cx_instance| {
                     cx_instance
                         .proc()
-                        .spawn(&Name::new("log_client").to_string(), ())
+                        .spawn(&Name::new("log_client").to_string(), LogClientActor::default())
                         .await
                 })?;
             let client_actor_ref = client_actor.bind();
 
             // 2) Per-proc forwarders (wired back to the client actor)
-            let forwarder_mesh = instance_dispatch!(instance, async |cx_instance| {
-                proc_mesh
-                    .spawn(cx_instance, "log_forwarder", &client_actor_ref)
-                    .await
-            }).map_err(anyhow::Error::from)?;
+            // Only spawned if MESH_ENABLE_LOG_FORWARDING is true
+            let forwarder_mesh = if hyperactor_config::global::get(MESH_ENABLE_LOG_FORWARDING) {
+                Some(instance_dispatch!(instance, async |cx_instance| {
+                    proc_mesh
+                        .spawn(cx_instance, "log_forwarder", &client_actor_ref)
+                        .await
+                }).map_err(anyhow::Error::from)?)
+            } else {
+                None
+            };
 
-            // 3) Per-proc Python logging integration
+            // 3) Per-proc Python logging integration (always spawned)
             let logger_mesh = instance_dispatch!(instance, async |cx_instance| {
                 proc_mesh.spawn(cx_instance, "logger", &()).await
             }).map_err(anyhow::Error::from)?;
@@ -108,7 +113,9 @@ impl LoggingMeshClient {
 #### What to notice:
 - `PyPythonTask::new(async move {...})`: bridges the Python call into Rust async, returning a task handle back to Python.
 - `instance_dispatch!`: executes the spawn on the correct actor instance context.
-- Three things get created: one `LogClientActor` (client proc), **N** `LogForwardActor` (per remote proc), **N** `LoggerRuntimeActor` (per remote proc).
+- LogClientActor is spawned with `LogClientActor::default()`, not `()`.
+- Forwarder mesh is conditionally spawned only if `MESH_ENABLE_LOG_FORWARDING` is true; it's `Option<ActorMesh<LogForwardActor>>`.
+- Three things get created: one `LogClientActor` (client proc), **N** `LogForwardActor` (per remote proc, if enabled), **N** `LoggerRuntimeActor` (per remote proc).
 
 ---
 
@@ -117,8 +124,10 @@ impl LoggingMeshClient {
 ### `set_mode(stream_to_client, aggregate_window_sec_level)`
 ```rust
 // logging.rs (inside LoggingMeshClient::set_mode)
-self.forwarder_mesh
-    .cast(cx, LogForwardMessage::SetMode { stream_to_client })?;
+if let Some(ref forwarder_mesh) = self.forwarder_mesh {
+    forwarder_mesh
+        .cast(cx, LogForwardMessage::SetMode { stream_to_client })?;
+}
 
 self.logger_mesh
     .cast(cx, LoggerRuntimeMessage::SetLogging { level })?;
@@ -126,7 +135,7 @@ self.logger_mesh
 self.client_actor
     .send(LogClientMessage::SetAggregate { aggregate_window_sec })?;
 ```
-- Forwarders decide whether to stream back to the client
+- Forwarders (if they exist) decide whether to stream back to the client
 - LoggerRuntime sets Python logging level inside each remote process.
 - Client actor records/updates aggregation windowing behavior.
 

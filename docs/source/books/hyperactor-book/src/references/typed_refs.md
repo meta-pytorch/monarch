@@ -51,11 +51,13 @@ This allows the port to be sent across the network or passed into other messages
 ### Definition
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct PortRef<M: RemoteMessage> {
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
+pub struct PortRef<M> {
     port_id: PortId,
     reducer_spec: Option<ReducerSpec>,
+    reducer_opts: Option<ReducerOpts>,
     phantom: PhantomData<M>,
+    return_undeliverable: bool,
 }
 ```
 As with `ActorRef`, this is a typed wrapper around a raw identifier (`PortId`), carrying a phantom type for safety. It ensures that only messages of type `M` can be sent through this reference.
@@ -72,13 +74,13 @@ These are commonly used for request/response interactions, where a single reply 
 ### Definition
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct OncePortRef<M: Message> {
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct OncePortRef<M> {
     port_id: PortId,
     phantom: PhantomData<M>,
 }
 ```
-Just like `PortRef`, this wraps a `PortId` with a phantom message type `M` for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.
+This wraps a `PortId` with a phantom message type `M` for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.
 
 ## `GangRef<A>`
 
