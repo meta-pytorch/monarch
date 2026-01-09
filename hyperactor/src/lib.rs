@@ -74,7 +74,6 @@ pub mod checkpoint;
 pub mod clock;
 pub mod config;
 pub mod context;
-pub mod data;
 pub mod host;
 mod init;
 pub mod mailbox;
@@ -137,9 +136,8 @@ pub use init::initialize;
 pub use init::initialize_with_current_runtime;
 #[doc(inline)]
 pub use init::initialize_with_log_prefix;
-// Re-exported to make this available to callers of the `register!` macro.
 #[doc(hidden)]
-pub use inventory::submit;
+pub use inventory; // For remote! macro
 pub use mailbox::Data;
 pub use mailbox::Mailbox;
 pub use mailbox::Message;

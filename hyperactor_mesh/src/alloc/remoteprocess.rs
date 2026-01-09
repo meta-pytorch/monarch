@@ -98,7 +98,7 @@ pub enum RemoteProcessAllocatorMessage {
     /// host are alive.
     HeartBeat,
 }
-hyperactor::register_type!(RemoteProcessAllocatorMessage);
+wirevalue::register_type!(RemoteProcessAllocatorMessage);
 
 /// Control message sent from local allocator to remote allocator
 /// relaying process state updates.
@@ -117,7 +117,7 @@ pub enum RemoteProcessProcStateMessage {
     /// Heartbeat message to check if client is alive.
     HeartBeat,
 }
-hyperactor::register_type!(RemoteProcessProcStateMessage);
+wirevalue::register_type!(RemoteProcessProcStateMessage);
 
 /// Allocator with a service frontend that wraps ProcessAllocator.
 pub struct RemoteProcessAllocator {

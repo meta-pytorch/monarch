@@ -6,6 +6,7 @@ members = [
     "hyper",
     "hyperactor",
     "hyperactor_config",
+    "hyperactor_config_macros",
     "hyperactor_macros",
     "hyperactor_mesh",
     "hyperactor_mesh_macros",
@@ -32,4 +33,5 @@ members = [
     "timed_test",
     "torch-sys2",
     "torch-sys-cuda",
+    "wirevalue",
 ]

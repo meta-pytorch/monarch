@@ -9,12 +9,11 @@
 //! The mesh agent actor manages procs in ProcMeshes.
 
 use std::collections::HashMap;
-use std::mem::replace;
 use std::mem::take;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
-use std::sync::RwLockWriteGuard;
+use std::sync::RwLockReadGuard;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
@@ -64,7 +63,7 @@ pub enum GspawnResult {
     Success { rank: usize, actor_id: ActorId },
     Error(String),
 }
-hyperactor::register_type!(GspawnResult);
+wirevalue::register_type!(GspawnResult);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum StopActorResult {
@@ -72,7 +71,7 @@ pub enum StopActorResult {
     Timeout,
     NotFound,
 }
-hyperactor::register_type!(StopActorResult);
+wirevalue::register_type!(StopActorResult);
 
 #[derive(
     Debug,
@@ -497,7 +496,7 @@ pub struct ActorSpec {
     /// serialized parameters
     pub params_data: Data,
 }
-hyperactor::register_type!(ActorSpec);
+wirevalue::register_type!(ActorSpec);
 
 /// Actor state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
@@ -509,7 +508,7 @@ pub struct ActorState {
     // TODO status: ActorStatus,
     pub supervision_events: Vec<ActorSupervisionEvent>,
 }
-hyperactor::register_type!(ActorState);
+wirevalue::register_type!(ActorState);
 
 #[async_trait]
 impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
@@ -834,8 +833,20 @@ impl std::fmt::Debug for ReconfigurableMailboxSender {
     }
 }
 
+/// A capability wrapper granting access to the configured mailbox
+/// sender.
+///
+/// This type exists to tie the lifetime of any `&BoxedMailboxSender`
+/// reference to a lock guard, so the underlying state cannot be
+/// reconfigured while the reference is in use.
+///
+/// A **read** guard is sufficient because we only need to *observe*
+/// and borrow the configured sender, not mutate state. While a
+/// `RwLockReadGuard` is held, `configure()` cannot acquire the write
+/// lock, so the state cannot transition from `Configured(..)` to any
+/// other variant during the guard’s lifetime.
 pub(crate) struct ReconfigurableMailboxSenderInner<'a> {
-    guard: RwLockWriteGuard<'a, ReconfigurableMailboxSenderState>,
+    guard: RwLockReadGuard<'a, ReconfigurableMailboxSenderState>,
 }
 
 impl<'a> ReconfigurableMailboxSenderInner<'a> {
@@ -865,27 +876,34 @@ impl ReconfigurableMailboxSender {
     /// enqueue any pending messages onto the sender; future messages are
     /// posted directly to the configured sender.
     pub(crate) fn configure(&self, sender: BoxedMailboxSender) -> bool {
+        // Hold the write lock until all queued messages are flushed.
         let mut state = self.state.write().unwrap();
         if state.is_configured() {
             return false;
         }
 
-        let queued = replace(
+        // Install the configured sender exactly once.
+        let queued = std::mem::replace(
             &mut *state,
-            ReconfigurableMailboxSenderState::Configured(sender.clone()),
+            ReconfigurableMailboxSenderState::Configured(sender),
         );
 
+        // Borrow the configured sender from the state (stable while
+        // we hold the lock).
+        let configured_sender = state.as_configured().expect("just configured");
+
+        // Flush the old queue while still holding the write lock.
         for (envelope, return_handle) in queued.into_queueing().unwrap().into_inner().unwrap() {
-            sender.post(envelope, return_handle);
+            configured_sender.post(envelope, return_handle);
         }
-        *state = ReconfigurableMailboxSenderState::Configured(sender);
+
         true
     }
 
     pub(crate) fn as_inner<'a>(
         &'a self,
     ) -> Result<ReconfigurableMailboxSenderInner<'a>, anyhow::Error> {
-        let state = self.state.write().unwrap();
+        let state = self.state.read().unwrap();
         if state.is_configured() {
             Ok(ReconfigurableMailboxSenderInner { guard: state })
         } else {
@@ -900,11 +918,11 @@ impl MailboxSender for ReconfigurableMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match *self.state.read().unwrap() {
-            ReconfigurableMailboxSenderState::Queueing(ref queue) => {
+        match &*self.state.read().unwrap() {
+            ReconfigurableMailboxSenderState::Queueing(queue) => {
                 queue.lock().unwrap().push((envelope, return_handle));
             }
-            ReconfigurableMailboxSenderState::Configured(ref sender) => {
+            ReconfigurableMailboxSenderState::Configured(sender) => {
                 sender.post(envelope, return_handle);
             }
         }
@@ -915,11 +933,11 @@ impl MailboxSender for ReconfigurableMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match *self.state.read().unwrap() {
-            ReconfigurableMailboxSenderState::Queueing(ref queue) => {
+        match &*self.state.read().unwrap() {
+            ReconfigurableMailboxSenderState::Queueing(queue) => {
                 queue.lock().unwrap().push((envelope, return_handle));
             }
-            ReconfigurableMailboxSenderState::Configured(ref sender) => {
+            ReconfigurableMailboxSenderState::Configured(sender) => {
                 sender.post_unchecked(envelope, return_handle);
             }
         }

@@ -55,6 +55,7 @@ from monarch._src.actor.proc_mesh import (
     ProcMesh,
 )
 from monarch._src.actor.source_loader import SourceLoaderController
+from monarch.config import configure
 from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
@@ -222,6 +223,10 @@ async def _wait_for_breakpoints(
 
 
 async def _test_debug(nested: bool) -> None:
+    # Increase supervision liveness timeout for opt mode where PAR
+    # extraction causes slower startup.
+    configure(supervision_liveness_timeout="45s")
+
     if not nested:
         proc = proc_mesh(hosts=2, gpus=2)
         debugee = proc.spawn("debugee", DebugeeActor)

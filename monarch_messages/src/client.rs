@@ -11,7 +11,6 @@ use hyperactor::ActorId;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
-use hyperactor::data::Serialized;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -80,7 +79,7 @@ pub enum ClientMessage {
     /// A fetched result of an invoked operation.
     Result {
         seq: Seq,
-        result: Option<Result<Serialized, Exception>>,
+        result: Option<Result<wirevalue::Any, Exception>>,
     },
 
     /// Notify the client of an event.

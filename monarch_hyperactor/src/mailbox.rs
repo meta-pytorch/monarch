@@ -22,7 +22,6 @@ use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
-use hyperactor::data::Serialized;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::OncePortReceiver;
@@ -118,9 +117,9 @@ impl PyMailbox {
 
     pub(super) fn post(&self, dest: &PyActorId, message: &PythonMessage) -> PyResult<()> {
         let port_id = dest.inner.port_id(PythonMessage::port());
-        let message = Serialized::serialize(message).map_err(|err| {
+        let message = wirevalue::Any::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
-                "failed to serialize message ({:?}) to Serialized: {}",
+                "failed to serialize message ({:?}) to Any: {}",
                 message, err
             ))
         })?;
@@ -560,7 +559,7 @@ impl Bind for EitherPortRef {
 struct PythonReducer(PyObject);
 
 impl PythonReducer {
-    fn new(params: Option<Serialized>) -> anyhow::Result<Self> {
+    fn new(params: Option<wirevalue::Any>) -> anyhow::Result<Self> {
         let p = params.ok_or_else(|| anyhow::anyhow!("params cannot be None"))?;
         let obj: PickledPyObject = p.deserialized()?;
         Ok(Python::with_gil(|py: Python<'_>| -> PyResult<Self> {
@@ -583,18 +582,18 @@ impl CommReducer for PythonReducer {
 
 struct PythonAccumulator {
     accumulator: PyObject,
-    reducer: Option<Serialized>,
+    reducer: Option<wirevalue::Any>,
 }
 
 impl PythonAccumulator {
     fn new<'py>(py: Python<'py>, accumulator: PyObject) -> PyResult<Self> {
         let py_reducer = accumulator.getattr(py, "reducer")?;
-        let reducer: Option<Serialized> = if py_reducer.is_none(py) {
+        let reducer: Option<wirevalue::Any> = if py_reducer.is_none(py) {
             None
         } else {
             let pickled = PickledPyObject::cloudpickle(py_reducer.bind(py))?;
             Some(
-                Serialized::serialize(&pickled)
+                wirevalue::Any::serialize(&pickled)
                     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
             )
         };
