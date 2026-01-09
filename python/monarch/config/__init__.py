@@ -73,6 +73,7 @@ def configure(
     prefix_with_rank: bool | None = None,
     actor_spawn_max_idle: str | None = None,
     get_actor_state_max_idle: str | None = None,
+    supervision_liveness_timeout: str | None = None,
     proc_stop_max_idle: str | None = None,
     get_proc_state_max_idle: str | None = None,
     **kwargs: object,
@@ -143,6 +144,8 @@ def configure(
         Proc mesh timeouts:
             actor_spawn_max_idle: Maximum idle time while spawning actors (humantime).
             get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
+            supervision_liveness_timeout: Liveness timeout for the actor-mesh supervision stream; prolonged
+                silence is interpreted as the controller being unreachable (humantime).
 
         Host mesh timeouts:
             proc_stop_max_idle: Maximum idle time while stopping procs (humantime).
@@ -227,6 +230,8 @@ def configure(
         params["actor_spawn_max_idle"] = actor_spawn_max_idle
     if get_actor_state_max_idle is not None:
         params["get_actor_state_max_idle"] = get_actor_state_max_idle
+    if supervision_liveness_timeout is not None:
+        params["supervision_liveness_timeout"] = supervision_liveness_timeout
     if proc_stop_max_idle is not None:
         params["proc_stop_max_idle"] = proc_stop_max_idle
     if get_proc_state_max_idle is not None:

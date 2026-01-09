@@ -37,9 +37,9 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
+use hyperactor_config::AttrValue;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::declare_attrs;
-use hyperactor_macros::AttrValue;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -52,6 +52,7 @@ use tracing::Level;
 use tracing::Span;
 use typeuri::Named as _;
 use uuid::Uuid;
+use wirevalue::TypeInfo;
 
 use crate as hyperactor;
 use crate::Actor;
@@ -75,8 +76,6 @@ use crate::clock::ClockKind;
 use crate::clock::RealClock;
 use crate::config;
 use crate::context;
-use crate::data::Serialized;
-use crate::data::TypeInfo;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -1168,7 +1167,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor running on the proc.
-    pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
+    pub fn post(&self, port_id: PortId, headers: Attrs, message: wirevalue::Any) {
         <Self as context::MailboxExt>::post(self, port_id, headers, message, true)
     }
 
@@ -2030,7 +2029,7 @@ pub struct SeqInfo {
     /// Message's sequence number in the given session.
     pub seq: u64,
 }
-crate::register_type!(SeqInfo);
+wirevalue::register_type!(SeqInfo);
 
 impl fmt::Display for SeqInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

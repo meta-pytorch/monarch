@@ -22,6 +22,7 @@ torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
