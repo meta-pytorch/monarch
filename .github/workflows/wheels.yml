@@ -47,7 +47,7 @@ jobs:
         cargo install --path monarch_hyperactor
 
         # Build wheel
-        export MONARCH_VERSION=0.3.0.dev$(date +'%Y%m%d')
+        export MONARCH_VERSION=$(date +'%Y.%m.%d')
         export MONARCH_BUILD_MESH_ONLY=0
 
         python setup.py bdist_wheel
@@ -60,11 +60,20 @@ jobs:
         install_python_test_dependencies
         pip install dist/*.whl
         python -c "import monarch"
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Name of the artifact to upload (optional, default is 'artifact')
+          name: wheels
+          # A file, directory or wildcard pattern to upload (required)
+          path: dist
   publish:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    environment: nightly
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     permissions:
       id-token: write  # Required for PyPI trusted publishing

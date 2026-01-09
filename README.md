@@ -1,3 +1,10 @@
+# Deprecation Notice
+
+The torchmonarch-nightly package is deprecated. Please use [torchmonarch](https://pypi.org/project/torchmonarch)
+instead.
+Nightly builds will be published there, and can be installed with `pip install --pre torchmonarch`.
+The version format is <major>.<minor>.<patch>.dev<date>
+
 # Monarch 🦋
 
 **Monarch** is a distributed programming framework for PyTorch based on scalable
