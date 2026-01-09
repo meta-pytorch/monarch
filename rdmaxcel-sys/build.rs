@@ -177,15 +177,14 @@ impl Platform {
     fn compiler_args(&self) -> Vec<String> {
         match self {
             Platform::Cuda { .. } => vec![
-                "--compiler-options".into(),
+                "-Xcompiler".into(),
                 "-fPIC".into(),
                 "-std=c++14".into(),
                 "--expt-extended-lambda".into(),
-                "-Xcompiler".into(),
-                "-fPIC".into(),
             ],
             Platform::Rocm { version, .. } => {
                 let mut args = vec![
+                    "-fPIC".into(),
                     "-std=c++14".into(),
                     "-D__HIP_PLATFORM_AMD__=1".into(),
                     "-DUSE_ROCM=1".into(),
@@ -406,18 +405,19 @@ fn compile_gpu(
     let obj_path = format!("{}/rdmaxcel_cuda.o", build_dir);
     let lib_path = format!("{}/librdmaxcel_cuda.a", build_dir);
 
+    // Build base args without -fPIC (platform.compiler_args() handles it correctly)
     let mut args = vec![
         "-c".to_string(),
         sources.gpu_source.to_string_lossy().to_string(),
         "-o".to_string(),
         obj_path.clone(),
-        "-fPIC".to_string(),
         format!("-I{}", platform.include_dir()),
         format!("-I{}", sources.dir.display()),
         format!("-I{}", rdma_include),
         "-I/usr/include".to_string(),
         "-I/usr/include/infiniband".to_string(),
     ];
+    // Add platform-specific args (includes properly formatted -fPIC for each platform)
     args.extend(platform.compiler_args());
 
     let output = Command::new(platform.compiler())
