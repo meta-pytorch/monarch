@@ -16,7 +16,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
-use hyperactor::data::Serialized;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
@@ -264,7 +263,7 @@ enum InstanceStatus {
     Stopped,
 }
 
-/// Wrapper around a [`Serialized`] that allows returning it to python and
+/// Wrapper around a [`Any`] that allows returning it to python and
 /// passed to python based detached actors to send to other actors.
 #[pyclass(
     frozen,
@@ -273,7 +272,7 @@ enum InstanceStatus {
 )]
 #[derive(Debug)]
 pub struct PySerialized {
-    inner: Serialized,
+    inner: wirevalue::Any,
     /// The message port (type) of the message.
     port: u64,
 }
@@ -281,9 +280,9 @@ pub struct PySerialized {
 impl PySerialized {
     pub fn new<M: RemoteMessage>(message: &M) -> PyResult<Self> {
         Ok(Self {
-            inner: Serialized::serialize(message).map_err(|err| {
+            inner: wirevalue::Any::serialize(message).map_err(|err| {
                 PyRuntimeError::new_err(format!(
-                    "failed to serialize message of type {} to Serialized: {}",
+                    "failed to serialize message of type {} to Any: {}",
                     std::any::type_name::<M>(),
                     err
                 ))

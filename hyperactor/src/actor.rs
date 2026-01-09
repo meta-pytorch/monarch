@@ -444,7 +444,7 @@ pub enum Signal {
     /// The direct child with the given PID was stopped.
     ChildStopped(Index),
 }
-crate::register_type!(Signal);
+wirevalue::register_type!(Signal);
 
 impl fmt::Display for Signal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

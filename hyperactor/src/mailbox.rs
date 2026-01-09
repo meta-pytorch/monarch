@@ -116,7 +116,6 @@ use crate::channel::ChannelError;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
 use crate::context;
-use crate::data::Serialized;
 use crate::id;
 use crate::metrics;
 use crate::reference::ActorId;
@@ -203,7 +202,7 @@ pub struct MessageEnvelope {
     dest: PortId,
 
     /// The serialized message.
-    data: Serialized,
+    data: wirevalue::Any,
 
     /// Error contains a delivery error when message delivery failed.
     errors: Vec<DeliveryError>,
@@ -219,11 +218,11 @@ pub struct MessageEnvelope {
     return_undeliverable: bool,
     // TODO: add typename, source, seq, etc.
 }
-crate::register_type!(MessageEnvelope);
+wirevalue::register_type!(MessageEnvelope);
 
 impl MessageEnvelope {
     /// Create a new envelope with the provided sender, destination, and message.
-    pub fn new(sender: ActorId, dest: PortId, data: Serialized, headers: Attrs) -> Self {
+    pub fn new(sender: ActorId, dest: PortId, data: wirevalue::Any, headers: Attrs) -> Self {
         Self {
             sender,
             dest,
@@ -237,7 +236,7 @@ impl MessageEnvelope {
     }
 
     /// Create a new envelope whose sender ID is unknown.
-    pub(crate) fn new_unknown(dest: PortId, data: Serialized) -> Self {
+    pub(crate) fn new_unknown(dest: PortId, data: wirevalue::Any) -> Self {
         Self::new(id!(unknown[0].unknown), dest, data, Attrs::new())
     }
 
@@ -247,10 +246,10 @@ impl MessageEnvelope {
         dest: PortId,
         value: &T,
         headers: Attrs,
-    ) -> Result<Self, crate::data::Error> {
+    ) -> Result<Self, wirevalue::Error> {
         Ok(Self {
             headers,
-            data: Serialized::serialize(value)?,
+            data: wirevalue::Any::serialize(value)?,
             sender: source,
             dest,
             errors: Vec::new(),
@@ -305,7 +304,7 @@ impl MessageEnvelope {
     }
 
     /// The serialized message.
-    pub fn data(&self) -> &Serialized {
+    pub fn data(&self) -> &wirevalue::Any {
         &self.data
     }
 
@@ -401,7 +400,7 @@ impl MessageEnvelope {
         }
     }
 
-    fn open(self) -> (MessageMetadata, Serialized) {
+    fn open(self) -> (MessageMetadata, wirevalue::Any) {
         let Self {
             sender,
             dest,
@@ -425,7 +424,7 @@ impl MessageEnvelope {
         )
     }
 
-    fn seal(metadata: MessageMetadata, data: Serialized) -> Self {
+    fn seal(metadata: MessageMetadata, data: wirevalue::Any) -> Self {
         let MessageMetadata {
             sender,
             dest,
@@ -741,7 +740,7 @@ pub trait PortSender: MailboxSender {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) -> Result<(), MailboxSenderError> {
         // TODO: convert this to a undeliverable error also
-        let serialized = Serialized::serialize(&message).map_err(|err| {
+        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 port.port_id().clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
@@ -762,7 +761,7 @@ pub trait PortSender: MailboxSender {
         message: M,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) -> Result<(), MailboxSenderError> {
-        let serialized = Serialized::serialize(&message).map_err(|err| {
+        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 once_port.port_id().clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
@@ -1005,7 +1004,7 @@ fn server_return_handle<T: MailboxServer>(server: T) -> PortHandle<Undeliverable
                     )
                     .port_id()
                     .clone(),
-                    Serialized::serialize(&Undeliverable(envelope)).unwrap(),
+                    wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
                     Attrs::new(),
                 ),
                 monitored_return_handle(),
@@ -1052,7 +1051,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                         )
                         .port_id()
                         .clone(),
-                        Serialized::serialize(&Undeliverable(envelope)).unwrap(),
+                        wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
                         Attrs::new(),
                     ),
                     monitored_return_handle(),
@@ -1948,7 +1947,7 @@ pub struct SerializedSenderError {
     /// The headers associated with the message.
     pub headers: Attrs,
     /// The message was tried to send.
-    pub data: Serialized,
+    pub data: wirevalue::Any,
     /// The mailbox sender error that occurred.
     pub error: MailboxSenderError,
 }
@@ -1975,7 +1974,7 @@ trait SerializedSender: Send + Sync {
     fn send_serialized(
         &self,
         headers: Attrs,
-        serialized: Serialized,
+        serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError>;
 }
 
@@ -2058,7 +2057,7 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
     fn send_serialized(
         &self,
         headers: Attrs,
-        serialized: Serialized,
+        serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError> {
         // Here, the stack ensures that this port is only instantiated for M-typed messages.
         // This does not protect against bad senders (e.g., encoding wrongly-typed messages),
@@ -2154,7 +2153,7 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
     fn send_serialized(
         &self,
         headers: Attrs,
-        serialized: Serialized,
+        serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError> {
         match serialized.deserialized() {
             Ok(message) => self.send_once(message).map_err(|e| SerializedSenderError {
@@ -2174,10 +2173,10 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
     }
 }
 
-/// Use the provided function to send untyped messages (i.e. Serialized objects).
+/// Use the provided function to send untyped messages (i.e. Any objects).
 pub(crate) struct UntypedUnboundedSender {
     pub(crate) sender:
-        Box<dyn Fn(Serialized) -> Result<bool, (Serialized, anyhow::Error)> + Send + Sync>,
+        Box<dyn Fn(wirevalue::Any) -> Result<bool, (wirevalue::Any, anyhow::Error)> + Send + Sync>,
     pub(crate) port_id: PortId,
 }
 
@@ -2189,7 +2188,7 @@ impl SerializedSender for UntypedUnboundedSender {
     fn send_serialized(
         &self,
         headers: Attrs,
-        serialized: Serialized,
+        serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError> {
         (self.sender)(serialized).map_err(|(data, err)| SerializedSenderError {
             data,
@@ -2693,7 +2692,6 @@ mod tests {
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::context::Mailbox as MailboxContext;
-    use crate::data::Serialized;
     use crate::id;
     use crate::proc::Proc;
     use crate::reference::ProcId;
@@ -2726,7 +2724,7 @@ mod tests {
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 321u64);
 
-        let serialized = Serialized::serialize(&999u64).unwrap();
+        let serialized = wirevalue::Any::serialize(&999u64).unwrap();
         mbox.post(
             MessageEnvelope::new_unknown(port.port_id().clone(), serialized),
             monitored_return_handle(),
@@ -2802,7 +2800,7 @@ mod tests {
         // // (good!), but we stashed the port-id and so we can try on the
         // // serialized interface.
         // let Err(err) = mbox
-        //     .send_serialized(&port_id, &Serialized(Vec::new()))
+        //     .send_serialized(&port_id, &wirevalue::Any(Vec::new()))
         //     .await
         // else {
         //     unreachable!()
@@ -3100,7 +3098,7 @@ mod tests {
             a: u64,
             b: String,
         }
-        crate::register_type!(MyTest);
+        wirevalue::register_type!(MyTest);
 
         let envelope = MessageEnvelope::serialize(
             id!(source[0].actor),
@@ -3145,7 +3143,7 @@ mod tests {
         let message = MessageEnvelope::new(
             foo.actor_id().clone(),
             PortId(id!(corge[0].bar), 9999u64),
-            Serialized::serialize(&1u64).unwrap(),
+            wirevalue::Any::serialize(&1u64).unwrap(),
             Attrs::new(),
         );
         return_handle.send(Undeliverable(message)).unwrap();
@@ -3177,7 +3175,7 @@ mod tests {
         let envelope = MessageEnvelope::new(
             id!(foo[0].bar),
             PortId(id!(baz[0].corge), 9999u64),
-            Serialized::serialize(&1u64).unwrap(),
+            wirevalue::Any::serialize(&1u64).unwrap(),
             Attrs::new(),
         );
         return_handle.send(Undeliverable(envelope.clone())).unwrap();
@@ -3408,7 +3406,7 @@ mod tests {
     }
 
     fn post(cx: &impl context::Actor, port_id: PortId, msg: u64) {
-        let serialized = Serialized::serialize(&msg).unwrap();
+        let serialized = wirevalue::Any::serialize(&msg).unwrap();
         port_id.send(cx, serialized);
     }
 
@@ -3681,7 +3679,7 @@ mod tests {
         assert_eq!(msg, 60); // 10 + 20 + 30
 
         // Now send another message - it should fail because the port is torn down
-        let serialized = Serialized::serialize(&100u64).unwrap();
+        let serialized = wirevalue::Any::serialize(&100u64).unwrap();
         let envelope = MessageEnvelope::new(
             actor.mailbox().actor_id().clone(),
             split_port_id.clone(),

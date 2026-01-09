@@ -26,7 +26,6 @@ use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::WorldId;
 use hyperactor::accum::ReducerMode;
-use hyperactor::data::Serialized;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
@@ -48,7 +47,7 @@ use crate::comm::multicast::set_cast_info_on_headers;
 /// Parameters to initialize the CommActor
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Default)]
 pub struct CommActorParams {}
-hyperactor::register_type!(CommActorParams);
+wirevalue::register_type!(CommActorParams);
 
 /// A message buffered due to out-of-order delivery.
 #[derive(Debug)]
@@ -120,7 +119,7 @@ pub enum CommActorMode {
     // TODO: T224926642 Remove this once we are fully onto ActorMeshes.
     ImplicitWithWorldId(WorldId),
 }
-hyperactor::register_type!(CommActorMode);
+wirevalue::register_type!(CommActorMode);
 
 impl CommActorMode {
     /// Return the peer comm actor for the given rank, given a self id,
@@ -307,7 +306,7 @@ impl CommActor {
                     .actor_id(message.dest_port().actor_name(), 0)
                     .port_id(message.dest_port().port()),
                 headers,
-                Serialized::serialize(message.data())?,
+                wirevalue::Any::serialize(message.data())?,
             );
         }
 

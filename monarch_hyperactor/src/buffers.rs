@@ -261,7 +261,7 @@ impl Buffer {
 pub struct FrozenBuffer {
     pub inner: bytes::Bytes,
 }
-hyperactor::register_type!(FrozenBuffer);
+wirevalue::register_type!(FrozenBuffer);
 
 #[pymethods]
 impl FrozenBuffer {

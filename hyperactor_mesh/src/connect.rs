@@ -80,7 +80,7 @@ enum Io {
     // Signal the end of one side of the connection.
     Eof,
 }
-hyperactor::register_type!(Io);
+wirevalue::register_type!(Io);
 
 struct OwnedReadHalfStream {
     port: PortReceiver<Io>,
@@ -323,7 +323,7 @@ pub struct Connect {
     /// The port the server can use to complete the connection.
     return_conn: OncePortRef<Accept>,
 }
-hyperactor::register_type!(Connect);
+wirevalue::register_type!(Connect);
 
 impl Connect {
     /// Allocate a new `Connect` message and return the associated `ConnectionCompleter` that can be used
@@ -355,7 +355,7 @@ struct Accept {
     /// The port the client will use to send data over the connection to the server.
     conn: PortRef<Io>,
 }
-hyperactor::register_type!(Accept);
+wirevalue::register_type!(Accept);
 
 impl Bind for Connect {
     fn bind(&mut self, bindings: &mut Bindings) -> Result<()> {
