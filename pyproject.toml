@@ -82,6 +82,9 @@ test = [
     "pytest-xdist",
     "pyright",
 ]
+kubernetes = [
+    "kubernetes",
+]
 
 # Modern dependency groups for uv
 [dependency-groups]

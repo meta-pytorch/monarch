@@ -69,7 +69,7 @@ pub enum ChannelError {
 
     /// Data encoding errors.
     #[error(transparent)]
-    Data(#[from] crate::data::Error),
+    Data(#[from] wirevalue::Error),
 
     /// Some other error.
     #[error(transparent)]

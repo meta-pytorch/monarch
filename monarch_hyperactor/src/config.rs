@@ -54,22 +54,22 @@ pub enum PyEncoding {
     Multipart,
 }
 
-impl From<hyperactor::data::Encoding> for PyEncoding {
-    fn from(e: hyperactor::data::Encoding) -> Self {
+impl From<wirevalue::Encoding> for PyEncoding {
+    fn from(e: wirevalue::Encoding) -> Self {
         match e {
-            hyperactor::data::Encoding::Bincode => PyEncoding::Bincode,
-            hyperactor::data::Encoding::Json => PyEncoding::Json,
-            hyperactor::data::Encoding::Multipart => PyEncoding::Multipart,
+            wirevalue::Encoding::Bincode => PyEncoding::Bincode,
+            wirevalue::Encoding::Json => PyEncoding::Json,
+            wirevalue::Encoding::Multipart => PyEncoding::Multipart,
         }
     }
 }
 
-impl From<PyEncoding> for hyperactor::data::Encoding {
+impl From<PyEncoding> for wirevalue::Encoding {
     fn from(e: PyEncoding) -> Self {
         match e {
-            PyEncoding::Bincode => hyperactor::data::Encoding::Bincode,
-            PyEncoding::Json => hyperactor::data::Encoding::Json,
-            PyEncoding::Multipart => hyperactor::data::Encoding::Multipart,
+            PyEncoding::Bincode => wirevalue::Encoding::Bincode,
+            PyEncoding::Json => wirevalue::Encoding::Json,
+            PyEncoding::Multipart => wirevalue::Encoding::Multipart,
         }
     }
 }
@@ -425,7 +425,7 @@ macro_rules! declare_py_config_type {
     ($($ty:ty),+ $(,)?) => {
         hyperactor::paste! {
             $(
-                hyperactor::submit! {
+                hyperactor::inventory::submit! {
                     PythonConfigTypeInfo {
                         typehash: $ty::typehash,
                         set_runtime_config: |py, key, val| {
@@ -448,7 +448,7 @@ macro_rules! declare_py_config_type {
     };
     ($py_ty:ty as $ty:ty) => {
         hyperactor::paste! {
-            hyperactor::submit! {
+            hyperactor::inventory::submit! {
                 PythonConfigTypeInfo {
                     typehash: $ty::typehash,
                     set_runtime_config: |py, key, val| {
@@ -472,7 +472,7 @@ macro_rules! declare_py_config_type {
 
 declare_py_config_type!(PyBindSpec as BindSpec);
 declare_py_config_type!(PyDuration as Duration);
-declare_py_config_type!(PyEncoding as hyperactor::data::Encoding);
+declare_py_config_type!(PyEncoding as wirevalue::Encoding);
 declare_py_config_type!(PyPortRange as std::ops::Range::<u16>);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
@@ -737,20 +737,20 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|_py| {
             // Test Rust enum -> PyEncoding -> Rust enum
-            let rust_enc = hyperactor::data::Encoding::Bincode;
+            let rust_enc = wirevalue::Encoding::Bincode;
             let py_enc: PyEncoding = rust_enc.into();
             assert_eq!(py_enc, PyEncoding::Bincode);
 
-            let back: hyperactor::data::Encoding = py_enc.into();
+            let back: wirevalue::Encoding = py_enc.into();
             assert_eq!(back, rust_enc);
 
             // Test all variants
             assert_eq!(
-                PyEncoding::from(hyperactor::data::Encoding::Json),
+                PyEncoding::from(wirevalue::Encoding::Json),
                 PyEncoding::Json
             );
             assert_eq!(
-                PyEncoding::from(hyperactor::data::Encoding::Multipart),
+                PyEncoding::from(wirevalue::Encoding::Multipart),
                 PyEncoding::Multipart
             );
         });
@@ -760,11 +760,11 @@ mod tests {
     fn test_pyencoding_roundtrip() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let original = hyperactor::data::Encoding::Multipart;
+            let original = wirevalue::Encoding::Multipart;
             let py_encoding: PyEncoding = original.into();
             let py_obj = Bound::new(py, py_encoding).unwrap().into_any();
             let back: PyEncoding = py_obj.extract().unwrap();
-            let rust_back: hyperactor::data::Encoding = back.into();
+            let rust_back: wirevalue::Encoding = back.into();
             assert_eq!(rust_back, original);
         });
     }

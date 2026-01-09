@@ -33,7 +33,7 @@ use crate::mailbox::UndeliverableMessageError;
 /// 2. a port to send a true value to when TTL = 0.
 #[derive(Serialize, Deserialize, Debug, typeuri::Named)]
 pub struct PingPongMessage(pub u64, pub ActorRef<PingPongActor>, pub OncePortRef<bool>);
-crate::register_type!(PingPongMessage);
+wirevalue::register_type!(PingPongMessage);
 
 /// A PingPong actor that can play the PingPong game by sending messages around.
 #[derive(Debug)]
