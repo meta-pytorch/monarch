@@ -279,7 +279,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
 pub enum AssignRankMessage {
     AssignRank(),
 }
-hyperactor::register_type!(AssignRankMessage);
+wirevalue::register_type!(AssignRankMessage);
 
 #[async_trait]
 impl Handler<WorkerMessage> for WorkerActor {

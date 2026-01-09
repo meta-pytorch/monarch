@@ -75,6 +75,7 @@ def configure(
     prefix_with_rank: bool = ...,
     actor_spawn_max_idle: str = ...,
     get_actor_state_max_idle: str = ...,
+    supervision_liveness_timeout: str = ...,
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
     **kwargs: object,
@@ -156,14 +157,18 @@ def configure(
             (humantime)
         get_actor_state_max_idle: Maximum idle time for actor state
             queries (humantime)
+        supervision_liveness_timeout: Liveness timeout for the
+            actor-mesh supervision stream; prolonged silence is
+            interpreted as the controller being unreachable
+            (humantime)
         proc_stop_max_idle: Maximum idle time while stopping procs
             (humantime)
         get_proc_state_max_idle: Maximum idle time for proc state queries
             (humantime)
         **kwargs: Reserved for future configuration keys
 
-    Historically this API is named ``configure(...)``; conceptually it
-    acts as "set runtime config for this process".
+    For historical reasons, this API is named ``configure(...)``;
+    conceptually it acts as "set runtime config for this process".
 
     """
     ...

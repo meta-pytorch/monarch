@@ -26,12 +26,12 @@ use typeuri::Named;
 pub struct AutoReloadMessage {
     pub result: PortRef<Result<(), String>>,
 }
-hyperactor::register_type!(AutoReloadMessage);
+wirevalue::register_type!(AutoReloadMessage);
 
 /// Parameters for creating an AutoReloadActor
 #[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct AutoReloadParams {}
-hyperactor::register_type!(AutoReloadParams);
+wirevalue::register_type!(AutoReloadParams);
 
 /// Simple Rust Actor that wraps the Python AutoReloader class via pyo3
 #[derive(Debug)]
