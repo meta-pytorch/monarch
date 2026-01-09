@@ -8,7 +8,7 @@ import os
 import time
 import warnings
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
@@ -20,7 +20,7 @@ from torchx.specs import AppDef, AppState
 
 
 def serve(
-    appdef: Union[AppDef, Callable[..., AppDef]],
+    appdef: AppDef,
     scheduler: str = "mast_conda",
     scheduler_cfg: Optional[Dict[str, Any]] = None,
 ) -> "SPMDJob":
@@ -40,8 +40,7 @@ def serve(
         - The appdef's role.workspace defines which files to upload to workers.
 
     Args:
-        appdef: Either AppDef instance or callable that returns AppDef.
-            The appdef's role.workspace defines which files to upload.
+        appdef: AppDef instance. The role.workspace defines which files to upload.
         scheduler: Scheduler name (e.g., 'mast_conda')
         scheduler_cfg: Scheduler configuration dict
 
@@ -64,10 +63,6 @@ def serve(
             stacklevel=2,
         )
         os.remove(job_state_path)
-
-    # Resolve appdef if callable
-    if callable(appdef):
-        appdef = appdef()
 
     # Extract workspace from appdef's first role
     workspace = None
