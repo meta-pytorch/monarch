@@ -27,6 +27,7 @@ The `Host` manages multiple spawned procs and provides the infrastructure for:
 - Accepting external connections (frontend)
 - Coordinating message routing between procs (backend)
 - Managing a service proc for system-level coordination
+- Managing a local proc for user-level actors
 
 See [Host](host.md) for the complete hosting architecture.
 
@@ -34,6 +35,7 @@ See [Host](host.md) for the complete hosting architecture.
 
 A specialized router that enables bidirectional communication by distinguishing between:
 - Messages destined for the service proc (delivered locally)
+- Messages destined for the local proc (delivered locally)
 - Messages destined for spawned procs (dialed remotely)
 
 See [ProcOrDial Router](proc_or_dial.md) for routing implementation details.

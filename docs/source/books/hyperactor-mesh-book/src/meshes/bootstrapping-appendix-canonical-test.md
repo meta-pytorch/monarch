@@ -1,11 +1,11 @@
-# Appendix: `bootstrap_cannonical_simple`
+# Appendix: `bootstrap_canonical_simple`
 
 This is the exact test from the codebase that the walkthrough above is unpacking.
 
 ```rust
 // from hyperactor_mesh/src/bootstrap.rs (tests)
 #[tokio::test]
-async fn bootstrap_cannonical_simple() {
+async fn bootstrap_canonical_simple() {
     // SAFETY: unit-test scoped
     unsafe {
         std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
