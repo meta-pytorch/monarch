@@ -39,7 +39,6 @@
   - [Handler](actors/handler.md)
   - [RemoteSpawn](actors/remote_spawn.md)
   - [Remote Registry](actors/remote.md)
-  - [Checkpointable](actors/checkpointable.md)
   - [Referable](actors/referable.md)
   - [Binds](actors/binds.md)
   - [RemoteHandles](actors/remote_handles.md)

@@ -13,8 +13,6 @@ pub enum ActorStatus {
     Client,
     Idle,
     Processing(SystemTime, Option<(String, Option<String>)>),
-    Saving(SystemTime),
-    Loading(SystemTime),
     Stopping,
     Stopped,
     Failed(String),
@@ -28,8 +26,6 @@ pub enum ActorStatus {
 - `Client`: The actor is operating in “client” mode; its ports are being managed manually.
 - `Idle`: The actor is ready to process messages but is currently idle.
 - `Processing`: The actor is handling a message. Contains a timestamp and optionally the handler/arm label.
-- `Saving`: The actor is saving its state as part of a checkpoint. Includes the time the operation began.
-- `Loading`: The actor is loading a previously saved state.
 - `Stopping`: The actor is in shutdown mode and draining its mailbox.
 - `Stopped`: The actor has exited and will no longer process messages.
 - `Failed`: The actor terminated abnormally. Contains an error description.
@@ -45,19 +41,17 @@ pub enum ActorStatus {
 `Signal` is used to control actor lifecycle transitions externally. These messages are sent internally by the runtime (or explicitly by users) to initiate operations like shutdown.
 ```rust
 pub enum Signal {
-    Stop,
     DrainAndStop,
-    Save,
-    Load,
+    Stop,
+    ChildStopped(Index),
 }
 ```
 Variants
-- `Stop`: Immediately halts the actor, even if messages remain in its mailbox.
 - `DrainAndStop`: Gracefully stops the actor by first draining all queued messages.
-- `Save`: Triggers a state snapshot using the actor’s Checkpointable::save method.
-- `Load`: Requests state restoration via Checkpointable::load.
+- `Stop`: Immediately halts the actor, even if messages remain in its mailbox.
+- `ChildStopped`: Indicates that a direct child actor with the given index was stopped.
 
-These signals are routed like any other message, typically sent using `ActorHandle::send` or by the runtime during supervision and recovery procedures.
+These signals are routed like any other message, typically sent using `ActorHandle::send` or by the runtime during supervision procedures.
 
 ## `ActorError`
 
@@ -68,7 +62,7 @@ pub struct ActorError {
     kind: ActorErrorKind,
 }
 ```
-This error type is returned in various actor lifecycle operations such as initialization, message handling, checkpointing, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure.
+This error type is returned in various actor lifecycle operations such as initialization, message handling, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure.
 
 ### Associated Methods
 ```rust
@@ -86,27 +80,13 @@ impl ActorError {
 
 ```rust
 pub enum ActorErrorKind {
-    Processing(anyhow::Error),
-    Panic(anyhow::Error),
-    Init(anyhow::Error),
-    Mailbox(MailboxError),
-    MailboxSender(MailboxSenderError),
-    Checkpoint(CheckpointError),
-    MessageLog(MessageLogError),
-    IndeterminateState,
-    Passthrough(anyhow::Error),
+    Generic(String),
+    ErrorDuringHandlingSupervision(String, Box<ActorSupervisionEvent>),
+    UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
 }
 ```
 ### Variants
 
-- `Processing`: The actor's `handle()` method returned an error.
-- `Panic`: A panic occurred during message handling or actor logic.
-- `Init`: Actor initialization failed.
-- `Mailbox`: A lower-level mailbox error occurred.
-- `MailboxSender`: A lower-level sender error occurred.
-- `Checkpoint`: Error during save/load of actor state.
-- `MessageLog`: Failure in the underlying message log.
-- `IndeterminateState`: The actor reached an invalid or unknown internal state.
-- `Passthrough`: A generic error, preserving only the error message.
-
-`Passthrough` is used when a structured error needs to be simplified for cloning or propagation across boundaries.
+- `Generic`: Generic error with a formatted message.
+- `ErrorDuringHandlingSupervision`: An error that occurred while trying to handle a supervision event.
+- `UnhandledSupervisionEvent`: The actor did not handle the supervision event.

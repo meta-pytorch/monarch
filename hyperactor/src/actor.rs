@@ -34,8 +34,6 @@ use crate::ActorRef;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
-use crate::checkpoint::CheckpointError;
-use crate::checkpoint::Checkpointable;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::context;
@@ -293,21 +291,6 @@ impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     }
 }
 
-#[async_trait]
-impl<T> Checkpointable for T
-where
-    T: RemoteMessage + Clone,
-{
-    type State = T;
-    async fn save(&self) -> Result<Self::State, CheckpointError> {
-        Ok(self.clone())
-    }
-
-    async fn load(state: Self::State) -> Result<Self, CheckpointError> {
-        Ok(state)
-    }
-}
-
 /// Errors that occur while serving actors. Each error is associated
 /// with the ID of the actor being served.
 #[derive(Debug)]
@@ -368,11 +351,6 @@ impl ActorErrorKind {
     /// An underlying mailbox sender error.
     pub fn mailbox_sender(err: MailboxSenderError) -> Self {
         Self::Generic(err.to_string())
-    }
-
-    /// An underlying checkpoint error.
-    pub fn checkpoint(err: CheckpointError) -> Self {
-        Self::Generic(format!("checkpoint error: {}", err))
     }
 
     /// An underlying message log error.
@@ -484,10 +462,6 @@ pub enum ActorStatus {
     /// TODO: we shoudl use interned representations here, so we don't copy
     /// strings willy-nilly.
     Processing(SystemTime, Option<(String, Option<String>)>),
-    /// The actor has been saving its state.
-    Saving(SystemTime),
-    /// The actor has been loading its state.
-    Loading(SystemTime),
     /// The actor is stopping. It is draining messages.
     Stopping,
     /// The actor is stopped. It is no longer processing messages.
@@ -549,28 +523,6 @@ impl fmt::Display for ActorStatus {
                     "{},{}: processing for {}ms",
                     handler,
                     arm,
-                    RealClock
-                        .system_time_now()
-                        .duration_since(*instant)
-                        .unwrap_or_default()
-                        .as_millis()
-                )
-            }
-            Self::Saving(instant) => {
-                write!(
-                    f,
-                    "saving for {}ms",
-                    RealClock
-                        .system_time_now()
-                        .duration_since(*instant)
-                        .unwrap_or_default()
-                        .as_millis()
-                )
-            }
-            Self::Loading(instant) => {
-                write!(
-                    f,
-                    "loading for {}ms",
                     RealClock
                         .system_time_now()
                         .duration_since(*instant)
@@ -765,8 +717,6 @@ mod tests {
     use crate::Actor;
     use crate::OncePortHandle;
     use crate::PortRef;
-    use crate::checkpoint::CheckpointError;
-    use crate::checkpoint::Checkpointable;
     use crate::test_utils::pingpong::PingPongActor;
     use crate::test_utils::pingpong::PingPongMessage;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
@@ -892,39 +842,6 @@ mod tests {
 
         handle.drain_and_stop().unwrap();
         handle.await;
-    }
-
-    #[derive(Debug)]
-    struct CheckpointActor {
-        // The actor does nothing but sum the values of messages.
-        sum: u64,
-        port: PortRef<u64>,
-    }
-
-    #[async_trait]
-    impl Actor for CheckpointActor {}
-
-    #[async_trait]
-    impl Handler<u64> for CheckpointActor {
-        async fn handle(&mut self, cx: &Context<Self>, value: u64) -> Result<(), anyhow::Error> {
-            self.sum += value;
-            self.port.send(cx, self.sum)?;
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl Checkpointable for CheckpointActor {
-        type State = (u64, PortRef<u64>);
-
-        async fn save(&self) -> Result<Self::State, CheckpointError> {
-            Ok((self.sum, self.port.clone()))
-        }
-
-        async fn load(state: Self::State) -> Result<Self, CheckpointError> {
-            let (sum, port) = state;
-            Ok(CheckpointActor { sum, port })
-        }
     }
 
     type MultiValues = Arc<Mutex<(u64, String)>>;
