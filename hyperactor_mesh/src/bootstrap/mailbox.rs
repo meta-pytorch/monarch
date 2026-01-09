@@ -113,7 +113,6 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
-    use hyperactor::data::Serialized;
     use hyperactor::id;
     use hyperactor_config::attrs::Attrs;
 
@@ -170,7 +169,7 @@ mod tests {
         let envelope = MessageEnvelope::new(
             third_notexist_actor_id.clone(),
             PortId(first_actor_id.clone(), 0),
-            Serialized::serialize(&()).unwrap(),
+            wirevalue::Any::serialize(&()).unwrap(),
             Attrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
@@ -183,7 +182,7 @@ mod tests {
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(third_notexist_actor_id.clone(), 0),
-            Serialized::serialize(&()).unwrap(),
+            wirevalue::Any::serialize(&()).unwrap(),
             Attrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
@@ -196,7 +195,7 @@ mod tests {
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(id!(external[0].actor), 0),
-            Serialized::serialize(&()).unwrap(),
+            wirevalue::Any::serialize(&()).unwrap(),
             Attrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
@@ -211,7 +210,7 @@ mod tests {
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(system_actor_id, 0),
-            Serialized::serialize(&()).unwrap(),
+            wirevalue::Any::serialize(&()).unwrap(),
             Attrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());

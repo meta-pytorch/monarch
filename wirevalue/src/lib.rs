@@ -6,8 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! This module contains core traits and implementation to manage remote data
-//! types in Hyperactor.
+//! Wirevalue provides an erased serialization format. [`Any`] is a type-erased
+//! envelope containing a serialized value identified by a [`typeuri::Named`].
+//!
+//! Wirevalues also provide encoding polymorphism, allowing the same representation
+//! to carry multiple serialization formats, and to transcode between them for
+//! types that are registered through [`register_type!`].
 
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -16,26 +20,26 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 
 use enum_as_inner::EnumAsInner;
-use hyperactor_macros::AttrValue;
+use hyperactor_config::AttrValue;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 pub use typeuri::Named;
 pub use typeuri::intern_typename;
 
-use crate::config;
+pub mod config;
 
 #[doc(hidden)]
 /// Dump trait for Named types that are also serializable/deserializable.
-/// This is a utility used by [`Serialized::dump`], and is not intended
+/// This is a utility used by [`Any::dump`], and is not intended
 /// for direct use.
 pub trait NamedDumpable: Named + Serialize + for<'de> Deserialize<'de> {
-    /// Dump the data in Serialized to a JSON value.
-    fn dump(data: Serialized) -> Result<serde_json::Value, anyhow::Error>;
+    /// Dump the data in Any to a JSON value.
+    fn dump(data: Any) -> Result<serde_json::Value, anyhow::Error>;
 }
 
 impl<T: Named + Serialize + for<'de> Deserialize<'de>> NamedDumpable for T {
-    fn dump(data: Serialized) -> Result<serde_json::Value, anyhow::Error> {
+    fn dump(data: Any) -> Result<serde_json::Value, anyhow::Error> {
         let value = data.deserialized::<Self>()?;
         Ok(serde_json::to_value(value)?)
     }
@@ -53,7 +57,7 @@ pub struct TypeInfo {
     /// Named::typehash()
     pub port: fn() -> u64,
     /// A function that can transcode a serialized value to JSON.
-    pub dump: Option<fn(Serialized) -> Result<serde_json::Value, anyhow::Error>>,
+    pub dump: Option<fn(Any) -> Result<serde_json::Value, anyhow::Error>>,
     /// Return the arm for this type, if available.
     pub arm_unchecked: unsafe fn(*const ()) -> Option<&'static str>,
 }
@@ -61,40 +65,54 @@ pub struct TypeInfo {
 #[allow(dead_code)]
 impl TypeInfo {
     /// Get the typeinfo for the provided type hash.
-    pub(crate) fn get(typehash: u64) -> Option<&'static TypeInfo> {
+    pub fn get(typehash: u64) -> Option<&'static TypeInfo> {
         TYPE_INFO.get(&typehash).map(|v| &**v)
     }
 
     /// Get the typeinfo for the provided type id.
-    pub(crate) fn get_by_typeid(typeid: TypeId) -> Option<&'static TypeInfo> {
+    pub fn get_by_typeid(typeid: TypeId) -> Option<&'static TypeInfo> {
         TYPE_INFO_BY_TYPE_ID.get(&typeid).map(|v| &**v)
     }
 
     /// Get the typeinfo for the provided type.
-    pub(crate) fn of<T: ?Sized + 'static>() -> Option<&'static TypeInfo> {
+    pub fn of<T: ?Sized + 'static>() -> Option<&'static TypeInfo> {
         Self::get_by_typeid(TypeId::of::<T>())
     }
 
-    pub(crate) fn typename(&self) -> &'static str {
+    /// Get the typename for this type.
+    pub fn typename(&self) -> &'static str {
         (self.typename)()
     }
-    pub(crate) fn typehash(&self) -> u64 {
+
+    /// Get the typehash for this type.
+    pub fn typehash(&self) -> u64 {
         (self.typehash)()
     }
-    pub(crate) fn typeid(&self) -> TypeId {
+
+    /// Get the typeid for this type.
+    pub fn typeid(&self) -> TypeId {
         (self.typeid)()
     }
-    pub(crate) fn port(&self) -> u64 {
+
+    /// Get the port for this type.
+    pub fn port(&self) -> u64 {
         (self.port)()
     }
-    pub(crate) fn dump(&self, data: Serialized) -> Result<serde_json::Value, anyhow::Error> {
+
+    /// Dump the serialized data to a JSON value.
+    pub fn dump(&self, data: Any) -> Result<serde_json::Value, anyhow::Error> {
         if let Some(dump) = self.dump {
             (dump)(data)
         } else {
             anyhow::bail!("binary does not have dumper for {}", self.typehash())
         }
     }
-    pub(crate) unsafe fn arm_unchecked(&self, value: *const ()) -> Option<&'static str> {
+
+    /// Get the arm name for an enum value.
+    ///
+    /// # Safety
+    /// The caller must ensure the value pointer is valid for this type.
+    pub unsafe fn arm_unchecked(&self, value: *const ()) -> Option<&'static str> {
         // SAFETY: This isn't safe, we're passing it on.
         unsafe { (self.arm_unchecked)(value) }
     }
@@ -127,20 +145,23 @@ static TYPE_INFO_BY_TYPE_ID: LazyLock<HashMap<std::any::TypeId, &'static TypeInf
 macro_rules! register_type {
     ($type:ty) => {
         $crate::submit! {
-            $crate::data::TypeInfo {
-                typename: <$type as typeuri::Named>::typename,
-                typehash: <$type as typeuri::Named>::typehash,
-                typeid: <$type as typeuri::Named>::typeid,
-                port: <$type as typeuri::Named>::port,
-                dump: Some(<$type as $crate::data::NamedDumpable>::dump),
-                arm_unchecked: <$type as typeuri::Named>::arm_unchecked,
+            $crate::TypeInfo {
+                typename: <$type as $crate::Named>::typename,
+                typehash: <$type as $crate::Named>::typehash,
+                typeid: <$type as $crate::Named>::typeid,
+                port: <$type as $crate::Named>::port,
+                dump: Some(<$type as $crate::NamedDumpable>::dump),
+                arm_unchecked: <$type as $crate::Named>::arm_unchecked,
             }
         }
     };
 }
 
-/// An enumeration containing the supported encodings of Serialized
-/// values.
+// Re-export inventory::submit for the register_type! macro
+#[doc(hidden)]
+pub use inventory::submit;
+
+/// An enumeration containing the supported encodings of serialized values.
 #[derive(
     Debug,
     Clone,
@@ -244,7 +265,7 @@ impl std::fmt::Debug for Encoded {
     }
 }
 
-/// The type of error returned by operations on [`Serialized`].
+/// The type of error returned by operations on [`Any`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Errors returned from serde bincode.
@@ -264,10 +285,10 @@ pub enum Error {
 /// and deserialization details, while ensuring that we pass correctly-serialized
 /// message throughout the system.
 ///
-/// Currently, Serialized passes through to bincode, but in the future we may include
+/// Currently, Any passes through to bincode, but in the future we may include
 /// content-encoding information to allow for other codecs as well.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Serialized {
+pub struct Any {
     /// The encoded data
     encoded: Encoded,
     /// The typehash of the serialized value. This is used to provide
@@ -275,7 +296,7 @@ pub struct Serialized {
     typehash: u64,
 }
 
-impl std::fmt::Display for Serialized {
+impl std::fmt::Display for Any {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.dump() {
             Ok(value) => {
@@ -290,7 +311,7 @@ impl std::fmt::Display for Serialized {
     }
 }
 
-impl Serialized {
+impl Any {
     /// Construct a new serialized value by serializing the provided T-typed value.
     /// Serialize uses the default encoding defined by the configuration key
     /// [`config::DEFAULT_ENCODING`] in the global configuration; use [`serialize_with_encoding`]
@@ -385,7 +406,7 @@ impl Serialized {
         }
     }
 
-    /// Dump the Serialized message into a JSON value. This will succeed if: 1) the typehash is embedded
+    /// Dump the Any message into a JSON value. This will succeed if: 1) the typehash is embedded
     /// in the serialized value; 2) the named type is linked into the binary.
     pub fn dump(&self) -> Result<serde_json::Value, anyhow::Error> {
         match &self.encoded {
@@ -493,7 +514,7 @@ fn display_bytes_as_hash(f: &mut impl std::fmt::Write, bytes: &[u8]) -> std::fmt
 /// Formats a binary slice as hex when its display function is called.
 pub struct HexFmt<'a>(pub &'a [u8]);
 
-impl<'a> std::fmt::Display for HexFmt<'a> {
+impl std::fmt::Display for HexFmt<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // calculate a 2 byte checksum to prepend to the message
         display_bytes_as_hash(f, self.0)
@@ -506,7 +527,7 @@ pub struct JsonFmt<'a>(pub &'a serde_json::Value);
 
 const MAX_JSON_VALUE_DISPLAY_LENGTH: usize = 8;
 
-impl<'a> std::fmt::Display for JsonFmt<'a> {
+impl std::fmt::Display for JsonFmt<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         /// Truncate the input string to MAX_JSON_VALUE_DISPLAY_LENGTH and append
         /// the truncated hash of the full value for easy comparison.
@@ -562,7 +583,6 @@ impl<'a> std::fmt::Display for JsonFmt<'a> {
 
 #[cfg(test)]
 mod tests {
-
     use serde::Deserialize;
     use serde::Serialize;
     use serde_multipart::Part;
@@ -570,7 +590,6 @@ mod tests {
     use typeuri::Named;
 
     use super::*;
-    // for macros
 
     #[derive(typeuri::Named, Serialize, Deserialize)]
     struct TestStruct;
@@ -589,13 +608,10 @@ mod tests {
             <(u64, String, Option::<isize>)>::typename(),
             "(u64, String, Option<isize>)"
         );
-        assert_eq!(
-            TestStruct::typename(),
-            "hyperactor::data::tests::TestStruct"
-        );
+        assert_eq!(TestStruct::typename(), "wirevalue::tests::TestStruct");
         assert_eq!(
             Vec::<TestStruct>::typename(),
-            "Vec<hyperactor::data::tests::TestStruct>"
+            "Vec<wirevalue::tests::TestStruct>"
         );
     }
 
@@ -626,7 +642,7 @@ mod tests {
             c: Some(5678),
             d: None,
         };
-        let serialized = Serialized::serialize(&data).unwrap();
+        let serialized = Any::serialize(&data).unwrap();
         let serialized_json = serialized.clone().transcode_to_json().unwrap();
 
         assert!(serialized.encoded.is_multipart());
@@ -645,7 +661,7 @@ mod tests {
 
             assert_eq!(
                 serialized.typename(),
-                Some("hyperactor::data::tests::TestDumpStruct")
+                Some("wirevalue::tests::TestDumpStruct")
             );
 
             let json = serialized.dump().unwrap();
@@ -677,7 +693,7 @@ mod tests {
             d: None,
         };
 
-        let mut ser = Serialized::serialize(&data).unwrap();
+        let mut ser = Any::serialize(&data).unwrap();
         assert_eq!(ser.prefix::<String>().unwrap(), "hello".to_string());
 
         ser.emplace_prefix("hello, world, 123!".to_string())
@@ -827,7 +843,7 @@ mod tests {
             d: Some(Part::from("hello, world, again")),
         };
         for enc in Encoding::iter() {
-            let ser = Serialized::serialize_with_encoding(enc, &value).unwrap();
+            let ser = Any::serialize_with_encoding(enc, &value).unwrap();
             assert_eq!(ser.encoding(), enc);
             assert_eq!(ser.deserialized::<TestDumpStruct>().unwrap(), value);
         }

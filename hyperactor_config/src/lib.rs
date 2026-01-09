@@ -37,6 +37,8 @@ pub use attrs::AttrValue;
 pub use attrs::Attrs;
 pub use attrs::Key;
 pub use attrs::SerializableValue;
+// Re-export AttrValue derive macro
+pub use hyperactor_config_macros::AttrValue;
 // Re-export macros needed by declare_attrs!
 pub use inventory::submit;
 pub use paste::paste;
