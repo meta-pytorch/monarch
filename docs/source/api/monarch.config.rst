@@ -194,6 +194,25 @@ Timeouts
     - **Default**: ``"1m"``
     - **Environment**: ``HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE``
 
+``supervision_liveness_timeout``
+    Liveness timeout for the actor-mesh supervision stream.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"30s"``
+    - **Environment**: ``HYPERACTOR_MESH_SUPERVISION_LIVENESS_TIMEOUT``
+
+    During actor-mesh supervision, the controller is expected to
+    periodically publish on the subscription stream (including benign
+    updates). If no supervision message is observed within this
+    timeout, the controller is assumed to be unreachable and the mesh
+    transitions to an unhealthy state.
+
+    This timeout is a watchdog against indefinite silence rather than
+    a message-delivery guarantee, and may conservatively treat a quiet
+    but healthy controller as failed. Increase this value in
+    environments with long startup times or extended periods of
+    inactivity (e.g., opt mode with PAR extraction).
+
 ``proc_stop_max_idle``
     Maximum idle time between updates while stopping procs.
 

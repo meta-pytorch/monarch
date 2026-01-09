@@ -120,7 +120,7 @@ impl From<bootstrap::ProcStatus> for Status {
 /// instances with the delivered rank.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Default)]
 pub struct Rank(pub Option<usize>);
-hyperactor::register_type!(Rank);
+wirevalue::register_type!(Rank);
 
 impl Rank {
     /// Create a new rank with the provided value.
@@ -347,7 +347,7 @@ pub struct List {
     #[reply]
     pub reply: PortRef<Vec<Name>>,
 }
-hyperactor::register_type!(List);
+wirevalue::register_type!(List);
 
 /// A trait that bundles a set of types that together define a resource.
 pub trait Resource {
@@ -619,7 +619,7 @@ pub(crate) struct ProcSpec {
     /// at the `ClientOverride` layer.
     pub(crate) client_config_override: Attrs,
 }
-hyperactor::register_type!(ProcSpec);
+wirevalue::register_type!(ProcSpec);
 
 impl ProcSpec {
     pub(crate) fn new(client_config_override: Attrs) -> Self {

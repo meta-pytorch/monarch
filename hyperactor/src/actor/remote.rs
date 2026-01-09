@@ -23,7 +23,7 @@ use crate::reference::ActorId;
 pub const USER_PORT_OFFSET: u64 = 1024;
 
 /// Register an actor type so that it can be spawned remotely. The actor
-/// type must implement [`crate::data::Named`], which will be used to identify
+/// type must implement [`typeuri::Named`], which will be used to identify
 /// the actor globally.
 ///
 /// Example:
@@ -38,8 +38,8 @@ macro_rules! remote {
     ($actor:ty) => {
         $crate::paste! {
             static [<$actor:snake:upper _NAME>]: std::sync::LazyLock<&'static str> =
-              std::sync::LazyLock::new(|| <$actor as $crate::data::Named>::typename());
-            $crate::submit! {
+              std::sync::LazyLock::new(|| <$actor as $crate::typeuri::Named>::typename());
+            $crate::inventory::submit! {
                 $crate::actor::remote::SpawnableActor {
                     name: &[<$actor:snake:upper _NAME>],
                     gspawn: <$actor as $crate::actor::RemoteSpawn>::gspawn,
