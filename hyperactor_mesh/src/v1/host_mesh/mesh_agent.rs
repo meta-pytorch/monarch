@@ -23,7 +23,6 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::Proc;
@@ -38,6 +37,7 @@ use hyperactor::host::SingleTerminate;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
+use typeuri::Named;
 
 use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
@@ -227,7 +227,10 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
 #[async_trait]
 impl Handler<resource::Stop> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
-        let host = self.host.as_mut().expect("host present");
+        let host = self
+            .host
+            .as_mut()
+            .ok_or(anyhow::anyhow!("HostMeshAgent has already shut down"))?;
         let manager = host.as_process().map(Host::manager);
         let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
         // We don't remove the proc from the state map, instead we just store
@@ -340,6 +343,7 @@ pub struct ShutdownHost {
     #[reply]
     pub ack: hyperactor::PortRef<()>,
 }
+wirevalue::register_type!(ShutdownHost);
 
 #[async_trait]
 impl Handler<ShutdownHost> for HostMeshAgent {
@@ -378,6 +382,7 @@ pub struct ProcState {
     pub bootstrap_command: Option<BootstrapCommand>,
     pub proc_status: Option<bootstrap::ProcStatus>,
 }
+wirevalue::register_type!(ProcState);
 
 #[async_trait]
 impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
@@ -389,8 +394,7 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
         let manager: Option<&BootstrapProcManager> = self
             .host
             .as_mut()
-            .expect("host")
-            .as_process()
+            .and_then(|h| h.as_process())
             .map(Host::manager);
         let state = match self.created.get(&get_state.name) {
             Some(ProcCreationState {
@@ -555,6 +559,7 @@ pub struct GetHostMeshAgent {
     #[reply]
     pub host_mesh_agent: PortRef<ActorRef<HostMeshAgent>>,
 }
+wirevalue::register_type!(GetHostMeshAgent);
 
 #[async_trait]
 impl Handler<GetHostMeshAgent> for HostMeshAgentProcMeshTrampoline {

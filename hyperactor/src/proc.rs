@@ -37,10 +37,9 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
+use hyperactor_config::AttrValue;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::declare_attrs;
-use hyperactor_macros::AttrValue;
-use hyperactor_macros::Named;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -51,14 +50,15 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::Span;
+use typeuri::Named as _;
 use uuid::Uuid;
+use wirevalue::TypeInfo;
 
 use crate as hyperactor;
 use crate::Actor;
 use crate::ActorRef;
 use crate::Handler;
 use crate::Message;
-use crate::Named as _;
 use crate::RemoteMessage;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
@@ -76,8 +76,6 @@ use crate::clock::ClockKind;
 use crate::clock::RealClock;
 use crate::config;
 use crate::context;
-use crate::data::Serialized;
-use crate::data::TypeInfo;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -207,7 +205,7 @@ pub struct ActorTreeSnapshot {
     /// The PID of this actor.
     pub pid: Index,
 
-    /// The type name of the actor. If the actor is [`crate::Named`], then
+    /// The type name of the actor. If the actor is [`typeuri::Named`], then
     /// this is the registered name; otherwise it is the actor type's
     /// [`std::any::type_name`].
     pub type_name: String,
@@ -1169,7 +1167,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor running on the proc.
-    pub fn post(&self, port_id: PortId, headers: Attrs, message: Serialized) {
+    pub fn post(&self, port_id: PortId, headers: Attrs, message: wirevalue::Any) {
         <Self as context::MailboxExt>::post(self, port_id, headers, message, true)
     }
 
@@ -2024,13 +2022,14 @@ pub struct Ports<A: Actor> {
 }
 
 /// A message's sequencer number infomation.
-#[derive(Serialize, Deserialize, Clone, Named, AttrValue)]
+#[derive(Serialize, Deserialize, Clone, typeuri::Named, AttrValue)]
 pub struct SeqInfo {
     /// Message's session ID
     pub session_id: Uuid,
     /// Message's sequence number in the given session.
     pub seq: u64,
 }
+wirevalue::register_type!(SeqInfo);
 
 impl fmt::Display for SeqInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

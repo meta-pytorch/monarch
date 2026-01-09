@@ -1,10 +1,10 @@
 # `#[derive(Named)]`
 
-The `#[derive(Named)]` macro implements the `hyperactor::Named` trait for a type, making it identifiable at runtime through a globally unique string and stable hash.
+The `#[derive(Named)]` macro implements the `typeuri::Named` trait for a type, making it identifiable at runtime through a globally unique string and stable hash.
 
 ## The `Named` trait
 
-The `hyperactor::data::Named` trait is the foundation of type identification in hyperactor. It gives each type a globally unique identity based on its name used in routing.
+The `typeuri::Named` trait is the foundation of type identification in hyperactor. It gives each type a globally unique identity based on its name used in routing.
 ```rust
 pub trait Named: Sized + 'static {
     fn typename() -> &'static str;

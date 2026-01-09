@@ -9,7 +9,6 @@
 //! Messages used in supervision of actor meshes.
 
 use hyperactor::Bind;
-use hyperactor::Named;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
@@ -17,11 +16,12 @@ use hyperactor::context;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Message about a supervision failure on a mesh of actors instead of a single
 /// actor.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
-pub struct SupervisionFailureMessage {
+pub struct MeshFailure {
     /// Name of the mesh which the event originated from.
     pub actor_mesh_name: Option<String>,
     /// Rank of the mesh from which the event originated.
@@ -30,8 +30,9 @@ pub struct SupervisionFailureMessage {
     /// The supervision event on an actor located at mesh + rank.
     pub event: ActorSupervisionEvent,
 }
+wirevalue::register_type!(MeshFailure);
 
-impl SupervisionFailureMessage {
+impl MeshFailure {
     /// Helper function to handle a message to an actor that just wants to forward
     /// it to the next owner.
     pub fn default_handler(&self, cx: &impl context::Actor) -> Result<(), anyhow::Error> {
@@ -49,7 +50,7 @@ impl SupervisionFailureMessage {
     }
 }
 
-impl std::fmt::Display for SupervisionFailureMessage {
+impl std::fmt::Display for MeshFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -57,4 +58,11 @@ impl std::fmt::Display for SupervisionFailureMessage {
             self.actor_mesh_name, self.rank, self.event
         )
     }
+}
+
+// Shared between mesh types.
+#[derive(Debug, Clone)]
+pub(crate) enum Unhealthy {
+    StreamClosed(MeshFailure), // Event stream closed
+    Crashed(MeshFailure),      // Bad health event received
 }

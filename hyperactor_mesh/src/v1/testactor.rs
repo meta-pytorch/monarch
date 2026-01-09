@@ -14,6 +14,7 @@
 #[cfg(test)]
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::ops::Deref;
 #[cfg(test)]
 use std::time::Duration;
 
@@ -25,7 +26,6 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
@@ -42,12 +42,15 @@ use ndslice::Point;
 use ndslice::ViewExt as _;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::comm::multicast::CastInfo;
-#[cfg(test)]
+use crate::supervision::MeshFailure;
 use crate::v1::ActorMesh;
 #[cfg(test)]
 use crate::v1::ActorMeshRef;
+use crate::v1::Name;
+use crate::v1::ProcMeshRef;
 #[cfg(test)]
 use crate::v1::testing;
 
@@ -82,7 +85,32 @@ pub enum SupervisionEventType {
 /// A message that causes a supervision event. The one argument determines what
 /// kind of supervision event it'll be.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
-pub struct CauseSupervisionEvent(pub SupervisionEventType);
+pub struct CauseSupervisionEvent {
+    pub kind: SupervisionEventType,
+    pub send_to_children: bool,
+}
+
+impl CauseSupervisionEvent {
+    fn cause_event(&self) -> ! {
+        match self.kind {
+            SupervisionEventType::Panic => {
+                panic!("for testing");
+            }
+            SupervisionEventType::SigSEGV => {
+                tracing::error!("exiting with SIGSEGV");
+                // SAFETY: This is for testing code that explicitly causes a SIGSEGV.
+                unsafe { std::ptr::null_mut::<i32>().write(42) };
+                // While the above should always segfault, we need a hard exit
+                // for the compiler's sake.
+                panic!("should have segfaulted");
+            }
+            SupervisionEventType::ProcessExit(code) => {
+                tracing::error!("exiting process {} with code {}", std::process::id(), code);
+                std::process::exit(code);
+            }
+        }
+    }
+}
 
 #[async_trait]
 impl Handler<GetActorId> for TestActor {
@@ -103,21 +131,7 @@ impl Handler<CauseSupervisionEvent> for TestActor {
         _cx: &Context<Self>,
         msg: CauseSupervisionEvent,
     ) -> Result<(), anyhow::Error> {
-        match msg.0 {
-            SupervisionEventType::Panic => {
-                panic!("for testing");
-            }
-            SupervisionEventType::SigSEGV => {
-                tracing::error!("exiting with SIGSEGV");
-                // SAFETY: This is for testing code that explicitly causes a SIGSEGV.
-                unsafe { std::ptr::null_mut::<i32>().write(42) };
-            }
-            SupervisionEventType::ProcessExit(code) => {
-                tracing::error!("exiting process {} with code {}", std::process::id(), code);
-                std::process::exit(code);
-            }
-        }
-        Ok(())
+        msg.cause_event();
     }
 }
 
@@ -281,6 +295,125 @@ impl Handler<GetConfigAttrs> for TestActor {
     ) -> Result<(), anyhow::Error> {
         let attrs = bincode::serialize(&hyperactor_config::global::attrs())?;
         reply.send(cx, attrs)?;
+        Ok(())
+    }
+}
+
+/// A message to request the next supervision event delivered to WrapperActor.
+/// Replies with None if no supervision event is encountered within a timeout
+/// (10 seconds).
+#[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
+pub struct NextSupervisionFailure(pub PortRef<Option<MeshFailure>>);
+
+/// A small wrapper to handle supervision messages so they don't
+/// need to reach the client. This just wraps and forwards all messages to TestActor.
+/// The supervision events are sent back to "supervisor".
+#[derive(Debug)]
+#[hyperactor::export(
+    spawn = true,
+    handlers = [
+        CauseSupervisionEvent { cast = true },
+        MeshFailure { cast = true },
+        NextSupervisionFailure { cast = true },
+    ]
+)]
+pub struct WrapperActor {
+    proc_mesh: ProcMeshRef,
+    // Needs to be a mesh so we own this actor and have a controller for it.
+    mesh: Option<ActorMesh<TestActor>>,
+    supervisor: PortRef<MeshFailure>,
+    test_name: Name,
+}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for WrapperActor {
+    type Params = (ProcMeshRef, PortRef<MeshFailure>, Name);
+
+    async fn new(
+        (proc_mesh, supervisor, test_name): Self::Params,
+    ) -> Result<Self, hyperactor::anyhow::Error> {
+        Ok(Self {
+            proc_mesh,
+            mesh: None,
+            supervisor,
+            test_name,
+        })
+    }
+}
+
+#[async_trait]
+impl Actor for WrapperActor {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        self.mesh = Some(
+            self.proc_mesh
+                .spawn_with_name(this, self.test_name.clone(), &(), None, false)
+                .await?,
+        );
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<CauseSupervisionEvent> for WrapperActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: CauseSupervisionEvent,
+    ) -> Result<(), anyhow::Error> {
+        // No reply to wait for.
+        if msg.send_to_children {
+            // Send only to children, don't cause the event itself.
+            self.mesh
+                .as_ref()
+                .unwrap()
+                .cast(cx, msg)
+                .map_err(|e| e.into())
+        } else {
+            msg.cause_event()
+        }
+    }
+}
+
+#[async_trait]
+impl Handler<NextSupervisionFailure> for WrapperActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: NextSupervisionFailure,
+    ) -> Result<(), anyhow::Error> {
+        let mesh = if let Some(mesh) = self.mesh.as_ref() {
+            mesh.deref()
+        } else {
+            msg.0.send(cx, None)?;
+            return Ok(());
+        };
+        let failure = match RealClock
+            .timeout(
+                tokio::time::Duration::from_secs(10),
+                mesh.next_supervision_event(cx),
+            )
+            .await
+        {
+            Ok(Ok(failure)) => Some(failure),
+            // Any error in next_supervision_event is treated the same.
+            Ok(Err(_)) => None,
+            // If we timeout, send back None.
+            Err(_) => None,
+        };
+        msg.0.send(cx, failure)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<MeshFailure> for WrapperActor {
+    async fn handle(&mut self, cx: &Context<Self>, msg: MeshFailure) -> Result<(), anyhow::Error> {
+        // All supervision events are considered handled so they don't bubble up
+        // to the client (who isn't listening for MeshFailure).
+        tracing::info!("got supervision event from child: {}", msg);
+        // Send to a port so the client can view the messages.
+        // Ignore the error if there is one.
+        let _ = self.supervisor.send(cx, msg.clone());
         Ok(())
     }
 }

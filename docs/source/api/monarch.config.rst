@@ -194,6 +194,25 @@ Timeouts
     - **Default**: ``"1m"``
     - **Environment**: ``HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE``
 
+``supervision_liveness_timeout``
+    Liveness timeout for the actor-mesh supervision stream.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"30s"``
+    - **Environment**: ``HYPERACTOR_MESH_SUPERVISION_LIVENESS_TIMEOUT``
+
+    During actor-mesh supervision, the controller is expected to
+    periodically publish on the subscription stream (including benign
+    updates). If no supervision message is observed within this
+    timeout, the controller is assumed to be unreachable and the mesh
+    transitions to an unhealthy state.
+
+    This timeout is a watchdog against indefinite silence rather than
+    a message-delivery guarantee, and may conservatively treat a quiet
+    but healthy controller as failed. Increase this value in
+    environments with long startup times or extended periods of
+    inactivity (e.g., opt mode with PAR extraction).
+
 ``proc_stop_max_idle``
     Maximum idle time between updates while stopping procs.
 
@@ -359,15 +378,20 @@ Message Encoding
 ``default_encoding``
     Default message encoding format.
 
-    - **Type**: ``str``
-    - **Default**: ``"serde_multipart"``
-    - **Environment**: ``HYPERACTOR_DEFAULT_ENCODING``
+    - **Type**: ``Encoding`` enum
+    - **Default**: ``Encoding.Multipart``
+    - **Environment**: ``HYPERACTOR_DEFAULT_ENCODING`` (accepts ``"bincode"``, ``"serde_json"``, or ``"serde_multipart"``)
 
     Supported values:
 
-    - ``"bincode"`` - Binary encoding
-    - ``"serde_json"`` - JSON encoding
-    - ``"serde_multipart"`` - Multipart encoding (default)
+    - ``Encoding.Bincode`` - Bincode serialization (compact binary format via the ``bincode`` crate)
+    - ``Encoding.Json`` - JSON serialization (via ``serde_json``)
+    - ``Encoding.Multipart`` - Zero-copy multipart encoding that separates large binary fields from the message body, enabling efficient transmission via vectored I/O (default)
+
+    Example usage::
+
+        from monarch.config import Encoding, configure
+        configure(default_encoding=Encoding.Bincode)
 
 
 Mesh Bootstrap
@@ -432,32 +456,6 @@ Remote Allocation
     - **Type**: ``str`` (duration format)
     - **Default**: ``"5m"``
     - **Environment**: ``HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL``
-
-``remote_alloc_bind_to_inaddr_any``
-    Bind remote allocators to INADDR_ANY (0.0.0.0).
-
-    - **Type**: ``bool``
-    - **Default**: ``False``
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_BIND_TO_INADDR_ANY``
-
-``remote_alloc_bootstrap_addr``
-    Bootstrap address for remote allocators.
-
-    - **Type**: ``str``
-    - **Default**: None (no default)
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_BOOTSTRAP_ADDR``
-
-    Example: ``"tcp://127.0.0.1:9000"``
-
-``remote_alloc_allowed_port_range``
-    Allowed port range for remote allocators.
-
-    - **Type**: ``str`` or ``tuple[int, int]``
-    - **Default**: None (no default)
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOC_ALLOWED_PORT_RANGE``
-
-    Can be specified as a string (``"8000..9000"``) or tuple (``(8000,
-    9000)``).
 
 
 Validation and Error Handling

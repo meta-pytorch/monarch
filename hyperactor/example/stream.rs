@@ -16,11 +16,11 @@ use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Debug, Default)]
 struct CounterActor {

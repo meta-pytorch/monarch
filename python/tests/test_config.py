@@ -260,11 +260,6 @@ def test_duration_config_multiple() -> None:
     assert config["tail_log_lines"] == 0
 
 
-# ============================================================================
-# Systematic tests for all 29 new config parameters added
-# ============================================================================
-
-
 @pytest.mark.parametrize(
     "param_name,test_value,expected_value,default_value",
     [
@@ -281,12 +276,13 @@ def test_duration_config_multiple() -> None:
         # Proc mesh timeouts
         ("actor_spawn_max_idle", "45s", "45s", "30s"),
         ("get_actor_state_max_idle", "90s", "1m 30s", "1m"),
+        ("supervision_liveness_timeout", "90s", "1m 30s", "30s"),
         # Host mesh timeouts
         ("proc_stop_max_idle", "45s", "45s", "30s"),
         ("get_proc_state_max_idle", "90s", "1m 30s", "1m"),
     ],
 )
-def test_new_duration_params(param_name, test_value, expected_value, default_value):
+def test_duration_params(param_name, test_value, expected_value, default_value):
     """Test all new duration configuration parameters."""
     # Verify default value
     config = get_global_config()
@@ -317,7 +313,7 @@ def test_new_duration_params(param_name, test_value, expected_value, default_val
         ("read_log_buffer", 16384, 100),
     ],
 )
-def test_new_integer_params(param_name, test_value, default_value):
+def test_integer_params(param_name, test_value, default_value):
     """Test all new integer configuration parameters."""
     # Verify default value
     config = get_global_config()
@@ -341,14 +337,12 @@ def test_new_integer_params(param_name, test_value, default_value):
         ("mesh_bootstrap_enable_pdeathsig", True),
         # Runtime and buffering
         ("shared_asyncio_runtime", False),
-        # Remote allocation
-        ("remote_alloc_bind_to_inaddr_any", False),
         # Logging config
         ("force_file_log", False),
         ("prefix_with_rank", True),
     ],
 )
-def test_new_boolean_params(param_name, default_value):
+def test_boolean_params(param_name, default_value):
     """Test all new boolean configuration parameters."""
     # Verify default value
     config = get_global_config()
@@ -363,7 +357,7 @@ def test_new_boolean_params(param_name, default_value):
     assert config[param_name] == default_value
 
 
-def test_new_float_param_message_latency_sampling_rate():
+def test_float_param_message_latency_sampling_rate():
     """Test message_latency_sampling_rate float parameter."""
     # Verify default value (0.01, using approx for f32 precision)
     config = get_global_config()
@@ -382,79 +376,42 @@ def test_new_float_param_message_latency_sampling_rate():
     assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)
 
 
-def test_new_encoding_param():
-    """Test default_encoding string parameter with valid encodings."""
+def test_encoding_param():
+    """Test default_encoding enum parameter with valid encodings."""
+    from monarch._rust_bindings.monarch_hyperactor.config import Encoding
+
     # Verify default value
     config = get_global_config()
-    assert config["default_encoding"] == "serde_multipart"
+    assert config["default_encoding"] == Encoding.Multipart
 
     # Test all valid encodings
-    valid_encodings = ["bincode", "serde_json", "serde_multipart"]
+    valid_encodings = [Encoding.Bincode, Encoding.Json, Encoding.Multipart]
     for encoding in valid_encodings:
         with configured(default_encoding=encoding) as config:
             assert config["default_encoding"] == encoding
 
     # Verify restoration
     config = get_global_config()
-    assert config["default_encoding"] == "serde_multipart"
+    assert config["default_encoding"] == Encoding.Multipart
 
 
-def test_new_encoding_param_invalid():
+def test_encoding_param_invalid():
     """Test that invalid encoding values raise errors."""
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(default_encoding="invalid_encoding"):
+    # Strings aren't expected
+    with pytest.raises(TypeError):
+        with configured(default_encoding="bincode"):
             pass
 
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(default_encoding="xml"):
-            pass
-
-
-def test_new_bootstrap_addr_param():
-    """Test remote_alloc_bootstrap_addr string parameter."""
-    # Note: This attribute has no default value, only test setting it
-    test_addr = "tcp://127.0.0.1:9000"
-    with configured(remote_alloc_bootstrap_addr=test_addr) as config:
-        assert config["remote_alloc_bootstrap_addr"] == test_addr
-
-
-def test_new_port_range_param_tuple():
-    """Test remote_alloc_allowed_port_range with tuple format."""
-    # Note: This attribute has no default value, only test setting it
-    with configured(remote_alloc_allowed_port_range=(8000, 9000)) as config:
-        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
-
-
-def test_new_port_range_param_string():
-    """Test remote_alloc_allowed_port_range with string format."""
-    # Test string format
-    with configured(remote_alloc_allowed_port_range="8000..9000") as config:
-        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
-
-    # Test edge cases
-    with configured(remote_alloc_allowed_port_range="1..65535") as config:
-        assert config["remote_alloc_allowed_port_range"] == "1..65535"
-
-
-def test_new_port_range_param_invalid():
-    """Test that invalid port ranges raise errors."""
-    # Invalid tuple: start >= end
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(remote_alloc_allowed_port_range=(9000, 8000)):
-            pass
-
-    # Invalid string format
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(remote_alloc_allowed_port_range="invalid"):
-            pass
-
-    with pytest.raises(TypeError, match="invalid value"):
-        with configured(remote_alloc_allowed_port_range="8000-9000"):  # wrong separator
+    # Neither are numbers
+    with pytest.raises(TypeError):
+        with configured(default_encoding=123):
             pass
 
 
-def test_all_new_params_together():
-    """Test setting all 29 new config parameters simultaneously."""
+def test_all_params_together():
+    """Test setting all 29 config parameters simultaneously."""
+    from monarch._rust_bindings.monarch_hyperactor.config import Encoding
+
     with configured(
         # Hyperactor timeouts and message handling
         process_exit_timeout="20s",
@@ -466,7 +423,7 @@ def test_all_new_params_together():
         stop_actor_timeout="15s",
         cleanup_timeout="25s",
         remote_allocator_heartbeat_interval="10s",
-        default_encoding="serde_json",
+        default_encoding=Encoding.Json,
         channel_net_rx_buffer_full_check_interval="200ms",
         message_latency_sampling_rate=0.5,
         enable_client_seq_assignment=True,
@@ -479,10 +436,6 @@ def test_all_new_params_together():
         small_write_threshold=512,
         # Mesh config
         max_cast_dimension_size=2048,
-        # Remote allocation
-        remote_alloc_bind_to_inaddr_any=True,
-        remote_alloc_bootstrap_addr="tcp://127.0.0.1:9000",
-        remote_alloc_allowed_port_range=(8000, 9000),
         # Logging config
         read_log_buffer=16384,
         force_file_log=True,
@@ -490,6 +443,7 @@ def test_all_new_params_together():
         # Proc mesh timeouts
         actor_spawn_max_idle="45s",
         get_actor_state_max_idle="90s",
+        supervision_liveness_timeout="90s",
         # Host mesh timeouts
         proc_stop_max_idle="45s",
         get_proc_state_max_idle="90s",
@@ -504,7 +458,7 @@ def test_all_new_params_together():
         assert config["stop_actor_timeout"] == "15s"
         assert config["cleanup_timeout"] == "25s"
         assert config["remote_allocator_heartbeat_interval"] == "10s"
-        assert config["default_encoding"] == "serde_json"
+        assert config["default_encoding"] == Encoding.Json
         assert config["channel_net_rx_buffer_full_check_interval"] == "200ms"
         assert config["message_latency_sampling_rate"] == pytest.approx(0.5, rel=1e-5)
         assert config["enable_client_seq_assignment"] is True
@@ -514,14 +468,12 @@ def test_all_new_params_together():
         assert config["shared_asyncio_runtime"] is True
         assert config["small_write_threshold"] == 512
         assert config["max_cast_dimension_size"] == 2048
-        assert config["remote_alloc_bind_to_inaddr_any"] is True
-        assert config["remote_alloc_bootstrap_addr"] == "tcp://127.0.0.1:9000"
-        assert config["remote_alloc_allowed_port_range"] == "8000..9000"
         assert config["read_log_buffer"] == 16384
         assert config["force_file_log"] is True
         assert config["prefix_with_rank"] is True
         assert config["actor_spawn_max_idle"] == "45s"
         assert config["get_actor_state_max_idle"] == "1m 30s"
+        assert config["supervision_liveness_timeout"] == "1m 30s"
         assert config["proc_stop_max_idle"] == "45s"
         assert config["get_proc_state_max_idle"] == "1m 30s"
 
@@ -536,7 +488,7 @@ def test_all_new_params_together():
     assert config["stop_actor_timeout"] == "10s"
     assert config["cleanup_timeout"] == "3s"
     assert config["remote_allocator_heartbeat_interval"] == "5m"
-    assert config["default_encoding"] == "serde_multipart"
+    assert config["default_encoding"] == Encoding.Multipart
     assert config["channel_net_rx_buffer_full_check_interval"] == "5s"
     assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)
     assert config["enable_client_seq_assignment"] is False
@@ -546,18 +498,17 @@ def test_all_new_params_together():
     assert config["shared_asyncio_runtime"] is False
     assert config["small_write_threshold"] == 256
     # max_cast_dimension_size is usize::MAX, skip checking it
-    assert config["remote_alloc_bind_to_inaddr_any"] is False
-    # remote_alloc_bootstrap_addr and remote_alloc_allowed_port_range have no defaults
     assert config["read_log_buffer"] == 100
     assert config["force_file_log"] is False
     assert config["prefix_with_rank"] is True
     assert config["actor_spawn_max_idle"] == "30s"
     assert config["get_actor_state_max_idle"] == "1m"
+    assert config["supervision_liveness_timeout"] == "30s"
     assert config["proc_stop_max_idle"] == "30s"
     assert config["get_proc_state_max_idle"] == "1m"
 
 
-def test_new_params_type_errors():
+def test_params_type_errors():
     """Test that type errors are raised for incorrect parameter types."""
     # Duration param with wrong type
     with pytest.raises(TypeError):

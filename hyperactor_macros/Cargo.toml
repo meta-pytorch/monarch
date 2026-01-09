@@ -4,7 +4,7 @@
 name = "hyperactor_macros"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-hyperactor-macros@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "macros to support the Hyperactor actors and data exchange"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
@@ -13,7 +13,6 @@ license = "BSD-3-Clause"
 test = false
 doctest = false
 proc-macro = true
-edition = "2024"
 
 [[test]]
 name = "hyperactor_macros_test"
@@ -35,3 +34,5 @@ static_assertions = "1.1.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.37.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+typeuri = { version = "0.0.0", path = "../typeuri" }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }

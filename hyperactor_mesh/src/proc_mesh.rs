@@ -27,7 +27,10 @@ use hyperactor::Instance;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
 use hyperactor::WorldId;
+use hyperactor::actor::ActorError;
+use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
+use hyperactor::actor::Signal;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::BindSpec;
@@ -45,6 +48,7 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::metrics;
 use hyperactor::proc::Proc;
+use hyperactor::proc::WorkCell;
 use hyperactor::reference::ProcId;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -58,6 +62,7 @@ use ndslice::View;
 use ndslice::ViewExt;
 use strum::AsRefStr;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::span;
@@ -71,7 +76,6 @@ use crate::alloc::AllocatedProc;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
-use crate::alloc::serve_with_config;
 use crate::assign::Ranks;
 use crate::comm::CommActorMode;
 use crate::proc_mesh::mesh_agent::GspawnResult;
@@ -82,7 +86,7 @@ use crate::proc_mesh::mesh_agent::update_event_actor_id;
 use crate::reference::ProcMeshId;
 use crate::router;
 use crate::shortuuid::ShortUuid;
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 use crate::v1;
 use crate::v1::Name;
 
@@ -175,20 +179,134 @@ pub(crate) fn get_global_supervision_sink() -> Option<PortHandle<ActorSupervisio
 }
 
 #[derive(Debug)]
-pub struct GlobalClientActor;
+pub struct GlobalClientActor {
+    signal_rx: PortReceiver<Signal>,
+    supervision_rx: PortReceiver<ActorSupervisionEvent>,
+    work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
+}
+
+impl GlobalClientActor {
+    fn run(mut self, instance: &'static Instance<Self>) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let err = 'messages: loop {
+                tokio::select! {
+                    work = self.work_rx.recv() => {
+                        let work = work.expect("inconsistent work queue state");
+                        if let Err(err) = work.handle(&mut self, instance).await {
+                            for supervision_event in self.supervision_rx.drain() {
+                                if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                                    break 'messages err;
+                                }
+                            }
+                            let kind = ActorErrorKind::processing(err);
+                            break ActorError {
+                                actor_id: Box::new(instance.self_id().clone()),
+                                kind: Box::new(kind),
+                            };
+                        }
+                    }
+                    _ = self.signal_rx.recv() => {
+                        // TODO: do we need any signal handling for the root client?
+                    }
+                    Ok(supervision_event) = self.supervision_rx.recv() => {
+                        if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                            break err;
+                        }
+                    }
+                };
+            };
+            let event = match *err.kind {
+                ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
+                _ => {
+                    let status = ActorStatus::generic_failure(err.kind.to_string());
+                    ActorSupervisionEvent::new(
+                        instance.self_id().clone(),
+                        Some("testclient".into()),
+                        status,
+                        None,
+                    )
+                }
+            };
+            instance.proc().handle_supervision_event(event);
+        })
+    }
+}
 
 impl Actor for GlobalClientActor {}
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for GlobalClientActor {
-    async fn handle(
-        &mut self,
-        _cx: &Context<Self>,
-        message: SupervisionFailureMessage,
-    ) -> anyhow::Result<()> {
+impl Handler<MeshFailure> for GlobalClientActor {
+    async fn handle(&mut self, _cx: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
         tracing::error!("supervision failure reached global client: {}", message);
         panic!("supervision failure reached global client: {}", message);
     }
+}
+
+fn fresh_instance() -> (
+    &'static Instance<GlobalClientActor>,
+    &'static ActorHandle<GlobalClientActor>,
+) {
+    static INSTANCE: OnceLock<(Instance<GlobalClientActor>, ActorHandle<GlobalClientActor>)> =
+        OnceLock::new();
+    let client_proc = Proc::direct_with_default(
+        default_bind_spec().binding_addr(),
+        "mesh_root_client_proc".into(),
+        router::global().clone().boxed(),
+    )
+    .unwrap();
+
+    // Make this proc reachable through the global router, so that we can use the
+    // same client in both direct-addressed and ranked-addressed modes.
+    router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
+
+    // The work_rx messages loop is ignored. v0 will support Handler<MeshFailure>,
+    // but it doesn't actually handle the messages.
+    // This is fine because v0 doesn't use this supervision mechanism anyway.
+    let (client, handle, supervision_rx, signal_rx, work_rx) = client_proc
+        .actor_instance::<GlobalClientActor>("client")
+        .expect("root instance create");
+
+    // Bind the global root client's undeliverable port and
+    // forward any undeliverable messages to the currently active
+    // supervision sink.
+    //
+    // The resolver (`get_global_supervision_sink`) is passed as a
+    // function pointer, so each time an undeliverable is
+    // processed, we look up the *latest* sink. This allows the
+    // root client to seamlessly track whichever ProcMesh most
+    // recently installed a supervision sink (e.g., the
+    // application mesh instead of an internal controller mesh).
+    //
+    // The hook logs each undeliverable, along with whether a sink
+    // was present at the time of receipt, which helps diagnose
+    // lost or misrouted events.
+    let (_undeliverable_tx, undeliverable_rx) =
+        client.open_port::<Undeliverable<MessageEnvelope>>();
+    hyperactor::mailbox::supervise_undeliverable_messages_with(
+        undeliverable_rx,
+        crate::proc_mesh::get_global_supervision_sink,
+        |env| {
+            let sink_present = crate::proc_mesh::get_global_supervision_sink().is_some();
+            tracing::info!(
+                actor_id = %env.dest().actor_id(),
+                "global root client undeliverable observed with headers {:?} {}", env.headers(), sink_present
+            );
+        },
+    );
+
+    // Use the OnceLock to get a 'static lifetime for the instance.
+    INSTANCE
+        .set((client, handle))
+        .map_err(|_| "already initialized root client instance")
+        .unwrap();
+    let (instance, handle) = INSTANCE.get().unwrap();
+    let client = GlobalClientActor {
+        signal_rx,
+        supervision_rx,
+        work_rx,
+    };
+    client.run(instance);
+    (instance, handle)
 }
 
 /// Context use by root client to send messages.
@@ -196,58 +314,10 @@ impl Handler<SupervisionFailureMessage> for GlobalClientActor {
 /// messages will be sent to.
 pub fn global_root_client() -> &'static Instance<GlobalClientActor> {
     static GLOBAL_INSTANCE: OnceLock<(
-        Instance<GlobalClientActor>,
-        ActorHandle<GlobalClientActor>,
+        &'static Instance<GlobalClientActor>,
+        &'static ActorHandle<GlobalClientActor>,
     )> = OnceLock::new();
-    &GLOBAL_INSTANCE.get_or_init(|| {
-        let client_proc = Proc::direct_with_default(
-            default_bind_spec().binding_addr(),
-            "mesh_root_client_proc".into(),
-            router::global().clone().boxed(),
-        )
-        .unwrap();
-
-        // Make this proc reachable through the global router, so that we can use the
-        // same client in both direct-addressed and ranked-addressed modes.
-        router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
-
-        // The work_rx messages loop is ignored. v0 will support Handler<SupervisionFailureMessage>,
-        // but it doesn't actually handle the messages.
-        // This is fine because v0 doesn't use this supervision mechanism anyway.
-        let (client, handle, _, _, _) = client_proc
-            .actor_instance::<GlobalClientActor>("client")
-            .expect("root instance create");
-
-        // Bind the global root client's undeliverable port and
-        // forward any undeliverable messages to the currently active
-        // supervision sink.
-        //
-        // The resolver (`get_global_supervision_sink`) is passed as a
-        // function pointer, so each time an undeliverable is
-        // processed, we look up the *latest* sink. This allows the
-        // root client to seamlessly track whichever ProcMesh most
-        // recently installed a supervision sink (e.g., the
-        // application mesh instead of an internal controller mesh).
-        //
-        // The hook logs each undeliverable, along with whether a sink
-        // was present at the time of receipt, which helps diagnose
-        // lost or misrouted events.
-        let (_undeliverable_tx, undeliverable_rx) =
-            client.open_port::<Undeliverable<MessageEnvelope>>();
-        hyperactor::mailbox::supervise_undeliverable_messages_with(
-            undeliverable_rx,
-            crate::proc_mesh::get_global_supervision_sink,
-            |env| {
-                let sink_present = crate::proc_mesh::get_global_supervision_sink().is_some();
-                tracing::info!(
-                    actor_id = %env.dest().actor_id(),
-                    "global root client undeliverable observed with headers {:?} {}", env.headers(), sink_present
-                );
-            },
-        );
-
-        (client, handle)
-    }).0
+    GLOBAL_INSTANCE.get_or_init(fresh_instance).0
 }
 
 type ActorEventRouter = Arc<DashMap<ActorMeshName, mpsc::UnboundedSender<ActorSupervisionEvent>>>;
@@ -420,8 +490,8 @@ impl ProcMesh {
         );
 
         // Ensure that the router is served so that agents may reach us.
-        let (router_channel_addr, router_rx) =
-            serve_with_config(alloc.client_router_addr()).map_err(AllocatorError::Other)?;
+        let (router_channel_addr, router_rx) = channel::serve(alloc.client_router_addr())
+            .map_err(|e| AllocatorError::Other(e.into()))?;
         router.serve(router_rx);
         tracing::info!("router channel started listening on addr: {router_channel_addr}");
 
@@ -656,7 +726,7 @@ impl ProcMesh {
     ) -> Result<RootActorMesh<'_, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         match &self.inner {
             ProcMeshKind::V0 {
@@ -1007,7 +1077,7 @@ pub trait SharedSpawnable {
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
-        C::A: Handler<SupervisionFailureMessage>;
+        C::A: Handler<MeshFailure>;
 }
 
 #[async_trait]
@@ -1022,7 +1092,7 @@ impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D 
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         match &self.deref().inner {
             ProcMeshKind::V0 {

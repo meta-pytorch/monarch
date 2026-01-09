@@ -13,15 +13,12 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
-use hyperactor::ProcId;
 use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
@@ -32,16 +29,13 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor::reference::WorldId;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
-use hyperactor_mesh::actor_mesh::CAST_ACTOR_MESH_ID;
-use hyperactor_mesh::comm::multicast::CAST_ORIGINATING_SENDER;
+use hyperactor_mesh::actor_mesh::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::default_bind_spec;
-use hyperactor_mesh::reference::ActorMeshId;
 use hyperactor_mesh::router;
-use hyperactor_mesh::supervision::SupervisionFailureMessage;
+use hyperactor_mesh::supervision::MeshFailure;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use pyo3::IntoPyObjectExt;
@@ -59,6 +53,7 @@ use serde::Serialize;
 use serde_multipart::Part;
 use tokio::sync::oneshot;
 use tracing::Instrument;
+use typeuri::Named;
 
 use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
@@ -76,7 +71,7 @@ use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::proc::PyActorId;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
-use crate::supervision::MeshFailure;
+use crate::supervision::PyMeshFailure;
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -98,16 +93,18 @@ pub enum MethodSpecifier {
 
 impl std::fmt::Display for MethodSpecifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+#[pymethods]
+impl MethodSpecifier {
+    #[getter]
+    fn name(&self) -> &str {
         match self {
-            MethodSpecifier::ReturnsResponse { name } => {
-                write!(f, "{}", name)
-            }
-            MethodSpecifier::ExplicitPort { name } => {
-                write!(f, "{}", name)
-            }
-            MethodSpecifier::Init {} => {
-                write!(f, "__init__")
-            }
+            MethodSpecifier::ReturnsResponse { name } => name,
+            MethodSpecifier::ExplicitPort { name } => name,
+            MethodSpecifier::Init {} => "__init__",
         }
     }
 }
@@ -135,6 +132,7 @@ pub enum PythonMessageKind {
         unflatten_args: Vec<UnflattenArg>,
     },
 }
+wirevalue::register_type!(PythonMessageKind);
 
 impl Default for PythonMessageKind {
     fn default() -> Self {
@@ -153,6 +151,7 @@ pub struct PythonMessage {
     pub kind: PythonMessageKind,
     pub message: Part,
 }
+wirevalue::register_type!(PythonMessage);
 
 struct ResolvedCallMethod {
     method: MethodSpecifier,
@@ -280,7 +279,7 @@ impl std::fmt::Debug for PythonMessage {
             .field("kind", &self.kind)
             .field(
                 "message",
-                &hyperactor::data::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
+                &wirevalue::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
             )
             .finish()
     }
@@ -363,7 +362,7 @@ impl PythonActorHandle {
     spawn = true,
     handlers = [
         PythonMessage { cast = true },
-        SupervisionFailureMessage { cast = true },
+        MeshFailure { cast = true },
     ],
 )]
 pub struct PythonActor {
@@ -582,47 +581,6 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
     })
 }
 
-/// An undeliverable might have its sender address set as the comm actor instead
-/// of the original sender. Update it based on the headers present in the message
-/// so it matches the sender.
-fn update_undeliverable_envelope_for_casting(
-    mut envelope: Undeliverable<MessageEnvelope>,
-) -> Undeliverable<MessageEnvelope> {
-    let old_actor = envelope.0.sender().clone();
-    // v1 casting
-    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER).cloned() {
-        tracing::debug!(
-            actor_id = %old_actor,
-            "PythonActor::handle_undeliverable_message: remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
-        );
-        envelope.0.update_sender(actor_id);
-    // v0 casting
-    } else if let Some(actor_mesh_id) = envelope.0.headers().get(CAST_ACTOR_MESH_ID) {
-        match actor_mesh_id {
-            ActorMeshId::V0(proc_mesh_id, actor_name) => {
-                let actor_id = ActorId(
-                    ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
-                    actor_name.clone(),
-                    0,
-                );
-                tracing::debug!(
-                    actor_id = %old_actor,
-                    "PythonActor::handle_undeliverable_message: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", actor_id
-                );
-                envelope.0.update_sender(actor_id);
-            }
-            ActorMeshId::V1(_) => {
-                tracing::debug!(
-                    "PythonActor::handle_undeliverable_message: headers present but V1 ActorMeshId; leaving actor_id unchanged"
-                );
-            }
-        }
-    } else {
-        // Do nothing, it wasn't from a comm actor.
-    }
-    envelope
-}
-
 #[async_trait]
 impl Actor for PythonActor {
     async fn cleanup(
@@ -701,10 +659,11 @@ impl Actor for PythonActor {
             envelope.0.sender(),
             ins.self_id(),
             "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest actor port = {}",
+            Return address = {}, src actor = {}, dest actor port = {}, envelope headers = {}",
             envelope.0.sender(),
             ins.self_id(),
-            envelope.0.dest()
+            envelope.0.dest(),
+            envelope.0.headers()
         );
 
         let cx = Context::new(ins, envelope.0.headers().clone());
@@ -766,7 +725,7 @@ impl Actor for PythonActor {
         let cx = Context::new(this, Attrs::new());
         self.handle(
             &cx,
-            SupervisionFailureMessage {
+            MeshFailure {
                 actor_mesh_name: None,
                 rank: None,
                 event: event.clone(),
@@ -946,12 +905,18 @@ impl Handler<PanicFromPy> for PythonActor {
 }
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for PythonActor {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        message: SupervisionFailureMessage,
-    ) -> anyhow::Result<()> {
+impl Handler<MeshFailure> for PythonActor {
+    async fn handle(&mut self, cx: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
+        // If the message is not about a failure, don't call __supervise__.
+        // This includes messages like "stop", because those are not errors that
+        // need to be propagated.
+        if !message.event.actor_status.is_failed() {
+            tracing::info!(
+                "ignoring non-failure supervision event from child: {}",
+                message
+            );
+            return Ok(());
+        }
         Python::with_gil(|py| {
             let instance = self.instance.get_or_insert_with(|| {
                 let instance: crate::context::PyInstance = cx.into();
@@ -967,7 +932,7 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                 "__supervise__",
                 (
                     crate::context::PyContext::new(cx, instance.clone_ref(py)),
-                    MeshFailure::from(message.clone()),
+                    PyMeshFailure::from(message.clone()),
                 ),
                 None,
             );
@@ -1173,7 +1138,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 mod tests {
     use hyperactor::PortRef;
     use hyperactor::accum::ReducerSpec;
-    use hyperactor::data::Serialized;
     use hyperactor::id;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
@@ -1192,7 +1156,7 @@ mod tests {
     fn test_python_message_bind_unbind() {
         let reducer_spec = ReducerSpec {
             typehash: 123,
-            builder_params: Some(Serialized::serialize(&"abcdefg12345".to_string()).unwrap()),
+            builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
         let port_ref = PortRef::<PythonMessage>::attest_reducible(
             id!(world[0].client[0][123]),

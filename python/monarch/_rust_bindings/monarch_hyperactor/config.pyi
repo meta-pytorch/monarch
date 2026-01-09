@@ -10,9 +10,17 @@
 Type hints for the monarch_hyperactor.config Rust bindings.
 """
 
+from enum import Enum
 from typing import Any, Dict
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+
+class Encoding(Enum):
+    """Message encoding format for serialization."""
+
+    Bincode: int
+    Json: int
+    Multipart: int
 
 def reload_config_from_env() -> None:
     """
@@ -49,7 +57,7 @@ def configure(
     stop_actor_timeout: str = ...,
     cleanup_timeout: str = ...,
     remote_allocator_heartbeat_interval: str = ...,
-    default_encoding: str = ...,
+    default_encoding: Encoding = ...,
     channel_net_rx_buffer_full_check_interval: str = ...,
     message_latency_sampling_rate: float = ...,
     enable_client_seq_assignment: bool = ...,
@@ -61,12 +69,13 @@ def configure(
     max_cast_dimension_size: int = ...,
     remote_alloc_bind_to_inaddr_any: bool = ...,
     remote_alloc_bootstrap_addr: str = ...,
-    remote_alloc_allowed_port_range: str | tuple[int, int] = ...,
+    remote_alloc_allowed_port_range: slice = ...,
     read_log_buffer: int = ...,
     force_file_log: bool = ...,
     prefix_with_rank: bool = ...,
     actor_spawn_max_idle: str = ...,
     get_actor_state_max_idle: str = ...,
+    supervision_liveness_timeout: str = ...,
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
     **kwargs: object,
@@ -115,8 +124,8 @@ def configure(
         cleanup_timeout: Timeout for cleanup operations (humantime)
         remote_allocator_heartbeat_interval: Heartbeat interval for
             remote allocator (humantime)
-        default_encoding: Default message encoding ("bincode",
-            "serde_json", or "serde_multipart")
+        default_encoding: Default message encoding (Encoding.Bincode,
+            Encoding.Json, or Encoding.Multipart)
         channel_net_rx_buffer_full_check_interval: Network receive buffer
             check interval (humantime)
         message_latency_sampling_rate: Sampling rate for message latency
@@ -139,7 +148,7 @@ def configure(
         remote_alloc_bootstrap_addr: Bootstrap address for remote
             allocators
         remote_alloc_allowed_port_range: Allowed port range as
-            "start..end" or (start, end) tuple
+            slice(start, stop)
         read_log_buffer: Buffer size for reading logs (bytes)
         force_file_log: Force file-based logging regardless of
             environment
@@ -148,14 +157,18 @@ def configure(
             (humantime)
         get_actor_state_max_idle: Maximum idle time for actor state
             queries (humantime)
+        supervision_liveness_timeout: Liveness timeout for the
+            actor-mesh supervision stream; prolonged silence is
+            interpreted as the controller being unreachable
+            (humantime)
         proc_stop_max_idle: Maximum idle time while stopping procs
             (humantime)
         get_proc_state_max_idle: Maximum idle time for proc state queries
             (humantime)
         **kwargs: Reserved for future configuration keys
 
-    Historically this API is named ``configure(...)``; conceptually it
-    acts as "set runtime config for this process".
+    For historical reasons, this API is named ``configure(...)``;
+    conceptually it acts as "set runtime config for this process".
 
     """
     ...

@@ -22,13 +22,12 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate as hyperactor; // for macros
-use crate::Named;
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorStatus;
 use crate::reference::ActorId;
 
 /// This is the local actor supervision event. Child actor will propagate this event to its parent.
-#[derive(Clone, Debug, Derivative, Serialize, Deserialize, Named)]
+#[derive(Clone, Debug, Derivative, Serialize, Deserialize, typeuri::Named)]
 #[derivative(PartialEq, Eq)]
 pub struct ActorSupervisionEvent {
     /// The actor id of the child actor where the event is triggered.
@@ -44,6 +43,7 @@ pub struct ActorSupervisionEvent {
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Attrs>,
 }
+wirevalue::register_type!(ActorSupervisionEvent);
 
 impl ActorSupervisionEvent {
     /// Create a new supervision event. Timestamp is set to the current time.

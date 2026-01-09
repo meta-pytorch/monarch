@@ -1187,7 +1187,7 @@ class _Actor:
         MESSAGES_HANDLED.add(1)
 
         # Initialize method_name before try block so it's always defined
-        method_name = "unknown"
+        method_name = method.name
         # Initialize endpoint_span before try block so it's always defined
         # In the case that `the_method` raises an exception, we will exit the span
         endpoint_span: PySpan | None = None
@@ -1204,7 +1204,6 @@ class _Actor:
 
             match method:
                 case MethodSpecifier.Init():
-                    method_name = "__init__"
                     ins = ctx.actor_instance
                     (args,) = args
                     init_args = cast(ActorInitArgs, args)
@@ -1238,12 +1237,11 @@ class _Actor:
                         raise
                     response_port.send(None)
                     return None
-                case MethodSpecifier.ReturnsResponse(name=method_name):
+                case MethodSpecifier.ReturnsResponse():
                     pass
-                case MethodSpecifier.ExplicitPort(name=method_name):
+                case MethodSpecifier.ExplicitPort():
                     args = (response_port, *args)
                     response_port = DroppingPort()
-            assert isinstance(method_name, str)
 
             if self.instance is None:
                 # This could happen because of the following reasons. Both
@@ -1303,7 +1301,7 @@ class _Actor:
         except Exception as e:
             if endpoint_span is not None:
                 endpoint_span.exit()
-            log_endpoint_exception(e, method_name)
+            log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
             self._post_mortem_debug(e.__traceback__)
             response_port.exception(
                 ActorError(
@@ -1601,10 +1599,8 @@ class ActorMesh(MeshTrait, Generic[T]):
         # supervision_event, which needs an Instance. Initialize here so events
         # can be collected even without any endpoints being awaited.
         instance = context().actor_instance
-        supervision_display_name = (
-            f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
-        )
-        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
+        # Supervision display name is unused here now, it is set in ProcMesh::spawn.
+        mesh._inner.start_supervision(instance._as_rust(), "")
 
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None

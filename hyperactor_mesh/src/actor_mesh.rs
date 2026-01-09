@@ -14,13 +14,14 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::GangId;
 use hyperactor::GangRef;
 use hyperactor::Message;
-use hyperactor::Named;
 use hyperactor::PortHandle;
+use hyperactor::ProcId;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
@@ -28,7 +29,9 @@ use hyperactor::WorldId;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
+use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -53,9 +56,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
 use tokio::sync::mpsc;
+use typeuri::Named;
 
 use crate::CommActor;
 use crate::Mesh;
+use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::Uslice;
@@ -71,6 +76,45 @@ declare_attrs! {
     /// handling, where the CastMessageEnvelope is serialized, and its content
     /// cannot be inspected.
     pub attr CAST_ACTOR_MESH_ID: ActorMeshId;
+}
+
+/// An undeliverable might have its sender address set as the comm actor instead
+/// of the original sender. Update it based on the headers present in the message
+/// so it matches the sender.
+pub fn update_undeliverable_envelope_for_casting(
+    mut envelope: Undeliverable<MessageEnvelope>,
+) -> Undeliverable<MessageEnvelope> {
+    let old_actor = envelope.0.sender().clone();
+    // v1 casting
+    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER).cloned() {
+        tracing::debug!(
+            actor_id = %old_actor,
+            "remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
+        );
+        envelope.0.update_sender(actor_id);
+    // v0 casting
+    } else if let Some(actor_mesh_id) = envelope.0.headers().get(CAST_ACTOR_MESH_ID) {
+        match actor_mesh_id {
+            ActorMeshId::V0(proc_mesh_id, actor_name) => {
+                let actor_id = ActorId(
+                    ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
+                    actor_name.clone(),
+                    0,
+                );
+                tracing::debug!(
+                    actor_id = %old_actor,
+                    "remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", actor_id
+                );
+                envelope.0.update_sender(actor_id);
+            }
+            ActorMeshId::V1(_) => {
+                tracing::debug!("headers present but V1 ActorMeshId; leaving actor_id unchanged");
+            }
+        }
+    } else {
+        // Do nothing, it wasn't from a comm actor.
+    }
+    envelope
 }
 
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
@@ -633,7 +677,7 @@ pub(crate) mod test_util {
 
     use super::*;
     use crate::comm::multicast::CastInfo;
-    use crate::supervision::SupervisionFailureMessage;
+    use crate::supervision::MeshFailure;
 
     // This can't be defined under a `#[cfg(test)]` because there needs to
     // be an entry in the spawnable actor registry in the executable
@@ -846,11 +890,11 @@ pub(crate) mod test_util {
         }
     }
     #[async_trait]
-    impl Handler<SupervisionFailureMessage> for ProxyActor {
+    impl Handler<MeshFailure> for ProxyActor {
         async fn handle(
             &mut self,
             _cx: &Context<Self>,
-            message: SupervisionFailureMessage,
+            message: MeshFailure,
         ) -> Result<(), anyhow::Error> {
             panic!("unhandled supervision failure: {}", message);
         }
@@ -865,9 +909,9 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::ProcId;
     use hyperactor::WorldId;
-    use hyperactor::data::Encoding;
     use hyperactor_config::attrs::Attrs;
     use timed_test::async_timed_test;
+    use wirevalue::Encoding;
 
     use super::*;
     use crate::proc_mesh::ProcEvent;
@@ -887,7 +931,6 @@ mod tests {
             use $crate::comm::multicast::set_cast_info_on_headers;
             use $crate::proc_mesh::SharedSpawnable;
             use std::collections::VecDeque;
-            use hyperactor::data::Serialized;
             use $crate::proc_mesh::default_transport;
 
             use super::*;
@@ -1267,7 +1310,7 @@ mod tests {
                     .port_id(GetRank::port())
                     .send_with_headers(
                         mesh.client(),
-                        Serialized::serialize(&GetRank(true, reply_port)).unwrap(),
+                        wirevalue::Any::serialize(&GetRank(true, reply_port)).unwrap(),
                         headers
                     );
                 assert_eq!(2, reply_port_receiver.recv().await.unwrap());
@@ -1545,7 +1588,7 @@ mod tests {
             }
             // Calculate the frame length for the given message.
             fn frame_length(src: &ActorId, dst: &PortId, pay: &Payload) -> usize {
-                let serialized = Serialized::serialize(pay).unwrap();
+                let serialized = wirevalue::Any::serialize(pay).unwrap();
                 let mut headers = Attrs::new();
                 hyperactor::mailbox::headers::set_send_timestamp(&mut headers);
                 hyperactor::mailbox::headers::set_rust_message_type::<Payload>(&mut headers);
@@ -1566,7 +1609,7 @@ mod tests {
                 std::env::set_var("HYPERACTOR_CODEC_MAX_FRAME_LENGTH", "1024");
             };
             let _guard3 =
-                config.override_key(hyperactor::config::DEFAULT_ENCODING, Encoding::Bincode);
+                config.override_key(wirevalue::config::DEFAULT_ENCODING, Encoding::Bincode);
 
             let alloc = process_allocator()
                 .allocate(AllocSpec {

@@ -8,16 +8,19 @@
 
 #![allow(dead_code)]
 
-use hyperactor::Named;
-/// This module defines common types for mesh resources. Meshes are managed as
-/// resources, usually by a controller actor implementing the [`crate::resource`]
-/// behavior.
-///
-/// The mesh controller manages all aspects of the mesh lifecycle, and the owning
-/// actor uses the resource behavior directly to query the state of the mesh.
+//! This module defines common types for mesh resources. Meshes are managed as
+//! resources, usually by a controller actor implementing the [`crate::resource`]
+//! behavior.
+//!
+//! The mesh controller manages all aspects of the mesh lifecycle, and the owning
+//! actor uses the resource behavior directly to query the state of the mesh.
+
+use hyperactor::Bind;
+use hyperactor::Unbind;
 use ndslice::Extent;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::resource::Resource;
 use crate::resource::Status;
@@ -34,21 +37,31 @@ pub struct Spec<S> {
 }
 
 /// Mesh states
-#[derive(Debug, Named, Serialize, Deserialize)]
+#[derive(Debug, Named, Bind, Unbind, Serialize, Deserialize)]
 pub struct State<S> {
     /// The current status for each rank in the mesh.
-    statuses: ValueMesh<Status>,
+    pub statuses: ValueMesh<Status>,
     /// Mesh-specific state.
-    state: S,
+    pub state: S,
 }
 
 /// A mesh trait bundles a set of types that together define a mesh resource.
 pub trait Mesh {
     /// The mesh-specific specification for this resource.
-    type Spec: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type Spec: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 
     /// The mesh-specific state for this resource.
-    type State: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type State: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 }
 
 impl<M: Mesh> Resource for M {

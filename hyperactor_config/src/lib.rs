@@ -23,10 +23,10 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use hyperactor_named::Named;
 use serde::Deserialize;
 use serde::Serialize;
 use shell_quote::QuoteRefExt;
+use typeuri::Named;
 
 pub mod attrs;
 pub mod global;
@@ -37,12 +37,14 @@ pub use attrs::AttrValue;
 pub use attrs::Attrs;
 pub use attrs::Key;
 pub use attrs::SerializableValue;
-// Re-export hyperactor_named for macro usage
-#[doc(hidden)]
-pub use hyperactor_named;
+// Re-export AttrValue derive macro
+pub use hyperactor_config_macros::AttrValue;
 // Re-export macros needed by declare_attrs!
 pub use inventory::submit;
 pub use paste::paste;
+// Re-export typeuri for macro usage
+#[doc(hidden)]
+pub use typeuri;
 
 // declare_attrs is already exported via #[macro_export] in attrs.rs
 
@@ -227,7 +229,7 @@ mod tests {
         }
     }
 
-    impl hyperactor_named::Named for TestMode {
+    impl typeuri::Named for TestMode {
         fn typename() -> &'static str {
             "hyperactor_config::tests::TestMode"
         }

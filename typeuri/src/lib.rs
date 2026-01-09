@@ -6,13 +6,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Core Named trait for types with globally unique names in Hyperactor.
+//! Named trait for types with globally unique type URIs.
 
 use std::any::TypeId;
 use std::collections::HashMap;
 
+// Re-export cityhasher for use in the derive macro
+pub use cityhasher;
 // Re-export dashmap so that the intern_typename macro can use $crate::dashmap
 pub use dashmap;
+// Re-export the Named derive macro from typeuri_macros
+pub use typeuri_macros::Named;
 
 /// A [`Named`] type is a type that has a globally unique name.
 pub trait Named: Sized + 'static {

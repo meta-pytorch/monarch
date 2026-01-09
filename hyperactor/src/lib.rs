@@ -74,7 +74,6 @@ pub mod checkpoint;
 pub mod clock;
 pub mod config;
 pub mod context;
-pub mod data;
 pub mod host;
 mod init;
 pub mod mailbox;
@@ -103,20 +102,12 @@ pub use actor::RemoteSpawn;
 pub use anyhow;
 #[doc(hidden)]
 pub use async_trait;
-// Re-exported to use in Named derive macro.
-#[doc(hidden)]
-pub use cityhasher;
-#[doc(hidden)]
-pub use dashmap; // For intern_typename!
-pub use data::Named;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]
 pub use hyperactor_macros::HandleClient;
 #[doc(inline)]
 pub use hyperactor_macros::Handler;
-#[doc(inline)]
-pub use hyperactor_macros::Named;
 #[doc(inline)]
 pub use hyperactor_macros::RefClient;
 #[doc(inline)]
@@ -133,8 +124,6 @@ pub use hyperactor_macros::instrument;
 pub use hyperactor_macros::instrument_infallible;
 pub use hyperactor_macros::observe_async;
 pub use hyperactor_macros::observe_result;
-#[doc(hidden)]
-pub use hyperactor_named; // For declare_attrs! macro
 pub use hyperactor_telemetry::declare_static_counter;
 pub use hyperactor_telemetry::declare_static_gauge;
 pub use hyperactor_telemetry::declare_static_histogram;
@@ -147,9 +136,8 @@ pub use init::initialize;
 pub use init::initialize_with_current_runtime;
 #[doc(inline)]
 pub use init::initialize_with_log_prefix;
-// Re-exported to make this available to callers of the `register!` macro.
 #[doc(hidden)]
-pub use inventory::submit;
+pub use inventory; // For remote! macro
 pub use mailbox::Data;
 pub use mailbox::Mailbox;
 pub use mailbox::Message;
@@ -193,6 +181,8 @@ pub use signal_handler::unregister_signal_cleanup;
 // Re-exported to support tracing in hyperactor_macros codegen.
 #[doc(hidden)]
 pub use tracing;
+#[doc(hidden)]
+pub use typeuri; // For declare_attrs! macro
 
 mod private {
     /// Public trait in a private module for sealing traits within this crate:

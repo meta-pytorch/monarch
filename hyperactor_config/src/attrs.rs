@@ -106,7 +106,6 @@ use chrono::DateTime;
 use chrono::Utc;
 use erased_serde::Deserializer as ErasedDeserializer;
 use erased_serde::Serialize as ErasedSerialize;
-use hyperactor_named::Named;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -115,6 +114,7 @@ use serde::de::DeserializeOwned;
 use serde::de::MapAccess;
 use serde::de::Visitor;
 use serde::ser::SerializeMap;
+use typeuri::Named;
 
 // Information about an attribute key, used for automatic registration.
 // This needs to be public to be accessible from other crates, but it is
@@ -874,7 +874,7 @@ macro_rules! declare_attrs {
                     const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
                     $crate::const_ascii_lowercase!(FULL_NAME)
                 },
-                typehash: <$type as $crate::hyperactor_named::Named>::typehash,
+                typehash: <$type as $crate::typeuri::Named>::typehash,
                 deserialize_erased: |deserializer| {
                     let value: $type = erased_serde::deserialize(deserializer)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
@@ -927,7 +927,7 @@ macro_rules! declare_attrs {
                     const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
                     $crate::const_ascii_lowercase!(FULL_NAME)
                 },
-                typehash: <$type as $crate::hyperactor_named::Named>::typehash,
+                typehash: <$type as $crate::typeuri::Named>::typehash,
                 deserialize_erased: |deserializer| {
                     let value: $type = erased_serde::deserialize(deserializer)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)

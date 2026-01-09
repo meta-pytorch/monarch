@@ -27,7 +27,6 @@ use enum_as_inner::EnumAsInner;
 pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
@@ -37,6 +36,7 @@ pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 pub use value_mesh::ValueMesh;
 
 /// A mesh of per-rank lifecycle statuses.
@@ -244,6 +244,7 @@ pub enum Name {
     /// Reserved names for system actors without UUIDs.
     Reserved(String),
 }
+wirevalue::register_type!(Name);
 
 // The delimiter between the name and the uuid when a Name::Suffixed is stringified.
 // Actor names must be parseable as an actor identifier. We do not allow this delimiter

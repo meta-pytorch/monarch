@@ -32,7 +32,6 @@ use humantime::format_duration;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -69,6 +68,7 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::Level;
+use typeuri::Named;
 
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
@@ -181,6 +181,7 @@ pub(crate) const BOOTSTRAP_LOG_CHANNEL: &str = "BOOTSTRAP_LOG_CHANNEL";
 /// the allocator), along with the control message in question.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub(crate) struct Process2Allocator(pub usize, pub Process2AllocatorMessage);
+wirevalue::register_type!(Process2Allocator);
 
 /// Control messages sent from processes to the allocator.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
@@ -198,6 +199,7 @@ pub(crate) enum Process2AllocatorMessage {
 
     Heartbeat,
 }
+wirevalue::register_type!(Process2AllocatorMessage);
 
 /// Messages sent from the allocator to a process.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
@@ -214,6 +216,7 @@ pub(crate) enum Allocator2Process {
     /// exit code
     Exit(i32),
 }
+wirevalue::register_type!(Allocator2Process);
 
 async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: ChannelAddr) {
     let tx = match channel::dial(bootstrap_addr.clone()) {
@@ -552,21 +555,30 @@ impl Bootstrap {
 pub fn install_pdeathsig_kill() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
+        // SAFETY: `getppid()` is a simple libc syscall returning the
+        // parent PID; it has no side effects and does not touch memory.
+        let ppid_before = unsafe { libc::getppid() };
+
         // SAFETY: Calling into libc; does not dereference memory, just
         // asks the kernel to deliver SIGKILL on parent death.
         let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_int) };
         if rc != 0 {
             return Err(io::Error::last_os_error());
         }
-    }
-    // Race-close: if the parent died between our exec and prctl(),
-    // we won't get a signal, so detect that and exit now.
-    //
-    // If getppid() == 1, we've already been reparented (parent gone).
-    // SAFETY: `getppid()` is a simple libc syscall returning the
-    // parent PID; it has no side effects and does not touch memory.
-    if unsafe { libc::getppid() } == 1 {
-        std::process::exit(0);
+
+        // Race-close: if the parent died between our exec and prctl(),
+        // we won't get a signal, so detect that and exit now.
+        //
+        // If the parent PID changed, the parent has died and we've been
+        // reparented. Note: We cannot assume ppid == 1 means the parent
+        // died, as in container environments (e.g., Kubernetes) the parent
+        // may legitimately run as PID 1.
+        // SAFETY: `getppid()` is a simple libc syscall returning the
+        // parent PID; it has no side effects and does not touch memory.
+        let ppid_after = unsafe { libc::getppid() };
+        if ppid_before != ppid_after {
+            std::process::exit(0);
+        }
     }
     Ok(())
 }
@@ -1523,6 +1535,7 @@ pub struct BootstrapCommand {
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
 }
+wirevalue::register_type!(BootstrapCommand);
 
 impl BootstrapCommand {
     /// Creates a bootstrap command specification to replicate the
@@ -2661,7 +2674,6 @@ mod tests {
     #[tokio::test]
     async fn test_v1_child_logging() {
         use hyperactor::channel;
-        use hyperactor::data::Serialized;
         use hyperactor::mailbox::BoxedMailboxSender;
         use hyperactor::mailbox::DialMailboxRouter;
         use hyperactor::mailbox::MailboxServer;
@@ -2717,7 +2729,7 @@ mod tests {
             hostname: "testhost".into(),
             pid: 12345,
             output_target: OutputTarget::Stdout,
-            payload: Serialized::serialize(&"hello from child".to_string()).unwrap(),
+            payload: wirevalue::Any::serialize(&"hello from child".to_string()).unwrap(),
         });
 
         // Assert we see it via the tap.

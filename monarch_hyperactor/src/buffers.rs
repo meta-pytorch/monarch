@@ -14,7 +14,6 @@ use std::ffi::c_void;
 use bytes::Buf;
 use bytes::Bytes;
 use bytes::BytesMut;
-use hyperactor::Named;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -25,6 +24,7 @@ use pyo3::types::PyBytesMethods;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
+use typeuri::Named;
 
 declare_attrs! {
     /// Threshold below which writes are copied into a contiguous buffer.
@@ -261,6 +261,7 @@ impl Buffer {
 pub struct FrozenBuffer {
     pub inner: bytes::Bytes,
 }
+wirevalue::register_type!(FrozenBuffer);
 
 #[pymethods]
 impl FrozenBuffer {

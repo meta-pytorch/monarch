@@ -23,10 +23,8 @@ use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::WorldId;
-use hyperactor::data::Serialized;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
@@ -37,6 +35,7 @@ use hyperactor::reference::UnboundPort;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
@@ -46,6 +45,7 @@ use crate::comm::multicast::set_cast_info_on_headers;
 /// Parameters to initialize the CommActor
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Default)]
 pub struct CommActorParams {}
+wirevalue::register_type!(CommActorParams);
 
 /// A message buffered due to out-of-order delivery.
 #[derive(Debug)]
@@ -117,6 +117,7 @@ pub enum CommActorMode {
     // TODO: T224926642 Remove this once we are fully onto ActorMeshes.
     ImplicitWithWorldId(WorldId),
 }
+wirevalue::register_type!(CommActorMode);
 
 impl CommActorMode {
     /// Return the peer comm actor for the given rank, given a self id,
@@ -295,7 +296,7 @@ impl CommActor {
                     .actor_id(message.dest_port().actor_name(), 0)
                     .port_id(message.dest_port().port()),
                 headers,
-                Serialized::serialize(message.data())?,
+                wirevalue::Any::serialize(message.data())?,
             );
         }
 
@@ -469,11 +470,11 @@ pub mod test_utils {
     use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Named;
     use hyperactor::PortRef;
     use hyperactor::Unbind;
     use serde::Deserialize;
     use serde::Serialize;
+    use typeuri::Named;
 
     use super::*;
 
@@ -1082,8 +1083,11 @@ mod tests {
             forward_port: tx.bind(),
         };
         let actor_name = v1::Name::new("test").expect("valid test name");
+        // Make this actor a "system" actor to avoid spawning a controller actor.
+        // This test is verifying the whole comm tree, so we want fewer actors
+        // involved.
         let actor_mesh = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params)
+            .spawn_with_name(&instance, actor_name, &params, None, true)
             .await
             .unwrap();
         let actor_mesh_ref = actor_mesh.deref().clone();

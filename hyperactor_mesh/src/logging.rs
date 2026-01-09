@@ -27,7 +27,6 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
@@ -41,7 +40,6 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::data::Serialized;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -59,6 +57,7 @@ use tokio::sync::RwLock;
 use tokio::sync::watch::Receiver;
 use tokio::task::JoinHandle;
 use tracing::Level;
+use typeuri::Named;
 
 use crate::bootstrap::BOOTSTRAP_LOG_CHANNEL;
 use crate::shortuuid::ShortUuid;
@@ -293,7 +292,7 @@ pub enum LogMessage {
         /// The target output stream (stdout or stderr)
         output_target: OutputTarget,
         /// The log payload as bytes
-        payload: Serialized,
+        payload: wirevalue::Any,
     },
 
     /// Flush the log
@@ -395,7 +394,7 @@ impl LogSender for LocalLogSender {
                 hostname: self.hostname.clone(),
                 pid: self.pid,
                 output_target: target,
-                payload: Serialized::serialize(&payload)?,
+                payload: wirevalue::Any::serialize(&payload)?,
             });
         }
 
@@ -417,6 +416,7 @@ impl LogSender for LocalLogSender {
 pub struct FileMonitorMessage {
     lines: Vec<String>,
 }
+wirevalue::register_type!(FileMonitorMessage);
 
 /// File appender, coordinates write access to a file via a channel.
 pub struct FileAppender {
@@ -1142,9 +1142,7 @@ impl LogForwardMessageHandler for LogForwardActor {
 }
 
 /// Deserialize a serialized message and split it into UTF-8 lines
-fn deserialize_message_lines(
-    serialized_message: &hyperactor::data::Serialized,
-) -> Result<Vec<Vec<String>>> {
+fn deserialize_message_lines(serialized_message: &wirevalue::Any) -> Result<Vec<Vec<String>>> {
     // Try to deserialize as Vec<Vec<u8>> first (multiple byte arrays)
     if let Ok(message_bytes) = serialized_message.deserialized::<Vec<Vec<u8>>>() {
         let mut result = Vec::new();
@@ -1261,7 +1259,7 @@ impl LogMessageHandler for LogClientActor {
         hostname: String,
         pid: u32,
         output_target: OutputTarget,
-        payload: Serialized,
+        payload: wirevalue::Any,
     ) -> Result<(), anyhow::Error> {
         // Deserialize the message and process line by line with UTF-8
         let message_line_groups = deserialize_message_lines(&payload)?;
@@ -1616,7 +1614,7 @@ mod tests {
             hostname: "my_host".into(),
             pid: 1,
             output_target: OutputTarget::Stderr,
-            payload: Serialized::serialize(&"will not stream".to_string()).unwrap(),
+            payload: wirevalue::Any::serialize(&"will not stream".to_string()).unwrap(),
         });
 
         // Turn on streaming
@@ -1625,7 +1623,7 @@ mod tests {
             hostname: "my_host".into(),
             pid: 1,
             output_target: OutputTarget::Stderr,
-            payload: Serialized::serialize(&"will stream".to_string()).unwrap(),
+            payload: wirevalue::Any::serialize(&"will stream".to_string()).unwrap(),
         });
 
         // TODO: it is hard to test out anything meaningful here as the client flushes to stdout.
@@ -1635,7 +1633,7 @@ mod tests {
     fn test_deserialize_message_lines_string() {
         // Test deserializing a String message with multiple lines
         let message = "Line 1\nLine 2\nLine 3".to_string();
-        let serialized = Serialized::serialize(&message).unwrap();
+        let serialized = wirevalue::Any::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(result, vec![vec!["Line 1", "Line 2", "Line 3"]]);
@@ -1645,7 +1643,7 @@ mod tests {
             "Hello\nWorld".as_bytes().to_vec(),
             "UTF-8 \u{1F980}\nTest".as_bytes().to_vec(),
         ];
-        let serialized = Serialized::serialize(&message_bytes).unwrap();
+        let serialized = wirevalue::Any::serialize(&message_bytes).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(
@@ -1655,7 +1653,7 @@ mod tests {
 
         // Test deserializing a single line message
         let message = "Single line message".to_string();
-        let serialized = Serialized::serialize(&message).unwrap();
+        let serialized = wirevalue::Any::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1663,7 +1661,7 @@ mod tests {
 
         // Test deserializing an empty lines
         let message = "\n\n".to_string();
-        let serialized = Serialized::serialize(&message).unwrap();
+        let serialized = wirevalue::Any::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1671,7 +1669,7 @@ mod tests {
 
         // Test error handling for invalid UTF-8 bytes
         let invalid_utf8_bytes = vec![vec![0xFF, 0xFE, 0xFD]]; // Invalid UTF-8 sequence in Vec<Vec<u8>>
-        let serialized = Serialized::serialize(&invalid_utf8_bytes).unwrap();
+        let serialized = wirevalue::Any::serialize(&invalid_utf8_bytes).unwrap();
 
         let result = deserialize_message_lines(&serialized);
 
@@ -1989,13 +1987,13 @@ mod tests {
     async fn test_deserialize_message_lines_edge_cases() {
         // Test with empty string
         let empty_message = "".to_string();
-        let serialized = Serialized::serialize(&empty_message).unwrap();
+        let serialized = wirevalue::Any::serialize(&empty_message).unwrap();
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(result, vec![vec![] as Vec<String>]);
 
         // Test with trailing newline
         let trailing_newline = "line1\nline2\n".to_string();
-        let serialized = Serialized::serialize(&trailing_newline).unwrap();
+        let serialized = wirevalue::Any::serialize(&trailing_newline).unwrap();
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(result, vec![vec!["line1", "line2"]]);
     }

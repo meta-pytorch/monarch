@@ -222,9 +222,10 @@ impl<M: ProcManager> Host<M> {
         &self.local_proc
     }
 
-    /// Spawn a new process with the given `name`. On success, the proc has been
-    /// spawned, and is reachable through the returned, direct-addressed ProcId,
-    /// which will be `ProcId::Direct(self.addr(), name)`.
+    /// Spawn a new process with the given `name`. On success, the
+    /// proc has been spawned, and is reachable through the returned,
+    /// direct-addressed ProcId, which will be
+    /// `ProcId::Direct(self.addr(), name)`.
     pub async fn spawn(
         &mut self,
         name: String,
@@ -242,44 +243,23 @@ impl<M: ProcManager> Host<M> {
 
         // Await readiness (config-driven; 0s disables timeout).
         let to: Duration = hyperactor_config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
-        let ready: Result<(), HostError> = if to == Duration::from_secs(0) {
-            handle.ready().await.map_err(|e| {
-                HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
-            })
+        let ready = if to == Duration::from_secs(0) {
+            ReadyProc::ensure(&handle).await
         } else {
-            match RealClock.timeout(to, handle.ready()).await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(HostError::ProcessConfigurationFailure(
-                    proc_id.clone(),
-                    anyhow::anyhow!("{e:?}"),
-                )),
-                Err(_) => Err(HostError::ProcessConfigurationFailure(
-                    proc_id.clone(),
-                    anyhow::anyhow!(format!("timeout waiting for Ready after {to:?}")),
-                )),
+            match RealClock.timeout(to, ReadyProc::ensure(&handle)).await {
+                Ok(result) => result,
+                Err(_elapsed) => Err(ReadyProcError::Timeout),
             }
-        };
-
-        ready?;
-
-        // After Ready, addr() + agent_ref() must be present.
-        let addr = handle.addr().ok_or_else(|| {
-            HostError::ProcessConfigurationFailure(
-                proc_id.clone(),
-                anyhow::anyhow!("proc reported Ready but no addr() available"),
-            )
-        })?;
-        let agent_ref = handle.agent_ref().ok_or_else(|| {
-            HostError::ProcessConfigurationFailure(
-                proc_id.clone(),
-                anyhow::anyhow!("proc reported Ready but no agent_ref() available"),
-            )
+        }
+        .map_err(|e| {
+            HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
         })?;
 
-        self.router.bind(proc_id.clone().into(), addr.clone());
+        self.router
+            .bind(proc_id.clone().into(), ready.addr().clone());
         self.procs.insert(name);
 
-        Ok((proc_id, agent_ref))
+        Ok((proc_id, ready.agent_ref().clone()))
     }
 
     fn forwarder(&self) -> ProcOrDial {
@@ -323,6 +303,26 @@ pub enum ReadyError<TerminalStatus> {
     Terminal(TerminalStatus),
     /// Implementation lost its status channel / cannot observe state.
     ChannelClosed,
+}
+
+/// Error returned by [`ready_proc`].
+#[derive(Debug, Clone)]
+pub enum ReadyProcError<TerminalStatus> {
+    /// Timed out waiting for ready.
+    Timeout,
+    /// The underlying `ready()` call failed.
+    Ready(ReadyError<TerminalStatus>),
+    /// The handle's `addr()` returned `None` after `ready()` succeeded.
+    MissingAddr,
+    /// The handle's `agent_ref()` returned `None` after `ready()`
+    /// succeeded.
+    MissingAgentRef,
+}
+
+impl<T> From<ReadyError<T>> for ReadyProcError<T> {
+    fn from(e: ReadyError<T>) -> Self {
+        ReadyProcError::Ready(e)
+    }
 }
 
 /// Error returned by [`ProcHandle::wait`].
@@ -529,6 +529,56 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
     }
 }
 
+/// Capability proving a proc is ready.
+///
+/// [`ReadyProc::ensure`] validates that `addr()` and `agent_ref()`
+/// are available; this type carries that proof, providing infallible
+/// accessors.
+///
+/// Obtain a `ReadyProc` by calling `ready_proc(&handle).await`.
+pub struct ReadyProc<'a, H: ProcHandle> {
+    handle: &'a H,
+    addr: ChannelAddr,
+    agent_ref: ActorRef<H::Agent>,
+}
+
+impl<'a, H: ProcHandle> ReadyProc<'a, H> {
+    /// Wait for a proc to become ready, then return a capability that
+    /// provides infallible access to `addr()` and `agent_ref()`.
+    ///
+    /// This is the type-safe way to obtain the proc's address and
+    /// agent reference. After this function returns `Ok(ready)`, both
+    /// `ready.addr()` and `ready.agent_ref()` are guaranteed to
+    /// succeed.
+    pub async fn ensure(
+        handle: &'a H,
+    ) -> Result<ReadyProc<'a, H>, ReadyProcError<H::TerminalStatus>> {
+        handle.ready().await?;
+        let addr = handle.addr().ok_or(ReadyProcError::MissingAddr)?;
+        let agent_ref = handle.agent_ref().ok_or(ReadyProcError::MissingAgentRef)?;
+        Ok(ReadyProc {
+            handle,
+            addr,
+            agent_ref,
+        })
+    }
+
+    /// The proc's logical identity.
+    pub fn proc_id(&self) -> &ProcId {
+        self.handle.proc_id()
+    }
+
+    /// The proc's address (guaranteed available after ready).
+    pub fn addr(&self) -> &ChannelAddr {
+        &self.addr
+    }
+
+    /// The agent actor reference (guaranteed available after ready).
+    pub fn agent_ref(&self) -> &ActorRef<H::Agent> {
+        &self.agent_ref
+    }
+}
+
 /// Minimal uniform surface for a spawned-**proc** handle returned by
 /// a `ProcManager`. Each manager can return its own concrete handle,
 /// as long as it exposes these. A **proc** is the Hyperactor runtime
@@ -584,10 +634,19 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     fn proc_id(&self) -> &ProcId;
 
     /// The proc's address (the one callers bind into the host
-    /// router).
+    /// router). May return `None` before `ready()` completes.
+    /// Guaranteed to return `Some` after `ready()` succeeds.
+    ///
+    /// **Prefer [`ready_proc()`]** for type-safe access that
+    /// guarantees availability at compile time.
     fn addr(&self) -> Option<ChannelAddr>;
 
-    /// The agent actor reference hosted in the proc.
+    /// The agent actor reference hosted in the proc. May return
+    /// `None` before `ready()` completes. Guaranteed to return `Some`
+    /// after `ready()` succeeds.
+    ///
+    /// **Prefer [`ready_proc()`]** for type-safe access that
+    /// guarantees availability at compile time.
     fn agent_ref(&self) -> Option<ActorRef<Self::Agent>>;
 
     /// Resolves when the proc becomes Ready. Multi-waiter,
@@ -808,9 +867,11 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     fn proc_id(&self) -> &ProcId {
         &self.proc_id
     }
+
     fn addr(&self) -> Option<ChannelAddr> {
         Some(self.addr.clone())
     }
+
     fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
@@ -1034,9 +1095,11 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
     fn proc_id(&self) -> &ProcId {
         &self.proc_id
     }
+
     fn addr(&self) -> Option<ChannelAddr> {
         Some(self.addr.clone())
     }
+
     fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
@@ -1456,6 +1519,7 @@ mod tests {
         fn proc_id(&self) -> &ProcId {
             &self.id
         }
+
         fn addr(&self) -> Option<ChannelAddr> {
             if self.omit_addr {
                 None
@@ -1463,6 +1527,7 @@ mod tests {
                 Some(self.addr.clone())
             }
         }
+
         fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
             if self.omit_agent {
                 None
@@ -1470,6 +1535,7 @@ mod tests {
                 Some(self.agent.clone())
             }
         }
+
         async fn ready(&self) -> Result<(), ReadyError<Self::TerminalStatus>> {
             match self.mode {
                 ReadyMode::OkAfter(d) => {

@@ -51,12 +51,12 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::RdmaDevice;
 use crate::RdmaManagerActor;
@@ -74,6 +74,7 @@ pub struct DoorBell {
     pub dst_ptr: usize,
     pub size: usize,
 }
+wirevalue::register_type!(DoorBell);
 
 impl DoorBell {
     /// Rings the doorbell to trigger the execution of previously enqueued operations.
@@ -104,6 +105,7 @@ pub struct RdmaBuffer {
     pub size: usize,
     pub device_name: String,
 }
+wirevalue::register_type!(RdmaBuffer);
 
 impl RdmaBuffer {
     /// Read from the RdmaBuffer into the provided memory.
@@ -482,6 +484,7 @@ pub struct RdmaQueuePair {
     context: usize,        // *mut rdmaxcel_sys::ibv_context,
     config: IbverbsConfig,
 }
+wirevalue::register_type!(RdmaQueuePair);
 
 impl RdmaQueuePair {
     /// Applies hardware initialization delay if this is the first operation since RTS.

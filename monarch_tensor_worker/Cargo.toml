@@ -4,7 +4,7 @@
 name = "monarch_tensor_worker"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
@@ -28,6 +28,8 @@ torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+typeuri = { version = "0.0.0", path = "../typeuri" }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["small_rng"] }

@@ -20,7 +20,6 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
@@ -34,6 +33,7 @@ use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Candidate number submitted to the sieve.
 ///

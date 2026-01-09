@@ -42,7 +42,6 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
@@ -50,6 +49,7 @@ use hyperactor::clock::Clock;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
@@ -138,6 +138,7 @@ pub enum RdmaManagerMessage {
         reply: OncePortRef<u32>,
     },
 }
+wirevalue::register_type!(RdmaManagerMessage);
 
 #[derive(Debug)]
 #[hyperactor::export(

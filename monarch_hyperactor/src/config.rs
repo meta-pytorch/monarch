@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
-use hyperactor::Named;
 use hyperactor::channel::BindSpec;
 use hyperactor_config::AttrValue;
 use hyperactor_config::CONFIG;
@@ -35,60 +34,54 @@ use pyo3::conversion::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use typeuri::Named;
 
 use crate::channel::PyBindSpec;
 
-/// Python wrapper for Encoding enum.
+/// Python enum for Encoding.
 ///
-/// This type bridges between Python strings (e.g., "bincode",
-/// "serde_json", "serde_multipart") and Rust's
-/// `hyperactor::data::Encoding` enum.
+/// Serialization format used for actor message payloads.
+#[pyclass(
+    module = "monarch._rust_bindings.monarch_hyperactor.config",
+    eq,
+    eq_int,
+    name = "Encoding"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PyEncoding(pub hyperactor::data::Encoding);
+pub enum PyEncoding {
+    Bincode,
+    Json,
+    Multipart,
+}
 
-impl From<PyEncoding> for hyperactor::data::Encoding {
+impl From<wirevalue::Encoding> for PyEncoding {
+    fn from(e: wirevalue::Encoding) -> Self {
+        match e {
+            wirevalue::Encoding::Bincode => PyEncoding::Bincode,
+            wirevalue::Encoding::Json => PyEncoding::Json,
+            wirevalue::Encoding::Multipart => PyEncoding::Multipart,
+        }
+    }
+}
+
+impl From<PyEncoding> for wirevalue::Encoding {
     fn from(e: PyEncoding) -> Self {
-        e.0
+        match e {
+            PyEncoding::Bincode => wirevalue::Encoding::Bincode,
+            PyEncoding::Json => wirevalue::Encoding::Json,
+            PyEncoding::Multipart => wirevalue::Encoding::Multipart,
+        }
     }
 }
 
-impl From<hyperactor::data::Encoding> for PyEncoding {
-    fn from(e: hyperactor::data::Encoding) -> Self {
-        PyEncoding(e)
-    }
-}
-
-impl<'py> FromPyObject<'py> for PyEncoding {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let s: String = ob.extract()?;
-        let encoding = s.parse::<hyperactor::data::Encoding>().map_err(|e| {
-            PyValueError::new_err(format!(
-                "Invalid encoding '{}': {}. Valid values: bincode, serde_json, serde_multipart",
-                s, e
-            ))
-        })?;
-        Ok(PyEncoding(encoding))
-    }
-}
-
-impl<'py> IntoPyObject<'py> for PyEncoding {
-    type Target = PyAny;
-    type Output = Bound<'py, Self::Target>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let formatted = self.0.to_string();
-        formatted.into_bound_py_any(py)
-    }
-}
-
-/// Python wrapper for Range<u16>, using tuple or string format.
+/// Python wrapper for Range<u16>, using Python's slice type.
 ///
-/// This type bridges between Python and Rust's
+/// This type bridges between Python's `slice` and Rust's
 /// `std::ops::Range<u16>`.
-/// Accepts either:
-/// - Tuple: `(8000, 9000)`
-/// - String: `"8000..9000"`
+/// Accepts: `slice(8000, 9000)`
+///
+/// Empty ranges are allowed (e.g., `slice(8000, 8000)`).
+/// Backwards ranges are rejected (e.g., `slice(9000, 8000)`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyPortRange(pub std::ops::Range<u16>);
 
@@ -106,43 +99,56 @@ impl From<std::ops::Range<u16>> for PyPortRange {
 
 impl<'py> FromPyObject<'py> for PyPortRange {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        // Try tuple format first: (start, end)
-        if let Ok((start, end)) = ob.extract::<(u16, u16)>() {
-            if start >= end {
+        // Extract slice(start, stop, step)
+        let slice = ob.downcast::<pyo3::types::PySlice>().map_err(|_| {
+            PyTypeError::new_err("Port range must be a slice object: slice(start, stop)")
+        })?;
+
+        // Validate step is None or 1 (port ranges are continuous, no stepping)
+        let step = slice.getattr("step")?;
+        if !step.is_none() {
+            let step_val: isize = step.extract().map_err(|_| {
+                PyTypeError::new_err("slice.step must be None or 1 for port ranges")
+            })?;
+            if step_val != 1 {
                 return Err(PyValueError::new_err(format!(
-                    "Invalid port range ({}, {}): start must be less than end",
-                    start, end
+                    "Invalid slice step {}: port ranges require step=None or step=1",
+                    step_val
                 )));
             }
-            return Ok(PyPortRange(start..end));
         }
 
-        // Fall back to string format: "start..end"
-        let s: String = ob.extract().map_err(|_| {
-            PyTypeError::new_err(
-                "Port range must be either a tuple (start, end) or string 'start..end'",
-            )
+        // Extract and validate start
+        let start_obj = slice.getattr("start")?;
+        if start_obj.is_none() {
+            return Err(PyTypeError::new_err(
+                "slice.start must be set to an integer in range [0, 65535]",
+            ));
+        }
+        let start = start_obj.extract::<u16>().map_err(|_| {
+            PyTypeError::new_err("slice.start must be an integer in range [0, 65535]")
         })?;
-        let parts: Vec<&str> = s.split("..").collect();
-        if parts.len() != 2 {
+
+        // Extract and validate stop
+        let stop_obj = slice.getattr("stop")?;
+        if stop_obj.is_none() {
+            return Err(PyTypeError::new_err(
+                "slice.stop must be set to an integer in range [0, 65535]",
+            ));
+        }
+        let stop = stop_obj.extract::<u16>().map_err(|_| {
+            PyTypeError::new_err("slice.stop must be an integer in range [0, 65535]")
+        })?;
+
+        // Allow empty ranges (start == stop), reject backwards ranges (start > stop)
+        if start > stop {
             return Err(PyValueError::new_err(format!(
-                "Invalid port range format '{}': expected 'start..end'",
-                s
+                "Invalid port range slice({}, {}): start cannot be greater than stop",
+                start, stop
             )));
         }
-        let start = parts[0].parse::<u16>().map_err(|e| {
-            PyValueError::new_err(format!("Invalid start port '{}': {}", parts[0], e))
-        })?;
-        let end = parts[1].parse::<u16>().map_err(|e| {
-            PyValueError::new_err(format!("Invalid end port '{}': {}", parts[1], e))
-        })?;
-        if start >= end {
-            return Err(PyValueError::new_err(format!(
-                "Invalid port range '{}': start must be less than end",
-                s
-            )));
-        }
-        Ok(PyPortRange(start..end))
+
+        Ok(PyPortRange(start..stop))
     }
 }
 
@@ -152,8 +158,7 @@ impl<'py> IntoPyObject<'py> for PyPortRange {
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let formatted = format!("{}..{}", self.0.start, self.0.end);
-        formatted.into_bound_py_any(py)
+        Ok(pyo3::types::PySlice::new(py, self.0.start as isize, self.0.end as isize, 1).into_any())
     }
 }
 
@@ -420,7 +425,7 @@ macro_rules! declare_py_config_type {
     ($($ty:ty),+ $(,)?) => {
         hyperactor::paste! {
             $(
-                hyperactor::submit! {
+                hyperactor::inventory::submit! {
                     PythonConfigTypeInfo {
                         typehash: $ty::typehash,
                         set_runtime_config: |py, key, val| {
@@ -443,7 +448,7 @@ macro_rules! declare_py_config_type {
     };
     ($py_ty:ty as $ty:ty) => {
         hyperactor::paste! {
-            hyperactor::submit! {
+            hyperactor::inventory::submit! {
                 PythonConfigTypeInfo {
                     typehash: $ty::typehash,
                     set_runtime_config: |py, key, val| {
@@ -467,7 +472,7 @@ macro_rules! declare_py_config_type {
 
 declare_py_config_type!(PyBindSpec as BindSpec);
 declare_py_config_type!(PyDuration as Duration);
-declare_py_config_type!(PyEncoding as hyperactor::data::Encoding);
+declare_py_config_type!(PyEncoding as wirevalue::Encoding);
 declare_py_config_type!(PyPortRange as std::ops::Range::<u16>);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
@@ -637,6 +642,8 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add_function(clear_runtime_config)?;
 
+    module.add_class::<PyEncoding>()?;
+
     Ok(())
 }
 
@@ -645,7 +652,6 @@ mod tests {
     use std::time::Duration;
 
     use pyo3::prelude::*;
-    use pyo3::types::PyDict;
     use pyo3::types::PyString;
     use pyo3::types::PyTuple;
 
@@ -703,33 +709,50 @@ mod tests {
     }
 
     #[test]
-    fn test_pyencoding_parse_valid_values() {
+    fn test_pyencoding_enum_variants() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let s = PyString::new(py, "bincode");
-            let e: PyEncoding = s.extract().unwrap();
-            assert_eq!(e.0, hyperactor::data::Encoding::Bincode);
-
-            let s = PyString::new(py, "serde_json");
-            let e: PyEncoding = s.extract().unwrap();
-            assert_eq!(e.0, hyperactor::data::Encoding::Json);
-
-            let s = PyString::new(py, "serde_multipart");
-            let e: PyEncoding = s.extract().unwrap();
-            assert_eq!(e.0, hyperactor::data::Encoding::Multipart);
+            // Test all enum variants roundtrip
+            for variant in [PyEncoding::Bincode, PyEncoding::Json, PyEncoding::Multipart] {
+                let py_obj = Bound::new(py, variant).unwrap().into_any();
+                let back: PyEncoding = py_obj.extract().unwrap();
+                assert_eq!(back, variant);
+            }
         });
     }
 
     #[test]
-    fn test_pyencoding_parse_invalid_value() {
+    fn test_pyencoding_rejects_strings() {
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            let s = PyString::new(py, "invalid_encoding");
+        Python::with_gil(|_py| {
+            // Strings ought not to work
+            let s = PyString::new(_py, "bincode");
             let result: PyResult<PyEncoding> = s.extract();
             assert!(result.is_err());
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(err_msg.contains("Invalid encoding"));
-            assert!(err_msg.contains("Valid values"));
+        });
+    }
+
+    #[test]
+    fn test_pyencoding_conversions() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|_py| {
+            // Test Rust enum -> PyEncoding -> Rust enum
+            let rust_enc = wirevalue::Encoding::Bincode;
+            let py_enc: PyEncoding = rust_enc.into();
+            assert_eq!(py_enc, PyEncoding::Bincode);
+
+            let back: wirevalue::Encoding = py_enc.into();
+            assert_eq!(back, rust_enc);
+
+            // Test all variants
+            assert_eq!(
+                PyEncoding::from(wirevalue::Encoding::Json),
+                PyEncoding::Json
+            );
+            assert_eq!(
+                PyEncoding::from(wirevalue::Encoding::Multipart),
+                PyEncoding::Multipart
+            );
         });
     }
 
@@ -737,79 +760,106 @@ mod tests {
     fn test_pyencoding_roundtrip() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let original = hyperactor::data::Encoding::Multipart;
-            let py_encoding = PyEncoding(original);
-            let py_obj = py_encoding.into_pyobject(py).unwrap();
+            let original = wirevalue::Encoding::Multipart;
+            let py_encoding: PyEncoding = original.into();
+            let py_obj = Bound::new(py, py_encoding).unwrap().into_any();
             let back: PyEncoding = py_obj.extract().unwrap();
-            assert_eq!(back.0, original);
+            let rust_back: wirevalue::Encoding = back.into();
+            assert_eq!(rust_back, original);
         });
     }
 
     #[test]
-    fn test_pyportrange_parse_tuple_format() {
+    fn test_pyportrange_parse_slice_format() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
+            let slice = pyo3::types::PySlice::new(py, 8000, 9000, 1);
+            let r: PyPortRange = slice.extract().unwrap();
+            assert_eq!(r.0.start, 8000);
+            assert_eq!(r.0.end, 9000);
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_tuples_and_strings() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // Tuples should not work
             let tuple = PyTuple::new(py, [8000u16, 9000u16]).unwrap();
-            let r: PyPortRange = tuple.extract().unwrap();
-            assert_eq!(r.0.start, 8000);
-            assert_eq!(r.0.end, 9000);
-        });
-    }
+            let result: PyResult<PyPortRange> = tuple.extract();
+            assert!(result.is_err());
 
-    #[test]
-    fn test_pyportrange_parse_string_format() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+            // Strings should not work
             let s = PyString::new(py, "8000..9000");
-            let r: PyPortRange = s.extract().unwrap();
+            let result: PyResult<PyPortRange> = s.extract();
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_backwards_range() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // start > stop should be rejected
+            let slice = pyo3::types::PySlice::new(py, 9000, 8000, 1);
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("start cannot be greater than stop"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_invalid_step() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // step != 1 and step != None should be rejected
+            let slice = pyo3::types::PySlice::new(py, 8000, 9000, 2);
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("port ranges require step=None or step=1"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_none_start() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // slice(None, 9000) should be rejected
+            // Create via Python eval since PySlice::new doesn't support None
+            let slice = py.eval(c"slice(None, 9000)", None, None).unwrap();
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("slice.start must be set"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_reject_none_stop() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // slice(8000, None) should be rejected
+            // Create via Python eval since PySlice::new doesn't support None
+            let slice = py.eval(c"slice(8000, None)", None, None).unwrap();
+            let result: PyResult<PyPortRange> = slice.extract();
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("slice.stop must be set"));
+        });
+    }
+
+    #[test]
+    fn test_pyportrange_allow_empty_range() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // start == stop should be allowed (empty range)
+            let slice = pyo3::types::PySlice::new(py, 8000, 8000, 1);
+            let r: PyPortRange = slice.extract().unwrap();
             assert_eq!(r.0.start, 8000);
-            assert_eq!(r.0.end, 9000);
-        });
-    }
-
-    #[test]
-    fn test_pyportrange_reject_invalid_string_format() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            // Missing ".."
-            let s = PyString::new(py, "8000-9000");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-
-            // Not numbers
-            let s = PyString::new(py, "abc..def");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-
-            // Too many parts
-            let s = PyString::new(py, "8000..9000..10000");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-        });
-    }
-
-    #[test]
-    fn test_pyportrange_reject_invalid_ranges() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            // start >= end (tuple format)
-            let tuple = PyTuple::new(py, [9000u16, 8000u16]).unwrap();
-            let result: PyResult<PyPortRange> = tuple.extract();
-            assert!(result.is_err());
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(err_msg.contains("start must be less than end"));
-
-            // start == end (tuple format)
-            let tuple = PyTuple::new(py, [8000u16, 8000u16]).unwrap();
-            let result: PyResult<PyPortRange> = tuple.extract();
-            assert!(result.is_err());
-
-            // start >= end (string format)
-            let s = PyString::new(py, "9000..8000");
-            let result: PyResult<PyPortRange> = s.extract();
-            assert!(result.is_err());
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(err_msg.contains("start must be less than end"));
+            assert_eq!(r.0.end, 8000);
+            assert!(r.0.is_empty());
         });
     }
 
@@ -820,41 +870,13 @@ mod tests {
             let original = 8000..9000;
             let py_range = PyPortRange(original.clone());
             let py_obj = py_range.into_pyobject(py).unwrap();
-            let s: String = py_obj.extract().unwrap();
-            assert_eq!(s, "8000..9000");
+
+            // Should be a slice object
+            assert!(py_obj.downcast::<pyo3::types::PySlice>().is_ok());
 
             // Parse back
             let back: PyPortRange = py_obj.extract().unwrap();
             assert_eq!(back.0, original);
-        });
-    }
-
-    #[test]
-    fn test_pyportrange_accepts_both_formats() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            // Create a dict with both formats
-            let dict = PyDict::new(py);
-            dict.set_item("tuple_format", (8000u16, 9000u16)).unwrap();
-            dict.set_item("string_format", "8000..9000").unwrap();
-
-            // Both should parse to the same range
-            let r1: PyPortRange = dict
-                .get_item("tuple_format")
-                .unwrap()
-                .unwrap()
-                .extract()
-                .unwrap();
-            let r2: PyPortRange = dict
-                .get_item("string_format")
-                .unwrap()
-                .unwrap()
-                .extract()
-                .unwrap();
-
-            assert_eq!(r1.0, r2.0);
-            assert_eq!(r1.0.start, 8000);
-            assert_eq!(r1.0.end, 9000);
         });
     }
 }

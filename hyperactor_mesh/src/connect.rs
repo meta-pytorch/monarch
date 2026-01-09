@@ -48,7 +48,6 @@ use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
 use hyperactor::ActorId;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::clock::Clock;
@@ -68,6 +67,7 @@ use serde::Serialize;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio_util::io::StreamReader;
+use typeuri::Named;
 
 // Timeout for establishing a connection, used by both client and server.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -80,6 +80,7 @@ enum Io {
     // Signal the end of one side of the connection.
     Eof,
 }
+wirevalue::register_type!(Io);
 
 struct OwnedReadHalfStream {
     port: PortReceiver<Io>,
@@ -322,6 +323,7 @@ pub struct Connect {
     /// The port the server can use to complete the connection.
     return_conn: OncePortRef<Accept>,
 }
+wirevalue::register_type!(Connect);
 
 impl Connect {
     /// Allocate a new `Connect` message and return the associated `ConnectionCompleter` that can be used
@@ -353,6 +355,7 @@ struct Accept {
     /// The port the client will use to send data over the connection to the server.
     conn: PortRef<Io>,
 }
+wirevalue::register_type!(Accept);
 
 impl Bind for Connect {
     fn bind(&mut self, bindings: &mut Bindings) -> Result<()> {

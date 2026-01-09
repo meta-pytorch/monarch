@@ -4,7 +4,7 @@
 name = "monarch_messages"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
@@ -21,6 +21,8 @@ thiserror = "2.0.12"
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+typeuri = { version = "0.0.0", path = "../typeuri" }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }

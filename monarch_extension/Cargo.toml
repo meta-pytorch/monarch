@@ -4,7 +4,7 @@
 name = "monarch_extension"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [lib]
@@ -36,6 +36,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }

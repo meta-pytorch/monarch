@@ -17,7 +17,6 @@ use futures::TryStreamExt;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor_mesh::actor_mesh::ActorMesh;
@@ -36,6 +35,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use typeuri::Named;
 
 use crate::code_sync::WorkspaceLocation;
 
@@ -45,6 +45,7 @@ pub struct CondaSyncResult {
     /// All changes that occurred during the sync operation
     pub changes: HashMap<PathBuf, Action>,
 }
+wirevalue::register_type!(CondaSyncResult);
 
 #[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
 pub struct CondaSyncMessage {
@@ -57,9 +58,11 @@ pub struct CondaSyncMessage {
     /// Path prefixes to fixup/replace when copying.
     pub path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
 }
+wirevalue::register_type!(CondaSyncMessage);
 
 #[derive(Debug, Named, Serialize, Deserialize)]
 pub struct CondaSyncParams {}
+wirevalue::register_type!(CondaSyncParams);
 
 #[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [CondaSyncMessage { cast = true }])]

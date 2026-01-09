@@ -20,6 +20,7 @@ from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import (
     clear_runtime_config as _clear_runtime_config,
     configure as _configure,
+    Encoding,
     get_global_config as _get_global_config,
     get_runtime_config as _get_runtime_config,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "clear_runtime_config",
     "configure",
     "configured",
+    "Encoding",
     "get_global_config",
     "get_runtime_config",
 ]
@@ -53,7 +55,7 @@ def configure(
     stop_actor_timeout: str | None = None,
     cleanup_timeout: str | None = None,
     remote_allocator_heartbeat_interval: str | None = None,
-    default_encoding: str | None = None,
+    default_encoding: Encoding | None = None,
     channel_net_rx_buffer_full_check_interval: str | None = None,
     message_latency_sampling_rate: float | None = None,
     enable_client_seq_assignment: bool | None = None,
@@ -65,12 +67,13 @@ def configure(
     max_cast_dimension_size: int | None = None,
     remote_alloc_bind_to_inaddr_any: bool | None = None,
     remote_alloc_bootstrap_addr: str | None = None,
-    remote_alloc_allowed_port_range: str | tuple[int, int] | None = None,
+    remote_alloc_allowed_port_range: slice | None = None,
     read_log_buffer: int | None = None,
     force_file_log: bool | None = None,
     prefix_with_rank: bool | None = None,
     actor_spawn_max_idle: str | None = None,
     get_actor_state_max_idle: str | None = None,
+    supervision_liveness_timeout: str | None = None,
     proc_stop_max_idle: str | None = None,
     get_proc_state_max_idle: str | None = None,
     **kwargs: object,
@@ -111,7 +114,7 @@ def configure(
             stop_actor_timeout: Timeout for stopping actors (humantime).
             cleanup_timeout: Timeout for cleanup operations (humantime).
             remote_allocator_heartbeat_interval: Heartbeat interval for remote allocator (humantime).
-            default_encoding: Default message encoding ("bincode", "serde_json", or "serde_multipart").
+            default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
             channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
             message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
             enable_client_seq_assignment: Enable client-side sequence assignment.
@@ -131,7 +134,7 @@ def configure(
         Remote allocation:
             remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY.
             remote_alloc_bootstrap_addr: Bootstrap address for remote allocators.
-            remote_alloc_allowed_port_range: Allowed port range as "start..end" or (start, end) tuple.
+            remote_alloc_allowed_port_range: Allowed port range as slice(start, stop).
 
         Logging configuration:
             read_log_buffer: Buffer size for reading logs (bytes).
@@ -141,6 +144,8 @@ def configure(
         Proc mesh timeouts:
             actor_spawn_max_idle: Maximum idle time while spawning actors (humantime).
             get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
+            supervision_liveness_timeout: Liveness timeout for the actor-mesh supervision stream; prolonged
+                silence is interpreted as the controller being unreachable (humantime).
 
         Host mesh timeouts:
             proc_stop_max_idle: Maximum idle time while stopping procs (humantime).
@@ -225,6 +230,8 @@ def configure(
         params["actor_spawn_max_idle"] = actor_spawn_max_idle
     if get_actor_state_max_idle is not None:
         params["get_actor_state_max_idle"] = get_actor_state_max_idle
+    if supervision_liveness_timeout is not None:
+        params["supervision_liveness_timeout"] = supervision_liveness_timeout
     if proc_stop_max_idle is not None:
         params["proc_stop_max_idle"] = proc_stop_max_idle
     if get_proc_state_max_idle is not None:

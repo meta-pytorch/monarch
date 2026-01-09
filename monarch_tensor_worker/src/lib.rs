@@ -55,7 +55,6 @@ use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
@@ -98,6 +97,7 @@ use torch_sys2::Layout;
 use torch_sys2::ScalarType;
 use torch_sys2::TensorCell;
 use torch_sys2::factory_zeros;
+use typeuri::Named;
 
 #[derive(Debug)]
 struct RemoteProcessGroupState {
@@ -279,6 +279,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
 pub enum AssignRankMessage {
     AssignRank(),
 }
+wirevalue::register_type!(AssignRankMessage);
 
 #[async_trait]
 impl Handler<WorkerMessage> for WorkerActor {

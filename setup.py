@@ -313,7 +313,7 @@ class Clean(Command):
 
 # Actual Setup
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
-package_version = os.environ.get("MONARCH_VERSION", "0.0.1")
+package_version = os.environ.get("MONARCH_VERSION", "0.3.0.dev0")
 
 setup(
     name=package_name,

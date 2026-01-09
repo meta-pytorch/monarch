@@ -4,15 +4,15 @@
 name = "monarch_types"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
 derive_more = { version = "1.0.0", features = ["full"] }
-hyperactor = { version = "0.0.0", path = "../hyperactor" }
 pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
+typeuri = { version = "0.0.0", path = "../typeuri" }
 
 [dev-dependencies]
 anyhow = "1.0.98"

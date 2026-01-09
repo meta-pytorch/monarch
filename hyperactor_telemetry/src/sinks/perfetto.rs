@@ -47,7 +47,7 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::AttrValue;
 use hyperactor_config::attrs::declare_attrs;
-use hyperactor_config::hyperactor_named::Named;
+use hyperactor_config::typeuri::Named;
 use indexmap::IndexMap;
 use prost::Message;
 use serde::Deserialize;

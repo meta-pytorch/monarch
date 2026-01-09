@@ -18,7 +18,6 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
@@ -29,11 +28,12 @@ use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::supervision::SupervisionFailureMessage;
+use hyperactor_mesh::supervision::MeshFailure;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
+use typeuri::Named;
 
 pub fn initialize() {
     let subscriber = tracing_subscriber::fmt()
@@ -161,11 +161,11 @@ impl Handler<Echo> for ProxyActor {
 }
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for ProxyActor {
+impl Handler<MeshFailure> for ProxyActor {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
-        message: SupervisionFailureMessage,
+        message: MeshFailure,
     ) -> Result<(), anyhow::Error> {
         message.default_handler(cx)
     }

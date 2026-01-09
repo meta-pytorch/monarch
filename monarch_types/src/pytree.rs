@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::Named;
 use pyo3::Bound;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
@@ -26,6 +25,7 @@ use pyo3::types::PyModule;
 use pyo3::types::PyTuple;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::PickledPyObject;
 use crate::python::TryIntoPyObjectUnsafe;

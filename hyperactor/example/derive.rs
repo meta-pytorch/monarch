@@ -15,12 +15,12 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 enum ShoppingList {

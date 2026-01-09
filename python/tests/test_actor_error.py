@@ -17,6 +17,9 @@ from typing import cast
 
 import monarch.actor
 import pytest
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    UndeliverableMessageEnvelope,
+)
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import ActorMesh
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
@@ -595,6 +598,7 @@ async def test_actor_mesh_supervision_handling() -> None:
 
         # actor mesh should still be healthy
         await e.check.call()
+        print("before failure")
 
         # existing call should fail with supervision error
         with pytest.raises(
@@ -602,6 +606,7 @@ async def test_actor_mesh_supervision_handling() -> None:
             match=".*Actor .* exited because of the following reason",
         ):
             await e.fail_with_supervision_error.call_one()
+        print("after failure")
 
         # new call should fail with check of health state of actor mesh
         with pytest.raises(
@@ -609,6 +614,7 @@ async def test_actor_mesh_supervision_handling() -> None:
             match="Actor .* (is unhealthy with reason|exited because of the following reason)",
         ):
             await e.check.call()
+        print("after subsequent endpoint call")
 
         with pytest.raises(RuntimeError, match="error spawning actor mesh"):
             await proc.spawn("ex", ExceptionActorSync).initialized
@@ -646,6 +652,13 @@ class Intermediate(Actor):
     def __supervise__(self, failure) -> bool:
         # Suppress this error from propagating further, the purpose of this actor
         # is to test the v0 supervision handling by creating individual exceptions.
+        return True
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        # Errors delivering messages to error_actor can be ignored, we don't
+        # want Intermediate to stop.
         return True
 
 
@@ -715,6 +728,9 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
             match="Actor .* (is unhealthy with reason|exited because of the following reason)",
         ):
             await error_actor.check.call()
+        # The above check call is undeliverable and might get returned to the client
+        # later on. We need to wait for it to be processed.
+        await asyncio.sleep(5)
 
 
 @pytest.mark.parametrize(
@@ -859,10 +875,10 @@ async def test_actor_mesh_stop() -> None:
         ):
             await am_1.print.call("hello 2")
 
-    # An independent actor mesh should be fine.
-    await am_2.print.call("hello 3")
+        # An independent actor mesh should be fine.
+        await am_2.print.call("hello 3")
 
-    await pm.stop()
+        await pm.stop()
 
 
 # TODO - re-enable after resolving T232206970
@@ -937,44 +953,49 @@ async def test_supervision_with_sending_error() -> None:
     )
 
 
+@pytest.mark.timeout(30)
 async def test_slice_supervision() -> None:
     # This test doesn't want the client process to crash during testing.
-    monarch.actor.unhandled_fault_hook = lambda failure: None
-    pm = spawn_procs_on_this_host({"gpus": 4})
-    healthy_mesh = pm.spawn("healthy", HealthyActor)
-    error_mesh = pm.spawn("error", ErrorActor)
-    slice_1 = error_mesh.slice(gpus=slice(2, 4))
-    slice_2 = error_mesh.slice(gpus=2)
-    slice_3 = error_mesh.slice(gpus=3)
+    with override_fault_hook():
+        pm = spawn_procs_on_this_host({"gpus": 4})
+        healthy_mesh = pm.spawn("healthy", HealthyActor)
+        error_mesh = pm.spawn("error", ErrorActor)
+        slice_1 = error_mesh.slice(gpus=slice(2, 4))
+        slice_2 = error_mesh.slice(gpus=2)
+        slice_3 = error_mesh.slice(gpus=3)
 
-    match = (
-        "Actor .* (is unhealthy with reason:|exited because of the following reason:)"
-    )
-    # Trigger supervision error on gpus=3
-    with pytest.raises(SupervisionError, match=match):
-        await slice_3.fail_with_supervision_error.call()
+        match = "Actor .* (is unhealthy with reason:|exited because of the following reason:)"
+        print("before slice_3 fail")
+        # Trigger supervision error on gpus=3
+        with pytest.raises(SupervisionError, match=match):
+            await slice_3.fail_with_supervision_error.call()
 
-    # Mesh containing all gpus is unhealthy
-    with pytest.raises(SupervisionError, match=match):
-        await error_mesh.check.call()
+        print("before error_mesh.check")
+        # Mesh containing all gpus is unhealthy
+        with pytest.raises(SupervisionError, match=match):
+            await error_mesh.check.call()
 
-    # Slice containing only gpus=3 is unhealthy
-    with pytest.raises(SupervisionError, match=match):
-        await slice_3.check.call()
+        print("before slice_3.check")
+        # Slice containing only gpus=3 is unhealthy
+        with pytest.raises(SupervisionError, match=match):
+            await slice_3.check.call()
 
-    # Slice containing gpus=3 is unhealthy
-    with pytest.raises(SupervisionError, match=match):
-        await slice_1.check.call()
+        print("before slice_1.check")
+        # Slice containing gpus=3 is unhealthy
+        with pytest.raises(SupervisionError, match=match):
+            await slice_1.check.call()
 
-    # Slice not containing gpus=3 is healthy
-    check = await slice_2.check.call()
-    for _, item in check.items():
-        assert item == "this is a healthy check"
+        print("before slice_2.check")
+        # Slice not containing gpus=3 is healthy
+        check = await slice_2.check.call()
+        for _, item in check.items():
+            assert item == "this is a healthy check"
 
-    # Other actor mesh on the same proc mesh is healthy
-    check = await healthy_mesh.check.call()
-    for _, item in check.items():
-        assert item == "this is a healthy check"
+        print("before healthy_mesh.check")
+        # Other actor mesh on the same proc mesh is healthy
+        check = await healthy_mesh.check.call()
+        for _, item in check.items():
+            assert item == "this is a healthy check"
 
 
 @pytest.mark.timeout(30)
@@ -1011,7 +1032,25 @@ class ErrorActorWithSupervise(ErrorActor):
         self.should_handle = should_handle
 
     @endpoint
+    async def self_fail(self) -> None:
+        """Fails this actor with a graceful error that causes the actor to stop"""
+        raise ActorFailureError("Simulated actor failure for supervision testing")
+
+    @endpoint
+    async def self_ungraceful_fail(self) -> None:
+        """Fails this actor with an ungraceful error that runs no cleanup.
+        The controller actor on this process will be unreachable, and users
+        of any sub-actors owned by this one should observe that"""
+        os._exit(1)
+
+    @endpoint
+    async def stop_subworker(self) -> None:
+        """Stop the inner actor this one owns"""
+        await self.mesh.stop()
+
+    @endpoint
     async def subworker_fail(self, sleep: float | None = None) -> None:
+        """Fails the sub-actors this actor owns"""
         await self.mesh.check.call()
         try:
             # This should cause a SupervisionError to get raised.
@@ -1043,7 +1082,7 @@ class ErrorActorWithSupervise(ErrorActor):
         )
 
     @endpoint
-    async def get_mesh(self):
+    async def get_mesh(self) -> ErrorActor:
         return self.mesh
 
     @endpoint
@@ -1225,5 +1264,36 @@ async def test_supervise_callback_unhandled():
     # Calling a second endpoint would also raise the same message.
     with pytest.raises(SupervisionError, match=message):
         await supervisor.subworker_fail.call(sleep=5)
+
+    await pm.stop()
+
+
+@pytest.mark.timeout(60)
+async def test_actor_mesh_supervision_controller_dead() -> None:
+    """Tests what happens when the owner of an actor crashes ungracefully, and
+    another proc has a ref to that actor. That actor should stop and the ref
+    should get a supervision error"""
+    with override_fault_hook():
+        pm = spawn_procs_on_this_host({"gpus": 1})
+        second_mesh = spawn_procs_on_this_host({"gpus": 1})
+        wrapper_mesh = pm.spawn("wrapper", ErrorActorWithSupervise, second_mesh)
+        inner_mesh = await wrapper_mesh.get_mesh.call_one()
+        # First, stop the inner actors. We do this so we can guarantee both
+        # the wrapper and inner has exited.
+        await wrapper_mesh.stop_subworker.call()
+
+        # Cause a hard crash to make the controller unreachable.
+        # This will deliver a supervision event to the client which is ignored
+        # with the override_fault_hook.
+        with pytest.raises(SupervisionError):
+            await wrapper_mesh.self_ungraceful_fail.call_one()
+
+        # The inner mesh should not be reachable, and have a good error message
+        # explaining the problem.
+        with pytest.raises(
+            SupervisionError,
+            match="timed out reaching controller.*for mesh error_actor",
+        ):
+            await inner_mesh.check.call()
 
     await pm.stop()

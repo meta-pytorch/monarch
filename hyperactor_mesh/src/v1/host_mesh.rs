@@ -18,7 +18,7 @@ use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
 
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 
 pub mod mesh_agent;
 
@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
@@ -42,6 +41,7 @@ use ndslice::view::Ranked;
 use ndslice::view::RegionParseError;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::Bootstrap;
 use crate::alloc::Alloc;
@@ -96,6 +96,7 @@ declare_attrs! {
 /// A reference to a single host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
 pub struct HostRef(ChannelAddr);
+wirevalue::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
@@ -382,7 +383,7 @@ impl HostMesh {
         bootstrap_params: Option<BootstrapCommand>,
     ) -> v1::Result<Self>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         Self::allocate_inner(cx, alloc, Name::new(name)?, bootstrap_params).await
     }
@@ -396,7 +397,7 @@ impl HostMesh {
         bootstrap_params: Option<BootstrapCommand>,
     ) -> v1::Result<Self>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Attempt");
         let transport = alloc.transport();
@@ -409,11 +410,15 @@ impl HostMesh {
         // sub-host dimension of size 1.
 
         let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port();
+        let trampoline_name = Name::new("host_mesh_trampoline").unwrap();
         let _trampoline_actor_mesh = proc_mesh
-            .spawn::<HostMeshAgentProcMeshTrampoline, C>(
+            .spawn_with_name::<HostMeshAgentProcMeshTrampoline, C>(
                 cx,
-                "host_mesh_trampoline",
+                trampoline_name,
                 &(transport, mesh_agents.bind(), bootstrap_params, is_local),
+                None,
+                // The trampoline is a system actor and does not need a controller.
+                true,
             )
             .await?;
 
@@ -716,6 +721,7 @@ pub struct HostMeshRef {
     region: Region,
     ranks: Arc<Vec<HostRef>>,
 }
+wirevalue::register_type!(HostMeshRef);
 
 impl HostMeshRef {
     /// Create a new (raw) HostMeshRef from the provided region and associated
@@ -781,7 +787,7 @@ impl HostMeshRef {
         per_host: Extent,
     ) -> v1::Result<ProcMesh>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         self.spawn_inner(cx, Name::new(name)?, per_host).await
     }
@@ -794,7 +800,7 @@ impl HostMeshRef {
         per_host: Extent,
     ) -> v1::Result<ProcMesh>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
@@ -819,7 +825,7 @@ impl HostMeshRef {
         per_host: Extent,
     ) -> v1::Result<ProcMesh>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
         let host_labels = self.region.labels().iter().collect::<HashSet<_>>();
@@ -1576,7 +1582,7 @@ mod tests {
         assert_matches!(
             err,
             v1::Error::ProcCreationError { state, .. }
-            if matches!(state.status, resource::Status::Failed(ref msg) if msg.contains("failed to configure process: Terminal(Stopped { exit_code: 1"))
+            if matches!(state.status, resource::Status::Failed(ref msg) if msg.contains("failed to configure process: Ready(Terminal(Stopped { exit_code: 1"))
         );
     }
 

@@ -10,9 +10,7 @@ use derive_more::Display;
 use hyperactor::ActorRef;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::RefClient;
-use hyperactor::data::Serialized;
 use hyperactor::reference::ActorId;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
@@ -20,6 +18,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::types::PyAnyMethods;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::client::ClientActor;
 use crate::debugger::DebuggerAction;
@@ -192,7 +191,7 @@ pub enum ControllerMessage {
     /// workers and avoids the need to pay the cost to deserialize pytrees in the controller.
     Send {
         ranks: Ranks,
-        message: Serialized,
+        message: wirevalue::Any,
     },
 
     /// Response to a [`crate::worker::WorkerMessage::CallFunction`] message if
@@ -212,12 +211,12 @@ pub enum ControllerMessage {
     },
 
     /// Response to a [`crate::worker::WorkerMessage::SendValue`] message, containing the
-    /// requested value. The value is serialized as a `Serialized` and deserialization
+    /// requested value. The value is serialized as a `Any` and deserialization
     /// is the responsibility of the caller. It should be deserialized as
-    /// [`monarch_types::PyTree<RValue>`] using the [`Serialized::deserialized`] method.
+    /// [`monarch_types::PyTree<RValue>`] using the [`wirevalue::Any::deserialized`] method.
     FetchResult {
         seq: Seq,
-        value: Result<Serialized, WorkerError>,
+        value: Result<wirevalue::Any, WorkerError>,
     },
 
     /// This is used in unit tests to get the first incomplete seq for each rank as captured
@@ -236,5 +235,6 @@ pub enum ControllerMessage {
         action: DebuggerAction,
     },
 }
+wirevalue::register_type!(ControllerMessage);
 
 hyperactor::behavior!(ControllerActor, ControllerMessage);

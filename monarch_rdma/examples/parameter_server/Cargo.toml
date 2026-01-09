@@ -4,24 +4,21 @@
 name = "parameter_server"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [lib]
 path = "src/parameter_server.rs"
-edition = "2024"
 
 [[bin]]
 name = "parameter_server_bootstrap"
 path = "bootstrap.rs"
 test = false
-edition = "2024"
 
 [[bin]]
 name = "parameter_server_example"
 path = "src/lib.rs"
 test = false
-edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
@@ -35,6 +32,8 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+typeuri = { version = "0.0.0", path = "../../../typeuri" }
+wirevalue = { version = "0.0.0", path = "../../../wirevalue" }
 
 [dev-dependencies]
 timed_test = { version = "0.0.0", path = "../../../timed_test" }

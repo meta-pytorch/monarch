@@ -28,7 +28,6 @@ use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
@@ -59,6 +58,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use typeuri::Named;
 
 use crate::code_sync::WorkspaceLocation;
 use crate::code_sync::auto_reload::AutoReloadActor;
@@ -185,14 +185,17 @@ pub enum CodeSyncMessage {
         result: PortRef<Result<(), String>>,
     },
 }
+wirevalue::register_type!(CodeSyncMessage);
 
 #[derive(Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
 pub struct SetActorMeshMessage {
     pub actor_mesh: v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
 }
+wirevalue::register_type!(SetActorMeshMessage);
 
 #[derive(Debug, Named, Serialize, Deserialize)]
 pub struct CodeSyncManagerParams {}
+wirevalue::register_type!(CodeSyncManagerParams);
 
 #[derive(Debug)]
 #[hyperactor::export(

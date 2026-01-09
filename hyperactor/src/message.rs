@@ -36,16 +36,15 @@ use std::marker::PhantomData;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use typeuri::Named;
 
-use crate as hyperactor;
+// for macros
 use crate::ActorRef;
 use crate::Mailbox;
-use crate::Named;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::actor::Referable;
 use crate::context;
-use crate::data::Serialized;
 
 /// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
 /// and store in [`Bindings`]. The extracted parameters in [`Bindings`] can be
@@ -71,12 +70,12 @@ impl<T: RemoteMessage + Bind + Unbind> Castable for T {}
 /// Information extracted from a message through [Unbind], which can be merged
 /// back to the message through [Bind].
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Bindings(VecDeque<(u64, Serialized)>);
+pub struct Bindings(VecDeque<(u64, wirevalue::Any)>);
 
 impl Bindings {
     /// Push a value into this bindings.
     pub fn push_back<T: Serialize + Named>(&mut self, value: &T) -> anyhow::Result<()> {
-        let ser = Serialized::serialize(value)?;
+        let ser = wirevalue::Any::serialize(value)?;
         self.0.push_back((T::typehash(), ser));
         Ok(())
     }
@@ -117,7 +116,7 @@ impl Bindings {
             if v.0 == T::typehash() {
                 let mut t = v.1.deserialized::<T>()?;
                 f(&mut t)?;
-                v.1 = Serialized::serialize(&t)?;
+                v.1 = wirevalue::Any::serialize(&t)?;
             }
         }
         Ok(())
@@ -172,15 +171,16 @@ impl<M: Unbind> Unbound<M> {
 }
 
 /// Unbound, with its message type M erased through serialization.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
 pub struct ErasedUnbound {
-    message: Serialized,
+    message: wirevalue::Any,
     bindings: Bindings,
 }
+wirevalue::register_type!(ErasedUnbound);
 
 impl ErasedUnbound {
-    /// Create an object directly from Serialized without binding.
-    pub fn new(message: Serialized) -> Self {
+    /// Create an object directly from Any without binding.
+    pub fn new(message: wirevalue::Any) -> Self {
         Self {
             message,
             bindings: Bindings::default(),
@@ -192,7 +192,7 @@ impl ErasedUnbound {
     // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
     pub fn try_from_message<T: Unbind + Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
         let unbound = Unbound::try_from_message(msg)?;
-        let serialized = Serialized::serialize(&unbound.message)?;
+        let serialized = wirevalue::Any::serialize(&unbound.message)?;
         Ok(Self {
             message: serialized,
             bindings: unbound.bindings,
@@ -219,7 +219,7 @@ impl ErasedUnbound {
 
 /// Type used for indexing an erased unbound.
 /// Has the same serialized representation as `ErasedUnbound`.
-#[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, typeuri::Named)]
 #[serde(from = "ErasedUnbound")]
 pub struct IndexedErasedUnbound<M>(ErasedUnbound, PhantomData<M>);
 
@@ -318,21 +318,30 @@ impl<T: Bind> Bind for Option<T> {
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::PortRef;
-    use hyperactor::id;
-
     use super::*;
+    use crate as hyperactor; // for macros
     use crate::Bind;
+    use crate::PortRef;
     use crate::Unbind;
     use crate::accum::ReducerSpec;
+    use crate::id;
     use crate::reference::UnboundPort;
 
     // Used to demonstrate a user defined reply type.
-    #[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
+    #[derive(Debug, PartialEq, Serialize, Deserialize, typeuri::Named)]
     struct MyReply(String);
 
     // Used to demonstrate a two-way message type.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+    #[derive(
+        Debug,
+        Clone,
+        PartialEq,
+        Serialize,
+        Deserialize,
+        typeuri::Named,
+        Bind,
+        Unbind
+    )]
     struct MyMessage {
         arg0: bool,
         arg1: u32,
@@ -360,7 +369,7 @@ mod tests {
             reply1: original_port1.clone(),
         };
 
-        let serialized_my_message = Serialized::serialize(&my_message).unwrap();
+        let serialized_my_message = wirevalue::Any::serialize(&my_message).unwrap();
 
         // convert to ErasedUnbound
         let mut erased = ErasedUnbound::try_from_message(my_message.clone()).unwrap();
@@ -372,11 +381,11 @@ mod tests {
                     [
                         (
                             UnboundPort::typehash(),
-                            Serialized::serialize(&UnboundPort::from(&original_port0)).unwrap(),
+                            wirevalue::Any::serialize(&UnboundPort::from(&original_port0)).unwrap(),
                         ),
                         (
                             UnboundPort::typehash(),
-                            Serialized::serialize(&UnboundPort::from(&original_port1)).unwrap(),
+                            wirevalue::Any::serialize(&UnboundPort::from(&original_port1)).unwrap(),
                         ),
                     ]
                     .into_iter()
@@ -413,11 +422,11 @@ mod tests {
             [
                 (
                     UnboundPort::typehash(),
-                    Serialized::serialize(&UnboundPort::from(&new_port0)).unwrap(),
+                    wirevalue::Any::serialize(&UnboundPort::from(&new_port0)).unwrap(),
                 ),
                 (
                     UnboundPort::typehash(),
-                    Serialized::serialize(&UnboundPort::from(&new_port1)).unwrap(),
+                    wirevalue::Any::serialize(&UnboundPort::from(&new_port1)).unwrap(),
                 ),
             ]
             .into_iter()
