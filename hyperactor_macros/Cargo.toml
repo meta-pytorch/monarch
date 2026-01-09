@@ -35,3 +35,4 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.37.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }

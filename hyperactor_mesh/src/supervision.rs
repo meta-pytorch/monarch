@@ -30,7 +30,7 @@ pub struct SupervisionFailureMessage {
     /// The supervision event on an actor located at mesh + rank.
     pub event: ActorSupervisionEvent,
 }
-hyperactor::register_type!(SupervisionFailureMessage);
+wirevalue::register_type!(SupervisionFailureMessage);
 
 impl SupervisionFailureMessage {
     /// Helper function to handle a message to an actor that just wants to forward

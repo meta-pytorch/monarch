@@ -13,6 +13,7 @@ use std::hash::Hasher;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock as OnceCell;
+use std::time::Duration;
 
 use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
@@ -27,7 +28,10 @@ use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::Attrs;
+use hyperactor_config::attrs::declare_attrs;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
@@ -57,6 +61,19 @@ use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::v1::mesh_controller::ActorMeshController;
 use crate::v1::mesh_controller::Subscribe;
+
+declare_attrs! {
+    /// Liveness watchdog for the supervision stream. If no
+    /// supervision message (healthy or unhealthy) is observed within
+    /// this duration, the controller is assumed to be unreachable and
+    /// the mesh is treated as unhealthy. This timeout is about
+    /// detecting silence, not slow messages.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_SUPERVISION_LIVENESS_TIMEOUT".to_string()),
+        py_name: Some("supervision_liveness_timeout".to_string()),
+    })
+    pub attr SUPERVISION_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+}
 
 /// An ActorMesh is a collection of ranked A-typed actors.
 ///
@@ -288,10 +305,14 @@ fn into_watch<M: Send + Sync + Clone + Default + 'static>(
     mut rx: PortReceiver<M>,
 ) -> watch::Receiver<MessageOrFailure<M>> {
     let (sender, receiver) = watch::channel(MessageOrFailure::<M>::default());
-    // Put a timeout here to send a different state change on the watch channel.
-    // This represents that no new message (healthy or unhealthy) has been
-    // received from the sender, and we should assume the sender is dead.
-    let timeout = tokio::time::Duration::from_secs(30);
+    // Apply a liveness timeout to the supervision stream. If no
+    // supervision message (healthy or unhealthy) is observed within
+    // this window, we assume the controller is unreachable and
+    // surface a terminal failure on the watch channel. This is a
+    // watchdog against indefinite silence, not a message-delivery
+    // guarantee, and may conservatively treat a quiet but healthy
+    // controller as failed.
+    let timeout = hyperactor_config::global::get(SUPERVISION_LIVENESS_TIMEOUT);
     tokio::spawn(async move {
         loop {
             let message = match RealClock.timeout(timeout, rx.recv()).await {

@@ -42,6 +42,7 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use typeuri::Named;
+use wirevalue::TypeInfo;
 
 use crate::Actor;
 use crate::ActorHandle;
@@ -53,8 +54,6 @@ use crate::actor::Referable;
 use crate::channel::ChannelAddr;
 use crate::context;
 use crate::context::MailboxExt;
-use crate::data::Serialized;
-use crate::data::TypeInfo;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
@@ -926,7 +925,7 @@ impl PortId {
     /// Send a serialized message to this port, provided a sending capability,
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
-    pub fn send(&self, cx: &impl context::Actor, serialized: Serialized) {
+    pub fn send(&self, cx: &impl context::Actor, serialized: wirevalue::Any) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         cx.post(self.clone(), headers, serialized, true);
@@ -938,7 +937,7 @@ impl PortId {
     pub fn send_with_headers(
         &self,
         cx: &impl context::Actor,
-        serialized: Serialized,
+        serialized: wirevalue::Any,
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
@@ -1083,7 +1082,7 @@ impl<M: RemoteMessage> PortRef<M> {
         headers: Attrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
-        let serialized = Serialized::serialize(&message).map_err(|err| {
+        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
@@ -1099,7 +1098,7 @@ impl<M: RemoteMessage> PortRef<M> {
         &self,
         cx: &impl context::Actor,
         mut headers: Attrs,
-        message: Serialized,
+        message: wirevalue::Any,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
@@ -1149,7 +1148,7 @@ pub struct UnboundPort(
     pub ReducerMode,
     pub bool, // return_undeliverable
 );
-crate::register_type!(UnboundPort);
+wirevalue::register_type!(UnboundPort);
 
 impl UnboundPort {
     /// Update the port id of this binding.
@@ -1228,7 +1227,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
         message: M,
     ) -> Result<(), MailboxSenderError> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        let serialized = Serialized::serialize(&message).map_err(|err| {
+        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
@@ -1256,7 +1255,7 @@ impl<M: RemoteMessage> fmt::Display for OncePortRef<M> {
 
 impl<M: RemoteMessage> Named for OncePortRef<M> {
     fn typename() -> &'static str {
-        crate::data::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
+        wirevalue::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
     }
 }
 
@@ -1574,7 +1573,7 @@ mod tests {
     fn test_port_type_annotation() {
         #[derive(typeuri::Named, Serialize, Deserialize)]
         struct MyType;
-        crate::register_type!(MyType);
+        wirevalue::register_type!(MyType);
         let port_id = PortId(
             ActorId(
                 ProcId::Ranked(WorldId("test".into()), 234),
