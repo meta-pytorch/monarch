@@ -20,7 +20,6 @@ use typeuri::Named;
 
 // for macros
 use crate::config;
-use crate::data::Serialized;
 use crate::reference::Index;
 
 /// An accumulator is a object that accumulates updates into a state.
@@ -44,9 +43,9 @@ pub struct ReducerSpec {
     /// The typehash of the underlying [Self::Reducer] type.
     pub typehash: u64,
     /// The parameters used to build the reducer.
-    pub builder_params: Option<Serialized>,
+    pub builder_params: Option<wirevalue::Any>,
 }
-crate::register_type!(ReducerSpec);
+wirevalue::register_type!(ReducerSpec);
 
 /// Runtime behavior of reducers.
 #[derive(
@@ -96,14 +95,18 @@ pub trait CommReducer {
 /// Type erased version of [CommReducer].
 pub trait ErasedCommReducer {
     /// Reduce 2 updates into a single update.
-    fn reduce_erased(&self, left: &Serialized, right: &Serialized) -> anyhow::Result<Serialized>;
+    fn reduce_erased(
+        &self,
+        left: &wirevalue::Any,
+        right: &wirevalue::Any,
+    ) -> anyhow::Result<wirevalue::Any>;
 
     /// Reducer an non-empty vector of updates. Return Error if the vector is
     /// empty.
     fn reduce_updates(
         &self,
-        updates: Vec<Serialized>,
-    ) -> Result<Serialized, (anyhow::Error, Vec<Serialized>)> {
+        updates: Vec<wirevalue::Any>,
+    ) -> Result<wirevalue::Any, (anyhow::Error, Vec<wirevalue::Any>)> {
         if updates.is_empty() {
             return Err((anyhow::anyhow!("empty updates"), updates));
         }
@@ -134,11 +137,15 @@ where
     R: CommReducer<Update = T> + Named,
     T: Serialize + DeserializeOwned + Named,
 {
-    fn reduce_erased(&self, left: &Serialized, right: &Serialized) -> anyhow::Result<Serialized> {
+    fn reduce_erased(
+        &self,
+        left: &wirevalue::Any,
+        right: &wirevalue::Any,
+    ) -> anyhow::Result<wirevalue::Any> {
         let left = left.deserialized::<T>()?;
         let right = right.deserialized::<T>()?;
         let result = self.reduce(left, right)?;
-        Ok(Serialized::serialize(&result)?)
+        Ok(wirevalue::Any::serialize(&result)?)
     }
 
     fn typehash(&self) -> u64 {
@@ -156,7 +163,7 @@ pub struct ReducerFactory {
     pub typehash_f: fn() -> u64,
     /// The builder function to build the [`ErasedCommReducer`] type.
     pub builder_f: fn(
-        Option<Serialized>,
+        Option<wirevalue::Any>,
     ) -> anyhow::Result<Box<dyn ErasedCommReducer + Sync + Send + 'static>>,
 }
 
@@ -215,7 +222,7 @@ inventory::submit! {
 /// return the type-erased version of it.
 pub(crate) fn resolve_reducer(
     typehash: u64,
-    builder_params: Option<Serialized>,
+    builder_params: Option<wirevalue::Any>,
 ) -> anyhow::Result<Option<Box<dyn ErasedCommReducer + Sync + Send + 'static>>> {
     static FACTORY_MAP: OnceLock<HashMap<u64, &'static ReducerFactory>> = OnceLock::new();
     let factories = FACTORY_MAP.get_or_init(|| {
@@ -467,10 +474,10 @@ mod tests {
 
     use super::*;
 
-    fn serialize<T: Serialize + Named>(values: Vec<T>) -> Vec<Serialized> {
+    fn serialize<T: Serialize + Named>(values: Vec<T>) -> Vec<wirevalue::Any> {
         values
             .into_iter()
-            .map(|n| Serialized::serialize(&n).unwrap())
+            .map(|n| wirevalue::Any::serialize(&n).unwrap())
             .collect()
     }
 
@@ -591,7 +598,7 @@ mod tests {
         );
 
         fn verify<T: PartialEq + DeserializeOwned + Debug + Named>(
-            updates: Vec<Serialized>,
+            updates: Vec<wirevalue::Any>,
             expected: HashMap<Index, T>,
         ) {
             let typehash = <WatermarkUpdateReducer<T> as Named>::typehash();

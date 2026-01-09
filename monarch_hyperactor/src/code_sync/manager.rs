@@ -185,17 +185,17 @@ pub enum CodeSyncMessage {
         result: PortRef<Result<(), String>>,
     },
 }
-hyperactor::register_type!(CodeSyncMessage);
+wirevalue::register_type!(CodeSyncMessage);
 
 #[derive(Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
 pub struct SetActorMeshMessage {
     pub actor_mesh: v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
 }
-hyperactor::register_type!(SetActorMeshMessage);
+wirevalue::register_type!(SetActorMeshMessage);
 
 #[derive(Debug, Named, Serialize, Deserialize)]
 pub struct CodeSyncManagerParams {}
-hyperactor::register_type!(CodeSyncManagerParams);
+wirevalue::register_type!(CodeSyncManagerParams);
 
 #[derive(Debug)]
 #[hyperactor::export(

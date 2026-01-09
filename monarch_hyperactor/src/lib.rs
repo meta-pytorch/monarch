@@ -40,5 +40,5 @@ pub mod value_mesh;
 #[cfg(fbcode_build)]
 pub mod meta;
 
-// Register types from dependent crates that don't have hyperactor as a dependency
-hyperactor::register_type!(monarch_types::PickledPyObject);
+// Register types from dependent crates that don't have wirevalue as a dependency
+wirevalue::register_type!(monarch_types::PickledPyObject);

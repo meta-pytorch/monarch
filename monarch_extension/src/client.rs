@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use hyperactor::ActorRef;
-use hyperactor::data::Serialized;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyActorId;
@@ -47,11 +46,11 @@ pub enum PyRanks {
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.client")]
 pub struct WorkerResponse {
     seq: Seq,
-    result: Option<Result<Serialized, Exception>>,
+    result: Option<Result<wirevalue::Any, Exception>>,
 }
 
 impl WorkerResponse {
-    pub fn new(seq: Seq, result: Option<Result<Serialized, Exception>>) -> Self {
+    pub fn new(seq: Seq, result: Option<Result<wirevalue::Any, Exception>>) -> Self {
         Self { seq, result }
     }
 }
@@ -390,7 +389,7 @@ impl ClientActor {
         };
 
         let message = convert(message)?;
-        let message = Serialized::serialize(&message).map_err(|err| {
+        let message = wirevalue::Any::serialize(&message).map_err(|err| {
             PyRuntimeError::new_err(format!("Failed to serialize message: {err}"))
         })?;
         let message = ControllerMessage::Send { ranks, message };
