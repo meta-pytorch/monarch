@@ -18,6 +18,7 @@ regex = "1.12.2"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }

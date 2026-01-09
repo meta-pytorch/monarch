@@ -138,7 +138,7 @@ pub enum RdmaManagerMessage {
         reply: OncePortRef<u32>,
     },
 }
-hyperactor::register_type!(RdmaManagerMessage);
+wirevalue::register_type!(RdmaManagerMessage);
 
 #[derive(Debug)]
 #[hyperactor::export(

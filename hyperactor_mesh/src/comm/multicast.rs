@@ -13,7 +13,6 @@ use hyperactor::Context;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
-use hyperactor::data::Serialized;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
@@ -59,7 +58,7 @@ pub struct CastMessageEnvelope {
     /// The shape of the cast.
     shape: Shape,
 }
-hyperactor::register_type!(CastMessageEnvelope);
+wirevalue::register_type!(CastMessageEnvelope);
 
 impl CastMessageEnvelope {
     /// Create a new CastMessageEnvelope.
@@ -95,7 +94,7 @@ impl CastMessageEnvelope {
         sender: ActorId,
         dest_port: DestinationPort,
         shape: Shape,
-        data: Serialized,
+        data: wirevalue::Any,
     ) -> Self {
         Self {
             actor_mesh_id,
@@ -180,7 +179,7 @@ pub struct DestinationPort {
     /// message type and cached here.
     port: u64,
 }
-hyperactor::register_type!(DestinationPort);
+wirevalue::register_type!(DestinationPort);
 
 impl DestinationPort {
     /// Create a new DestinationPort for a global actor name and message type.
@@ -214,7 +213,7 @@ pub struct CastMessage {
     /// The message to cast.
     pub message: CastMessageEnvelope,
 }
-hyperactor::register_type!(CastMessage);
+wirevalue::register_type!(CastMessage);
 
 /// Forward a message to procs of next hops. This is used by comm actor to
 /// forward a message to other comm actors following the selection topology.
@@ -232,7 +231,7 @@ pub(crate) struct ForwardMessage {
     /// The message to distribute.
     pub(crate) message: CastMessageEnvelope,
 }
-hyperactor::register_type!(ForwardMessage);
+wirevalue::register_type!(ForwardMessage);
 
 declare_attrs! {
     /// Used inside headers to store the originating sender of a cast.
