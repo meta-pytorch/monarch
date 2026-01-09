@@ -584,6 +584,7 @@ pub(crate) mod meta {
     const DEFAULT_SRV_CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
     const THRIFT_TLS_CL_CERT_PATH_ENV: &str = "THRIFT_TLS_CL_CERT_PATH";
     const THRIFT_TLS_CL_KEY_PATH_ENV: &str = "THRIFT_TLS_CL_KEY_PATH";
+    const MONARCH_SERVER_PEM_PATH_ENV: &str = "MONARCH_SERVER_PEM_PATH";
     const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
@@ -628,7 +629,8 @@ pub(crate) mod meta {
 
     /// Creates a TLS acceptor by looking for necessary certs and keys in a Meta server environment.
     pub(crate) fn tls_acceptor(enforce_client_tls: bool) -> Result<TlsAcceptor> {
-        let server_cert_path = DEFAULT_SERVER_PEM_PATH;
+        let server_cert_path =
+            std::env::var_os(MONARCH_SERVER_PEM_PATH_ENV).unwrap_or(DEFAULT_SERVER_PEM_PATH.into());
         let certs = rustls_pemfile::certs(&mut BufReader::new(
             File::open(server_cert_path).context("open {server_cert_path}")?,
         ))?
@@ -636,9 +638,12 @@ pub(crate) mod meta {
         .map(CertificateDer::from)
         .collect();
         // certs are good here
-        let server_key_path = DEFAULT_SERVER_PEM_PATH;
+        let server_key_path = std::env::var_os(MONARCH_SERVER_PEM_PATH_ENV)
+            .unwrap_or(DEFAULT_SERVER_PEM_PATH.into())
+            .to_string_lossy()
+            .to_string();
         let mut key_reader =
-            BufReader::new(File::open(server_key_path).context("open {server_key_path}")?);
+            BufReader::new(File::open(&server_key_path).context("open {server_key_path}")?);
         let key = loop {
             break match rustls_pemfile::read_one(&mut key_reader)? {
                 Some(rustls_pemfile::Item::RSAKey(key)) => key,
