@@ -910,11 +910,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     // The client implementation methods.
     let mut impl_methods = Vec::new();
 
-    let send_message = if is_handle {
-        quote! { self.send(message)? }
-    } else {
-        quote! { self.send(cx, message)? }
-    };
+    let send_message = quote! { self.send(cx, message)? };
     let global_log_level = parse_log_level(&input.attrs).ok().unwrap_or(None);
 
     for message in &messages {

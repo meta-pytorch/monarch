@@ -978,7 +978,7 @@ impl StreamActor {
 
         let broker = BrokerId::new(params.broker_id).resolve(cx).await;
         broker
-            .send(message)
+            .send(cx, message)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
         let result = recv
             .recv()
