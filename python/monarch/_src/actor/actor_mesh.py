@@ -83,6 +83,9 @@ from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
 )
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
+from monarch._src.actor.channel import (  # noqa: F401 - import runs @rust_struct patching
+    Receiver,
+)
 from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
     Endpoint,
@@ -106,9 +109,15 @@ from opentelemetry.trace import Tracer
 from typing_extensions import Self
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.actor import (
+        PortProtocol,
+        QueuedMessage,
+    )
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
-    from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+        PortHandle,
+        PortReceiverBase,
+    )
     from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
 from monarch._src.actor.telemetry import get_monarch_tracer
 
@@ -1183,7 +1192,7 @@ class _Actor:
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
-    ) -> None:
+    ) -> bool:
         MESSAGES_HANDLED.add(1)
 
         # Initialize method_name before try block so it's always defined
@@ -1236,7 +1245,7 @@ class _Actor:
                         )
                         raise
                     response_port.send(None)
-                    return None
+                    return True
                 case MethodSpecifier.ReturnsResponse():
                     pass
                 case MethodSpecifier.ExplicitPort():
@@ -1309,6 +1318,7 @@ class _Actor:
                     f"Actor call {ctx.actor_instance.name}.{method_name} failed.",
                 )
             )
+            return False
         except BaseException as e:
             if endpoint_span is not None:
                 endpoint_span.exit()
@@ -1327,6 +1337,7 @@ class _Actor:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
             raise
+        return True
 
     def _maybe_exit_debugger(self, do_continue: bool = True) -> None:
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
@@ -1424,6 +1435,62 @@ class _Actor:
         else:
             with fake_sync_state():
                 return cleanup(exc)
+
+    async def _dispatch_loop(
+        self,
+        receiver: "Receiver[QueuedMessage]",
+        error_port: "PortHandle",
+    ) -> None:
+        """
+        Message loop for queue-dispatch mode. Called from Rust Actor::init.
+
+        Args:
+            receiver: Channel receiver for queued messages
+            error_port: Port to send errors to for actor supervision
+        """
+        while True:
+            msg = await receiver.recv()
+            try:
+                await self._handle_queued_message(msg)
+            except BaseException as e:
+                import cloudpickle
+
+                error_bytes = cloudpickle.dumps(e)
+                error_msg = PythonMessage(
+                    PythonMessageKind.Exception(rank=None),
+                    error_bytes,
+                )
+                error_port.send(msg.context.actor_instance, error_msg)
+                raise
+
+    async def _handle_queued_message(self, msg: "QueuedMessage") -> None:
+        """Handle a single queued message."""
+
+        class QueuePanicFlag:
+            """Panic flag for queue dispatch mode.
+
+            Unlike the DummyPanicFlag, this one stores the exception so it can
+            be re-raised after handle() returns, ensuring proper cleanup.
+            """
+
+            def __init__(self) -> None:
+                self.panic_exception: BaseException | None = None
+
+            def signal_panic(self, ex: BaseException) -> None:
+                self.panic_exception = ex
+
+        panic_flag = QueuePanicFlag()
+        await self.handle(
+            msg.context,
+            msg.method,
+            msg.bytes,
+            panic_flag,  # pyre-ignore[6]: QueuePanicFlag implements PanicFlag protocol
+            msg.local_state,
+            msg.response_port,
+        )
+        # If a panic was signaled, re-raise it after handle() has cleaned up
+        if panic_flag.panic_exception is not None:
+            raise panic_flag.panic_exception
 
     def __repr__(self) -> str:
         return f"_Actor(instance={self.instance!r})"

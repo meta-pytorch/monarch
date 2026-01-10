@@ -78,6 +78,7 @@ def configure(
     supervision_liveness_timeout: str = ...,
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
+    actor_queue_dispatch: bool = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.

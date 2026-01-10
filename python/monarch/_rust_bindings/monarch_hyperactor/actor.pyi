@@ -187,3 +187,35 @@ class Actor(Protocol):
         local_state: Iterable[Any],
         response_port: PortProtocol[Any],
     ) -> None: ...
+
+@final
+class QueuedMessage:
+    """
+    A message sent through the queue in queue-dispatch mode.
+    Contains pre-resolved components ready for Python consumption.
+    """
+
+    @property
+    def context(self) -> Any:
+        """The PyContext for this message."""
+        ...
+
+    @property
+    def method(self) -> MethodSpecifier:
+        """The method specifier for this message."""
+        ...
+
+    @property
+    def bytes(self) -> FrozenBuffer:
+        """The serialized message bytes."""
+        ...
+
+    @property
+    def local_state(self) -> Any:
+        """The local state for this message."""
+        ...
+
+    @property
+    def response_port(self) -> PortProtocol[Any]:
+        """The response port for this message."""
+        ...

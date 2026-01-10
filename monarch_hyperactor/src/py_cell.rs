@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fmt;
 use std::mem::take;
 use std::sync::Mutex;
 
@@ -18,6 +19,12 @@ use pyo3::Python;
 /// when it is first used, it is moved to the Python heap.
 pub struct PyCell<T> {
     inner: Mutex<PyCellState<T>>,
+}
+
+impl<T> fmt::Debug for PyCell<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PyCell").finish_non_exhaustive()
+    }
 }
 
 #[derive(Default)]

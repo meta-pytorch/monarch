@@ -45,16 +45,14 @@ fn get_or_add_new_module<'py>(
         if let Some(submodule) = submodule {
             current_module = submodule.extract()?;
         } else {
-            let new_module = PyModule::new(current_module.py(), part)?;
+            let full_name = format!("monarch._rust_bindings.{}", parts.join("."));
+            let new_module = PyModule::new(current_module.py(), &full_name)?;
             current_module.add_submodule(&new_module)?;
             current_module
                 .py()
                 .import("sys")?
                 .getattr("modules")?
-                .set_item(
-                    format!("monarch._rust_bindings.{}", parts.join(".")),
-                    new_module.clone(),
-                )?;
+                .set_item(&full_name, new_module.clone())?;
             current_module = new_module;
         }
     }
