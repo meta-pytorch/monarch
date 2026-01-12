@@ -101,6 +101,8 @@ class SPMDActor(Actor):
         Set up distributed training environment and execute the training script.
 
         Args:
+            master_addr: Master node address for distributed training
+            master_port: Master node port for distributed training
             script_args: Arguments for the training script. First element is either
                 "-m" (for module execution) or the script path, followed by script arguments.
 
@@ -108,7 +110,7 @@ class SPMDActor(Actor):
             True on successful execution.
 
         Raises:
-            ValueError: If no script or module is specified.
+            ValueError: If no script or module specified.
         """
         self._setup_env(master_addr, master_port)
 

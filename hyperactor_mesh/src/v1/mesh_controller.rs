@@ -43,7 +43,7 @@ use crate::actor_mesh::update_undeliverable_envelope_for_casting;
 use crate::bootstrap::ProcStatus;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::resource;
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
 use crate::v1;
 use crate::v1::Name;
@@ -74,21 +74,21 @@ struct HealthState {
     unhealthy_event: Option<Unhealthy>,
     crashed_ranks: HashMap<usize, ActorSupervisionEvent>,
     // The unique owner of this actor.
-    owner: Option<PortRef<SupervisionFailureMessage>>,
+    owner: Option<PortRef<MeshFailure>>,
     /// A set of subscribers to send messages to when events are encountered.
-    subscribers: HashSet<PortRef<Option<SupervisionFailureMessage>>>,
+    subscribers: HashSet<PortRef<Option<MeshFailure>>>,
     /// A set of subscribers that are known to be undeliverable to. This is used
     /// to avoid causing errors in handle_undeliverable_message, and is cleared
     /// before a the set of subscribers is sent to.
     /// This should only be queried by handle_undeliverable_message, and not used
     /// to prevent sending messages. A port id may be reused later.
-    undeliverable_subscribers: HashSet<PortRef<Option<SupervisionFailureMessage>>>,
+    undeliverable_subscribers: HashSet<PortRef<Option<MeshFailure>>>,
 }
 
 impl HealthState {
     fn new(
         statuses: HashMap<Point, resource::Status>,
-        owner: Option<PortRef<SupervisionFailureMessage>>,
+        owner: Option<PortRef<MeshFailure>>,
     ) -> Self {
         Self {
             statuses,
@@ -107,12 +107,12 @@ impl HealthState {
 /// the listener that the controller is still alive. Make sure to filter such events
 /// out as not useful.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct Subscribe(pub PortRef<Option<SupervisionFailureMessage>>);
+pub struct Subscribe(pub PortRef<Option<MeshFailure>>);
 
 /// Unsubscribe me to future updates about a mesh. Should be the same port used in
 /// the Subscribe message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct Unsubscribe(pub PortRef<Option<SupervisionFailureMessage>>);
+pub struct Unsubscribe(pub PortRef<Option<MeshFailure>>);
 
 /// Check state of the actors in the mesh. This is used as a self message to
 /// periodically check.
@@ -157,7 +157,7 @@ impl<A: Referable> ActorMeshController<A> {
     pub(crate) fn new(
         mesh: ActorMeshRef<A>,
         supervision_display_name: Option<String>,
-        port: Option<PortRef<SupervisionFailureMessage>>,
+        port: Option<PortRef<MeshFailure>>,
         initial_statuses: ValueMesh<resource::Status>,
     ) -> Self {
         let supervision_display_name =
@@ -193,8 +193,8 @@ impl<A: Referable> ActorMeshController<A> {
 
 fn send_subscriber_message(
     cx: &impl context::Actor,
-    subscriber: &PortRef<Option<SupervisionFailureMessage>>,
-    message: SupervisionFailureMessage,
+    subscriber: &PortRef<Option<MeshFailure>>,
+    message: MeshFailure,
 ) {
     if let Err(error) = subscriber.send(cx, Some(message.clone())) {
         tracing::warn!(
@@ -252,7 +252,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         // The only part of the port that is used for equality checks is the port id,
         // so create a new one just for the comparison.
         let dest_port_id = envelope.clone().into_inner().dest().clone();
-        let port = PortRef::<Option<SupervisionFailureMessage>>::attest(dest_port_id);
+        let port = PortRef::<Option<MeshFailure>>::attest(dest_port_id);
         // If we sent a message to a subscriber that could not receive it, remove
         // it from the subscriber set instead of generating an error.
         let did_exist = self.health_state.subscribers.remove(&port);
@@ -396,7 +396,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             ActorStatus::Stopped,
             None,
         );
-        let message = SupervisionFailureMessage {
+        let message = MeshFailure {
             actor_mesh_name: Some(mesh_name.to_string()),
             // Rank = none means it affects the whole mesh.
             rank: None,
@@ -471,7 +471,7 @@ fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
     }
 }
 
-/// Sends a SupervisionFailureMessage to the owner and subscribers of this mesh,
+/// Sends a MeshFailure to the owner and subscribers of this mesh,
 /// and changes the health state stored unhealthy_event.
 /// Owners are sent a message only for Failure events, not for Stopped events.
 /// Subscribers are sent both Stopped and Failure events.
@@ -502,7 +502,7 @@ fn send_state_change(
         );
     }
 
-    let failure_message = SupervisionFailureMessage {
+    let failure_message = MeshFailure {
         actor_mesh_name: Some(mesh_name.to_string()),
         rank: Some(rank),
         event: event.clone(),
@@ -582,7 +582,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
     /// When any actor in this mesh changes state,
     /// including once for the initial state of all actors, send a message to the
     /// owners and subscribers of this mesh.
-    /// The receivers will get a SupervisionFailureMessage. The created rank is
+    /// The receivers will get a MeshFailure. The created rank is
     /// the original rank of the actor on the mesh, not the rank after
     /// slicing.
     ///
