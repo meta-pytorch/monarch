@@ -7,7 +7,7 @@ Aggregates or prints log lines from all remote procs (stdout/stderr), optionally
 
 ## Message types
 - **Data (from forwarders)**
-  - `LogMessage::Log { hostname, pid, output_target, payload }`  — payload is `Serialized` of `Vec<Vec<u8>>` lines (or `String` fallback).
+  - `LogMessage::Log { hostname, pid, output_target, payload }`  — payload is `wirevalue::Any` of `Vec<Vec<u8>>` lines (or `String` fallback).
   - `LogMessage::Flush { sync_version: Option<u64> }` — `None` = heartbeat; `Some(v)` = barrier marker.
 - **Control (to client actor)**
   - `LogClientMessage::SetAggregate { aggregate_window_sec: Option<u64> }`
@@ -64,7 +64,7 @@ Aggregates or prints log lines from all remote procs (stdout/stderr), optionally
 
 > **Type legend:**
 > `LogClientActor` — client-side coordinator (single instance)
-> `Serialized` — opaque bytes; expected to be `Vec<Vec<u8>>` (lines) or `String`
+> `wirevalue::Any` — opaque bytes; expected to be `Vec<Vec<u8>>` (lines) or `String`
 > `OutputTarget` — `Stdout | Stderr`
 
 ### 1) Deserializing payload into lines
@@ -73,7 +73,7 @@ Aggregates or prints log lines from all remote procs (stdout/stderr), optionally
 
 ```rust
 fn deserialize_message_lines(
-    serialized_message: &Serialized,
+    serialized_message: &wirevalue::Any,
 ) -> anyhow::Result<Vec<Vec<String>>> {
     // Prefer Vec<Vec<u8>> → Vec<Vec<String>>
     if let Ok(message_bytes) = serialized_message.deserialized::<Vec<Vec<u8>>>() {
@@ -122,7 +122,7 @@ async fn log(
     hostname: String,
     pid: u32,
     output_target: OutputTarget,
-    payload: Serialized,
+    payload: wirevalue::Any,
 ) -> Result<(), anyhow::Error> {
     let message_line_groups = deserialize_message_lines(&payload)?;     // Vec<Vec<String>>
     let hostname = hostname.as_str();

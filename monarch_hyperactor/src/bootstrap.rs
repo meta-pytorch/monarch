@@ -37,7 +37,7 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
         fbinit::perform_init();
     };
 
-    hyperactor::tracing::debug!("entering async bootstrap");
+    hyperactor::internal_macro_support::tracing::debug!("entering async bootstrap");
     crate::runtime::future_into_py::<_, ()>(py, async move {
         // SAFETY:
         // - Only one of these is ever created.
