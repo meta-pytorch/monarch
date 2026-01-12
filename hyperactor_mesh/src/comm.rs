@@ -269,14 +269,11 @@ impl CommActor {
                         ReducerMode::Streaming(opts.clone().unwrap_or_default())
                     }
                     UnboundPortKind::Once => {
-                        // Only split OncePorts that have an accumulator.
-                        // Without a reducer, pass through unchanged.
-                        if reducer_spec.is_none() {
-                            return Ok(());
-                        }
-                        ReducerMode::Once(peer_count)
+                        // OncePort splitting not yet supported. Leave as is.
+                        return Ok(());
                     }
                 };
+
                 let split = port_id.split(
                     cx,
                     reducer_spec.clone(),

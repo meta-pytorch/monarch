@@ -16,6 +16,7 @@ import pdb  # noqa
 import traceback
 from collections import deque
 from logging import Logger
+from traceback import FrameSummary
 from typing import (
     Any,
     cast,
@@ -39,7 +40,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     UnflattenArg,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
@@ -189,6 +190,28 @@ class Controller(_Controller):
         self._mailbox: Mailbox = Instance._mailbox
         self._pending_debugger_sessions: deque[ActorId] = deque()
 
+    def node(
+        self,
+        seq: int,
+        defs: Sequence[object],
+        uses: Sequence[object],
+        port: Tuple[PortId, NDSlice] | None,
+        tracebacks: List[List[FrameSummary]],
+    ) -> None:
+        actor_instance = context().actor_instance
+        self._node(
+            actor_instance._as_rust(),
+            seq,
+            defs,
+            uses,
+            port,
+            tracebacks,
+        )
+
+    def drop_refs(self, refs: Sequence[object]) -> None:
+        actor_instance = context().actor_instance
+        self._drop_refs(actor_instance._as_rust(), refs)
+
     def next_message(
         self, timeout: Optional[float]
     ) -> Optional[LogMessage | MessageResult]:
@@ -202,13 +225,19 @@ class Controller(_Controller):
         msg: NamedTuple,
     ) -> None:
         with torch.utils._python_dispatch._disable_current_modes():
-            return super().send(ranks, msg)
+            actor_instance = context().actor_instance
+            return super()._send(actor_instance._as_rust(), ranks, msg)
 
     def drain_and_stop(
         self,
     ) -> List[LogMessage | MessageResult | client.DebuggerMessage]:
-        self._drain_and_stop(context().actor_instance._as_rust())
+        actor_instance = context().actor_instance
+        self._drain_and_stop(actor_instance._as_rust())
         return []
+
+    def sync_at_exit(self, port: PortId) -> None:
+        actor_instance = context().actor_instance
+        self._sync_at_exit(actor_instance._as_rust(), port)
 
     def stop_mesh(self):
         # I think this is a noop?

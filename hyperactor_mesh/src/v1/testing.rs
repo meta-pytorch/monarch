@@ -42,7 +42,7 @@ use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
 use crate::alloc::ProcessAllocator;
 use crate::proc_mesh::default_transport;
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 use crate::v1::ProcMesh;
 use crate::v1::host_mesh::HostMesh;
 
@@ -56,12 +56,8 @@ pub struct TestRootClient {
 impl Actor for TestRootClient {}
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for TestRootClient {
-    async fn handle(
-        &mut self,
-        _cx: &Context<Self>,
-        msg: SupervisionFailureMessage,
-    ) -> Result<(), anyhow::Error> {
+impl Handler<MeshFailure> for TestRootClient {
+    async fn handle(&mut self, _cx: &Context<Self>, msg: MeshFailure) -> Result<(), anyhow::Error> {
         // If a supervision failure reaches the root test client, the test has
         // failed.
         tracing::error!("got supervision event from child: {}", msg);
@@ -146,7 +142,7 @@ pub fn instance() -> &'static Instance<TestRootClient> {
 #[cfg(fbcode_build)]
 pub async fn proc_meshes<C: context::Actor>(cx: &C, extent: Extent) -> Vec<ProcMesh>
 where
-    C::A: Handler<SupervisionFailureMessage>,
+    C::A: Handler<MeshFailure>,
 {
     let mut meshes = Vec::new();
 
