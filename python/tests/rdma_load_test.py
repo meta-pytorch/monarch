@@ -133,20 +133,20 @@ class RDMATest(Actor):
         tensor_addr = tensor.data_ptr()
 
         # Critical validation - this should catch the null pointer issue
-        assert (
-            tensor_addr != 0
-        ), f"CRITICAL: Tensor has null pointer! Device: {self.device}, Shape: {shape}"
+        assert tensor_addr != 0, (
+            f"CRITICAL: Tensor has null pointer! Device: {self.device}, Shape: {shape}"
+        )
         assert size_elem > 0, f"CRITICAL: Tensor has zero size! Size: {size_elem}"
 
         byte_view = tensor.view(torch.uint8).flatten()
         # Validate byte_view too
         byte_view_addr = byte_view.data_ptr()
-        assert (
-            byte_view_addr != 0
-        ), f"CRITICAL: Byte view has null pointer! Original addr: 0x{tensor_addr:x}"
-        assert (
-            byte_view_addr == tensor_addr
-        ), f"CRITICAL: Address mismatch! Tensor: 0x{tensor_addr:x}, ByteView: 0x{byte_view_addr:x}"
+        assert byte_view_addr != 0, (
+            f"CRITICAL: Byte view has null pointer! Original addr: 0x{tensor_addr:x}"
+        )
+        assert byte_view_addr == tensor_addr, (
+            f"CRITICAL: Address mismatch! Tensor: 0x{tensor_addr:x}, ByteView: 0x{byte_view_addr:x}"
+        )
 
         execution_start = time.time()
         buffer = RDMABuffer(byte_view)
@@ -238,8 +238,8 @@ class RDMATest(Actor):
 
             # Print results
             print(f"Total iterations completed: {len(timings)}")
-            print(f"Average data per operation: {avg_size / (1024*1024):.1f} MB")
-            print(f"Total data transferred: {total_data / (1024*1024):.1f} MB")
+            print(f"Average data per operation: {avg_size / (1024 * 1024):.1f} MB")
+            print(f"Total data transferred: {total_data / (1024 * 1024):.1f} MB")
             print()
 
             print("INDIVIDUAL OPERATION BANDWIDTH:")
@@ -274,7 +274,7 @@ class RDMATest(Actor):
         print(f"  Minimum batch time: {min_batch_time * 1000:.3f} ms")
         print(f"  Maximum batch time: {max_batch_time * 1000:.3f} ms")
         print(f"  Standard deviation: {std_batch_time * 1000:.3f} ms")
-        print(f"  Average data per batch: {avg_batch_size / (1024*1024):.1f} MB")
+        print(f"  Average data per batch: {avg_batch_size / (1024 * 1024):.1f} MB")
 
         # Calculate bandwidth (Gbps)
         def calc_bandwidth_gbps(size_bytes: int, time_seconds: float) -> float:
@@ -295,7 +295,7 @@ class RDMATest(Actor):
         total_throughput = calc_bandwidth_gbps(total_data, total_elapsed_time)
         print("\nTOTAL SUSTAINED THROUGHPUT:")
         print(f"  Total wall-clock time: {total_elapsed_time:.3f} s")
-        print(f"  Total data transferred: {total_data / (1024*1024):.1f} MB")
+        print(f"  Total data transferred: {total_data / (1024 * 1024):.1f} MB")
         print(f"  Sustained throughput: {total_throughput:.2f} Gbps")
         if concurrency > 1:
             print(f"  (Accounts for {concurrency}x concurrent overlapping operations)")
@@ -380,7 +380,7 @@ if __name__ == "__main__":
                 validated_devices.append("cpu")
             elif device_id >= torch.cuda.device_count():
                 print(
-                    f"Warning: CUDA device {device_id} not available. Available devices: 0-{torch.cuda.device_count()-1}. Falling back to CPU."
+                    f"Warning: CUDA device {device_id} not available. Available devices: 0-{torch.cuda.device_count() - 1}. Falling back to CPU."
                 )
                 validated_devices.append("cpu")
             else:

@@ -335,9 +335,9 @@ def test_proc_mesh_bootstrap_error():
 
     # Assert that the subprocess exited with a non-zero code
     assert "Started function error_bootstrap" in process.stdout.decode()
-    assert (
-        process.returncode != 0
-    ), f"Expected non-zero exit code, got {process.returncode}"
+    assert process.returncode != 0, (
+        f"Expected non-zero exit code, got {process.returncode}"
+    )
 
 
 @pytest.mark.parametrize("raise_on_getstate", [True, False])
