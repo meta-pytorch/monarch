@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Formatter;
+use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync;
 use std::sync::Arc;
@@ -43,7 +44,7 @@ use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::selection::Selection;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
-use hyperactor_mesh::supervision::SupervisionFailureMessage;
+use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh_macros::sel;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
@@ -167,9 +168,10 @@ impl _Controller {
         self.broker_id.clone()
     }
 
-    #[pyo3(signature = (seq, defs, uses, response_port, tracebacks))]
-    fn node<'py>(
+    #[pyo3(signature = (instance, seq, defs, uses, response_port, tracebacks))]
+    fn _node<'py>(
         &mut self,
+        instance: &PyInstance,
         seq: u64,
         defs: Bound<'py, PyAny>,
         uses: Bound<'py, PyAny>,
@@ -195,27 +197,38 @@ impl _Controller {
         };
         self.controller_handle
             .blocking_lock()
-            .send(msg)
+            .send(instance.deref(), msg)
             .map_err(to_py_error)
     }
 
-    fn drop_refs(&mut self, refs: Vec<Ref>) -> PyResult<()> {
+    fn _drop_refs(&mut self, instance: &PyInstance, refs: Vec<Ref>) -> PyResult<()> {
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::DropRefs { refs })
+            .send(
+                instance.deref(),
+                ClientToControllerMessage::DropRefs { refs },
+            )
             .map_err(to_py_error)
     }
 
-    fn sync_at_exit(&mut self, port: PyPortId) -> PyResult<()> {
+    fn _sync_at_exit(&mut self, instance: &PyInstance, port: PyPortId) -> PyResult<()> {
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::SyncAtExit {
-                port: PortRef::attest(port.into()),
-            })
+            .send(
+                instance.deref(),
+                ClientToControllerMessage::SyncAtExit {
+                    port: PortRef::attest(port.into()),
+                },
+            )
             .map_err(to_py_error)
     }
 
-    fn send<'py>(&mut self, ranks: Bound<'py, PyAny>, message: Bound<'py, PyAny>) -> PyResult<()> {
+    fn _send<'py>(
+        &mut self,
+        instance: &PyInstance,
+        ranks: Bound<'py, PyAny>,
+        message: Bound<'py, PyAny>,
+    ) -> PyResult<()> {
         let slices = if let Ok(slice) = ranks.extract::<PySlice>() {
             vec![slice.into()]
         } else {
@@ -225,7 +238,10 @@ impl _Controller {
         let message: WorkerMessage = convert(message)?;
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::Send { slices, message })
+            .send(
+                instance.deref(),
+                ClientToControllerMessage::Send { slices, message },
+            )
             .map_err(to_py_error)
     }
 
@@ -234,9 +250,12 @@ impl _Controller {
 
         self.controller_handle
             .blocking_lock()
-            .send(ClientToControllerMessage::StopWorkers {
-                response_port: stop_worker_port,
-            })
+            .send(
+                instance.deref(),
+                ClientToControllerMessage::StopWorkers {
+                    response_port: stop_worker_port,
+                },
+            )
             .map_err(to_py_error)?;
         signal_safe_block_on(py, async move { stop_worker_receiver.recv().await })?
             .map_err(to_py_error)?
@@ -935,12 +954,8 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
 }
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for MeshControllerActor {
-    async fn handle(
-        &mut self,
-        this: &Context<Self>,
-        message: SupervisionFailureMessage,
-    ) -> anyhow::Result<()> {
+impl Handler<MeshFailure> for MeshControllerActor {
+    async fn handle(&mut self, this: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner.
         let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
