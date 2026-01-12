@@ -1017,7 +1017,7 @@ where
 
 // register for concrete types:
 
-hyperactor::inventory::submit! {
+hyperactor::internal_macro_support::inventory::submit! {
     ReducerFactory {
         typehash_f: <ValueOverlayReducer<crate::resource::Status> as Named>::typehash,
         builder_f: |_| Ok(Box::new(ValueOverlayReducer::<crate::resource::Status>(PhantomData))),

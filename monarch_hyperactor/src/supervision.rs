@@ -7,7 +7,7 @@
  */
 
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_mesh::supervision::SupervisionFailureMessage;
+use hyperactor_mesh::supervision::MeshFailure;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -64,50 +64,39 @@ impl SupervisionError {
     name = "MeshFailure",
     module = "monarch._rust_bindings.monarch_hyperactor.supervision"
 )]
-pub struct MeshFailure {
-    pub mesh_name: Option<String>,
-    pub rank: Option<usize>,
-    pub event: ActorSupervisionEvent,
+pub struct PyMeshFailure {
+    pub inner: MeshFailure,
 }
 
-impl MeshFailure {
-    pub fn new(
-        mesh_name: Option<&impl ToString>,
-        rank: Option<usize>,
-        event: ActorSupervisionEvent,
-    ) -> Self {
-        Self {
-            mesh_name: mesh_name.map(|name| name.to_string()),
-            rank,
-            event,
-        }
+impl PyMeshFailure {
+    pub fn new(failure: MeshFailure) -> Self {
+        Self { inner: failure }
     }
 }
 
-impl From<SupervisionFailureMessage> for MeshFailure {
-    fn from(message: SupervisionFailureMessage) -> Self {
-        Self {
-            mesh_name: message.actor_mesh_name,
-            rank: message.rank,
-            event: message.event,
-        }
+impl From<MeshFailure> for PyMeshFailure {
+    fn from(failure: MeshFailure) -> Self {
+        Self { inner: failure }
     }
 }
 
-impl std::fmt::Display for MeshFailure {
+impl std::fmt::Display for PyMeshFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "MeshFailure(mesh_name={}, rank={}, event={})",
-            self.mesh_name.clone().unwrap_or("<none>".into()),
-            self.rank.map_or("<none>".into(), |r| r.to_string()),
-            self.event
+            self.inner
+                .actor_mesh_name
+                .clone()
+                .unwrap_or("<none>".into()),
+            self.inner.rank.map_or("<none>".into(), |r| r.to_string()),
+            self.inner.event
         )
     }
 }
 
 #[pymethods]
-impl MeshFailure {
+impl PyMeshFailure {
     // TODO: store and return the mesh object.
     #[getter]
     fn mesh(&self) {}
@@ -117,7 +106,7 @@ impl MeshFailure {
     }
 
     fn report(&self) -> String {
-        format!("{}", self.event)
+        format!("{}", self.inner.event)
     }
 }
 
@@ -126,7 +115,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     // Add the exception to the module using its type object
     module.add("SupervisionError", py.get_type::<SupervisionError>())?;
-    module.add("MeshFailure", py.get_type::<MeshFailure>())?;
+    module.add("MeshFailure", py.get_type::<PyMeshFailure>())?;
     Ok(())
 }
 

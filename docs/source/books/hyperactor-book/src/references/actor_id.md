@@ -27,7 +27,7 @@ Construct an actor ID directly:
 ```rust
 use hyperactor::reference::{ActorId, ProcId, WorldId};
 
-let proc = ProcId(WorldId("training".into()), 0);
+let proc = ProcId::Ranked(WorldId("training".into()), 0);
 let actor = ActorId(proc, "worker".into(), 1);
 ```
 
@@ -36,7 +36,7 @@ Or with the `id!` macro:
 use hyperactor::id;
 
 let actor = id!(training[0].worker[1]);
-// Equivalent to ActorId(ProcId(WorldId("training".into()), 0), "worker".into(), 1)
+// Equivalent to ActorId(ProcId::Ranked(WorldId("training".into()), 0), "worker".into(), 1)
 ```
 To refer to the root actor (the canonical instance), use:
 ```rust
@@ -62,8 +62,8 @@ impl ActorId {
 - `.proc_id()` returns the ProcId that owns this actor.
 - `.name()` returns the logical name of the actor (e.g., "worker").
 - `.pid()` returns the actor's instance ID.
-- `.world_name()` returns the name of the actor’s world.
-- `.rank()` returns the proc rank (i.e., index) this actor runs on.
+- `.world_name()` returns the name of the actor's world. **Panics** if this is a direct proc.
+- `.rank()` returns the proc rank (i.e., index) this actor runs on. **Panics** if this is a direct proc.
 - `.child_id(pid)` creates a new `ActorId` with the same name and proc but a different pid.
 - `.port_id(port)` returns a `PortId` representing a port on this actor.
 - `.root(proc, name)` constructs a new root actor (`pid = 0`) in the given proc.
