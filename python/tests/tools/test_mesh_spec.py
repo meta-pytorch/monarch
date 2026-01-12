@@ -17,7 +17,6 @@ from monarch.tools.mesh_spec import (
     tag_as_metadata,
 )
 from monarch.tools.network import get_sockaddr
-
 from torchx import specs
 
 UNUSED = "__UNUSED_FOR_TEST__"

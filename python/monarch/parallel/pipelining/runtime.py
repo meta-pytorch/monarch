@@ -16,9 +16,7 @@ from logging import getLogger
 from typing import Callable, Dict, List, Optional
 
 import torch
-
 import torch.nn as nn
-
 import torch.optim as optim
 from monarch import fetch_shard, OpaqueRef, remote, Stream, Tensor
 from monarch.common.device_mesh import DeviceMesh, no_mesh
@@ -390,14 +388,14 @@ class PipelineParallelism:
         batch_size,
         microbatch_size,
     ):
-        assert (
-            batch_size % microbatch_size == 0
-        ), "Batch size should be divisible by microbatch size."
+        assert batch_size % microbatch_size == 0, (
+            "Batch size should be divisible by microbatch size."
+        )
         num_microbatches = batch_size // microbatch_size
         num_round = max(num_microbatches // pipeline_parallel_size, 1)
-        assert (
-            num_microbatches % num_round == 0
-        ), "Number of microbatches should be divisible by number of pipeline rounds."
+        assert num_microbatches % num_round == 0, (
+            "Number of microbatches should be divisible by number of pipeline rounds."
+        )
         num_microbatch_per_round = num_microbatches // num_round
 
         num_model_chunks = total_num_model_chunks // pipeline_parallel_size

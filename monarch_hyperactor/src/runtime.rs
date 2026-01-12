@@ -67,12 +67,14 @@ pub fn get_tokio_runtime<'l>() -> std::sync::MappedRwLockReadGuard<'l, tokio::ru
 }
 
 #[pyfunction]
-pub fn shutdown_tokio_runtime() {
-    // It is important to not hold the GIL while calling this function.
-    // Other runtime threads may be waiting to acquire it and we will never get to shutdown.
-    if let Some(x) = INSTANCE.write().unwrap().take() {
-        x.shutdown_timeout(Duration::from_secs(1));
-    }
+pub fn shutdown_tokio_runtime(py: Python<'_>) {
+    // Called from Python's atexit, which holds the GIL. Release it so tokio
+    // worker threads can acquire it to complete their Python work.
+    py.allow_threads(|| {
+        if let Some(x) = INSTANCE.write().unwrap().take() {
+            x.shutdown_timeout(Duration::from_secs(1));
+        }
+    });
 }
 
 /// Stores the native thread ID of the main Python thread.

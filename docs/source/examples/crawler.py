@@ -14,24 +14,24 @@ Monarch actors including:
 - Providing that QueueActor to multiple CrawlActors
 - Having CrawlActors add/remove items from the QueueActor as they crawl
 - Retrieving results and cleaning up
-The queue is based on asyncio to enable concurrent blocking waits/timeouts.
-An auxiliary set is also used to avoid duplicates and it does not need to
-be thread-safe because in Monarch each actor handles its messages sequentially,
-finishing one before moving on.
+
+The queue uses a local deque and stores response ports for waiters when empty.
+An auxiliary set is used to avoid duplicates. Thread-safety is not required
+because in Monarch each actor handles its messages sequentially.
 """
 
 # %%
 """
 Import libraries and set tuneable configuration values.
 """
-import asyncio
 import time
+from collections import deque
 from typing import Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
-from monarch.actor import Actor, context, endpoint, ProcMesh, this_host
+from monarch.actor import Actor, context, endpoint, Port, ProcMesh, this_host
 
 # Configuration
 BASE = "https://meta-pytorch.org/monarch/"
@@ -44,40 +44,43 @@ TIMEOUT = 5
 class QueueActor(Actor):
     """
     Define the QueueActor class.
-    - Holds an asyncio Queue, which enables concurrent sleeps.
-    - Provies insert and get functions to add/remove from the queue.
-    - Uses the set to avoid duplicates (this would eventually OOM at scale).
+    - Holds a deque for items and a list of waiting ports.
+    - When get() is called and queue is empty, the port is stored.
+    - When insert() is called, it either wakes a waiter or enqueues the item.
     """
 
     def __init__(self):
-        self.q: asyncio.Queue = asyncio.Queue()
+        self.q: deque = deque()
         self.seen_links: Set[str] = set()
+        self.waiters: deque[Port[Optional[Tuple[str, int]]]] = deque()
 
     @endpoint
-    async def insert(self, item, depth):
+    def insert(self, item: str, depth: int) -> None:
         if item not in self.seen_links:
             self.seen_links.add(item)
-            await self.q.put((item, depth))
+            if self.waiters:
+                port = self.waiters.popleft()
+                port.send((item, depth))
+            else:
+                self.q.append((item, depth))
 
-    @endpoint
-    async def get(self) -> Optional[Tuple[str, int]]:
-        try:
-            return await asyncio.wait_for(self.q.get(), timeout=TIMEOUT)
-        except asyncio.TimeoutError:
-            print("Queue has no items, returning done value.")
-            return None
+    @endpoint(explicit_response_port=True)
+    def get(self, port: Port[Optional[Tuple[str, int]]]) -> None:
+        if self.q:
+            port.send(self.q.popleft())
+        else:
+            self.waiters.append(port)
 
 
 # %%
 class CrawlActor(Actor):
     """
     Define the CrawlActor class.
-    - Takes in all queues, but slices down to only use the first one.  This is a temporary
-      workaround until ProcMesh.slice is implemented.
-    - Runs a long crawl() process that continuously takes items off the central queue, parses them,
-      and adds links it finds back to the queue.
-    - Crawls to a configured depth and terminates after the queue is empty for a configured number
-      of seconds.
+    - Takes in all queues, but slices down to only use the first one.
+    - Runs a crawl() process that continuously takes items off the central queue,
+      parses them, and adds links it finds back to the queue.
+    - Crawls to a configured depth and terminates after the queue is empty for
+      a configured number of seconds.
     """
 
     def __init__(self, all_queues: QueueActor):
@@ -90,7 +93,7 @@ class CrawlActor(Actor):
         normalized = urlunparse((p.scheme, p.netloc, p.path, p.params, "", ""))
         return normalized
 
-    async def _crawl_internal(self, target, depth):
+    def _crawl_internal(self, target: str, depth: int) -> None:
         response = requests.get(target)
         response_size_kb = len(response.content) / 1024
         print(f"    - {target} was {response_size_kb:.2f} KB")
@@ -103,26 +106,30 @@ class CrawlActor(Actor):
             # Stop at the target depth and only follow links on our base site.
             if depth > 0 and BASE in link:
                 normalized_link = CrawlActor.normalize_url(link)
-                await self.target_queue.insert.call_one(normalized_link, depth - 1)
+                self.target_queue.insert.broadcast(normalized_link, depth - 1)
 
     @endpoint
-    async def crawl(self):
+    def crawl(self) -> int:
         rank = context().actor_instance.rank
 
         while True:
-            result = await self.target_queue.get.call_one()
+            try:
+                result = self.target_queue.get.call_one().get(timeout=TIMEOUT)
+            except TimeoutError:
+                print("Queue has no items, returning done value.")
+                result = None
             if result is None:
                 break
             url, depth = result
             print(f"Crawler #{rank} found {url} @ depth={depth}.")
-            await self._crawl_internal(url, depth)
+            self._crawl_internal(url, depth)
             self.processed += 1
 
         return self.processed
 
 
 # %%
-async def main():
+def main():
     start_time = time.time()
 
     # Start up a ProcMesh.
@@ -130,22 +137,21 @@ async def main():
         per_host={"procs": NUM_CRAWLERS}
     )
 
-    # Create queues across the mesh and use slice to target the first one; we will not use the rest.
-    # TODO: One ProcMesh::slice is implemented, avoid spawning the extra ones here.
+    # Create queues across the mesh and use slice to target the first one.
     all_queues = local_proc_mesh.spawn("queues", QueueActor)
     target_queue = all_queues.slice(procs=slice(0, 1))
 
     # Prime the queue with the base URL we want to crawl.
-    await target_queue.insert.call_one(BASE, DEPTH)
+    target_queue.insert.broadcast(BASE, DEPTH)
 
-    # Make the crawlers and pass in the queues; crawlers will just use the first one as well.
+    # Make the crawlers and pass in the queues.
     crawlers = local_proc_mesh.spawn("crawlers", CrawlActor, all_queues)
 
     # Run the crawlers; display the count of documents they crawled when done.
-    results = await crawlers.crawl.call()
+    results = crawlers.crawl.call().get()
 
     # Shut down all our resources.
-    await local_proc_mesh.stop()
+    local_proc_mesh.stop().get()
 
     # Log results.
     pages = sum(v[1] for v in results.items())
@@ -155,9 +161,9 @@ async def main():
 
 # %%
 """
-Run main in an asyncio context.
+Run main.
 """
-asyncio.run(main())
+main()
 
 # %%
 # Results

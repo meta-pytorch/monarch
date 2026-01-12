@@ -20,7 +20,6 @@ except ImportError:
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
-
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
 
@@ -202,7 +201,7 @@ class KubernetesJob(JobTrait):
                 # Skip pods outside expected range
                 if pod_rank < 0 or pod_rank >= num_replicas:
                     logger.warning(
-                        f"Pod {pod.metadata.name} has rank {pod_rank} outside expected range [0, {num_replicas-1}]"
+                        f"Pod {pod.metadata.name} has rank {pod_rank} outside expected range [0, {num_replicas - 1}]"
                     )
                     continue
 
