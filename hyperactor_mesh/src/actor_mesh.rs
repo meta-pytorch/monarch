@@ -677,7 +677,7 @@ pub(crate) mod test_util {
 
     use super::*;
     use crate::comm::multicast::CastInfo;
-    use crate::supervision::SupervisionFailureMessage;
+    use crate::supervision::MeshFailure;
 
     // This can't be defined under a `#[cfg(test)]` because there needs to
     // be an entry in the spawnable actor registry in the executable
@@ -890,11 +890,11 @@ pub(crate) mod test_util {
         }
     }
     #[async_trait]
-    impl Handler<SupervisionFailureMessage> for ProxyActor {
+    impl Handler<MeshFailure> for ProxyActor {
         async fn handle(
             &mut self,
             _cx: &Context<Self>,
-            message: SupervisionFailureMessage,
+            message: MeshFailure,
         ) -> Result<(), anyhow::Error> {
             panic!("unhandled supervision failure: {}", message);
         }

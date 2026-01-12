@@ -345,9 +345,9 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
     /// Send a message to any actor. It is the responsibility of the caller to ensure the right
     /// payload accepted by the target actor has been serialized and provided to this function.
     pub fn send(&self, actor_id: &PyActorId, message: &PySerialized) -> PyResult<()> {
-        hyperactor::tracing::debug!(
+        hyperactor::internal_macro_support::tracing::debug!(
             name = "py_send_message",
-            actor_id = hyperactor::tracing::field::display(self.actor_id()),
+            actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id()),
             receiver_actor_id = tracing::field::display(&actor_id.inner),
             ?message,
         );
@@ -383,7 +383,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
     /// Get the next message from the queue. It will wait until a message is received
     /// or the timeout is reached in which case it will return None.
-    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
     pub async fn next_message(&mut self, timeout_msec: Option<u64>) -> Result<Option<M>> {
         hyperactor::declare_static_timer!(
             PY_NEXT_MESSAGE_TIMER,
@@ -430,7 +430,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
     }
 
     /// Put the actor in stopped mode and return any messages that were received.
-    #[hyperactor::instrument(fields(actor_id=hyperactor::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(fields(actor_id=hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
     pub fn drain_and_stop(&mut self) -> Result<Vec<M>> {
         self.ensure_detached_and_alive()?;
         let messages: Vec<M> = self.message_receiver.drain().into_iter().collect();

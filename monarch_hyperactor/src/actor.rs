@@ -8,6 +8,7 @@
 
 use std::error::Error;
 use std::future::pending;
+use std::ops::Deref;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -35,7 +36,7 @@ use hyperactor_mesh::actor_mesh::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::default_bind_spec;
 use hyperactor_mesh::router;
-use hyperactor_mesh::supervision::SupervisionFailureMessage;
+use hyperactor_mesh::supervision::MeshFailure;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use pyo3::IntoPyObjectExt;
@@ -71,7 +72,7 @@ use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::proc::PyActorId;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
-use crate::supervision::MeshFailure;
+use crate::supervision::PyMeshFailure;
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -197,7 +198,7 @@ impl PythonMessage {
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
-                broker.send(LocalStateBrokerMessage::Get(id, send))?;
+                broker.send(cx, LocalStateBrokerMessage::Get(id, send))?;
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
                 Python::with_gil(|py| {
@@ -343,10 +344,9 @@ pub(super) struct PythonActorHandle {
 #[pymethods]
 impl PythonActorHandle {
     // TODO: do the pickling in rust
-    // TODO(pzhang) Use instance after its required by PortHandle.
-    fn send(&self, _instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
+    fn send(&self, instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
         self.inner
-            .send(message.clone())
+            .send(instance.deref(), message.clone())
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
         Ok(())
     }
@@ -362,7 +362,7 @@ impl PythonActorHandle {
     spawn = true,
     handlers = [
         PythonMessage { cast = true },
-        SupervisionFailureMessage { cast = true },
+        MeshFailure { cast = true },
     ],
 )]
 pub struct PythonActor {
@@ -464,9 +464,11 @@ impl PythonActor {
             .set(client)
             .map_err(|_| "already initialized root client instance")
             .unwrap();
+        let instance = root_client_instance.get().unwrap();
 
         handle
             .send(
+                instance,
                 PythonMessage::new(
                     PythonMessageKind::CallMethod {
                         name: MethodSpecifier::Init {},
@@ -482,8 +484,6 @@ impl PythonActor {
         // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
         // are bound.
         let _client_ref = handle.bind::<PythonActor>();
-
-        let instance = root_client_instance.get().unwrap();
 
         get_tokio_runtime().spawn(async move {
             let mut signal_rx = signal_rx;
@@ -725,7 +725,7 @@ impl Actor for PythonActor {
         let cx = Context::new(this, Attrs::new());
         self.handle(
             &cx,
-            SupervisionFailureMessage {
+            MeshFailure {
                 actor_mesh_name: None,
                 rank: None,
                 event: event.clone(),
@@ -905,12 +905,8 @@ impl Handler<PanicFromPy> for PythonActor {
 }
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for PythonActor {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        message: SupervisionFailureMessage,
-    ) -> anyhow::Result<()> {
+impl Handler<MeshFailure> for PythonActor {
+    async fn handle(&mut self, cx: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
         // If the message is not about a failure, don't call __supervise__.
         // This includes messages like "stop", because those are not errors that
         // need to be propagated.
@@ -936,7 +932,7 @@ impl Handler<SupervisionFailureMessage> for PythonActor {
                 "__supervise__",
                 (
                     crate::context::PyContext::new(cx, instance.clone_ref(py)),
-                    MeshFailure::from(message.clone()),
+                    PyMeshFailure::from(message.clone()),
                 ),
                 None,
             );

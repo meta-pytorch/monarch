@@ -67,7 +67,7 @@ class DDPActor(Actor):
         print(f"{self.rank=} {msg}")
 
     @endpoint
-    async def setup(self):
+    def setup(self):
         """Initialize the PyTorch distributed process group."""
         self._rprint("Initializing torch distributed")
         os.environ["MASTER_ADDR"] = "localhost"
@@ -78,13 +78,13 @@ class DDPActor(Actor):
         self._rprint("Finished initializing torch distributed")
 
     @endpoint
-    async def cleanup(self):
+    def cleanup(self):
         """Clean up the PyTorch distributed process group."""
         self._rprint("Cleaning up torch distributed")
         dist.destroy_process_group()
 
     @endpoint
-    async def demo_basic(self):
+    def demo_basic(self):
         """Run a basic DDP training example."""
         self._rprint("Running basic DDP example")
 
@@ -105,56 +105,29 @@ class DDPActor(Actor):
 
 
 # %%
-# Now we'll define functions to create and run our DDP example
+# Now we'll create and run our DDP example
 
-
-async def create_ddp_actors():
-    """Create the process mesh and spawn DDP actors."""
-    # Spawn a process mesh
-    local_proc_mesh = this_host().spawn_procs(per_host={"gpus": WORLD_SIZE})
-    # Spawn our actor mesh on top of the process mesh
-    ddp_actor = local_proc_mesh.spawn("ddp_actor", DDPActor)
-    return ddp_actor, local_proc_mesh
-
-
-async def setup_distributed(ddp_actor):
-    """Initialize the distributed environment."""
-    # Setup torch Distributed
-    await ddp_actor.setup.call()
-
-
-async def run_ddp_example(ddp_actor):
-    """Run the DDP training example."""
-    # Run the demo
-    await ddp_actor.demo_basic.call()
-
-
-async def cleanup_distributed(ddp_actor):
-    """Clean up distributed resources."""
-    # Clean up
-    await ddp_actor.cleanup.call()
+# Spawn a process mesh
+local_proc_mesh = this_host().spawn_procs(per_host={"gpus": WORLD_SIZE})
+# Spawn our actor mesh on top of the process mesh
+ddp_actor = local_proc_mesh.spawn("ddp_actor", DDPActor)
 
 
 # %%
-# Main function to run the complete example
-async def main():
-    """Main function to run the DDP example."""
-    # Create actors
-    ddp_actor, proc_mesh = await create_ddp_actors()
+# Initialize the distributed environment
 
-    # Setup distributed environment
-    await setup_distributed(ddp_actor)
-
-    # Run DDP example
-    await run_ddp_example(ddp_actor)
-
-    # Clean up
-    await cleanup_distributed(ddp_actor)
-
-    print("DDP example completed successfully!")
+ddp_actor.setup.call().get()
 
 
-if __name__ == "__main__":
-    import asyncio
+# %%
+# Run the DDP training example
 
-    asyncio.run(main())
+ddp_actor.demo_basic.call().get()
+
+
+# %%
+# Clean up distributed resources
+
+ddp_actor.cleanup.call().get()
+
+print("DDP example completed successfully!")

@@ -14,8 +14,8 @@ pub trait Handler<M>: Actor {
 ## Message Dispatch: `handle`
 
 The `handle` method is invoked by the runtime whenever a message of type `M` arrives at a matching port on the actor.
-- message is the received payload.
-- this gives access to the actor's runtime context, including its identity, mailbox, and and any capabilities exposed by the `Instance` type (such as spawning or reference resolution).
+- `message` is the received payload.
+- `cx` gives access to the actor's runtime context, including its identity, mailbox, and any capabilities exposed by the `Context` type (such as spawning or reference resolution).
 - The return value indicates whether the message was handled successfully.
 
 An actor may implement `Handler<M>` multiple times — once for each message type `M` it supports.
@@ -55,7 +55,7 @@ where
         msg: IndexedErasedUnbound<M>,
     ) -> anyhow::Result<()> {
         let message = msg.downcast()?.bind()?;
-        Handler::handle(self, this, message).await
+        Handler::handle(self, cx, message).await
     }
 }
 ```

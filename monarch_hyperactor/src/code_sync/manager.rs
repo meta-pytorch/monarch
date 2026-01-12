@@ -276,11 +276,14 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                     // Forward rsync connection port to the RsyncActor, which will do the actual
                     // connection and run the client.
                     let (tx, mut rx) = cx.open_port::<Result<RsyncResult, String>>();
-                    self.get_rsync_actor(cx).await?.send(RsyncMessage {
-                        connect,
-                        result: tx.bind(),
-                        workspace,
-                    })?;
+                    self.get_rsync_actor(cx).await?.send(
+                        cx,
+                        RsyncMessage {
+                            connect,
+                            result: tx.bind(),
+                            workspace,
+                        },
+                    )?;
                     // Observe any errors.
                     let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
                 }
@@ -291,14 +294,15 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                     // Forward rsync connection port to the RsyncActor, which will do the actual
                     // connection and run the client.
                     let (tx, mut rx) = cx.open_port::<Result<CondaSyncResult, String>>();
-                    self.get_conda_sync_actor(cx)
-                        .await?
-                        .send(CondaSyncMessage {
+                    self.get_conda_sync_actor(cx).await?.send(
+                        cx,
+                        CondaSyncMessage {
                             connect,
                             result: tx.bind(),
                             workspace,
                             path_prefix_replacements,
-                        })?;
+                        },
+                    )?;
                     // Observe any errors.
                     let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
                 }
@@ -383,7 +387,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             let (tx, mut rx) = cx.open_port();
             self.get_auto_reload_actor(cx)
                 .await?
-                .send(AutoReloadMessage { result: tx.bind() })?;
+                .send(cx, AutoReloadMessage { result: tx.bind() })?;
             rx.recv().await?.map_err(anyhow::Error::msg)?;
             anyhow::Ok(())
         }
