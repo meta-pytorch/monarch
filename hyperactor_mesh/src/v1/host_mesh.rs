@@ -19,7 +19,7 @@ use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
 
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 
 pub mod mesh_agent;
 
@@ -384,7 +384,7 @@ impl HostMesh {
         bootstrap_params: Option<BootstrapCommand>,
     ) -> v1::Result<Self>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         Self::allocate_inner(cx, alloc, Name::new(name)?, bootstrap_params).await
     }
@@ -398,7 +398,7 @@ impl HostMesh {
         bootstrap_params: Option<BootstrapCommand>,
     ) -> v1::Result<Self>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Attempt");
         let transport = alloc.transport();
@@ -788,7 +788,7 @@ impl HostMeshRef {
         per_host: Extent,
     ) -> v1::Result<ProcMesh>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         self.spawn_inner(cx, Name::new(name)?, per_host).await
     }
@@ -801,7 +801,7 @@ impl HostMeshRef {
         per_host: Extent,
     ) -> v1::Result<ProcMesh>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
@@ -826,7 +826,7 @@ impl HostMeshRef {
         per_host: Extent,
     ) -> v1::Result<ProcMesh>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
         let host_labels = self.region.labels().iter().collect::<HashSet<_>>();

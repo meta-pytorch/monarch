@@ -28,7 +28,7 @@ use hyperactor_mesh::proc_mesh::global_root_client;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellPool;
 use hyperactor_mesh::shared_cell::SharedCellRef;
-use hyperactor_mesh::supervision::SupervisionFailureMessage;
+use hyperactor_mesh::supervision::MeshFailure;
 use monarch_types::PickledPyObject;
 use ndslice::Shape;
 use pyo3::IntoPyObjectExt;
@@ -95,7 +95,7 @@ impl TrackedProcMesh {
         params: &A::Params,
     ) -> Result<SharedCell<RootActorMesh<'static, A>>, anyhow::Error>
     where
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         let mesh = self.cell.borrow()?;
         let actor = mesh.spawn(cx, actor_name, params).await?;

@@ -144,11 +144,14 @@ impl LoggingMeshClient {
         let (version_tx, version_rx) = cx.instance().open_once_port::<u64>();
 
         // First initialize a sync flush.
-        client_actor.send(LogClientMessage::StartSyncFlush {
-            expected_procs: forwarder_mesh.region().num_ranks(),
-            reply: reply_tx.bind(),
-            version: version_tx.bind(),
-        })?;
+        client_actor.send(
+            cx,
+            LogClientMessage::StartSyncFlush {
+                expected_procs: forwarder_mesh.region().num_ranks(),
+                reply: reply_tx.bind(),
+                version: version_tx.bind(),
+            },
+        )?;
 
         let version = version_rx.recv().await?;
 
@@ -320,9 +323,12 @@ impl LoggingMeshClient {
 
         // Always update the client actor's aggregation window.
         self.client_actor
-            .send(LogClientMessage::SetAggregate {
-                aggregate_window_sec,
-            })
+            .send(
+                instance.deref(),
+                LogClientMessage::SetAggregate {
+                    aggregate_window_sec,
+                },
+            )
             .map_err(anyhow::Error::msg)?;
 
         Ok(())

@@ -53,18 +53,14 @@ match reference {
 ```rust
 impl Reference {
     pub fn is_prefix_of(&self, other: &Reference) -> bool;
-    pub fn world_id(&self) -> &WorldId;
+    pub fn world_id(&self) -> Option<&WorldId>;
     pub fn proc_id(&self) -> Option<&ProcId>;
     pub fn actor_id(&self) -> Option<&ActorId>;
-    pub fn actor_name(&self) -> Option<&str>;
-    pub fn pid(&self) -> Option<usize>;
-    pub fn port(&self) -> Option<u64>;
 }
 ```
 - `.is_prefix_of(other)` checks whether one reference is a prefix of another (e.g., `WorldId` -> `ProcId` -> `ActorId`).
-- `.world_id()` returns the reference’s associated world.
+- `.world_id()` returns the reference's associated world, if any.
 - `.proc_id()` and `.actor_id()` return their corresponding IDs if applicable.
-- `.actor_name()`, `.pid()`, and `.port()` expose reference components across variants.
 
 ## Ordering
 
