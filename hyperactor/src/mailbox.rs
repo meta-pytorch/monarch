@@ -300,7 +300,7 @@ impl MessageEnvelope {
 
     /// Deserialize the message in the envelope to the provided type T.
     pub fn deserialized<T: DeserializeOwned + Named>(&self) -> Result<T, anyhow::Error> {
-        self.data.deserialized()
+        Ok(self.data.deserialized()?)
     }
 
     /// The serialized message.
@@ -2082,7 +2082,7 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
                 data: serialized,
                 error: MailboxSenderError::new_bound(
                     self.port_id.clone(),
-                    MailboxSenderErrorKind::Deserialize(M::typename(), err),
+                    MailboxSenderErrorKind::Deserialize(M::typename(), err.into()),
                 ),
                 headers,
             }),
@@ -2164,7 +2164,7 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
                 data: serialized,
                 error: MailboxSenderError::new_bound(
                     self.port_id.clone(),
-                    MailboxSenderErrorKind::Deserialize(M::typename(), err),
+                    MailboxSenderErrorKind::Deserialize(M::typename(), err.into()),
                 ),
                 headers,
             }),
