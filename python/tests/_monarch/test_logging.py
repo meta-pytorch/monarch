@@ -86,8 +86,13 @@ class LoggingManagerTest(TestCase):
         mock_future_instance.get.assert_called_once_with(timeout=3)
 
     @patch("monarch._src.actor.logging.Future")
-    def test_flush_handles_exception_gracefully(self, mock_future: Mock) -> None:
-        # Setup: mock client and Future that raises exception
+    @patch("monarch._src.actor.logging.context")
+    def test_flush_handles_exception_gracefully(
+        self, mock_context: Mock, mock_future: Mock
+    ) -> None:
+        # Setup: mock context, client, and Future that raises exception
+        mock_instance = Mock()
+        mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
         mock_client = Mock()
         self.logging_manager._logging_mesh_client = mock_client
 

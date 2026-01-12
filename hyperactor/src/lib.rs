@@ -92,16 +92,25 @@ pub mod sync;
 pub mod test_utils;
 pub mod time;
 
+/// Re-exports of external crates used by hyperactor_macros codegen.
+/// This module is not part of the public API and should not be used directly.
+#[doc(hidden)]
+pub mod internal_macro_support {
+    pub use anyhow;
+    pub use async_trait;
+    pub use inventory;
+    pub use opentelemetry;
+    pub use paste::paste;
+    pub use serde_json;
+    pub use tracing;
+    pub use typeuri;
+}
+
 pub use actor::Actor;
 pub use actor::ActorHandle;
 pub use actor::Handler;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
-// Re-export public dependencies of hyperactor_macros codegen.
-#[doc(hidden)]
-pub use anyhow;
-#[doc(hidden)]
-pub use async_trait;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]
@@ -136,19 +145,12 @@ pub use init::initialize;
 pub use init::initialize_with_current_runtime;
 #[doc(inline)]
 pub use init::initialize_with_log_prefix;
-#[doc(hidden)]
-pub use inventory; // For remote! macro
 pub use mailbox::Data;
 pub use mailbox::Mailbox;
 pub use mailbox::Message;
 pub use mailbox::OncePortHandle;
 pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
-// Re-exported to support opentelemetry in hyperactor_macros codegen.
-#[doc(hidden)]
-pub use opentelemetry;
-#[doc(hidden)]
-pub use paste::paste;
 pub use proc::Context;
 pub use proc::Instance;
 pub use proc::Proc;
@@ -161,9 +163,6 @@ pub use reference::PortId;
 pub use reference::PortRef;
 pub use reference::ProcId;
 pub use reference::WorldId;
-// Re-exported to support tracing in hyperactor_macros codegen.
-#[doc(hidden)]
-pub use serde_json;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
 #[doc(inline)]
@@ -178,11 +177,6 @@ pub use signal_handler::register_signal_cleanup_scoped;
 pub use signal_handler::sigpipe_disposition;
 #[doc(inline)]
 pub use signal_handler::unregister_signal_cleanup;
-// Re-exported to support tracing in hyperactor_macros codegen.
-#[doc(hidden)]
-pub use tracing;
-#[doc(hidden)]
-pub use typeuri; // For declare_attrs! macro
 
 mod private {
     /// Public trait in a private module for sealing traits within this crate:
