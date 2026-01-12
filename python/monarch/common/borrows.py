@@ -70,9 +70,9 @@ class StorageAliases:
     def borrow_from(
         self, id: int, mesh: "DeviceMesh", f: "StorageAliases", mutable: bool
     ):
-        assert (
-            self.borrowed_from is None
-        ), "we should have created a new storage with no borrows"
+        assert self.borrowed_from is None, (
+            "we should have created a new storage with no borrows"
+        )
         if mutable:
             if "w" not in f.access:
                 raise RuntimeError(

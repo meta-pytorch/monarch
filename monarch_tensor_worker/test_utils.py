@@ -82,7 +82,8 @@ def test_remote_process_group(group: torch.distributed.ProcessGroup) -> None:
     # This function is used inside a rust test that does torch.distributed ops with multiple
     # workers in the same process, which behaves weirdly with rank assignment. So we can't use
     # worker rank to assert a specific output.
-    assert (
-        output_tensor.cpu().equal(torch.tensor([0, 2]))
-        or output_tensor.cpu().equal(torch.tensor([4, 6]))
-    ), f"Expected {output_tensor.cpu()} to equal {torch.tensor([0, 2])} or {torch.tensor([4, 6])}"
+    assert output_tensor.cpu().equal(torch.tensor([0, 2])) or output_tensor.cpu().equal(
+        torch.tensor([4, 6])
+    ), (
+        f"Expected {output_tensor.cpu()} to equal {torch.tensor([0, 2])} or {torch.tensor([4, 6])}"
+    )

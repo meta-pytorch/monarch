@@ -7,7 +7,6 @@
 
 # pyre-strict
 import warnings
-
 from typing import Optional
 
 from monarch.actor import ProcMesh

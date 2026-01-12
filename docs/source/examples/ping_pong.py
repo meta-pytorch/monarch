@@ -23,8 +23,6 @@ a generic interface for distributed computing. We'll cover:
 # distributed systems, it can be helpful to think of each Actor as a server with endpoints
 # that can be called.
 
-import asyncio
-
 from monarch.actor import Actor, current_rank, endpoint, this_host
 
 NUM_ACTORS = 4
@@ -35,38 +33,37 @@ class ToyActor(Actor):
         self.rank = current_rank().rank
 
     @endpoint
-    async def hello_world(self, msg):
+    def hello_world(self, msg):
         print(f"Identity: {self.rank}, {msg=}")
 
 
+# %%
 # Note: Meshes can be also be created on different nodes, but we're ignoring that in this example
-async def create_toy_actors():
-    local_proc_mesh = this_host().spawn_procs(per_host={"gpus": NUM_ACTORS})
-    # This spawns 4 instances of 'ToyActor'
-    toy_actor = local_proc_mesh.spawn("toy_actor", ToyActor)
-    return toy_actor, local_proc_mesh
+
+local_proc_mesh = this_host().spawn_procs(per_host={"gpus": NUM_ACTORS})
+# This spawns 4 instances of 'ToyActor'
+toy_actor = local_proc_mesh.spawn("toy_actor", ToyActor)
 
 
 # %%
 # Once actors are spawned, we can call all of them simultaneously with `Actor.endpoint.call`
-async def call_all_actors(toy_actor):
-    await toy_actor.hello_world.call("hey there, from script!!")
+
+toy_actor.hello_world.call("hey there, from script!!").get()
 
 
 # %%
 # We can also specify a single actor using the 'slice' API
-async def call_specific_actors(toy_actor):
-    futures = []
-    for idx in range(NUM_ACTORS):
-        actor_instance = toy_actor.slice(gpus=idx)
-        futures.append(
-            actor_instance.hello_world.call_one(
-                f"Here's an arbitrary unique value: {idx}"
-            )
-        )
 
-    # conveniently, we can still schedule & gather them in parallel using asyncio
-    await asyncio.gather(*futures)
+futures = []
+for idx in range(NUM_ACTORS):
+    actor_instance = toy_actor.slice(gpus=idx)
+    futures.append(
+        actor_instance.hello_world.call_one(f"Here's an arbitrary unique value: {idx}")
+    )
+
+# Wait for all futures to complete
+for fut in futures:
+    fut.get()
 
 
 # %%
@@ -81,75 +78,54 @@ class ExampleActor(Actor):
         self.actor_name = actor_name
 
     @endpoint
-    async def init(self, other_actor):
+    def init(self, other_actor):
         self.other_actor = other_actor
         self.other_actor_pair = other_actor.slice(**current_rank())
         self.identity = current_rank().rank
 
     @endpoint
-    async def send(self, msg):
-        await self.other_actor_pair.recv.call(
+    def send(self, msg):
+        self.other_actor_pair.recv.call(
             f"Sender ({self.actor_name}:{self.identity}) {msg=}"
-        )
+        ).get()
 
     @endpoint
-    async def recv(self, msg):
+    def recv(self, msg):
         print(f"Pong!, Receiver ({self.actor_name}:{self.identity}) received msg {msg}")
 
 
-async def create_ping_pong_actors():
-    # Spawn two different Actors in different meshes, with two instances each
-    local_mesh_0 = this_host().spawn_procs(per_host={"gpus": 2})
-    actor_0 = local_mesh_0.spawn(
-        "actor_0",
-        ExampleActor,
-        "actor_0",  # this arg is passed to ExampleActor.__init__
-    )
+# %%
+# Spawn two different Actors in different meshes, with two instances each
 
-    local_mesh_1 = this_host().spawn_procs(per_host={"gpus": 2})
-    actor_1 = local_mesh_1.spawn(
-        "actor_1",
-        ExampleActor,
-        "actor_1",  # this arg is passed to ExampleActor.__init__
-    )
+local_mesh_0 = this_host().spawn_procs(per_host={"gpus": 2})
+actor_0 = local_mesh_0.spawn(
+    "actor_0",
+    ExampleActor,
+    "actor_0",  # this arg is passed to ExampleActor.__init__
+)
 
-    return actor_0, actor_1, local_mesh_0, local_mesh_1
+local_mesh_1 = this_host().spawn_procs(per_host={"gpus": 2})
+actor_1 = local_mesh_1.spawn(
+    "actor_1",
+    ExampleActor,
+    "actor_1",  # this arg is passed to ExampleActor.__init__
+)
 
 
 # %%
 # Initialize each actor with references to each other
-async def init_ping_pong(actor_0, actor_1):
-    await asyncio.gather(
-        actor_0.init.call(actor_1),
-        actor_1.init.call(actor_0),
-    )
+
+actor_0.init.call(actor_1).get()
+actor_1.init.call(actor_0).get()
 
 
 # %%
 # Send messages between actors
-async def send_ping_pong(actor_0, actor_1):
-    # Actor 0 sends to Actor 1
-    await actor_0.send.call("Ping")
 
-    # Actor 1 sends to Actor 0
-    await actor_1.send.call("Ping")
+# Actor 0 sends to Actor 1
+actor_0.send.call("Ping").get()
 
+# Actor 1 sends to Actor 0
+actor_1.send.call("Ping").get()
 
-# %%
-# Main function to run the example
-async def main():
-    # Hello World example
-    toy_actor, toy_mesh = await create_toy_actors()
-    await call_all_actors(toy_actor)
-    await call_specific_actors(toy_actor)
-
-    # Ping Pong example
-    actor_0, actor_1, mesh_0, mesh_1 = await create_ping_pong_actors()
-    await init_ping_pong(actor_0, actor_1)
-    await send_ping_pong(actor_0, actor_1)
-
-    print("Example completed successfully!")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+print("Example completed successfully!")

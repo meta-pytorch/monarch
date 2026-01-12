@@ -72,11 +72,14 @@ class Logger(Actor):
 @pytest.mark.timeout(60)
 async def test_actor_logging_smoke() -> None:
     # Create temporary files to capture output.
-    with tempfile.NamedTemporaryFile(
-        mode="w+", delete=False, suffix="_stdout.log"
-    ) as stdout_file, tempfile.NamedTemporaryFile(
-        mode="w+", delete=False, suffix="_stderr.log"
-    ) as stderr_file:
+    with (
+        tempfile.NamedTemporaryFile(
+            mode="w+", delete=False, suffix="_stdout.log"
+        ) as stdout_file,
+        tempfile.NamedTemporaryFile(
+            mode="w+", delete=False, suffix="_stderr.log"
+        ) as stderr_file,
+    ):
         stdout_path = stdout_file.name
         stderr_path = stderr_file.name
 
@@ -106,18 +109,18 @@ async def test_actor_logging_smoke() -> None:
             stderr_content = f.read()
 
         # Assertions on the captured output.
-        assert re.search(
-            r"hello 1", stdout_content
-        ), f"Expected 'hello 1' in stdout: {stdout_content}"
-        assert re.search(
-            r"hello 2", stdout_content
-        ), f"Expected 'hello 2' in stdout: {stdout_content}"
-        assert re.search(
-            r"hello 3", stderr_content
-        ), f"Expected 'hello 3' in stderr: {stderr_content}"
-        assert re.search(
-            r"\[actor=.*Logger.*\]", stdout_content
-        ), f"Expected actor prefix in stdout: {stdout_content}"
+        assert re.search(r"hello 1", stdout_content), (
+            f"Expected 'hello 1' in stdout: {stdout_content}"
+        )
+        assert re.search(r"hello 2", stdout_content), (
+            f"Expected 'hello 2' in stdout: {stdout_content}"
+        )
+        assert re.search(r"hello 3", stderr_content), (
+            f"Expected 'hello 3' in stderr: {stderr_content}"
+        )
+        assert re.search(r"\[actor=.*Logger.*\]", stdout_content), (
+            f"Expected actor prefix in stdout: {stdout_content}"
+        )
 
         await pm.stop()
 
