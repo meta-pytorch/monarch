@@ -340,6 +340,7 @@ def test_proc_mesh_bootstrap_error():
     )
 
 
+@pytest.mark.oss_skip
 @pytest.mark.parametrize("raise_on_getstate", [True, False])
 @pytest.mark.parametrize("raise_on_setstate", [True, False])
 @pytest.mark.parametrize("num_procs", [1, 2])
