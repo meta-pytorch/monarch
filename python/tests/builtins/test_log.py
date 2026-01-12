@@ -9,7 +9,6 @@ import logging
 from unittest.mock import patch
 
 import pytest
-
 from monarch._testing import TestingContext
 from monarch.builtins.log import log_remote, set_logging_level_remote
 

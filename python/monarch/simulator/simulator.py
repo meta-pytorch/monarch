@@ -38,7 +38,6 @@ from typing import (
 )
 
 import numpy as np
-
 import torch
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
@@ -1060,11 +1059,10 @@ class SimulatorInterface:
         Watch for popup blockers.
         """
         sim = self._ctrl.simulator
-        with tempfile.NamedTemporaryFile(
-            suffix=".json", delete=False
-        ) as json_file, tempfile.NamedTemporaryFile(
-            suffix=".pkl", delete=False
-        ) as memory_pkl:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".json", delete=False) as json_file,
+            tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as memory_pkl,
+        ):
             sim._report(trace_path=json_file.name, memory_view_path=memory_pkl.name)
             self._display_trace(json_file.name, memory_pkl.name)
 
