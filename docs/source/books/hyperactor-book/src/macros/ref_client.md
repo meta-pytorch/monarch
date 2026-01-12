@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use hyperactor::{
     ActorRef,
     anyhow::Error,
-    cap::{CanSend, CanOpenPort},
+    context::Actor,
     mailbox::open_once_port,
     metrics,
     Message,
@@ -32,30 +32,30 @@ impl<T> ShoppingListClient for ActorRef<T>
 where
     T: ShoppingListHandler + Send + Sync + 'static,
 {
-    async fn add(&self, caps: &impl CanSend, item: String) -> Result<(), Error> {
-        self.send(caps, ShoppingList::Add(item)).await
+    async fn add(&self, cx: &impl Actor, item: String) -> Result<(), Error> {
+        self.send(cx, ShoppingList::Add(item)).await
     }
 
-    async fn remove(&self, caps: &impl CanSend, item: String) -> Result<(), Error> {
-        self.send(caps, ShoppingList::Remove(item)).await
+    async fn remove(&self, cx: &impl Actor, item: String) -> Result<(), Error> {
+        self.send(cx, ShoppingList::Remove(item)).await
     }
 
     async fn exists(
         &self,
-        caps: &impl CanSend + CanOpenPort,
+        cx: &impl Actor,
         item: String,
     ) -> Result<bool, Error> {
-        let (reply_to, recv) = open_once_port(caps)?;
-        self.send(caps, ShoppingList::Exists(item, reply_to)).await?;
+        let (reply_to, recv) = open_once_port(cx)?;
+        self.send(cx, ShoppingList::Exists(item, reply_to)).await?;
         Ok(recv.await?)
     }
 
     async fn list(
         &self,
-        caps: &impl CanSend + CanOpenPort,
+        cx: &impl Actor,
     ) -> Result<Vec<String>, Error> {
-        let (reply_to, recv) = open_once_port(caps)?;
-        self.send(caps, ShoppingList::List(reply_to)).await?;
+        let (reply_to, recv) = open_once_port(cx)?;
+        self.send(cx, ShoppingList::List(reply_to)).await?;
         Ok(recv.await?)
     }
 }
