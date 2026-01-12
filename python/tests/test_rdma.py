@@ -177,9 +177,9 @@ async def test_rdma_buffer_drop():
 
     # Try to use the buffer after dropping - this should fail
     error_result = await consumer.test_buffer_after_drop.call_one(buffer)
-    assert error_result.startswith(
-        "EXPECTED_ERROR:"
-    ), f"Expected an error after drop, but got: {error_result}"
+    assert error_result.startswith("EXPECTED_ERROR:"), (
+        f"Expected an error after drop, but got: {error_result}"
+    )
 
     print(f"✓ Buffer operations failed after drop as expected: {error_result}")
 
@@ -230,9 +230,9 @@ class GeneratorActor(Actor):
         self.step += 1
         byte_tensor = self.generator.weight.data.view(torch.uint8).flatten()
         await self.handle.read_into(byte_tensor)
-        assert (
-            torch.sum(self.generator.weight.data) == self.step * 100
-        ), f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
+        assert torch.sum(self.generator.weight.data) == self.step * 100, (
+            f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
+        )
 
 
 @needs_rdma
@@ -354,16 +354,16 @@ async def test_rdma_concurrent_2gb_writes_in_order():
     expected_result = torch.full((num_elem,), 2.0, dtype=torch.float32)
 
     # Verify using torch.allclose
-    assert torch.allclose(
-        tensor_a_actual, expected_result
-    ), "tensor_a does not match expected 2.0s"
-    assert torch.allclose(
-        tensor_b_actual, expected_result
-    ), "tensor_b does not match expected 2.0s"
+    assert torch.allclose(tensor_a_actual, expected_result), (
+        "tensor_a does not match expected 2.0s"
+    )
+    assert torch.allclose(tensor_b_actual, expected_result), (
+        "tensor_b does not match expected 2.0s"
+    )
 
-    assert torch.allclose(
-        buffer_data_actual, expected_result
-    ), "RDMABuffer does not contain expected 2.0s"
+    assert torch.allclose(buffer_data_actual, expected_result), (
+        "RDMABuffer does not contain expected 2.0s"
+    )
 
     print("✓ Concurrent 2GB operations completed successfully")
 

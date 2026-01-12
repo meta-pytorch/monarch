@@ -18,9 +18,9 @@ class Referenceable:
         raise NotImplementedError("no delete_ref method")
 
     def __reduce_ex__(self, protocol):
-        assert (
-            self.ref is not None
-        ), f"{self} is being sent but does not have a reference"
+        assert self.ref is not None, (
+            f"{self} is being sent but does not have a reference"
+        )
         return Ref, (self.ref,)
 
     # Used by rust backend to get the ref for this object

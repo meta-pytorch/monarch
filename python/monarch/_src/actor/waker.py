@@ -44,7 +44,7 @@ class Event(abc.ABC):
             self._event_loop.add_reader(self._read_fd, notified)
         elif self._event_loop is not event_loop:
             raise RuntimeError(
-                "Event already associated with event loop {self._event_loop}"
+                f"Event already associated with event loop {self._event_loop}"
             )
 
         assert self._event is not None

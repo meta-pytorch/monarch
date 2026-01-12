@@ -26,14 +26,12 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-
 from monarch._src.actor.allocator import LocalAllocator
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
-
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     PortReceiver,

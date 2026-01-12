@@ -262,7 +262,9 @@ impl Actor for FailingCreateTestActor {}
 impl hyperactor::RemoteSpawn for FailingCreateTestActor {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> Result<Self, hyperactor::anyhow::Error> {
+    async fn new(
+        _params: Self::Params,
+    ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Err(anyhow::anyhow!("test failure"))
     }
 }
@@ -331,7 +333,7 @@ impl hyperactor::RemoteSpawn for WrapperActor {
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
-    ) -> Result<Self, hyperactor::anyhow::Error> {
+    ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Ok(Self {
             proc_mesh,
             mesh: None,

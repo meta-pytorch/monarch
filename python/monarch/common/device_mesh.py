@@ -7,7 +7,6 @@
 # pyre-unsafe
 
 import logging
-
 import warnings
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -29,7 +28,6 @@ from typing import (
 import monarch.common.messages as messages
 import torch
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
-
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
 from torch.utils.weak import weakref
@@ -212,7 +210,7 @@ class DeviceMesh(Referenceable, MeshTrait):
             gpus_per_host = self.client.gpu_per_host
 
             def format_data(x):
-                return f"{x//gpus_per_host}.gpu[{x%gpus_per_host}]"
+                return f"{x // gpus_per_host}.gpu[{x % gpus_per_host}]"
 
             return tensor_to_table(
                 tensor, format_data=format_data, axis_names=names, axis_labels=labels
