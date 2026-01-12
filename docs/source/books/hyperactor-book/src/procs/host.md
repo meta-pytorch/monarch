@@ -41,6 +41,7 @@ pub struct Host<M> {
     router: DialMailboxRouter,
     manager: M,
     service_proc: Proc,
+    local_proc: Proc,
     frontend_rx: Option<ChannelRx<MessageEnvelope>>,
 }
 ```
@@ -53,6 +54,7 @@ pub struct Host<M> {
 - `router`: A [`DialMailboxRouter`](../mailboxes/routers.md#dialmailboxrouter-remote-and-serializable-routing) for prefix-based routing to spawned procs
 - `manager`: A `ProcManager` implementation that handles proc lifecycle
 - `service_proc`: The host's local proc for system-level actors
+- `local_proc`: The host's local proc for user-level actors
 - `frontend_rx`: Channel receiver for external connections (consumed during startup)
 
 ## Creating a Host
@@ -75,6 +77,12 @@ impl<M: ProcManager> Host<M> {
         );
         let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
 
+        let local_proc_id = ProcId::Direct(
+            frontend_addr.clone(),
+            "local".to_string()
+        );
+        let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
+
         let host = Host {
             procs: HashSet::new(),
             frontend_addr,
@@ -82,6 +90,7 @@ impl<M: ProcManager> Host<M> {
             router,
             manager,
             service_proc,
+            local_proc,
             frontend_rx: Some(frontend_rx),
         };
 
@@ -116,10 +125,11 @@ The returned address is the **actual bound address** you can give to others to c
 
 See [Channel Addresses](../channels/addresses.md) and [Transmits and Receives](../channels/tx_rx.md) for more on channel semantics.
 
-### The Service Proc
+### The Service Proc and Local Proc
 
-The host creates a **service proc** identified by a `ProcId::Direct`:
+The host creates two procs identified by `ProcId::Direct`:
 
+**Service Proc:**
 ```rust
 let service_proc_id = ProcId::Direct(
     frontend_addr.clone(),
@@ -128,11 +138,21 @@ let service_proc_id = ProcId::Direct(
 let service_proc = Proc::new(service_proc_id, router.boxed());
 ```
 
-This proc:
-- Lives within the host process
-- Uses `ProcId::Direct(frontend_addr, "service")` as its identity
-- Forwards outbound messages through the `DialMailboxRouter`
-- Hosts system-level actors that manage proc lifecycle and coordination
+**Local Proc:**
+```rust
+let local_proc_id = ProcId::Direct(
+    frontend_addr.clone(),
+    "local".to_string()
+);
+let local_proc = Proc::new(local_proc_id, router.boxed());
+```
+
+Both procs:
+- Live within the host process
+- Use `ProcId::Direct(frontend_addr, name)` as their identity
+- Forward outbound messages through the `DialMailboxRouter`
+- The service proc hosts system-level actors that manage proc lifecycle and coordination
+- The local proc hosts user-level actors
 
 See [`ProcId` variants](../references/proc_id.md) for the distinction between `Ranked` and `Direct` addressing.
 
@@ -155,7 +175,8 @@ Some(self.forwarder().serve(self.frontend_rx.take()?))
 ```text
 frontend_rx (external connections)    ──┐
                                         ├──> serve() ──> ProcOrDial   ──┬──> service proc
-backend_rx (from spawned procs)       ──┘                               └──> DialMailboxRouter
+backend_rx (from spawned procs)       ──┘                               ├──> local proc
+                                                                        └──> DialMailboxRouter
                                                                              │
                                                                              └──> looks up proc by name
                                                                                   └──> dials backend addr
@@ -163,9 +184,9 @@ backend_rx (from spawned procs)       ──┘                               �
 
 Both receivers feed into the same `ProcOrDial` router, creating bidirectional routing:
 
-- **Inbound (frontend)**: External → ProcOrDial → either service proc or spawned proc
-- **Inbound (backend)**: Spawned procs → ProcOrDial → either service proc or other spawned procs
-- **Outbound (from service proc)**: `service_proc.forwarder` = DialMailboxRouter → spawned procs
+- **Inbound (frontend)**: External → ProcOrDial → service proc or local proc or spawned proc
+- **Inbound (backend)**: Spawned procs → ProcOrDial → service proc or local proc or other spawned procs
+- **Outbound (from service proc or local proc)**: `service_proc.forwarder` / `local_proc.forwarder` = DialMailboxRouter → spawned procs
 
 See [`MailboxServer::serve()`](../mailboxes/mailbox_server.md) for how receivers are bridged to routers.
 

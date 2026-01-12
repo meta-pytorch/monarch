@@ -730,7 +730,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &mut self,
                         cx: &hyperactor::Context<Self>,
                         #(#arg_names: #arg_types),*)
-                        -> Result<#return_type, hyperactor::anyhow::Error>;
+                        -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 client_trait_methods.push(quote! {
@@ -739,14 +739,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<#return_type, hyperactor::anyhow::Error>;
+                        -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<#return_type, hyperactor::anyhow::Error>;
+                        -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 let (reply_port_arg, _) = message.reply_port_arg().unwrap();
@@ -760,7 +760,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                             // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
                             // This would require Result<Result<..., in order to handle RPC errors.
                             #construct_result_future
-                            #reply_port_arg.send(#result_ident).map_err(hyperactor::anyhow::Error::from)
+                            #reply_port_arg.send(#result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
                     });
                 } else {
@@ -770,7 +770,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                             // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
                             // This would require Result<Result<..., in order to handle RPC errors.
                             #construct_result_future
-                            #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::anyhow::Error::from)
+                            #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
                     });
                 }
@@ -804,7 +804,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &mut self,
                         cx: &hyperactor::Context<Self>,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error>;
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 client_trait_methods.push(quote! {
@@ -813,14 +813,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error>;
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error>;
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 let constructor = variant.constructor();
@@ -857,7 +857,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #[doc = "The custom handler trait for this message type."]
-        #[hyperactor::async_trait::async_trait]
+        #[hyperactor::internal_macro_support::async_trait::async_trait]
         pub trait #handler_trait_name #handler_impl_generics: hyperactor::Actor + Send + Sync  {
             #(#handler_trait_methods)*
 
@@ -866,7 +866,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 &mut self,
                 cx: &hyperactor::Context<Self>,
                 message: #name #ty_generics,
-            ) -> hyperactor::anyhow::Result<()>  {
+            ) -> hyperactor::internal_macro_support::anyhow::Result<()>  {
                  // Dispatch based on message type.
                  match message {
                      #(#match_arms)*
@@ -875,7 +875,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
         }
 
         #[doc = "The custom client trait for this message type."]
-        #[hyperactor::async_trait::async_trait]
+        #[hyperactor::internal_macro_support::async_trait::async_trait]
         pub trait #client_trait_name #client_impl_generics: Send + Sync  {
             #(#client_trait_methods)*
         }
@@ -910,11 +910,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     // The client implementation methods.
     let mut impl_methods = Vec::new();
 
-    let send_message = if is_handle {
-        quote! { self.send(message)? }
-    } else {
-        quote! { self.send(cx, message)? }
-    };
+    let send_message = quote! { self.send(cx, message)? };
     let global_log_level = parse_log_level(&input.attrs).ok().unwrap_or(None);
 
     for message in &messages {
@@ -965,13 +961,13 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
 
                         #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
@@ -979,13 +975,13 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
                     });
                 } else {
@@ -995,14 +991,14 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let #reply_port_arg = #reply_port_arg.bind();
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
 
                         #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
@@ -1010,14 +1006,14 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let #reply_port_arg = #reply_port_arg.bind();
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
                     });
                 }
@@ -1056,7 +1052,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error> {
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error> {
                         let message = #constructor;
                         #log_message;
                         #send_message;
@@ -1067,7 +1063,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error> {
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error> {
                         let message = #constructor;
                         #log_message;
                         #send_message;
@@ -1115,7 +1111,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
 
     let expanded = if is_handle {
         quote! {
-            #[hyperactor::async_trait::async_trait]
+            #[hyperactor::internal_macro_support::async_trait::async_trait]
             impl #impl_generics #trait_name #ty_generics for hyperactor::ActorHandle<#actor_ident>
               where #actor_ident: hyperactor::Handler<#name #ty_generics> {
                 #(#impl_methods)*
@@ -1123,7 +1119,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
         }
     } else {
         quote! {
-            #[hyperactor::async_trait::async_trait]
+            #[hyperactor::internal_macro_support::async_trait::async_trait]
             impl #impl_generics #trait_name #ty_generics for hyperactor::ActorRef<#actor_ident>
               where #actor_ident: hyperactor::actor::RemoteHandles<#name #ty_generics> {
                 #(#impl_methods)*
@@ -1179,13 +1175,13 @@ pub fn forward(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input
 
-        #[hyperactor::async_trait::async_trait]
+        #[hyperactor::internal_macro_support::async_trait::async_trait]
         impl hyperactor::Handler<#message_type> for #self_type {
             async fn handle(
                 &mut self,
                 cx: &hyperactor::Context<Self>,
                 message: #message_type,
-            ) -> hyperactor::anyhow::Result<()> {
+            ) -> hyperactor::internal_macro_support::anyhow::Result<()> {
                 <Self as #trait_name>::handle(self, cx, message).await
             }
         }
@@ -1212,7 +1208,7 @@ pub fn instrument(args: TokenStream, input: TokenStream) -> TokenStream {
         parse_macro_input!(args with Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated);
     let input = parse_macro_input!(input as ItemFn);
     let output = quote! {
-        #[hyperactor::tracing::instrument(err, skip_all, #args)]
+        #[hyperactor::internal_macro_support::tracing::instrument(err, skip_all, #args)]
         #input
     };
 
@@ -1236,7 +1232,7 @@ pub fn instrument_infallible(args: TokenStream, input: TokenStream) -> TokenStre
     let input = parse_macro_input!(input as ItemFn);
 
     let output = quote! {
-        #[hyperactor::tracing::instrument(skip_all, #args)]
+        #[hyperactor::internal_macro_support::tracing::instrument(skip_all, #args)]
         #input
     };
 
