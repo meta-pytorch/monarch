@@ -13,7 +13,7 @@
 //!
 //! The approach does not add overhead in uncontended scenarios:
 //!
-//! ```
+//! ```ignore
 //!   | Approach             | Mean   | Notes                           |
 //!   |----------------------|--------|---------------------------------|
 //!   | FD-based             | ~48 µs | No GIL acquisition on Rust side |

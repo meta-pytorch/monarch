@@ -25,9 +25,9 @@ def setup_torch_elastic_env(
     If master_addr and master_port are None, it will automatically select a master node and port.
     It selects the first proc in the proc_mesh to be the master node.
     """
-    assert (
-        (master_addr is None) == (master_port is None)
-    ), "Either both master_addr and master_port must be specified or neither must be specified."
+    assert (master_addr is None) == (master_port is None), (
+        "Either both master_addr and master_port must be specified or neither must be specified."
+    )
     am = proc_mesh.spawn("_SPMDActor", SPMDActor)
     if master_addr is None:
         # Select the first actor (all coordinates = 0) to get the master host/port
@@ -51,9 +51,9 @@ async def setup_torch_elastic_env_async(
     If master_addr and master_port are None, it will automatically select a master node and port.
     It selects the first proc in the proc_mesh to be the master node.
     """
-    assert (
-        (master_addr is None) == (master_port is None)
-    ), "Either both master_addr and master_port must be specified or neither must be specified."
+    assert (master_addr is None) == (master_port is None), (
+        "Either both master_addr and master_port must be specified or neither must be specified."
+    )
     am = proc_mesh.spawn("_SPMDActor", SPMDActor)
     if master_addr is None:
         # Select the first actor (all coordinates = 0) to get the master host/port

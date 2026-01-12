@@ -22,7 +22,6 @@ from typing import (
 
 from monarch._rust_bindings.monarch_extension import tensor_worker
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
-
 from monarch._src.actor.shape import NDSlice
 from monarch.common.function import ResolvableFromCloudpickle, ResolvableFunction
 from monarch.common.invocation import DeviceException, RemoteException

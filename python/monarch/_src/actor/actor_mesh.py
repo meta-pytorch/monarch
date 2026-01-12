@@ -16,9 +16,7 @@ import logging
 import threading
 import warnings
 from abc import abstractproperty
-
 from dataclasses import dataclass
-
 from functools import cache
 from pprint import pformat
 from textwrap import indent
@@ -102,7 +100,6 @@ from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
-
 from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer

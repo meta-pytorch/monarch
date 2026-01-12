@@ -8,6 +8,7 @@
 
 use std::error::Error;
 use std::future::pending;
+use std::ops::Deref;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -216,7 +217,7 @@ impl PythonMessage {
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
-                broker.send(LocalStateBrokerMessage::Get(id, send))?;
+                broker.send(cx, LocalStateBrokerMessage::Get(id, send))?;
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
                 Python::with_gil(|py| {
@@ -362,10 +363,9 @@ pub(super) struct PythonActorHandle {
 #[pymethods]
 impl PythonActorHandle {
     // TODO: do the pickling in rust
-    // TODO(pzhang) Use instance after its required by PortHandle.
-    fn send(&self, _instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
+    fn send(&self, instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
         self.inner
-            .send(message.clone())
+            .send(instance.deref(), message.clone())
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
         Ok(())
     }
@@ -513,9 +513,11 @@ impl PythonActor {
             .set(client)
             .map_err(|_| "already initialized root client instance")
             .unwrap();
+        let instance = root_client_instance.get().unwrap();
 
         handle
             .send(
+                instance,
                 PythonMessage::new(
                     PythonMessageKind::CallMethod {
                         name: MethodSpecifier::Init {},
@@ -531,8 +533,6 @@ impl PythonActor {
         // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
         // are bound.
         let _client_ref = handle.bind::<PythonActor>();
-
-        let instance = root_client_instance.get().unwrap();
 
         get_tokio_runtime().spawn(async move {
             // This is gross. Sorry.

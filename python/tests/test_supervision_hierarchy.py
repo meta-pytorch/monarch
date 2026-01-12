@@ -89,9 +89,9 @@ class FaultCapture:
 
     def assert_fault_occurred(self, pattern: Optional[str] = None):
         """Assert that a fault was captured, optionally checking the message."""
-        assert (
-            self.captured_failure is not None
-        ), "Expected a fault to be captured, but none occurred"
+        assert self.captured_failure is not None, (
+            "Expected a fault to be captured, but none occurred"
+        )
         if pattern:
             report = self.captured_failure.report()
             assert re.search(pattern, report), (
