@@ -51,7 +51,7 @@ use crate::comm::multicast;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::reference::ActorMeshId;
 use crate::resource;
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
 use crate::v1;
 use crate::v1::Error;
@@ -186,21 +186,20 @@ impl<A: Referable> ActorMesh<A> {
             }?;
             // Update health state with the new statuses.
             let mut health_state = self.health_state.lock().expect("lock poisoned");
-            health_state.unhealthy_event =
-                Some(Unhealthy::StreamClosed(SupervisionFailureMessage {
-                    actor_mesh_name: Some(self.name().to_string()),
-                    rank: None,
-                    event: ActorSupervisionEvent::new(
-                        // Use an actor id from the mesh.
-                        ndslice::view::Ranked::get(&self.current_ref, 0)
-                            .unwrap()
-                            .actor_id()
-                            .clone(),
-                        None,
-                        ActorStatus::Stopped,
-                        None,
-                    ),
-                }));
+            health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
+                actor_mesh_name: Some(self.name().to_string()),
+                rank: None,
+                event: ActorSupervisionEvent::new(
+                    // Use an actor id from the mesh.
+                    ndslice::view::Ranked::get(&self.current_ref, 0)
+                        .unwrap()
+                        .actor_id()
+                        .clone(),
+                    None,
+                    ActorStatus::Stopped,
+                    None,
+                ),
+            }));
         }
         // Also take the controller from the ref, since that is used for
         // some operations.
@@ -356,11 +355,8 @@ pub struct ActorMeshRef<A: Referable> {
     /// Shared cloneable receiver for supervision events, used by next_supervision_event.
     /// Not a OnceCell since we need mutable borrows for "watch::Receiver::wait_for"
     /// mutable borrows of OnceCell are an unstable library feature.
-    receiver: Arc<
-        tokio::sync::Mutex<
-            Option<watch::Receiver<MessageOrFailure<Option<SupervisionFailureMessage>>>>,
-        >,
-    >,
+    receiver:
+        Arc<tokio::sync::Mutex<Option<watch::Receiver<MessageOrFailure<Option<MeshFailure>>>>>>,
     /// Lazily allocated collection of pages:
     /// - The outer `OnceCell` defers creating the vector until first
     ///   use.
@@ -632,7 +628,7 @@ impl<A: Referable> ActorMeshRef<A> {
     fn init_supervision_receiver(
         controller: &ActorRef<ActorMeshController<A>>,
         cx: &impl context::Actor,
-    ) -> watch::Receiver<MessageOrFailure<Option<SupervisionFailureMessage>>> {
+    ) -> watch::Receiver<MessageOrFailure<Option<MeshFailure>>> {
         let (tx, rx) = cx.mailbox().open_port();
         controller
             .send(cx, Subscribe(tx.bind()))
@@ -649,7 +645,7 @@ impl<A: Referable> ActorMeshRef<A> {
     pub async fn next_supervision_event(
         &self,
         cx: &impl context::Actor,
-    ) -> Result<SupervisionFailureMessage, anyhow::Error> {
+    ) -> Result<MeshFailure, anyhow::Error> {
         let controller = if let Some(c) = self.controller() {
             c
         } else {
@@ -694,16 +690,14 @@ impl<A: Referable> ActorMeshRef<A> {
                 .await?;
             let message = message.clone();
             match message {
-                MessageOrFailure::Message(message) => {
-                    Ok::<SupervisionFailureMessage, anyhow::Error>(
-                        message.expect("filter excludes any None messages"),
-                    )
-                }
+                MessageOrFailure::Message(message) => Ok::<MeshFailure, anyhow::Error>(
+                    message.expect("filter excludes any None messages"),
+                ),
                 MessageOrFailure::Failure(failure) => Err(anyhow::anyhow!("{}", failure)),
                 MessageOrFailure::Timeout => {
                     // Treat timeout from controller as a supervision failure,
                     // the controller is unreachable.
-                    Ok(SupervisionFailureMessage {
+                    Ok(MeshFailure {
                         actor_mesh_name: Some(self.name().to_string()),
                         rank: None,
                         event: ActorSupervisionEvent::new(
@@ -862,7 +856,7 @@ mod tests {
     use tokio::time::Duration;
 
     use super::ActorMesh;
-    use crate::supervision::SupervisionFailureMessage;
+    use crate::supervision::MeshFailure;
     use crate::v1::ActorMeshRef;
     use crate::v1::Name;
     use crate::v1::ProcMesh;
@@ -984,15 +978,14 @@ mod tests {
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<SupervisionFailureMessage>();
+        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        // Need to use a wrapper as there's no way to customize the handler for SupervisionFailureMessage
+        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
         // on the client instance. The client would just panic with the message.
         let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
             .spawn(
@@ -1023,8 +1016,7 @@ mod tests {
         // First test the ActorMeshRef got the event.
         // Use a NextSupervisionFailure message to get the event from the wrapper
         // actor.
-        let (failure_port, mut failure_receiver) =
-            instance.open_port::<Option<SupervisionFailureMessage>>();
+        let (failure_port, mut failure_receiver) = instance.open_port::<Option<MeshFailure>>();
         actor_mesh
             .cast(
                 instance,
@@ -1036,7 +1028,7 @@ mod tests {
             .await
             .unwrap()
             .expect("no supervision event found on ref from wrapper actor");
-        let check_failure = move |failure: SupervisionFailureMessage| {
+        let check_failure = move |failure: MeshFailure| {
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
             assert_eq!(
                 failure.event.actor_id.name(),
@@ -1074,8 +1066,7 @@ mod tests {
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<SupervisionFailureMessage>();
+        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
@@ -1084,7 +1075,7 @@ mod tests {
         let second_proc_mesh = &second_meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        // Need to use a wrapper as there's no way to customize the handler for SupervisionFailureMessage
+        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
         // on the client instance. The client would just panic with the message.
         let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
             .spawn(
@@ -1112,8 +1103,7 @@ mod tests {
             .unwrap();
 
         // Same drill as for panic, except this one is for process exit.
-        let (failure_port, mut failure_receiver) =
-            instance.open_port::<Option<SupervisionFailureMessage>>();
+        let (failure_port, mut failure_receiver) = instance.open_port::<Option<MeshFailure>>();
         actor_mesh
             .cast(
                 instance,
@@ -1126,7 +1116,7 @@ mod tests {
             .unwrap()
             .expect("no supervision event found on ref from wrapper actor");
 
-        let check_failure = move |failure: SupervisionFailureMessage| {
+        let check_failure = move |failure: MeshFailure| {
             // TODO: It can't find the real actor id, so it says the agent failed.
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
             assert_eq!(failure.event.actor_id.name(), "mesh");
@@ -1160,15 +1150,14 @@ mod tests {
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) =
-            instance.open_port::<SupervisionFailureMessage>();
+        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
         let child_name = Name::new("child").unwrap();
 
-        // Need to use a wrapper as there's no way to customize the handler for SupervisionFailureMessage
+        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
         // on the client instance. The client would just panic with the message.
         let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
             .spawn(

@@ -423,9 +423,9 @@ inventory::collect!(PythonConfigTypeInfo);
 /// usage is `declare_py_config_type!(PyBindSpec as BindSpec)`.
 macro_rules! declare_py_config_type {
     ($($ty:ty),+ $(,)?) => {
-        hyperactor::paste! {
+        hyperactor::internal_macro_support::paste! {
             $(
-                hyperactor::inventory::submit! {
+                hyperactor::internal_macro_support::inventory::submit! {
                     PythonConfigTypeInfo {
                         typehash: $ty::typehash,
                         set_runtime_config: |py, key, val| {
@@ -447,8 +447,8 @@ macro_rules! declare_py_config_type {
         }
     };
     ($py_ty:ty as $ty:ty) => {
-        hyperactor::paste! {
-            hyperactor::inventory::submit! {
+        hyperactor::internal_macro_support::paste! {
+            hyperactor::internal_macro_support::inventory::submit! {
                 PythonConfigTypeInfo {
                     typehash: $ty::typehash,
                     set_runtime_config: |py, key, val| {

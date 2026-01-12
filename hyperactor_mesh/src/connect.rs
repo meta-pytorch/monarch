@@ -430,10 +430,10 @@ mod tests {
     #[tokio::test]
     async fn test_simple_connection() -> Result<()> {
         let proc = Proc::local();
-        let (client, _client_handle) = proc.instance("client")?;
+        let (client, _) = proc.instance("client")?;
         let (connect, completer) = Connect::allocate(client.self_id().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
-        actor.send(connect)?;
+        actor.send(&completer.caps, connect)?;
         let (mut rd, mut wr) = completer.complete().await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];
         try_join!(
