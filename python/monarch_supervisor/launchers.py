@@ -19,7 +19,6 @@ import traceback
 from typing import Callable, Optional, Sequence, Tuple
 
 from . import Context, Host
-
 from .host import main
 from .logging import gethostname, initialize_logging
 from .python_executable import PYTHON_EXECUTABLE
