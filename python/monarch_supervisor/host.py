@@ -350,7 +350,7 @@ class Host:
                     self.heartbeat()
                 if t > supervisor_expiry:
                     self.abort(
-                        f"No messages from supervisor for {HEARTBEAT_INTERVAL*HEARTBEAT_LIVENESS} seconds, aborting."
+                        f"No messages from supervisor for {HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS} seconds, aborting."
                     )
                 if t > log_pstree_info_at:
                     log_pstree = subprocess.Popen(

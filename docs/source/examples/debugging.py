@@ -55,7 +55,7 @@ def _debugee_actor_internal(rank):
 
 class DebugeeActor(Actor):
     @endpoint
-    async def to_debug(self):
+    def to_debug(self):
         rank = current_rank().rank
         breakpoint()  # noqa
         return _debugee_actor_internal(rank)
