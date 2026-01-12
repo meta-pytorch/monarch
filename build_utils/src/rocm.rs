@@ -26,11 +26,26 @@ use std::path::Path;
 /// CUDA CU_* constants → HIP equivalents
 /// hipify_torch does not convert these constants in rdmaxcel_hip.cpp
 const CUDA_CONSTANT_REPLACEMENTS: &[(&str, &str)] = &[
-    ("CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD", "hipMemRangeHandleTypeDmaBufFd"),
-    ("CU_DEVICE_ATTRIBUTE_PCI_BUS_ID", "hipDeviceAttributePciBusId"),
-    ("CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID", "hipDeviceAttributePciDeviceId"),
-    ("CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID", "hipDeviceAttributePciDomainID"),
-    ("CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL", "HIP_POINTER_ATTRIBUTE_DEVICE_ORDINAL"),
+    (
+        "CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD",
+        "hipMemRangeHandleTypeDmaBufFd",
+    ),
+    (
+        "CU_DEVICE_ATTRIBUTE_PCI_BUS_ID",
+        "hipDeviceAttributePciBusId",
+    ),
+    (
+        "CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID",
+        "hipDeviceAttributePciDeviceId",
+    ),
+    (
+        "CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID",
+        "hipDeviceAttributePciDomainID",
+    ),
+    (
+        "CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL",
+        "HIP_POINTER_ATTRIBUTE_DEVICE_ORDINAL",
+    ),
     ("CUDA_SUCCESS", "hipSuccess"),
 ];
 
@@ -44,8 +59,14 @@ const CUDA_TYPE_REPLACEMENTS: &[(&str, &str)] = &[
 /// Macro entry replacements for driver_api_hip.cpp: _(cuXxx) → _(hipXxx)
 /// These are entries in the RDMAXCEL_CUDA_DRIVER_API macro for dlsym lookups
 const MACRO_ENTRY_REPLACEMENTS: &[(&str, &str)] = &[
-    ("_(cuMemGetHandleForAddressRange)", "_(hipMemGetHandleForAddressRange)"),
-    ("_(cuMemGetAllocationGranularity)", "_(hipMemGetAllocationGranularity)"),
+    (
+        "_(cuMemGetHandleForAddressRange)",
+        "_(hipMemGetHandleForAddressRange)",
+    ),
+    (
+        "_(cuMemGetAllocationGranularity)",
+        "_(hipMemGetAllocationGranularity)",
+    ),
     ("_(cuMemCreate)", "_(hipMemCreate)"),
     ("_(cuMemAddressReserve)", "_(hipMemAddressReserve)"),
     ("_(cuMemMap)", "_(hipMemMap)"),
@@ -70,8 +91,14 @@ const MACRO_ENTRY_REPLACEMENTS: &[(&str, &str)] = &[
 /// Struct member access replacements for driver_api_hip.cpp wrapper implementations
 /// These fix the ->cuXxx_( calls inside the wrapper functions
 const MEMBER_ACCESS_REPLACEMENTS: &[(&str, &str)] = &[
-    ("->cuMemGetHandleForAddressRange_(", "->hipMemGetHandleForAddressRange_("),
-    ("->cuMemGetAllocationGranularity_(", "->hipMemGetAllocationGranularity_("),
+    (
+        "->cuMemGetHandleForAddressRange_(",
+        "->hipMemGetHandleForAddressRange_(",
+    ),
+    (
+        "->cuMemGetAllocationGranularity_(",
+        "->hipMemGetAllocationGranularity_(",
+    ),
     ("->cuMemCreate_(", "->hipMemCreate_("),
     ("->cuMemAddressReserve_(", "->hipMemAddressReserve_("),
     ("->cuMemMap_(", "->hipMemMap_("),
@@ -100,23 +127,29 @@ const MEMBER_ACCESS_REPLACEMENTS: &[(&str, &str)] = &[
 /// Apply ROCm 7+ specific patches to hipified files.
 ///
 /// ROCm 7+ has native `hipMemGetHandleForAddressRange` support.
-/// 
+///
 /// Key design: We keep wrapper function names as `rdmaxcel_cu*` for API stability.
 /// Only the internal HIP API calls are converted.
 pub fn patch_hipified_files_rocm7(hip_src_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:warning=Patching hipified sources for ROCm 7.0+...");
 
     // rdmaxcel_hip.cpp - fix constants and types, keep wrapper function names as rdmaxcel_cu*
-    patch_file(hip_src_dir, "rdmaxcel_hip.cpp", |c| patch_rdmaxcel_cpp_rocm7(&c))?;
-    
+    patch_file(hip_src_dir, "rdmaxcel_hip.cpp", |c| {
+        patch_rdmaxcel_cpp_rocm7(&c)
+    })?;
+
     // Header needs driver_api include path fix
     patch_file(hip_src_dir, "rdmaxcel_hip.h", patch_rdmaxcel_h)?;
-    
+
     // driver_api_hip.h - fix any remaining CUDA types
-    patch_file(hip_src_dir, "driver_api_hip.h", |c| patch_driver_api_h_rocm7(&c))?;
-    
+    patch_file(hip_src_dir, "driver_api_hip.h", |c| {
+        patch_driver_api_h_rocm7(&c)
+    })?;
+
     // driver_api_hip.cpp - comprehensive patching: macro entries, member access, types
-    patch_file(hip_src_dir, "driver_api_hip.cpp", |c| patch_driver_api_cpp_rocm7(&c))?;
+    patch_file(hip_src_dir, "driver_api_hip.cpp", |c| {
+        patch_driver_api_cpp_rocm7(&c)
+    })?;
 
     Ok(())
 }
@@ -130,9 +163,13 @@ pub fn patch_hipified_files_rocm7(hip_src_dir: &Path) -> Result<(), Box<dyn std:
 pub fn patch_hipified_files_rocm6(hip_src_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:warning=Patching hipified sources for ROCm 6.x (HSA dmabuf)...");
 
-    patch_file(hip_src_dir, "rdmaxcel_hip.cpp", |c| patch_rdmaxcel_cpp_rocm6(&c))?;
+    patch_file(hip_src_dir, "rdmaxcel_hip.cpp", |c| {
+        patch_rdmaxcel_cpp_rocm6(&c)
+    })?;
     patch_file(hip_src_dir, "rdmaxcel_hip.h", patch_rdmaxcel_h)?;
-    patch_file(hip_src_dir, "driver_api_hip.h", |c| patch_driver_api_h_rocm6(&c))?;
+    patch_file(hip_src_dir, "driver_api_hip.h", |c| {
+        patch_driver_api_h_rocm6(&c)
+    })?;
     patch_file(hip_src_dir, "driver_api_hip.cpp", |c| {
         let patched = patch_driver_api_cpp_rocm6(&c);
         patch_for_dlopen(&patched)
@@ -144,7 +181,12 @@ pub fn patch_hipified_files_rocm6(hip_src_dir: &Path) -> Result<(), Box<dyn std:
 
 /// Validate that required hipified files exist after hipification.
 pub fn validate_hipified_files(hip_src_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    const REQUIRED: &[&str] = &["rdmaxcel_hip.h", "rdmaxcel_hip.c", "rdmaxcel_hip.cpp", "rdmaxcel.hip"];
+    const REQUIRED: &[&str] = &[
+        "rdmaxcel_hip.h",
+        "rdmaxcel_hip.c",
+        "rdmaxcel_hip.cpp",
+        "rdmaxcel.hip",
+    ];
 
     for name in REQUIRED {
         let path = hip_src_dir.join(name);
@@ -153,7 +195,8 @@ pub fn validate_hipified_files(hip_src_dir: &Path) -> Result<(), Box<dyn std::er
                 "Required hipified file '{}' not found in {}",
                 name,
                 hip_src_dir.display()
-            ).into());
+            )
+            .into());
         }
     }
     Ok(())
@@ -196,7 +239,7 @@ fn patch_rdmaxcel_h(content: &str) -> String {
 }
 
 /// Patch rdmaxcel_hip.cpp for ROCm 7+
-/// 
+///
 /// IMPORTANT: We do NOT rename wrapper function calls (rdmaxcel_cu* stays rdmaxcel_cu*)
 /// We only fix:
 /// - CU_* constants → HIP equivalents  
@@ -204,38 +247,55 @@ fn patch_rdmaxcel_h(content: &str) -> String {
 /// - c10 namespace references
 fn patch_rdmaxcel_cpp_rocm7(content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Add hip_version.h include
     result = result.replace(
         "#include <hip/hip_runtime.h>",
-        "#include <hip/hip_runtime.h>\n#include <hip/hip_version.h>"
+        "#include <hip/hip_runtime.h>\n#include <hip/hip_version.h>",
     );
-    
+
     // Fix c10 namespace (hipify sometimes misses nested references)
     result = result
-        .replace("c10::cuda::CUDACachingAllocator", "c10::hip::HIPCachingAllocator")
-        .replace("c10::cuda::CUDAAllocatorConfig", "c10::hip::HIPAllocatorConfig")
-        .replace("c10::hip::HIPCachingAllocator::CUDAAllocatorConfig",
-                 "c10::hip::HIPCachingAllocator::HIPAllocatorConfig")
+        .replace(
+            "c10::cuda::CUDACachingAllocator",
+            "c10::hip::HIPCachingAllocator",
+        )
+        .replace(
+            "c10::cuda::CUDAAllocatorConfig",
+            "c10::hip::HIPAllocatorConfig",
+        )
+        .replace(
+            "c10::hip::HIPCachingAllocator::CUDAAllocatorConfig",
+            "c10::hip::HIPCachingAllocator::HIPAllocatorConfig",
+        )
         .replace("CUDAAllocatorConfig::", "HIPAllocatorConfig::");
-    
+
     // Fix static_cast to reinterpret_cast for device pointers
     result = result
-        .replace("static_cast<CUdeviceptr>", "reinterpret_cast<hipDeviceptr_t>")
-        .replace("static_cast<hipDeviceptr_t>", "reinterpret_cast<hipDeviceptr_t>");
-    
+        .replace(
+            "static_cast<CUdeviceptr>",
+            "reinterpret_cast<hipDeviceptr_t>",
+        )
+        .replace(
+            "static_cast<hipDeviceptr_t>",
+            "reinterpret_cast<hipDeviceptr_t>",
+        );
+
     // Fix PCI domain attribute case (hipify produces wrong case)
-    result = result.replace("hipDeviceAttributePciDomainId", "hipDeviceAttributePciDomainID");
-    
+    result = result.replace(
+        "hipDeviceAttributePciDomainId",
+        "hipDeviceAttributePciDomainID",
+    );
+
     // Apply CU_* constant replacements
     result = apply_replacements(&result, CUDA_CONSTANT_REPLACEMENTS);
-    
+
     // Apply type replacements
     result = apply_replacements(&result, CUDA_TYPE_REPLACEMENTS);
-    
+
     // NOTE: We intentionally do NOT rename wrapper function calls here.
     // The wrapper functions keep their rdmaxcel_cu* names for API stability.
-    
+
     result
 }
 
@@ -256,33 +316,33 @@ fn patch_driver_api_h_rocm7(content: &str) -> String {
 /// NOTE: Wrapper function names (rdmaxcel_cu*) are NOT changed.
 fn patch_driver_api_cpp_rocm7(content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Fix library name
     result = result.replace("libcuda.so.1", "libamdhip64.so");
-    
+
     // Fix runtime header
     result = result.replace("#include <cuda_runtime.h>", "#include <hip/hip_runtime.h>");
     result = result.replace("cudaFree", "hipFree");
-    
+
     // Apply macro entry replacements: _(cuXxx) → _(hipXxx)
     // These are the actual HIP function names for dlsym lookup
     result = apply_replacements(&result, MACRO_ENTRY_REPLACEMENTS);
-    
+
     // Apply struct member access replacements: ->cuXxx_( → ->hipXxx_(
     // These are the function pointers stored in the DriverAPI struct
     result = apply_replacements(&result, MEMBER_ACCESS_REPLACEMENTS);
-    
+
     // Apply type replacements
     result = apply_replacements(&result, CUDA_TYPE_REPLACEMENTS);
-    
+
     // Fix const_cast for HtoD (srcHost needs to be non-const for HIP)
     result = result.replace(
         "dstDevice, srcHost, ByteCount);",
-        "dstDevice, const_cast<void*>(srcHost), ByteCount);"
+        "dstDevice, const_cast<void*>(srcHost), ByteCount);",
     );
-    
+
     // NOTE: Wrapper function names (rdmaxcel_cu*) are intentionally NOT changed.
-    
+
     result
 }
 
@@ -307,14 +367,17 @@ fn patch_rdmaxcel_cpp_rocm6(content: &str) -> String {
 
     // Apply constant replacements
     result = apply_replacements(&result, CUDA_CONSTANT_REPLACEMENTS);
-    
+
     // Apply type replacements - but NOT hipMemRangeHandleType (doesn't exist in ROCm 6.x)
     result = result.replace("CUresult", "hipError_t");
     result = result.replace("CUdevice device", "hipDevice_t device");
-    
+
     // ROCm 6.x doesn't have hipMemRangeHandleType - use int as placeholder
-    result = result.replace("CUmemRangeHandleType", "int /* ROCm 6.x: no hipMemRangeHandleType */");
-    
+    result = result.replace(
+        "CUmemRangeHandleType",
+        "int /* ROCm 6.x: no hipMemRangeHandleType */",
+    );
+
     // For ROCm 6.x, replace the dmabuf constant with HSA placeholder
     result = result.replace("hipMemRangeHandleTypeDmaBufFd", "0 /* HSA dmabuf */");
 
@@ -325,22 +388,25 @@ fn patch_rdmaxcel_cpp_rocm6(content: &str) -> String {
 /// Add HSA includes and fix types. Do NOT rename wrapper functions.
 fn patch_driver_api_h_rocm6(content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Add HSA includes
     if !result.contains("#include <hsa/hsa.h>") {
         result = result.replace(
             "#include <hip/hip_runtime.h>",
-            "#include <hip/hip_runtime.h>\n#include <hsa/hsa.h>\n#include <hsa/hsa_ext_amd.h>"
+            "#include <hip/hip_runtime.h>\n#include <hsa/hsa.h>\n#include <hsa/hsa_ext_amd.h>",
         );
     }
-    
+
     // Apply type replacements - but NOT hipMemRangeHandleType (doesn't exist in ROCm 6.x)
     result = result.replace("CUresult", "hipError_t");
     result = result.replace("CUdevice device", "hipDevice_t device");
-    
+
     // ROCm 6.x doesn't have hipMemRangeHandleType - use int as placeholder
-    result = result.replace("CUmemRangeHandleType", "int /* ROCm 6.x: no hipMemRangeHandleType */");
-    
+    result = result.replace(
+        "CUmemRangeHandleType",
+        "int /* ROCm 6.x: no hipMemRangeHandleType */",
+    );
+
     result
 }
 
@@ -348,11 +414,11 @@ fn patch_driver_api_h_rocm6(content: &str) -> String {
 /// Converts internal HIP calls and replaces hipMemGetHandleForAddressRange with HSA
 fn patch_driver_api_cpp_rocm6(content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Add HSA includes
     result = result.replace(
         "#include \"driver_api_hip.h\"",
-        "#include \"driver_api_hip.h\"\n#include <hsa/hsa.h>\n#include <hsa/hsa_ext_amd.h>"
+        "#include \"driver_api_hip.h\"\n#include <hsa/hsa.h>\n#include <hsa/hsa_ext_amd.h>",
     );
 
     // Fix library name and runtime
@@ -360,37 +426,40 @@ fn patch_driver_api_cpp_rocm6(content: &str) -> String {
         .replace("libcuda.so.1", "libamdhip64.so")
         .replace("cudaFree", "hipFree")
         .replace("#include <cuda_runtime.h>", "#include <hip/hip_runtime.h>");
-    
+
     // Apply macro entry replacements for dlsym lookups
     result = apply_replacements(&result, MACRO_ENTRY_REPLACEMENTS);
-    
+
     // Apply struct member access replacements
     result = apply_replacements(&result, MEMBER_ACCESS_REPLACEMENTS);
-    
+
     // Apply type replacements - but NOT hipMemRangeHandleType (doesn't exist in ROCm 6.x)
     result = result.replace("CUresult", "hipError_t");
     result = result.replace("CUdevice device", "hipDevice_t device");
-    
+
     // ROCm 6.x doesn't have hipMemRangeHandleType - use int as placeholder
-    result = result.replace("CUmemRangeHandleType", "int /* ROCm 6.x: no hipMemRangeHandleType */");
-    
+    result = result.replace(
+        "CUmemRangeHandleType",
+        "int /* ROCm 6.x: no hipMemRangeHandleType */",
+    );
+
     // Fix const_cast for HtoD
     result = result.replace(
         "dstDevice, srcHost, ByteCount);",
-        "dstDevice, const_cast<void*>(srcHost), ByteCount);"
+        "dstDevice, const_cast<void*>(srcHost), ByteCount);",
     );
-    
+
     // For ROCm 6.x, hipMemGetHandleForAddressRange doesn't exist
     // Remove it from the macro list and we'll add HSA wrapper separately
     result = result.replace(
         "_(hipMemGetHandleForAddressRange)  \\",
-        "/* hipMemGetHandleForAddressRange not available in ROCm 6.x */  \\"
+        "/* hipMemGetHandleForAddressRange not available in ROCm 6.x */  \\",
     );
     result = result.replace(
         "_(hipMemGetHandleForAddressRange) \\",
-        "/* hipMemGetHandleForAddressRange not available in ROCm 6.x */ \\"
+        "/* hipMemGetHandleForAddressRange not available in ROCm 6.x */ \\",
     );
-    
+
     // Replace the wrapper implementation to use HSA
     // The wrapper function name stays as rdmaxcel_cuMemGetHandleForAddressRange
     let old_wrapper = r#"hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
@@ -402,7 +471,7 @@ fn patch_driver_api_cpp_rocm6(content: &str) -> String {
   return rdmaxcel::DriverAPI::get()->hipMemGetHandleForAddressRange_(
       handle, dptr, size, handleType, flags);
 }"#;
-    
+
     let hsa_wrapper = r#"// ROCm 6.x: Use HSA hsa_amd_portable_export_dmabuf instead of hipMemGetHandleForAddressRange
 hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
     int* handle,
@@ -416,9 +485,9 @@ hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
       reinterpret_cast<void*>(dptr), size, handle, nullptr);
   return (status == HSA_STATUS_SUCCESS) ? hipSuccess : hipErrorUnknown;
 }"#;
-    
+
     result = result.replace(old_wrapper, hsa_wrapper);
-    
+
     // Also handle if the type wasn't converted yet
     let old_wrapper2 = r#"hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
     int* handle,
@@ -430,7 +499,7 @@ hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
       handle, dptr, size, handleType, flags);
 }"#;
     result = result.replace(old_wrapper2, hsa_wrapper);
-    
+
     // Handle if the type was already replaced with int placeholder
     let old_wrapper3 = r#"hipError_t rdmaxcel_cuMemGetHandleForAddressRange(
     int* handle,
@@ -454,7 +523,7 @@ fn patch_for_dlopen(content: &str) -> String {
     if !result.contains("_(hipFree)") {
         result = result.replace(
             "_(hipDrvGetErrorString)",
-            "_(hipDrvGetErrorString)              \\\n  _(hipFree)"
+            "_(hipDrvGetErrorString)              \\\n  _(hipFree)",
         );
     }
 
@@ -471,7 +540,7 @@ fn patch_for_dlopen(content: &str) -> String {
   // Ensure valid HIP context via dlopen'd hipFree (not direct call)
   singleton.hipFree_(0);
   return &singleton;
-}"#
+}"#,
     );
 
     result

@@ -410,7 +410,8 @@ mod tests {
         // may be garbage collected before we observe intermediate states
         assert!(
             has_deactivating || has_inactive || has_gone,
-            "Should observe deactivating, inactive, or gone state during shutdown. States: {:?}", collected_states
+            "Should observe deactivating, inactive, or gone state during shutdown. States: {:?}",
+            collected_states
         );
         assert!(has_gone, "Should observe unit cleanup");
 

@@ -23,29 +23,25 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(rocm_7_plus)");
 
     // Auto-detect ROCm vs CUDA using build_utils
-    let (is_rocm, compute_home) =
-        if let Ok(rocm_home) = build_utils::validate_rocm_installation() {
-            let version = build_utils::get_rocm_version(&rocm_home).unwrap_or((6, 0));
-            println!(
-                "cargo:warning=torch-sys-cuda: Using ROCm {}.{} at {}",
-                version.0, version.1, rocm_home
-            );
-            println!("cargo:rustc-cfg=rocm");
-            if version.0 >= 7 {
-                println!("cargo:rustc-cfg=rocm_7_plus");
-            } else {
-                println!("cargo:rustc-cfg=rocm_6_x");
-            }
-            (true, rocm_home)
-        } else if let Ok(cuda_home) = build_utils::validate_cuda_installation() {
-            println!(
-                "cargo:warning=torch-sys-cuda: Using CUDA at {}",
-                cuda_home
-            );
-            (false, cuda_home)
+    let (is_rocm, compute_home) = if let Ok(rocm_home) = build_utils::validate_rocm_installation() {
+        let version = build_utils::get_rocm_version(&rocm_home).unwrap_or((6, 0));
+        println!(
+            "cargo:warning=torch-sys-cuda: Using ROCm {}.{} at {}",
+            version.0, version.1, rocm_home
+        );
+        println!("cargo:rustc-cfg=rocm");
+        if version.0 >= 7 {
+            println!("cargo:rustc-cfg=rocm_7_plus");
         } else {
-            panic!("Neither CUDA nor ROCm installation found!");
-        };
+            println!("cargo:rustc-cfg=rocm_6_x");
+        }
+        (true, rocm_home)
+    } else if let Ok(cuda_home) = build_utils::validate_cuda_installation() {
+        println!("cargo:warning=torch-sys-cuda: Using CUDA at {}", cuda_home);
+        (false, cuda_home)
+    } else {
+        panic!("Neither CUDA nor ROCm installation found!");
+    };
 
     // Configure platform-specific library search paths
     // Actual library linking is handled by nccl-sys dependency

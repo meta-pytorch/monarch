@@ -58,10 +58,7 @@ fn main() {
         let project_root = manifest_dir.parent().expect("Failed to find project root");
 
         // Only hipify files that exist
-        let source_files = vec![
-            src_dir.join("bridge.h"),
-            src_dir.join("bridge.cpp"),
-        ];
+        let source_files = vec![src_dir.join("bridge.h"), src_dir.join("bridge.cpp")];
 
         build_utils::run_hipify_torch(project_root, &source_files, &hip_src_dir)
             .expect("Failed to hipify nccl-sys sources");
@@ -84,7 +81,7 @@ fn main() {
             if rocm_version.0 < 7 {
                 patched = patched.replace(
                     "LOOKUP_NCCL_ENTRY(ncclCommInitRankScalable)",
-                    "// LOOKUP_NCCL_ENTRY(ncclCommInitRankScalable)"
+                    "// LOOKUP_NCCL_ENTRY(ncclCommInitRankScalable)",
                 );
             }
 

@@ -216,7 +216,7 @@ pub mod test_utils {
                         prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
                         prop.location.id = device;
                         prop.allocFlags.gpuDirectRDMACapable = 1;
-                        
+
                         // HIP uses requestedHandleType (singular), CUDA uses requestedHandleTypes (plural)
                         #[cfg(any(rocm_6_x, rocm_7_plus))]
                         {

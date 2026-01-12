@@ -142,8 +142,16 @@ mod inner {
     }
 }
 
-pub use inner::*;
-
+// --- Pointer Attribute Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::HIP_POINTER_ATTRIBUTE_MEMORY_TYPE as CU_POINTER_ATTRIBUTE_MEMORY_TYPE;
+// --- Status/Success Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::HIP_SUCCESS as CUDA_SUCCESS;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipCtx_t as CUcontext;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipDevice_t as CUdevice;
 // =============================================================================
 // ROCm/HIP Compatibility Aliases
 // =============================================================================
@@ -156,53 +164,31 @@ pub use inner::*;
 // --- Basic Type Aliases ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::hipDeviceptr_t as CUdeviceptr;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipDevice_t as CUdevice;
-
 #[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::hipError_t as CUresult;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipCtx_t as CUcontext;
-
-// --- Memory Allocation Types ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipMemGenericAllocationHandle_t as CUmemGenericAllocationHandle;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipMemAllocationProp as CUmemAllocationProp;
-
 #[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::hipMemAccessDesc as CUmemAccessDesc;
-
-// --- Status/Success Constants ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::HIP_SUCCESS as CUDA_SUCCESS;
-
-// --- Pointer Attribute Constants ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::HIP_POINTER_ATTRIBUTE_MEMORY_TYPE as CU_POINTER_ATTRIBUTE_MEMORY_TYPE;
-
-// --- Memory Allocation Type Constants ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipMemAllocationTypePinned as CU_MEM_ALLOCATION_TYPE_PINNED;
-
-// --- Memory Location Type Constants ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipMemLocationTypeDevice as CU_MEM_LOCATION_TYPE_DEVICE;
-
-// --- Memory Handle Type Constants ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipMemHandleTypePosixFileDescriptor as CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-
-// --- Memory Allocation Granularity Constants ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::hipMemAllocationGranularityMinimum as CU_MEM_ALLOC_GRANULARITY_MINIMUM;
-
 // --- Memory Access Flags Constants ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::hipMemAccessFlagsProtReadWrite as CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+// --- Memory Allocation Granularity Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAllocationGranularityMinimum as CU_MEM_ALLOC_GRANULARITY_MINIMUM;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAllocationProp as CUmemAllocationProp;
+// --- Memory Allocation Type Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAllocationTypePinned as CU_MEM_ALLOCATION_TYPE_PINNED;
+// --- Memory Allocation Types ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemGenericAllocationHandle_t as CUmemGenericAllocationHandle;
+// --- Memory Handle Type Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemHandleTypePosixFileDescriptor as CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+// --- Memory Location Type Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemLocationTypeDevice as CU_MEM_LOCATION_TYPE_DEVICE;
+pub use inner::*;
 
 // --- Dmabuf Handle Type Constants ---
 #[cfg(rocm_6_x)]
@@ -210,7 +196,18 @@ pub const CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD: i32 = 0;
 
 #[cfg(rocm_7_plus)]
 pub use inner::hipMemRangeHandleTypeDmaBufFd as CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD;
-
+// --- Context Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuCtxCreate_v2;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuCtxSetCurrent;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuDeviceGet;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuDeviceGetCount;
+// --- Error Handling Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuGetErrorString;
 // =============================================================================
 // Driver API Wrapper Functions
 // =============================================================================
@@ -220,67 +217,37 @@ pub use inner::hipMemRangeHandleTypeDmaBufFd as CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF
 // --- Driver Init/Device Functions ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::rdmaxcel_cuInit;
-
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuDeviceGet;
-
+pub use inner::rdmaxcel_cuMemAddressFree;
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuDeviceGetCount;
-
+pub use inner::rdmaxcel_cuMemAddressReserve;
 #[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuPointerGetAttribute;
-
-// --- Context Functions ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuCtxCreate_v2;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuCtxSetCurrent;
-
-// --- Error Handling Functions ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuGetErrorString;
-
+pub use inner::rdmaxcel_cuMemCreate;
 // --- Memory Management Functions ---
 #[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::rdmaxcel_cuMemGetAllocationGranularity;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemCreate;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemAddressReserve;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemMap;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemSetAccess;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemUnmap;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemAddressFree;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemRelease;
-
-// --- Memory Copy/Set Functions ---
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemcpyHtoD_v2;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemcpyDtoH_v2;
-
-#[cfg(any(rocm_6_x, rocm_7_plus))]
-pub use inner::rdmaxcel_cuMemsetD8_v2;
-
 // --- Dmabuf Function ---
 // Both ROCm 6.x and 7+ export rdmaxcel_cuMemGetHandleForAddressRange from C++
 // (ROCm 6.x uses HSA internally, ROCm 7+ uses native hipMemGetHandleForAddressRange)
 #[cfg(any(rocm_6_x, rocm_7_plus))]
 pub use inner::rdmaxcel_cuMemGetHandleForAddressRange;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemMap;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemRelease;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemSetAccess;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemUnmap;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemcpyDtoH_v2;
+// --- Memory Copy/Set Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemcpyHtoD_v2;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemsetD8_v2;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuPointerGetAttribute;
 
 // =============================================================================
 // Helper Types & Externs

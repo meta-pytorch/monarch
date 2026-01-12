@@ -39,7 +39,14 @@ fn main() {
     platform.emit_link_libs();
 
     // Setup rerun triggers
-    for f in &["rdmaxcel.h", "rdmaxcel.c", "rdmaxcel.cpp", "rdmaxcel.cu", "driver_api.h", "driver_api.cpp"] {
+    for f in &[
+        "rdmaxcel.h",
+        "rdmaxcel.c",
+        "rdmaxcel.cpp",
+        "rdmaxcel.cu",
+        "driver_api.h",
+        "driver_api.cpp",
+    ] {
         println!("cargo:rerun-if-changed=src/{}", f);
     }
 
@@ -48,8 +55,12 @@ fn main() {
         let out_path = PathBuf::from(&out_dir);
         let sources = platform.prepare_sources(&src_dir, &out_path);
 
-        let python_config = build_utils::python_env_dirs_with_interpreter("python3")
-            .unwrap_or(build_utils::PythonConfig { include_dir: None, lib_dir: None });
+        let python_config = build_utils::python_env_dirs_with_interpreter("python3").unwrap_or(
+            build_utils::PythonConfig {
+                include_dir: None,
+                lib_dir: None,
+            },
+        );
 
         generate_bindings(&sources, &platform, rdma_include, &python_config, &out_path);
         compile_c(&sources, &platform, rdma_include);
@@ -57,7 +68,10 @@ fn main() {
         compile_gpu(&sources, &platform, rdma_include, &manifest_dir, &out_path);
     }
 
-    println!("cargo:rustc-env=CUDA_INCLUDE_PATH={}", platform.include_dir());
+    println!(
+        "cargo:rustc-env=CUDA_INCLUDE_PATH={}",
+        platform.include_dir()
+    );
     println!("cargo:rustc-cfg=cargo");
 }
 
@@ -160,10 +174,7 @@ impl Platform {
         match self {
             Platform::Cuda { .. } => vec![],
             Platform::Rocm { version, .. } => {
-                let mut defs = vec![
-                    "-D__HIP_PLATFORM_AMD__=1".into(),
-                    "-DUSE_ROCM=1".into(),
-                ];
+                let mut defs = vec!["-D__HIP_PLATFORM_AMD__=1".into(), "-DUSE_ROCM=1".into()];
                 if version.0 >= 7 {
                     defs.push("-DROCM_7_PLUS=1".into());
                 } else {
@@ -217,7 +228,10 @@ fn detect_platform() -> Platform {
     // Try ROCm first (ROCm systems may also have CUDA installed)
     if let Ok(home) = build_utils::validate_rocm_installation() {
         let version = build_utils::get_rocm_version(&home).unwrap_or((6, 0));
-        println!("cargo:warning=Using HIP/ROCm {}.{} from {}", version.0, version.1, home);
+        println!(
+            "cargo:warning=Using HIP/ROCm {}.{} from {}",
+            version.0, version.1, home
+        );
 
         if version.0 >= 7 {
             println!("cargo:rustc-cfg=rocm_7_plus");
@@ -244,33 +258,39 @@ fn detect_platform() -> Platform {
 // =============================================================================
 
 fn hipify_sources(src_dir: &PathBuf, hip_dir: &PathBuf, version: (u32, u32)) {
-    println!("cargo:warning=Hipifying sources to {}...", hip_dir.display());
+    println!(
+        "cargo:warning=Hipifying sources to {}...",
+        hip_dir.display()
+    );
 
     let files: Vec<PathBuf> = [
-        "lib.rs", "rdmaxcel.h", "rdmaxcel.c", "rdmaxcel.cpp",
-        "rdmaxcel.cu", "test_rdmaxcel.c", "driver_api.h", "driver_api.cpp"
-    ].iter()
-        .map(|f| src_dir.join(f))
-        .filter(|p| p.exists())
-        .collect();
+        "lib.rs",
+        "rdmaxcel.h",
+        "rdmaxcel.c",
+        "rdmaxcel.cpp",
+        "rdmaxcel.cu",
+        "test_rdmaxcel.c",
+        "driver_api.h",
+        "driver_api.cpp",
+    ]
+    .iter()
+    .map(|f| src_dir.join(f))
+    .filter(|p| p.exists())
+    .collect();
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let project_root = manifest_dir.parent().expect("Failed to find project root");
 
-    build_utils::run_hipify_torch(project_root, &files, hip_dir)
-        .expect("hipify_torch failed");
+    build_utils::run_hipify_torch(project_root, &files, hip_dir).expect("hipify_torch failed");
 
     // Apply version-specific patches
     if version.0 >= 7 {
-        build_utils::rocm::patch_hipified_files_rocm7(hip_dir)
-            .expect("ROCm 7+ patching failed");
+        build_utils::rocm::patch_hipified_files_rocm7(hip_dir).expect("ROCm 7+ patching failed");
     } else {
-        build_utils::rocm::patch_hipified_files_rocm6(hip_dir)
-            .expect("ROCm 6.x patching failed");
+        build_utils::rocm::patch_hipified_files_rocm6(hip_dir).expect("ROCm 6.x patching failed");
     }
 
-    build_utils::rocm::validate_hipified_files(hip_dir)
-        .expect("Hipified file validation failed");
+    build_utils::rocm::validate_hipified_files(hip_dir).expect("Hipified file validation failed");
 }
 
 // =============================================================================
@@ -286,44 +306,71 @@ fn generate_bindings(
 ) {
     let mut builder = bindgen::Builder::default()
         .header(sources.header.to_string_lossy())
-        .clang_arg("-x").clang_arg("c++").clang_arg("-std=c++14")
+        .clang_arg("-x")
+        .clang_arg("c++")
+        .clang_arg("-std=c++14")
         .clang_arg(format!("-I{}", platform.include_dir()))
         .clang_arg(format!("-I{}", rdma_include))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Functions
-        .allowlist_function("ibv_.*").allowlist_function("mlx5dv_.*")
-        .allowlist_function("create_qp").allowlist_function("create_mlx5dv_.*")
-        .allowlist_function("register_cuda_memory").allowlist_function("register_hip_memory")
-        .allowlist_function("db_ring").allowlist_function("cqe_poll")
-        .allowlist_function("send_wqe").allowlist_function("recv_wqe")
-        .allowlist_function("launch_.*").allowlist_function("rdma_get_.*")
+        .allowlist_function("ibv_.*")
+        .allowlist_function("mlx5dv_.*")
+        .allowlist_function("create_qp")
+        .allowlist_function("create_mlx5dv_.*")
+        .allowlist_function("register_cuda_memory")
+        .allowlist_function("register_hip_memory")
+        .allowlist_function("db_ring")
+        .allowlist_function("cqe_poll")
+        .allowlist_function("send_wqe")
+        .allowlist_function("recv_wqe")
+        .allowlist_function("launch_.*")
+        .allowlist_function("rdma_get_.*")
         .allowlist_function("pt_.*_allocator_compatibility")
-        .allowlist_function("register_segments").allowlist_function("deregister_segments")
+        .allowlist_function("register_segments")
+        .allowlist_function("deregister_segments")
         .allowlist_function("register_dmabuf_buffer")
         .allowlist_function("get_.*_pci_address_from_ptr")
         .allowlist_function("rdmaxcel_.*")
-        .allowlist_function("completion_cache_.*").allowlist_function("poll_cq_with_cache")
+        .allowlist_function("completion_cache_.*")
+        .allowlist_function("poll_cq_with_cache")
         // Types
-        .allowlist_type("rdmaxcel_.*").allowlist_type("completion_.*")
-        .allowlist_type("poll_context.*").allowlist_type("rdma_qp_type_t")
-        .allowlist_type("CU.*").allowlist_type("hip.*").allowlist_type("hsa_status_t")
-        .allowlist_type("ibv_.*").allowlist_type("mlx5.*")
-        .allowlist_type("cqe_poll_.*").allowlist_type("wqe_params_t")
+        .allowlist_type("rdmaxcel_.*")
+        .allowlist_type("completion_.*")
+        .allowlist_type("poll_context.*")
+        .allowlist_type("rdma_qp_type_t")
+        .allowlist_type("CU.*")
+        .allowlist_type("hip.*")
+        .allowlist_type("hsa_status_t")
+        .allowlist_type("ibv_.*")
+        .allowlist_type("mlx5.*")
+        .allowlist_type("cqe_poll_.*")
+        .allowlist_type("wqe_params_t")
         .allowlist_type("rdma_segment_info_t")
         // Vars
-        .allowlist_var("CUDA_SUCCESS").allowlist_var("CU_.*")
-        .allowlist_var("hipSuccess").allowlist_var("HIP_.*")
+        .allowlist_var("CUDA_SUCCESS")
+        .allowlist_var("CU_.*")
+        .allowlist_var("hipSuccess")
+        .allowlist_var("HIP_.*")
         .allowlist_var("HSA_STATUS_SUCCESS")
-        .allowlist_var("MLX5_.*").allowlist_var("IBV_.*").allowlist_var("RDMA_QP_TYPE_.*")
+        .allowlist_var("MLX5_.*")
+        .allowlist_var("IBV_.*")
+        .allowlist_var("RDMA_QP_TYPE_.*")
         // Config
-        .blocklist_type("ibv_wc").blocklist_type("mlx5_wqe_ctrl_seg")
-        .bitfield_enum("ibv_access_flags").bitfield_enum("ibv_qp_attr_mask")
-        .bitfield_enum("ibv_wc_flags").bitfield_enum("ibv_send_flags")
+        .blocklist_type("ibv_wc")
+        .blocklist_type("mlx5_wqe_ctrl_seg")
+        .bitfield_enum("ibv_access_flags")
+        .bitfield_enum("ibv_qp_attr_mask")
+        .bitfield_enum("ibv_wc_flags")
+        .bitfield_enum("ibv_send_flags")
         .bitfield_enum("ibv_port_cap_flags")
-        .constified_enum_module("ibv_qp_type").constified_enum_module("ibv_qp_state")
-        .constified_enum_module("ibv_port_state").constified_enum_module("ibv_wc_opcode")
-        .constified_enum_module("ibv_wr_opcode").constified_enum_module("ibv_wc_status")
-        .derive_default(true).prepend_enum_name(false);
+        .constified_enum_module("ibv_qp_type")
+        .constified_enum_module("ibv_qp_state")
+        .constified_enum_module("ibv_port_state")
+        .constified_enum_module("ibv_wc_opcode")
+        .constified_enum_module("ibv_wr_opcode")
+        .constified_enum_module("ibv_wc_status")
+        .derive_default(true)
+        .prepend_enum_name(false);
 
     for def in platform.clang_defines() {
         builder = builder.clang_arg(def);
@@ -333,14 +380,17 @@ fn generate_bindings(
         builder = builder.clang_arg(format!("-I{}", dir));
     }
 
-    builder.generate()
+    builder
+        .generate()
         .expect("Unable to generate bindings")
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings");
 }
 
 fn compile_c(sources: &Sources, platform: &Platform, rdma_include: &str) {
-    if !sources.c_source.exists() { return; }
+    if !sources.c_source.exists() {
+        return;
+    }
 
     let mut build = cc::Build::new();
     build
@@ -360,7 +410,9 @@ fn compile_cpp(
     rdma_include: &str,
     python_config: &build_utils::PythonConfig,
 ) {
-    if !sources.cpp_source.exists() { return; }
+    if !sources.cpp_source.exists() {
+        return;
+    }
 
     let mut build = cc::Build::new();
     build
@@ -397,7 +449,9 @@ fn compile_gpu(
     manifest_dir: &PathBuf,
     out_path: &PathBuf,
 ) {
-    if !sources.gpu_source.exists() { return; }
+    if !sources.gpu_source.exists() {
+        return;
+    }
 
     let build_dir = format!("{}/target/cuda_build", manifest_dir.display());
     std::fs::create_dir_all(&build_dir).expect("Failed to create build directory");

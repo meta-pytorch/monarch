@@ -91,21 +91,17 @@ mod inner {
     }
 }
 
-pub use inner::*;
-
 // =============================================================================
 // ROCm/HIP Compatibility Aliases
 // =============================================================================
 // These allow consumers (like torch-sys-cuda) to use CUDA names transparently on ROCm.
-
 #[cfg(rocm)]
 pub use inner::hipError_t as cudaError_t;
-
-#[cfg(rocm)]
-pub use inner::hipStream_t as cudaStream_t;
-
 #[cfg(rocm)]
 pub use inner::hipSetDevice as cudaSetDevice;
+#[cfg(rocm)]
+pub use inner::hipStream_t as cudaStream_t;
+pub use inner::*;
 
 #[cfg(test)]
 mod tests {
