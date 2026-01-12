@@ -86,7 +86,7 @@ use crate::proc_mesh::mesh_agent::update_event_actor_id;
 use crate::reference::ProcMeshId;
 use crate::router;
 use crate::shortuuid::ShortUuid;
-use crate::supervision::SupervisionFailureMessage;
+use crate::supervision::MeshFailure;
 use crate::v1;
 use crate::v1::Name;
 
@@ -235,12 +235,8 @@ impl GlobalClientActor {
 impl Actor for GlobalClientActor {}
 
 #[async_trait]
-impl Handler<SupervisionFailureMessage> for GlobalClientActor {
-    async fn handle(
-        &mut self,
-        _cx: &Context<Self>,
-        message: SupervisionFailureMessage,
-    ) -> anyhow::Result<()> {
+impl Handler<MeshFailure> for GlobalClientActor {
+    async fn handle(&mut self, _cx: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
         tracing::error!("supervision failure reached global client: {}", message);
         panic!("supervision failure reached global client: {}", message);
     }
@@ -263,7 +259,7 @@ fn fresh_instance() -> (
     // same client in both direct-addressed and ranked-addressed modes.
     router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
 
-    // The work_rx messages loop is ignored. v0 will support Handler<SupervisionFailureMessage>,
+    // The work_rx messages loop is ignored. v0 will support Handler<MeshFailure>,
     // but it doesn't actually handle the messages.
     // This is fine because v0 doesn't use this supervision mechanism anyway.
     let (client, handle, supervision_rx, signal_rx, work_rx) = client_proc
@@ -730,7 +726,7 @@ impl ProcMesh {
     ) -> Result<RootActorMesh<'_, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         match &self.inner {
             ProcMeshKind::V0 {
@@ -1081,7 +1077,7 @@ pub trait SharedSpawnable {
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
-        C::A: Handler<SupervisionFailureMessage>;
+        C::A: Handler<MeshFailure>;
 }
 
 #[async_trait]
@@ -1096,7 +1092,7 @@ impl<D: Deref<Target = ProcMesh> + Send + Sync + 'static> SharedSpawnable for D 
     ) -> Result<RootActorMesh<'static, A>, anyhow::Error>
     where
         A::Params: RemoteMessage,
-        C::A: Handler<SupervisionFailureMessage>,
+        C::A: Handler<MeshFailure>,
     {
         match &self.deref().inner {
             ProcMeshKind::V0 {

@@ -80,7 +80,7 @@ impl Handler<NextNumber> for SieveActor {
         if !msg.number.is_multiple_of(self.prime) {
             match &self.next {
                 Some(next) => {
-                    next.send(msg)?;
+                    next.send(cx, msg)?;
                 }
                 None => {
                     msg.prime_collector.send(cx, msg.number)?;

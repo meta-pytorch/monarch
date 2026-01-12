@@ -21,7 +21,7 @@ use typeuri::Named;
 /// Message about a supervision failure on a mesh of actors instead of a single
 /// actor.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
-pub struct SupervisionFailureMessage {
+pub struct MeshFailure {
     /// Name of the mesh which the event originated from.
     pub actor_mesh_name: Option<String>,
     /// Rank of the mesh from which the event originated.
@@ -30,9 +30,9 @@ pub struct SupervisionFailureMessage {
     /// The supervision event on an actor located at mesh + rank.
     pub event: ActorSupervisionEvent,
 }
-wirevalue::register_type!(SupervisionFailureMessage);
+wirevalue::register_type!(MeshFailure);
 
-impl SupervisionFailureMessage {
+impl MeshFailure {
     /// Helper function to handle a message to an actor that just wants to forward
     /// it to the next owner.
     pub fn default_handler(&self, cx: &impl context::Actor) -> Result<(), anyhow::Error> {
@@ -50,7 +50,7 @@ impl SupervisionFailureMessage {
     }
 }
 
-impl std::fmt::Display for SupervisionFailureMessage {
+impl std::fmt::Display for MeshFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -63,6 +63,6 @@ impl std::fmt::Display for SupervisionFailureMessage {
 // Shared between mesh types.
 #[derive(Debug, Clone)]
 pub(crate) enum Unhealthy {
-    StreamClosed(SupervisionFailureMessage), // Event stream closed
-    Crashed(SupervisionFailureMessage),      // Bad health event received
+    StreamClosed(MeshFailure), // Event stream closed
+    Crashed(MeshFailure),      // Bad health event received
 }

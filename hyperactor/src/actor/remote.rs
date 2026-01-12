@@ -36,10 +36,10 @@ pub const USER_PORT_OFFSET: u64 = 1024;
 #[macro_export]
 macro_rules! remote {
     ($actor:ty) => {
-        $crate::paste! {
+        $crate::internal_macro_support::paste! {
             static [<$actor:snake:upper _NAME>]: std::sync::LazyLock<&'static str> =
-              std::sync::LazyLock::new(|| <$actor as $crate::typeuri::Named>::typename());
-            $crate::inventory::submit! {
+              std::sync::LazyLock::new(|| <$actor as $crate::internal_macro_support::typeuri::Named>::typename());
+            $crate::internal_macro_support::inventory::submit! {
                 $crate::actor::remote::SpawnableActor {
                     name: &[<$actor:snake:upper _NAME>],
                     gspawn: <$actor as $crate::actor::RemoteSpawn>::gspawn,

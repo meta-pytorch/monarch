@@ -1,6 +1,6 @@
-# `#[behavior]`
+# `behavior!`
 
-The `#[behavior]` macro defines a type which represents an actor that handles a set of messages.
+The `behavior!` macro defines a type which represents an actor that handles a set of messages.
 Behaviors allows you to define and hand out **stable or restricted APIs** without tying clients
 to the full concrete actor type.
 
@@ -81,10 +81,12 @@ shopping_api.clear_list(&client, "end of session".into()).await?;
 
 ### Generated code (excerpt)
 
-Expanding the example above yields a zero-sized façade actor with trait impls:
+Expanding the example above yields a zero-sized struct with trait impls:
 
 ```rust
-pub struct ShoppingApi;
+pub struct ShoppingApi {
+    _phantom: std::marker::PhantomData<()>
+}
 
 impl hyperactor::actor::Referable for ShoppingApi {}
 
