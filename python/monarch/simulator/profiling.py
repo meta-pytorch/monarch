@@ -14,7 +14,6 @@ import os
 import socket
 import time
 import traceback
-
 from contextlib import closing
 from datetime import timedelta
 from typing import (
@@ -480,9 +479,9 @@ class RuntimeEstimator:
                 nor callable functions.
         """
         for k, v in func_or_time.items():
-            assert isinstance(v, int) or callable(
-                v
-            ), "The supported customized timing are an integer or a function."
+            assert isinstance(v, int) or callable(v), (
+                "The supported customized timing are an integer or a function."
+            )
             setattr(self, k.value, v)
 
     def get_runtime(self, msg) -> int:
