@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 import torch
-
 from monarch.common.remote import remote
 
 

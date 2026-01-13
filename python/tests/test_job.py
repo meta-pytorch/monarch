@@ -16,7 +16,6 @@ import pytest
 
 # Import directly from _src since job module isn't properly exposed
 from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
-
 from monarch.actor import HostMesh
 
 

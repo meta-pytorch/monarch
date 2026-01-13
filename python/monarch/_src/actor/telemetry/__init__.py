@@ -13,7 +13,6 @@ from typing import Optional, Sequence
 
 import opentelemetry.metrics as metrics  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
 import opentelemetry.trace as trace  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
-
 from monarch._rust_bindings.monarch_hyperactor.telemetry import (  # @manual=//monarch/monarch_extension:monarch_extension
     forward_to_tracing,
     PyCounter,

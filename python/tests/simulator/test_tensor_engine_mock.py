@@ -95,9 +95,10 @@ class TestTensorEngineMock(unittest.TestCase):
 
     def test_multiple_patches_context_manager(self) -> None:
         # Execute: Use multiple patches
-        with patch_tensor_engine(
-            TestActor, mock_tensor_engine_factory
-        ), patch_tensor_engine(AnotherTestActor, another_mock_factory):
+        with (
+            patch_tensor_engine(TestActor, mock_tensor_engine_factory),
+            patch_tensor_engine(AnotherTestActor, another_mock_factory),
+        ):
             # Assert: Both actors have factories registered
             self.assertEqual(
                 get_tensor_engine_factory(TestActor), mock_tensor_engine_factory
