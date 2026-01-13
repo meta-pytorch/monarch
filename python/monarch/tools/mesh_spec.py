@@ -105,9 +105,9 @@ def mesh_spec_from_str(mesh_spec_str: str) -> MeshSpec:
             in the format 'NAME:NUM_HOSTS:HOST_TYPE' (e.g. 'trainer:8:gpu.medium').
     """
     parts = mesh_spec_str.split(":")
-    assert (
-        len(parts) == 3
-    ), f"`{mesh_spec_str}` is not of the form 'NAME:NUM_HOSTS:HOST_TYPE'"
+    assert len(parts) == 3, (
+        f"`{mesh_spec_str}` is not of the form 'NAME:NUM_HOSTS:HOST_TYPE'"
+    )
 
     name, num_hosts, host_type = parts
     gpus = specs.resource(h=host_type).gpu

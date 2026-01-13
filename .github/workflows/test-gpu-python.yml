@@ -60,8 +60,7 @@ jobs:
         # Each group runs separately with process cleanup in between
         pip install pytest-split
 
-        # Run tests with test_actor_error disabled
-        run_test_groups 0
+        run_test_groups
 
         # TODO(meriksen): temporarily disabled to unblock lands while debugging
         # mock CUDA issues on the OSS setup
