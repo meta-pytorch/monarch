@@ -74,14 +74,14 @@ def test_runpath_and_needed_dependencies_resolve():
     if any("libpython" in n for n in needed):
         py_hits = [ln for ln in ldd.splitlines() if "libpython" in ln]
         assert py_hits, f"ldd did not list libpython:\n{ldd}"
-        assert all(
-            "not found" not in ln for ln in py_hits
-        ), f"libpython unresolved:\n{ldd}"
+        assert all("not found" not in ln for ln in py_hits), (
+            f"libpython unresolved:\n{ldd}"
+        )
 
     # CUDA runtime: if you linked against cudart, ensure it resolves
     if any("cudart" in n for n in needed):
         cu_hits = [ln for ln in ldd.splitlines() if "cudart" in ln]
         assert cu_hits, f"ldd did not list libcudart:\n{ldd}"
-        assert all(
-            "not found" not in ln for ln in cu_hits
-        ), f"libcudart unresolved:\n{ldd}"
+        assert all("not found" not in ln for ln in cu_hits), (
+            f"libcudart unresolved:\n{ldd}"
+        )

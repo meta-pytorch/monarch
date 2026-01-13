@@ -206,9 +206,12 @@ def test_this_host_on_controllers_can_spawn_actual_os_processes() -> None:
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_host_meshes() -> None:
     orig_get_client_context = _client_context.get
-    with patch.object(_client_context, "get") as mock_get_client_context, patch.object(
-        monarch._src.actor.host_mesh, "create_local_host_mesh"
-    ) as mock_create_local:
+    with (
+        patch.object(_client_context, "get") as mock_get_client_context,
+        patch.object(
+            monarch._src.actor.host_mesh, "create_local_host_mesh"
+        ) as mock_create_local,
+    ):
         mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():

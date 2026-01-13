@@ -8,7 +8,6 @@
 
 import abc
 from enum import Enum
-
 from typing import (
     Any,
     final,
@@ -24,7 +23,6 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
-
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     OncePortRef,

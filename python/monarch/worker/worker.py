@@ -29,7 +29,6 @@ from typing import (
     Tuple,
     Union,
 )
-
 from weakref import WeakKeyDictionary
 
 import torch
@@ -38,7 +37,6 @@ import torch.fx
 import zmq
 import zmq.asyncio
 from monarch._src.actor.shape import NDSlice
-
 from monarch.common import messages
 from monarch.common.function import ResolvableFunction
 from monarch.common.messages import DependentOnError, Dims
@@ -703,9 +701,9 @@ class Worker:
         return inputs, unflatten
 
     def SendValue(self, m: messages.SendValue):
-        assert (
-            not _tls.tracing
-        ), "controller should have prevented SendValue in repeat block."
+        assert not _tls.tracing, (
+            "controller should have prevented SendValue in repeat block."
+        )
         stream: Stream = self.resolve(m.stream).get()
         pipe: Optional["WorkerPipe"] = (
             self.resolve(m.destination).get() if m.destination is not None else None
@@ -848,9 +846,9 @@ class Worker:
 
     def BorrowDrop(self, m: messages.BorrowDrop):
         _, borrow = self.borrows.pop(m.borrow)
-        assert (
-            not _tls.tracing or borrow in _tls.tracing.defined_borrows
-        ), "controller should have stopped a drop of a borrow not created in a repeat loop"
+        assert not _tls.tracing or borrow in _tls.tracing.defined_borrows, (
+            "controller should have stopped a drop of a borrow not created in a repeat loop"
+        )
         stream = borrow.from_stream
         stream.borrow_drop(borrow)
 
