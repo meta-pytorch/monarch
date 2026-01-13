@@ -54,9 +54,9 @@
 //! # Examples
 //!
 //! ```
-//! use ndslice::algebra::BoundedJoinSemilattice;
-//! use ndslice::algebra::JoinSemilattice;
-//! use ndslice::algebra::Max;
+//! use algebra::BoundedJoinSemilattice;
+//! use algebra::JoinSemilattice;
+//! use algebra::Max;
 //!
 //! let a = Max(5);
 //! let b = Max(10);

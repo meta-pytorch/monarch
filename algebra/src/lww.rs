@@ -18,12 +18,12 @@ use super::JoinSemilattice;
 
 /// A **Last-Writer-Wins register** lattice.
 ///
-/// The state is a triple `(value, ts, replica)` where `ts` is a logical
-/// timestamp (e.g. Lamport clock, HLC, or monotone counter) and `replica`
-/// is a unique identifier for the writer. Ordering uses `(ts, replica)`
-/// lexicographically, yielding a total order on register versions; `join`
-/// returns the greater version and is commutative, associative, and
-/// idempotent.
+/// The state is a triple `(value, ts, replica)` where `ts` is a
+/// logical timestamp (e.g. Lamport clock, HLC, or monotone counter)
+/// and `replica` is a unique identifier for the writer. Ordering uses
+/// `(ts, replica)` lexicographically, yielding a total order on
+/// register versions; `join` returns the greater version and is
+/// commutative, associative, and idempotent.
 ///
 /// This makes `LWW<T>` a simple register-style lattice that can be
 /// used as the payload in higher-level CRDTs or accumulators where
@@ -45,8 +45,8 @@ use super::JoinSemilattice;
 /// # Example
 ///
 /// ```
-/// use ndslice::algebra::JoinSemilattice;
-/// use ndslice::algebra::LWW;
+/// use algebra::JoinSemilattice;
+/// use algebra::LWW;
 ///
 /// // Two writers (replicas 1 and 2) with different timestamps
 /// let v1 = LWW::new(100, 1, 1);
