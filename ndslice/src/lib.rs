@@ -58,6 +58,9 @@ pub mod utils;
 /// A small parsing library for identifiers.
 pub mod parse;
 
+/// Algebraic structures for accumulation and reduction.
+pub mod algebra;
+
 /// Types to describe extents, points and views.
 pub mod view;
 /// Describes the shape of a coordinate space.

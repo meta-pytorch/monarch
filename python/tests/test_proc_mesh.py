@@ -298,9 +298,12 @@ def test_context_proc_mesh_in_controller_spawns_actor_in_client_os_process() -> 
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_proc_meshes() -> None:
     orig_get_client_context = _client_context.get
-    with patch.object(_client_context, "get") as mock_get_client_context, patch.object(
-        monarch._src.actor.host_mesh, "fake_in_process_host"
-    ) as mock_fake_in_process_host:
+    with (
+        patch.object(_client_context, "get") as mock_get_client_context,
+        patch.object(
+            monarch._src.actor.host_mesh, "fake_in_process_host"
+        ) as mock_fake_in_process_host,
+    ):
         mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():

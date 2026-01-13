@@ -82,9 +82,7 @@ from functools import partial
 from typing import Callable
 
 import numpy as np
-
 import pytest
-
 import torch
 from monarch.actor import Actor, endpoint, this_host
 from monarch.rdma import is_rdma_available, RDMABuffer
@@ -143,9 +141,9 @@ class RDMABufferTestReceiver(Actor):
 
         await buffer.read_into(tensor, timeout=TIMEOUT)
         expected = self.data[key]
-        assert torch.allclose(
-            tensor, expected
-        ), "dst tensor is not equal to expected tensor after read_into."
+        assert torch.allclose(tensor, expected), (
+            "dst tensor is not equal to expected tensor after read_into."
+        )
 
     @endpoint
     async def do_write_from_random(
@@ -157,9 +155,9 @@ class RDMABufferTestReceiver(Actor):
         )
         tensor_copy = tensor.clone()
         await buffer.write_from(tensor, timeout=TIMEOUT)
-        assert torch.equal(
-            tensor_copy, tensor
-        ), "Source tensor was modified during write_from()."
+        assert torch.equal(tensor_copy, tensor), (
+            "Source tensor was modified during write_from()."
+        )
 
 
 class RDMABufferTestController(Actor):
@@ -223,9 +221,9 @@ class RDMABufferTestController(Actor):
                 for key, tensor in tensors.items()
             }
             for key, tensor in tensors.items():
-                assert torch.equal(
-                    tensor, expected[key]
-                ), "Remote tensor is not equal to local tensor (RDMABuffer) after write_from() for key {key}"
+                assert torch.equal(tensor, expected[key]), (
+                    "Remote tensor is not equal to local tensor (RDMABuffer) after write_from() for key {key}"
+                )
 
         except Exception as e:
             return e
@@ -252,9 +250,9 @@ class RDMABufferTestController(Actor):
                 for key, tensor in tensors.items()
             }
             for key, tensor in tensors.items():
-                assert torch.equal(
-                    tensor, expected[key]
-                ), "Remote tensor is not equal to local tensor (RDMABuffer) after write_from() for key {key}"
+                assert torch.equal(tensor, expected[key]), (
+                    "Remote tensor is not equal to local tensor (RDMABuffer) after write_from() for key {key}"
+                )
 
         except Exception as e:
             return e

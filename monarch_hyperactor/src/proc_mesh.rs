@@ -450,7 +450,10 @@ struct KeepaliveState(tokio::task::JoinHandle<()>);
 
 impl Drop for KeepaliveState {
     fn drop(&mut self) {
-        self.0.abort();
+        // Guard against panics during interpreter shutdown when tokio runtime may be gone
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.0.abort();
+        }));
     }
 }
 
