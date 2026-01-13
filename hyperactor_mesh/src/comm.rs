@@ -339,6 +339,15 @@ fn split_ports(
                 UnboundPortKind::Streaming(opts) => {
                     ReducerMode::Streaming(opts.clone().unwrap_or_default())
                 }
+                UnboundPortKind::Once if reducer_spec.is_none() => {
+                    // We can only split OncePorts that have reducers.
+                    // Pass this through -- if it is used multiple times,
+                    // it will cause a delivery error downstream.
+                    // However we should reconsider this behavior
+                    // as it its semantics will now differ between
+                    // unicast and broadcast messages.
+                    return Ok(());
+                }
                 UnboundPortKind::Once => ReducerMode::Once(peer_count),
             };
 
