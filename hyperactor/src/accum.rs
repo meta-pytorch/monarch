@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use ndslice::algebra::JoinSemilattice;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -294,42 +295,29 @@ pub fn sum<T: std::ops::Add<Output = T> + Copy + Named + 'static>()
     SumAccumulator(PhantomData)
 }
 
+/// Re-export Max from ndslice algebra module.
+pub use ndslice::algebra::Max;
+
 #[derive(typeuri::Named)]
 struct MaxReducer<T>(PhantomData<T>);
 
-impl<T: Ord> CommReducer for MaxReducer<T> {
-    type Update = T;
+impl<T: Ord + Clone> CommReducer for MaxReducer<T> {
+    type Update = Max<T>;
 
-    fn reduce(&self, left: T, right: T) -> anyhow::Result<T> {
-        Ok(std::cmp::max(left, right))
-    }
-}
-
-/// The state of a [`Max`] accumulator.
-#[derive(Debug, Clone, Default)]
-pub struct Max<T>(Option<T>);
-
-impl<T> Max<T> {
-    /// Get the accumulated value.
-    pub fn get(&self) -> &T {
-        self.0
-            .as_ref()
-            .expect("accumulator state should have been intialized.")
+    fn reduce(&self, left: Max<T>, right: Max<T>) -> anyhow::Result<Max<T>> {
+        Ok(left.join(&right))
     }
 }
 
 /// Accumulate the max of received updates.
 struct MaxAccumulator<T>(PhantomData<T>);
 
-impl<T: Ord + Copy + Named + 'static> Accumulator for MaxAccumulator<T> {
+impl<T: Ord + Clone + Named + 'static> Accumulator for MaxAccumulator<T> {
     type State = Max<T>;
-    type Update = T;
+    type Update = Max<T>;
 
-    fn accumulate(&self, state: &mut Self::State, update: T) -> anyhow::Result<()> {
-        match state.0.as_mut() {
-            Some(s) => *s = std::cmp::max(*s, update),
-            None => *state = Max(Some(update)),
-        }
+    fn accumulate(&self, state: &mut Max<T>, update: Max<T>) -> anyhow::Result<()> {
+        *state = state.join(&update);
         Ok(())
     }
 
@@ -343,46 +331,34 @@ impl<T: Ord + Copy + Named + 'static> Accumulator for MaxAccumulator<T> {
 
 /// Accumulate the max of received updates (i.e. the largest value of all
 /// received updates).
-pub fn max<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = Max<T>, Update = T> {
+pub fn max<T: Ord + Clone + Named + 'static>() -> impl Accumulator<State = Max<T>, Update = Max<T>>
+{
     MaxAccumulator(PhantomData::<T>)
 }
+
+/// Re-export Min from ndslice algebra module.
+pub use ndslice::algebra::Min;
 
 #[derive(typeuri::Named)]
 struct MinReducer<T>(PhantomData<T>);
 
-impl<T: Ord> CommReducer for MinReducer<T> {
-    type Update = T;
+impl<T: Ord + Clone> CommReducer for MinReducer<T> {
+    type Update = Min<T>;
 
-    fn reduce(&self, left: T, right: T) -> anyhow::Result<T> {
-        Ok(std::cmp::min(left, right))
-    }
-}
-
-/// The state of a [`Min`] accumulator.
-#[derive(Debug, Clone, Default)]
-pub struct Min<T>(Option<T>);
-
-impl<T> Min<T> {
-    /// Get the accumulated value.
-    pub fn get(&self) -> &T {
-        self.0
-            .as_ref()
-            .expect("accumulator state should have been intialized.")
+    fn reduce(&self, left: Min<T>, right: Min<T>) -> anyhow::Result<Min<T>> {
+        Ok(left.join(&right))
     }
 }
 
 /// Accumulate the min of received updates.
 struct MinAccumulator<T>(PhantomData<T>);
 
-impl<T: Ord + Copy + Named + 'static> Accumulator for MinAccumulator<T> {
+impl<T: Ord + Clone + Named + 'static> Accumulator for MinAccumulator<T> {
     type State = Min<T>;
-    type Update = T;
+    type Update = Min<T>;
 
-    fn accumulate(&self, state: &mut Min<T>, update: T) -> anyhow::Result<()> {
-        match state.0.as_mut() {
-            Some(s) => *s = std::cmp::min(*s, update),
-            None => *state = Min(Some(update)),
-        }
+    fn accumulate(&self, state: &mut Min<T>, update: Min<T>) -> anyhow::Result<()> {
+        *state = state.join(&update);
         Ok(())
     }
 
@@ -396,7 +372,8 @@ impl<T: Ord + Copy + Named + 'static> Accumulator for MinAccumulator<T> {
 
 /// Accumulate the min of received updates (i.e. the smallest value of all
 /// received updates).
-pub fn min<T: Ord + Copy + Named + 'static>() -> impl Accumulator<State = Min<T>, Update = T> {
+pub fn min<T: Ord + Clone + Named + 'static>() -> impl Accumulator<State = Min<T>, Update = Min<T>>
+{
     MinAccumulator(PhantomData)
 }
 
@@ -500,19 +477,23 @@ mod tests {
 
     #[test]
     fn test_comm_reducer_numeric() {
-        let u64_numbers: Vec<_> = serialize(vec![1u64, 3u64, 1100u64]);
-        let i64_numbers: Vec<_> = serialize(vec![-123i64, 33i64, 110i64]);
+        let u64_numbers_sum: Vec<_> = serialize(vec![1u64, 3u64, 1100u64]);
+        let i64_numbers_sum: Vec<_> = serialize(vec![-123i64, 33i64, 110i64]);
+        let u64_numbers_max: Vec<_> = serialize(vec![Max(1u64), Max(3u64), Max(1100u64)]);
+        let i64_numbers_max: Vec<_> = serialize(vec![Max(-123i64), Max(33i64), Max(110i64)]);
+        let u64_numbers_min: Vec<_> = serialize(vec![Min(1u64), Min(3u64), Min(1100u64)]);
+        let i64_numbers_min: Vec<_> = serialize(vec![Min(-123i64), Min(33i64), Min(110i64)]);
         {
             let typehash = <MaxReducer<u64> as Named>::typehash();
             assert_eq!(
                 resolve_reducer(typehash, None)
                     .unwrap()
                     .unwrap()
-                    .reduce_updates(u64_numbers.clone())
+                    .reduce_updates(u64_numbers_max.clone())
                     .unwrap()
-                    .deserialized::<u64>()
+                    .deserialized::<Max<u64>>()
                     .unwrap(),
-                1100u64,
+                Max(1100u64),
             );
 
             let typehash = <MinReducer<u64> as Named>::typehash();
@@ -520,11 +501,11 @@ mod tests {
                 resolve_reducer(typehash, None)
                     .unwrap()
                     .unwrap()
-                    .reduce_updates(u64_numbers.clone())
+                    .reduce_updates(u64_numbers_min.clone())
                     .unwrap()
-                    .deserialized::<u64>()
+                    .deserialized::<Min<u64>>()
                     .unwrap(),
-                1u64,
+                Min(1u64),
             );
 
             let typehash = <SumReducer<u64> as Named>::typehash();
@@ -532,7 +513,7 @@ mod tests {
                 resolve_reducer(typehash, None)
                     .unwrap()
                     .unwrap()
-                    .reduce_updates(u64_numbers)
+                    .reduce_updates(u64_numbers_sum)
                     .unwrap()
                     .deserialized::<u64>()
                     .unwrap(),
@@ -546,11 +527,11 @@ mod tests {
                 resolve_reducer(typehash, None)
                     .unwrap()
                     .unwrap()
-                    .reduce_updates(i64_numbers.clone())
+                    .reduce_updates(i64_numbers_max.clone())
                     .unwrap()
-                    .deserialized::<i64>()
+                    .deserialized::<Max<i64>>()
                     .unwrap(),
-                110i64,
+                Max(110i64),
             );
 
             let typehash = <MinReducer<i64> as Named>::typehash();
@@ -558,11 +539,11 @@ mod tests {
                 resolve_reducer(typehash, None)
                     .unwrap()
                     .unwrap()
-                    .reduce_updates(i64_numbers.clone())
+                    .reduce_updates(i64_numbers_min.clone())
                     .unwrap()
-                    .deserialized::<i64>()
+                    .deserialized::<Min<i64>>()
                     .unwrap(),
-                -123i64,
+                Min(-123i64),
             );
 
             let typehash = <SumReducer<i64> as Named>::typehash();
@@ -570,7 +551,7 @@ mod tests {
                 resolve_reducer(typehash, None)
                     .unwrap()
                     .unwrap()
-                    .reduce_updates(i64_numbers)
+                    .reduce_updates(i64_numbers_sum)
                     .unwrap()
                     .deserialized::<i64>()
                     .unwrap(),

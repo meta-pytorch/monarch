@@ -8,7 +8,6 @@
 
 import functools
 import logging
-
 from logging import Logger
 from typing import (
     Any,
@@ -26,13 +25,11 @@ from typing import (
 )
 
 import monarch.common.messages as messages
-
 import torch
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape
 from monarch._src.actor.actor_mesh import Port
 from monarch._src.actor.endpoint import Selection
 from monarch._src.actor.future import Future
-
 from monarch.common import _coalescing, device_mesh, stream
 from monarch.common.future import Future as OldFuture
 
@@ -42,7 +39,6 @@ if TYPE_CHECKING:
 from monarch._src.actor.endpoint import Endpoint
 from monarch.common.device_mesh import RemoteProcessGroup
 from monarch.common.fake import fake_call
-
 from monarch.common.function import (
     Propagator,
     resolvable_function,
@@ -56,7 +52,6 @@ from monarch.common.function_caching import (
     TensorPlaceholder,
 )
 from monarch.common.messages import Dims
-
 from monarch.common.tensor import dtensor_check, dtensor_dispatch, InputChecker
 from monarch.common.tree import flatten, tree_map
 from torch import autograd, distributed as dist

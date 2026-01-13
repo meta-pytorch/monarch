@@ -12,7 +12,6 @@ from monarch.common.function import (
     resolvable_function,
     ResolvableFunction,
 )
-
 from monarch.common.opaque_ref import OpaqueRef
 from monarch.common.remote import call_on_shard_and_fetch, remote
 
