@@ -7,6 +7,7 @@
  */
 
 use std::error::Error;
+use std::fmt::Debug;
 use std::future::pending;
 use std::ops::Deref;
 use std::sync::OnceLock;
@@ -215,6 +216,7 @@ impl PythonMessage {
                     .unwrap()
                     .into();
                     let response_port = LocalPort {
+                        instance: cx.into(),
                         inner: Some(state.response_port),
                     }
                     .into_py_any(py)
@@ -1044,6 +1046,9 @@ async fn handle_async_endpoint_panic(
     actor_id: String,
     endpoint: String,
 ) {
+    // Create a local client for this task.
+    let proc = Proc::local();
+    let (client, _) = proc.instance("async_endpoint_handler").unwrap();
     // Create attributes for metrics with actor_id and endpoint
     let attributes =
         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id, "endpoint" => endpoint);
@@ -1090,7 +1095,7 @@ async fn handle_async_endpoint_panic(
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
 
         panic_sender
-            .send(PanicFromPy(panic))
+            .send(&client, PanicFromPy(panic))
             .expect("Unable to send panic message");
     }
 
@@ -1100,9 +1105,17 @@ async fn handle_async_endpoint_panic(
 }
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Debug)]
 struct LocalPort {
+    instance: PyInstance,
     inner: Option<OncePortHandle<Result<PyObject, PyObject>>>,
+}
+
+impl Debug for LocalPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalPort")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 pub(crate) fn to_py_error<T>(e: T) -> PyErr
@@ -1116,11 +1129,13 @@ where
 impl LocalPort {
     fn send(&mut self, obj: PyObject) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(Ok(obj)).map_err(to_py_error)
+        port.send(self.instance.deref(), Ok(obj))
+            .map_err(to_py_error)
     }
     fn exception(&mut self, e: PyObject) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(Err(e)).map_err(to_py_error)
+        port.send(self.instance.deref(), Err(e))
+            .map_err(to_py_error)
     }
 }
 

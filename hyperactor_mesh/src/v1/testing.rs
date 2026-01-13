@@ -107,7 +107,7 @@ impl TestRootClient {
                     )
                 }
             };
-            instance.proc().handle_supervision_event(event);
+            instance.proc().handle_supervision_event(instance, event);
         })
     }
 }
