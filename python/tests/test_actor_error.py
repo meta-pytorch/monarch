@@ -13,6 +13,7 @@ import importlib.resources
 import os
 import re
 import subprocess
+import time
 from typing import cast
 
 import monarch.actor
@@ -198,13 +199,19 @@ async def test_actor_init_exception_buggered(mesh, actor_class, num_procs) -> No
     The correct behavior here should be to raise a supervision exception.
     """
     proc = mesh({"gpus": num_procs})
-    exception_actor = proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-    with pytest.raises(ActorError, match="This is an exception from __init__"):
-        if num_procs == 1:
-            await exception_actor.noop.call_one()
-        else:
-            await exception_actor.noop.call()
+    # The exception in the constructor will be an unhandled fault by default,
+    # override this to examine the normal behavior.
+    with override_fault_hook():
+        exception_actor = proc.spawn(
+            "exception_actor", actor_class, except_on_init=True
+        )
+        with pytest.raises(ActorError, match="This is an exception from __init__"):
+            if num_procs == 1:
+                await exception_actor.noop.call_one()
+            else:
+                await exception_actor.noop.call()
+        await asyncio.sleep(3)
 
 
 @pytest.mark.parametrize(
@@ -223,15 +230,21 @@ def test_actor_init_exception_sync_buggered(mesh, actor_class, num_procs) -> Non
     The correct behavior here should be to raise a supervision exception.
     """
     proc = mesh({"gpus": num_procs})
-    exception_actor = proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-    with pytest.raises(ActorError, match="This is an exception from __init__"):
-        if num_procs == 1:
-            exception_actor.noop.call_one().get()
-        else:
-            exception_actor.noop.call().get()
+    # Same reason as the async test variant.
+    with override_fault_hook():
+        exception_actor = proc.spawn(
+            "exception_actor", actor_class, except_on_init=True
+        )
+        with pytest.raises(ActorError, match="This is an exception from __init__"):
+            if num_procs == 1:
+                exception_actor.noop.call_one().get()
+            else:
+                exception_actor.noop.call().get()
+        time.sleep(3)
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -582,6 +595,7 @@ async def test_errors_propagated() -> None:
     assert "value error" in str(err_info.value)
 
 
+@pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 async def test_actor_mesh_supervision_handling() -> None:
     # This test doesn't want the client process to crash during testing.
