@@ -448,6 +448,11 @@ impl MessageEnvelope {
     fn return_undeliverable(&self) -> bool {
         self.return_undeliverable
     }
+
+    /// Get a mutable reference to this envelope's headers.
+    pub fn headers_mut(&mut self) -> &mut Attrs {
+        &mut self.headers
+    }
 }
 
 impl fmt::Display for MessageEnvelope {
