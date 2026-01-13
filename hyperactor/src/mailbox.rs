@@ -2737,28 +2737,28 @@ mod tests {
         let (port, mut receiver) = mbox.open_accum_port(accum::max::<i64>());
 
         for i in -3..4 {
-            port.send(i).unwrap();
+            port.send(accum::Max(i)).unwrap();
             let received: accum::Max<i64> = receiver.recv().await.unwrap();
             let msg = received.get();
             assert_eq!(msg, &i);
         }
         // Send a smaller or same value. Should still receive the previous max.
         for i in -3..4 {
-            port.send(i).unwrap();
+            port.send(accum::Max(i)).unwrap();
             assert_eq!(receiver.recv().await.unwrap().get(), &3);
         }
         // send a larger value. Should receive the new max.
-        port.send(4).unwrap();
+        port.send(accum::Max(4)).unwrap();
         assert_eq!(receiver.recv().await.unwrap().get(), &4);
 
         // Send multiple updates. Should only receive the final change.
         for i in 5..10 {
-            port.send(i).unwrap();
+            port.send(accum::Max(i)).unwrap();
         }
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
-        port.send(1).unwrap();
-        port.send(3).unwrap();
-        port.send(2).unwrap();
+        port.send(accum::Max(1)).unwrap();
+        port.send(accum::Max(3)).unwrap();
+        port.send(accum::Max(2)).unwrap();
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
     }
 

@@ -12,7 +12,6 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import Mock, patch
 
 import pytest
-
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMeshV1,
 )
@@ -194,11 +193,14 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         mock_client = Mock()
         self.logging_manager._logging_mesh_client = mock_client
 
-        with patch.object(
-            self.logging_manager, "register_flusher_if_in_ipython"
-        ) as mock_register, patch.object(
-            self.logging_manager, "enable_fd_capture_if_in_ipython"
-        ) as mock_enable:
+        with (
+            patch.object(
+                self.logging_manager, "register_flusher_if_in_ipython"
+            ) as mock_register,
+            patch.object(
+                self.logging_manager, "enable_fd_capture_if_in_ipython"
+            ) as mock_enable,
+        ):
             # Execute: call logging_option with valid parameters
             await self.logging_manager.logging_option(
                 stream_to_client=False,
