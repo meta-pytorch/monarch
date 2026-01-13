@@ -43,9 +43,9 @@ class profile:
             "path to save the profiler."
         )
         schedule = kwargs.get("schedule", None)
-        assert (
-            isinstance(schedule, Schedule) or schedule is None
-        ), "schedule can only be monarch.profiler.Schedule or None."
+        assert isinstance(schedule, Schedule) or schedule is None, (
+            "schedule can only be monarch.profiler.Schedule or None."
+        )
         self.id = next(self._counter)
         _profiler_controller_init(self.id, *args, **kwargs)
 
@@ -72,9 +72,9 @@ _profilers: Dict[int, _Profiler] = {}
 
 def _profiler_init(ident, *args, **kwargs) -> None:
     global _profilers
-    assert (
-        ident not in _profilers
-    ), f"Initializing an already existing profiler, {ident=}"
+    assert ident not in _profilers, (
+        f"Initializing an already existing profiler, {ident=}"
+    )
     _profilers[ident] = _Profiler(args, kwargs)
     # It's unclear why we cannot create the profiler here. Even though
     # the thread is the same, profiler complains thread id mismatch.
