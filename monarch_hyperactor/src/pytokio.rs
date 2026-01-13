@@ -499,7 +499,10 @@ impl Drop for PyShared {
         if self.abort {
             // When the PyShared is dropped, we don't want the background task to go
             // forever, because nothing will wait on the rx.
-            self.handle.abort();
+            // Guard against panics during interpreter shutdown when tokio runtime may be gone
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.handle.abort();
+            }));
         }
     }
 }

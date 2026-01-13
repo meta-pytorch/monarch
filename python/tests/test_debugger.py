@@ -18,11 +18,8 @@ from typing import cast, List, Optional, Tuple, TypeVar
 from unittest.mock import AsyncMock, patch
 
 import cloudpickle
-
 import monarch
-
 import pytest
-
 import torch
 from monarch._src.actor.actor_mesh import (
     Actor,
@@ -60,7 +57,6 @@ from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
 )
-
 from pyre_extensions import none_throws
 
 
@@ -277,9 +273,12 @@ async def _test_debug(nested: bool) -> None:
     output_mock = AsyncMock()
     output_mock.side_effect = _patch_output
 
-    with patch(
-        "monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock
-    ), patch("monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock):
+    with (
+        patch("monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock),
+        patch(
+            "monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock
+        ),
+    ):
         debug_controller = await get_or_spawn_controller(
             "debug_controller", DebugControllerForTesting
         )
@@ -807,7 +806,7 @@ async def test_debug_command_parser_valid_inputs(user_input, expected_output):
         "attach",
         "a actor",
         "attach actor",
-        "attacha actor 1" "attch actor 1",
+        "attacha actor 1attch actor 1",
         "attach actor 1abc",
         "attach actor 1 a",
         "cast ranks(123) b 25",
@@ -872,13 +871,11 @@ async def test_debug_cli():
 
     port = debug_controller.server_port.call_one().get()
 
-    async def create_debug_cli_proc() -> (
-        Tuple[
-            Optional[asyncio.subprocess.Process],
-            asyncio.StreamWriter,
-            asyncio.StreamReader,
-        ]
-    ):
+    async def create_debug_cli_proc() -> Tuple[
+        Optional[asyncio.subprocess.Process],
+        asyncio.StreamWriter,
+        asyncio.StreamReader,
+    ]:
         cmd = None
         if IN_PAR:
             cmd = [
@@ -1224,9 +1221,12 @@ async def test_debug_with_pickle_by_value():
     output_mock = AsyncMock()
     output_mock.side_effect = _patch_output
 
-    with patch(
-        "monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock
-    ), patch("monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock):
+    with (
+        patch("monarch._src.actor.debugger.debug_io.DebugStdIO.input", new=input_mock),
+        patch(
+            "monarch._src.actor.debugger.debug_io.DebugStdIO.output", new=output_mock
+        ),
+    ):
         debug_controller = get_or_spawn_controller(
             "debug_controller", DebugControllerForTesting
         ).get()
