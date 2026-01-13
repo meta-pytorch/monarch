@@ -179,6 +179,13 @@ impl Actor for CommActor {
                 cx.self_id(),
                 return_port.port_id(),
             )));
+
+            // Needed so that the receiver of the undeliverable message can easily find the
+            // original sender of the cast message.
+            message_envelope
+                .headers_mut()
+                .set(CAST_ORIGINATING_SENDER, sender.clone());
+
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
