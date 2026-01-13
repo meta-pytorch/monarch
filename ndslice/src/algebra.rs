@@ -71,6 +71,8 @@
 //! ```
 
 mod join_semilattice;
+mod lattice_map;
+mod lww;
 mod monoid;
 mod primitives;
 mod semigroup;
@@ -78,6 +80,9 @@ mod semigroup;
 // Re-export core traits
 pub use join_semilattice::BoundedJoinSemilattice;
 pub use join_semilattice::JoinSemilattice;
+// Re-export composite lattice types
+pub use lattice_map::LatticeMap;
+pub use lww::LWW;
 pub use monoid::CommutativeMonoid;
 pub use monoid::Monoid;
 // Re-export primitive lattice types
