@@ -548,7 +548,10 @@ impl Drop for PythonActorMeshImpl {
                 "Dropping stopped PythonActorMesh. The underlying mesh is already stopped."
             );
         }
-        self.monitor.abort();
+        // Guard against panics during interpreter shutdown when tokio runtime may be gone
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.monitor.abort();
+        }));
     }
 }
 

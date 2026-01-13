@@ -15,7 +15,6 @@ from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
-
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
 
@@ -153,9 +152,9 @@ class SlurmJob(JobTrait):
             and self._gpus_per_node is not None
         ):
             gpus_per_task = self._gpus_per_node // self._ntasks_per_node
-            assert (
-                self._partition
-            ), "Slurm partition must be set for jobs that share nodes with other jobs"
+            assert self._partition, (
+                "Slurm partition must be set for jobs that share nodes with other jobs"
+            )
             self.share_node(
                 tasks_per_node=self._ntasks_per_node,
                 gpus_per_task=gpus_per_task,

@@ -38,7 +38,6 @@ if TYPE_CHECKING:
     from monarch import timer
     from monarch._src.actor.shape import Extent, NDSlice, Shape
     from monarch.common._coalescing import coalescing
-
     from monarch.common.device_mesh import (
         get_active_mesh,
         no_mesh,
@@ -46,7 +45,6 @@ if TYPE_CHECKING:
         slice_mesh,
         to_mesh,
     )
-
     from monarch.common.function import resolvers as function_resolvers
     from monarch.common.opaque_ref import OpaqueRef
     from monarch.common.remote import remote
