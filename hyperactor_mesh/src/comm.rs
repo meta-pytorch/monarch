@@ -32,8 +32,10 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::message::ErasedUnbound;
 use hyperactor::reference::UnboundPort;
 use hyperactor::reference::UnboundPortKind;
+use ndslice::Point;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
@@ -181,6 +183,13 @@ impl Actor for CommActor {
                 cx.self_id(),
                 return_port.port_id(),
             )));
+
+            // Needed so that the receiver of the undeliverable message can easily find the
+            // original sender of the cast message.
+            message_envelope
+                .headers_mut()
+                .set(CAST_ORIGINATING_SENDER, sender.clone());
+
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
@@ -254,54 +263,23 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
-        // Split ports, if any, and update message with new ports. In this
-        // way, children actors will reply to this comm actor's ports, instead
-        // of to the original ports provided by parent.
-        message.data_mut().visit_mut::<UnboundPort>(
-            |UnboundPort(port_id, reducer_spec, return_undeliverable, kind)| {
-                let reducer_mode = match kind {
-                    UnboundPortKind::Streaming(opts) => {
-                        ReducerMode::Streaming(opts.clone().unwrap_or_default())
-                    }
-                    UnboundPortKind::Once => {
-                        // OncePort splitting not yet supported. Leave as is.
-                        return Ok(());
-                    }
-                };
-
-                let split = port_id.split(
-                    cx,
-                    reducer_spec.clone(),
-                    reducer_mode,
-                    *return_undeliverable,
-                )?;
-
-                #[cfg(test)]
-                tests::collect_split_port(port_id, &split, deliver_here);
-
-                *port_id = split;
-                Ok(())
-            },
-        )?;
+        split_ports(cx, message.data_mut(), deliver_here)?;
 
         // Deliver message here, if necessary.
         if deliver_here {
             let rank_on_root_mesh = mode.self_rank(cx.self_id())?;
             let cast_rank = message.relative_rank(rank_on_root_mesh)?;
-            // Replace ranks with self ranks.
-            message
-                .data_mut()
-                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                    *rank = Some(cast_rank);
-                    Ok(())
-                })?;
             let cast_shape = message.shape();
-            let point = cast_shape
+            let cast_point = cast_shape
                 .extent()
                 .point_of_rank(cast_rank)
                 .expect("rank out of bounds");
+
+            // Replace ranks with self ranks.
+            replace_with_self_ranks(&cast_point, message.data_mut())?;
+
             let mut headers = cx.headers().clone();
-            set_cast_info_on_headers(&mut headers, point, message.sender().clone());
+            set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
             cx.post(
                 cx.self_id()
                     .proc_id()
@@ -336,6 +314,53 @@ impl CommActor {
 
         Ok(())
     }
+}
+
+// Split ports, if any, and update message with new ports. In this
+// way, children actors will reply to this comm actor's ports, instead
+// of to the original ports provided by parent.
+fn split_ports(
+    cx: &Context<CommActor>,
+    data: &mut ErasedUnbound,
+    // append parameter name with _ because it is only used in test.
+    _deliver_here: bool,
+) -> anyhow::Result<()> {
+    // Split ports, if any, and update message with new ports. In this
+    // way, children actors will reply to this comm actor's ports, instead
+    // of to the original ports provided by parent.
+    data.visit_mut::<UnboundPort>(
+        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind)| {
+            let reducer_mode = match kind {
+                UnboundPortKind::Streaming(opts) => {
+                    ReducerMode::Streaming(opts.clone().unwrap_or_default())
+                }
+                UnboundPortKind::Once => {
+                    // OncePort splitting not yet supported. Leave as is.
+                    return Ok(());
+                }
+            };
+
+            let split = port_id.split(
+                cx,
+                reducer_spec.clone(),
+                reducer_mode,
+                *return_undeliverable,
+            )?;
+
+            #[cfg(test)]
+            tests::collect_split_port(port_id, &split, _deliver_here);
+
+            *port_id = split;
+            Ok(())
+        },
+    )
+}
+
+fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
+    data.visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+        *rank = Some(cast_point.rank());
+        Ok(())
+    })
 }
 
 #[async_trait]
