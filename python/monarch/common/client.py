@@ -27,7 +27,6 @@ from typing import (
     TYPE_CHECKING,
     Union,
 )
-
 from weakref import WeakKeyDictionary
 
 import torch
@@ -41,11 +40,9 @@ from monarch.common import messages
 from monarch.common.borrows import Borrow, StorageAliases
 from monarch.common.controller_api import LogMessage, MessageResult, TController
 from monarch.common.device_mesh import DeviceMesh
-
 from monarch.common.future import Future
 from monarch.common.invocation import DeviceException, RemoteException, Seq
 from monarch.common.recording import flatten_messages, Recording
-
 from monarch.common.reference import Ref, Referenceable
 from monarch.common.stream import StreamRef
 from monarch.common.tensor import Tensor
@@ -129,9 +126,13 @@ class Client:
             return self.send_nocoalesce(ranks, msg)
         if _coalescing.is_recording(self):
             match msg:
-                case messages.BorrowFirstUse() if msg.borrow not in self.recorder.borrow_entries_created:
+                case messages.BorrowFirstUse() if (
+                    msg.borrow not in self.recorder.borrow_entries_created
+                ):
                     return self.send_nocoalesce(ranks, msg)
-                case messages.BorrowLastUse() if msg.borrow not in self.recorder.borrow_entries_created:
+                case messages.BorrowLastUse() if (
+                    msg.borrow not in self.recorder.borrow_entries_created
+                ):
                     raise ValueError(
                         "cannot explicitly drop a tensor inside a compiled block that was borrowed outside of it."
                     )
@@ -235,8 +236,7 @@ class Client:
         # all messages are processed, we can now stop the system
         if time.time() - start_time >= timeout:
             logger.warning(
-                "timeout waiting for all messages to be processed, "
-                "stop the mesh anyway"
+                "timeout waiting for all messages to be processed, stop the mesh anyway"
             )
         else:
             logger.info("all messages are processed, stop the mesh")
@@ -327,9 +327,9 @@ class Client:
                 assert error.controller_frames is None
                 _, tracebacks = self.pending_results[original_frame_seq]
                 assert tracebacks is not None
-                assert (
-                    len(tracebacks) > index
-                ), f"tracebacks contains {len(tracebacks)} frames, but index is {index}"
+                assert len(tracebacks) > index, (
+                    f"tracebacks contains {len(tracebacks)} frames, but index is {index}"
+                )
                 error.controller_frames = tracebacks[index]
 
         fut, _ = self.pending_results[seq]

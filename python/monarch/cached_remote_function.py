@@ -7,15 +7,12 @@
 # pyre-unsafe
 import importlib
 import logging
-
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Type, Union
 
 import torch
 from monarch.common.process_group import SingleControllerProcessGroupWrapper
-
 from monarch.common.remote import DummyProcessGroup, remote, RemoteProcessGroup
-
 from torch import autograd
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
@@ -237,9 +234,9 @@ def remote_autograd_function(
             f"{target_class} is already a autograd.Function UDF! You are likely monkey-patching too many times"
         )
         return target_class
-    assert issubclass(
-        target_class, autograd.Function
-    ), f"{target_class} is not a torch.autograd.Function!"
+    assert issubclass(target_class, autograd.Function), (
+        f"{target_class} is not a torch.autograd.Function!"
+    )
     if name is None:
         name = f"Remote_{target_class.__name__}"
 
