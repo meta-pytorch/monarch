@@ -17,7 +17,6 @@ import time
 from getpass import getuser
 from importlib.abc import SourceLoader
 from importlib.machinery import ExtensionFileLoader, SourceFileLoader
-
 from pathlib import Path
 from pprint import pprint
 from socket import gethostname
@@ -28,7 +27,6 @@ from typing import Any, List, Optional
 
 import zmq
 from monarch.common.device_mesh import DeviceMesh
-
 from monarch.common.mast import mast_get_jobs, MastJob
 from monarch.common.remote import remote
 from monarch.world_mesh import world_mesh
@@ -329,7 +327,7 @@ def reserve(hosts, nfs=False, force_rebuild=False):
         )
     else:
         environment = os.environ["CONDA_PREFIX"]
-        cache = f'{os.environ["HOME"]}/.controller_notebook_package'
+        cache = f"{os.environ['HOME']}/.controller_notebook_package"
         try:
             with open(cache, "r") as f:
                 package, version = f.read().strip().split(":")
@@ -571,9 +569,9 @@ def mast_mesh(
     if hosts is None:
         hosts = mast_job.get_num_hosts()
     else:
-        assert (
-            hosts <= mast_job.get_num_hosts()
-        ), f"Requested {hosts} hosts, but job only has {mast_job.get_num_hosts()} hosts."
+        assert hosts <= mast_job.get_num_hosts(), (
+            f"Requested {hosts} hosts, but job only has {mast_job.get_num_hosts()} hosts."
+        )
 
     if n_gpus_per_host is None:
         n_gpus_per_host = mast_job.get_gpus_per_host()

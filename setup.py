@@ -15,7 +15,6 @@ from typing import Dict, List, Optional
 from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.extension import Extension
-
 from setuptools_rust import Binding, RustBin, RustExtension
 
 

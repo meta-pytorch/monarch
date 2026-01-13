@@ -11,7 +11,6 @@ import threading
 from typing import Optional, TextIO, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
-
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import (
     LoggingMeshClient as LoggingMeshClientV1,
@@ -110,7 +109,8 @@ class LoggingManager:
         If in IPython, returns backups of the original FDs so they can be restored.
         """
         if IN_IPYTHON:
-            import os, sys
+            import os
+            import sys
 
             r1, w1 = os.pipe()
             r2, w2 = os.pipe()
