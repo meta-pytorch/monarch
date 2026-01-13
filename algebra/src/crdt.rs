@@ -6,7 +6,38 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Last-Writer-Wins (LWW) register CRDT.
+//! **State-based CRDTs** built on lattice primitives.
+//!
+//! This module provides convergent replicated data types implemented in
+//! terms of [`JoinSemilattice`] / [`BoundedJoinSemilattice`]. All types
+//! here are *state-based* CRDTs: replicas exchange full lattice states
+//! and merge them with `join`, guaranteeing convergence under arbitrary
+//! message reordering and duplication.
+//!
+//! # Included Types
+//!
+//! - [`LWW<T>`]: a **Last-Writer-Wins register** lattice storing
+//!   `(value, ts, replica)` and resolving conflicts by picking the value
+//!   with the larger timestamp; equal timestamps use replica ID as
+//!   a deterministic tiebreaker to ensure commutativity.
+//!
+//! # Example
+//!
+//! ```rust
+//! use algebra::JoinSemilattice;
+//! use algebra::LWW;
+//!
+//! // Replica 1 writes value 100 at timestamp 1
+//! let v1 = LWW::new(100, 1, 1);
+//!
+//! // Replica 2 writes value 50 at timestamp 2
+//! let v2 = LWW::new(50, 2, 2);
+//!
+//! // Higher timestamp wins
+//! let merged = v1.join(&v2);
+//! assert_eq!(merged.value, 50);
+//! assert_eq!(merged.ts, 2);
+//! ```
 
 use std::cmp::Ordering;
 
@@ -18,16 +49,16 @@ use super::JoinSemilattice;
 
 /// A **Last-Writer-Wins register** lattice.
 ///
-/// The state is a triple `(value, ts, replica)` where `ts` is a
-/// logical timestamp (e.g. Lamport clock, HLC, or monotone counter)
-/// and `replica` is a unique identifier for the writer. Ordering uses
-/// `(ts, replica)` lexicographically, yielding a total order on
-/// register versions; `join` returns the greater version and is
-/// commutative, associative, and idempotent.
+/// The state is a triple `(value, ts, replica)` where `ts` is a logical
+/// timestamp (e.g. Lamport clock, HLC, or monotone counter) and `replica`
+/// is a unique identifier for the writer. Ordering uses `(ts, replica)`
+/// lexicographically, yielding a total order on register versions; `join`
+/// returns the greater version and is commutative, associative, and
+/// idempotent.
 ///
-/// This makes `LWW<T>` a simple register-style lattice that can be
-/// used as the payload in higher-level CRDTs or accumulators where
-/// "latest value" semantics are needed.
+/// This makes `LWW<T>` a simple register-style lattice that can be used
+/// as the payload in higher-level CRDTs or accumulators where "latest
+/// value" semantics are needed.
 ///
 /// # Properties
 ///
@@ -77,7 +108,8 @@ impl<T: Clone + PartialEq> JoinSemilattice for LWW<T> {
                 } else if other.replica > self.replica {
                     other.clone()
                 } else {
-                    // Same (ts, replica) should mean same write (duplicate delivery)
+                    // Same (ts, replica) should mean same write
+                    // (duplicate delivery)
                     debug_assert!(
                         self.value == other.value,
                         "LWW collision: same (ts, replica) but different values"
@@ -100,7 +132,8 @@ impl<T: Clone + PartialEq + Default> BoundedJoinSemilattice for LWW<T> {
 }
 
 impl<T> LWW<T> {
-    /// Create a new LWW register with the given value, timestamp, and replica ID.
+    /// Create a new LWW register with the given value, timestamp, and
+    /// replica ID.
     pub fn new(value: T, ts: u64, replica: u64) -> Self {
         LWW { value, ts, replica }
     }
