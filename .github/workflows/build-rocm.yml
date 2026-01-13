@@ -1,0 +1,52 @@
+name: Build ROCm
+
+on:
+  workflow_call:
+  push:
+    tags:
+      - ciflow/rocm/*
+  workflow_dispatch:
+
+concurrency:
+  group: build-rocm-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-rocm:
+    name: Build ROCm (rocm6.4-py3.10)
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: 4xlargegpu
+            runs-on: linux.rocm.gpu.gfx942.8.meta-pytorch
+            torch-spec: 'torch --index-url https://download.pytorch.org/whl/rocm6.4/'
+            gpu-arch-type: "rocm"
+            gpu-arch-version: "6.4"
+    with:
+      timeout: 60
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      submodules: recursive
+      upload-artifact: monarch-rocm-${{ github.sha }}
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
+        # TODO TEMPORARY: ROCm6.4 pytorch/almalinux-builder:rocm6.4 image has gcc-toolset-14
+        export PATH=/opt/rh/devtoolset-14/root/usr/bin/:$PATH
+        # Setup build environment (conda + system deps + rust + build deps)
+        setup_build_environment
+        # Install torch nightly
+        pip install ${{ matrix.torch-spec }}
+        pip install -r build-requirements.txt
+        # Setup Tensor Engine
+        setup_tensor_engine
+        # Build monarch (ROCm version)
+        # TODO TEMPORARY: Use USE_TENSOR_ENGINE=0 to avoid Rust build errors with cuda-sys, nccl-sys etc.
+        USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
