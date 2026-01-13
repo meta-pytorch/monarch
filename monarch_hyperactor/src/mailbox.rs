@@ -248,10 +248,9 @@ pub(super) struct PythonPortHandle {
 
 #[pymethods]
 impl PythonPortHandle {
-    // TODO(pzhang) Use instance after its required by PortHandle.
-    fn send(&self, _instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
+    fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
         self.inner
-            .send(message)
+            .send(instance.deref(), message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
         Ok(())
     }
@@ -412,12 +411,12 @@ pub(super) struct PythonOncePortHandle {
 
 #[pymethods]
 impl PythonOncePortHandle {
-    fn send(&mut self, message: PythonMessage) -> PyResult<()> {
+    fn send(&mut self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
         let Some(port) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
 
-        port.send(message)
+        port.send(instance.deref(), message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
         Ok(())
     }
