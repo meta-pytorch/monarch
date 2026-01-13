@@ -406,13 +406,18 @@ impl LoggingMeshClient {
 // remote logging actors; it only stops the local client actor.
 impl Drop for LoggingMeshClient {
     fn drop(&mut self) {
-        match self.client_actor.drain_and_stop() {
-            Ok(_) => {}
-            Err(e) => {
-                // it is ok as during shutdown, the channel might already be closed
-                tracing::debug!("error draining logging client actor during shutdown: {}", e);
+        // Use catch_unwind to guard against panics during interpreter shutdown.
+        // During Python teardown, the tokio runtime or channels may already be
+        // deallocated, and attempting to drain could cause a segfault.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match self.client_actor.drain_and_stop() {
+                Ok(_) => {}
+                Err(e) => {
+                    // it is ok as during shutdown, the channel might already be closed
+                    tracing::debug!("error draining logging client actor during shutdown: {}", e);
+                }
             }
-        }
+        }));
     }
 }
 

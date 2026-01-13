@@ -9,7 +9,6 @@
 import unittest
 
 import pytest
-
 from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.mock import _actor_registry, get_actor_class, patch_actor
@@ -120,8 +119,9 @@ class TestActorMock(unittest.TestCase):
             pass
 
         # Execute: Use multiple patches
-        with patch_actor(OriginalActor, MockActor), patch_actor(
-            SecondOriginalActor, AnotherMockActor
+        with (
+            patch_actor(OriginalActor, MockActor),
+            patch_actor(SecondOriginalActor, AnotherMockActor),
         ):
             # Assert: Both actors are patched
             self.assertEqual(get_actor_class(OriginalActor), MockActor)

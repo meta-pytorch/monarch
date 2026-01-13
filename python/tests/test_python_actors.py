@@ -43,7 +43,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.future import Future
@@ -57,7 +56,6 @@ from monarch._src.actor.host_mesh import (
 )
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, get_or_spawn_controller
 from monarch._src.job.job import LoginJob, ProcessState
-
 from monarch.actor import (
     Accumulator,
     Actor,
@@ -574,9 +572,10 @@ def configured_with_redirected_stdio(
 ) -> Iterator[tuple[Dict[str, Any], RedirectedPaths]]:
     """Apply config overrides and capture stdio for the duration of
     the block."""
-    with configured(**config_overrides) as config, redirected_stdio(
-        capture_stderr
-    ) as paths:
+    with (
+        configured(**config_overrides) as config,
+        redirected_stdio(capture_stderr) as paths,
+    ):
         yield (config, paths)
 
 
@@ -654,12 +653,12 @@ async def test_actor_log_streaming() -> None:
         assert not re.search(
             r"similar log lines.*no print streaming", stderr_content
         ), stderr_content
-        assert not re.search(
-            r"similar log lines.*no log streaming", stdout_content
-        ), stdout_content
-        assert not re.search(
-            r"similar log lines.*no log streaming", stderr_content
-        ), stderr_content
+        assert not re.search(r"similar log lines.*no log streaming", stdout_content), (
+            stdout_content
+        )
+        assert not re.search(r"similar log lines.*no log streaming", stderr_content), (
+            stderr_content
+        )
         assert not re.search(
             r"similar log lines.*no log streaming due to level mismatch",
             stdout_content,
@@ -669,9 +668,9 @@ async def test_actor_log_streaming() -> None:
             stderr_content,
         ), stderr_content
 
-        assert re.search(
-            r"similar log lines.*has print streaming", stdout_content
-        ), stdout_content
+        assert re.search(r"similar log lines.*has print streaming", stdout_content), (
+            stdout_content
+        )
         assert not re.search(
             r"similar log lines.*has print streaming", stderr_content
         ), stderr_content
@@ -745,9 +744,9 @@ async def test_alloc_based_log_streaming() -> None:
                     rf"similar log lines.*{test_name} print streaming",
                     stdout_content,
                 ), f"stream_logs=False case: {stdout_content}"
-                assert re.search(
-                    rf"{test_name} print streaming", stdout_content
-                ), f"stream_logs=False case: {stdout_content}"
+                assert re.search(rf"{test_name} print streaming", stdout_content), (
+                    f"stream_logs=False case: {stdout_content}"
+                )
             else:
                 # When stream_logs=True, logs should be streamed to client (no aggregation by default)
                 assert re.search(
@@ -795,19 +794,19 @@ async def test_logging_option_defaults() -> None:
             stderr_content = f.read()
 
         # Assertions on the captured output
-        assert not re.search(
-            r"similar log lines.*print streaming", stdout_content
-        ), stdout_content
+        assert not re.search(r"similar log lines.*print streaming", stdout_content), (
+            stdout_content
+        )
         assert re.search(r"print streaming", stdout_content), stdout_content
-        assert not re.search(
-            r"similar log lines.*print streaming", stderr_content
-        ), stderr_content
-        assert not re.search(
-            r"similar log lines.*log streaming", stdout_content
-        ), stdout_content
-        assert not re.search(
-            r"similar log lines.*log streaming", stderr_content
-        ), stderr_content
+        assert not re.search(r"similar log lines.*print streaming", stderr_content), (
+            stderr_content
+        )
+        assert not re.search(r"similar log lines.*log streaming", stdout_content), (
+            stdout_content
+        )
+        assert not re.search(r"similar log lines.*log streaming", stderr_content), (
+            stderr_content
+        )
 
 
 class MockEvents:
@@ -840,16 +839,19 @@ async def test_flush_called_only_once() -> None:
         enable_log_forwarding=True, enable_file_capture=True, tail_log_lines=100
     ):
         mock_ipython = MockIPython()
-        with unittest.mock.patch(
-            "IPython.get_ipython",
-            lambda: mock_ipython,
-        ), unittest.mock.patch(
-            "monarch._src.actor.logging.IN_IPYTHON", True
-        ), unittest.mock.patch(
-            "monarch._src.actor.logging.flush_all_proc_mesh_logs"
-        ) as mock_flush, unittest.mock.patch(
-            "monarch._src.actor.logging.LoggingManager.enable_fd_capture_if_in_ipython",
-            return_value=None,
+        with (
+            unittest.mock.patch(
+                "IPython.get_ipython",
+                lambda: mock_ipython,
+            ),
+            unittest.mock.patch("monarch._src.actor.logging.IN_IPYTHON", True),
+            unittest.mock.patch(
+                "monarch._src.actor.logging.flush_all_proc_mesh_logs"
+            ) as mock_flush,
+            unittest.mock.patch(
+                "monarch._src.actor.logging.LoggingManager.enable_fd_capture_if_in_ipython",
+                return_value=None,
+            ),
         ):
             # Create 2 proc meshes with a large aggregation window
             pm1 = this_host().spawn_procs(per_host={"gpus": 2})
@@ -879,10 +881,13 @@ async def test_flush_logs_ipython() -> None:
     ) as (_, paths):
         mock_ipython = MockIPython()
 
-        with unittest.mock.patch(
-            "IPython.get_ipython",
-            lambda: mock_ipython,
-        ), unittest.mock.patch("monarch._src.actor.logging.IN_IPYTHON", True):
+        with (
+            unittest.mock.patch(
+                "IPython.get_ipython",
+                lambda: mock_ipython,
+            ),
+            unittest.mock.patch("monarch._src.actor.logging.IN_IPYTHON", True),
+        ):
             # Make sure we can register and unregister callbacks
             for _ in range(3):
                 pm1 = this_host().spawn_procs(per_host={"gpus": 2})
@@ -1011,17 +1016,17 @@ async def test_flush_on_disable_aggregation() -> None:
         ), stdout_content
 
         # No aggregated single log lines
-        assert not re.search(
-            r"similar log lines.*single log line", stdout_content
-        ), stdout_content
+        assert not re.search(r"similar log lines.*single log line", stdout_content), (
+            stdout_content
+        )
 
         # 10 = 5 log lines * 2 procs
         total_single = len(
             re.findall(r"\[.* [0-9]+\](?: \[[0-9]+\])? single log line", stdout_content)
         )
-        assert (
-            total_single == 10
-        ), f"Expected 10 single log lines, got {total_single} from {stdout_content}"
+        assert total_single == 10, (
+            f"Expected 10 single log lines, got {total_single} from {stdout_content}"
+        )
 
 
 @pytest.mark.timeout(120)
@@ -1106,9 +1111,9 @@ async def test_adjust_aggregation_window() -> None:
             r"\[6 similar log lines\].*first batch of logs", stdout_content
         ), stdout_content
 
-        assert re.search(
-            r"similar log lines.*second batch of logs", stdout_content
-        ), stdout_content
+        assert re.search(r"similar log lines.*second batch of logs", stdout_content), (
+            stdout_content
+        )
 
 
 class SendAlot(Actor):
@@ -1141,7 +1146,10 @@ class LsActor(Actor):
 
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
-    with tempfile.TemporaryDirectory() as workspace_src, tempfile.TemporaryDirectory() as workspace_dst:
+    with (
+        tempfile.TemporaryDirectory() as workspace_src,
+        tempfile.TemporaryDirectory() as workspace_dst,
+    ):
         host = create_local_host_mesh(env={"WORKSPACE_DIR": workspace_dst})
         pm = host.spawn_procs(per_host={"gpus": 1})
         code_sync_mesh = host
