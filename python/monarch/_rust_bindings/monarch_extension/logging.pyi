@@ -9,7 +9,6 @@
 from typing import final
 
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
-
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 

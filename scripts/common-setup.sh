@@ -155,24 +155,13 @@ setup_test_environment() {
 }
 
 # Run Python test groups for Monarch.
-# Usage: run_test_groups <enable_actor_error_test: 0|1>
-#
-# Arguments:
-#   enable_actor_error_test:
-#       0 → skip python/tests/test_actor_error.py
-#       1 → include python/tests/test_actor_error.py
+# Usage: run_test_groups
 #
 # Tests are executed in 10 sequential groups with process cleanup
 # between runs.
 run_test_groups() {
   set +e
   local test_results_dir="${RUNNER_TEST_RESULTS_DIR:-test-results}"
-  local enable_actor_error_test="${2:-0}"
-  # Validate argument enable_actor_error_test
-  if [[ "$enable_actor_error_test" != "0" && "$enable_actor_error_test" != "1" ]]; then
-    echo "Usage: run_test_groups <enable_actor_error_test: 0|1>"
-    return 2
-  fi
   # Make sure the runtime linker uses the conda env's libstdc++
   # (which was used to compile monarch) instead of the system's.
   # TODO: Revisit this to determine if this is the proper/most
@@ -190,22 +179,12 @@ run_test_groups() {
     pkill -9 python || true
     pkill -9 pytest || true
     sleep 2
-    if [[ "$enable_actor_error_test" == "1" ]]; then
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-            --ignore-glob="**/meta/**" \
-            --dist=no \
-            --group="$GROUP" \
-            --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
-            --splits=10
-    else
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-            --ignore-glob="**/meta/**" \
-            --dist=no \
-            --ignore=python/tests/test_actor_error.py \
-            --group="$GROUP" \
-            --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
-            --splits=10
-    fi
+    LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        --ignore-glob="**/meta/**" \
+        --dist=no \
+        --group="$GROUP" \
+        --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
+        --splits=10
     TEST_EXIT_CODE=$?
     # Check result and record failures
     if [[ $TEST_EXIT_CODE -eq 0 ]]; then

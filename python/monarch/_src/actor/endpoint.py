@@ -33,7 +33,6 @@ from typing import (
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
-
 from monarch._src.actor.future import Future
 from monarch._src.actor.metrics import (
     endpoint_broadcast_error_counter,
@@ -51,7 +50,6 @@ from monarch._src.actor.metrics import (
     endpoint_stream_throughput_counter,
 )
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
-
 from opentelemetry.metrics import Counter, Histogram
 
 T = TypeVar("T")

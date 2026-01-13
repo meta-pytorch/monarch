@@ -232,9 +232,9 @@ class RDMABuffer:
             # Check if CUDA caching allocator is using expandable segments
             _check_cuda_expandable_segments_enabled()
 
-        assert (
-            is_rdma_available()
-        ), "Tried to create an RDMABuffer, but RDMA is not available on this platform."
+        assert is_rdma_available(), (
+            "Tried to create an RDMABuffer, but RDMA is not available on this platform."
+        )
 
         # We need to ensure that _RdmaManager is initialized at this point, because under the hood
         # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case.
