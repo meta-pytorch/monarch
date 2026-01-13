@@ -13,9 +13,7 @@ from typing import ContextManager, List
 from unittest.mock import patch
 
 import monarch
-
 import pytest
-
 import torch
 from monarch import coalescing, fetch_shard, get_active_stream, remote, Stream
 from monarch._testing import TestingContext

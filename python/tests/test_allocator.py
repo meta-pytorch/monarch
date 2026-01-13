@@ -26,14 +26,12 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-
 from monarch._src.actor.allocator import (
     ALLOC_LABEL_PROC_MESH_NAME,
     AllocateMixin,
@@ -48,7 +46,6 @@ from monarch._src.actor.sync_state import fake_sync_state
 from monarch.actor import Actor, current_rank, current_size, endpoint, ValueMesh
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
 from monarch.tools.network import get_sockaddr
-
 from torch.distributed.elastic.utils.distributed import get_free_port
 from torchx.specs import AppState
 
@@ -253,21 +250,24 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             Exception,
             r"exited with code 1: Traceback \(most recent call last\).*",
         ):
-            with remote_process_allocator(
-                envs={
-                    "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
-                    "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-                    "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-                }
-            ) as host1, remote_process_allocator(
-                envs={
-                    "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
-                    "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-                    "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-                }
-            ) as host2:
+            with (
+                remote_process_allocator(
+                    envs={
+                        "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
+                        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
+                        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
+                    }
+                ) as host1,
+                remote_process_allocator(
+                    envs={
+                        "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
+                        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
+                        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
+                    }
+                ) as host2,
+            ):
                 allocator = RemoteAllocator(
                     world_id="test_remote_allocator",
                     initializer=StaticRemoteAllocInitializer(host1, host2),
@@ -541,6 +541,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # now we doing casting without accessing the wrapped type.
             del actor
 
+    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_remote_allocator_with_no_connection(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=1, gpu=4)
 
@@ -561,7 +562,10 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         # create two stacked actor meshes on the same host
         # each actor mesh running on separate process-allocators
 
-        with remote_process_allocator() as host1_a, remote_process_allocator() as host1_b:
+        with (
+            remote_process_allocator() as host1_a,
+            remote_process_allocator() as host1_b,
+        ):
             allocator_a = RemoteAllocator(
                 world_id="a",
                 initializer=StaticRemoteAllocInitializer(host1_a),
