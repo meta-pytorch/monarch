@@ -218,6 +218,18 @@ inventory::submit! {
         builder_f: |_| Ok(Box::new(WatermarkUpdateReducer::<u64>(PhantomData))),
     }
 }
+inventory::submit! {
+    ReducerFactory {
+        typehash_f: <GCounterReducer as Named>::typehash,
+        builder_f: |_| Ok(Box::new(GCounterReducer)),
+    }
+}
+inventory::submit! {
+    ReducerFactory {
+        typehash_f: <PNCounterReducer as Named>::typehash,
+        builder_f: |_| Ok(Box::new(PNCounterReducer)),
+    }
+}
 
 /// Build a reducer object with the given typehash's [CommReducer] type, and
 /// return the type-erased version of it.
@@ -456,7 +468,6 @@ impl<T: Clone + PartialEq> CommReducer for WatermarkUpdateReducer<T> {
     type Update = WatermarkUpdate<T>;
 
     fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        // Use lattice join - fully commutative and idempotent!
         Ok(WatermarkUpdate(left.0.join(&right.0)))
     }
 }
@@ -470,7 +481,6 @@ impl<T: Ord + Clone + PartialEq + Named + 'static> Accumulator
     type Update = WatermarkUpdate<T>;
 
     fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
-        // Use lattice join - no need for replace, just join in place
         *state = WatermarkUpdate(state.0.join(&update.0));
         Ok(())
     }
@@ -493,6 +503,185 @@ impl<T: Ord + Clone + PartialEq + Named + 'static> Accumulator
 pub fn low_watermark<T: Ord + Clone + PartialEq + Named + 'static>()
 -> impl Accumulator<State = WatermarkUpdate<T>, Update = WatermarkUpdate<T>> {
     LowWatermarkUpdateAccumulator(PhantomData)
+}
+
+/// State for a grow-only distributed counter (GCounter CRDT).
+///
+/// Each rank maintains its own count. The total value is the sum of
+/// all ranks' counts. Merge takes pointwise max.
+///
+/// # CRDT Properties
+///
+/// - *Commutative*: Merge order doesn't matter
+/// - *Associative*: Grouping doesn't matter
+/// - *Idempotent*: Merging duplicate updates has no effect
+/// - *Convergent*: All replicas converge to the same state
+#[derive(Default, Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct GCounterUpdate(algebra::LatticeMap<Index, Max<u64>>);
+wirevalue::register_type!(GCounterUpdate);
+
+impl GCounterUpdate {
+    /// Total counter value (sum of all ranks' counts).
+    pub fn get(&self) -> u64 {
+        self.0.iter().map(|(_, max)| max.0).sum()
+    }
+
+    /// Get count for a specific rank.
+    pub fn get_rank(&self, rank: Index) -> Option<u64> {
+        self.0.get(&rank).map(|max| max.0)
+    }
+
+    /// Number of ranks that have contributed.
+    pub fn num_ranks(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl From<(Index, u64)> for GCounterUpdate {
+    /// Create a GCounter update from (rank, count).
+    fn from((rank, count): (Index, u64)) -> Self {
+        let mut map = algebra::LatticeMap::new();
+        map.insert(rank, Max(count));
+        Self(map)
+    }
+}
+
+/// Reducer for GCounterUpdate using lattice join (pointwise max).
+#[derive(typeuri::Named)]
+struct GCounterReducer;
+
+impl CommReducer for GCounterReducer {
+    type Update = GCounterUpdate;
+
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
+        Ok(GCounterUpdate(left.0.join(&right.0)))
+    }
+}
+
+struct GCounterAccumulator;
+
+impl Accumulator for GCounterAccumulator {
+    type State = GCounterUpdate;
+    type Update = GCounterUpdate;
+
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
+        *state = GCounterUpdate(state.0.join(&update.0));
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <GCounterReducer as Named>::typehash(),
+            builder_params: None,
+        })
+    }
+}
+
+/// Accumulate a grow-only distributed counter (GCounter CRDT).
+///
+/// Each rank maintains its own count. The total value is the sum of
+/// all ranks' counts. Merge uses pointwise max, making this
+/// commutative, associative, and idempotent.
+pub fn gcounter() -> impl Accumulator<State = GCounterUpdate, Update = GCounterUpdate> {
+    GCounterAccumulator
+}
+
+/// State for an increment/decrement distributed counter (PNCounter
+/// CRDT).
+///
+/// Internally uses two GCounters: one for increments (P), one for
+/// decrements (N). The value is P - N. Each is merged independently
+/// via pointwise max.
+#[derive(Default, Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct PNCounterUpdate {
+    p: algebra::LatticeMap<Index, Max<u64>>,
+    n: algebra::LatticeMap<Index, Max<u64>>,
+}
+wirevalue::register_type!(PNCounterUpdate);
+
+impl PNCounterUpdate {
+    /// Counter value (sum of increments minus sum of decrements).
+    pub fn get(&self) -> i64 {
+        let p: u64 = self.p.iter().map(|(_, m)| m.0).sum();
+        let n: u64 = self.n.iter().map(|(_, m)| m.0).sum();
+        p as i64 - n as i64
+    }
+
+    /// Create an increment update for a rank.
+    pub fn inc(rank: Index, delta: u64) -> Self {
+        let mut p = algebra::LatticeMap::new();
+        p.insert(rank, Max(delta));
+        Self {
+            p,
+            n: algebra::LatticeMap::new(),
+        }
+    }
+
+    /// Create a decrement update for a rank.
+    pub fn dec(rank: Index, delta: u64) -> Self {
+        let mut n = algebra::LatticeMap::new();
+        n.insert(rank, Max(delta));
+        Self {
+            p: algebra::LatticeMap::new(),
+            n,
+        }
+    }
+
+    /// Number of ranks that have contributed increments.
+    pub fn num_inc_ranks(&self) -> usize {
+        self.p.len()
+    }
+
+    /// Number of ranks that have contributed decrements.
+    pub fn num_dec_ranks(&self) -> usize {
+        self.n.len()
+    }
+}
+
+/// Reducer for PNCounterUpdate using lattice join on both components.
+#[derive(typeuri::Named)]
+struct PNCounterReducer;
+
+impl CommReducer for PNCounterReducer {
+    type Update = PNCounterUpdate;
+
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
+        Ok(PNCounterUpdate {
+            p: left.p.join(&right.p),
+            n: left.n.join(&right.n),
+        })
+    }
+}
+
+struct PNCounterAccumulator;
+
+impl Accumulator for PNCounterAccumulator {
+    type State = PNCounterUpdate;
+    type Update = PNCounterUpdate;
+
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
+        *state = PNCounterUpdate {
+            p: state.p.join(&update.p),
+            n: state.n.join(&update.n),
+        };
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <PNCounterReducer as Named>::typehash(),
+            builder_params: None,
+        })
+    }
+}
+
+/// Accumulate an increment/decrement distributed counter (PNCounter CRDT).
+///
+/// Each rank can increment or decrement. The value is the sum of all
+/// increments minus the sum of all decrements. Merge uses pointwise max
+/// on both components independently.
+pub fn pncounter() -> impl Accumulator<State = PNCounterUpdate, Update = PNCounterUpdate> {
+    PNCounterAccumulator
 }
 
 #[cfg(test)]
@@ -760,5 +949,251 @@ mod tests {
                 "rank is {rank}; value is {value}; ts is {ts}"
             );
         }
+    }
+
+    #[test]
+    fn test_comm_reducer_gcounter() {
+        // Updates from different ranks
+        let updates = serialize::<GCounterUpdate>(vec![
+            GCounterUpdate::from((0, 10)),
+            GCounterUpdate::from((1, 20)),
+            GCounterUpdate::from((0, 15)), // rank 0 increases to 15
+            GCounterUpdate::from((2, 5)),
+            GCounterUpdate::from((1, 25)), // rank 1 increases to 25
+        ]);
+
+        let typehash = <GCounterReducer as Named>::typehash();
+        let result = resolve_reducer(typehash, None)
+            .unwrap()
+            .unwrap()
+            .reduce_updates(updates)
+            .unwrap()
+            .deserialized::<GCounterUpdate>()
+            .unwrap();
+
+        // Each rank should have its max value
+        assert_eq!(result.get_rank(0), Some(15));
+        assert_eq!(result.get_rank(1), Some(25));
+        assert_eq!(result.get_rank(2), Some(5));
+        assert_eq!(result.num_ranks(), 3);
+        // Total is sum of max values: 15 + 25 + 5 = 45
+        assert_eq!(result.get(), 45);
+    }
+
+    #[test]
+    fn test_accum_reducer_gcounter() {
+        assert_eq!(
+            gcounter().reducer_spec().unwrap().typehash,
+            <GCounterReducer as Named>::typehash(),
+        );
+    }
+
+    #[test]
+    fn test_gcounter_accumulator() {
+        let accumulator = gcounter();
+        // (rank, count, expected_total)
+        let ranks_counts_expectations: [(Index, u64, u64); 17] = [
+            // initialize all 3 ranks in descending order
+            (0, 1000, 1000),
+            (1, 100, 1100),
+            (2, 10, 1110),
+            // increase in ascending order
+            (2, 20, 1120),
+            (1, 200, 1220),
+            (0, 2000, 2220),
+            // same values (idempotent - no change)
+            (0, 2000, 2220),
+            (1, 200, 2220),
+            (2, 20, 2220),
+            // lower values (ignored - max wins)
+            (0, 1, 2220),
+            (1, 1, 2220),
+            (2, 1, 2220),
+            // shuffle which rank has max: make rank 2 largest
+            (2, 5000, 7200), // 2000 + 200 + 5000
+            // make rank 1 largest
+            (1, 6000, 13000), // 2000 + 6000 + 5000
+            // make rank 0 largest again
+            (0, 10000, 21000), // 10000 + 6000 + 5000
+            // all ranks increase together
+            (0, 10001, 21001),
+            (1, 6001, 21002),
+        ];
+        let mut state = GCounterUpdate::default();
+        for (rank, count, expected) in ranks_counts_expectations {
+            accumulator
+                .accumulate(&mut state, GCounterUpdate::from((rank, count)))
+                .unwrap();
+            assert_eq!(state.get(), expected, "rank is {rank}; count is {count}");
+        }
+        // Verify final per-rank values
+        assert_eq!(state.get_rank(0), Some(10001));
+        assert_eq!(state.get_rank(1), Some(6001));
+        assert_eq!(state.get_rank(2), Some(5000));
+        assert_eq!(state.get_rank(3), None);
+        assert_eq!(state.num_ranks(), 3);
+    }
+
+    #[test]
+    fn test_gcounter_commutativity() {
+        // Verify that order of accumulation doesn't matter
+        let updates = [
+            GCounterUpdate::from((0, 10)),
+            GCounterUpdate::from((1, 20)),
+            GCounterUpdate::from((0, 15)),
+            GCounterUpdate::from((2, 5)),
+            GCounterUpdate::from((1, 25)),
+        ];
+
+        // Forward order
+        let accumulator = gcounter();
+        let mut forward = GCounterUpdate::default();
+        for update in updates.iter().cloned() {
+            accumulator.accumulate(&mut forward, update).unwrap();
+        }
+
+        // Reverse order
+        let mut reverse = GCounterUpdate::default();
+        for update in updates.iter().rev().cloned() {
+            accumulator.accumulate(&mut reverse, update).unwrap();
+        }
+
+        assert_eq!(forward.get(), reverse.get());
+        assert_eq!(forward.get(), 45); // 15 + 25 + 5
+        assert_eq!(forward.get_rank(0), reverse.get_rank(0));
+        assert_eq!(forward.get_rank(1), reverse.get_rank(1));
+        assert_eq!(forward.get_rank(2), reverse.get_rank(2));
+    }
+
+    #[test]
+    fn test_comm_reducer_pncounter() {
+        // Updates from different ranks with increments and decrements
+        let updates = serialize::<PNCounterUpdate>(vec![
+            PNCounterUpdate::inc(0, 10),
+            PNCounterUpdate::inc(1, 20),
+            PNCounterUpdate::dec(0, 5),
+            PNCounterUpdate::inc(0, 15), // rank 0 inc increases to 15
+            PNCounterUpdate::dec(1, 8),
+            PNCounterUpdate::dec(0, 7), // rank 0 dec increases to 7
+        ]);
+
+        let typehash = <PNCounterReducer as Named>::typehash();
+        let result = resolve_reducer(typehash, None)
+            .unwrap()
+            .unwrap()
+            .reduce_updates(updates)
+            .unwrap()
+            .deserialized::<PNCounterUpdate>()
+            .unwrap();
+
+        // Each rank should have its max values for both inc and dec
+        // rank 0: inc=15, dec=7 -> contribution = 15-7 = 8
+        // rank 1: inc=20, dec=8 -> contribution = 20-8 = 12
+        // Total: 8 + 12 = 20
+        assert_eq!(result.get(), 20);
+        assert_eq!(result.num_inc_ranks(), 2);
+        assert_eq!(result.num_dec_ranks(), 2);
+    }
+
+    #[test]
+    fn test_accum_reducer_pncounter() {
+        assert_eq!(
+            pncounter().reducer_spec().unwrap().typehash,
+            <PNCounterReducer as Named>::typehash(),
+        );
+    }
+
+    #[test]
+    fn test_pncounter_accumulator() {
+        let accumulator = pncounter();
+        // Helper to make updates clearer
+        #[derive(Clone, Copy, Debug)]
+        enum Op {
+            Inc(Index, u64),
+            Dec(Index, u64),
+        }
+        use Op::*;
+
+        // (operation, expected_total)
+        // State tracked: p0, p1, p2 (increments), n0, n1, n2 (decrements)
+        // Total = (p0 + p1 + p2) - (n0 + n1 + n2)
+        let ops_expectations = [
+            // initialize all 3 ranks with increments
+            (Inc(0, 100), 100), // p: 100,0,0 n: 0,0,0 = 100
+            (Inc(1, 50), 150),  // p: 100,50,0 n: 0,0,0 = 150
+            (Inc(2, 25), 175),  // p: 100,50,25 n: 0,0,0 = 175
+            // add decrements
+            (Dec(0, 10), 165), // p: 100,50,25 n: 10,0,0 = 175-10 = 165
+            (Dec(1, 5), 160),  // p: 100,50,25 n: 10,5,0 = 175-15 = 160
+            (Dec(2, 2), 158),  // p: 100,50,25 n: 10,5,2 = 175-17 = 158
+            // increase increments
+            (Inc(0, 200), 258), // p: 200,50,25 n: 10,5,2 = 275-17 = 258
+            (Inc(1, 100), 308), // p: 200,100,25 n: 10,5,2 = 325-17 = 308
+            (Inc(2, 50), 333),  // p: 200,100,50 n: 10,5,2 = 350-17 = 333
+            // increase decrements
+            (Dec(0, 20), 323), // p: 200,100,50 n: 20,5,2 = 350-27 = 323
+            (Dec(1, 15), 313), // p: 200,100,50 n: 20,15,2 = 350-37 = 313
+            (Dec(2, 5), 310),  // p: 200,100,50 n: 20,15,5 = 350-40 = 310
+            // duplicate updates (idempotent - no change)
+            (Inc(0, 200), 310),
+            (Dec(1, 15), 310),
+            // lower values (ignored - max wins)
+            (Inc(0, 1), 310),
+            (Dec(0, 1), 310),
+            // make decrements larger than increments for some ranks
+            (Dec(2, 60), 255),  // p: 200,100,50 n: 20,15,60 = 350-95 = 255
+            (Dec(1, 120), 150), // p: 200,100,50 n: 20,120,60 = 350-200 = 150
+            // rank 1 now contributes negatively: 100 - 120 = -20
+            (Inc(2, 60), 160), // p: 200,100,60 n: 20,120,60 = 360-200 = 160
+            // shuffle: make rank 0 contribute most
+            (Inc(0, 1000), 960), // p: 1000,100,60 n: 20,120,60 = 1160-200 = 960
+            (Dec(2, 100), 920),  // p: 1000,100,60 n: 20,120,100 = 1160-240 = 920
+        ];
+
+        let mut state = PNCounterUpdate::default();
+        for (i, (op, expected)) in ops_expectations.iter().enumerate() {
+            let update = match op {
+                Inc(rank, delta) => PNCounterUpdate::inc(*rank, *delta),
+                Dec(rank, delta) => PNCounterUpdate::dec(*rank, *delta),
+            };
+            accumulator.accumulate(&mut state, update).unwrap();
+            assert_eq!(state.get(), *expected, "step {i}: {op:?}");
+        }
+
+        // Verify final state
+        assert_eq!(state.num_inc_ranks(), 3);
+        assert_eq!(state.num_dec_ranks(), 3);
+    }
+
+    #[test]
+    fn test_pncounter_commutativity() {
+        // Verify that order of accumulation doesn't matter
+        let updates = [
+            PNCounterUpdate::inc(0, 10),
+            PNCounterUpdate::inc(1, 20),
+            PNCounterUpdate::dec(0, 5),
+            PNCounterUpdate::inc(0, 15),
+            PNCounterUpdate::dec(1, 8),
+            PNCounterUpdate::dec(2, 3),
+            PNCounterUpdate::inc(2, 12),
+        ];
+
+        // Forward order
+        let accumulator = pncounter();
+        let mut forward = PNCounterUpdate::default();
+        for update in updates.iter().cloned() {
+            accumulator.accumulate(&mut forward, update).unwrap();
+        }
+
+        // Reverse order
+        let mut reverse = PNCounterUpdate::default();
+        for update in updates.iter().rev().cloned() {
+            accumulator.accumulate(&mut reverse, update).unwrap();
+        }
+
+        assert_eq!(forward.get(), reverse.get());
+        assert_eq!(forward.get(), 31); // (15 + 20 + 12) - (5 + 8 + 3) = 47 - 16 = 31
+        assert_eq!(forward.num_inc_ranks(), reverse.num_inc_ranks());
+        assert_eq!(forward.num_dec_ranks(), reverse.num_dec_ranks());
     }
 }
