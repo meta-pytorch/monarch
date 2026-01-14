@@ -474,6 +474,81 @@ where
     }
 }
 
+use std::collections::HashSet;
+
+/// `HashSet<T>`: join = union
+///
+/// A `HashSet<T>` forms a join-semilattice under set union:
+/// - join = union (∪)
+/// - bottom = empty set (∅)
+///
+/// This makes `HashSet` ideal for tracking "sets of things" in
+/// distributed systems where we want to accumulate all observed values
+/// across replicas.
+impl<T: Eq + Hash + Clone> JoinSemilattice for HashSet<T> {
+    fn join(&self, other: &Self) -> Self {
+        self.union(other).cloned().collect()
+    }
+}
+
+impl<T: Eq + Hash + Clone> BoundedJoinSemilattice for HashSet<T> {
+    fn bottom() -> Self {
+        HashSet::new()
+    }
+}
+
+use std::collections::BTreeSet;
+
+/// `BTreeSet<T>`: join = union
+///
+/// Same semantics as `HashSet`, but uses `Ord` instead of `Hash`.
+impl<T: Ord + Clone> JoinSemilattice for BTreeSet<T> {
+    fn join(&self, other: &Self) -> Self {
+        self.union(other).cloned().collect()
+    }
+}
+
+impl<T: Ord + Clone> BoundedJoinSemilattice for BTreeSet<T> {
+    fn bottom() -> Self {
+        BTreeSet::new()
+    }
+}
+
+/// `Option<L>`: lifted lattice
+///
+/// `Option<L>` lifts a lattice `L` by adding a new bottom element (`None`).
+/// - `None` is the bottom element
+/// - `Some(a).join(Some(b))` = `Some(a.join(b))`
+/// - `None.join(x)` = `x.join(None)` = `x`
+///
+/// This is useful for representing "optional" lattice values where
+/// absence is distinct from any present value.
+impl<L: JoinSemilattice + Clone> JoinSemilattice for Option<L> {
+    fn join(&self, other: &Self) -> Self {
+        match (self, other) {
+            (None, x) | (x, None) => x.clone(),
+            (Some(a), Some(b)) => Some(a.join(b)),
+        }
+    }
+}
+
+impl<L: JoinSemilattice + Clone> BoundedJoinSemilattice for Option<L> {
+    fn bottom() -> Self {
+        None
+    }
+}
+
+/// `()`: trivial unit lattice
+///
+/// The unit type forms a trivial lattice with a single element.
+impl JoinSemilattice for () {
+    fn join(&self, _other: &Self) -> Self {}
+}
+
+impl BoundedJoinSemilattice for () {
+    fn bottom() -> Self {}
+}
+
 // Tests
 
 #[cfg(test)]
@@ -833,5 +908,211 @@ mod tests {
         let decoded: LatticeMap<u32, Min<i64>> = bincode::deserialize(&encoded).unwrap();
 
         assert_eq!(original, decoded);
+    }
+
+    // HashSet tests
+
+    #[test]
+    fn hashset_join_is_union() {
+        let mut a = HashSet::new();
+        a.insert(1);
+        a.insert(2);
+
+        let mut b = HashSet::new();
+        b.insert(2);
+        b.insert(3);
+
+        let c = a.join(&b);
+        assert_eq!(c.len(), 3);
+        assert!(c.contains(&1));
+        assert!(c.contains(&2));
+        assert!(c.contains(&3));
+    }
+
+    #[test]
+    fn hashset_bottom_is_empty() {
+        let bottom: HashSet<i32> = HashSet::bottom();
+        assert!(bottom.is_empty());
+
+        let mut a = HashSet::new();
+        a.insert(42);
+
+        assert_eq!(bottom.join(&a), a);
+        assert_eq!(a.join(&bottom), a);
+    }
+
+    #[test]
+    fn hashset_is_idempotent() {
+        let mut a = HashSet::new();
+        a.insert(1);
+        a.insert(2);
+
+        assert_eq!(a.join(&a), a);
+    }
+
+    #[test]
+    fn hashset_is_commutative() {
+        let mut a = HashSet::new();
+        a.insert(1);
+        a.insert(2);
+
+        let mut b = HashSet::new();
+        b.insert(2);
+        b.insert(3);
+
+        assert_eq!(a.join(&b), b.join(&a));
+    }
+
+    #[test]
+    fn hashset_is_associative() {
+        let mut a = HashSet::new();
+        a.insert(1);
+
+        let mut b = HashSet::new();
+        b.insert(2);
+
+        let mut c = HashSet::new();
+        c.insert(3);
+
+        assert_eq!(a.join(&b).join(&c), a.join(&b.join(&c)));
+    }
+
+    #[test]
+    fn hashset_semigroup_blanket_impl() {
+        // Semigroup::combine is blanket-impl'd from JoinSemilattice::join
+        // so combine(a, b) == join(a, b) == union
+        let mut a: HashSet<&str> = HashSet::new();
+        a.insert("foo");
+
+        let mut b: HashSet<&str> = HashSet::new();
+        b.insert("bar");
+
+        // Test via join (Semigroup::combine delegates to join)
+        let c = a.join(&b);
+        assert_eq!(c.len(), 2);
+        assert!(c.contains(&"foo"));
+        assert!(c.contains(&"bar"));
+    }
+
+    #[test]
+    fn hashset_monoid_blanket_impl() {
+        // Monoid::empty is blanket-impl'd from BoundedJoinSemilattice::bottom
+        // so empty() == bottom() == empty set
+        let empty: HashSet<i32> = HashSet::bottom();
+        assert!(empty.is_empty());
+
+        let mut a = HashSet::new();
+        a.insert(42);
+
+        // Test identity: bottom.join(a) == a == a.join(bottom)
+        assert_eq!(empty.join(&a), a);
+        assert_eq!(a.join(&empty), a);
+    }
+
+    // BTreeSet tests
+
+    #[test]
+    fn btreeset_join_is_union() {
+        let a: BTreeSet<i32> = [1, 2].into_iter().collect();
+        let b: BTreeSet<i32> = [2, 3].into_iter().collect();
+
+        let c = a.join(&b);
+        assert_eq!(c.len(), 3);
+        assert!(c.contains(&1));
+        assert!(c.contains(&2));
+        assert!(c.contains(&3));
+    }
+
+    #[test]
+    fn btreeset_bottom_is_empty() {
+        let bottom: BTreeSet<i32> = BTreeSet::bottom();
+        assert!(bottom.is_empty());
+
+        let a: BTreeSet<i32> = [42].into_iter().collect();
+        assert_eq!(bottom.join(&a), a);
+        assert_eq!(a.join(&bottom), a);
+    }
+
+    #[test]
+    fn btreeset_is_idempotent() {
+        let a: BTreeSet<i32> = [1, 2].into_iter().collect();
+        assert_eq!(a.join(&a), a);
+    }
+
+    #[test]
+    fn btreeset_is_commutative() {
+        let a: BTreeSet<i32> = [1, 2].into_iter().collect();
+        let b: BTreeSet<i32> = [2, 3].into_iter().collect();
+        assert_eq!(a.join(&b), b.join(&a));
+    }
+
+    // Option tests
+
+    #[test]
+    fn option_join_lifts_inner() {
+        let a: Option<Max<i32>> = Some(Max(5));
+        let b: Option<Max<i32>> = Some(Max(10));
+
+        assert_eq!(a.join(&b), Some(Max(10)));
+    }
+
+    #[test]
+    fn option_join_with_none() {
+        let a: Option<Max<i32>> = Some(Max(5));
+        let none: Option<Max<i32>> = None;
+
+        // None acts as identity for join
+        assert_eq!(a.join(&none), a);
+        assert_eq!(none.join(&a), a);
+        assert_eq!(none.join(&none), None);
+    }
+
+    #[test]
+    fn option_bottom_is_none() {
+        let bottom: Option<Max<i32>> = Option::bottom();
+        assert_eq!(bottom, None);
+    }
+
+    #[test]
+    fn option_with_hashset() {
+        let a: Option<HashSet<i32>> = Some([1, 2].into_iter().collect());
+        let b: Option<HashSet<i32>> = Some([2, 3].into_iter().collect());
+
+        let c = a.join(&b);
+        let expected: HashSet<i32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(c, Some(expected));
+    }
+
+    #[test]
+    fn option_is_idempotent() {
+        let a: Option<Max<i32>> = Some(Max(5));
+        assert_eq!(a.join(&a), a);
+
+        let none: Option<Max<i32>> = None;
+        assert_eq!(none.join(&none), none);
+    }
+
+    #[test]
+    fn option_is_commutative() {
+        let a: Option<Max<i32>> = Some(Max(5));
+        let b: Option<Max<i32>> = Some(Max(10));
+        assert_eq!(a.join(&b), b.join(&a));
+    }
+
+    // Unit tests
+
+    #[test]
+    fn unit_join_is_trivial() {
+        assert_eq!(().join(&()), ());
+    }
+
+    #[test]
+    fn unit_bottom_is_unit() {
+        assert_eq!(<()>::bottom(), ());
+    }
+
+    #[test]
+    fn unit_is_idempotent() {
+        assert_eq!(().join(&()), ());
     }
 }
