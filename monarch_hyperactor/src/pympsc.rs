@@ -77,10 +77,16 @@ impl std::error::Error for SendError {}
 
 /// A channel that can be used to send messages from Rust to Python without acquiring
 /// the GIL on the sender side.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Sender {
     tx: mpsc::Sender<Box<dyn IntoPyObjectBox>>,
     waker: Arc<pywaker::Waker>,
+}
+
+impl std::fmt::Debug for Sender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sender").finish_non_exhaustive()
+    }
 }
 
 impl Sender {
@@ -98,11 +104,16 @@ impl Sender {
 
 /// The receiver side of a channel. Objects are converted to Python heap objects when
 /// they are received.
-#[derive(Debug)]
-#[pyclass(name = "Receiver", module = "monarch._src.actor.channel")]
+#[pyclass(name = "Receiver", module = "monarch._src.actor.mpsc")]
 pub struct PyReceiver {
     rx: Arc<Mutex<mpsc::Receiver<Box<dyn IntoPyObjectBox>>>>,
     event: PyCell<PyEvent>,
+}
+
+impl std::fmt::Debug for PyReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyReceiver").finish_non_exhaustive()
+    }
 }
 
 #[pymethods]
@@ -130,7 +141,7 @@ mod testing {
 
     #[pyclass(
         name = "TestSender",
-        module = "monarch._rust_bindings.monarch_hyperactor.pychannel"
+        module = "monarch._rust_bindings.monarch_hyperactor.pympsc"
     )]
     struct PyTestSender {
         sender: Arc<Mutex<Sender>>,

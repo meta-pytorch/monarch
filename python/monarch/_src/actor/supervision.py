@@ -17,10 +17,24 @@ _logger: logging.Logger = logging.getLogger(__name__)
 def unhandled_fault_hook(failure: MeshFailure) -> None:
     """When a supervision event is unhandled and is propagated back to the client,
     this hook is called.
-    The default implementation is to exit the process after logging
-    the event.
-    Assign to this function to change the behavior.
-    Single argument is the SupervisionEvent
+    The default implementation is to exit the process with error code 1
+    after logging the event.
+    If this function raises any exception (including BaseException classes such
+    as SystemExit), the client process will exit. Any normal return value will
+    cause the fault to be dropped. Logs will be written containing the failure
+    message in either case.
+    To customize this behavior, overwrite this function in your client code like so:
+    ```
+    import monarch.actor
+
+    def my_unhandled_fault_hook(failure: MeshFailure) -> None:
+        # log it, add metrics, etc.
+        print(f"Mesh failure was not handled: {failure}")
+        # To ignore this error, return any value (including None) without an exception.
+
+
+    monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
+    ```
     """
 
     # use stderr, not _logger because loggers are sometimes set

@@ -6,7 +6,6 @@
 
 # pyre-strict
 
-import abc
 from enum import Enum
 from typing import (
     Any,
@@ -23,13 +22,9 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
-from monarch._rust_bindings.monarch_hyperactor.mailbox import (
-    Mailbox,
-    OncePortRef,
-    PortRef,
-)
+from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
 
 class PythonMessageKind:
     @classmethod
@@ -123,6 +118,7 @@ class PythonMessage:
         self,
         kind: PythonMessageKind,
         message: Union[Buffer, bytes],
+        pending_pickle_state: Optional[PendingPickleState] = None,
     ) -> None: ...
     @property
     def message(self) -> FrozenBuffer:

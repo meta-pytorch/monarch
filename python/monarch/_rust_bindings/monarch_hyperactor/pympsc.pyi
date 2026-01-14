@@ -6,15 +6,16 @@
 
 # pyre-strict
 
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
-T = TypeVar("T")
+T = TypeVar("T", covariant=True)
+U = TypeVar("U")
 
-class Receiver(Generic[T]):
+class Receiver(Protocol[T]):
     def try_recv(self) -> T | None: ...
     async def recv(self) -> T: ...
 
-class TestSender(Generic[T]):
-    def send(self, value: T) -> None: ...
+class TestSender(Generic[U]):
+    def send(self, value: U) -> None: ...
 
 def channel_for_test() -> tuple[TestSender[Any], Receiver[Any]]: ...

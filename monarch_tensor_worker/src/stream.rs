@@ -108,6 +108,7 @@ fn pickle_python_result(
             rank: Some(worker_rank),
         },
         data.take_part(),
+        None,
     ))
 }
 
