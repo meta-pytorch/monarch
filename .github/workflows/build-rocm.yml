@@ -39,7 +39,7 @@ jobs:
         # Source common setup functions
         source scripts/common-setup.sh
         # TODO TEMPORARY: ROCm6.4 pytorch/almalinux-builder:rocm6.4 image has gcc-toolset-14
-        export PATH=/opt/rh/devtoolset-14/root/usr/bin/:$PATH
+        export PATH=/opt/rh/gcc-toolset-14/root/usr/bin/:$PATH
         # Setup build environment (conda + system deps + rust + build deps)
         setup_build_environment
         # Install torch nightly
