@@ -153,9 +153,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.pywaker",
     )?)?;
 
-    monarch_hyperactor::pychannel::register_python_bindings(&get_or_add_new_module(
+    monarch_hyperactor::pympsc::register_python_bindings(&get_or_add_new_module(
         module,
-        "monarch_hyperactor.pychannel",
+        "monarch_hyperactor.pympsc",
     )?)?;
 
     monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(
