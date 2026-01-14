@@ -28,7 +28,7 @@ pub mod ndslice;
 pub mod proc;
 pub mod proc_mesh;
 pub mod py_cell;
-pub mod pychannel;
+pub mod pympsc;
 pub mod pytokio;
 pub mod pywaker;
 pub mod runtime;
