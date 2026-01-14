@@ -426,7 +426,7 @@ struct GradientGenerator {
     DEBUG_PRINT(
         "// add: " << node->node->name()
                    << ", input_nr=" << static_cast<int>(input_nr) << "\n");
-#if TORCH_VERSION_NEWER_THAN(2, 9, 1)
+#if TORCH_VERSION_NEWER_THAN(2, 10, 0)
     realInputBuffer(node).add(
         input_nr,
         check_and_reduce(node->node, input_nr, std::move(t)),

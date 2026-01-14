@@ -21,7 +21,7 @@ jobs:
         include:
           - name: 4xlarge
             runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/cu128'
+            torch-spec: 'torch --index-url https://download.pytorch.org/whl/cu128'
             gpu-arch-type: "cuda"
             gpu-arch-version: "12.8"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
