@@ -237,12 +237,12 @@ fn build_struct_parts(
                 .zip(indices.iter())
                 .map(|(binding, idx)| quote! { #binding.apply(&mut value.#idx)?; });
 
-            let patch_type = if patch_fields.len() > 0 {
+            let patch_type = if !patch_fields.is_empty() {
                 quote! { ( #( #patch_fields ),* , ) }
             } else {
                 quote! { () }
             };
-            let diff_expr = if diff_fields.len() > 0 {
+            let diff_expr = if !diff_fields.is_empty() {
                 quote! { ( #( #diff_fields ),* , ) }
             } else {
                 quote! { () }
