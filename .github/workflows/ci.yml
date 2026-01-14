@@ -44,6 +44,11 @@ jobs:
     with:
       artifact-name: monarch-cuda-${{ github.sha }}
 
+  build-wheels-and-docker:
+    name: Build Wheels and Docker
+    needs: build-cuda
+    uses: ./.github/workflows/build-wheels-and-docker.yml
+
   status-check:
     name: Status Check
     runs-on: ubuntu-latest
