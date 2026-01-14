@@ -13,13 +13,14 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocSpec,
 )
 from monarch._src.actor.allocator import ProcessAllocator
+from monarch._src.actor.proc_mesh import _get_bootstrap_args
 
 
 class TestAlloc(IsolatedAsyncioTestCase):
     async def test_basic(self) -> None:
-        cmd = "echo hello"
-        allocator = ProcessAllocator(cmd)
+        allocator = ProcessAllocator(*_get_bootstrap_args())
         spec = AllocSpec(AllocConstraints(), replica=2)
         alloc = allocator.allocate(spec)
+        await alloc.initialized
 
         print(alloc)

@@ -30,6 +30,7 @@ name = "channel_benchmarks"
 path = "benches/main.rs"
 
 [dependencies]
+algebra = { version = "0.0.0", path = "../algebra" }
 anyhow = "1.0.98"
 async-trait = "0.1.86"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
