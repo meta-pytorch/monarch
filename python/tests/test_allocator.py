@@ -541,6 +541,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # now we doing casting without accessing the wrapped type.
             del actor
 
+    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_remote_allocator_with_no_connection(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=1, gpu=4)
 
