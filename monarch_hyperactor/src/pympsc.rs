@@ -94,7 +94,7 @@ impl Sender {
 
 /// The receiver side of a channel. Objects are converted to Python heap objects when
 /// they are received.
-#[pyclass(name = "Receiver", module = "monarch._src.actor.channel")]
+#[pyclass(name = "Receiver", module = "monarch._src.actor.mpsc")]
 pub struct PyReceiver {
     rx: Arc<Mutex<mpsc::Receiver<Box<dyn IntoPyObjectBox>>>>,
     event: PyCell<PyEvent>,
@@ -125,7 +125,7 @@ mod testing {
 
     #[pyclass(
         name = "TestSender",
-        module = "monarch._rust_bindings.monarch_hyperactor.pychannel"
+        module = "monarch._rust_bindings.monarch_hyperactor.pympsc"
     )]
     struct PyTestSender {
         sender: Arc<Mutex<Sender>>,

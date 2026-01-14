@@ -11,10 +11,10 @@ from typing import Generic, TypeVar
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.waker import Event
 
-T = TypeVar("T")
+T = TypeVar("T", covariant=True)
 
 
-@rust_struct("monarch_hyperactor::pychannel::Receiver")
+@rust_struct("monarch_hyperactor::pympsc::Receiver")
 class Receiver(Generic[T], abc.ABC):
     """Channel receiver with both sync and async recv methods."""
 

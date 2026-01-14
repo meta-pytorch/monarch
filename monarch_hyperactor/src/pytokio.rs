@@ -42,6 +42,7 @@ use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 
+use bytes::Bytes;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor_config::CONFIG;
@@ -59,11 +60,15 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyNone;
 use pyo3::types::PyString;
+use pyo3::types::PyTuple;
 use pyo3::types::PyType;
+use serde_multipart::Part;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::buffers::Buffer;
+use crate::buffers::FrozenBuffer;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::signal_safe_block_on;
 
@@ -260,7 +265,7 @@ impl PyPythonTask {
         });
         Ok(PyShared {
             rx,
-            handle,
+            handle: Some(handle),
             abort: true,
             traceback,
         })
@@ -315,7 +320,7 @@ impl PyPythonTask {
         });
         Ok(PyShared {
             rx,
-            handle,
+            handle: Some(handle),
             abort: false,
             traceback,
         })
@@ -444,7 +449,7 @@ impl PyPythonTask {
         });
         Ok(PyShared {
             rx,
-            handle,
+            handle: Some(handle),
             abort: false,
             traceback,
         })
@@ -489,7 +494,7 @@ impl PyPythonTask {
 )]
 pub struct PyShared {
     rx: watch::Receiver<Option<PyResult<PyObject>>>,
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
     abort: bool,
     traceback: Option<PyObject>,
 }
@@ -499,14 +504,19 @@ impl Drop for PyShared {
         if self.abort {
             // When the PyShared is dropped, we don't want the background task to go
             // forever, because nothing will wait on the rx.
-            self.handle.abort();
+            if let Some(h) = self.handle.as_ref() {
+                // Guard against panics during interpreter shutdown when tokio runtime may be gone
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    h.abort();
+                }));
+            }
         }
     }
 }
 
 #[pymethods]
 impl PyShared {
-    pub(crate) fn task(&mut self) -> PyResult<PyPythonTask> {
+    pub(crate) fn task(&self) -> PyResult<PyPythonTask> {
         // watch channels start unchanged, and when a value is sent to them signal
         // the receivers `changed` future.
         // By cloning the rx before awaiting it,
@@ -534,11 +544,10 @@ impl PyShared {
         Ok(PythonTaskAwaitIterator::new(task.into_py_any(py)?))
     }
 
-    pub fn block_on(mut slf: PyRefMut<PyShared>, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn block_on(slf: PyRef<PyShared>, py: Python<'_>) -> PyResult<PyObject> {
         let task = slf.task()?.take_task()?;
-        // mutable references to python objects must be dropped before calling
-        // signal_safe_block_on. It will release the GIL, and any other thread
-        // trying to access slf will throw.
+        // Explicitly drop the reference so that if another thread attempts to borrow
+        // this object mutably during signal_safe_block_on, it won't throw an exception.
         drop(slf);
         signal_safe_block_on(py, task)?
     }
@@ -547,6 +556,34 @@ impl PyShared {
     fn __class_getitem__(cls: &Bound<'_, PyType>, _arg: PyObject) -> PyObject {
         cls.clone().unbind().into()
     }
+
+    /// If the task has completed, return the result. Otherwise, return None.
+    /// This is useful because it allows us to get the result of the task
+    /// without blocking the tokio runtime.
+    pub(crate) fn poll(&self) -> PyResult<Option<PyObject>> {
+        let b = self.rx.borrow();
+        let r = b.as_ref();
+        match r {
+            None => Ok(None),
+            Some(r) => Python::with_gil(|py| match r {
+                Ok(v) => Ok(Some(v.clone_ref(py))),
+                Err(err) => Err(err.clone_ref(py)),
+            }),
+        }
+    }
+
+    /// Create a new PyShared that will return a value the first time it is polled.
+    #[classmethod]
+    fn from_value(_cls: &Bound<'_, PyType>, value: PyObject) -> PyResult<Self> {
+        let (tx, rx) = watch::channel(None);
+        tx.send(Some(Ok(value))).map_err(to_py_error)?;
+        Ok(Self {
+            rx,
+            handle: None,
+            abort: false,
+            traceback: None,
+        })
+    }
 }
 
 #[pyfunction]
@@ -554,9 +591,129 @@ fn is_tokio_thread() -> bool {
     tokio::runtime::Handle::try_current().is_ok()
 }
 
+/// Represents an object that we are eventually going to pickle,
+/// but we can't yet because it hasn't been fully initialized. This
+/// is separate from `PyShared` because it's used as a marker type
+/// to indicate values for which we're allowed to defer pickling.
+/// In general, attempting to pickle a generic `PyShared` should fail.
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.pytokio")]
+#[derive(Clone)]
+pub(crate) struct PendingPickle(Py<PyShared>);
+
+#[pymethods]
+impl PendingPickle {
+    #[new]
+    pub(crate) fn new(py_shared: Py<PyShared>) -> PyResult<Self> {
+        Ok(Self(py_shared))
+    }
+}
+
+impl PendingPickle {
+    pub(crate) fn from_future<F>(f: F) -> PyResult<Self>
+    where
+        F: Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+    {
+        let py_shared = PyPythonTask::new(f)?.spawn_abortable()?;
+        Ok(Self(Python::with_gil(|py| {
+            Ok::<_, PyErr>(py_shared.into_pyobject(py)?.unbind())
+        })?))
+    }
+
+    pub(crate) async fn result(&self) -> PyResult<Py<PyAny>> {
+        let mut task = Python::with_gil(|py| self.0.borrow(py).task())?;
+        task.take_task()?.await
+    }
+}
+
+py_global!(unflatten, "monarch._src.actor.pickle", "unflatten");
+py_global!(flatten, "monarch._src.actor.pickle", "flatten");
+
+/// A special class used to allow deferring the full pickling of an object.
+/// It contains a list of objects that were returned by the filter in a call
+/// to `flatten`, and the filter itself. Crucially, some of these objects
+/// may be futures that need to be awaited in an asynchronous context.
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.pytokio")]
+#[derive(Debug, Clone)]
+pub struct PendingPickleState {
+    unflatten_values: Vec<Py<PyAny>>,
+    flatten_filter: Py<PyAny>,
+}
+
+#[pymethods]
+impl PendingPickleState {
+    #[new]
+    fn new(unflatten_values: Vec<Py<PyAny>>, flatten_filter: Py<PyAny>) -> Self {
+        Self {
+            unflatten_values,
+            flatten_filter,
+        }
+    }
+}
+
+impl PendingPickleState {
+    /// Given a pre-pickled object that has placeholders for `self.unflatten_values`,
+    /// collect all the futures in `self.unflatten_values`, await them, and repickle
+    /// the input with the results of the futures.
+    pub(crate) async fn resolve(self, pickled: impl Into<Bytes>) -> PyResult<Part> {
+        let (idxs, futs): (Vec<_>, Vec<_>) = Python::with_gil(|py| {
+            self.unflatten_values
+                .iter()
+                .enumerate()
+                .filter_map(|(i, py_obj)| {
+                    py_obj.extract::<PendingPickle>(py).map_or(None, |pending| {
+                        Some((i, async move { pending.result().await }))
+                    })
+                })
+                .unzip()
+        });
+
+        // This really shouldn't happen. This `PendingPickleState` object
+        // shouldn't have been created if there are no futures to resolve.
+        if futs.is_empty() {
+            return Ok(Part::from(pickled.into()));
+        }
+
+        let result = futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let mut unflatten_values = Vec::with_capacity(self.unflatten_values.len());
+        let mut fut_idx = 0;
+        for i in 0..self.unflatten_values.len() {
+            if idxs.get(fut_idx).is_some_and(|idx| *idx == i) {
+                Python::with_gil(|py| {
+                    unflatten_values.push(result[fut_idx].clone_ref(py));
+                });
+                fut_idx += 1;
+            } else {
+                Python::with_gil(|py| {
+                    unflatten_values.push(self.unflatten_values[i].clone_ref(py));
+                });
+            }
+        }
+
+        Python::with_gil(|py| {
+            let unpickled = unflatten(py).call1((
+                FrozenBuffer {
+                    inner: pickled.into(),
+                },
+                unflatten_values,
+            ))?;
+            let repickled = flatten(py)
+                .call1((unpickled, self.flatten_filter))?
+                .downcast_into::<PyTuple>()?;
+            let buffer = repickled.get_item(1)?.downcast_into::<Buffer>()?;
+            Ok(buffer.borrow_mut().take_part())
+        })
+    }
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyPythonTask>()?;
     hyperactor_mod.add_class::<PyShared>()?;
+    hyperactor_mod.add_class::<PendingPickle>()?;
+    hyperactor_mod.add_class::<PendingPickleState>()?;
     let f = wrap_pyfunction!(is_tokio_thread, hyperactor_mod)?;
     f.setattr(
         "__module__",

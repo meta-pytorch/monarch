@@ -590,6 +590,7 @@ impl History {
             PythonMessage::new_from_buf(
                 PythonMessageKind::Exception { rank: Some(rank) },
                 data.take_part(),
+                None,
             )
         }));
 
@@ -635,6 +636,7 @@ impl History {
                         PythonMessage::new_from_buf(
                             PythonMessageKind::Result { rank: None },
                             b"\x80\x04N.".to_vec(),
+                            None,
                         )
                     }
                 };
