@@ -18,7 +18,7 @@ permissions:
 jobs:
   build-rocm:
     name: Build ROCm (rocm6.4-py3.10)
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: jithunnair-amd/test-infra/.github/workflows/linux_job_v2.yml@patch-5
     strategy:
       fail-fast: true
       matrix:
