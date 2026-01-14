@@ -753,27 +753,15 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let constructor = variant.constructor();
                 let result_ident = Ident::new("result", Span::mixed_site());
                 let construct_result_future = quote! { use hyperactor::Message; let #result_ident = self.#variant_name_snake(cx, #(#arg_names),*).await?; };
-                if reply_port.is_handle {
-                    match_arms.push(quote! {
-                        #constructor => {
-                            #log_message
-                            // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
-                            // This would require Result<Result<..., in order to handle RPC errors.
-                            #construct_result_future
-                            #reply_port_arg.send(#result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
-                        }
-                    });
-                } else {
-                    match_arms.push(quote! {
-                        #constructor => {
-                            #log_message
-                            // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
-                            // This would require Result<Result<..., in order to handle RPC errors.
-                            #construct_result_future
-                            #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
-                        }
-                    });
-                }
+                match_arms.push(quote! {
+                    #constructor => {
+                        #log_message
+                        // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
+                        // This would require Result<Result<..., in order to handle RPC errors.
+                        #construct_result_future
+                        #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
+                    }
+                });
             }
             Message::OneWay { variant, log_level } => {
                 let (arg_names, arg_types): (Vec<_>, Vec<_>) = message.args().into_iter().unzip();

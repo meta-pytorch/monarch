@@ -43,13 +43,13 @@ impl Actor for LocalStateBrokerActor {}
 impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         message: LocalStateBrokerMessage,
     ) -> anyhow::Result<()> {
         match message {
             LocalStateBrokerMessage::Set(id, state) => match self.ports.remove_entry(&id) {
                 Some((_, port)) => {
-                    port.send(state)?;
+                    port.send(cx, state)?;
                 }
                 None => {
                     self.states.insert(id, state);
@@ -57,7 +57,7 @@ impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
             },
             LocalStateBrokerMessage::Get(id, port) => match self.states.remove_entry(&id) {
                 Some((_, state)) => {
-                    port.send(state)?;
+                    port.send(cx, state)?;
                 }
                 None => {
                     self.ports.insert(id, port);

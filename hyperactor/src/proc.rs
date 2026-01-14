@@ -447,6 +447,19 @@ impl Proc {
         &self.state().clock
     }
 
+    /// A global runtime client. It is used when there is no sender actor
+    /// available.
+    pub fn runtime() -> &'static Instance<()> {
+        // A global client for returning undeliverable messages.
+        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
+        &CLIENT
+            .get_or_init(|| {
+                let proc = Proc::local();
+                proc.instance("runtime").unwrap()
+            })
+            .0
+    }
+
     /// Get the snapshot of the ledger.
     pub fn ledger_snapshot(&self) -> ActorLedgerSnapshot {
         self.state().ledger.snapshot()
@@ -1160,7 +1173,7 @@ impl<A: Actor> Instance<A> {
         let clock = self.inner.proc.state().clock.clone();
         tokio::spawn(async move {
             clock.non_advancing_sleep(delay).await;
-            if let Err(e) = port.send(message) {
+            if let Err(e) = port.send(Proc::runtime(), message) {
                 // TODO: this is a fire-n-forget thread. We need to
                 // handle errors in a better way.
                 tracing::info!("{}: error sending delayed message: {}", self_id, e);
@@ -1249,7 +1262,7 @@ impl<A: Actor> Instance<A> {
         if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
             if let Some(event) = event {
                 // Parent exists, failure should be propagated to the parent.
-                parent.send_supervision_event_or_crash(event);
+                parent.send_supervision_event_or_crash(&self, event);
             }
             // TODO: we should get rid of this signal, and use *only* supervision events for
             // the purpose of conveying lifecycle changes
@@ -1503,7 +1516,7 @@ impl<A: Actor> Instance<A> {
     pub fn handle_supervision_event_with_proc(&self, event: ActorSupervisionEvent) {
         let proc = &self.inner.proc;
         let result = match proc.state().supervision_coordinator_port.get() {
-            Some(port) => port.send(event.clone()).map_err(anyhow::Error::from),
+            Some(port) => port.send(self, event.clone()).map_err(anyhow::Error::from),
             None => Err(anyhow::anyhow!(
                 "coordinator port is not set for proc {}",
                 proc.proc_id(),
@@ -1848,7 +1861,9 @@ impl InstanceCell {
     /// Send a signal to the actor.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
         if let Some((signal_port, _)) = &self.inner.actor_loop {
-            signal_port.send(signal).map_err(ActorError::from)
+            signal_port
+                .send(Proc::runtime(), signal)
+                .map_err(ActorError::from)
         } else {
             tracing::warn!(
                 "{}: attempted to send signal {} to detached actor",
@@ -1867,10 +1882,14 @@ impl InstanceCell {
     /// Note that "let it crash" is the default behavior when a supervision event
     /// cannot be delivered upstream. It is the upstream's responsibility to
     /// detect and handle crashes.
-    pub fn send_supervision_event_or_crash(&self, event: ActorSupervisionEvent) {
+    pub fn send_supervision_event_or_crash(
+        &self,
+        child_cx: &impl context::Actor, // context of the child who sends the event.
+        event: ActorSupervisionEvent,
+    ) {
         match &self.inner.actor_loop {
             Some((_, supervision_port)) => {
-                if let Err(err) = supervision_port.send(event) {
+                if let Err(err) = supervision_port.send(child_cx, event) {
                     tracing::error!(
                         "{}: failed to send supervision event to actor: {:?}. Crash the process.",
                         self.actor_id(),
@@ -2843,7 +2862,7 @@ mod tests {
                 cx: &crate::Context<Self>,
                 message: OncePortHandle<PortHandle<usize>>,
             ) -> anyhow::Result<()> {
-                message.send(cx.port())?;
+                message.send(cx, cx.port())?;
                 Ok(())
             }
         }
@@ -2868,7 +2887,7 @@ mod tests {
         let (tx, rx) = client.open_once_port();
         handle.send(&client, tx).unwrap();
         let usize_handle = rx.recv().await.unwrap();
-        usize_handle.send(123).unwrap();
+        usize_handle.send(&client, 123).unwrap();
 
         handle.drain_and_stop().unwrap();
         handle.await;
