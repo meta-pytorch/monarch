@@ -194,7 +194,7 @@ impl GlobalClientActor {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut self, instance).await {
                             for supervision_event in self.supervision_rx.drain() {
-                                if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                                if let Err(err) = instance.handle_supervision_event_with_actor(&mut self, supervision_event).await {
                                     break 'messages err;
                                 }
                             }
@@ -209,7 +209,7 @@ impl GlobalClientActor {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Ok(supervision_event) = self.supervision_rx.recv() => {
-                        if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                        if let Err(err) = instance.handle_supervision_event_with_actor(&mut self, supervision_event).await {
                             break err;
                         }
                     }
@@ -227,7 +227,7 @@ impl GlobalClientActor {
                     )
                 }
             };
-            instance.proc().handle_supervision_event(event);
+            instance.handle_supervision_event_with_proc(event);
         })
     }
 }

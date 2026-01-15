@@ -945,9 +945,9 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
                 let worker_stop_result = self.workers().stop(this).await;
                 let broker_stop_result = self.brokers().stop(this).await;
                 if worker_stop_result.is_ok() && broker_stop_result.is_ok() {
-                    response_port.send(Ok(()))?;
+                    response_port.send(this, Ok(()))?;
                 } else {
-                    response_port.send(Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)))?;
+                    response_port.send(this, Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)))?;
                 }
             }
         }
