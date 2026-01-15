@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 
+import asyncio
 import os
 import threading
 import time
@@ -17,8 +18,11 @@ import monarch._src.actor.host_mesh
 import monarch.actor
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
+    ProcMesh as HyProcMesh,
+)
 from monarch._src.actor.actor_mesh import (
     _client_context,
     Actor,
@@ -325,3 +329,19 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
         # will have already been initialized and the function never gets
         # called.
         assert mock_fake_in_process_host.call_count in (0, 1)
+
+
+@pytest.mark.timeout(60)
+def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
+    async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
+        time.sleep(15)
+        return await pm
+
+    host = create_local_host_mesh()
+    proc_mesh = host.spawn_procs(name="test_proc")
+    proc_mesh._proc_mesh = PythonTask.from_coroutine(
+        sleep_then_mesh(proc_mesh._proc_mesh)
+    ).spawn()
+    assert proc_mesh._proc_mesh.poll() is None
+    proc_mesh.spawn("pid", PidActor)
+    assert proc_mesh._proc_mesh.poll() is None
