@@ -7,6 +7,7 @@
  */
 
 use std::ops::Deref;
+use std::sync::Arc;
 
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::v1;
@@ -115,7 +116,7 @@ impl PyProcMesh {
                 )
                 .await
                 .map_err(to_py_error)?;
-            Ok(PythonActorMesh::from_impl(Box::new(
+            Ok(PythonActorMesh::from_impl(Arc::new(
                 PythonActorMeshImpl::new_owned(actor_mesh),
             )))
         };

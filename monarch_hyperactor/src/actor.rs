@@ -70,6 +70,7 @@ use crate::metrics::ENDPOINT_ACTOR_ERROR;
 use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::proc::PyActorId;
+use crate::pytokio::PendingPickleState;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::supervision::PyMeshFailure;
@@ -147,10 +148,21 @@ fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, Py
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named, PartialEq, Default)]
+#[derive(Clone, Serialize, Deserialize, Named, Default)]
 pub struct PythonMessage {
     pub kind: PythonMessageKind,
     pub message: Part,
+    #[serde(skip)]
+    pub pending_pickle_state: Option<PendingPickleState>,
+}
+
+impl PartialEq for PythonMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.message == other.message
+            && self.pending_pickle_state.is_none() // PendingPickleState doesn't/can't implement PartialEq
+            && other.pending_pickle_state.is_none()
+    }
 }
 wirevalue::register_type!(PythonMessage);
 
@@ -164,10 +176,15 @@ struct ResolvedCallMethod {
 }
 
 impl PythonMessage {
-    pub fn new_from_buf(kind: PythonMessageKind, message: impl Into<Part>) -> Self {
+    pub fn new_from_buf(
+        kind: PythonMessageKind,
+        message: impl Into<Part>,
+        pending_pickle_state: Option<PendingPickleState>,
+    ) -> Self {
         Self {
             kind,
             message: message.into(),
+            pending_pickle_state,
         }
     }
 
@@ -177,10 +194,12 @@ impl PythonMessage {
             PythonMessageKind::Result { .. } => PythonMessage {
                 kind: PythonMessageKind::Result { rank },
                 message: self.message,
+                pending_pickle_state: self.pending_pickle_state,
             },
             PythonMessageKind::Exception { .. } => PythonMessage {
                 kind: PythonMessageKind::Exception { rank },
                 message: self.message,
+                pending_pickle_state: self.pending_pickle_state,
             },
             _ => panic!("PythonMessage is not a response but {:?}", self),
         }
@@ -307,14 +326,23 @@ impl Bind for PythonMessage {
 #[pymethods]
 impl PythonMessage {
     #[new]
-    #[pyo3(signature = (kind, message))]
-    pub fn new<'py>(kind: PythonMessageKind, message: Bound<'py, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (kind, message, pending_pickle_state=None))]
+    pub fn new<'py>(
+        kind: PythonMessageKind,
+        message: Bound<'py, PyAny>,
+        pending_pickle_state: Option<PendingPickleState>,
+    ) -> PyResult<Self> {
         if let Ok(mut buff) = message.extract::<PyRefMut<'py, Buffer>>() {
-            return Ok(PythonMessage::new_from_buf(kind, buff.take_part()));
+            return Ok(PythonMessage::new_from_buf(
+                kind,
+                buff.take_part(),
+                pending_pickle_state,
+            ));
         } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
             return Ok(PythonMessage::new_from_buf(
                 kind,
                 Vec::from(buff.as_bytes()),
+                pending_pickle_state,
             ));
         }
 
@@ -477,6 +505,7 @@ impl PythonActor {
                     root_client_class
                         .call_method0("_pickled_init_args")
                         .expect("call RootClientActor._pickled_init_args"),
+                    None,
                 )
                 .expect("create RootClientActor init message"),
             )
@@ -1172,6 +1201,7 @@ mod tests {
                 response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
             },
             message: Part::from(vec![1, 2, 3]),
+            pending_pickle_state: None,
         };
         {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
