@@ -99,6 +99,7 @@ dev = [
 [project.scripts]
 monarch = "monarch.tools.cli:main"
 monarch_bootstrap = "monarch._src.actor.bootstrap_main:invoke_main"
+worker = "monarch.tools.worker:main"
 
 [tool.setuptools]
 packages = {find = {where = ["python"]}}
