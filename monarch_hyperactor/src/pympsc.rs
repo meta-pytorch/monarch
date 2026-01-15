@@ -120,6 +120,7 @@ impl PyReceiver {
 
 mod testing {
     use pyo3::pyfunction;
+    use pyo3::types::PyAnyMethods;
 
     use super::*;
 
@@ -150,7 +151,13 @@ mod testing {
 
     pub(super) fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
         hyperactor_mod.add_class::<PyTestSender>()?;
-        hyperactor_mod.add_function(wrap_pyfunction!(channel_for_test, hyperactor_mod)?)?;
+        let channel_for_test = wrap_pyfunction!(channel_for_test, hyperactor_mod)?;
+        channel_for_test.setattr(
+            "__module__",
+            "monarch._rust_bindings.monarch_hyperactor.pympsc",
+        )?;
+
+        hyperactor_mod.add_function(channel_for_test)?;
         Ok(())
     }
 }
