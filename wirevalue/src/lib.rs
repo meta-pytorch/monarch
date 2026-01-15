@@ -29,6 +29,9 @@ pub use typeuri::intern_typename;
 
 pub mod config;
 
+/// Typehash value indicating a broken (unknown type, no value) Any.
+pub const BROKEN_TYPEHASH: u64 = 0;
+
 #[doc(hidden)]
 /// Dump trait for Named types that are also serializable/deserializable.
 /// This is a utility used by [`Any::dump`], and is not intended
@@ -360,8 +363,26 @@ impl Any {
         })
     }
 
+    /// Create a new broken Any value. A broken value has unknown type and
+    /// no valid data. Attempting to deserialize a broken value will fail.
+    pub fn new_broken() -> Self {
+        Self {
+            encoded: Encoded::Bincode(bytes::Bytes::new()),
+            typehash: BROKEN_TYPEHASH,
+        }
+    }
+
+    /// Returns true if this Any is broken (unknown type, no value).
+    pub fn is_broken(&self) -> bool {
+        self.typehash == BROKEN_TYPEHASH
+    }
+
     /// Deserialize a value to the provided type T.
     pub fn deserialized<T: DeserializeOwned + Named>(&self) -> Result<T, anyhow::Error> {
+        anyhow::ensure!(
+            !self.is_broken(),
+            "attempted to deserialize a broken Any value"
+        );
         anyhow::ensure!(
             self.is::<T>(),
             "attempted to serialize {}-typed serialized into type {}",
@@ -847,5 +868,20 @@ mod tests {
             assert_eq!(ser.encoding(), enc);
             assert_eq!(ser.deserialized::<TestDumpStruct>().unwrap(), value);
         }
+    }
+
+    #[test]
+    fn test_broken_any() {
+        let broken = Any::new_broken();
+        assert!(broken.is_broken());
+        assert_eq!(broken.typehash(), BROKEN_TYPEHASH);
+
+        // Normal values are not broken
+        let normal = Any::serialize(&"hello".to_string()).unwrap();
+        assert!(!normal.is_broken());
+
+        // deserialized() should fail for broken values
+        let err = broken.deserialized::<String>().unwrap_err();
+        assert!(err.to_string().contains("broken"));
     }
 }
