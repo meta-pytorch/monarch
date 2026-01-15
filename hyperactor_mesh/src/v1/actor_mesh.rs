@@ -16,6 +16,7 @@ use std::sync::OnceLock as OnceCell;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
+use hyperactor::PortRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::ActorStatus;
@@ -61,6 +62,7 @@ use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::v1::mesh_controller::ActorMeshController;
 use crate::v1::mesh_controller::Subscribe;
+use crate::v1::mesh_controller::Unsubscribe;
 
 declare_attrs! {
     /// Liveness watchdog for the supervision stream. If no
@@ -68,6 +70,9 @@ declare_attrs! {
     /// this duration, the controller is assumed to be unreachable and
     /// the mesh is treated as unhealthy. This timeout is about
     /// detecting silence, not slow messages.
+    /// This value must be > SUPERVISION_POLL_FREQUENCY + GET_ACTOR_STATE_MAX_IDLE
+    /// or else it is possible to declare the controller dead before it could
+    /// feasibly send a message.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_SUPERVISION_LIVENESS_TIMEOUT".to_string()),
         py_name: Some("supervision_liveness_timeout".to_string()),
@@ -355,8 +360,14 @@ pub struct ActorMeshRef<A: Referable> {
     /// Shared cloneable receiver for supervision events, used by next_supervision_event.
     /// Not a OnceCell since we need mutable borrows for "watch::Receiver::wait_for"
     /// mutable borrows of OnceCell are an unstable library feature.
-    receiver:
-        Arc<tokio::sync::Mutex<Option<watch::Receiver<MessageOrFailure<Option<MeshFailure>>>>>>,
+    receiver: Arc<
+        tokio::sync::Mutex<
+            Option<(
+                PortRef<Option<MeshFailure>>,
+                watch::Receiver<MessageOrFailure<Option<MeshFailure>>>,
+            )>,
+        >,
+    >,
     /// Lazily allocated collection of pages:
     /// - The outer `OnceCell` defers creating the vector until first
     ///   use.
@@ -628,12 +639,16 @@ impl<A: Referable> ActorMeshRef<A> {
     fn init_supervision_receiver(
         controller: &ActorRef<ActorMeshController<A>>,
         cx: &impl context::Actor,
-    ) -> watch::Receiver<MessageOrFailure<Option<MeshFailure>>> {
+    ) -> (
+        PortRef<Option<MeshFailure>>,
+        watch::Receiver<MessageOrFailure<Option<MeshFailure>>>,
+    ) {
         let (tx, rx) = cx.mailbox().open_port();
+        let tx = tx.bind();
         controller
-            .send(cx, Subscribe(tx.bind()))
+            .send(cx, Subscribe(tx.clone()))
             .expect("failed to send Subscribe");
-        into_watch(rx)
+        (tx, into_watch(rx))
     }
 
     /// Returns the next supervision event occurring on this mesh. Await this
@@ -663,8 +678,8 @@ impl<A: Referable> ActorMeshRef<A> {
             let mut receiver = self.receiver.lock().await;
             let rx =
                 receiver.get_or_insert_with(|| Self::init_supervision_receiver(controller, cx));
-            let message = rx
-                .wait_for(|message| {
+            let message =
+                rx.1.wait_for(|message| {
                     // Filter out messages that do not apply to these ranks. This
                     // is relevant for slices since we get messages back for the
                     // whole mesh.
@@ -689,6 +704,20 @@ impl<A: Referable> ActorMeshRef<A> {
                 })
                 .await?;
             let message = message.clone();
+            let is_failure = matches!(
+                message,
+                MessageOrFailure::Failure(_) | MessageOrFailure::Timeout
+            );
+            if is_failure {
+                // In failure cases, the receiver is dropped, so we can unsubscribe
+                // from the controller. The controller can detect this
+                // on its own, but an explicit unsubscribe prevents error logs
+                // about this receiver being unreachable.
+                let mut port = controller.port();
+                // We don't care if the controller is unreachable for an unsubscribe.
+                port.return_undeliverable(false);
+                let _ = port.send(cx, Unsubscribe(rx.0.clone()));
+            }
             match message {
                 MessageOrFailure::Message(message) => Ok::<MeshFailure, anyhow::Error>(
                     message.expect("filter excludes any None messages"),
