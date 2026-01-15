@@ -9,7 +9,11 @@
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import (
+    PendingPickle,
+    PythonTask,
+    Shared,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
     BootstrapCommand,
@@ -99,18 +103,8 @@ class HostMesh(MeshTrait):
         region: Region,
         stream_logs: bool,
         is_fake_in_process: bool,
-        _initialized_hy_host_mesh: Optional[HyHostMesh],
         _code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
     ) -> None:
-        self._initialized_host_mesh = _initialized_hy_host_mesh
-        if not self._initialized_host_mesh:
-
-            async def task(hy_host_mesh_task: Shared[HyHostMesh]) -> HyHostMesh:
-                self._initialized_host_mesh = await hy_host_mesh_task
-                return self._initialized_host_mesh
-
-            hy_host_mesh = PythonTask.from_coroutine(task(hy_host_mesh)).spawn()
-
         self._hy_host_mesh = hy_host_mesh
         self._region = region
         self._stream_logs = stream_logs
@@ -142,7 +136,6 @@ class HostMesh(MeshTrait):
             extent.region,
             alloc.stream_logs,
             isinstance(allocator, LocalAllocator),
-            None,
             None,
         )
 
@@ -210,25 +203,21 @@ class HostMesh(MeshTrait):
         if shape.region == self._region:
             return self
 
-        initialized_hm: Optional[HyHostMesh] = (
-            None
-            if self._initialized_host_mesh is None
-            else self._initialized_host_mesh.sliced(shape.region)
-        )
+        sliced_hy_hm: Shared[HyHostMesh]
+        if (hm := self._hy_host_mesh.poll()) is not None:
+            sliced_hy_hm = Shared.from_value(hm.sliced(shape.region))
+        else:
 
-        async def task() -> HyHostMesh:
-            return (
-                initialized_hm
-                if initialized_hm
-                else (await self._hy_host_mesh).sliced(shape.region)
-            )
+            async def task() -> HyHostMesh:
+                return (await self._hy_host_mesh).sliced(shape.region)
+
+            sliced_hy_hm = PythonTask.from_coroutine(task()).spawn()
 
         return HostMesh(
-            PythonTask.from_coroutine(task()).spawn(),
+            sliced_hy_hm,
             shape.region,
             self.stream_logs,
             self.is_fake_in_process,
-            initialized_hm,
             None,
         )
 
@@ -248,15 +237,11 @@ class HostMesh(MeshTrait):
         stream_logs: bool,
         is_fake_in_process: bool,
     ) -> "HostMesh":
-        async def task() -> HyHostMesh:
-            return hy_host_mesh
-
         return HostMesh(
-            PythonTask.from_coroutine(task()).spawn(),
+            Shared.from_value(hy_host_mesh),
             region,
             stream_logs,
             is_fake_in_process,
-            hy_host_mesh,
             None,
         )
 
@@ -277,7 +262,7 @@ class HostMesh(MeshTrait):
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return HostMesh._from_initialized_hy_host_mesh, (
-            self._initialized_mesh(),
+            self._hy_host_mesh.poll() or PendingPickle(self._hy_host_mesh),
             self._region,
             self.stream_logs,
             self.is_fake_in_process,
@@ -297,10 +282,7 @@ class HostMesh(MeshTrait):
         )
 
     def _initialized_mesh(self) -> HyHostMesh:
-        if self._initialized_host_mesh is None:
-            self._hy_host_mesh.block_on()
-            assert self._initialized_host_mesh is not None
-        return self._initialized_host_mesh
+        return self._hy_host_mesh.poll() or self._hy_host_mesh.block_on()
 
     def shutdown(self) -> Future[None]:
         """
