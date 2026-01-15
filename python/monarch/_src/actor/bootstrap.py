@@ -119,7 +119,6 @@ def attach_to_workers(
         extent.region,
         stream_logs=False,
         is_fake_in_process=False,
-        _initialized_hy_host_mesh=None,
         _code_sync_proc_mesh=None,
     )
     hm._code_sync_proc_mesh = _Lazy(lambda: hm.spawn_procs())
