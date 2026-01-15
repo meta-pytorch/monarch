@@ -59,7 +59,7 @@ pub fn derive_attr_value(input: TokenStream) -> TokenStream {
                 self.to_string()
             }
 
-            fn parse(value: &str) -> Result<Self, anyhow::Error> {
+            fn parse(value: &str) -> std::result::Result<Self, anyhow::Error> {
                 value.parse().map_err(|e| anyhow::anyhow!("failed to parse {}: {}", stringify!(#name), e))
             }
         }
