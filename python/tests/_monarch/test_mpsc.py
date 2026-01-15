@@ -12,9 +12,10 @@ from typing import Any
 
 from monarch._rust_bindings.monarch_hyperactor.pympsc import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
     channel_for_test,
+    Receiver,
     TestSender,
 )
-from monarch._src.actor.mpsc import Receiver
+
 
 async def test_async_recv() -> None:
     """Test async recv using pywaker."""
