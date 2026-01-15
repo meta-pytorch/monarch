@@ -325,11 +325,11 @@ async def main(
 
     await actor_0.set_other_actor.call(actor_1)
 
-    for i in range(warmup_iterations):
+    for _ in range(warmup_iterations):
         await actor_0.send.call(is_warmup=True, concurrency=concurrency)
 
     total_start_time = time.time()
-    for i in range(iterations):
+    for _ in range(iterations):
         await actor_0.send.call(concurrency=concurrency)
     total_end_time = time.time()
     total_elapsed_time = total_end_time - total_start_time

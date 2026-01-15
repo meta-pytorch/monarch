@@ -8,6 +8,7 @@
 
 use std::clone::Clone;
 use std::ops::Deref;
+use std::sync::Arc;
 
 use hyperactor::ActorRef;
 use hyperactor_mesh::v1::actor_mesh::ActorMesh;
@@ -29,6 +30,7 @@ use pyo3::types::PyBytes;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor_mesh::ActorMeshProtocol;
+use crate::actor_mesh::AsyncActorMesh;
 use crate::actor_mesh::PythonActorMesh;
 use crate::context::PyInstance;
 use crate::proc::PyActorId;
@@ -246,7 +248,8 @@ impl PythonActorMeshImpl {
 fn py_actor_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
     let r: PyResult<ActorMeshRef<PythonActor>> =
         bincode::deserialize(bytes.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()));
-    r.map(|r| PythonActorMesh::from_impl(Box::new(PythonActorMeshImpl::new_ref(r))))
+    r.map(|r| AsyncActorMesh::from_impl(Arc::new(PythonActorMeshImpl::new_ref(r))))
+        .map(|r| PythonActorMesh::from_impl(Arc::from(r)))
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {

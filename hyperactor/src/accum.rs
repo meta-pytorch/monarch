@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use ndslice::algebra::JoinSemilattice;
+use algebra::JoinSemilattice;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -301,8 +301,8 @@ pub fn sum<T: std::ops::Add<Output = T> + Copy + Named + 'static>()
     SumAccumulator(PhantomData)
 }
 
-/// Re-export Max from ndslice algebra module.
-pub use ndslice::algebra::Max;
+/// Re-export Max from algebra.
+pub use algebra::Max;
 
 #[derive(typeuri::Named)]
 struct MaxReducer<T>(PhantomData<T>);
@@ -342,8 +342,8 @@ pub fn max<T: Ord + Clone + Named + 'static>() -> impl Accumulator<State = Max<T
     MaxAccumulator(PhantomData::<T>)
 }
 
-/// Re-export Min from ndslice algebra module.
-pub use ndslice::algebra::Min;
+/// Re-export Min from algebra.
+pub use algebra::Min;
 
 #[derive(typeuri::Named)]
 struct MinReducer<T>(PhantomData<T>);
@@ -376,33 +376,36 @@ impl<T: Ord + Clone + Named + 'static> Accumulator for MinAccumulator<T> {
     }
 }
 
-/// Accumulate the min of received updates (i.e. the smallest value of all
-/// received updates).
+/// Accumulate the min of received updates (i.e. the smallest value of
+/// all received updates).
 pub fn min<T: Ord + Clone + Named + 'static>() -> impl Accumulator<State = Min<T>, Update = Min<T>>
 {
     MinAccumulator(PhantomData)
 }
 
-/// Update from ranks for watermark accumulator using Last-Writer-Wins CRDT.
+/// Update from ranks for watermark accumulator using Last-Writer-Wins
+/// CRDT.
 ///
-/// This is a proper CRDT that tracks the latest value from each rank using
-/// logical timestamps. When updates from the same rank are merged, the one
-/// with the higher timestamp wins. This allows ranks to report values that
-/// may decrease (e.g., during failure recovery) while maintaining proper
-/// commutativity and idempotence.
+/// This is a proper CRDT that tracks the latest value from each rank
+/// using logical timestamps. When updates from the same rank are
+/// merged, the one with the higher timestamp wins. This allows ranks
+/// to report values that may decrease (e.g., during failure recovery)
+/// while maintaining proper commutativity and idempotence.
 ///
 /// # CRDT Properties
 ///
-/// - *Commutative*: Merge order doesn't matter (timestamps resolve conflicts)
+/// - *Commutative*: Merge order doesn't matter (timestamps resolve
+///   conflicts)
 /// - *Idempotent*: Merging duplicate updates has no effect
 /// - *Convergent*: All replicas converge to the same state
 ///
 /// # Watermark Semantics
 ///
-/// The watermark is the minimum value across all ranks' *latest* reports.
-/// "Latest" is determined by logical timestamp, not arrival order.
+/// The watermark is the minimum value across all ranks' *latest*
+/// reports. "Latest" is determined by logical timestamp, not arrival
+/// order.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct WatermarkUpdate<T>(ndslice::algebra::LatticeMap<Index, ndslice::algebra::LWW<T>>);
+pub struct WatermarkUpdate<T>(algebra::LatticeMap<Index, algebra::LWW<T>>);
 
 impl<T: Ord + Clone> WatermarkUpdate<T> {
     /// Get the watermark value (minimum of all ranks' current values).
@@ -435,12 +438,9 @@ impl<T> From<(Index, T, u64)> for WatermarkUpdate<T> {
     /// number, or monotonic counter) that increases with each update from
     /// the same rank.
     fn from((rank, value, timestamp): (Index, T, u64)) -> Self {
-        let mut map = ndslice::algebra::LatticeMap::new();
+        let mut map = algebra::LatticeMap::new();
         // Use rank as replica ID - each rank is a unique writer
-        map.insert(
-            rank,
-            ndslice::algebra::LWW::new(value, timestamp, rank as u64),
-        );
+        map.insert(rank, algebra::LWW::new(value, timestamp, rank as u64));
         Self(map)
     }
 }
