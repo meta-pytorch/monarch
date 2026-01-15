@@ -2739,7 +2739,8 @@ mod tests {
     #[tokio::test]
     async fn test_mailbox_accum() {
         let mbox = Mailbox::new_detached(id!(test[0].test));
-        let (port, mut receiver) = mbox.open_accum_port(accum::max::<i64>());
+        let (port, mut receiver) =
+            mbox.open_accum_port(accum::join_semilattice::<accum::Max<i64>>());
 
         for i in -3..4 {
             port.send(accum::Max(i)).unwrap();
@@ -2772,9 +2773,9 @@ mod tests {
         let mbox = Mailbox::new_detached(id!(test[0].test));
         // accum port could have reducer typehash
         {
-            let accumulator = accum::max::<u64>();
+            let accumulator = accum::join_semilattice::<accum::Max<u64>>();
             let reducer_spec = accumulator.reducer_spec().unwrap();
-            let (port, _) = mbox.open_accum_port(accum::max::<u64>());
+            let (port, _) = mbox.open_accum_port(accum::join_semilattice::<accum::Max<u64>>());
             assert_eq!(port.reducer_spec, Some(reducer_spec.clone()));
             let port_ref = port.bind();
             assert_eq!(port_ref.reducer_spec(), &Some(reducer_spec));

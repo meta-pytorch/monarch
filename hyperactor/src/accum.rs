@@ -184,50 +184,50 @@ inventory::submit! {
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <MaxReducer::<i64> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(MaxReducer::<i64>(PhantomData))),
+        typehash_f: <SemilatticeReducer<Max<i64>> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<Max<i64>>(PhantomData))),
     }
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <MaxReducer::<u64> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(MaxReducer::<u64>(PhantomData))),
+        typehash_f: <SemilatticeReducer<Max<u64>> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<Max<u64>>(PhantomData))),
     }
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <MinReducer::<i64> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(MinReducer::<i64>(PhantomData))),
+        typehash_f: <SemilatticeReducer<Min<i64>> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<Min<i64>>(PhantomData))),
     }
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <MinReducer::<u64> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(MinReducer::<u64>(PhantomData))),
+        typehash_f: <SemilatticeReducer<Min<u64>> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<Min<u64>>(PhantomData))),
     }
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <WatermarkUpdateReducer::<i64> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(WatermarkUpdateReducer::<i64>(PhantomData))),
+        typehash_f: <SemilatticeReducer<WatermarkUpdate<i64>> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<WatermarkUpdate<i64>>(PhantomData))),
     }
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <WatermarkUpdateReducer::<u64> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(WatermarkUpdateReducer::<u64>(PhantomData))),
+        typehash_f: <SemilatticeReducer<WatermarkUpdate<u64>> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<WatermarkUpdate<u64>>(PhantomData))),
     }
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <GCounterReducer as Named>::typehash,
-        builder_f: |_| Ok(Box::new(GCounterReducer)),
+        typehash_f: <SemilatticeReducer<GCounterUpdate> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<GCounterUpdate>(PhantomData))),
     }
 }
 inventory::submit! {
     ReducerFactory {
-        typehash_f: <PNCounterReducer as Named>::typehash,
-        builder_f: |_| Ok(Box::new(PNCounterReducer)),
+        typehash_f: <SemilatticeReducer<PNCounterUpdate> as Named>::typehash,
+        builder_f: |_| Ok(Box::new(SemilatticeReducer::<PNCounterUpdate>(PhantomData))),
     }
 }
 
@@ -307,93 +307,66 @@ impl<T: std::ops::Add<Output = T> + Copy + Named + 'static> Accumulator for SumA
 /// which tracks per-replica increments and uses pointwise-max for
 /// merging (commutative, associative, and idempotent).
 ///
-/// *See also*: [`max`], [`min`] (proper lattice-based CRDTs)
+/// *See also*: [`Max`], [`Min`] (proper lattice-based CRDTs)
 pub fn sum<T: std::ops::Add<Output = T> + Copy + Named + 'static>()
 -> impl Accumulator<State = T, Update = T> {
     SumAccumulator(PhantomData)
 }
 
+/// Generic reducer for any JoinSemilattice type.
+#[derive(typeuri::Named)]
+struct SemilatticeReducer<L>(PhantomData<L>);
+
+impl<L: JoinSemilattice + Clone> CommReducer for SemilatticeReducer<L> {
+    type Update = L;
+
+    fn reduce(&self, left: L, right: L) -> anyhow::Result<L> {
+        Ok(left.join(&right))
+    }
+}
+
+/// Generic accumulator for any JoinSemilattice type.
+struct SemilatticeAccumulator<L>(PhantomData<L>);
+
+impl<L: JoinSemilattice + Clone + Named + 'static> Accumulator for SemilatticeAccumulator<L> {
+    type State = L;
+    type Update = L;
+
+    fn accumulate(&self, state: &mut L, update: L) -> anyhow::Result<()> {
+        *state = state.join(&update);
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <SemilatticeReducer<L> as Named>::typehash(),
+            builder_params: None,
+        })
+    }
+}
+
+/// Create an accumulator for any JoinSemilattice type.
+///
+/// This is the primary way to create accumulators for lattice-based
+/// types like `Max<T>`, `Min<T>`, `GCounterUpdate`, `PNCounterUpdate`,
+/// and `WatermarkUpdate<T>`.
+///
+/// # Example
+///
+/// ```ignore
+/// use hyperactor::accum::{join_semilattice, Max};
+///
+/// let max_acc = join_semilattice::<Max<u64>>();
+/// ```
+pub fn join_semilattice<L: JoinSemilattice + Clone + Named + 'static>()
+-> impl Accumulator<State = L, Update = L> {
+    SemilatticeAccumulator::<L>(PhantomData)
+}
+
 /// Re-export Max from algebra.
 pub use algebra::Max;
-
-#[derive(typeuri::Named)]
-struct MaxReducer<T>(PhantomData<T>);
-
-impl<T: Ord + Clone> CommReducer for MaxReducer<T> {
-    type Update = Max<T>;
-
-    fn reduce(&self, left: Max<T>, right: Max<T>) -> anyhow::Result<Max<T>> {
-        Ok(left.join(&right))
-    }
-}
-
-/// Accumulate the max of received updates.
-struct MaxAccumulator<T>(PhantomData<T>);
-
-impl<T: Ord + Clone + Named + 'static> Accumulator for MaxAccumulator<T> {
-    type State = Max<T>;
-    type Update = Max<T>;
-
-    fn accumulate(&self, state: &mut Max<T>, update: Max<T>) -> anyhow::Result<()> {
-        *state = state.join(&update);
-        Ok(())
-    }
-
-    fn reducer_spec(&self) -> Option<ReducerSpec> {
-        Some(ReducerSpec {
-            typehash: <MaxReducer<T> as Named>::typehash(),
-            builder_params: None,
-        })
-    }
-}
-
-/// Accumulate the max of received updates (i.e. the largest value of all
-/// received updates).
-pub fn max<T: Ord + Clone + Named + 'static>() -> impl Accumulator<State = Max<T>, Update = Max<T>>
-{
-    MaxAccumulator(PhantomData::<T>)
-}
-
 /// Re-export Min from algebra.
 pub use algebra::Min;
-
-#[derive(typeuri::Named)]
-struct MinReducer<T>(PhantomData<T>);
-
-impl<T: Ord + Clone> CommReducer for MinReducer<T> {
-    type Update = Min<T>;
-
-    fn reduce(&self, left: Min<T>, right: Min<T>) -> anyhow::Result<Min<T>> {
-        Ok(left.join(&right))
-    }
-}
-
-/// Accumulate the min of received updates.
-struct MinAccumulator<T>(PhantomData<T>);
-
-impl<T: Ord + Clone + Named + 'static> Accumulator for MinAccumulator<T> {
-    type State = Min<T>;
-    type Update = Min<T>;
-
-    fn accumulate(&self, state: &mut Min<T>, update: Min<T>) -> anyhow::Result<()> {
-        *state = state.join(&update);
-        Ok(())
-    }
-
-    fn reducer_spec(&self) -> Option<ReducerSpec> {
-        Some(ReducerSpec {
-            typehash: <MinReducer<T> as Named>::typehash(),
-            builder_params: None,
-        })
-    }
-}
-
-/// Accumulate the min of received updates (i.e. the smallest value of
-/// all received updates).
-pub fn min<T: Ord + Clone + Named + 'static>() -> impl Accumulator<State = Min<T>, Update = Min<T>>
-{
-    MinAccumulator(PhantomData)
-}
 
 /// Update from ranks for watermark accumulator using Last-Writer-Wins
 /// CRDT.
@@ -457,52 +430,10 @@ impl<T> From<(Index, T, u64)> for WatermarkUpdate<T> {
     }
 }
 
-/// Reducer for WatermarkUpdate using lattice join (LWW semantics).
-///
-/// Merges two watermark updates by joining their underlying LatticeMap.
-/// For each rank, the LWW value with the higher timestamp wins.
-#[derive(typeuri::Named)]
-struct WatermarkUpdateReducer<T>(PhantomData<T>);
-
-impl<T: Clone + PartialEq> CommReducer for WatermarkUpdateReducer<T> {
-    type Update = WatermarkUpdate<T>;
-
-    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        Ok(WatermarkUpdate(left.0.join(&right.0)))
+impl<T: Clone + PartialEq> JoinSemilattice for WatermarkUpdate<T> {
+    fn join(&self, other: &Self) -> Self {
+        WatermarkUpdate(self.0.join(&other.0))
     }
-}
-
-struct LowWatermarkUpdateAccumulator<T>(PhantomData<T>);
-
-impl<T: Ord + Clone + PartialEq + Named + 'static> Accumulator
-    for LowWatermarkUpdateAccumulator<T>
-{
-    type State = WatermarkUpdate<T>;
-    type Update = WatermarkUpdate<T>;
-
-    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
-        *state = WatermarkUpdate(state.0.join(&update.0));
-        Ok(())
-    }
-
-    fn reducer_spec(&self) -> Option<ReducerSpec> {
-        Some(ReducerSpec {
-            typehash: <WatermarkUpdateReducer<T> as Named>::typehash(),
-            builder_params: None,
-        })
-    }
-}
-
-/// Accumulate the min value among the ranks, aka. low watermark, based on the
-/// ranks' latest updates. Ranks' previous updates are discarded, and not used
-/// in the min value calculation.
-///
-/// The main difference bwtween low wartermark accumulator and [`MinAccumulator`]
-/// is, `MinAccumulator` takes previous updates into consideration too, and thus
-/// returns the min of the whole history.
-pub fn low_watermark<T: Ord + Clone + PartialEq + Named + 'static>()
--> impl Accumulator<State = WatermarkUpdate<T>, Update = WatermarkUpdate<T>> {
-    LowWatermarkUpdateAccumulator(PhantomData)
 }
 
 /// State for a grow-only distributed counter (GCounter CRDT).
@@ -546,44 +477,10 @@ impl From<(Index, u64)> for GCounterUpdate {
     }
 }
 
-/// Reducer for GCounterUpdate using lattice join (pointwise max).
-#[derive(typeuri::Named)]
-struct GCounterReducer;
-
-impl CommReducer for GCounterReducer {
-    type Update = GCounterUpdate;
-
-    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        Ok(GCounterUpdate(left.0.join(&right.0)))
+impl JoinSemilattice for GCounterUpdate {
+    fn join(&self, other: &Self) -> Self {
+        GCounterUpdate(self.0.join(&other.0))
     }
-}
-
-struct GCounterAccumulator;
-
-impl Accumulator for GCounterAccumulator {
-    type State = GCounterUpdate;
-    type Update = GCounterUpdate;
-
-    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
-        *state = GCounterUpdate(state.0.join(&update.0));
-        Ok(())
-    }
-
-    fn reducer_spec(&self) -> Option<ReducerSpec> {
-        Some(ReducerSpec {
-            typehash: <GCounterReducer as Named>::typehash(),
-            builder_params: None,
-        })
-    }
-}
-
-/// Accumulate a grow-only distributed counter (GCounter CRDT).
-///
-/// Each rank maintains its own count. The total value is the sum of
-/// all ranks' counts. Merge uses pointwise max, making this
-/// commutative, associative, and idempotent.
-pub fn gcounter() -> impl Accumulator<State = GCounterUpdate, Update = GCounterUpdate> {
-    GCounterAccumulator
 }
 
 /// State for an increment/decrement distributed counter (PNCounter
@@ -638,50 +535,13 @@ impl PNCounterUpdate {
     }
 }
 
-/// Reducer for PNCounterUpdate using lattice join on both components.
-#[derive(typeuri::Named)]
-struct PNCounterReducer;
-
-impl CommReducer for PNCounterReducer {
-    type Update = PNCounterUpdate;
-
-    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        Ok(PNCounterUpdate {
-            p: left.p.join(&right.p),
-            n: left.n.join(&right.n),
-        })
+impl JoinSemilattice for PNCounterUpdate {
+    fn join(&self, other: &Self) -> Self {
+        PNCounterUpdate {
+            p: self.p.join(&other.p),
+            n: self.n.join(&other.n),
+        }
     }
-}
-
-struct PNCounterAccumulator;
-
-impl Accumulator for PNCounterAccumulator {
-    type State = PNCounterUpdate;
-    type Update = PNCounterUpdate;
-
-    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
-        *state = PNCounterUpdate {
-            p: state.p.join(&update.p),
-            n: state.n.join(&update.n),
-        };
-        Ok(())
-    }
-
-    fn reducer_spec(&self) -> Option<ReducerSpec> {
-        Some(ReducerSpec {
-            typehash: <PNCounterReducer as Named>::typehash(),
-            builder_params: None,
-        })
-    }
-}
-
-/// Accumulate an increment/decrement distributed counter (PNCounter CRDT).
-///
-/// Each rank can increment or decrement. The value is the sum of all
-/// increments minus the sum of all decrements. Merge uses pointwise max
-/// on both components independently.
-pub fn pncounter() -> impl Accumulator<State = PNCounterUpdate, Update = PNCounterUpdate> {
-    PNCounterAccumulator
 }
 
 #[cfg(test)]
@@ -709,7 +569,7 @@ mod tests {
         let u64_numbers_min: Vec<_> = serialize(vec![Min(1u64), Min(3u64), Min(1100u64)]);
         let i64_numbers_min: Vec<_> = serialize(vec![Min(-123i64), Min(33i64), Min(110i64)]);
         {
-            let typehash = <MaxReducer<u64> as Named>::typehash();
+            let typehash = <SemilatticeReducer<Max<u64>> as Named>::typehash();
             assert_eq!(
                 resolve_reducer(typehash, None)
                     .unwrap()
@@ -721,7 +581,7 @@ mod tests {
                 Max(1100u64),
             );
 
-            let typehash = <MinReducer<u64> as Named>::typehash();
+            let typehash = <SemilatticeReducer<Min<u64>> as Named>::typehash();
             assert_eq!(
                 resolve_reducer(typehash, None)
                     .unwrap()
@@ -747,7 +607,7 @@ mod tests {
         }
 
         {
-            let typehash = <MaxReducer<i64> as Named>::typehash();
+            let typehash = <SemilatticeReducer<Max<i64>> as Named>::typehash();
             assert_eq!(
                 resolve_reducer(typehash, None)
                     .unwrap()
@@ -759,7 +619,7 @@ mod tests {
                 Max(110i64),
             );
 
-            let typehash = <MinReducer<i64> as Named>::typehash();
+            let typehash = <SemilatticeReducer<Min<i64>> as Named>::typehash();
             assert_eq!(
                 resolve_reducer(typehash, None)
                     .unwrap()
@@ -821,11 +681,11 @@ mod tests {
             .collect(),
         );
 
-        fn verify<T: Ord + Clone + DeserializeOwned + Debug + Named>(
+        fn verify<T: Ord + Clone + PartialEq + DeserializeOwned + Debug + Named>(
             updates: Vec<wirevalue::Any>,
             expected: HashMap<Index, T>,
         ) {
-            let typehash = <WatermarkUpdateReducer<T> as Named>::typehash();
+            let typehash = <SemilatticeReducer<WatermarkUpdate<T>> as Named>::typehash();
             let result = resolve_reducer(typehash, None)
                 .unwrap()
                 .unwrap()
@@ -877,30 +737,45 @@ mod tests {
         );
 
         assert_eq!(
-            min::<u64>().reducer_spec().unwrap().typehash,
-            <MinReducer::<u64> as Named>::typehash(),
+            join_semilattice::<Min<u64>>()
+                .reducer_spec()
+                .unwrap()
+                .typehash,
+            <SemilatticeReducer<Min<u64>> as Named>::typehash(),
         );
         assert_eq!(
-            min::<i64>().reducer_spec().unwrap().typehash,
-            <MinReducer::<i64> as Named>::typehash(),
+            join_semilattice::<Min<i64>>()
+                .reducer_spec()
+                .unwrap()
+                .typehash,
+            <SemilatticeReducer<Min<i64>> as Named>::typehash(),
         );
 
         assert_eq!(
-            max::<u64>().reducer_spec().unwrap().typehash,
-            <MaxReducer::<u64> as Named>::typehash(),
+            join_semilattice::<Max<u64>>()
+                .reducer_spec()
+                .unwrap()
+                .typehash,
+            <SemilatticeReducer<Max<u64>> as Named>::typehash(),
         );
         assert_eq!(
-            max::<i64>().reducer_spec().unwrap().typehash,
-            <MaxReducer::<i64> as Named>::typehash(),
+            join_semilattice::<Max<i64>>()
+                .reducer_spec()
+                .unwrap()
+                .typehash,
+            <SemilatticeReducer<Max<i64>> as Named>::typehash(),
         );
     }
 
     #[test]
     fn test_accum_reducer_watermark() {
-        fn verify<T: Ord + Clone + Named>() {
+        fn verify<T: Clone + PartialEq + Named + 'static>() {
             assert_eq!(
-                low_watermark::<T>().reducer_spec().unwrap().typehash,
-                <WatermarkUpdateReducer::<T> as Named>::typehash(),
+                join_semilattice::<WatermarkUpdate<T>>()
+                    .reducer_spec()
+                    .unwrap()
+                    .typehash,
+                <SemilatticeReducer<WatermarkUpdate<T>> as Named>::typehash(),
             );
         }
         verify::<u64>();
@@ -909,7 +784,7 @@ mod tests {
 
     #[test]
     fn test_watermark_accumulator() {
-        let accumulator = low_watermark::<u64>();
+        let accumulator = join_semilattice::<WatermarkUpdate<u64>>();
         let ranks_values_expectations = [
             // send in descending order (with timestamps 0, 1, 2)
             (0, 1003, 0, 1003),
@@ -962,7 +837,7 @@ mod tests {
             GCounterUpdate::from((1, 25)), // rank 1 increases to 25
         ]);
 
-        let typehash = <GCounterReducer as Named>::typehash();
+        let typehash = <SemilatticeReducer<GCounterUpdate> as Named>::typehash();
         let result = resolve_reducer(typehash, None)
             .unwrap()
             .unwrap()
@@ -983,14 +858,17 @@ mod tests {
     #[test]
     fn test_accum_reducer_gcounter() {
         assert_eq!(
-            gcounter().reducer_spec().unwrap().typehash,
-            <GCounterReducer as Named>::typehash(),
+            join_semilattice::<GCounterUpdate>()
+                .reducer_spec()
+                .unwrap()
+                .typehash,
+            <SemilatticeReducer<GCounterUpdate> as Named>::typehash(),
         );
     }
 
     #[test]
     fn test_gcounter_accumulator() {
-        let accumulator = gcounter();
+        let accumulator = join_semilattice::<GCounterUpdate>();
         // (rank, count, expected_total)
         let ranks_counts_expectations: [(Index, u64, u64); 17] = [
             // initialize all 3 ranks in descending order
@@ -1046,7 +924,7 @@ mod tests {
         ];
 
         // Forward order
-        let accumulator = gcounter();
+        let accumulator = join_semilattice::<GCounterUpdate>();
         let mut forward = GCounterUpdate::default();
         for update in updates.iter().cloned() {
             accumulator.accumulate(&mut forward, update).unwrap();
@@ -1077,7 +955,7 @@ mod tests {
             PNCounterUpdate::dec(0, 7), // rank 0 dec increases to 7
         ]);
 
-        let typehash = <PNCounterReducer as Named>::typehash();
+        let typehash = <SemilatticeReducer<PNCounterUpdate> as Named>::typehash();
         let result = resolve_reducer(typehash, None)
             .unwrap()
             .unwrap()
@@ -1098,14 +976,17 @@ mod tests {
     #[test]
     fn test_accum_reducer_pncounter() {
         assert_eq!(
-            pncounter().reducer_spec().unwrap().typehash,
-            <PNCounterReducer as Named>::typehash(),
+            join_semilattice::<PNCounterUpdate>()
+                .reducer_spec()
+                .unwrap()
+                .typehash,
+            <SemilatticeReducer<PNCounterUpdate> as Named>::typehash(),
         );
     }
 
     #[test]
     fn test_pncounter_accumulator() {
-        let accumulator = pncounter();
+        let accumulator = join_semilattice::<PNCounterUpdate>();
         // Helper to make updates clearer
         #[derive(Clone, Copy, Debug)]
         enum Op {
@@ -1179,7 +1060,7 @@ mod tests {
         ];
 
         // Forward order
-        let accumulator = pncounter();
+        let accumulator = join_semilattice::<PNCounterUpdate>();
         let mut forward = PNCounterUpdate::default();
         for update in updates.iter().cloned() {
             accumulator.accumulate(&mut forward, update).unwrap();
