@@ -269,10 +269,12 @@ except Exception:
 # %%
 # Broadcasting Without Response
 # ----------------------------
-# We also might call something and provide it no way to respond:
+# We also might call something and provide it no way to respond.
+# In this case, the error will not show up as an exception, but will be delivered
+# to the owner of "e".
 
 if False:
-    e.say_hello.broadcast()  # do not expect a response NYI: supervision is buggy here and doesn't kill the process!
+    e.say_hello.broadcast()  # do not expect a response
 
 
 # %%
@@ -288,14 +290,49 @@ if False:
 # read a URL, perhaps it would work to just restart it. In these cases, we also offer a
 # different API. If an actor defines a `__supervise__` special method, then it will get
 # called to handle supervision events for meshes owned by the actor.
+# If an error happens on an ActorMesh that is a reference, such as a slice, or
+# a mesh that is sent to another actor, then the recovery is done on the original
+# creator of that mesh, not the holder of the reference. There is currently
+# no way to transfer the ownership from the original creator, this way we ensure
+# every actor has a single owner to report errors to.
+
+from monarch.actor import MeshFailure
 
 
 class SupervisorActor(Actor):
-    def __supervise__(self, event):
-        # NYI: specific supervise protocol is not spec'd out or implemented.
-        print(f"Supervision event received: {event}")
-        # Logic to handle supervision events and potentially restart failed actors
+    def __supervise__(self, failure: MeshFailure):
+        # The failure message will include the id of the actor that failed and
+        # the reason why.
+        print(f"Failure received: {failure}")
+        # Logic to handle failures and potentially restart failed actors
 
+        # If a truthy value is returned, the supervision event is considered handled
+        # and will not be propagated further.
+        # Otherwise, the event will be propagated to the creator of this actor.
+        # That will be the Actor (or client) which called the spawn() method.
+        return True
+
+
+# %%
+# If a MeshFailure is not handled by any __supervise__ in the supervision tree,
+# it will reach the client, where monarch.actor.unhandled_fault_hook will be
+# called with the MeshFailure object. By default, this function crashes the
+# client process with exit code 1.
+
+# You can overwrite the global unhandled_fault_hook function to customize this
+# behavior.
+
+import monarch.actor
+
+
+def my_unhandled_fault_hook(failure: MeshFailure) -> None:
+    # Log it, add metrics, etc.
+    print(f"Mesh failure was not handled: {failure}")
+    # The failure will be ignored unless this hook returns an exception.
+
+
+# pyre-ignore[9]: Callable is compatible.
+monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
 
 # %%
 # Point-to-Point RDMA
