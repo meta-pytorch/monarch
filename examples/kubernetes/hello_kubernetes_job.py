@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import argparse
 import socket
 
 from monarch.actor import Actor, endpoint
@@ -26,9 +27,32 @@ def greet_from_mesh(mesh_name: str, mesh_procs):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Monarch Kubernetes example")
+    parser.add_argument(
+        "--volcano",
+        action="store_true",
+        help="Use Volcano scheduler with volcano_workers.yaml",
+    )
+    args = parser.parse_args()
+
     job = KubernetesJob(namespace="monarch-tests")
-    job.add_mesh("mesh1", 2)
-    job.add_mesh("mesh2", 2)
+    if args.volcano:
+        # Volcano adds volcano.sh/job-name and volcano.sh/task-index labels to pods
+        job.add_mesh(
+            "mesh1",
+            2,
+            label_selector="volcano.sh/job-name=mesh1",
+            pod_rank_label="volcano.sh/task-index",
+        )
+        job.add_mesh(
+            "mesh2",
+            2,
+            label_selector="volcano.sh/job-name=mesh2",
+            pod_rank_label="volcano.sh/task-index",
+        )
+    else:
+        job.add_mesh("mesh1", 2)
+        job.add_mesh("mesh2", 2)
 
     state = job.state()
 
