@@ -23,8 +23,8 @@ use super::JoinSemilattice;
 ///
 /// # Example
 /// ```
-/// use ndslice::algebra::JoinSemilattice;
-/// use ndslice::algebra::Max;
+/// use algebra::JoinSemilattice;
+/// use algebra::Max;
 ///
 /// let a = Max(5);
 /// let b = Max(10);
@@ -89,8 +89,8 @@ impl<T> Max<T> {
 ///
 /// # Example
 /// ```
-/// use ndslice::algebra::JoinSemilattice;
-/// use ndslice::algebra::Min;
+/// use algebra::JoinSemilattice;
+/// use algebra::Min;
 ///
 /// let a = Min(5);
 /// let b = Min(10);
@@ -155,8 +155,8 @@ impl<T> Min<T> {
 ///
 /// # Example
 /// ```
-/// use ndslice::algebra::Any;
-/// use ndslice::algebra::JoinSemilattice;
+/// use algebra::Any;
+/// use algebra::JoinSemilattice;
 ///
 /// let a = Any(false);
 /// let b = Any(true);
@@ -204,8 +204,8 @@ impl From<bool> for Any {
 ///
 /// # Example
 /// ```
-/// use ndslice::algebra::All;
-/// use ndslice::algebra::JoinSemilattice;
+/// use algebra::All;
+/// use algebra::JoinSemilattice;
 ///
 /// let a = All(true);
 /// let b = All(false);
