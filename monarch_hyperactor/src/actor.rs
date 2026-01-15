@@ -1073,9 +1073,12 @@ async fn handle_async_endpoint_panic(
     actor_id: String,
     endpoint: String,
 ) {
+    // Clone values before they're moved into attributes
+    let actor_id_str = actor_id.clone();
+    let endpoint_str = endpoint.clone();
+
     // Create attributes for metrics with actor_id and endpoint
-    let attributes =
-        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id, "endpoint" => endpoint);
+    let attributes = hyperactor_telemetry::kv_pairs!("actor_id" => actor_id, "method" => endpoint);
 
     // Record the start time for latency measurement
     let start_time = std::time::Instant::now();
@@ -1117,6 +1120,13 @@ async fn handle_async_endpoint_panic(
     } {
         // Record error and panic metrics
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
+        // use hyperactor tracing to log the required metadata.
+        tracing::error!(
+            error = "ActorEndpointError",
+            method = %endpoint_str,
+            actor_id = %actor_id_str,
+            "caught error in async endpoint"
+        );
 
         panic_sender
             .send(PanicFromPy(panic))
