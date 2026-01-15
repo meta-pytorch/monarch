@@ -61,7 +61,12 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import (
+    PendingPickle,
+    PendingPickleState,
+    PythonTask,
+    Shared,
+)
 from monarch._rust_bindings.monarch_hyperactor.selection import (
     Selection as HySelection,  # noqa: F401
 )
@@ -594,17 +599,38 @@ def _create_endpoint_message(
         PythonMessage ready to be sent to the actor mesh
     """
     _check_endpoint_arguments(method_name, signature, args, kwargs)
-    objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+    objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox_or_pending_pickle)
 
-    if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
+    has_ref = False
+    has_pending_pickle = False
+    mailbox_or_refs = []
+    for obj in objects:
+        if isinstance(obj, PendingPickle):
+            has_pending_pickle = True
+        elif hasattr(obj, "__monarch_ref__"):
+            mailbox_or_refs.append(obj)
+            has_ref = True
+        else:
+            mailbox_or_refs.append(obj)
+
+    pending_pickle_state = None
+    if has_pending_pickle:
+        pending_pickle_state = PendingPickleState(
+            objects, _is_ref_or_mailbox_or_pending_pickle
+        )
+
+    if not has_ref:
         message = PythonMessage(
             PythonMessageKind.CallMethod(
                 method_name, None if port is None else port._port_ref
             ),
             buffer,
+            pending_pickle_state,
         )
     else:
-        message = create_actor_message(method_name, proc_mesh, buffer, objects, port)
+        message = create_actor_message(
+            method_name, proc_mesh, buffer, objects, port, pending_pickle_state
+        )
 
     return message
 
@@ -671,9 +697,11 @@ class ActorEndpoint(Endpoint[P, R]):
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
-        refs, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        refs, buffer, pending_pickle_state = _flatten_with_pending_pickle(
+            (args, kwargs)
+        )
 
-        return actor_rref(self, buffer, refs)
+        return actor_rref(self, buffer, refs, pending_pickle_state)
 
 
 @overload
@@ -947,9 +975,13 @@ class Port(Generic[R]):
         Args:
             obj: R-typed object to send.
         """
+        _, buffer, pending_pickle_state = _flatten_with_pending_pickle(obj)
+
         self._port_ref.send(
             self._instance,
-            PythonMessage(PythonMessageKind.Result(self._rank), _pickle(obj)),
+            PythonMessage(
+                PythonMessageKind.Result(self._rank), buffer, pending_pickle_state
+            ),
         )
 
     def exception(self, obj: Exception) -> None:
@@ -1438,6 +1470,22 @@ def _is_ref_or_mailbox(x: object) -> bool:
     return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
+def _is_ref_or_mailbox_or_pending_pickle(x: object) -> bool:
+    return _is_ref_or_mailbox(x) or isinstance(x, PendingPickle)
+
+
+def _flatten_with_pending_pickle(
+    x: object,
+) -> Tuple[List[Any], Buffer, Optional[PendingPickleState]]:
+    objs, buff = flatten(x, _is_ref_or_mailbox_or_pending_pickle)
+    pending_pickle_state = None
+    if any(isinstance(obj, PendingPickle) for obj in objs):
+        pending_pickle_state = PendingPickleState(
+            objs, _is_ref_or_mailbox_or_pending_pickle
+        )
+    return objs, buff, pending_pickle_state
+
+
 def _pickle(obj: object) -> Buffer:
     _, buff = flatten(obj, _is_mailbox)
     return buff
@@ -1731,5 +1779,5 @@ class RootClientActor(Actor):
             ActorInitArgs(RootClientActor, None, None, RootClientActor.name, None, ()),
         )
         kwargs = {}
-        _, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        _, buffer = flatten((args, kwargs), lambda _: False)
         return buffer

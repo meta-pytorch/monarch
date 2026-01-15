@@ -164,6 +164,8 @@ html_static_path = ["_static"]
 # Configure MyST-Parser to find markdown files in the books directory
 myst_update_mathjax = False
 myst_heading_anchors = 3
+# Configure code blocks with just mermaid to be rendered as diagrams.
+myst_fence_as_directive = ["mermaid"]
 
 # The suffix(es) of source filenames.
 source_suffix = {
