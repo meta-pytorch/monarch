@@ -1,0 +1,91 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Volcano Job for launching Monarch workers with gang scheduling.
+# Requires Volcano scheduler to be installed in the cluster.
+# See: https://volcano.sh/en/docs/installation/
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: mesh1
+  namespace: monarch-tests
+spec:
+  minAvailable: 2
+  schedulerName: volcano
+  tasks:
+  - replicas: 2
+    name: worker
+    template:
+      spec:
+        containers:
+        - name: worker
+          image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+          # TODO: use worker.py when it's available
+          command:
+            - python
+            - -u
+            - -c
+            - |
+              import os
+              import socket
+              import logging
+              from monarch.actor import run_worker_loop_forever
+              logging.basicConfig(level=logging.INFO)
+              logger = logging.getLogger("monarch-worker")
+              port = os.environ.get("MONARCH_PORT", "26600")
+              hostname = socket.gethostname()
+              address = f"tcp://{hostname}:{port}"
+              logger.info(f"--- Starting Monarch Worker ---")
+              logger.info(f"Identity: {hostname}")
+              logger.info(f"Listening on: {address}")
+              run_worker_loop_forever(address=address, ca="trust_all_connections")
+
+          ports:
+            - containerPort: 26600
+              name: monarch
+              protocol: TCP
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: mesh2
+  namespace: monarch-tests
+spec:
+  minAvailable: 2
+  schedulerName: volcano
+  tasks:
+  - replicas: 2
+    name: worker
+    template:
+      spec:
+        containers:
+        - name: worker
+          image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+          # TODO: use worker.py when it's available
+          command:
+            - python
+            - -u
+            - -c
+            - |
+              import os
+              import socket
+              import logging
+              from monarch.actor import run_worker_loop_forever
+              logging.basicConfig(level=logging.INFO)
+              logger = logging.getLogger("monarch-worker")
+              port = os.environ.get("MONARCH_PORT", "26600")
+              hostname = socket.gethostname()
+              address = f"tcp://{hostname}:{port}"
+              logger.info(f"--- Starting Monarch Worker ---")
+              logger.info(f"Identity: {hostname}")
+              logger.info(f"Listening on: {address}")
+              run_worker_loop_forever(address=address, ca="trust_all_connections")
+
+          ports:
+            - containerPort: 26600
+              name: monarch
+              protocol: TCP
