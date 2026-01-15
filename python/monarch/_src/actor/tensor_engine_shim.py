@@ -30,9 +30,10 @@ time it is used.
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
-    from monarch._src.actor.actor_mesh import ActorEndpoint, Port, Selection
+    from monarch._src.actor.actor_mesh import Port
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
 
 P = ParamSpec("P")
 F = TypeVar("F", bound=Callable[..., Any])
@@ -75,6 +76,7 @@ def create_actor_message(
     args_kwargs_tuple: Buffer,
     refs: "Sequence[Any]",
     port: "Optional[Port[Any]]",
+    pending_pickle_state: Optional[PendingPickleState],
 ) -> "Any": ...
 
 
@@ -83,6 +85,7 @@ def actor_rref(
     endpoint: Any,
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
+    pending_pickle_state: Optional[PendingPickleState],
 ) -> Any: ...
 
 
