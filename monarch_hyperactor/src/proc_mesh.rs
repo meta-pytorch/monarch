@@ -333,7 +333,7 @@ impl PyProcMesh {
                 keepalive,
                 actor_events,
             );
-            Ok(PythonActorMesh::from_impl(Box::new(im)))
+            Ok(PythonActorMesh::from_impl(Arc::new(im)))
         };
         PyPythonTask::new(meshimpl)
     }

@@ -39,9 +39,9 @@ use super::JoinSemilattice;
 /// reports its progress monotonically:
 ///
 /// ```
-/// use ndslice::algebra::JoinSemilattice;
-/// use ndslice::algebra::LatticeMap;
-/// use ndslice::algebra::Min;
+/// use algebra::JoinSemilattice;
+/// use algebra::LatticeMap;
+/// use algebra::Min;
 ///
 /// // Rank 0 reports progress: 100
 /// let mut state1: LatticeMap<u32, Min<u64>> = LatticeMap::new();
@@ -65,9 +65,9 @@ use super::JoinSemilattice;
 /// provides true commutativity:
 ///
 /// ```
-/// use ndslice::algebra::JoinSemilattice;
-/// use ndslice::algebra::LatticeMap;
-/// use ndslice::algebra::Min;
+/// use algebra::JoinSemilattice;
+/// use algebra::LatticeMap;
+/// use algebra::Min;
 ///
 /// let mut a: LatticeMap<u32, Min<i64>> = LatticeMap::new();
 /// a.insert(0, Min(10));
@@ -201,8 +201,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algebra::Max;
-    use crate::algebra::Min;
+    use crate::Max;
+    use crate::Min;
 
     #[test]
     fn lattice_map_new_is_empty() {
