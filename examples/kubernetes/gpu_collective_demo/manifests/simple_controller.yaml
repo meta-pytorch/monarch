@@ -1,0 +1,12 @@
+# Manifest for the monarch driver pod.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monarch-client-demo
+  namespace: monarch-tests
+spec:
+  containers:
+    - name: monarch
+      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      command: ["sleep"]
+      args: ["infinity"]
