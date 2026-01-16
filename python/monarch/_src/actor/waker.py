@@ -36,6 +36,7 @@ class Event(abc.ABC):
 
             assert self._event is not None
             event: asyncio.Event = self._event
+            assert event is not None
 
             def notified() -> None:
                 os.read(self._read_fd, 1)
