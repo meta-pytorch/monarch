@@ -1,0 +1,45 @@
+# Manifest for a monarch pod with a single host with 4 GPUs.
+apiVersion: monarch.pytorch.org/v1alpha1
+kind: MonarchMesh
+metadata:
+  name: gpumesh1
+  namespace: monarch-tests
+spec:
+  replicas: 2
+  port: 26600
+  podTemplate:
+    containers:
+    - name: worker
+      # We use a public image and inline the python commands below.
+      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+
+      # Ensure we always try to pull (helpful during development)
+      imagePullPolicy: Always
+
+      # Request all 4 GPUs on the node for exclusive access
+      resources:
+        limits:
+          nvidia.com/gpu: 4
+        requests:
+          nvidia.com/gpu: 4
+
+      # TODO: Remove after we have a worker.py in the image.
+      command:
+        - python
+        - -u
+        - -c
+        - |
+          import os
+          import socket
+          import logging
+          from monarch.actor import run_worker_loop_forever
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("monarch-worker")
+          port = os.environ.get("MONARCH_PORT", "26600")
+          # Use FQDN instead of short hostname for cross-pod resolution
+          hostname = socket.getfqdn()
+          address = f"tcp://{hostname}:{port}"
+          logger.info(f"--- Starting Monarch Worker ---")
+          logger.info(f"Identity: {hostname}")
+          logger.info(f"Listening on: {address}")
+          run_worker_loop_forever(address=address, ca="trust_all_connections")
