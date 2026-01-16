@@ -106,7 +106,7 @@ use crate as hyperactor; // for macros
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::accum::Accumulator;
-use crate::accum::ReducerOpts;
+use crate::accum::ReducerMode;
 use crate::accum::ReducerSpec;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
@@ -1322,7 +1322,7 @@ impl Mailbox {
         A::Update: Message,
         A::State: Message + Default + Clone,
     {
-        self.open_accum_port_opts(accum, None)
+        self.open_accum_port_opts(accum, ReducerMode::default())
     }
 
     /// Open a new port with an accumulator. This port accepts A::Update type
@@ -1331,11 +1331,11 @@ impl Mailbox {
     /// a single A::State message. If there is no new update, the receiver will
     /// not receive any message.
     ///
-    /// If provided, reducer options are applied to reduce operations.
+    /// If provided, reducer mode controls reduce operations.
     pub fn open_accum_port_opts<A>(
         &self,
         accum: A,
-        reducer_opts: Option<ReducerOpts>,
+        reducer_mode: ReducerMode,
     ) -> (PortHandle<A::Update>, PortReceiver<A::State>)
     where
         A: Accumulator + Send + Sync + 'static,
@@ -1360,7 +1360,7 @@ impl Mailbox {
                 sender: UnboundedPortSender::Func(Arc::new(enqueue)),
                 bound: Arc::new(OnceLock::new()),
                 reducer_spec,
-                reducer_opts,
+                reducer_mode,
             },
             PortReceiver::new(receiver, port_id, /*coalesce=*/ true, self.clone()),
         )
@@ -1379,7 +1379,7 @@ impl Mailbox {
             sender: UnboundedPortSender::Func(Arc::new(enqueue)),
             bound: Arc::new(OnceLock::new()),
             reducer_spec: None,
-            reducer_opts: None,
+            reducer_mode: ReducerMode::default(),
         }
     }
 
@@ -1638,8 +1638,8 @@ pub struct PortHandle<M: Message> {
     // Typehash of an optional reducer. When it's defined, we include it in port
     /// references to optionally enable incremental accumulation.
     reducer_spec: Option<ReducerSpec>,
-    /// Reduction options. If unspecified, we use `ReducerOpts::default`.
-    reducer_opts: Option<ReducerOpts>,
+    /// Reduction mode.
+    reducer_mode: ReducerMode,
 }
 
 impl<M: Message> PortHandle<M> {
@@ -1650,7 +1650,7 @@ impl<M: Message> PortHandle<M> {
             sender,
             bound: Arc::new(OnceLock::new()),
             reducer_spec: None,
-            reducer_opts: None,
+            reducer_mode: ReducerMode::default(),
         }
     }
 
@@ -1703,7 +1703,7 @@ impl<M: RemoteMessage> PortHandle<M> {
                 .get_or_init(|| self.mailbox.bind(self).port_id().clone())
                 .clone(),
             self.reducer_spec.clone(),
-            self.reducer_opts.clone(),
+            self.reducer_mode.clone(),
         )
     }
 
@@ -1735,7 +1735,7 @@ impl<M: Message> Clone for PortHandle<M> {
             sender: self.sender.clone(),
             bound: self.bound.clone(),
             reducer_spec: self.reducer_spec.clone(),
-            reducer_opts: self.reducer_opts.clone(),
+            reducer_mode: self.reducer_mode.clone(),
         }
     }
 }
@@ -3373,7 +3373,7 @@ mod tests {
 
     async fn setup_split_port_ids(
         reducer_spec: Option<ReducerSpec>,
-        reducer_opts: Option<ReducerOpts>,
+        reducer_mode: ReducerMode,
     ) -> Setup {
         let proc = Proc::local();
         let (actor0, actor0_handle) = proc.instance("actor0").unwrap();
@@ -3385,15 +3385,15 @@ mod tests {
 
         // Split it twice on actor1
         let port_id1 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
+            .split(&actor1, reducer_spec.clone(), reducer_mode.clone(), true)
             .unwrap();
         let port_id2 = port_id
-            .split(&actor1, reducer_spec.clone(), reducer_opts.clone(), true)
+            .split(&actor1, reducer_spec.clone(), reducer_mode.clone(), true)
             .unwrap();
 
         // A split port id can also be split
         let port_id2_1 = port_id2
-            .split(&actor1, reducer_spec, reducer_opts.clone(), true)
+            .split(&actor1, reducer_spec, reducer_mode.clone(), true)
             .unwrap();
 
         Setup {
@@ -3427,7 +3427,7 @@ mod tests {
             port_id2,
             port_id2_1,
             ..
-        } = setup_split_port_ids(None, None).await;
+        } = setup_split_port_ids(None, ReducerMode::default()).await;
         // Can send messages to receiver from all port handles
         post(&actor0, port_id.clone(), 1);
         assert_eq!(receiver.recv().await.unwrap(), 1);
@@ -3481,7 +3481,7 @@ mod tests {
             port_id2,
             port_id2_1,
             ..
-        } = setup_split_port_ids(reducer_spec, None).await;
+        } = setup_split_port_ids(reducer_spec, ReducerMode::default()).await;
         post(&actor0, port_id.clone(), 4);
         post(&actor1, port_id1.clone(), 2);
         post(&actor1, port_id2.clone(), 3);
@@ -3517,10 +3517,10 @@ mod tests {
             .split(
                 &actor,
                 reducer_spec,
-                Some(ReducerOpts {
+                ReducerMode::Streaming {
                     max_update_interval: Some(Duration::from_mins(10)),
                     initial_update_interval: Some(Duration::from_mins(10)),
-                }),
+                },
                 true,
             )
             .unwrap();
@@ -3559,10 +3559,10 @@ mod tests {
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
-            Some(ReducerOpts {
+            ReducerMode::Streaming {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: Some(Duration::from_millis(50)),
-            }),
+            },
         )
         .await;
 
@@ -3603,10 +3603,10 @@ mod tests {
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
-            Some(ReducerOpts {
+            ReducerMode::Streaming {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: Some(Duration::from_millis(50)),
-            }),
+            },
         )
         .await;
 
@@ -3624,6 +3624,34 @@ mod tests {
         assert_eq!(msg, 40);
 
         // No further messages
+        let msg = receiver.try_recv().unwrap();
+        assert_eq!(msg, None);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_split_port_once_mode_basic() {
+        let proc = Proc::local();
+        let (actor, _actor_handle) = proc.instance("actor").unwrap();
+        let (port_handle, mut receiver) = actor.open_port::<u64>();
+        let port_id = port_handle.bind().port_id().clone();
+
+        // Split with Once(3) mode - accumulate 3 values then emit
+        let reducer_spec = accum::sum::<u64>().reducer_spec();
+        let split_port_id = port_id
+            .split(&actor, reducer_spec, ReducerMode::Once(3), true)
+            .unwrap();
+
+        // Send 3 messages
+        post(&actor, split_port_id.clone(), 10);
+        post(&actor, split_port_id.clone(), 20);
+        post(&actor, split_port_id.clone(), 30);
+
+        // Should receive a single reduced message
+        let msg = receiver.recv().await.unwrap();
+        assert_eq!(msg, 60); // 10 + 20 + 30
+
+        // No further messages
+        RealClock.sleep(Duration::from_millis(100)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
     }

@@ -48,7 +48,7 @@ use crate::Actor;
 use crate::ActorHandle;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
-use crate::accum::ReducerOpts;
+use crate::accum::ReducerMode;
 use crate::accum::ReducerSpec;
 use crate::actor::Referable;
 use crate::channel::ChannelAddr;
@@ -950,13 +950,13 @@ impl PortId {
         &self,
         cx: &impl context::Actor,
         reducer_spec: Option<ReducerSpec>,
-        reducer_opts: Option<ReducerOpts>,
+        reducer_mode: ReducerMode,
         return_undeliverable: bool,
     ) -> anyhow::Result<PortId> {
         cx.split(
             self.clone(),
             reducer_spec,
-            reducer_opts,
+            reducer_mode,
             return_undeliverable,
         )
     }
@@ -1005,7 +1005,7 @@ pub struct PortRef<M> {
         Ord = "ignore",
         Hash = "ignore"
     )]
-    reducer_opts: Option<ReducerOpts>,
+    reducer_mode: ReducerMode,
     phantom: PhantomData<M>,
     return_undeliverable: bool,
 }
@@ -1017,7 +1017,7 @@ impl<M: RemoteMessage> PortRef<M> {
         Self {
             port_id,
             reducer_spec: None,
-            reducer_opts: None,
+            reducer_mode: ReducerMode::default(),
             phantom: PhantomData,
             return_undeliverable: true,
         }
@@ -1028,12 +1028,12 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn attest_reducible(
         port_id: PortId,
         reducer_spec: Option<ReducerSpec>,
-        reducer_opts: Option<ReducerOpts>,
+        reducer_mode: ReducerMode,
     ) -> Self {
         Self {
             port_id,
             reducer_spec,
-            reducer_opts,
+            reducer_mode,
             phantom: PhantomData,
             return_undeliverable: true,
         }
@@ -1127,7 +1127,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
         Self {
             port_id: self.port_id.clone(),
             reducer_spec: self.reducer_spec.clone(),
-            reducer_opts: self.reducer_opts.clone(),
+            reducer_mode: self.reducer_mode.clone(),
             phantom: PhantomData,
             return_undeliverable: self.return_undeliverable,
         }
@@ -1145,7 +1145,7 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
 pub struct UnboundPort(
     pub PortId,
     pub Option<ReducerSpec>,
-    pub Option<ReducerOpts>,
+    pub ReducerMode,
     pub bool, // return_undeliverable
 );
 wirevalue::register_type!(UnboundPort);
@@ -1162,7 +1162,7 @@ impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
         UnboundPort(
             port_ref.port_id.clone(),
             port_ref.reducer_spec.clone(),
-            port_ref.reducer_opts.clone(),
+            port_ref.reducer_mode.clone(),
             port_ref.return_undeliverable,
         )
     }
@@ -1179,7 +1179,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
         let bound = bindings.try_pop_front::<UnboundPort>()?;
         self.port_id = bound.0;
         self.reducer_spec = bound.1;
-        self.reducer_opts = bound.2;
+        self.reducer_mode = bound.2;
         self.return_undeliverable = bound.3;
         Ok(())
     }

@@ -30,7 +30,7 @@ use crate::Instance;
 use crate::PortId;
 use crate::accum;
 use crate::accum::ErasedCommReducer;
-use crate::accum::ReducerOpts;
+use crate::accum::ReducerMode;
 use crate::accum::ReducerSpec;
 use crate::config;
 use crate::mailbox;
@@ -69,7 +69,7 @@ pub(crate) trait MailboxExt: Mailbox {
         &self,
         port_id: PortId,
         reducer_spec: Option<ReducerSpec>,
-        reducer_opts: Option<ReducerOpts>,
+        reducer_mode: ReducerMode,
         return_undeliverable: bool,
     ) -> anyhow::Result<PortId>;
 }
@@ -109,7 +109,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         &self,
         port_id: PortId,
         reducer_spec: Option<ReducerSpec>,
-        reducer_opts: Option<ReducerOpts>,
+        reducer_mode: ReducerMode,
         return_undeliverable: bool,
     ) -> anyhow::Result<PortId> {
         fn post(
@@ -151,83 +151,116 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                 post(&mailbox, port_id.clone(), serialized, return_undeliverable);
                 Ok(())
             }),
-            Some(reducer) => {
-                let buffer: Arc<Mutex<UpdateBuffer>> =
-                    Arc::new(Mutex::new(UpdateBuffer::new(reducer)));
+            Some(reducer) => match reducer_mode {
+                ReducerMode::Streaming { .. } => {
+                    let buffer: Arc<Mutex<UpdateBuffer>> =
+                        Arc::new(Mutex::new(UpdateBuffer::new(reducer)));
 
-                let alarm = Alarm::new();
+                    let alarm = Alarm::new();
 
-                {
-                    let mut sleeper = alarm.sleeper();
-                    let buffer = Arc::clone(&buffer);
-                    let port_id = port_id.clone();
-                    let mailbox = mailbox.clone();
-                    tokio::spawn(async move {
-                        while sleeper.sleep().await {
-                            let mut buf = buffer.lock().unwrap();
-                            match buf.reduce() {
-                                None => (),
-                                Some(Ok(reduced)) => {
-                                    post(&mailbox, port_id.clone(), reduced, return_undeliverable)
+                    {
+                        let mut sleeper = alarm.sleeper();
+                        let buffer = Arc::clone(&buffer);
+                        let port_id = port_id.clone();
+                        let mailbox = mailbox.clone();
+                        tokio::spawn(async move {
+                            while sleeper.sleep().await {
+                                let mut buf = buffer.lock().unwrap();
+                                match buf.reduce() {
+                                    None => (),
+                                    Some(Ok(reduced)) => post(
+                                        &mailbox,
+                                        port_id.clone(),
+                                        reduced,
+                                        return_undeliverable,
+                                    ),
+                                    // We simply ignore errors here, and let them be propagated
+                                    // later in the enqueueing function.
+                                    //
+                                    // If this is the last update, then this strategy will cause a hang.
+                                    // We should obtain a supervisor here from our send context and notify
+                                    // it.
+                                    Some(Err(e)) => tracing::error!(
+                                        "error while reducing update: {}; waiting until the next send to propagate",
+                                        e
+                                    ),
                                 }
-                                // We simply ignore errors here, and let them be propagated
-                                // later in the enqueueing function.
-                                //
-                                // If this is the last update, then this strategy will cause a hang.
-                                // We should obtain a supervisor here from our send context and notify
-                                // it.
-                                Some(Err(e)) => tracing::error!(
-                                    "error while reducing update: {}; waiting until the next send to propagate",
-                                    e
-                                ),
                             }
-                        }
-                    });
-                }
-
-                // Note: alarm is held in the closure while the port is active;
-                // when it is dropped, the alarm terminates, and so does the sleeper
-                // task.
-                let alarm = Mutex::new(alarm);
-
-                // Default to global configuration if not specified.
-                let reducer_opts = reducer_opts.unwrap_or_default();
-                let max_interval = reducer_opts.max_update_interval();
-                let initial_interval = reducer_opts.initial_update_interval();
-
-                // Create exponential backoff for buffer flush interval, starting at
-                // initial_interval and growing to max_interval
-                let backoff = Mutex::new(
-                    ExponentialBackoffBuilder::new()
-                        .with_initial_interval(initial_interval)
-                        .with_multiplier(2.0)
-                        .with_max_interval(max_interval)
-                        .with_max_elapsed_time(None)
-                        .build(),
-                );
-
-                Box::new(move |update: wirevalue::Any| {
-                    // Hold the lock until messages are sent. This is to avoid another
-                    // invocation of this method trying to send message concurrently and
-                    // cause messages delivered out of order.
-                    //
-                    // We also always acquire alarm *after* the buffer, to avoid deadlocks.
-                    let mut buf = buffer.lock().unwrap();
-                    match buf.push(update) {
-                        None => {
-                            let interval = backoff.lock().unwrap().next_backoff().unwrap();
-                            alarm.lock().unwrap().rearm(interval);
-                            Ok(())
-                        }
-                        Some(Ok(reduced)) => {
-                            alarm.lock().unwrap().disarm();
-                            post(&mailbox, port_id.clone(), reduced, return_undeliverable);
-                            Ok(())
-                        }
-                        Some(Err(e)) => Err((buf.pop().unwrap(), e)),
+                        });
                     }
-                })
-            }
+
+                    // Note: alarm is held in the closure while the port is active;
+                    // when it is dropped, the alarm terminates, and so does the sleeper
+                    // task.
+                    let alarm = Mutex::new(alarm);
+
+                    let max_interval = reducer_mode.max_update_interval();
+                    let initial_interval = reducer_mode.initial_update_interval();
+
+                    // Create exponential backoff for buffer flush interval, starting at
+                    // initial_interval and growing to max_interval
+                    let backoff = Mutex::new(
+                        ExponentialBackoffBuilder::new()
+                            .with_initial_interval(initial_interval)
+                            .with_multiplier(2.0)
+                            .with_max_interval(max_interval)
+                            .with_max_elapsed_time(None)
+                            .build(),
+                    );
+
+                    Box::new(move |update: wirevalue::Any| {
+                        // Hold the lock until messages are sent. This is to avoid another
+                        // invocation of this method trying to send message concurrently and
+                        // cause messages delivered out of order.
+                        //
+                        // We also always acquire alarm *after* the buffer, to avoid deadlocks.
+                        let mut buf = buffer.lock().unwrap();
+                        match buf.push(update) {
+                            None => {
+                                let interval = backoff.lock().unwrap().next_backoff().unwrap();
+                                alarm.lock().unwrap().rearm(interval);
+                                Ok(())
+                            }
+                            Some(Ok(reduced)) => {
+                                alarm.lock().unwrap().disarm();
+                                post(&mailbox, port_id.clone(), reduced, return_undeliverable);
+                                Ok(())
+                            }
+                            Some(Err(e)) => Err((buf.pop().unwrap(), e)),
+                        }
+                    })
+                }
+                ReducerMode::Once(0) => Box::new(move |update: wirevalue::Any| {
+                    Err((
+                        update,
+                        anyhow::anyhow!(
+                            "invalid ReducerMode: Once must specify at least one update"
+                        ),
+                    ))
+                }),
+                ReducerMode::Once(expected) => {
+                    let buffer: Arc<Mutex<OnceBuffer>> =
+                        Arc::new(Mutex::new(OnceBuffer::new(reducer, expected)));
+
+                    Box::new(move |update: wirevalue::Any| {
+                        let mut buf = buffer.lock().unwrap();
+                        if buf.done {
+                            return Err((
+                                update,
+                                anyhow::anyhow!("OnceReducer has already emitted"),
+                            ));
+                        }
+                        match buf.push(update) {
+                            Ok(Some(reduced)) => {
+                                post(&mailbox, port_id.clone(), reduced, return_undeliverable);
+                                Ok(())
+                            }
+                            Ok(None) => Ok(()),
+                            Err(e) => Err(e),
+                        }
+                    })
+                }
+            },
         };
         self.mailbox().bind_untyped(
             &split_port,
@@ -251,10 +284,6 @@ impl UpdateBuffer {
             buffered: Vec::new(),
             reducer,
         }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.buffered.is_empty()
     }
 
     fn pop(&mut self) -> Option<wirevalue::Any> {
@@ -285,6 +314,56 @@ impl UpdateBuffer {
                     Some(Err(e))
                 }
             }
+        }
+    }
+}
+
+struct OnceBuffer {
+    accumulated: Option<wirevalue::Any>,
+    reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>,
+    expected: usize,
+    count: usize,
+    done: bool,
+}
+
+impl OnceBuffer {
+    fn new(reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>, expected: usize) -> Self {
+        Self {
+            accumulated: None,
+            reducer,
+            expected,
+            count: 0,
+            done: false,
+        }
+    }
+
+    /// Push a new value and reduce incrementally. Returns Ok(Some(reduced)) when
+    /// the expected count is reached, Ok(None) while still accumulating. On error,
+    /// the buffer is broken and returns the rejected value.
+    fn push(
+        &mut self,
+        value: wirevalue::Any,
+    ) -> Result<Option<wirevalue::Any>, (wirevalue::Any, anyhow::Error)> {
+        self.count += 1;
+        self.accumulated = match self.accumulated.take() {
+            None => Some(value),
+            Some(acc) => match self.reducer.reduce_updates(vec![acc, value]) {
+                Ok(reduced) => Some(reduced),
+                Err((e, mut rejected)) => {
+                    return Err((
+                        rejected
+                            .pop()
+                            .unwrap_or_else(|| wirevalue::Any::serialize(&()).unwrap()),
+                        e,
+                    ));
+                }
+            },
+        };
+        if self.count >= self.expected {
+            self.done = true;
+            Ok(self.accumulated.take())
+        } else {
+            Ok(None)
         }
     }
 }
