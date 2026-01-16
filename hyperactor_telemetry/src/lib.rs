@@ -1065,7 +1065,7 @@ pub mod env {
                 let datetime: chrono::DateTime<chrono::Local> = now.into();
                 datetime.format("%b-%d_%H:%M").to_string()
             };
-            let random_number: u16 = (rand::thread_rng().next_u32() % 1000) as u16;
+            let random_number: u16 = (rand::rng().next_u32() % 1000) as u16;
             let execution_id = format!("{}_{}_{}", username, now, random_number);
             execution_id
         });
