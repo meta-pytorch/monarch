@@ -1595,6 +1595,7 @@ impl MailboxSender for Mailbox {
                         error: sender_error,
                         headers,
                     }) => {
+                        entry.remove();
                         let err = DeliveryError::Mailbox(format!("{}", sender_error));
 
                         MessageEnvelope::seal(
@@ -2180,7 +2181,7 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
 /// Use the provided function to send untyped messages (i.e. Any objects).
 pub(crate) struct UntypedUnboundedSender {
     pub(crate) sender:
-        Box<dyn Fn(wirevalue::Any) -> Result<(), (wirevalue::Any, anyhow::Error)> + Send + Sync>,
+        Box<dyn Fn(wirevalue::Any) -> Result<bool, (wirevalue::Any, anyhow::Error)> + Send + Sync>,
     pub(crate) port_id: PortId,
 }
 
@@ -2201,9 +2202,7 @@ impl SerializedSender for UntypedUnboundedSender {
                 MailboxSenderErrorKind::Other(err),
             ),
             headers,
-        })?;
-
-        Ok(true)
+        })
     }
 }
 
@@ -2696,6 +2695,7 @@ mod tests {
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
+    use crate::context::Mailbox as MailboxContext;
     use crate::id;
     use crate::proc::Proc;
     use crate::reference::ProcId;
@@ -3652,6 +3652,57 @@ mod tests {
 
         // No further messages
         RealClock.sleep(Duration::from_millis(100)).await;
+        let msg = receiver.try_recv().unwrap();
+        assert_eq!(msg, None);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_split_port_once_mode_teardown() {
+        let proc = Proc::local();
+        let (actor, _actor_handle) = proc.instance("actor").unwrap();
+        let (port_handle, mut receiver) = actor.open_port::<u64>();
+        let port_id = port_handle.bind().port_id().clone();
+
+        // Set up an undeliverable receiver to capture messages sent to torn-down ports
+        let (undeliverable_handle, mut undeliverable_receiver) =
+            undeliverable::new_undeliverable_port();
+
+        // Split with Once(3) mode - accumulate 3 values then emit and tear down
+        let reducer_spec = accum::sum::<u64>().reducer_spec();
+        let split_port_id = port_id
+            .split(&actor, reducer_spec, ReducerMode::Once(3), true)
+            .unwrap();
+
+        // Send 3 messages to trigger reduction
+        post(&actor, split_port_id.clone(), 10);
+        post(&actor, split_port_id.clone(), 20);
+        post(&actor, split_port_id.clone(), 30);
+
+        // Should receive a single reduced message
+        let msg = receiver.recv().await.unwrap();
+        assert_eq!(msg, 60); // 10 + 20 + 30
+
+        // Now send another message - it should fail because the port is torn down
+        let serialized = wirevalue::Any::serialize(&100u64).unwrap();
+        let envelope = MessageEnvelope::new(
+            actor.mailbox().actor_id().clone(),
+            split_port_id.clone(),
+            serialized,
+            Attrs::new(),
+        );
+        actor.mailbox().post(envelope, undeliverable_handle);
+
+        // Verify the message was returned as undeliverable
+        let undeliverable = RealClock
+            .timeout(Duration::from_secs(2), undeliverable_receiver.recv())
+            .await
+            .expect("should receive undeliverable message")
+            .expect("receiver should not be closed");
+
+        // Verify the undeliverable message has the correct destination
+        assert_eq!(undeliverable.0.dest(), &split_port_id);
+
+        // Verify no additional messages arrived at the original receiver
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
     }

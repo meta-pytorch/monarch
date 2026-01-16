@@ -145,11 +145,11 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             .transpose()?
             .flatten();
         let enqueue: Box<
-            dyn Fn(wirevalue::Any) -> Result<(), (wirevalue::Any, anyhow::Error)> + Send + Sync,
+            dyn Fn(wirevalue::Any) -> Result<bool, (wirevalue::Any, anyhow::Error)> + Send + Sync,
         > = match reducer {
             None => Box::new(move |serialized: wirevalue::Any| {
                 post(&mailbox, port_id.clone(), serialized, return_undeliverable);
-                Ok(())
+                Ok(true)
             }),
             Some(reducer) => match reducer_mode {
                 ReducerMode::Streaming { .. } => {
@@ -219,12 +219,12 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                             None => {
                                 let interval = backoff.lock().unwrap().next_backoff().unwrap();
                                 alarm.lock().unwrap().rearm(interval);
-                                Ok(())
+                                Ok(true)
                             }
                             Some(Ok(reduced)) => {
                                 alarm.lock().unwrap().disarm();
                                 post(&mailbox, port_id.clone(), reduced, return_undeliverable);
-                                Ok(())
+                                Ok(true)
                             }
                             Some(Err(e)) => Err((buf.pop().unwrap(), e)),
                         }
@@ -253,9 +253,9 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         match buf.push(update) {
                             Ok(Some(reduced)) => {
                                 post(&mailbox, port_id.clone(), reduced, return_undeliverable);
-                                Ok(())
+                                Ok(false) // Done, tear down the port
                             }
-                            Ok(None) => Ok(()),
+                            Ok(None) => Ok(true),
                             Err(e) => Err(e),
                         }
                     })
