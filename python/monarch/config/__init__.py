@@ -77,6 +77,7 @@ def configure(
     supervision_liveness_timeout: str | None = None,
     proc_stop_max_idle: str | None = None,
     get_proc_state_max_idle: str | None = None,
+    actor_queue_dispatch: bool | None = None,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -237,6 +238,8 @@ def configure(
         params["proc_stop_max_idle"] = proc_stop_max_idle
     if get_proc_state_max_idle is not None:
         params["get_proc_state_max_idle"] = get_proc_state_max_idle
+    if actor_queue_dispatch is not None:
+        params["actor_queue_dispatch"] = actor_queue_dispatch
 
     _configure(**params)
 
@@ -355,6 +358,8 @@ def parametrize_config(
         ...     pass
     """
     import asyncio
+    import functools
+    import inspect
     import itertools
 
     import pytest  # pyre-ignore[21]: pytest is a test-only dependency
@@ -375,31 +380,36 @@ def parametrize_config(
     config_dicts = [dict(zip(keys, combo)) for combo in combinations]
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        # Get original function's signature and add _config_overrides as first param
+        orig_sig = inspect.signature(fn)
+        new_params = [
+            inspect.Parameter(
+                "_config_overrides", inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+        ] + list(orig_sig.parameters.values())
+        new_sig = orig_sig.replace(parameters=new_params)
+
         if asyncio.iscoroutinefunction(fn):
 
             async def async_wrapper(
-                _config_overrides: Dict[str, Any],
+                _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
                 with configured(**_config_overrides):
-                    return await fn()
+                    return await fn(*args, **kwargs)
 
-            # pyre-ignore[16]: functions have __name__, __doc__, __module__
-            async_wrapper.__name__ = fn.__name__
-            async_wrapper.__doc__ = fn.__doc__
-            async_wrapper.__module__ = fn.__module__
+            functools.update_wrapper(async_wrapper, fn)
+            async_wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
             wrapped = async_wrapper
         else:
 
             def sync_wrapper(
-                _config_overrides: Dict[str, Any],
+                _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
                 with configured(**_config_overrides):
-                    return fn()
+                    return fn(*args, **kwargs)
 
-            # pyre-ignore[16]: functions have __name__, __doc__, __module__
-            sync_wrapper.__name__ = fn.__name__
-            sync_wrapper.__doc__ = fn.__doc__
-            sync_wrapper.__module__ = fn.__module__
+            functools.update_wrapper(sync_wrapper, fn)
+            sync_wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
             wrapped = sync_wrapper
 
         return pytest.mark.parametrize(

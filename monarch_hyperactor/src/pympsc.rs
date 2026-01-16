@@ -38,7 +38,10 @@ pub fn channel() -> Result<(Sender, PyReceiver), nix::Error> {
     let (waker, event) = pywaker::event()?;
 
     Ok((
-        Sender { tx, waker },
+        Sender {
+            tx,
+            waker: Arc::new(waker),
+        },
         PyReceiver {
             rx,
             event: PyCell::new(event),
@@ -74,9 +77,16 @@ impl std::error::Error for SendError {}
 
 /// A channel that can be used to send messages from Rust to Python without acquiring
 /// the GIL on the sender side.
+#[derive(Clone)]
 pub struct Sender {
     tx: mpsc::Sender<Box<dyn IntoPyObjectBox>>,
-    waker: pywaker::Waker,
+    waker: Arc<pywaker::Waker>,
+}
+
+impl std::fmt::Debug for Sender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sender").finish_non_exhaustive()
+    }
 }
 
 impl Sender {
@@ -98,6 +108,12 @@ impl Sender {
 pub struct PyReceiver {
     rx: Arc<Mutex<mpsc::Receiver<Box<dyn IntoPyObjectBox>>>>,
     event: PyCell<PyEvent>,
+}
+
+impl std::fmt::Debug for PyReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyReceiver").finish_non_exhaustive()
+    }
 }
 
 #[pymethods]

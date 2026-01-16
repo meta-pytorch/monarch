@@ -57,6 +57,7 @@ use pyo3::types::PyModule;
 use pyo3::types::PyModuleMethods;
 
 /// Waker is is a handle to a [`PyEvent`].
+#[derive(Debug)]
 pub struct Waker {
     write_fd: OwnedFd,
 }

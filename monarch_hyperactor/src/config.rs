@@ -211,6 +211,13 @@ declare_attrs! {
         py_name: Some("shared_asyncio_runtime".to_string()),
     })
     pub attr SHARED_ASYNCIO_RUNTIME: bool = false;
+
+    /// Use queue-based message dispatch for Python actors instead of direct dispatch
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("MONARCH_ACTOR_QUEUE_DISPATCH".to_string()),
+        py_name: Some("actor_queue_dispatch".to_string()),
+    })
+    pub attr ACTOR_QUEUE_DISPATCH: bool = false;
 }
 
 /// Python API for configuration management

@@ -243,8 +243,14 @@ impl std::fmt::Debug for PyPortId {
     name = "PortHandle",
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
-pub(super) struct PythonPortHandle {
+pub(crate) struct PythonPortHandle {
     inner: PortHandle<PythonMessage>,
+}
+
+impl PythonPortHandle {
+    pub(crate) fn new(inner: PortHandle<PythonMessage>) -> Self {
+        Self { inner }
+    }
 }
 
 #[pymethods]
