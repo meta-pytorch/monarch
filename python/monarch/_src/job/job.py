@@ -183,7 +183,10 @@ class JobTrait(ABC):
             return None
         if not running.can_run(self):
             logger.info("Cached job cannot run this spec, removing cache")
-            running._kill()
+            try:
+                running._kill()
+            except NotImplementedError as e:
+                logger.info("Failed to kill cached job: %s", e)
             os.remove(cached_path)
             return None
         return job
