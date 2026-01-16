@@ -8,15 +8,104 @@ import os
 import time
 import warnings
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
+from monarch._src.spmd.actor import SPMDActor
 from monarch._src.tools.commands import torchx_runner
 from torchx.runner import Runner
 from torchx.specs import AppDef, AppState
+
+
+def _parse_torchrun(
+    original_roles: List[Dict[str, Any]],
+) -> Tuple[List[str], int]:
+    """
+    Parse torchrun args to extract script/module args and nproc-per-node.
+
+    The original role structure looks like:
+        {
+            'entrypoint': 'workspace/entrypoint.sh',
+            'args': ['torchrun', '--nnodes=1', '--nproc-per-node=8', '-m', 'train', '--lr', '0.001']
+        }
+
+    Supports these patterns:
+        - ['torchrun', '--nproc-per-node=8', '-m', 'train', ...]
+        - ['python', '-m', 'torch.distributed.run', '--nproc-per-node=8', '-m', 'train', ...]
+        - ['python', '-m', 'torchrun', '--nproc-per-node=8', '-m', 'train', ...]
+        - ['python', 'train.py', ...]  (single proc)
+
+    Returns:
+        (script_args, nproc_per_node) tuple
+        e.g., (['-m', 'train', '--lr', '0.001'], 8)
+
+    Raises:
+        ValueError: If args format is not recognized
+    """
+    if not original_roles:
+        raise ValueError("No roles provided")
+
+    role = original_roles[0]
+    full_args = role.get("args", [])
+
+    if not full_args:
+        raise ValueError("Role has no args")
+
+    nproc_per_node = 1
+    script_args: List[str] = []
+
+    # Determine start index for torchrun options
+    # Handle: torchrun ..., python -m torch.distributed.run ..., python -m torchrun ...
+    torchrun_modules = ("torch.distributed.run", "torchrun")
+
+    if full_args[0] in ("torchrun", "torch.distributed.run"):
+        # Direct torchrun invocation
+        start_idx = 1
+    elif full_args[0] in ("python", "python3"):
+        # Check for python -m torch.distributed.run or python -m torchrun
+        if (
+            len(full_args) >= 3
+            and full_args[1] == "-m"
+            and full_args[2] in torchrun_modules
+        ):
+            start_idx = 3  # Skip: python -m torch.distributed.run
+        else:
+            # Plain python script - no torchrun options to parse
+            start_idx = 1
+    else:
+        raise ValueError(
+            f"Expected args to start with torchrun, torch.distributed.run, "
+            f"python, or python3, got: {full_args[0]}"
+        )
+
+    # Parse nproc-per-node from args (after start_idx)
+    for arg in full_args[start_idx:]:
+        if arg.startswith("--nproc-per-node=") or arg.startswith("--nproc_per_node="):
+            try:
+                nproc_per_node = int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+            break
+
+    # Extract script args (skip torchrun options until we hit -m or script path)
+    i = start_idx
+    while i < len(full_args):
+        arg = full_args[i]
+        if arg == "-m":
+            script_args = list(full_args[i:])
+            break
+        elif arg.startswith("--"):
+            i += 1
+        elif arg.startswith("-") and arg != "-m":
+            i += 1
+        else:
+            script_args = list(full_args[i:])
+            break
+
+    return (script_args, nproc_per_node)
 
 
 def serve(
@@ -209,7 +298,6 @@ class SPMDJob(JobTrait):
         ]
         self._hostnames = hostnames
 
-        # Connect to workers using bootstrap.attach_to_workers
         configure(default_transport=ChannelTransport.MetaTlsWithHostname)
         # TODO generalize away from just mast
         workers = attach_to_workers(
@@ -226,5 +314,18 @@ class SPMDJob(JobTrait):
             self._get_runner().cancel(self._app_handle)
 
     def run_spmd(self):
-        # TODO
-        pass
+        state = self._state()
+        workers = state.workers
+
+        script_args, nproc_per_node = _parse_torchrun(self._original_roles)
+
+        procs = workers.spawn_procs(per_host={"gpus": nproc_per_node})
+        am = procs.spawn("_SPMDActor", SPMDActor)
+
+        # Get master addr/port from first actor
+        first_values = dict.fromkeys(procs._labels, 0)
+        master_addr, master_port = (
+            am.slice(**first_values).get_host_port.call_one(None).get()
+        )
+
+        am.main.call(master_addr, master_port, script_args).get()
