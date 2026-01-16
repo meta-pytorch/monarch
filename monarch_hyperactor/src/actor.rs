@@ -24,6 +24,7 @@ use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
+use hyperactor::actor::Signal;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -918,21 +919,6 @@ impl Handler<PythonMessage> for PythonActor {
     }
 }
 
-#[derive(Debug)]
-struct PanicFromPy(SerializablePyErr);
-
-#[async_trait]
-impl Handler<PanicFromPy> for PythonActor {
-    async fn handle(
-        &mut self,
-        _cx: &Context<Self>,
-        PanicFromPy(err): PanicFromPy,
-    ) -> anyhow::Result<()> {
-        tracing::error!("caught error in async endpoint {}", err);
-        Err(err.into())
-    }
-}
-
 #[async_trait]
 impl Handler<MeshFailure> for PythonActor {
     async fn handle(&mut self, cx: &Context<Self>, message: MeshFailure) -> anyhow::Result<()> {
@@ -1067,7 +1053,7 @@ impl Handler<MeshFailure> for PythonActor {
 }
 
 async fn handle_async_endpoint_panic(
-    panic_sender: PortHandle<PanicFromPy>,
+    panic_sender: PortHandle<Signal>,
     task: PythonTask,
     side_channel: oneshot::Receiver<PyObject>,
     actor_id: String,
@@ -1119,7 +1105,7 @@ async fn handle_async_endpoint_panic(
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
 
         panic_sender
-            .send(PanicFromPy(panic))
+            .send(Signal::Abort(panic.to_string()))
             .expect("Unable to send panic message");
     }
 

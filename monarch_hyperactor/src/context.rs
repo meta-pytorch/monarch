@@ -80,6 +80,12 @@ impl PyInstance {
     pub fn actor_id(&self) -> PyActorId {
         self.inner.self_id().clone().into()
     }
+
+    #[pyo3(signature = (reason = None))]
+    fn abort(&self, reason: Option<&str>) -> PyResult<()> {
+        let reason = reason.unwrap_or("(no reason provided)");
+        Ok(self.inner.abort(reason).map_err(anyhow::Error::from)?)
+    }
 }
 
 impl PyInstance {
