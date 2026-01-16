@@ -1221,7 +1221,7 @@ class _Actor:
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
-    ) -> bool:
+    ) -> None:
         MESSAGES_HANDLED.add(1)
 
         # Initialize method_name before try block so it's always defined
@@ -1274,7 +1274,7 @@ class _Actor:
                         )
                         raise
                     response_port.send(None)
-                    return True
+                    return
                 case MethodSpecifier.ReturnsResponse():
                     pass
                 case MethodSpecifier.ExplicitPort():
@@ -1347,7 +1347,7 @@ class _Actor:
                     f"Actor call {ctx.actor_instance.name}.{method_name} failed.",
                 )
             )
-            return False
+            return
         except BaseException as e:
             if endpoint_span is not None:
                 endpoint_span.exit()
@@ -1366,7 +1366,7 @@ class _Actor:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
             raise
-        return True
+        return
 
     def _maybe_exit_debugger(self, do_continue: bool = True) -> None:
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
