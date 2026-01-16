@@ -148,6 +148,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.pytokio",
     )?)?;
 
+    monarch_hyperactor::pywaker::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.pywaker",
+    )?)?;
+
     monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.mailbox",

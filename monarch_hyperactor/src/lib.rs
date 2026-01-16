@@ -28,6 +28,7 @@ pub mod ndslice;
 pub mod proc;
 pub mod proc_mesh;
 pub mod pytokio;
+pub mod pywaker;
 pub mod runtime;
 pub mod selection;
 pub mod shape;
