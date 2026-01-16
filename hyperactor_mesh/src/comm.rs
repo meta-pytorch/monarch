@@ -25,6 +25,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::WorldId;
+use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
@@ -33,6 +34,7 @@ use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::reference::UnboundPort;
+use hyperactor::reference::UnboundPortKind;
 use ndslice::Point;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
@@ -323,12 +325,23 @@ fn split_ports(
     // append parameter name with _ because it is only used in test.
     _deliver_here: bool,
 ) -> anyhow::Result<()> {
+    // Split ports, if any, and update message with new ports. In this
+    // way, children actors will reply to this comm actor's ports, instead
+    // of to the original ports provided by parent.
     data.visit_mut::<UnboundPort>(
-        |UnboundPort(port_id, reducer_spec, reducer_opts, return_undeliverable)| {
+        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind)| {
+            let reducer_mode = match kind {
+                UnboundPortKind::Streaming(opts) => {
+                    ReducerMode::Streaming(opts.clone().unwrap_or_default())
+                }
+                UnboundPortKind::Once => {
+                    anyhow::bail!("onceport splitting not yet supported")
+                }
+            };
             let split = port_id.split(
                 cx,
                 reducer_spec.clone(),
-                reducer_opts.clone(),
+                reducer_mode,
                 *return_undeliverable,
             )?;
 

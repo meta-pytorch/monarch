@@ -9,6 +9,7 @@
 use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::accum::ReducerMode;
+use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
@@ -860,10 +861,10 @@ impl HostMeshRef {
         // NotExist.
         let (port, rx) = cx.mailbox().open_accum_port_opts(
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
-            ReducerMode::Streaming {
+            ReducerMode::Streaming(StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
-            },
+            }),
         );
 
         // Create or update each proc, then fence on receiving status
@@ -1045,10 +1046,10 @@ impl HostMeshRef {
         // NotExist.
         let (port, rx) = cx.mailbox().open_accum_port_opts(
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
-            ReducerMode::Streaming {
+            ReducerMode::Streaming(StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
-            },
+            }),
         );
         for proc_id in procs.into_iter() {
             let Some((addr, proc_name)) = proc_id.as_direct() else {

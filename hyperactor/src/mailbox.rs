@@ -3517,10 +3517,10 @@ mod tests {
             .split(
                 &actor,
                 reducer_spec,
-                ReducerMode::Streaming {
+                ReducerMode::Streaming(accum::StreamingReducerOpts {
                     max_update_interval: Some(Duration::from_mins(10)),
                     initial_update_interval: Some(Duration::from_mins(10)),
-                },
+                }),
                 true,
             )
             .unwrap();
@@ -3559,10 +3559,10 @@ mod tests {
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
-            ReducerMode::Streaming {
+            ReducerMode::Streaming(accum::StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: Some(Duration::from_millis(50)),
-            },
+            }),
         )
         .await;
 
@@ -3603,10 +3603,10 @@ mod tests {
             ..
         } = setup_split_port_ids(
             Some(accum::sum::<u64>().reducer_spec().unwrap()),
-            ReducerMode::Streaming {
+            ReducerMode::Streaming(accum::StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: Some(Duration::from_millis(50)),
-            },
+            }),
         )
         .await;
 
