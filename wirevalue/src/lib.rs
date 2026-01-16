@@ -29,17 +29,20 @@ pub use typeuri::intern_typename;
 
 pub mod config;
 
+/// Typehash value indicating a broken (unknown type, no value) Any.
+pub const BROKEN_TYPEHASH: u64 = 0;
+
 #[doc(hidden)]
 /// Dump trait for Named types that are also serializable/deserializable.
 /// This is a utility used by [`Any::dump`], and is not intended
 /// for direct use.
 pub trait NamedDumpable: Named + Serialize + for<'de> Deserialize<'de> {
     /// Dump the data in Any to a JSON value.
-    fn dump(data: Any) -> Result<serde_json::Value, anyhow::Error>;
+    fn dump(data: Any) -> Result<serde_json::Value>;
 }
 
 impl<T: Named + Serialize + for<'de> Deserialize<'de>> NamedDumpable for T {
-    fn dump(data: Any) -> Result<serde_json::Value, anyhow::Error> {
+    fn dump(data: Any) -> Result<serde_json::Value> {
         let value = data.deserialized::<Self>()?;
         Ok(serde_json::to_value(value)?)
     }
@@ -57,7 +60,7 @@ pub struct TypeInfo {
     /// Named::typehash()
     pub port: fn() -> u64,
     /// A function that can transcode a serialized value to JSON.
-    pub dump: Option<fn(Any) -> Result<serde_json::Value, anyhow::Error>>,
+    pub dump: Option<fn(Any) -> Result<serde_json::Value>>,
     /// Return the arm for this type, if available.
     pub arm_unchecked: unsafe fn(*const ()) -> Option<&'static str>,
 }
@@ -100,11 +103,11 @@ impl TypeInfo {
     }
 
     /// Dump the serialized data to a JSON value.
-    pub fn dump(&self, data: Any) -> Result<serde_json::Value, anyhow::Error> {
+    pub fn dump(&self, data: Any) -> Result<serde_json::Value> {
         if let Some(dump) = self.dump {
             (dump)(data)
         } else {
-            anyhow::bail!("binary does not have dumper for {}", self.typehash())
+            Err(Error::MissingDumper(self.typehash()))
         }
     }
 
@@ -279,7 +282,33 @@ pub enum Error {
     /// The encoding was not recognized.
     #[error("unknown encoding: {0}")]
     InvalidEncoding(String),
+
+    /// Attempted to deserialize a broken Any value.
+    #[error("attempted to deserialize a broken Any value")]
+    BrokenAny,
+
+    /// Type mismatch during deserialization.
+    #[error("type mismatch: expected {expected}, found {actual}")]
+    TypeMismatch {
+        expected: &'static str,
+        actual: String,
+    },
+
+    /// Type info not available for the given typehash.
+    #[error("binary does not have typeinfo for typehash {0}")]
+    MissingTypeInfo(u64),
+
+    /// Dumper not available for the given typehash.
+    #[error("binary does not have dumper for typehash {0}")]
+    MissingDumper(u64),
+
+    /// Operation requires bincode encoding.
+    #[error("only bincode encoding supports prefix operations")]
+    PrefixNotSupported,
 }
+
+/// A specialized Result type for wirevalue operations.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Represents a serialized value, wrapping the underlying serialization
 /// and deserialization details, while ensuring that we pass correctly-serialized
@@ -316,7 +345,7 @@ impl Any {
     /// Serialize uses the default encoding defined by the configuration key
     /// [`config::DEFAULT_ENCODING`] in the global configuration; use [`serialize_with_encoding`]
     /// to serialize values with a specific encoding.
-    pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self, Error> {
+    pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self> {
         Self::serialize_with_encoding(
             hyperactor_config::global::get(config::DEFAULT_ENCODING),
             value,
@@ -326,7 +355,7 @@ impl Any {
     /// Serialize U-typed value as a T-typed value. This should be used with care
     /// (typically only in testing), as the value's representation may be illegally
     /// coerced.
-    pub fn serialize_as<T: Named, U: Serialize>(value: &U) -> Result<Self, Error> {
+    pub fn serialize_as<T: Named, U: Serialize>(value: &U) -> Result<Self> {
         Self::serialize_with_encoding_as::<T, U>(
             hyperactor_config::global::get(config::DEFAULT_ENCODING),
             value,
@@ -337,7 +366,7 @@ impl Any {
     pub fn serialize_with_encoding<T: Serialize + Named>(
         encoding: Encoding,
         value: &T,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         Self::serialize_with_encoding_as::<T, T>(encoding, value)
     }
 
@@ -347,7 +376,7 @@ impl Any {
     pub fn serialize_with_encoding_as<T: Named, U: Serialize>(
         encoding: Encoding,
         value: &U,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         Ok(Self {
             encoded: match encoding {
                 Encoding::Bincode => Encoded::Bincode(bincode::serialize(value)?.into()),
@@ -360,33 +389,50 @@ impl Any {
         })
     }
 
+    /// Create a new broken Any value. A broken value has unknown type and
+    /// no valid data. Attempting to deserialize a broken value will fail.
+    pub fn new_broken() -> Self {
+        Self {
+            encoded: Encoded::Bincode(bytes::Bytes::new()),
+            typehash: BROKEN_TYPEHASH,
+        }
+    }
+
+    /// Returns true if this Any is broken (unknown type, no value).
+    pub fn is_broken(&self) -> bool {
+        self.typehash == BROKEN_TYPEHASH
+    }
+
     /// Deserialize a value to the provided type T.
-    pub fn deserialized<T: DeserializeOwned + Named>(&self) -> Result<T, anyhow::Error> {
-        anyhow::ensure!(
-            self.is::<T>(),
-            "attempted to serialize {}-typed serialized into type {}",
-            self.typename().unwrap_or("unknown"),
-            T::typename()
-        );
+    pub fn deserialized<T: DeserializeOwned + Named>(&self) -> Result<T> {
+        if self.is_broken() {
+            return Err(Error::BrokenAny);
+        }
+        if !self.is::<T>() {
+            return Err(Error::TypeMismatch {
+                expected: T::typename(),
+                actual: self.typename().unwrap_or("unknown").to_string(),
+            });
+        }
         self.deserialized_unchecked()
     }
 
     /// Deserialize a value to the provided type T, without checking for type conformance.
     /// This should be used carefully, only when you know that the dynamic type check is
     /// not needed.
-    pub fn deserialized_unchecked<T: DeserializeOwned>(&self) -> Result<T, anyhow::Error> {
+    pub fn deserialized_unchecked<T: DeserializeOwned>(&self) -> Result<T> {
         match &self.encoded {
-            Encoded::Bincode(data) => bincode::deserialize(data).map_err(anyhow::Error::from),
-            Encoded::Json(data) => serde_json::from_slice(data).map_err(anyhow::Error::from),
+            Encoded::Bincode(data) => Ok(bincode::deserialize(data)?),
+            Encoded::Json(data) => Ok(serde_json::from_slice(data)?),
             Encoded::Multipart(message) => {
-                serde_multipart::deserialize_bincode(message.clone()).map_err(anyhow::Error::from)
+                Ok(serde_multipart::deserialize_bincode(message.clone())?)
             }
         }
     }
 
     /// Transcode the serialized value to JSON. This operation will succeed if the type hash
     /// is embedded in the value, and the corresponding type is available in this binary.
-    pub fn transcode_to_json(self) -> Result<Self, Self> {
+    pub fn transcode_to_json(self) -> std::result::Result<Self, Self> {
         match self.encoded {
             Encoded::Bincode(_) | Encoded::Multipart(_) => {
                 let json_value = match self.dump() {
@@ -408,15 +454,15 @@ impl Any {
 
     /// Dump the Any message into a JSON value. This will succeed if: 1) the typehash is embedded
     /// in the serialized value; 2) the named type is linked into the binary.
-    pub fn dump(&self) -> Result<serde_json::Value, anyhow::Error> {
+    pub fn dump(&self) -> Result<serde_json::Value> {
         match &self.encoded {
             Encoded::Bincode(_) | Encoded::Multipart(_) => {
                 let Some(typeinfo) = TYPE_INFO.get(&self.typehash) else {
-                    anyhow::bail!("binary does not have typeinfo for {}", self.typehash);
+                    return Err(Error::MissingTypeInfo(self.typehash));
                 };
                 typeinfo.dump(self.clone())
             }
-            Encoded::Json(data) => serde_json::from_slice(data).map_err(anyhow::Error::from),
+            Encoded::Json(data) => Ok(serde_json::from_slice(data)?),
         }
     }
 
@@ -441,22 +487,19 @@ impl Any {
     /// for bincode-serialized values.
     // TODO: we should support this by formalizing the notion of a 'prefix'
     // serialization, and generalize it to other codecs as well.
-    pub fn prefix<T: DeserializeOwned>(&self) -> Result<T, anyhow::Error> {
+    pub fn prefix<T: DeserializeOwned>(&self) -> Result<T> {
         match &self.encoded {
-            Encoded::Bincode(data) => bincode::deserialize(data).map_err(anyhow::Error::from),
-            _ => anyhow::bail!("only bincode supports prefix emplacement"),
+            Encoded::Bincode(data) => Ok(bincode::deserialize(data)?),
+            _ => Err(Error::PrefixNotSupported),
         }
     }
 
     /// Emplace a new prefix to this value. This is currently only supported
     /// for bincode-serialized values.
-    pub fn emplace_prefix<T: Serialize + DeserializeOwned>(
-        &mut self,
-        prefix: T,
-    ) -> Result<(), anyhow::Error> {
+    pub fn emplace_prefix<T: Serialize + DeserializeOwned>(&mut self, prefix: T) -> Result<()> {
         let data = match &self.encoded {
             Encoded::Bincode(data) => data,
-            _ => anyhow::bail!("only bincode supports prefix emplacement"),
+            _ => return Err(Error::PrefixNotSupported),
         };
 
         // This is a bit ugly, but: we first deserialize out the old prefix,
@@ -847,5 +890,20 @@ mod tests {
             assert_eq!(ser.encoding(), enc);
             assert_eq!(ser.deserialized::<TestDumpStruct>().unwrap(), value);
         }
+    }
+
+    #[test]
+    fn test_broken_any() {
+        let broken = Any::new_broken();
+        assert!(broken.is_broken());
+        assert_eq!(broken.typehash(), BROKEN_TYPEHASH);
+
+        // Normal values are not broken
+        let normal = Any::serialize(&"hello".to_string()).unwrap();
+        assert!(!normal.is_broken());
+
+        // deserialized() should fail for broken values
+        let err = broken.deserialized::<String>().unwrap_err();
+        assert!(err.to_string().contains("broken"));
     }
 }
