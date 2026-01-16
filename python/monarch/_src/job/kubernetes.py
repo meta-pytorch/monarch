@@ -31,6 +31,7 @@ logger.propagate = False
 
 # Default monarch port for worker communication
 _DEFAULT_MONARCH_PORT: int = 26600
+_RFC_1123_MAX_LEN = 63
 
 
 class KubernetesJob(JobTrait):
@@ -66,11 +67,37 @@ class KubernetesJob(JobTrait):
         Requires all pod ranks from 0 to num_replicas-1 specified by pod rank label to be ready before the mesh becomes available.
 
         Args:
-            name: Name of the mesh
+            name: Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction:
+                  * At most 63 characters
+                  * only lowercase alphanumeric characters
+                  * must start with an alphabetic character,
+                  * and end with an alphanumeric character.
             num_replicas: Number of pod replicas (expects all ranks 0 to num_replicas-1)
             label_selector: Custom Kubernetes label selector for pod discovery (default: "app.kubernetes.io/name=monarch-worker,monarch.pytorch.org/mesh-name=<name>")
             pod_rank_label: Label key containing the pod rank for ordering workers (default: "apps.kubernetes.io/pod-index")
+
+        Raises:
+            ValueError: If name does not follow RFC 1123 DNS label standard with Monarch restriction.
         """
+        if len(name) == 0:
+            raise ValueError("Empty mesh name is invalid.")
+        if len(name) > _RFC_1123_MAX_LEN:
+            raise ValueError(
+                f"Mesh name '{name}' is invalid. Name must contain at most 63 characters."
+            )
+        if not name.isalnum() or not name.islower():
+            raise ValueError(
+                f"Mesh name '{name}' is invalid. Name must contain only lowercase alphanumeric characters."
+            )
+        if not name[0].isalpha():
+            raise ValueError(
+                f"Mesh name '{name}' is invalid. Name must start with an alphabetic character."
+            )
+        if not name[-1].isalnum():
+            raise ValueError(
+                f"Mesh name '{name}' is invalid. Name must end with an alphanumeric character."
+            )
+
         self._meshes[name] = {
             "label_selector": label_selector
             or f"app.kubernetes.io/name=monarch-worker,monarch.pytorch.org/mesh-name={name}",
