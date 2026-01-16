@@ -55,10 +55,12 @@ use crate::v1::view::Point;
 
 declare_attrs! {
     /// Time between checks of actor states to create supervision events for
-    /// owners. Default of 3 seconds is chosen to not penalize short-lived actors,
-    /// while still able to catch issues before they look like a hang or timeout.
+    /// owners. The longer this is, the longer it will take to detect a failure
+    /// and report it to all subscribers; however, shorter intervals will send
+    /// more frequent messages and heartbeats just to see everything is still running.
+    /// The default is chosen to balance these two objectives.
     /// This also controls how frequently the healthy heartbeat is sent out to
-    /// subscribers.
+    /// subscribers if there are no failures encountered.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY".to_string()),
         py_name: None,
@@ -462,7 +464,10 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
 /// between "no messages because no errors" and "no messages because controller died".
 /// Without sending these hearbeats, subscribers will assume the mesh is dead.
 fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
-    tracing::debug!("sending heartbeat to subscribers");
+    tracing::debug!(
+        "sending heartbeat to subscribers, num subscribers = {}",
+        health_state.subscribers.len()
+    );
 
     for subscriber in health_state.subscribers.iter() {
         if let Err(e) = subscriber.send(cx, None) {
@@ -702,6 +707,11 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
             self.self_check_state_message(cx)?;
             return Ok(());
         }
+        // If there was any state change, we don't need to send a heartbeat.
+        let mut did_send_state_change = false;
+        // True if any rank is in a terminal status. Once that is true, no more
+        // heartbeats are sent.
+        let mut is_terminal = false;
         // This returned point is the created rank, *not* the rank of
         // the possibly sliced input mesh.
         for (point, state) in events.unwrap().iter() {
@@ -723,6 +733,11 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                     }
                     state.status.clone()
                 });
+            // If the status of any rank is terminal, we don't want to send
+            // a heartbeat message.
+            if !is_terminal && entry.is_terminating() {
+                is_terminal = true;
+            }
             // If this actor is new, or the state changed, send a message to the owner.
             let (rank, event) = if is_new {
                 let (rank, events) = actor_state_to_supervision_events(state.clone());
@@ -744,16 +759,17 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 *entry = state.status;
                 (rank, events[0].clone())
             } else {
-                // No state change, but subscribers need to be sent a message
-                // every so often so they know the controller is still alive.
-                // Send a "no state change" message.
-                // Only if the last state for this actor is not a terminal state.
-                if !entry.is_terminating() {
-                    send_heartbeat(cx, &self.health_state);
-                }
                 continue;
             };
+            did_send_state_change = true;
             send_state_change(cx, rank, event, mesh.name(), false, &mut self.health_state);
+        }
+        if !did_send_state_change && !is_terminal {
+            // No state change, but subscribers need to be sent a message
+            // every so often so they know the controller is still alive.
+            // Send a "no state change" message.
+            // Only if the last state for any actor in this mesh is not a terminal state.
+            send_heartbeat(cx, &self.health_state);
         }
 
         // Reschedule a self send after a waiting period.
