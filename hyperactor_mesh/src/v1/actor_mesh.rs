@@ -80,6 +80,19 @@ declare_attrs! {
     pub attr SUPERVISION_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
 }
 
+declare_attrs! {
+    /// Liveness watchdog for the supervision stream. If no
+    /// supervision message (healthy or unhealthy) is observed within
+    /// this duration, the controller is assumed to be unreachable and
+    /// the mesh is treated as unhealthy. This timeout is about
+    /// detecting silence, not slow messages.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_SUPERVISION_LIVENESS_TIMEOUT".to_string()),
+        py_name: Some("supervision_liveness_timeout".to_string()),
+    })
+    pub attr SUPERVISION_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+}
+
 /// An ActorMesh is a collection of ranked A-typed actors.
 ///
 /// Bound note: `A: Referable` because the mesh stores/returns
