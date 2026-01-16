@@ -32,7 +32,7 @@ typeuri = { version = "0.0.0", path = "../typeuri" }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
-rand = { version = "0.8", features = ["small_rng"] }
+rand = { version = "0.9", features = ["small_rng"] }
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [build-dependencies]

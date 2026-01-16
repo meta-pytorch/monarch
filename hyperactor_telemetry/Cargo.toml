@@ -21,7 +21,7 @@ libc = "0.2.139"
 opentelemetry = "0.29"
 opentelemetry_sdk = { version = "0.29.0", features = ["rt-tokio"] }
 prost = { version = "0.13.4", default-features = false }
-rand = { version = "0.8", features = ["small_rng"] }
+rand = { version = "0.9", features = ["small_rng"] }
 rusqlite = { version = "0.37.0", features = ["backup", "blob", "bundled", "column_decltype", "functions", "limits", "modern_sqlite", "serde_json"] }
 scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
