@@ -127,12 +127,12 @@ impl Platform {
                 println!("cargo:rustc-link-lib=pthread");
             }
             Platform::Rocm { .. } => {
-				// ROCm linking strategy:
-				// - Driver API (hipMemCreate, etc.): loaded via dlopen in driver_api_hip.cpp
-				// - HIP runtime (hipLaunchKernel): needed for compiled GPU kernels
-				// - RDMA libraries: used directly by rdmaxcel.c/cpp, not via dlopen
-				// - HSA runtime: ROCm 6.x uses hsa_amd_portable_export_dmabuf directly
-				//   (ROCm 7+ has native hipMemGetHandleForAddressRange and won't need this)
+                // ROCm linking strategy:
+                // - Driver API (hipMemCreate, etc.): loaded via dlopen in driver_api_hip.cpp
+                // - HIP runtime (hipLaunchKernel): needed for compiled GPU kernels
+                // - RDMA libraries: used directly by rdmaxcel.c/cpp, not via dlopen
+                // - HSA runtime: ROCm 6.x uses hsa_amd_portable_export_dmabuf directly
+                //   (ROCm 7+ has native hipMemGetHandleForAddressRange and won't need this)
                 println!("cargo:rustc-link-lib=amdhip64");
                 println!("cargo:rustc-link-lib=ibverbs");
                 println!("cargo:rustc-link-lib=mlx5");
