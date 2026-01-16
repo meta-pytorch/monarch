@@ -43,8 +43,11 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::bootstrap;
+use crate::proc_mesh::mesh_agent::ActorSpec;
+use crate::proc_mesh::mesh_agent::ActorState;
 use crate::v1::Name;
 use crate::v1::StatusOverlay;
+use crate::v1::host_mesh::mesh_agent::ProcState;
 
 /// The current lifecycle status of a resource.
 #[derive(
@@ -261,6 +264,8 @@ pub struct CreateOrUpdate<S> {
     /// The specification of the resource.
     pub spec: S,
 }
+wirevalue::register_type!(CreateOrUpdate<ProcSpec>);
+wirevalue::register_type!(CreateOrUpdate<ActorSpec>);
 
 /// Stop a resource according to a spec.
 #[derive(
@@ -279,6 +284,7 @@ pub struct Stop {
     /// The name of the resource to stop.
     pub name: Name,
 }
+wirevalue::register_type!(Stop);
 
 /// Stop all resources owned by the receiver of this message.
 /// No reply, this just issues the stop command.
@@ -296,6 +302,7 @@ pub struct Stop {
     Unbind
 )]
 pub struct StopAll {}
+wirevalue::register_type!(StopAll);
 
 /// Retrieve the current state of the resource.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
@@ -306,6 +313,8 @@ pub struct GetState<S> {
     #[reply]
     pub reply: PortRef<State<S>>,
 }
+wirevalue::register_type!(GetState<ProcState>);
+wirevalue::register_type!(GetState<ActorState>);
 
 // Cannot derive Bind and Unbind for this generic, implement manually.
 impl<S> Unbind for GetState<S>

@@ -1151,6 +1151,16 @@ impl<A: Actor> Instance<A> {
         self.inner.cell.signal(Signal::DrainAndStop)
     }
 
+    /// Signal the actor to abort with a provided reason.
+    pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
+        tracing::info!(
+            actor_id = ?self.inner.cell.actor_id(),
+            abort_reason = reason,
+            "Instance::abort called",
+        );
+        self.inner.cell.signal(Signal::Abort(reason.to_string()))
+    }
+
     /// Open a new port that accepts M-typed messages. The returned
     /// port may be freely cloned, serialized, and passed around. The
     /// returned receiver should only be retained by the actor responsible
@@ -1458,6 +1468,9 @@ impl<A: Actor> Instance<A> {
                         Signal::ChildStopped(pid) => {
                             assert!(self.inner.cell.get_child(pid).is_none());
                         },
+                        Signal::Abort(reason) => {
+                            return Err(ActorError { actor_id: Box::new(self.self_id().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
+                        }
                     }
                 }
                 Ok(supervision_event) = supervision_event_receiver.recv() => {

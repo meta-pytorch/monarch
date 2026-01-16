@@ -328,9 +328,14 @@ pub enum ActorErrorKind {
     /// An error that occurred while trying to handle a supervision event.
     #[error("{0} while handling {1}")]
     ErrorDuringHandlingSupervision(String, Box<ActorSupervisionEvent>),
+
     /// The actor did not attempt to handle
     #[error("{0}")]
     UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
+
+    /// The actor was explicitly aborted with the provided reason.
+    #[error("actor explicitly aborted due to: {0}")]
+    Aborted(String),
 }
 
 impl ActorErrorKind {
@@ -443,6 +448,11 @@ pub enum Signal {
 
     /// The direct child with the given PID was stopped.
     ChildStopped(Index),
+
+    /// Abort the actor. This will exit the actor loop with an error,
+    /// causing a supervision event to propagate up the supervision
+    /// hierarchy.
+    Abort(String),
 }
 wirevalue::register_type!(Signal);
 
@@ -452,6 +462,7 @@ impl fmt::Display for Signal {
             Signal::DrainAndStop => write!(f, "DrainAndStop"),
             Signal::Stop => write!(f, "Stop"),
             Signal::ChildStopped(index) => write!(f, "ChildStopped({})", index),
+            Signal::Abort(reason) => write!(f, "Abort({})", reason),
         }
     }
 }
