@@ -672,10 +672,10 @@ impl Actor for PythonActor {
 
         let receiver = receiver.take().unwrap();
 
-        // Create an error port that converts PythonMessage to PanicFromPy.
+        // Create an error port that converts PythonMessage to an abort signal.
         // This allows Python to send errors that trigger actor supervision.
         let error_port: hyperactor::PortHandle<PythonMessage> =
-            this.port::<PanicFromPy>().contramap(|msg: PythonMessage| {
+            this.port::<Signal>().contramap(|msg: PythonMessage| {
                 Python::with_gil(|py| {
                     let err = match msg.kind {
                         PythonMessageKind::Exception { .. } => {
@@ -695,7 +695,7 @@ impl Actor for PythonActor {
                             SerializablePyErr::from(py, &py_err)
                         }
                     };
-                    PanicFromPy(err)
+                    Signal::Abort(err.to_string())
                 })
             });
 
