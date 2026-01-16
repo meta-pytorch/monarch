@@ -6,12 +6,12 @@
 
 # pyre-strict
 
-import logging
+import os
+import socket
 import sys
+from datetime import datetime
 
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
-
-_logger: logging.Logger = logging.getLogger(__name__)
 
 
 def unhandled_fault_hook(failure: MeshFailure) -> None:
@@ -36,9 +36,18 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
     monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
     ```
     """
+    from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 
-    # use stderr, not _logger because loggers are sometimes set
+    pid = os.getpid()
+    hostname = socket.gethostname()
+    message = (
+        f"Unhandled monarch error on the root actor, hostname={hostname}, "
+        f"PID={pid} at time {datetime.now()}: {failure.report()}\n"
+    )
+    # use stderr, not a logger because loggers are sometimes set
     # not print anything (e.g. in pytest)
-    sys.stderr.write(f"Unhandled monarch error on the root actor: {failure.report()}\n")
+    sys.stderr.write(message)
     sys.stderr.flush()
+    # In addition to writing to stderr, log the event to telemetry.
+    instant_event(message)
     sys.exit(1)

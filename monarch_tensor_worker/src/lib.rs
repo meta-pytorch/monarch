@@ -1100,7 +1100,7 @@ mod tests {
     use pyo3::types::PyList;
     use pyo3::types::PyString;
     use rand::Rng;
-    use rand::distributions::Alphanumeric;
+    use rand::distr::Alphanumeric;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -1931,7 +1931,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn get_random_channel_addr() -> ChannelAddr {
-        let random_string = rand::thread_rng()
+        let random_string = rand::rng()
             .sample_iter(&Alphanumeric)
             .take(24)
             .map(char::from)
