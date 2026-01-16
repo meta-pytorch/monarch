@@ -15,7 +15,7 @@ import itertools
 import logging
 import threading
 import warnings
-from abc import abstractproperty
+from abc import abstractmethod, abstractproperty
 from dataclasses import dataclass
 from functools import cache
 from pprint import pformat
@@ -230,6 +230,14 @@ class Instance(abc.ABC):
 
     def __repr__(self) -> str:
         return _qualified_name(self)
+
+    @abstractmethod
+    def abort(self, reason: Optional[str] = None) -> None:
+        """
+        Abort the current actor. This will cause the actor to terminate
+        with a failure, and a supervision error will propagate to its creator.
+        """
+        ...
 
 
 @dataclass
