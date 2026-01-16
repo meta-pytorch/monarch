@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 import time
-from typing import cast
+from typing import Callable, cast, Optional
 
 import monarch.actor
 import pytest
@@ -25,7 +25,7 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionErr
 from monarch._src.actor.actor_mesh import ActorMesh, context
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import ProcMesh
-from monarch.actor import Actor, ActorError, endpoint, MeshFailure
+from monarch.actor import Actor, ActorError, context, endpoint, MeshFailure
 from monarch.config import configured, parametrize_config
 
 
@@ -1424,3 +1424,38 @@ async def test_actor_mesh_supervision_controller_dead() -> None:
             await inner_mesh.check.call()
 
     await pm.stop()
+
+
+@pytest.mark.timeout(60)
+async def test_actor_abort() -> None:
+    class AbortActor(Actor):
+        @endpoint
+        def abort(self, reason: Optional[str] = None) -> None:
+            context().actor_instance.abort(reason)
+
+    for reason in (None, "test abort reason"):
+        fut: asyncio.Future[str] = asyncio.Future()
+
+        def make_fault_hook(
+            future: asyncio.Future[str],
+        ) -> Callable[[MeshFailure], None]:
+            loop = asyncio.get_running_loop()
+
+            def fault_hook(failure: MeshFailure) -> None:
+                report = failure.report()
+                # Due to poor test isolation, we might observe MeshFailures from
+                # other tests here, but we only care about the AbortActor.
+                if "AbortActor" in report:
+                    loop.call_soon_threadsafe(future.set_result, report)
+
+            return fault_hook
+
+        with override_fault_hook(make_fault_hook(fut)):
+            pm = this_host().spawn_procs({"gpus": 1})
+            actor = pm.spawn("abort", AbortActor)
+            # This call will succeed, but the actor will abort.
+            await actor.abort.call(reason)
+            if reason is None:
+                assert "no reason provided" in await fut
+            else:
+                assert reason in await fut
