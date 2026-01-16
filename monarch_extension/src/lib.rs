@@ -180,17 +180,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.proc_mesh",
     )?)?;
 
-    monarch_hyperactor::v1::actor_mesh::register_python_bindings(&get_or_add_new_module(
+    monarch_hyperactor::host_mesh::register_python_bindings(&get_or_add_new_module(
         module,
-        "monarch_hyperactor.v1.actor_mesh",
-    )?)?;
-    monarch_hyperactor::v1::proc_mesh::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.v1.proc_mesh",
-    )?)?;
-    monarch_hyperactor::v1::host_mesh::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.v1.host_mesh",
+        "monarch_hyperactor.host_mesh",
     )?)?;
 
     monarch_hyperactor::runtime::register_python_bindings(&get_or_add_new_module(
@@ -219,11 +211,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::logging::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.logging",
-    )?)?;
-
-    monarch_hyperactor::v1::logging::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.v1.logging",
     )?)?;
 
     crate::trace::register_python_bindings(&get_or_add_new_module(

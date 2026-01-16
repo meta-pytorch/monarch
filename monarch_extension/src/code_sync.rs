@@ -30,7 +30,6 @@ use monarch_hyperactor::code_sync::manager::code_sync_mesh;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_hyperactor::v1::proc_mesh::PyProcMesh as PyProcMeshV1;
 use pyo3::Bound;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
@@ -275,42 +274,28 @@ impl CodeSyncMeshClient {
         client: PyInstance,
         proc_mesh: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        if let Ok(v0) = proc_mesh.downcast::<PyProcMesh>() {
-            let proc_mesh = v0.borrow().try_inner()?;
-            signal_safe_block_on(py, async move {
-                let actor_mesh = proc_mesh
-                    .spawn(
-                        client.deref(),
-                        "code_sync_manager",
-                        &CodeSyncManagerParams {},
-                    )
-                    .await?;
-                Ok(Self { actor_mesh })
-            })?
-        } else {
-            let proc_mesh = proc_mesh.downcast::<PyProcMeshV1>()?.borrow().mesh_ref()?;
-            signal_safe_block_on(py, async move {
-                let actor_mesh = proc_mesh
-                    .spawn_service(
-                        client.deref(),
-                        "code_sync_manager",
-                        &CodeSyncManagerParams {},
-                    )
-                    .await
-                    .map_err(|err| PyException::new_err(err.to_string()))?;
-                actor_mesh
-                    .cast(
-                        client.deref(),
-                        SetActorMeshMessage {
-                            actor_mesh: actor_mesh.deref().clone(),
-                        },
-                    )
-                    .map_err(|err| PyException::new_err(err.to_string()))?;
-                Ok(Self {
-                    actor_mesh: SharedCell::from(RootActorMesh::from(actor_mesh)),
-                })
-            })?
-        }
+        let proc_mesh = proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
+        signal_safe_block_on(py, async move {
+            let actor_mesh = proc_mesh
+                .spawn_service(
+                    client.deref(),
+                    "code_sync_manager",
+                    &CodeSyncManagerParams {},
+                )
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+            actor_mesh
+                .cast(
+                    client.deref(),
+                    SetActorMeshMessage {
+                        actor_mesh: actor_mesh.deref().clone(),
+                    },
+                )
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+            Ok(Self {
+                actor_mesh: SharedCell::from(RootActorMesh::from(actor_mesh)),
+            })
+        })?
     }
 
     #[pyo3(signature = (*, instance, local, remote, method = PyCodeSyncMethod::Rsync {}, auto_reload = false))]

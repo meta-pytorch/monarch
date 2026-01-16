@@ -12,9 +12,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import Mock, patch
 
 import pytest
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as HyProcMeshV1,
-)
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._src.actor.logging import flush_all_proc_mesh_logs, LoggingManager
 
 
@@ -139,7 +137,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.logging_manager = LoggingManager()
 
-    @patch("monarch._src.actor.logging.LoggingMeshClientV1")
+    @patch("monarch._src.actor.logging.LoggingMeshClient")
     @patch("monarch._src.actor.logging.context")
     async def test_init_with_hyprocmesh_creates_logging_mesh_client(
         self, mock_context: Mock, mock_logging_client: Mock
@@ -147,7 +145,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         # Setup: mock the context and LoggingMeshClient
         mock_instance = Mock()
         mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
-        mock_proc_mesh = Mock(spec=HyProcMeshV1)
+        mock_proc_mesh = Mock(spec=HyProcMesh)
 
         mock_client: Mock = Mock()
 
@@ -157,7 +155,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
 
         mock_logging_client.spawn = mock_spawn
 
-        # Execute: initialize the logging manager with HyProcMeshV1
+        # Execute: initialize the logging manager with HyProcMesh
         await self.logging_manager.init(mock_proc_mesh, stream_to_client=True)
 
         # Assert: set_mode was called with correct parameters

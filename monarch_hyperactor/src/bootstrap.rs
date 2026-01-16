@@ -26,8 +26,8 @@ use pyo3::types::PyModule;
 use pyo3::types::PyModuleMethods;
 use pyo3::wrap_pyfunction;
 
+use crate::host_mesh::PyHostMesh;
 use crate::pytokio::PyPythonTask;
-use crate::v1::host_mesh::PyHostMesh;
 
 #[pyfunction]
 #[pyo3(signature = ())]

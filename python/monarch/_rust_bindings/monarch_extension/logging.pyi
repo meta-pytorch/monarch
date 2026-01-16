@@ -6,11 +6,14 @@
 
 # pyre-strict
 
-from typing import final
+from typing import final, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.context import Instance
 
 @final
 class LoggingMeshClient:
@@ -29,3 +32,5 @@ class LoggingMeshClient:
         level: int,
     ) -> None: ...
     def flush(self, instance: Instance) -> PythonTask[None]: ...
+
+def log_endpoint_exception(e: Exception, endpoint: str, actor_id: ActorId) -> None: ...

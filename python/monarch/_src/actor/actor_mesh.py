@@ -43,6 +43,7 @@ from typing import (
     TypeVar,
 )
 
+from monarch._rust_bindings.monarch_extension.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PanicFlag,
@@ -80,7 +81,6 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     SupervisionError,
 )
 from monarch._rust_bindings.monarch_hyperactor.telemetry import PySpan
-from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
 )
@@ -372,7 +372,7 @@ def _init_client_context() -> Context:
     Create a client context that bootstraps an actor instance running on a real
     local proc mesh on a real local host mesh.
     """
-    from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import bootstrap_host
+    from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_host
     from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
 
@@ -410,7 +410,7 @@ def shutdown_context() -> "Future[None]":
     from monarch._src.actor.future import Future
 
     try:
-        from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
+        from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
             shutdown_local_host_mesh,
         )
 
