@@ -13,14 +13,11 @@ from monarch._rust_bindings.monarch_extension import client
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as ProcMeshV0
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.shape import Slice as NDSlice
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as ProcMeshV1,
-)
 
 class _Controller:
-    def __new__(self, proc_mesh: Union[ProcMeshV0, ProcMeshV1]) -> None: ...
+    def __new__(self, proc_mesh: ProcMesh) -> None: ...
     def _node(
         self,
         instance: Instance,
