@@ -988,7 +988,7 @@ impl fmt::Display for PortId {
 }
 
 /// A reference to a remote port. All messages passed through
-/// PortRefs will be serialized.
+/// PortRefs will be serialized. PortRefs are always streaming.
 #[derive(Debug, Serialize, Deserialize, Derivative, typeuri::Named)]
 #[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct PortRef<M> {
@@ -1006,7 +1006,7 @@ pub struct PortRef<M> {
         Ord = "ignore",
         Hash = "ignore"
     )]
-    reducer_mode: ReducerMode,
+    streaming_opts: StreamingReducerOpts,
     phantom: PhantomData<M>,
     return_undeliverable: bool,
 }
@@ -1018,7 +1018,7 @@ impl<M: RemoteMessage> PortRef<M> {
         Self {
             port_id,
             reducer_spec: None,
-            reducer_mode: ReducerMode::default(),
+            streaming_opts: StreamingReducerOpts::default(),
             phantom: PhantomData,
             return_undeliverable: true,
         }
@@ -1029,12 +1029,12 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn attest_reducible(
         port_id: PortId,
         reducer_spec: Option<ReducerSpec>,
-        reducer_mode: ReducerMode,
+        streaming_opts: StreamingReducerOpts,
     ) -> Self {
         Self {
             port_id,
             reducer_spec,
-            reducer_mode,
+            streaming_opts,
             phantom: PhantomData,
             return_undeliverable: true,
         }
@@ -1128,7 +1128,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
         Self {
             port_id: self.port_id.clone(),
             reducer_spec: self.reducer_spec.clone(),
-            reducer_mode: self.reducer_mode.clone(),
+            streaming_opts: self.streaming_opts.clone(),
             phantom: PhantomData,
             return_undeliverable: self.return_undeliverable,
         }
@@ -1169,15 +1169,11 @@ impl UnboundPort {
 
 impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
     fn from(port_ref: &PortRef<M>) -> Self {
-        let kind = match &port_ref.reducer_mode {
-            ReducerMode::Streaming(opts) => UnboundPortKind::Streaming(Some(opts.clone())),
-            ReducerMode::Once(_) => UnboundPortKind::Once,
-        };
         UnboundPort(
             port_ref.port_id.clone(),
             port_ref.reducer_spec.clone(),
             port_ref.return_undeliverable,
-            kind,
+            UnboundPortKind::Streaming(Some(port_ref.streaming_opts.clone())),
         )
     }
 }
@@ -1195,9 +1191,11 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
         self.port_id = port_id;
         self.reducer_spec = reducer_spec;
         self.return_undeliverable = return_undeliverable;
-        self.reducer_mode = match port_kind {
-            UnboundPortKind::Streaming(opts) => ReducerMode::Streaming(opts.unwrap_or_default()),
-            UnboundPortKind::Once => ReducerMode::Once(1),
+        self.streaming_opts = match port_kind {
+            UnboundPortKind::Streaming(opts) => opts.unwrap_or_default(),
+            UnboundPortKind::Once => {
+                anyhow::bail!("OncePortRef cannot be bound to PortRef")
+            }
         };
         Ok(())
     }
@@ -1209,6 +1207,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct OncePortRef<M> {
     port_id: PortId,
+    reducer_spec: Option<ReducerSpec>,
     phantom: PhantomData<M>,
 }
 
@@ -1216,8 +1215,24 @@ impl<M: RemoteMessage> OncePortRef<M> {
     pub(crate) fn attest(port_id: PortId) -> Self {
         Self {
             port_id,
+            reducer_spec: None,
             phantom: PhantomData,
         }
+    }
+
+    /// The caller attests that the provided PortId can be
+    /// converted to a reachable, typed once port reference.
+    pub fn attest_reducible(port_id: PortId, reducer_spec: Option<ReducerSpec>) -> Self {
+        Self {
+            port_id,
+            reducer_spec,
+            phantom: PhantomData,
+        }
+    }
+
+    /// The typehash of this port's reducer, if any.
+    pub fn reducer_spec(&self) -> &Option<ReducerSpec> {
+        &self.reducer_spec
     }
 
     /// This port's ID.
@@ -1260,6 +1275,7 @@ impl<M: RemoteMessage> Clone for OncePortRef<M> {
     fn clone(&self) -> Self {
         Self {
             port_id: self.port_id.clone(),
+            reducer_spec: self.reducer_spec.clone(),
             phantom: PhantomData,
         }
     }
@@ -1277,18 +1293,37 @@ impl<M: RemoteMessage> Named for OncePortRef<M> {
     }
 }
 
-// We do not split PortRef, because it can only receive a single response, and
-// there is no meaningful performance gain to make that response going through
-// comm actors.
+impl<M: RemoteMessage> From<&OncePortRef<M>> for UnboundPort {
+    fn from(port_ref: &OncePortRef<M>) -> Self {
+        UnboundPort(
+            port_ref.port_id.clone(),
+            port_ref.reducer_spec.clone(),
+            true, // return_undeliverable
+            UnboundPortKind::Once,
+        )
+    }
+}
+
 impl<M: RemoteMessage> Unbind for OncePortRef<M> {
-    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        bindings.push_back(&UnboundPort::from(self))
     }
 }
 
 impl<M: RemoteMessage> Bind for OncePortRef<M> {
-    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        let UnboundPort(port_id, reducer_spec, _return_undeliverable, port_kind) =
+            bindings.try_pop_front::<UnboundPort>()?;
+        match port_kind {
+            UnboundPortKind::Once => {
+                self.port_id = port_id;
+                self.reducer_spec = reducer_spec;
+                Ok(())
+            }
+            UnboundPortKind::Streaming(_) => {
+                anyhow::bail!("PortRef cannot be bound to OncePortRef")
+            }
+        }
     }
 }
 

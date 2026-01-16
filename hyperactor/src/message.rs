@@ -323,8 +323,8 @@ mod tests {
     use crate::Bind;
     use crate::PortRef;
     use crate::Unbind;
-    use crate::accum::ReducerMode;
     use crate::accum::ReducerSpec;
+    use crate::accum::StreamingReducerOpts;
     use crate::id;
     use crate::reference::UnboundPort;
 
@@ -361,7 +361,7 @@ mod tests {
                 typehash: 123,
                 builder_params: None,
             }),
-            ReducerMode::default(),
+            StreamingReducerOpts::default(),
         );
         let my_message = MyMessage {
             arg0: true,
@@ -417,7 +417,7 @@ mod tests {
                 typehash: 123,
                 builder_params: None,
             }),
-            ReducerMode::default(),
+            StreamingReducerOpts::default(),
         );
         let new_bindings = Bindings(
             [

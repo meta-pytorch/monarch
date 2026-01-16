@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use algebra::JoinSemilattice;
+use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -61,7 +62,15 @@ pub struct StreamingReducerOpts {
 }
 
 /// The mode in which a reducer operates.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    EnumAsInner,
+    typeuri::Named
+)]
 pub enum ReducerMode {
     /// Streaming mode: continuously reduce and emit updates based on buffer size/timeout.
     Streaming(StreamingReducerOpts),

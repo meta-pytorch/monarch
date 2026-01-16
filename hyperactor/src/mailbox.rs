@@ -106,8 +106,8 @@ use crate as hyperactor; // for macros
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::accum::Accumulator;
-use crate::accum::ReducerMode;
 use crate::accum::ReducerSpec;
+use crate::accum::StreamingReducerOpts;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
 use crate::channel;
@@ -1322,7 +1322,7 @@ impl Mailbox {
         A::Update: Message,
         A::State: Message + Default + Clone,
     {
-        self.open_accum_port_opts(accum, ReducerMode::default())
+        self.open_accum_port_opts(accum, StreamingReducerOpts::default())
     }
 
     /// Open a new port with an accumulator. This port accepts A::Update type
@@ -1335,7 +1335,7 @@ impl Mailbox {
     pub fn open_accum_port_opts<A>(
         &self,
         accum: A,
-        reducer_mode: ReducerMode,
+        streaming_opts: StreamingReducerOpts,
     ) -> (PortHandle<A::Update>, PortReceiver<A::State>)
     where
         A: Accumulator + Send + Sync + 'static,
@@ -1360,7 +1360,7 @@ impl Mailbox {
                 sender: UnboundedPortSender::Func(Arc::new(enqueue)),
                 bound: Arc::new(OnceLock::new()),
                 reducer_spec,
-                reducer_mode,
+                streaming_opts,
             },
             PortReceiver::new(receiver, port_id, /*coalesce=*/ true, self.clone()),
         )
@@ -1379,7 +1379,7 @@ impl Mailbox {
             sender: UnboundedPortSender::Func(Arc::new(enqueue)),
             bound: Arc::new(OnceLock::new()),
             reducer_spec: None,
-            reducer_mode: ReducerMode::default(),
+            streaming_opts: StreamingReducerOpts::default(),
         }
     }
 
@@ -1639,8 +1639,8 @@ pub struct PortHandle<M: Message> {
     // Typehash of an optional reducer. When it's defined, we include it in port
     /// references to optionally enable incremental accumulation.
     reducer_spec: Option<ReducerSpec>,
-    /// Reduction mode.
-    reducer_mode: ReducerMode,
+    /// Streaming reducer options.
+    streaming_opts: StreamingReducerOpts,
 }
 
 impl<M: Message> PortHandle<M> {
@@ -1651,7 +1651,7 @@ impl<M: Message> PortHandle<M> {
             sender,
             bound: Arc::new(OnceLock::new()),
             reducer_spec: None,
-            reducer_mode: ReducerMode::default(),
+            streaming_opts: StreamingReducerOpts::default(),
         }
     }
 
@@ -1704,7 +1704,7 @@ impl<M: RemoteMessage> PortHandle<M> {
                 .get_or_init(|| self.mailbox.bind(self).port_id().clone())
                 .clone(),
             self.reducer_spec.clone(),
-            self.reducer_mode.clone(),
+            self.streaming_opts.clone(),
         )
     }
 
@@ -1736,7 +1736,7 @@ impl<M: Message> Clone for PortHandle<M> {
             sender: self.sender.clone(),
             bound: self.bound.clone(),
             reducer_spec: self.reducer_spec.clone(),
-            reducer_mode: self.reducer_mode.clone(),
+            streaming_opts: self.streaming_opts.clone(),
         }
     }
 }
@@ -2689,6 +2689,7 @@ mod tests {
     use crate::Instance;
     use crate::PortId;
     use crate::accum;
+    use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
     use crate::channel::dial;
     use crate::channel::serve;

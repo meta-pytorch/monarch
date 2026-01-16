@@ -25,7 +25,6 @@ use hyperactor::Handler;
 use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
-use hyperactor::accum::ReducerMode;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
@@ -1033,10 +1032,10 @@ impl ProcMeshRef {
             // Initial state for the accumulator: full mesh seeded to
             // NotExist.
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
-            ReducerMode::Streaming(StreamingReducerOpts {
+            StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
-            }),
+            },
         );
 
         let mut reply = port.bind();
@@ -1175,10 +1174,10 @@ impl ProcMeshRef {
             // Initial state for the accumulator: full mesh seeded to
             // NotExist.
             crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
-            ReducerMode::Streaming(StreamingReducerOpts {
+            StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
-            }),
+            },
         );
         agent_mesh.cast(
             cx,

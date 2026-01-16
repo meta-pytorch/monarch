@@ -335,9 +335,11 @@ fn split_ports(
                     ReducerMode::Streaming(opts.clone().unwrap_or_default())
                 }
                 UnboundPortKind::Once => {
-                    anyhow::bail!("onceport splitting not yet supported")
+                    // OncePort splitting not yet supported. Leave as is.
+                    return Ok(());
                 }
             };
+
             let split = port_id.split(
                 cx,
                 reducer_spec.clone(),
