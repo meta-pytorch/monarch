@@ -864,7 +864,7 @@ pub(crate) mod test_util {
                 // We will support directly wiring up the meshes later.
                 let (tx, mut rx) = cx.open_port();
 
-                actor.send(cx, Echo(message.0, tx.bind()))?;
+                actor.send(cx, Echo(message.0, tx.bind().into_port_ref()))?;
                 message.1.send(cx, rx.recv().await.unwrap())?;
 
                 Ok(())
@@ -873,7 +873,7 @@ pub(crate) mod test_util {
 
                 let actor: ActorRef<_> = self.actor_mesh.as_ref().unwrap().get(0).unwrap();
                 let (tx, mut rx) = cx.open_port::<String>();
-                actor.send(cx, Echo(message.0, tx.bind()))?;
+                actor.send(cx, Echo(message.0, tx.bind().into_port_ref()))?;
 
                 use tokio::time::Duration;
                 use tokio::time::timeout;
@@ -959,7 +959,7 @@ mod tests {
                 let actor_mesh: RootActorMesh<'_, ProxyActor> = proc_mesh.spawn(&instance, "proxy", &()).await.unwrap();
                 let proxy_actor = actor_mesh.get(0).unwrap();
                 let (tx, mut rx) = actor_mesh.open_port::<String>();
-                proxy_actor.send(proc_mesh.client(), Echo("hello!".to_owned(), tx.bind())).unwrap();
+                proxy_actor.send(proc_mesh.client(), Echo("hello!".to_owned(), tx.bind().into_port_ref())).unwrap();
 
                 #[allow(clippy::disallowed_methods)]
                 match tokio::time::timeout(tokio::time::Duration::from_secs(3), rx.recv()).await {
@@ -986,7 +986,7 @@ mod tests {
                 let actor_mesh: RootActorMesh<TestActor> = proc_mesh.spawn(&instance, "echo", &()).await.unwrap();
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
-                    .cast(proc_mesh.client(), sel!(*), Echo("Hello".to_string(), reply_handle.bind()))
+                    .cast(proc_mesh.client(), sel!(*), Echo("Hello".to_string(), reply_handle.bind().into_port_ref()))
                     .unwrap();
                 for _ in 0..4 {
                     assert_eq!(&reply_receiver.recv().await.unwrap(), "Hello");
@@ -1013,14 +1013,14 @@ mod tests {
 
                 let (undeliverable_msg_tx, _) = mesh.client().open_port();
                 let actor_mesh: RootActorMesh<PingPongActor> = mesh
-                    .spawn(&instance, "ping-pong", &(Some(undeliverable_msg_tx.bind()), None, None))
+                    .spawn(&instance, "ping-pong", &(Some(undeliverable_msg_tx.bind().into_port_ref()), None, None))
                     .await
                     .unwrap();
 
                 let ping: ActorRef<PingPongActor> = actor_mesh.get(0).unwrap();
                 let pong: ActorRef<PingPongActor> = actor_mesh.get(1).unwrap();
                 let (done_tx, done_rx) = mesh.client().open_once_port();
-                ping.send(mesh.client(), PingPongMessage(4, pong.clone(), done_tx.bind())).unwrap();
+                ping.send(mesh.client(), PingPongMessage(4, pong.clone(), done_tx.bind().into_port_ref())).unwrap();
 
                 assert!(done_rx.recv().await.unwrap());
             }
@@ -1049,7 +1049,7 @@ mod tests {
                 let instance = $crate::v1::testing::instance();
                 let proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (undeliverable_tx, _undeliverable_rx) = proc_mesh.client().open_port();
-                let actor_mesh: RootActorMesh<PingPongActor> = proc_mesh.spawn(&instance, "pingpong", &(Some(undeliverable_tx.bind()), None, None)).await.unwrap();
+                let actor_mesh: RootActorMesh<PingPongActor> = proc_mesh.spawn(&instance, "pingpong", &(Some(undeliverable_tx.bind().into_port_ref()), None, None)).await.unwrap();
                 let slice = actor_mesh.shape().slice();
 
                 let mut futures = Vec::new();
@@ -1065,7 +1065,7 @@ mod tests {
                             actor
                                 .send(
                                     proc_mesh.client(),
-                                    PingPongMessage(4, neighbor.clone(), done_tx.bind()),
+                                    PingPongMessage(4, neighbor.clone(), done_tx.bind().into_port_ref()),
                                 )
                                 .unwrap();
                             futures.push(done_rx.recv());
@@ -1098,7 +1098,7 @@ mod tests {
                 let dont_simulate_error = true;
                 let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
                 actor_mesh
-                    .cast(proc_mesh.client(), sel!(*), GetRank(dont_simulate_error, reply_handle.bind()))
+                    .cast(proc_mesh.client(), sel!(*), GetRank(dont_simulate_error, reply_handle.bind().into_port_ref()))
                     .unwrap();
                 let mut ranks = Ranks::new(actor_mesh.shape().slice().len());
                 while !ranks.is_full() {
@@ -1111,7 +1111,7 @@ mod tests {
                     .cast(
                         proc_mesh.client(),
                         sel_from_shape!(actor_mesh.shape(), replica = 0, host = 0),
-                        GetRank(dont_simulate_error, reply_handle.bind()),
+                        GetRank(dont_simulate_error, reply_handle.bind().into_port_ref()),
                     )
                     .unwrap();
                 let mut ranks = Ranks::new(8);
@@ -1144,7 +1144,7 @@ mod tests {
                 // Bounce the message through all actors and return it to the sender (us).
                 let mut hops: VecDeque<_> = actor_mesh.iter().map(|actor| actor.port()).collect();
                 let (handle, mut rx) = proc_mesh.client().open_port();
-                hops.push_back(handle.bind());
+                hops.push_back(handle.bind().into_port_ref());
                 hops.pop_front()
                     .unwrap()
                     .send(proc_mesh.client(), Relay(0, hops))
@@ -1187,7 +1187,7 @@ mod tests {
 
                 let client = meshes[0].0.client();
                 let (handle, mut rx) = client.open_port();
-                hops.push_back(handle.bind());
+                hops.push_back(handle.bind().into_port_ref());
                 hops.pop_front()
                     .unwrap()
                     .send(client, Relay(0, hops))
@@ -1226,7 +1226,7 @@ mod tests {
                 let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
 
                 let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
-                let params = CastTestActorParams{ forward_port: tx.bind() };
+                let params = CastTestActorParams{ forward_port: tx.bind().into_port_ref() };
                 let actor_mesh: RootActorMesh<CastTestActor> = proc_mesh.spawn(&instance, "actor", &params).await.unwrap();
 
                 actor_mesh.cast(proc_mesh.client(), sel!(*), CastTestMessage::Forward("abc".to_string())).unwrap();
@@ -1260,7 +1260,7 @@ mod tests {
                 let mut events = mesh.events().unwrap();
 
                 // Send a message to a non-existent actor (the proc however exists).
-                let unmonitored_reply_to = mesh.client().open_port::<usize>().0.bind();
+                let unmonitored_reply_to = mesh.client().open_port::<usize>().0.bind().into_port_ref();
                 let bad_actor = ActorRef::<TestActor>::attest(ActorId(ProcId::Ranked(WorldId(name.clone()), 0), "foo".into(), 0));
                 bad_actor.send(mesh.client(), GetRank(true, unmonitored_reply_to)).unwrap();
 
@@ -1290,7 +1290,7 @@ mod tests {
                 let instance = $crate::v1::testing::instance();
                 let mesh = ProcMesh::allocate(alloc).await.unwrap();
                 let (reply_port_handle, mut reply_port_receiver) = mesh.client().open_port::<usize>();
-                let reply_port = reply_port_handle.bind();
+                let reply_port = reply_port_handle.bind().into_port_ref();
 
                 let actor_mesh: RootActorMesh<TestActor> = mesh.spawn(&instance, "test", &()).await.unwrap();
                 let actor_ref = actor_mesh.get(0).unwrap();
@@ -1385,7 +1385,7 @@ mod tests {
             let (unmonitored_done_tx, _) = mesh.client().open_once_port();
             ping.send(
                 mesh.client(),
-                PingPongMessage(1, pong.clone(), unmonitored_done_tx.bind()),
+                PingPongMessage(1, pong.clone(), unmonitored_done_tx.bind().into_port_ref()),
             )
             .unwrap();
 
@@ -1400,7 +1400,7 @@ mod tests {
             let (unmonitored_done_tx, _) = mesh.client().open_once_port();
             pong.send(
                 mesh.client(),
-                PingPongMessage(1, ping.clone(), unmonitored_done_tx.bind()),
+                PingPongMessage(1, ping.clone(), unmonitored_done_tx.bind().into_port_ref()),
             )
             .unwrap();
 
@@ -1440,7 +1440,11 @@ mod tests {
             // replying with rank.
             let (reply_handle, mut reply_receiver) = actor_mesh.open_port();
             actor_mesh
-                .cast(mesh.client(), sel!(*), GetRank(false, reply_handle.bind()))
+                .cast(
+                    mesh.client(),
+                    sel!(*),
+                    GetRank(false, reply_handle.bind().into_port_ref()),
+                )
                 .unwrap();
             let rank = reply_receiver.recv().await.unwrap();
             assert_eq!(rank, 0);
@@ -1454,7 +1458,11 @@ mod tests {
             // Cast the message.
             let (reply_handle, _) = actor_mesh.open_port();
             actor_mesh
-                .cast(mesh.client(), sel!(*), GetRank(false, reply_handle.bind()))
+                .cast(
+                    mesh.client(),
+                    sel!(*),
+                    GetRank(false, reply_handle.bind().into_port_ref()),
+                )
                 .unwrap();
 
             // The message will be returned!
@@ -1544,7 +1552,7 @@ mod tests {
             pong_one
                 .send(
                     mesh.client(),
-                    PingPongMessage(1, ping_one.clone(), done_tx.bind()),
+                    PingPongMessage(1, ping_one.clone(), done_tx.bind().into_port_ref()),
                 )
                 .unwrap();
             assert!(done_rx.recv().await.is_ok());
@@ -1632,7 +1640,7 @@ mod tests {
             // Message sized to exactly max frame length.
             let payload = Payload {
                 part: Part::from(Bytes::from(vec![0u8; 586])),
-                reply_port: reply_handle.bind(),
+                reply_port: reply_handle.bind().into_port_ref(),
             };
             let frame_len = frame_length(
                 proc_mesh.client().self_id(),
@@ -1652,7 +1660,7 @@ mod tests {
             // Message sized to max frame length + 1.
             let payload = Payload {
                 part: Part::from(Bytes::from(vec![0u8; 587])),
-                reply_port: reply_handle.bind(),
+                reply_port: reply_handle.bind().into_port_ref(),
             };
             let frame_len = frame_length(
                 proc_mesh.client().self_id(),
@@ -1721,7 +1729,10 @@ mod tests {
             let proxy_actor = actor_mesh.get(0).unwrap();
             let (tx, mut rx) = actor_mesh.open_port::<String>();
             proxy_actor
-                .send(proc_mesh.client(), Echo("hello!".to_owned(), tx.bind()))
+                .send(
+                    proc_mesh.client(),
+                    Echo("hello!".to_owned(), tx.bind().into_port_ref()),
+                )
                 .unwrap();
 
             #[allow(clippy::disallowed_methods)]
@@ -2044,7 +2055,7 @@ mod tests {
                     instance,
                     sel!(*),
                     v1::testactor::GetCastInfo {
-                        cast_info: cast_info.bind(),
+                        cast_info: cast_info.bind().into_port_ref(),
                     },
                 )
                 .unwrap();

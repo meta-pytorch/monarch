@@ -1697,14 +1697,21 @@ impl<M: Message> PortHandle<M> {
 
 impl<M: RemoteMessage> PortHandle<M> {
     /// Bind this port, making it accessible to remote actors.
-    pub fn bind(&self) -> PortRef<M> {
-        PortRef::attest_reducible(
+    ///
+    /// Returns a [`BoundPort`] witness that provides both local send capability
+    /// and access to the remote [`PortRef`].
+    pub fn bind(&self) -> BoundPort<M> {
+        let port_ref = PortRef::attest_reducible(
             self.bound
                 .get_or_init(|| self.mailbox.bind(self).port_id().clone())
                 .clone(),
             self.reducer_spec.clone(),
             self.reducer_opts.clone(),
-        )
+        );
+        BoundPort {
+            handle: self.clone(),
+            port_ref,
+        }
     }
 
     /// Bind to this message's actor port. This method will panic if the handle
@@ -1746,6 +1753,52 @@ impl<M: Message> fmt::Display for PortHandle<M> {
     }
 }
 
+/// A bound port witness that proves the port is registered in the mailbox.
+///
+/// Obtained from [`PortHandle::bind()`]. Provides access to both the local
+/// send capability and the remote [`PortRef`].
+///
+/// Implements `Deref<Target=PortRef<M>>` for ergonomic access to `PortRef`
+/// methods.
+#[derive(Debug, Clone)]
+pub struct BoundPort<M: RemoteMessage> {
+    handle: PortHandle<M>,
+    port_ref: PortRef<M>,
+}
+
+impl<M: RemoteMessage> BoundPort<M> {
+    /// Send a message locally to this bound port via the handle channel. This
+    /// bypasses the mailbox routing and sends directly through the local
+    /// channel.
+    pub fn send_local(&self, message: M) -> Result<(), MailboxSenderError> {
+        self.handle.send(message)
+    }
+
+    /// Get the remote reference for this bound port.
+    pub fn port_ref(&self) -> &PortRef<M> {
+        &self.port_ref
+    }
+
+    /// Consume and return the port reference.
+    pub fn into_port_ref(self) -> PortRef<M> {
+        self.port_ref
+    }
+}
+
+impl<M: RemoteMessage> std::ops::Deref for BoundPort<M> {
+    type Target = PortRef<M>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.port_ref
+    }
+}
+
+impl<M: RemoteMessage> std::ops::DerefMut for BoundPort<M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.port_ref
+    }
+}
+
 /// A one-shot port handle to which M-typed messages can be delivered.
 #[derive(Debug)]
 pub struct OncePortHandle<M: Message> {
@@ -1778,20 +1831,58 @@ impl<M: Message> OncePortHandle<M> {
 }
 
 impl<M: RemoteMessage> OncePortHandle<M> {
-    /// Turn this handle into a ref that may be passed to
-    /// a remote actor. The remote actor can then use the
-    /// ref to send a message to the port. Creating a ref also
-    /// binds the port, so that it is remotely writable.
-    pub fn bind(self) -> OncePortRef<M> {
+    /// Turn this handle into a bound port witness that may be passed to
+    /// a remote actor. The remote actor can then use the ref to send a
+    /// message to the port. Creating the witness also binds the port,
+    /// so that it is remotely writable.
+    ///
+    /// Returns a [`BoundOncePort`] witness that provides access to the
+    /// remote [`OncePortRef`].
+    pub fn bind(self) -> BoundOncePort<M> {
         let port_id = self.port_id().clone();
         self.mailbox.clone().bind_once(self);
-        OncePortRef::attest(port_id)
+        BoundOncePort {
+            port_ref: OncePortRef::attest(port_id),
+        }
     }
 }
 
 impl<M: Message> fmt::Display for OncePortHandle<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.port_id(), f)
+    }
+}
+
+/// A bound one-shot port witness that proves the port is registered in the
+/// mailbox.
+///
+/// Obtained from [`OncePortHandle::bind()`]. Provides access to the remote
+/// [`OncePortRef`].
+///
+/// Implements `Deref<Target=OncePortRef<M>>` for ergonomic access to
+/// `OncePortRef` methods.
+#[derive(Debug, Clone)]
+pub struct BoundOncePort<M: RemoteMessage> {
+    port_ref: OncePortRef<M>,
+}
+
+impl<M: RemoteMessage> BoundOncePort<M> {
+    /// Get the remote reference for this bound port.
+    pub fn port_ref(&self) -> &OncePortRef<M> {
+        &self.port_ref
+    }
+
+    /// Consume and return the port reference.
+    pub fn into_port_ref(self) -> OncePortRef<M> {
+        self.port_ref
+    }
+}
+
+impl<M: RemoteMessage> std::ops::Deref for BoundOncePort<M> {
+    type Target = OncePortRef<M>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.port_ref
     }
 }
 
@@ -2884,7 +2975,7 @@ mod tests {
         let client = MailboxClient::new(tx);
 
         let (port, receiver) = mbox.open_once_port::<u64>();
-        let port = port.bind();
+        let port = port.bind().into_port_ref();
 
         client
             .serialize_and_send_once(port, 123u64, monitored_return_handle())
@@ -2912,7 +3003,7 @@ mod tests {
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
         let (port, receiver) = mbox.open_once_port::<u64>();
-        let port = port.bind();
+        let port = port.bind().into_port_ref();
         let msg: u64 = 123;
         client
             .serialize_and_send_once(port, msg, monitored_return_handle())
@@ -2934,7 +3025,7 @@ mod tests {
                 .into_iter()
                 .map(|mbox| {
                     let (port, receiver) = mbox.open_once_port::<u64>();
-                    (port.bind(), receiver)
+                    (port.bind().into_port_ref(), receiver)
                 })
                 .collect();
 
@@ -2960,14 +3051,14 @@ mod tests {
             crate::mailbox::undeliverable::new_undeliverable_port();
         let (port, _receiver) = mbox4.open_once_port();
         router
-            .serialize_and_send_once(port.bind(), 0, return_handle.clone())
+            .serialize_and_send_once(port.bind().into_port_ref(), 0, return_handle.clone())
             .unwrap();
         assert!(return_receiver.recv().await.is_ok());
 
         let router = router.fallback(mbox4.clone().into_boxed());
         let (port, receiver) = mbox4.open_once_port();
         router
-            .serialize_and_send_once(port.bind(), 0, return_handle)
+            .serialize_and_send_once(port.bind().into_port_ref(), 0, return_handle)
             .unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 0);
     }
@@ -3051,7 +3142,7 @@ mod tests {
         for router in [root.boxed(), world0_router.boxed(), world1_router.boxed()] {
             for mbox in mailboxes.iter() {
                 let (port, receiver) = mbox.open_once_port::<u64>();
-                let port = port.bind();
+                let port = port.bind().into_port_ref();
                 router
                     .serialize_and_send_once(port, 123u64, monitored_return_handle())
                     .unwrap();

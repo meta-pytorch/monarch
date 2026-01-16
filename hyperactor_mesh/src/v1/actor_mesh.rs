@@ -156,7 +156,7 @@ impl<A: Referable> ActorMesh<A> {
                     cx,
                     resource::GetState::<resource::mesh::State<()>> {
                         name: self.name.clone(),
-                        reply: port.bind(),
+                        reply: port.bind().into_port_ref(),
                     },
                 )
                 .map_err(|e| v1::Error::SendingError(controller.actor_id().clone(), Box::new(e)))?;
@@ -631,7 +631,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> watch::Receiver<MessageOrFailure<Option<MeshFailure>>> {
         let (tx, rx) = cx.mailbox().open_port();
         controller
-            .send(cx, Subscribe(tx.bind()))
+            .send(cx, Subscribe(tx.bind().into_port_ref()))
             .expect("failed to send Subscribe");
         into_watch(rx)
     }
@@ -952,11 +952,11 @@ mod tests {
         // exist).
         amr.get(0)
             .expect("rank 0 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
+            .send(instance, testactor::GetActorId(port.bind().into_port_ref()))
             .expect("send to rank 0 should succeed");
         amr.get(3)
             .expect("rank 3 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
+            .send(instance, testactor::GetActorId(port.bind().into_port_ref()))
             .expect("send to rank 3 should succeed");
         let id_a = RealClock
             .timeout(Duration::from_secs(3), rx.recv())
@@ -979,7 +979,7 @@ mod tests {
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
-        let supervisor = supervision_port.bind();
+        let supervisor = supervision_port.bind().into_port_ref();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
@@ -1020,7 +1020,7 @@ mod tests {
         actor_mesh
             .cast(
                 instance,
-                testactor::NextSupervisionFailure(failure_port.bind()),
+                testactor::NextSupervisionFailure(failure_port.bind().into_port_ref()),
             )
             .unwrap();
         let failure = failure_receiver
@@ -1067,7 +1067,7 @@ mod tests {
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
-        let supervisor = supervision_port.bind();
+        let supervisor = supervision_port.bind().into_port_ref();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let second_meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
@@ -1107,7 +1107,7 @@ mod tests {
         actor_mesh
             .cast(
                 instance,
-                testactor::NextSupervisionFailure(failure_port.bind()),
+                testactor::NextSupervisionFailure(failure_port.bind().into_port_ref()),
             )
             .unwrap();
         let failure = failure_receiver
@@ -1151,7 +1151,7 @@ mod tests {
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
-        let supervisor = supervision_port.bind();
+        let supervisor = supervision_port.bind().into_port_ref();
         let num_replicas = 4;
         let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
         let proc_mesh = &meshes[1];
@@ -1220,7 +1220,7 @@ mod tests {
             .cast(
                 instance,
                 testactor::GetCastInfo {
-                    cast_info: cast_info.bind(),
+                    cast_info: cast_info.bind().into_port_ref(),
                 },
             )
             .unwrap();
@@ -1271,6 +1271,7 @@ mod tests {
         // Set up undeliverable message port for collecting undeliverables
         let (undeliverable_port, mut undeliverable_rx) =
             instance.open_port::<Undeliverable<MessageEnvelope>>();
+        let bound_undeliverable = undeliverable_port.bind();
 
         // Spawn actors individually on each replica by spawning separate actor meshes
         // with specific proc selections.
@@ -1281,7 +1282,7 @@ mod tests {
             .spawn(
                 instance,
                 "ping",
-                &(Some(undeliverable_port.bind()), None, None),
+                &(Some(bound_undeliverable.port_ref().clone()), None, None),
             )
             .await
             .unwrap();
@@ -1300,7 +1301,7 @@ mod tests {
         ping_handle
             .send(
                 instance,
-                PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
+                PingPongMessage(2, pong_handle.clone(), done_tx.bind().into_port_ref()),
             )
             .unwrap();
         assert!(
@@ -1322,7 +1323,7 @@ mod tests {
             ping_handle
                 .send(
                     instance,
-                    PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
+                    PingPongMessage(ttl, pong_handle.clone(), once_tx.bind().into_port_ref()),
                 )
                 .unwrap();
         }

@@ -421,8 +421,8 @@ where
                 instance,
                 sel!(*),
                 RsyncMessage {
-                    connect: rsync_conns_tx.bind(),
-                    result: result_tx.bind(),
+                    connect: rsync_conns_tx.bind().into_port_ref(),
+                    result: result_tx.bind().into_port_ref(),
                     workspace: remote_workspace,
                 },
             )?;

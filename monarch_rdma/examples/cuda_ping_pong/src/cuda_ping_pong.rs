@@ -780,7 +780,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let (handle_1, receiver_1) = device_1_proc_mesh.client().open_once_port::<bool>();
     device_1_actor.send(
         device_1_proc_mesh.client(),
-        InitializeBuffer(DATA_VALUE, handle_1.bind()),
+        InitializeBuffer(DATA_VALUE, handle_1.bind().into_port_ref()),
     )?;
     receiver_1.recv().await?;
 
@@ -788,7 +788,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let (handle_2, receiver_2) = device_2_proc_mesh.client().open_once_port::<bool>();
     device_2_actor.send(
         device_2_proc_mesh.client(),
-        InitializeBuffer(0, handle_2.bind()),
+        InitializeBuffer(0, handle_2.bind().into_port_ref()),
     )?;
     receiver_2.recv().await?;
 
@@ -797,7 +797,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
         device_1_proc_mesh.client().open_once_port::<RdmaBuffer>();
     device_1_actor.send(
         device_1_proc_mesh.client(),
-        GetBufferHandle(handle_remote.bind()),
+        GetBufferHandle(handle_remote.bind().into_port_ref()),
     )?;
     let buffer_1 = receiver_remote.recv().await?;
 
@@ -805,7 +805,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
         device_2_proc_mesh.client().open_once_port::<RdmaBuffer>();
     device_2_actor.send(
         device_2_proc_mesh.client(),
-        GetBufferHandle(handle_remote.bind()),
+        GetBufferHandle(handle_remote.bind().into_port_ref()),
     )?;
     let buffer_2 = receiver_remote.recv().await?;
 
@@ -820,7 +820,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
             buffer_1,
             config.iterations,
             config.initial_length,
-            handle_2.bind(),
+            handle_2.bind().into_port_ref(),
         ),
     )?;
     receiver_2.recv().await?;
@@ -831,7 +831,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
             buffer_2,
             config.iterations,
             config.initial_length,
-            handle_1.bind(),
+            handle_1.bind().into_port_ref(),
         ),
     )?;
     receiver_1.recv().await?;
@@ -839,14 +839,14 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let (handle, receiver) = device_2_proc_mesh.client().open_once_port::<bool>();
     device_2_actor.send(
         device_2_proc_mesh.client(),
-        VerifyBuffer(expected_data_values.clone(), handle.bind()),
+        VerifyBuffer(expected_data_values.clone(), handle.bind().into_port_ref()),
     )?;
     let verification_result2 = receiver.recv().await?;
 
     let (handle, receiver) = device_1_proc_mesh.client().open_once_port::<bool>();
     device_1_actor.send(
         device_1_proc_mesh.client(),
-        VerifyBuffer(expected_data_values.clone(), handle.bind()),
+        VerifyBuffer(expected_data_values.clone(), handle.bind().into_port_ref()),
     )?;
     let verification_result1 = receiver.recv().await?;
 

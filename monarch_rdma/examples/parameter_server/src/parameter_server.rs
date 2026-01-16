@@ -319,7 +319,7 @@ impl Handler<WorkerInit> for WorkerActor {
         tracing::info!("[worker_actor_{}] initializing", rank);
 
         let (handle, receiver) = cx.mailbox().open_once_port();
-        ps_ref.send(cx, PsGetBuffers(rank, handle.bind()))?;
+        ps_ref.send(cx, PsGetBuffers(rank, handle.bind().into_port_ref()))?;
         let (ps_weights_handle, ps_grad_handle) = receiver.recv().await?;
         self.ps_weights_handle = Some(ps_weights_handle);
         self.ps_grad_handle = Some(ps_grad_handle);
@@ -586,7 +586,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
                 worker_proc_mesh.client(),
                 selection::selection_from(worker_actor_mesh.shape(), &[("gpu", 0..num_workers)])
                     .unwrap(),
-                WorkerStep(handle.bind()),
+                WorkerStep(handle.bind().into_port_ref()),
             )
             .unwrap();
 
@@ -601,7 +601,10 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
 
         let (handle, recv) = worker_proc_mesh.client().open_once_port::<bool>();
         ps_actor
-            .send(ps_proc_mesh.client(), PsUpdate(handle.bind()))
+            .send(
+                ps_proc_mesh.client(),
+                PsUpdate(handle.bind().into_port_ref()),
+            )
             .unwrap();
 
         let finished = recv.recv().await.unwrap();
@@ -615,7 +618,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
                 worker_proc_mesh.client(),
                 selection::selection_from(worker_actor_mesh.shape(), &[("gpu", 0..num_workers)])
                     .unwrap(),
-                WorkerUpdate(handle.bind()),
+                WorkerUpdate(handle.bind().into_port_ref()),
             )
             .unwrap();
 

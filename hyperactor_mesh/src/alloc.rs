@@ -752,9 +752,9 @@ pub(crate) mod testing {
                 cx,
                 rank,
                 router_channel_addr,
-                Some(supervison_port.bind()),
+                Some(supervison_port.bind().into_port_ref()),
                 HashMap::new(),
-                config_handle.bind(),
+                config_handle.bind().into_port_ref(),
                 false,
             )
             .await
@@ -774,7 +774,7 @@ pub(crate) mod testing {
                 actor_type,
                 "Stuck".to_string(),
                 bincode::serialize(params).unwrap(),
-                completed_handle.bind(),
+                completed_handle.bind().into_port_ref(),
             )
             .await
             .unwrap();

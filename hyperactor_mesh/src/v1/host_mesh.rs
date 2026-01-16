@@ -415,7 +415,12 @@ impl HostMesh {
             .spawn_with_name::<HostMeshAgentProcMeshTrampoline, C>(
                 cx,
                 trampoline_name,
-                &(transport, mesh_agents.bind(), bootstrap_params, is_local),
+                &(
+                    transport,
+                    mesh_agents.bind().into_port_ref(),
+                    bootstrap_params,
+                    is_local,
+                ),
                 None,
                 // The trampoline is a system actor and does not need a controller.
                 true,
@@ -898,7 +903,7 @@ impl HostMeshRef {
                 // the reply does not need to be returned to the sender.
                 reply_port.return_undeliverable(false);
                 host.mesh_agent()
-                    .get_rank_status(cx, proc_name.clone(), reply_port)
+                    .get_rank_status(cx, proc_name.clone(), reply_port.into_port_ref())
                     .await
                     .map_err(|e| {
                         v1::Error::HostMeshAgentConfigurationError(
@@ -955,7 +960,7 @@ impl HostMeshRef {
                             cx,
                             resource::GetState {
                                 name: proc_name.clone(),
-                                reply: reply_tx,
+                                reply: reply_tx.into_port_ref(),
                             },
                         )
                         .map_err(|e| {
@@ -1073,7 +1078,7 @@ impl HostMeshRef {
                 },
             )?;
             host.mesh_agent()
-                .get_rank_status(cx, proc_name, port.bind())
+                .get_rank_status(cx, proc_name, port.bind().into_port_ref())
                 .await?;
 
             tracing::info!(
@@ -1184,7 +1189,7 @@ impl HostMeshRef {
                     cx,
                     resource::GetState {
                         name: proc_name,
-                        reply,
+                        reply: reply.into_port_ref(),
                     },
                 )
                 .map_err(|e| {
@@ -1444,7 +1449,7 @@ mod tests {
             for actor_mesh in [&actor_mesh1, &actor_mesh2] {
                 let (port, mut rx) = instance.mailbox().open_port();
                 actor_mesh
-                    .cast(instance, testactor::GetActorId(port.bind()))
+                    .cast(instance, testactor::GetActorId(port.bind().into_port_ref()))
                     .unwrap();
 
                 let mut expected_actor_ids: HashSet<_> = actor_mesh
@@ -1478,7 +1483,7 @@ mod tests {
 
             // We are going to send to the first, and then set up a port to receive the last.
             let (last, mut last_rx) = instance.mailbox().open_port();
-            to_visit.push_back(last.bind());
+            to_visit.push_back(last.bind().into_port_ref());
 
             let forward = testactor::Forward {
                 to_visit,
@@ -1674,9 +1679,9 @@ mod tests {
             )
             .unwrap();
 
-        let (tx, mut rx) = instance.open_port();
+        let (tx, mut rx) = instance.open_port::<Vec<u8>>();
         actor_mesh
-            .cast(instance, GetConfigAttrs(tx.bind()))
+            .cast(instance, GetConfigAttrs(tx.bind().into_port_ref()))
             .unwrap();
         let actual_attrs = rx.recv().await.unwrap();
         let actual_attrs = bincode::deserialize::<Attrs>(&actual_attrs).unwrap();

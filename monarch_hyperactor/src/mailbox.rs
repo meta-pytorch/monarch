@@ -261,7 +261,7 @@ impl PythonPortHandle {
 
     fn bind(&self) -> PythonPortRef {
         PythonPortRef {
-            inner: self.inner.bind(),
+            inner: self.inner.bind().into_port_ref(),
         }
     }
 }
@@ -434,7 +434,7 @@ impl PythonOncePortHandle {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
         Ok(PythonOncePortRef {
-            inner: Some(port.bind()),
+            inner: Some(port.bind().into_port_ref()),
         })
     }
 }

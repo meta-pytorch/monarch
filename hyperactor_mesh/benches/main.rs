@@ -72,7 +72,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                             all(true_()),
                             BenchMessage {
                                 step: i as usize,
-                                reply: tx.bind(),
+                                reply: tx.bind().into_port_ref(),
                                 payload,
                             },
                         )
@@ -173,7 +173,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                                     all(true_()),
                                     BenchMessage {
                                         step: i as usize,
-                                        reply: tx.bind(),
+                                        reply: tx.bind().into_port_ref(),
                                         payload,
                                     },
                                 )

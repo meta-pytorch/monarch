@@ -446,7 +446,9 @@ pub async fn assert_casting_correctness(
     instance: &impl context::Actor,
 ) {
     let (port, mut rx) = mailbox::open_port(instance);
-    actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();
+    actor_mesh
+        .cast(instance, GetActorId(port.bind().into_port_ref()))
+        .unwrap();
 
     let mut expected_actor_ids: HashSet<_> = actor_mesh
         .values()

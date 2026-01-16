@@ -148,8 +148,8 @@ impl LoggingMeshClient {
             cx,
             LogClientMessage::StartSyncFlush {
                 expected_procs: forwarder_mesh.region().num_ranks(),
-                reply: reply_tx.bind(),
-                version: version_tx.bind(),
+                reply: reply_tx.bind().into_port_ref(),
+                version: version_tx.bind().into_port_ref(),
             },
         )?;
 

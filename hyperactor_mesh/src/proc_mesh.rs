@@ -513,9 +513,9 @@ impl ProcMesh {
                     &client,
                     rank,
                     router_channel_addr.clone(),
-                    Some(supervision_port.bind()),
+                    Some(supervision_port.bind().into_port_ref()),
                     address_book.clone(),
-                    config_handle.bind(),
+                    config_handle.bind().into_port_ref(),
                     false,
                 )
                 .await?;
@@ -635,7 +635,7 @@ impl ProcMesh {
                     actor_type.clone(),
                     actor_name.to_string(),
                     bincode::serialize(params)?,
-                    completed_handle.bind(),
+                    completed_handle.bind().into_port_ref(),
                 )
                 .await?;
             n += 1;
@@ -1392,7 +1392,7 @@ mod tests {
                     instance,
                     sel!(*),
                     v1::testactor::GetCastInfo {
-                        cast_info: cast_info.bind(),
+                        cast_info: cast_info.bind().into_port_ref(),
                     },
                 )
                 .unwrap();

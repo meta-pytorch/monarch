@@ -1344,15 +1344,16 @@ mod tests {
         let (instance2, _handle) = proc2.instance("client").unwrap();
 
         let (port, mut rx) = instance1.mailbox().open_port();
+        let bound_port = port.bind();
 
-        port.bind().send(&instance2, "hello".to_string()).unwrap();
+        bound_port.send(&instance2, "hello".to_string()).unwrap();
         assert_eq!(rx.recv().await.unwrap(), "hello".to_string());
 
         // Make sure that the system proc is also wired in correctly.
         let (system_actor, _handle) = host.system_proc().instance("test").unwrap();
 
         // system->proc
-        port.bind()
+        bound_port
             .send(&system_actor, "hello from the system proc".to_string())
             .unwrap();
         assert_eq!(
@@ -1362,7 +1363,8 @@ mod tests {
 
         // system->system
         let (port, mut rx) = system_actor.mailbox().open_port();
-        port.bind()
+        let bound_port = port.bind();
+        bound_port
             .send(&system_actor, "hello from the system".to_string())
             .unwrap();
         assert_eq!(
@@ -1371,7 +1373,7 @@ mod tests {
         );
 
         // proc->system
-        port.bind()
+        bound_port
             .send(&instance1, "hello from the instance1".to_string())
             .unwrap();
         assert_eq!(
@@ -1422,7 +1424,9 @@ mod tests {
         .unwrap();
         let (client_inst, _h) = client.instance("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();
-        echo1.send(&client_inst, port.bind()).unwrap();
+        echo1
+            .send(&client_inst, port.bind().into_port_ref())
+            .unwrap();
         let id = RealClock
             .timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -1438,7 +1442,9 @@ mod tests {
         // This exercises cross-proc routing between a child and an
         // external client under the same host.
         let (port2, rx2) = client_inst.mailbox().open_once_port();
-        echo2.send(&client_inst, port2.bind()).unwrap();
+        echo2
+            .send(&client_inst, port2.bind().into_port_ref())
+            .unwrap();
         let id2 = RealClock
             .timeout(Duration::from_secs(5), rx2.recv())
             .await
@@ -1458,7 +1464,7 @@ mod tests {
         let (port3, rx3) = client_inst.mailbox().open_once_port();
         // Send from system -> child via a message that ultimately
         // replies to client's port
-        echo1.send(&sys_inst, port3.bind()).unwrap();
+        echo1.send(&sys_inst, port3.bind().into_port_ref()).unwrap();
         let id3 = RealClock
             .timeout(Duration::from_secs(5), rx3.recv())
             .await

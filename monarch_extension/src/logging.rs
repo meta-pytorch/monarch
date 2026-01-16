@@ -68,8 +68,8 @@ impl LoggingMeshClient {
             cx,
             LogClientMessage::StartSyncFlush {
                 expected_procs: forwarder_inner_mesh.proc_mesh().shape().slice().len(),
-                reply: reply_tx.bind(),
-                version: version_tx.bind(),
+                reply: reply_tx.bind().into_port_ref(),
+                version: version_tx.bind().into_port_ref(),
             },
         )?;
 

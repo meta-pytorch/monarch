@@ -258,7 +258,7 @@ async fn main() -> Result<ExitCode> {
     actor_mesh
         .cast(
             instance,
-            PhilosopherMessage::Start(dining_message_handle.bind()),
+            PhilosopherMessage::Start(dining_message_handle.bind().into_port_ref()),
         )
         .unwrap();
     let mut waiter = Waiter::new(actor_mesh.deref().clone());

@@ -862,7 +862,7 @@ mod tests {
         let dest_actor_name = "dest_actor";
         let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
         let params = TestActorParams {
-            forward_port: tx.bind(),
+            forward_port: tx.bind().into_port_ref(),
         };
         let instance = crate::v1::testing::instance();
         let actor_mesh: RootActorMesh<TestActor> = Arc::clone(&proc_mesh)
@@ -871,19 +871,19 @@ mod tests {
             .unwrap();
 
         let (reply_port_handle0, _) = open_port::<String>(proc_mesh.client());
-        let reply_port_ref0 = reply_port_handle0.bind();
+        let reply_port0 = reply_port_handle0.bind();
         let (reply_port_handle1, reply1_rx) = match accum {
             Some(a) => proc_mesh.client().mailbox().open_accum_port(a),
             None => open_port(proc_mesh.client()),
         };
-        let reply_port_ref1 = reply_port_handle1.bind();
+        let reply_port1 = reply_port_handle1.bind();
         let (reply_port_handle2, reply2_rx) = open_port::<MyReply>(proc_mesh.client());
-        let reply_port_ref2 = reply_port_handle2.bind();
+        let reply_port2 = reply_port_handle2.bind();
         let message = TestMessage::CastAndReply {
             arg: "abc".to_string(),
-            reply_to0: reply_port_ref0.clone(),
-            reply_to1: reply_port_ref1.clone(),
-            reply_to2: reply_port_ref2.clone(),
+            reply_to0: reply_port0.port_ref().clone(),
+            reply_to1: reply_port1.port_ref().clone(),
+            reply_to2: reply_port2.port_ref().clone(),
         };
 
         let selection = sel!(*);
@@ -905,11 +905,11 @@ mod tests {
                     assert_eq!(arg, "abc");
                     // port 0 is still the same as the original one because it
                     // is not included in MutVisitor.
-                    assert_eq!(reply_to0, reply_port_ref0);
+                    assert_eq!(&reply_to0, reply_port0.port_ref());
                     // ports have been replaced by comm actor's split ports.
-                    assert_ne!(reply_to1, reply_port_ref1);
+                    assert_ne!(&reply_to1, reply_port1.port_ref());
                     assert_eq!(reply_to1.port_id().actor_id().name(), "comm");
-                    assert_ne!(reply_to2, reply_port_ref2);
+                    assert_ne!(&reply_to2, reply_port2.port_ref());
                     assert_eq!(reply_to2.port_id().actor_id().name(), "comm");
                     reply_tos.push((reply_to1, reply_to2));
                 }
@@ -919,7 +919,12 @@ mod tests {
             }
         }
 
-        verify_split_port_paths(&selection, &extent, &reply_port_ref1, &reply_port_ref2);
+        verify_split_port_paths(
+            &selection,
+            &extent,
+            reply_port1.port_ref(),
+            reply_port2.port_ref(),
+        );
 
         MeshSetup {
             actor_mesh,
@@ -1102,7 +1107,7 @@ mod tests {
 
         let (tx, mut rx) = hyperactor::mailbox::open_port(instance);
         let params = TestActorParams {
-            forward_port: tx.bind(),
+            forward_port: tx.bind().into_port_ref(),
         };
         let actor_name = v1::Name::new("test").expect("valid test name");
         // Make this actor a "system" actor to avoid spawning a controller actor.
@@ -1115,19 +1120,19 @@ mod tests {
         let actor_mesh_ref = actor_mesh.deref().clone();
 
         let (reply_port_handle0, _) = open_port::<String>(instance);
-        let reply_port_ref0 = reply_port_handle0.bind();
+        let reply_port0 = reply_port_handle0.bind();
         let (reply_port_handle1, reply1_rx) = match accum {
             Some(a) => instance.mailbox().open_accum_port(a),
             None => open_port(instance),
         };
-        let reply_port_ref1 = reply_port_handle1.bind();
+        let reply_port1 = reply_port_handle1.bind();
         let (reply_port_handle2, reply2_rx) = open_port::<MyReply>(instance);
-        let reply_port_ref2 = reply_port_handle2.bind();
+        let reply_port2 = reply_port_handle2.bind();
         let message = TestMessage::CastAndReply {
             arg: "abc".to_string(),
-            reply_to0: reply_port_ref0.clone(),
-            reply_to1: reply_port_ref1.clone(),
-            reply_to2: reply_port_ref2.clone(),
+            reply_to0: reply_port0.port_ref().clone(),
+            reply_to1: reply_port1.port_ref().clone(),
+            reply_to2: reply_port2.port_ref().clone(),
         };
 
         clear_collected_tree();
@@ -1146,11 +1151,11 @@ mod tests {
                     assert_eq!(arg, "abc");
                     // port 0 is still the same as the original one because it
                     // is not included in MutVisitor.
-                    assert_eq!(reply_to0, reply_port_ref0);
+                    assert_eq!(&reply_to0, reply_port0.port_ref());
                     // ports have been replaced by comm actor's split ports.
-                    assert_ne!(reply_to1, reply_port_ref1);
+                    assert_ne!(&reply_to1, reply_port1.port_ref());
                     assert!(reply_to1.port_id().actor_id().name().contains("comm"));
-                    assert_ne!(reply_to2, reply_port_ref2);
+                    assert_ne!(&reply_to2, reply_port2.port_ref());
                     assert!(reply_to2.port_id().actor_id().name().contains("comm"));
                     reply_tos.push((reply_to1, reply_to2));
                 }
@@ -1162,7 +1167,12 @@ mod tests {
 
         // v1 always uses sel!(*) when casting to a mesh.
         let selection = sel!(*);
-        verify_split_port_paths(&selection, &extent, &reply_port_ref1, &reply_port_ref2);
+        verify_split_port_paths(
+            &selection,
+            &extent,
+            reply_port1.port_ref(),
+            reply_port2.port_ref(),
+        );
 
         MeshSetupV1 {
             instance,

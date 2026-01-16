@@ -149,8 +149,8 @@ where
                 instance,
                 sel!(*),
                 CondaSyncMessage {
-                    connect: conns_tx.bind(),
-                    result: result_tx.bind(),
+                    connect: conns_tx.bind().into_port_ref(),
+                    result: result_tx.bind().into_port_ref(),
                     workspace: remote_workspace,
                     path_prefix_replacements,
                 },

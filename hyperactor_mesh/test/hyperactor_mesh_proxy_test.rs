@@ -153,7 +153,7 @@ impl Handler<Echo> for ProxyActor {
         let actor = self.actor_mesh.as_ref().unwrap().get(0).unwrap();
 
         let (tx, mut rx) = cx.open_port();
-        actor.send(cx, Echo(message.0, tx.bind()))?;
+        actor.send(cx, Echo(message.0, tx.bind().into_port_ref()))?;
         message.1.send(cx, rx.recv().await.unwrap())?;
 
         Ok(())
@@ -195,7 +195,10 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
         .await?;
     let proxy_actor = actor_mesh.get(0).unwrap();
     let (tx, mut rx) = actor_mesh.open_port::<String>();
-    proxy_actor.send(proc_mesh.client(), Echo("hello!".to_owned(), tx.bind()))?;
+    proxy_actor.send(
+        proc_mesh.client(),
+        Echo("hello!".to_owned(), tx.bind().into_port_ref()),
+    )?;
 
     let msg = rx.recv().await?;
     println!("{}", msg);

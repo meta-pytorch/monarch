@@ -115,7 +115,7 @@ CONSTANT = "modified_constant"
     actor_ref.send(
         &mailbox,
         AutoReloadMessage {
-            result: result_tx.bind(),
+            result: result_tx.bind().into_port_ref(),
         },
     )?;
 

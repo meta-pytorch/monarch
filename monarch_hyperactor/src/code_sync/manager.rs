@@ -280,7 +280,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                         cx,
                         RsyncMessage {
                             connect,
-                            result: tx.bind(),
+                            result: tx.bind().into_port_ref(),
                             workspace,
                         },
                     )?;
@@ -298,7 +298,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                         cx,
                         CondaSyncMessage {
                             connect,
-                            result: tx.bind(),
+                            result: tx.bind().into_port_ref(),
                             workspace,
                             path_prefix_replacements,
                         },
@@ -311,7 +311,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             // Trigger hot reload on all ranks that use/share this workspace.
             if let Some(workspace_shape) = reload {
                 let (tx, rx) = cx.open_port::<Result<(), String>>();
-                let tx = tx.bind();
+                let tx = tx.bind().into_port_ref();
                 let len;
                 if let Some(rank) = self.rank.get() {
                     let mesh = self
@@ -387,7 +387,9 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             let (tx, mut rx) = cx.open_port();
             self.get_auto_reload_actor(cx)
                 .await?
-                .send(cx, AutoReloadMessage { result: tx.bind() })?;
+                .send(cx, AutoReloadMessage {
+                    result: tx.bind().into_port_ref(),
+                })?;
             rx.recv().await?.map_err(anyhow::Error::msg)?;
             anyhow::Ok(())
         }
@@ -459,7 +461,7 @@ pub async fn code_sync_mesh(
             let (rsync_conns_tx, rsync_conns_rx) = instance.open_port::<Connect>();
             (
                 Method::Rsync {
-                    connect: rsync_conns_tx.bind(),
+                    connect: rsync_conns_tx.bind().into_port_ref(),
                 },
                 // This async task will process rsync connection attempts concurrently, forwarding
                 // them to the rsync daemon above.
@@ -489,7 +491,7 @@ pub async fn code_sync_mesh(
             let (conns_tx, conns_rx) = instance.open_port::<Connect>();
             (
                 Method::CondaSync {
-                    connect: conns_tx.bind(),
+                    connect: conns_tx.bind().into_port_ref(),
                     path_prefix_replacements,
                 },
                 async move {
@@ -534,7 +536,7 @@ pub async fn code_sync_mesh(
                     } else {
                         None
                     },
-                    result: result_tx.bind(),
+                    result: result_tx.bind().into_port_ref(),
                 },
             )?;
 

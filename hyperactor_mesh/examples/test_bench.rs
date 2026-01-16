@@ -87,7 +87,7 @@ async fn main() {
         let (port, mut rx) = instance.open_port();
         let begin = RealClock.now();
         actor_mesh
-            .cast(instance, TestMessage::Ping(port.bind()))
+            .cast(instance, TestMessage::Ping(port.bind().into_port_ref()))
             .unwrap();
         while received.len() < actor_mesh.extent().num_ranks() {
             received.insert(rx.recv().await.unwrap());

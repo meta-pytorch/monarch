@@ -137,14 +137,14 @@ async fn main() -> Result<ExitCode> {
     let mut candidate = 3;
 
     let (prime_collector_tx, mut prime_collector_rx) = mesh.client().open_port();
-    let prime_collector_ref = prime_collector_tx.bind();
+    let prime_collector = prime_collector_tx.bind();
 
     while primes.len() < 100 {
         sieve_head.send(
             mesh.client(),
             NextNumber {
                 number: candidate,
-                prime_collector: prime_collector_ref.clone(),
+                prime_collector: prime_collector.port_ref().clone(),
             },
         )?;
         while let Ok(Some(prime)) = prime_collector_rx.try_recv() {

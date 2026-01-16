@@ -807,7 +807,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
-        let actor = EchoActor(tx.bind());
+        let actor = EchoActor(tx.bind().into_port_ref());
         let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
         handle.send(&client, 123u64).unwrap();
         handle.drain_and_stop().unwrap();
@@ -821,9 +821,12 @@ mod tests {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (undeliverable_msg_tx, _) = client.open_port();
+        let undeliverable_port = undeliverable_msg_tx.bind();
 
-        let ping_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
-        let pong_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
+        let ping_actor =
+            PingPongActor::new(Some(undeliverable_port.port_ref().clone()), None, None);
+        let pong_actor =
+            PingPongActor::new(Some(undeliverable_port.port_ref().clone()), None, None);
         let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
         let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
 
@@ -832,7 +835,11 @@ mod tests {
         ping_handle
             .send(
                 &client,
-                PingPongMessage(10, pong_handle.bind(), local_port.bind()),
+                PingPongMessage(
+                10,
+                pong_handle.bind(),
+                local_port.bind().into_port_ref(),
+            ),
             )
             .unwrap();
 
@@ -850,11 +857,18 @@ mod tests {
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let error_ttl = 66;
+        let undeliverable_port = undeliverable_msg_tx.bind();
 
-        let ping_actor =
-            PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
-        let pong_actor =
-            PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
+        let ping_actor = PingPongActor::new(
+            Some(undeliverable_port.port_ref().clone()),
+            Some(error_ttl),
+            None,
+        );
+        let pong_actor = PingPongActor::new(
+            Some(undeliverable_port.port_ref().clone()),
+            Some(error_ttl),
+            None,
+        );
         let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
         let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
 
@@ -866,7 +880,7 @@ mod tests {
                 PingPongMessage(
                     error_ttl + 1, // will encounter an error at TTL=66
                     pong_handle.bind(),
-                    local_port.bind(),
+                    local_port.bind().into_port_ref(),
                 ),
             )
             .unwrap();

@@ -65,7 +65,8 @@ impl Actor for CountClient {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Subscribe to the counter on initialization. We give it our u64 port to report
         // messages back to.
-        self.counter.send(this, Subscribe(this.port().bind()))?;
+        self.counter
+            .send(this, Subscribe(this.port().bind().into_port_ref()))?;
         Ok(())
     }
 }
@@ -85,13 +86,16 @@ async fn main() {
     let counter_actor: ActorHandle<CounterActor> =
         proc.spawn("counter", CounterActor::default()).unwrap();
 
+    // Bind the counter's port once, then clone the ref for each client.
+    let counter_port = counter_actor.port().bind();
+
     for i in 0..10 {
         // Spawn new "countees". Every time each subscribes, the counter broadcasts
         // the count to everyone.
         let _countee_actor: ActorHandle<CountClient> = proc
             .spawn(
                 &format!("countee_{}", i),
-                CountClient::new(counter_actor.port().bind()),
+                CountClient::new(counter_port.port_ref().clone()),
             )
             .unwrap();
         #[allow(clippy::disallowed_methods)]

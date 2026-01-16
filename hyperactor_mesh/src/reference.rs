@@ -385,7 +385,7 @@ mod tests {
             .cast(
                 ping_proc_mesh.client(),
                 sel!(?),
-                MeshPingPongMessage(10, pong_mesh_ref, done_tx.bind()),
+                MeshPingPongMessage(10, pong_mesh_ref, done_tx.bind().into_port_ref()),
             )
             .unwrap();
 

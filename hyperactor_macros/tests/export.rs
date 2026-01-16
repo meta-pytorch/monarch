@@ -106,7 +106,9 @@ mod tests {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
+        let actor_handle = proc
+            .spawn("test", TestActor::new(tx.bind().into_port_ref()))
+            .unwrap();
         //  This will call binds
         actor_handle.bind::<TestActor>();
         // Verify that the ports can be gotten successfully.
@@ -184,7 +186,9 @@ mod tests {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
+        let actor_handle = proc
+            .spawn("test", TestActor::new(tx.bind().into_port_ref()))
+            .unwrap();
 
         actor_handle.send(&client, 123u64).unwrap();
         actor_handle

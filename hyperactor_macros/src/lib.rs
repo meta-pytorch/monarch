@@ -994,7 +994,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
-                            let #reply_port_arg = #reply_port_arg.bind();
+                            let #reply_port_arg = #reply_port_arg.bind().into_port_ref();
                             let message = #constructor;
                             #log_message;
                             #send_message;
@@ -1009,7 +1009,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
-                            let #reply_port_arg = #reply_port_arg.bind();
+                            let #reply_port_arg = #reply_port_arg.bind().into_port_ref();
                             let message = #constructor;
                             #log_message;
                             #send_message;

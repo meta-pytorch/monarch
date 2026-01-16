@@ -3757,7 +3757,10 @@ mod tests {
         // the mesh.
         let (port, mut rx) = instance.mailbox().open_port();
         actor_mesh
-            .cast(&instance, testactor::GetActorId(port.bind()))
+            .cast(
+                &instance,
+                testactor::GetActorId(port.bind().into_port_ref()),
+            )
             .unwrap();
         let got_id = rx.recv().await.unwrap();
         assert_eq!(

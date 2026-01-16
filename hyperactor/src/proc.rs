@@ -3058,7 +3058,7 @@ mod tests {
 
         let (port, mut receiver) = instance.open_port();
         child_actor
-            .send(&instance, ("hello".to_string(), port.bind()))
+            .send(&instance, ("hello".to_string(), port.bind().into_port_ref()))
             .unwrap();
 
         let message = receiver.recv().await.unwrap();

@@ -120,7 +120,7 @@ impl ProcRef {
     pub(crate) async fn status(&self, cx: &impl context::Actor) -> v1::Result<bool> {
         let (port, mut rx) = cx.mailbox().open_port();
         self.agent
-            .status(cx, port.bind())
+            .status(cx, port.bind().into_port_ref())
             .await
             .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e))?;
         loop {
@@ -147,7 +147,7 @@ impl ProcRef {
                 cx,
                 resource::GetState::<ActorState> {
                     name: name.clone(),
-                    reply: port.bind(),
+                    reply: port.bind().into_port_ref(),
                 },
             )
             .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
@@ -415,6 +415,7 @@ impl ProcMesh {
             .collect();
 
         let (config_handle, mut config_receiver) = cx.mailbox().open_port();
+        let config_port = config_handle.bind();
         for (rank, AllocatedProc { mesh_agent, .. }) in running.iter().enumerate() {
             mesh_agent
                 .configure(
@@ -423,7 +424,7 @@ impl ProcMesh {
                     proc_channel_addr.clone(),
                     None, // no supervisor; we just crash
                     address_book.clone(),
-                    config_handle.bind(),
+                    config_port.port_ref().clone(),
                     true,
                 )
                 .await
@@ -779,7 +780,7 @@ impl ProcMeshRef {
             cx,
             resource::GetState::<ActorState> {
                 name: name.clone(),
-                reply: port.bind(),
+                reply: port.bind().into_port_ref(),
             },
         )?;
         let expected = self.ranks.len();
@@ -1048,7 +1049,7 @@ impl ProcMeshRef {
             cx,
             resource::GetRankStatus {
                 name: name.clone(),
-                reply,
+                reply: reply.into_port_ref(),
             },
         )?;
 
@@ -1107,7 +1108,7 @@ impl ProcMeshRef {
             let controller: ActorMeshController<A> = ActorMeshController::new(
                 mesh.deref().clone(),
                 supervision_display_name,
-                Some(cx.instance().port().bind()),
+                Some(cx.instance().port().bind().into_port_ref()),
                 statuses,
             );
             let controller = controller
@@ -1183,7 +1184,7 @@ impl ProcMeshRef {
             cx,
             resource::GetRankStatus {
                 name: mesh_name,
-                reply: port.bind(),
+                reply: port.bind().into_port_ref(),
             },
         )?;
         let start_time = RealClock.now();

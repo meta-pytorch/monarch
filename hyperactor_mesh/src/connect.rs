@@ -334,8 +334,8 @@ impl Connect {
         (
             Self {
                 id,
-                conn: conn_tx.bind(),
-                return_conn: return_tx.bind(),
+                conn: conn_tx.bind().into_port_ref(),
+                return_conn: return_tx.bind().into_port_ref(),
             },
             ConnectionCompleter {
                 caps,
@@ -383,7 +383,7 @@ pub async fn accept<C: context::Actor>(
         &caps,
         Accept {
             id: self_id,
-            conn: tx.bind(),
+            conn: tx.bind().into_port_ref(),
         },
     )?;
     Ok(ActorConnection {

@@ -145,6 +145,10 @@ pub use init::initialize;
 pub use init::initialize_with_current_runtime;
 #[doc(inline)]
 pub use init::initialize_with_log_prefix;
+#[doc(hidden)]
+pub use inventory; // For remote! macro
+pub use mailbox::BoundOncePort;
+pub use mailbox::BoundPort;
 pub use mailbox::Data;
 pub use mailbox::Mailbox;
 pub use mailbox::Message;
