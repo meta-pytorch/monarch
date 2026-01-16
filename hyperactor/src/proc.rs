@@ -416,28 +416,6 @@ impl Proc {
             .map_err(|existing| anyhow::anyhow!("coordinator port is already set to {existing}"))
     }
 
-    /// Handle a supervision event received by the proc. Attempt to forward it to the
-    /// supervision coordinator port if one is set, otherwise crash the process.
-    pub fn handle_supervision_event(&self, event: ActorSupervisionEvent) {
-        let result = match self.state().supervision_coordinator_port.get() {
-            Some(port) => port.send(event.clone()).map_err(anyhow::Error::from),
-            None => Err(anyhow::anyhow!(
-                "coordinator port is not set for proc {}",
-                self.proc_id(),
-            )),
-        };
-        if let Err(err) = result {
-            tracing::error!(
-                "proc {}: could not propagate supervision event {} due to error: {:?}: crashing",
-                self.proc_id(),
-                event,
-                err
-            );
-
-            std::process::exit(1);
-        }
-    }
-
     /// Create a new local-only proc. This proc is not allowed to forward messages
     /// outside of the proc itself.
     pub fn local() -> Self {
@@ -1300,7 +1278,7 @@ impl<A: Actor> Instance<A> {
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
             if let Some(event) = event {
-                self.inner.proc.handle_supervision_event(event);
+                self.handle_supervision_event_with_proc(event);
             }
         }
     }
@@ -1448,7 +1426,7 @@ impl<A: Actor> Instance<A> {
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
                         for supervision_event in supervision_event_receiver.drain() {
-                            self.handle_supervision_event(actor, supervision_event).await?;
+                            self.handle_supervision_event_with_actor(actor, supervision_event).await?;
                         }
                         let kind = ActorErrorKind::processing(err);
                         return Err(ActorError {
@@ -1474,7 +1452,7 @@ impl<A: Actor> Instance<A> {
                     }
                 }
                 Ok(supervision_event) = supervision_event_receiver.recv() => {
-                    self.handle_supervision_event(actor, supervision_event).await?;
+                    self.handle_supervision_event_with_actor(actor, supervision_event).await?;
                 }
             }
             self.inner
@@ -1501,8 +1479,8 @@ impl<A: Actor> Instance<A> {
         Ok(())
     }
 
-    /// Handle a supervision event using the provided actor.
-    pub async fn handle_supervision_event(
+    /// Handle a supervision event using the provided actor's handler.
+    pub async fn handle_supervision_event_with_actor(
         &self,
         actor: &mut A,
         supervision_event: ActorSupervisionEvent,
@@ -1529,6 +1507,30 @@ impl<A: Actor> Instance<A> {
                 );
                 Err(ActorError::new(self.self_id(), kind))
             }
+        }
+    }
+
+    /// Handle a supervision event received by this instance's proc. Attempt to
+    /// forward it to the proc's supervision coordinator port if one is set,
+    /// otherwise crash the process.
+    pub fn handle_supervision_event_with_proc(&self, event: ActorSupervisionEvent) {
+        let proc = &self.inner.proc;
+        let result = match proc.state().supervision_coordinator_port.get() {
+            Some(port) => port.send(event.clone()).map_err(anyhow::Error::from),
+            None => Err(anyhow::anyhow!(
+                "coordinator port is not set for proc {}",
+                proc.proc_id(),
+            )),
+        };
+        if let Err(err) = result {
+            tracing::error!(
+                "proc {}: could not propagate supervision event {} due to error: {:?}: crashing",
+                proc.proc_id(),
+                event,
+                err
+            );
+
+            std::process::exit(1);
         }
     }
 

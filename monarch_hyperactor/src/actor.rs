@@ -590,9 +590,9 @@ impl PythonActor {
                             // If the immediate supervision event isn't handled, continue with
                             // exiting the loop.
                             // Else, continue handling messages.
-                            if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                            if let Err(err) = instance.handle_supervision_event_with_actor(&mut actor, supervision_event).await {
                                 for supervision_event in supervision_rx.drain() {
-                                    if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                                    if let Err(err) = instance.handle_supervision_event_with_actor(&mut actor, supervision_event).await {
                                         break 'messages err;
                                     }
                                 }
@@ -604,7 +604,7 @@ impl PythonActor {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Ok(supervision_event) = supervision_rx.recv() => {
-                        if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                        if let Err(err) = instance.handle_supervision_event_with_actor(&mut actor, supervision_event).await {
                             break err;
                         }
                     }
