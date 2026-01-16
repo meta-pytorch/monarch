@@ -1663,7 +1663,7 @@ mod tests {
 
             // Send direct or cast. Either are guaranteed over the
             // limit and will fail.
-            if rand::thread_rng().gen_bool(0.5) {
+            if rand::rng().random_bool(0.5) {
                 dest.send(proc_mesh.client(), payload).unwrap();
             } else {
                 actor_mesh
