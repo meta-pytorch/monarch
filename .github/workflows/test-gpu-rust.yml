@@ -60,15 +60,17 @@ jobs:
         # internal buck test behavior.
         # The CI profile is configured in .config/nextest.toml
         # Exclude filter is for packages that don't build in Github Actions yet.
-        # * monarch_messages: monarch/target/debug/deps/monarch_messages-...:
-        #   /lib64/libm.so.6: version `GLIBC_2.29' not found
-        #   (required by /meta-pytorch/monarch/libtorch/lib/libtorch_cpu.so)
+        # Exclude packages that link against libtorch - the nightly libtorch requires
+        # GLIBC_2.29+ which is not available in the CI container.
+        # Error: /lib64/libm.so.6: version `GLIBC_2.29' not found
+        #        (required by /meta-pytorch/monarch/libtorch/lib/libtorch_cpu.so)
         timeout 12m cargo nextest run --workspace --profile ci \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \
           --exclude torch-sys-cuda \
           --exclude monarch_rdma \
-          --exclude torch-sys
+          --exclude torch-sys \
+          --exclude rdmaxcel-sys
         # Copy the test results to the expected location
         # TODO: error in pytest-results-action, TypeError: results.testsuites.testsuite.testcase is not iterable
         # Don't try to parse these results for now.

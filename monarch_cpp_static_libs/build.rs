@@ -10,7 +10,7 @@
 //!
 //! This build script:
 //! 1. Obtains rdma-core source (from MONARCH_RDMA_CORE_SRC or by cloning)
-//! 2. Builds rdma-core with static libraries (libibverbs.a, libmlx5.a)
+//! 2. Builds rdma-core with static libraries (libibverbs.a, libmlx5.a, libccan.a)
 //! 3. Emits link directives for downstream crates
 
 use std::path::Path;
@@ -144,8 +144,10 @@ fn copy_dir(src_dir: &Path, target_dir: &Path) {
 fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
     let build_dir = rdma_core_dir.join("build");
 
-    // Check if already built
-    if build_dir.join("lib/statics/libibverbs.a").exists() {
+    // Check if already built (Must include ccan check now)
+    if build_dir.join("lib/statics/libibverbs.a").exists()
+        && build_dir.join("ccan/libccan.a").exists()
+    {
         println!("cargo:warning=rdma-core already built");
         return build_dir;
     }
@@ -208,12 +210,12 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
         panic!("Failed to configure rdma-core with cmake");
     }
 
-    // Build only the targets we need: libibverbs.a, libmlx5.a, and librdma_util.a
-    // We don't need librdmacm which has build issues with long paths
+    // Build targets: ADDED ccan/libccan.a
     let targets = [
         "lib/statics/libibverbs.a",
         "lib/statics/libmlx5.a",
         "util/librdma_util.a",
+        "ccan/libccan.a",
     ];
 
     for target in &targets {
@@ -259,7 +261,6 @@ fn emit_link_directives(rdma_build_dir: &Path) {
     println!("cargo:rustc-link-arg={}", librdma_util_path.display());
 
     // Export metadata for dependent crates
-    // Use cargo:: (double colon) format for proper DEP_<LINKS>_<KEY> env vars
     println!(
         "cargo::metadata=RDMA_INCLUDE_DIR={}",
         rdma_build_dir.join("include").display()
