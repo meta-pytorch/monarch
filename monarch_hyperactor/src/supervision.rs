@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::supervision::MeshFailure;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;

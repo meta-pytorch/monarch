@@ -436,17 +436,6 @@ Runtime and Buffering
     Writes at or above this size are stored as zero-copy references.
 
 
-Mesh Configuration
-------------------
-
-``max_cast_dimension_size``
-    Maximum dimension size for cast operations.
-
-    - **Type**: ``int``
-    - **Default**: ``usize::MAX`` (platform-dependent)
-    - **Environment**: ``HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE``
-
-
 Actor Configuration
 -------------------
 
@@ -459,6 +448,17 @@ Actor Configuration
 
     When ``True``, actor messages are dispatched through a queue rather than
     directly. This can improve throughput in high-message-volume scenarios.
+
+
+Mesh Configuration
+------------------
+
+``max_cast_dimension_size``
+    Maximum dimension size for cast operations.
+
+    - **Type**: ``int``
+    - **Default**: ``usize::MAX`` (platform-dependent)
+    - **Environment**: ``HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE``
 
 
 Remote Allocation

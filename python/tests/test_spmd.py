@@ -9,7 +9,9 @@
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from monarch._src.job.spmd import _parse_torchrun, SPMDJob
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 from monarch.spmd import (
     setup_torch_elastic_env,
@@ -179,3 +181,62 @@ def test_spmd_actor_rank_calculations() -> None:
         assert env["GROUP_RANK"] == str(expected_group_rank)
         assert env["GROUP_WORLD_SIZE"] == str(expected_group_world_size)
         assert env["WORLD_SIZE"] == str(world_size)
+
+
+def test_parse_torchrun() -> None:
+    """Test _parse_torchrun extracts script args and nproc_per_node correctly."""
+    original_roles = [
+        {
+            "entrypoint": "workspace/entrypoint.sh",
+            "args": [
+                "torchrun",
+                "--nnodes=2",
+                "--nproc-per-node=8",
+                "-m",
+                "train",
+                "--lr",
+                "0.001",
+            ],
+        }
+    ]
+    script_args, nproc_per_node = _parse_torchrun(original_roles)
+    assert script_args == ["-m", "train", "--lr", "0.001"]
+    assert nproc_per_node == 8
+
+
+def test_run_spmd() -> None:
+    """Test run_spmd parses args and spawns actors correctly."""
+    job = SPMDJob(
+        handle="test_handle",
+        scheduler="mast_conda",
+        original_roles=[
+            {
+                "entrypoint": "workspace/entrypoint.sh",
+                "args": ["torchrun", "--nproc-per-node=4", "-m", "train"],
+            }
+        ],
+    )
+
+    mock_workers = MagicMock()
+    mock_procs = MagicMock()
+    mock_am = MagicMock()
+
+    mock_workers.spawn_procs.return_value = mock_procs
+    mock_procs.spawn.return_value = mock_am
+    mock_procs._labels = ["hosts", "gpus"]
+
+    mock_slice = MagicMock()
+    mock_am.slice.return_value = mock_slice
+    mock_slice.get_host_port.call_one.return_value.get.return_value = (
+        "localhost",
+        29500,
+    )
+    mock_am.main.call.return_value.get.return_value = None
+
+    with patch.object(job, "_state") as mock_state:
+        mock_state.return_value = MagicMock(workers=mock_workers)
+        job.run_spmd()
+
+    mock_workers.spawn_procs.assert_called_once_with(per_host={"gpus": 4})
+    mock_procs.spawn.assert_called_once_with("_SPMDActor", SPMDActor)
+    mock_am.main.call.assert_called_once_with("localhost", 29500, ["-m", "train"])
