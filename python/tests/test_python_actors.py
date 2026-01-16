@@ -42,7 +42,6 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.future import Future
