@@ -144,11 +144,14 @@ impl LoggingMeshClient {
         let (version_tx, version_rx) = cx.instance().open_once_port::<u64>();
 
         // First initialize a sync flush.
-        client_actor.send(LogClientMessage::StartSyncFlush {
-            expected_procs: forwarder_mesh.region().num_ranks(),
-            reply: reply_tx.bind(),
-            version: version_tx.bind(),
-        })?;
+        client_actor.send(
+            cx,
+            LogClientMessage::StartSyncFlush {
+                expected_procs: forwarder_mesh.region().num_ranks(),
+                reply: reply_tx.bind(),
+                version: version_tx.bind(),
+            },
+        )?;
 
         let version = version_rx.recv().await?;
 
@@ -320,9 +323,12 @@ impl LoggingMeshClient {
 
         // Always update the client actor's aggregation window.
         self.client_actor
-            .send(LogClientMessage::SetAggregate {
-                aggregate_window_sec,
-            })
+            .send(
+                instance.deref(),
+                LogClientMessage::SetAggregate {
+                    aggregate_window_sec,
+                },
+            )
             .map_err(anyhow::Error::msg)?;
 
         Ok(())
@@ -400,13 +406,18 @@ impl LoggingMeshClient {
 // remote logging actors; it only stops the local client actor.
 impl Drop for LoggingMeshClient {
     fn drop(&mut self) {
-        match self.client_actor.drain_and_stop() {
-            Ok(_) => {}
-            Err(e) => {
-                // it is ok as during shutdown, the channel might already be closed
-                tracing::debug!("error draining logging client actor during shutdown: {}", e);
+        // Use catch_unwind to guard against panics during interpreter shutdown.
+        // During Python teardown, the tokio runtime or channels may already be
+        // deallocated, and attempting to drain could cause a segfault.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match self.client_actor.drain_and_stop() {
+                Ok(_) => {}
+                Err(e) => {
+                    // it is ok as during shutdown, the channel might already be closed
+                    tracing::debug!("error draining logging client actor during shutdown: {}", e);
+                }
             }
-        }
+        }));
     }
 }
 

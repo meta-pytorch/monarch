@@ -11,11 +11,11 @@ import bdb
 import io
 import logging
 import os
-
 import pdb  # noqa
 import traceback
 from collections import deque
 from logging import Logger
+from traceback import FrameSummary
 from typing import (
     Any,
     cast,
@@ -39,11 +39,12 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     UnflattenArg,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
-from monarch._src.actor.actor_mesh import ActorEndpoint, Channel, Port
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
+from monarch._src.actor.actor_mesh import Channel, Port
 from monarch._src.actor.shape import NDSlice
 from monarch.common import device_mesh, messages, stream
 from monarch.common.controller_api import TController
@@ -60,7 +61,6 @@ if TYPE_CHECKING:
 from monarch._rust_bindings.monarch_hyperactor.shape import Point
 from monarch._src.actor.actor_mesh import context, Instance
 from monarch._src.actor.device_utils import _local_device_count
-
 from monarch.common.client import Client
 from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh
@@ -189,6 +189,28 @@ class Controller(_Controller):
         self._mailbox: Mailbox = Instance._mailbox
         self._pending_debugger_sessions: deque[ActorId] = deque()
 
+    def node(
+        self,
+        seq: int,
+        defs: Sequence[object],
+        uses: Sequence[object],
+        port: Tuple[PortId, NDSlice] | None,
+        tracebacks: List[List[FrameSummary]],
+    ) -> None:
+        actor_instance = context().actor_instance
+        self._node(
+            actor_instance._as_rust(),
+            seq,
+            defs,
+            uses,
+            port,
+            tracebacks,
+        )
+
+    def drop_refs(self, refs: Sequence[object]) -> None:
+        actor_instance = context().actor_instance
+        self._drop_refs(actor_instance._as_rust(), refs)
+
     def next_message(
         self, timeout: Optional[float]
     ) -> Optional[LogMessage | MessageResult]:
@@ -202,13 +224,19 @@ class Controller(_Controller):
         msg: NamedTuple,
     ) -> None:
         with torch.utils._python_dispatch._disable_current_modes():
-            return super().send(ranks, msg)
+            actor_instance = context().actor_instance
+            return super()._send(actor_instance._as_rust(), ranks, msg)
 
     def drain_and_stop(
         self,
     ) -> List[LogMessage | MessageResult | client.DebuggerMessage]:
-        self._drain_and_stop(context().actor_instance._as_rust())
+        actor_instance = context().actor_instance
+        self._drain_and_stop(actor_instance._as_rust())
         return []
+
+    def sync_at_exit(self, port: PortId) -> None:
+        actor_instance = context().actor_instance
+        self._sync_at_exit(actor_instance._as_rust(), port)
 
     def stop_mesh(self):
         # I think this is a noop?
@@ -409,6 +437,7 @@ def _create_call_method_indirect_message(
     seq: Seq,
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
+    pending_pickle_state: Optional[PendingPickleState],
 ) -> Tuple[PythonMessage, Tuple[str, int]]:
     unflatten_args = [
         UnflattenArg.PyObject if isinstance(ref, Tensor) else UnflattenArg.Mailbox
@@ -420,6 +449,7 @@ def _create_call_method_indirect_message(
             method_name, broker_id, seq, unflatten_args
         ),
         args_kwargs_tuple,
+        pending_pickle_state,
     )
     return (actor_msg, broker_id)
 
@@ -430,6 +460,7 @@ def create_actor_message(
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
+    pending_pickle_state: Optional[PendingPickleState],
 ) -> PythonMessage:
     tensors = [ref for ref in refs if isinstance(ref, Tensor)]
     # we have some monarch references, we need to ensure their
@@ -462,6 +493,7 @@ def create_actor_message(
         checker.mesh,
         tensors,
         chosen_stream,
+        pending_pickle_state,
     )
 
 
@@ -474,6 +506,7 @@ def _create_actor_message(
     mesh: DeviceMesh,
     tensors: List[Tensor],
     chosen_stream: Stream,
+    pending_pickle_state: Optional[PendingPickleState],
 ) -> PythonMessage:
     stream_ref = chosen_stream._to_ref(client)
     fut = (port, mesh._ndslice) if port is not None else None
@@ -489,7 +522,7 @@ def _create_actor_message(
     # from the stream, then it will run the actor method, and send the result to response port.
 
     actor_msg, broker_id = _create_call_method_indirect_message(
-        method_name, client, ident, args_kwargs_tuple, refs
+        method_name, client, ident, args_kwargs_tuple, refs, pending_pickle_state
     )
     worker_msg = SendResultOfActorCall(ident, broker_id, tensors, [], stream_ref)
     client.send(mesh._ndslice, worker_msg)
@@ -501,7 +534,12 @@ def _create_actor_message(
     return actor_msg
 
 
-def actor_rref(endpoint, args_kwargs_tuple: Buffer, refs: Sequence[Any]):
+def actor_rref(
+    endpoint,
+    args_kwargs_tuple: Buffer,
+    refs: Sequence[Any],
+    pending_pickle_state: Optional[PendingPickleState],
+):
     chosen_stream = stream._active
     fake_result, dtensors, mutates, mesh = dtensor_check(
         endpoint._propagate,
@@ -527,7 +565,7 @@ def actor_rref(endpoint, args_kwargs_tuple: Buffer, refs: Sequence[Any]):
         result_msg = None
 
     actor_msg, broker_id = _create_call_method_indirect_message(
-        endpoint._name, mesh.client, seq, args_kwargs_tuple, refs
+        endpoint._name, mesh.client, seq, args_kwargs_tuple, refs, pending_pickle_state
     )
     endpoint._actor_mesh.cast(actor_msg, "all", context().actor_instance._as_rust())
     # note the device mesh has to be defined regardles so the remote functions

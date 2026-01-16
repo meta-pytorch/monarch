@@ -45,16 +45,14 @@ fn get_or_add_new_module<'py>(
         if let Some(submodule) = submodule {
             current_module = submodule.extract()?;
         } else {
-            let new_module = PyModule::new(current_module.py(), part)?;
+            let full_name = format!("monarch._rust_bindings.{}", parts.join("."));
+            let new_module = PyModule::new(current_module.py(), &full_name)?;
             current_module.add_submodule(&new_module)?;
             current_module
                 .py()
                 .import("sys")?
                 .getattr("modules")?
-                .set_item(
-                    format!("monarch._rust_bindings.{}", parts.join(".")),
-                    new_module.clone(),
-                )?;
+                .set_item(&full_name, new_module.clone())?;
             current_module = new_module;
         }
     }
@@ -146,6 +144,16 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::pytokio::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.pytokio",
+    )?)?;
+
+    monarch_hyperactor::pywaker::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.pywaker",
+    )?)?;
+
+    monarch_hyperactor::pympsc::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.pympsc",
     )?)?;
 
     monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(

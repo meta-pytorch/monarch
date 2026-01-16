@@ -14,6 +14,7 @@ use std::time::Duration;
 use hyperactor::ActorHandle;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::context;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::logging::LogClientActor;
@@ -48,6 +49,7 @@ pub struct LoggingMeshClient {
 
 impl LoggingMeshClient {
     async fn flush_internal(
+        cx: &impl context::Actor,
         client_actor: ActorHandle<LogClientActor>,
         forwarder_mesh: SharedCell<RootActorMesh<'static, LogForwardActor>>,
     ) -> Result<(), anyhow::Error> {
@@ -62,11 +64,14 @@ impl LoggingMeshClient {
             .open_once_port::<u64>();
 
         // First initialize a sync flush.
-        client_actor.send(LogClientMessage::StartSyncFlush {
-            expected_procs: forwarder_inner_mesh.proc_mesh().shape().slice().len(),
-            reply: reply_tx.bind(),
-            version: version_tx.bind(),
-        })?;
+        client_actor.send(
+            cx,
+            LogClientMessage::StartSyncFlush {
+                expected_procs: forwarder_inner_mesh.proc_mesh().shape().slice().len(),
+                reply: reply_tx.bind(),
+                version: version_tx.bind(),
+            },
+        )?;
 
         let version = version_rx.recv().await?;
 
@@ -108,6 +113,7 @@ impl LoggingMeshClient {
                         .timeout(
                             FLUSH_TIMEOUT,
                             Self::flush_internal(
+                                instance.deref(),
                                 client_actor_for_callback,
                                 forwarder_mesh_for_callback,
                             ),
@@ -141,7 +147,7 @@ impl LoggingMeshClient {
     fn set_mode<'py>(
         &self,
         _py: Python<'py>,
-        _instance: &PyInstance,
+        instance: &PyInstance,
         stream_to_client: bool,
         aggregate_window_sec: Option<u64>,
         level: u8,
@@ -173,21 +179,25 @@ impl LoggingMeshClient {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         self.client_actor
-            .send(LogClientMessage::SetAggregate {
-                aggregate_window_sec,
-            })
+            .send(
+                instance.deref(),
+                LogClientMessage::SetAggregate {
+                    aggregate_window_sec,
+                },
+            )
             .map_err(anyhow::Error::msg)?;
 
         Ok(())
     }
 
     // A sync flush mechanism for the client make sure all the stdout/stderr are streamed back and flushed.
-    fn flush(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
+    fn flush(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
         let forwarder_mesh = self.forwarder_mesh.clone();
         let client_actor = self.client_actor.clone();
+        let instance_for_task = instance.clone();
 
         PyPythonTask::new(async move {
-            Self::flush_internal(client_actor, forwarder_mesh)
+            Self::flush_internal(instance_for_task.deref(), client_actor, forwarder_mesh)
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
         })
@@ -196,13 +206,18 @@ impl LoggingMeshClient {
 
 impl Drop for LoggingMeshClient {
     fn drop(&mut self) {
-        match self.client_actor.drain_and_stop() {
-            Ok(_) => {}
-            Err(e) => {
-                // it is ok as during shutdown, the channel might already be closed
-                tracing::debug!("error draining logging client actor during shutdown: {}", e);
+        // Use catch_unwind to guard against panics during interpreter shutdown.
+        // During Python teardown, the tokio runtime or channels may already be
+        // deallocated, and attempting to drain could cause a segfault.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match self.client_actor.drain_and_stop() {
+                Ok(_) => {}
+                Err(e) => {
+                    // it is ok as during shutdown, the channel might already be closed
+                    tracing::debug!("error draining logging client actor during shutdown: {}", e);
+                }
             }
-        }
+        }));
     }
 }
 

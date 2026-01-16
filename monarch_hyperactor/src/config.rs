@@ -211,6 +211,13 @@ declare_attrs! {
         py_name: Some("shared_asyncio_runtime".to_string()),
     })
     pub attr SHARED_ASYNCIO_RUNTIME: bool = false;
+
+    /// Use queue-based message dispatch for Python actors instead of direct dispatch
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("MONARCH_ACTOR_QUEUE_DISPATCH".to_string()),
+        py_name: Some("actor_queue_dispatch".to_string()),
+    })
+    pub attr ACTOR_QUEUE_DISPATCH: bool = false;
 }
 
 /// Python API for configuration management
@@ -423,9 +430,9 @@ inventory::collect!(PythonConfigTypeInfo);
 /// usage is `declare_py_config_type!(PyBindSpec as BindSpec)`.
 macro_rules! declare_py_config_type {
     ($($ty:ty),+ $(,)?) => {
-        hyperactor::paste! {
+        hyperactor::internal_macro_support::paste! {
             $(
-                hyperactor::inventory::submit! {
+                hyperactor::internal_macro_support::inventory::submit! {
                     PythonConfigTypeInfo {
                         typehash: $ty::typehash,
                         set_runtime_config: |py, key, val| {
@@ -447,8 +454,8 @@ macro_rules! declare_py_config_type {
         }
     };
     ($py_ty:ty as $ty:ty) => {
-        hyperactor::paste! {
-            hyperactor::inventory::submit! {
+        hyperactor::internal_macro_support::paste! {
+            hyperactor::internal_macro_support::inventory::submit! {
                 PythonConfigTypeInfo {
                     typehash: $ty::typehash,
                     set_runtime_config: |py, key, val| {

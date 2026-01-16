@@ -25,13 +25,17 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::WorldId;
+use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::message::ErasedUnbound;
 use hyperactor::reference::UnboundPort;
+use hyperactor::reference::UnboundPortKind;
+use ndslice::Point;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
@@ -179,6 +183,13 @@ impl Actor for CommActor {
                 cx.self_id(),
                 return_port.port_id(),
             )));
+
+            // Needed so that the receiver of the undeliverable message can easily find the
+            // original sender of the cast message.
+            message_envelope
+                .headers_mut()
+                .set(CAST_ORIGINATING_SENDER, sender.clone());
+
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
@@ -252,44 +263,27 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
-        // Split ports, if any, and update message with new ports. In this
-        // way, children actors will reply to this comm actor's ports, instead
-        // of to the original ports provided by parent.
-        message.data_mut().visit_mut::<UnboundPort>(
-            |UnboundPort(port_id, reducer_spec, reducer_opts, return_undeliverable)| {
-                let split = port_id.split(
-                    cx,
-                    reducer_spec.clone(),
-                    reducer_opts.clone(),
-                    *return_undeliverable,
-                )?;
-
-                #[cfg(test)]
-                tests::collect_split_port(port_id, &split, deliver_here);
-
-                *port_id = split;
-                Ok(())
-            },
-        )?;
+        // Compute peer count for OncePort splitting. This is the number of
+        // destinations the message will be delivered to, so that the split
+        // port can correctly accumulate responses.
+        let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
+        split_ports(cx, message.data_mut(), peer_count, deliver_here)?;
 
         // Deliver message here, if necessary.
         if deliver_here {
             let rank_on_root_mesh = mode.self_rank(cx.self_id())?;
             let cast_rank = message.relative_rank(rank_on_root_mesh)?;
-            // Replace ranks with self ranks.
-            message
-                .data_mut()
-                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                    *rank = Some(cast_rank);
-                    Ok(())
-                })?;
             let cast_shape = message.shape();
-            let point = cast_shape
+            let cast_point = cast_shape
                 .extent()
                 .point_of_rank(cast_rank)
                 .expect("rank out of bounds");
+
+            // Replace ranks with self ranks.
+            replace_with_self_ranks(&cast_point, message.data_mut())?;
+
             let mut headers = cx.headers().clone();
-            set_cast_info_on_headers(&mut headers, point, message.sender().clone());
+            set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
             cx.post(
                 cx.self_id()
                     .proc_id()
@@ -324,6 +318,60 @@ impl CommActor {
 
         Ok(())
     }
+}
+
+// Split ports, if any, and update message with new ports. In this
+// way, children actors will reply to this comm actor's ports, instead
+// of to the original ports provided by parent.
+fn split_ports(
+    cx: &Context<CommActor>,
+    data: &mut ErasedUnbound,
+    peer_count: usize,
+    // append parameter name with _ because it is only used in test.
+    _deliver_here: bool,
+) -> anyhow::Result<()> {
+    // Split ports, if any, and update message with new ports. In this
+    // way, children actors will reply to this comm actor's ports, instead
+    // of to the original ports provided by parent.
+    data.visit_mut::<UnboundPort>(
+        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind)| {
+            let reducer_mode = match kind {
+                UnboundPortKind::Streaming(opts) => {
+                    ReducerMode::Streaming(opts.clone().unwrap_or_default())
+                }
+                UnboundPortKind::Once if reducer_spec.is_none() => {
+                    // We can only split OncePorts that have reducers.
+                    // Pass this through -- if it is used multiple times,
+                    // it will cause a delivery error downstream.
+                    // However we should reconsider this behavior
+                    // as it its semantics will now differ between
+                    // unicast and broadcast messages.
+                    return Ok(());
+                }
+                UnboundPortKind::Once => ReducerMode::Once(peer_count),
+            };
+
+            let split = port_id.split(
+                cx,
+                reducer_spec.clone(),
+                reducer_mode,
+                *return_undeliverable,
+            )?;
+
+            #[cfg(test)]
+            tests::collect_split_port(port_id, &split, _deliver_here);
+
+            *port_id = split;
+            Ok(())
+        },
+    )
+}
+
+fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
+    data.visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+        *rank = Some(cast_point.rank());
+        Ok(())
+    })
 }
 
 #[async_trait]
@@ -497,6 +545,11 @@ pub mod test_utils {
             reply_to1: PortRef<u64>,
             #[binding(include)]
             reply_to2: PortRef<MyReply>,
+        },
+        CastAndReplyOnce {
+            arg: String,
+            #[binding(include)]
+            reply_to: hyperactor::OncePortRef<u64>,
         },
     }
 
@@ -1182,5 +1235,143 @@ mod tests {
 
         let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
         execute_cast_and_accum(ranks, instance, reply1_rx, reply_tos).await;
+    }
+
+    struct OncePortMeshSetup {
+        _proc_mesh: Arc<ProcMesh>,
+        actor_mesh: RootActorMesh<'static, TestActor>,
+        reply_rx: hyperactor::mailbox::OncePortReceiver<u64>,
+        reply_tos: Vec<hyperactor::OncePortRef<u64>>,
+        _reply_port_ref: hyperactor::OncePortRef<u64>,
+    }
+
+    async fn setup_once_port_mesh(reducer_spec: Option<accum::ReducerSpec>) -> OncePortMeshSetup {
+        let extent = extent!(replica = 4, host = 4, gpu = 4);
+        let alloc = LocalAllocator
+            .allocate(AllocSpec {
+                extent: extent.clone(),
+                constraints: Default::default(),
+                proc_name: None,
+                transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
+        let dest_actor_name = "dest_actor";
+        let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
+        let params = TestActorParams {
+            forward_port: tx.bind(),
+        };
+        let instance = crate::v1::testing::instance();
+        let actor_mesh: RootActorMesh<TestActor> = Arc::clone(&proc_mesh)
+            .spawn(&instance, dest_actor_name, &params)
+            .await
+            .unwrap();
+
+        let (reply_port_handle, reply_rx) =
+            hyperactor::mailbox::open_once_port::<u64>(proc_mesh.client());
+        let has_reducer = reducer_spec.is_some();
+        let reply_port_ref = match reducer_spec {
+            Some(spec) => hyperactor::OncePortRef::attest_reducible(
+                reply_port_handle.bind().port_id().clone(),
+                Some(spec),
+            ),
+            None => reply_port_handle.bind(),
+        };
+
+        let message = TestMessage::CastAndReplyOnce {
+            arg: "abc".to_string(),
+            reply_to: reply_port_ref.clone(),
+        };
+
+        let selection = sel!(*);
+        clear_collected_tree();
+        actor_mesh
+            .cast(proc_mesh.client(), selection.clone(), message)
+            .unwrap();
+
+        let mut reply_tos = vec![];
+        for _ in extent.points() {
+            let msg = rx.recv().await.expect("missing");
+            match msg {
+                TestMessage::CastAndReplyOnce { arg, reply_to } => {
+                    assert_eq!(arg, "abc");
+                    if has_reducer {
+                        // With reducer: port is split by comm actor.
+                        assert_ne!(reply_to, reply_port_ref);
+                        assert_eq!(reply_to.port_id().actor_id().name(), "comm");
+                    } else {
+                        // Without reducer: port is passed through unchanged.
+                        assert_eq!(reply_to, reply_port_ref);
+                    }
+                    reply_tos.push(reply_to);
+                }
+                _ => {
+                    panic!("unexpected message: {:?}", msg);
+                }
+            }
+        }
+
+        OncePortMeshSetup {
+            _proc_mesh: proc_mesh,
+            actor_mesh,
+            reply_rx,
+            reply_tos,
+            _reply_port_ref: reply_port_ref,
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_reply_once() {
+        // Test OncePort without accumulator - port is NOT split.
+        // All destinations receive the same original port.
+        // First reply is delivered, others fail at receiver (port closed).
+        let OncePortMeshSetup {
+            actor_mesh,
+            reply_rx,
+            reply_tos,
+            ..
+        } = setup_once_port_mesh(None).await;
+        let proc_mesh_client = actor_mesh.proc_mesh().client();
+
+        // All reply_tos point to the same port (not split).
+        // Only the first message will be delivered successfully.
+        let num_replies = reply_tos.len();
+        for (i, reply_to) in reply_tos.into_iter().enumerate() {
+            reply_to.send(proc_mesh_client, i as u64).unwrap();
+        }
+
+        // OncePort receives exactly one value (the first to arrive)
+        let result = reply_rx.recv().await.unwrap();
+        // The result should be one of the values sent
+        assert!(result < num_replies as u64);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_accum_once() {
+        // Test OncePort splitting with sum accumulator.
+        // Each destination actor replies with its rank.
+        // The sum of all ranks should be received at the original port.
+        let reducer_spec = accum::sum::<u64>().reducer_spec();
+        let OncePortMeshSetup {
+            actor_mesh,
+            reply_rx,
+            reply_tos,
+            ..
+        } = setup_once_port_mesh(reducer_spec).await;
+        let proc_mesh_client = actor_mesh.proc_mesh().client();
+
+        // Each actor replies with its index
+        let mut expected_sum = 0u64;
+        for (i, reply_to) in reply_tos.into_iter().enumerate() {
+            reply_to.send(proc_mesh_client, i as u64).unwrap();
+            expected_sum += i as u64;
+        }
+
+        // OncePort should receive the sum of all responses
+        let result = reply_rx.recv().await.unwrap();
+        assert_eq!(result, expected_sum);
     }
 }

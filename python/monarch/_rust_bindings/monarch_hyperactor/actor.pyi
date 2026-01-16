@@ -6,9 +6,7 @@
 
 # pyre-strict
 
-import abc
 from enum import Enum
-
 from typing import (
     Any,
     final,
@@ -24,14 +22,9 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
-
-from monarch._rust_bindings.monarch_hyperactor.mailbox import (
-    Mailbox,
-    OncePortRef,
-    PortRef,
-)
+from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
 
 class PythonMessageKind:
     @classmethod
@@ -125,6 +118,7 @@ class PythonMessage:
         self,
         kind: PythonMessageKind,
         message: Union[Buffer, bytes],
+        pending_pickle_state: Optional[PendingPickleState] = None,
     ) -> None: ...
     @property
     def message(self) -> FrozenBuffer:
@@ -187,3 +181,35 @@ class Actor(Protocol):
         local_state: Iterable[Any],
         response_port: PortProtocol[Any],
     ) -> None: ...
+
+@final
+class QueuedMessage:
+    """
+    A message sent through the queue in queue-dispatch mode.
+    Contains pre-resolved components ready for Python consumption.
+    """
+
+    @property
+    def context(self) -> Any:
+        """The PyContext for this message."""
+        ...
+
+    @property
+    def method(self) -> MethodSpecifier:
+        """The method specifier for this message."""
+        ...
+
+    @property
+    def bytes(self) -> FrozenBuffer:
+        """The serialized message bytes."""
+        ...
+
+    @property
+    def local_state(self) -> Any:
+        """The local state for this message."""
+        ...
+
+    @property
+    def response_port(self) -> PortProtocol[Any]:
+        """The response port for this message."""
+        ...

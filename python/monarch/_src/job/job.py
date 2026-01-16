@@ -84,6 +84,12 @@ class JobTrait(ABC):
     jobs can also be "templates". But the model also supports having the job
     refer to a *specific instance* by including the resolved job name in the
     specification itself.
+
+    Implementation note: Subclasses must NOT set `_status` directly. The
+    `state()` method manages status transitions and pickle caching. If a
+    subclass pre-emptively sets `_status = "running"`, the `state()` method
+    will skip the cache dump, breaking job persistence. Instead, let
+    `apply()` set the status after `_create()` returns.
     """
 
     @property
@@ -150,6 +156,8 @@ class JobTrait(ABC):
             return cached._state()
         logger.info("Applying current job")
         self.apply()
+        logger.info("Job has started, connecting to current state")
+        result = self._state()
         if cached_path is not None:
             # Create the directory for cached_path if it doesn't exist
             cache_dir = os.path.dirname(cached_path)
@@ -157,8 +165,7 @@ class JobTrait(ABC):
                 os.makedirs(cache_dir, exist_ok=True)
             logger.info("Saving job to cache at %s", cached_path)
             self.dump(cached_path)
-        logger.info("Job has started, connecting to current state")
-        return self._state()
+        return result
 
     def _load_cached(self, cached_path: Optional[str]) -> "Optional[JobTrait]":
         if cached_path is None:
@@ -176,7 +183,10 @@ class JobTrait(ABC):
             return None
         if not running.can_run(self):
             logger.info("Cached job cannot run this spec, removing cache")
-            running._kill()
+            try:
+                running._kill()
+            except NotImplementedError as e:
+                logger.info("Failed to kill cached job: %s", e)
             os.remove(cached_path)
             return None
         return job
@@ -204,7 +214,15 @@ class JobTrait(ABC):
     def _state(self) -> JobState: ...
 
     @abstractmethod
-    def _create(self, client_script: Optional[str]): ...
+    def _create(self, client_script: Optional[str]):
+        """Create the job resources.
+
+        Called by `apply()` when the job is not yet running. Implementations
+        should schedule the job with the appropriate scheduler but must NOT
+        set `_status` directly; `apply()` handles status transitions after
+        this method returns.
+        """
+        ...
 
     @abstractmethod
     def can_run(self, spec: "JobTrait") -> bool:

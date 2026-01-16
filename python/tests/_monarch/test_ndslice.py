@@ -11,9 +11,7 @@ import random
 from unittest import TestCase
 
 import pytest
-
 from monarch._rust_bindings.monarch_hyperactor.selection import Selection
-
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Shape, Slice
 
 

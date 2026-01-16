@@ -15,10 +15,8 @@ import itertools
 import logging
 import threading
 import warnings
-from abc import abstractproperty
-
+from abc import abstractmethod, abstractproperty
 from dataclasses import dataclass
-
 from functools import cache
 from pprint import pformat
 from textwrap import indent
@@ -63,7 +61,12 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import (
+    PendingPickle,
+    PendingPickleState,
+    PythonTask,
+    Shared,
+)
 from monarch._rust_bindings.monarch_hyperactor.selection import (
     Selection as HySelection,  # noqa: F401
 )
@@ -94,21 +97,29 @@ from monarch._src.actor.endpoint import (
 )
 from monarch._src.actor.future import Future
 from monarch._src.actor.metrics import endpoint_message_size_histogram
+from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct patching
+    Receiver,
+)
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
-
 from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer
 from typing_extensions import Self
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.actor import (
+        PortProtocol,
+        QueuedMessage,
+    )
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
-    from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+        PortHandle,
+        PortReceiverBase,
+    )
     from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
 from monarch._src.actor.telemetry import get_monarch_tracer
 
@@ -228,6 +239,14 @@ class Instance(abc.ABC):
 
     def __repr__(self) -> str:
         return _qualified_name(self)
+
+    @abstractmethod
+    def abort(self, reason: Optional[str] = None) -> None:
+        """
+        Abort the current actor. This will cause the actor to terminate
+        with a failure, and a supervision error will propagate to its creator.
+        """
+        ...
 
 
 @dataclass
@@ -597,17 +616,38 @@ def _create_endpoint_message(
         PythonMessage ready to be sent to the actor mesh
     """
     _check_endpoint_arguments(method_name, signature, args, kwargs)
-    objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+    objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox_or_pending_pickle)
 
-    if all(not hasattr(obj, "__monarch_ref__") for obj in objects):
+    has_ref = False
+    has_pending_pickle = False
+    mailbox_or_refs = []
+    for obj in objects:
+        if isinstance(obj, PendingPickle):
+            has_pending_pickle = True
+        elif hasattr(obj, "__monarch_ref__"):
+            mailbox_or_refs.append(obj)
+            has_ref = True
+        else:
+            mailbox_or_refs.append(obj)
+
+    pending_pickle_state = None
+    if has_pending_pickle:
+        pending_pickle_state = PendingPickleState(
+            objects, _is_ref_or_mailbox_or_pending_pickle
+        )
+
+    if not has_ref:
         message = PythonMessage(
             PythonMessageKind.CallMethod(
                 method_name, None if port is None else port._port_ref
             ),
             buffer,
+            pending_pickle_state,
         )
     else:
-        message = create_actor_message(method_name, proc_mesh, buffer, objects, port)
+        message = create_actor_message(
+            method_name, proc_mesh, buffer, objects, port, pending_pickle_state
+        )
 
     return message
 
@@ -674,9 +714,11 @@ class ActorEndpoint(Endpoint[P, R]):
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
-        refs, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        refs, buffer, pending_pickle_state = _flatten_with_pending_pickle(
+            (args, kwargs)
+        )
 
-        return actor_rref(self, buffer, refs)
+        return actor_rref(self, buffer, refs, pending_pickle_state)
 
 
 @overload
@@ -950,9 +992,13 @@ class Port(Generic[R]):
         Args:
             obj: R-typed object to send.
         """
+        _, buffer, pending_pickle_state = _flatten_with_pending_pickle(obj)
+
         self._port_ref.send(
             self._instance,
-            PythonMessage(PythonMessageKind.Result(self._rank), _pickle(obj)),
+            PythonMessage(
+                PythonMessageKind.Result(self._rank), buffer, pending_pickle_state
+            ),
         )
 
     def exception(self, obj: Exception) -> None:
@@ -1236,7 +1282,7 @@ class _Actor:
                         )
                         raise
                     response_port.send(None)
-                    return None
+                    return
                 case MethodSpecifier.ReturnsResponse():
                     pass
                 case MethodSpecifier.ExplicitPort():
@@ -1309,6 +1355,7 @@ class _Actor:
                     f"Actor call {ctx.actor_instance.name}.{method_name} failed.",
                 )
             )
+            return
         except BaseException as e:
             if endpoint_span is not None:
                 endpoint_span.exit()
@@ -1327,6 +1374,7 @@ class _Actor:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
             raise
+        return
 
     def _maybe_exit_debugger(self, do_continue: bool = True) -> None:
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
@@ -1425,6 +1473,62 @@ class _Actor:
             with fake_sync_state():
                 return cleanup(exc)
 
+    async def _dispatch_loop(
+        self,
+        receiver: "Receiver[QueuedMessage]",
+        error_port: "PortHandle",
+    ) -> None:
+        """
+        Message loop for queue-dispatch mode. Called from Rust Actor::init.
+
+        Args:
+            receiver: Channel receiver for queued messages
+            error_port: Port to send errors to for actor supervision
+        """
+        while True:
+            msg = await receiver.recv()
+            try:
+                await self._handle_queued_message(msg)
+            except BaseException as e:
+                import cloudpickle
+
+                error_bytes = cloudpickle.dumps(e)
+                error_msg = PythonMessage(
+                    PythonMessageKind.Exception(rank=None),
+                    error_bytes,
+                )
+                error_port.send(msg.context.actor_instance, error_msg)
+                raise
+
+    async def _handle_queued_message(self, msg: "QueuedMessage") -> None:
+        """Handle a single queued message."""
+
+        class QueuePanicFlag:
+            """Panic flag for queue dispatch mode.
+
+            Unlike the DummyPanicFlag, this one stores the exception so it can
+            be re-raised after handle() returns, ensuring proper cleanup.
+            """
+
+            def __init__(self) -> None:
+                self.panic_exception: BaseException | None = None
+
+            def signal_panic(self, ex: BaseException) -> None:
+                self.panic_exception = ex
+
+        panic_flag = QueuePanicFlag()
+        await self.handle(
+            msg.context,
+            msg.method,
+            msg.bytes,
+            panic_flag,  # pyre-ignore[6]: QueuePanicFlag implements PanicFlag protocol
+            msg.local_state,
+            msg.response_port,
+        )
+        # If a panic was signaled, re-raise it after handle() has cleaned up
+        if panic_flag.panic_exception is not None:
+            raise panic_flag.panic_exception
+
     def __repr__(self) -> str:
         return f"_Actor(instance={self.instance!r})"
 
@@ -1439,6 +1543,22 @@ def _is_mailbox(x: object) -> bool:
 
 def _is_ref_or_mailbox(x: object) -> bool:
     return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
+
+
+def _is_ref_or_mailbox_or_pending_pickle(x: object) -> bool:
+    return _is_ref_or_mailbox(x) or isinstance(x, PendingPickle)
+
+
+def _flatten_with_pending_pickle(
+    x: object,
+) -> Tuple[List[Any], Buffer, Optional[PendingPickleState]]:
+    objs, buff = flatten(x, _is_ref_or_mailbox_or_pending_pickle)
+    pending_pickle_state = None
+    if any(isinstance(obj, PendingPickle) for obj in objs):
+        pending_pickle_state = PendingPickleState(
+            objs, _is_ref_or_mailbox_or_pending_pickle
+        )
+    return objs, buff, pending_pickle_state
 
 
 def _pickle(obj: object) -> Buffer:
@@ -1734,5 +1854,5 @@ class RootClientActor(Actor):
             ActorInitArgs(RootClientActor, None, None, RootClientActor.name, None, ()),
         )
         kwargs = {}
-        _, buffer = flatten((args, kwargs), _is_ref_or_mailbox)
+        _, buffer = flatten((args, kwargs), lambda _: False)
         return buffer

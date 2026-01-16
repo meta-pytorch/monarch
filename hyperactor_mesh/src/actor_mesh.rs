@@ -1631,7 +1631,7 @@ mod tests {
 
             // Message sized to exactly max frame length.
             let payload = Payload {
-                part: Part::from(Bytes::from(vec![0u8; 586])),
+                part: Part::from(Bytes::from(vec![0u8; 585])),
                 reply_port: reply_handle.bind(),
             };
             let frame_len = frame_length(
@@ -1651,7 +1651,7 @@ mod tests {
 
             // Message sized to max frame length + 1.
             let payload = Payload {
-                part: Part::from(Bytes::from(vec![0u8; 587])),
+                part: Part::from(Bytes::from(vec![0u8; 586])),
                 reply_port: reply_handle.bind(),
             };
             let frame_len = frame_length(
@@ -1663,7 +1663,7 @@ mod tests {
 
             // Send direct or cast. Either are guaranteed over the
             // limit and will fail.
-            if rand::thread_rng().gen_bool(0.5) {
+            if rand::rng().random_bool(0.5) {
                 dest.send(proc_mesh.client(), payload).unwrap();
             } else {
                 actor_mesh

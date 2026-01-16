@@ -33,7 +33,9 @@ class CondaEnvironment(Environment):
         if no `conda_prefix` was specified in the constructor."""
         if not self._conda_prefix:
             active_conda_prefix = utils.conda.active_env_dir()
-            assert active_conda_prefix, "No currently active conda environment. Either specify a `conda_prefix` or activate one."
+            assert active_conda_prefix, (
+                "No currently active conda environment. Either specify a `conda_prefix` or activate one."
+            )
             return active_conda_prefix
         else:
             return self._conda_prefix

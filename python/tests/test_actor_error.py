@@ -13,7 +13,8 @@ import importlib.resources
 import os
 import re
 import subprocess
-from typing import cast
+import time
+from typing import Callable, cast, Optional
 
 import monarch.actor
 import pytest
@@ -21,11 +22,11 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-from monarch._src.actor.actor_mesh import ActorMesh
+from monarch._src.actor.actor_mesh import ActorMesh, context
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import ProcMesh
-from monarch.actor import Actor, ActorError, endpoint, MeshFailure
-from monarch.config import configured
+from monarch.actor import Actor, ActorError, context, endpoint, MeshFailure
+from monarch.config import configured, parametrize_config
 
 
 @contextlib.contextmanager
@@ -134,6 +135,7 @@ def spawn_procs_on_this_host(per_host: dict[str, int]) -> ProcMesh:
     return this_host().spawn_procs(per_host)
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -158,6 +160,7 @@ async def test_actor_exception(mesh, actor_class, num_procs) -> None:
             await exception_actor.raise_exception.call()
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -182,6 +185,12 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
             exception_actor.raise_exception.call().get()
 
 
+@parametrize_config(
+    # In queue dispatch mode, __init__ exceptions become supervision errors
+    actor_queue_dispatch={
+        False,
+    }
+)
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -198,15 +207,27 @@ async def test_actor_init_exception_buggered(mesh, actor_class, num_procs) -> No
     The correct behavior here should be to raise a supervision exception.
     """
     proc = mesh({"gpus": num_procs})
-    exception_actor = proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-    with pytest.raises(ActorError, match="This is an exception from __init__"):
-        if num_procs == 1:
-            await exception_actor.noop.call_one()
-        else:
-            await exception_actor.noop.call()
+    # The exception in the constructor will be an unhandled fault by default,
+    # override this to examine the normal behavior.
+    with override_fault_hook():
+        exception_actor = proc.spawn(
+            "exception_actor", actor_class, except_on_init=True
+        )
+        with pytest.raises(ActorError, match="This is an exception from __init__"):
+            if num_procs == 1:
+                await exception_actor.noop.call_one()
+            else:
+                await exception_actor.noop.call()
+        await asyncio.sleep(3)
 
 
+@parametrize_config(
+    # In queue dispatch mode, __init__ exceptions become supervision errors
+    actor_queue_dispatch={
+        False,
+    }
+)
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -223,15 +244,103 @@ def test_actor_init_exception_sync_buggered(mesh, actor_class, num_procs) -> Non
     The correct behavior here should be to raise a supervision exception.
     """
     proc = mesh({"gpus": num_procs})
-    exception_actor = proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-    with pytest.raises(ActorError, match="This is an exception from __init__"):
-        if num_procs == 1:
-            exception_actor.noop.call_one().get()
-        else:
-            exception_actor.noop.call().get()
+    # Same reason as the async test variant.
+    with override_fault_hook():
+        exception_actor = proc.spawn(
+            "exception_actor", actor_class, except_on_init=True
+        )
+        with pytest.raises(ActorError, match="This is an exception from __init__"):
+            if num_procs == 1:
+                exception_actor.noop.call_one().get()
+            else:
+                exception_actor.noop.call().get()
+        time.sleep(3)
 
 
+@parametrize_config(actor_queue_dispatch={True})
+@pytest.mark.parametrize(
+    "mesh",
+    [spawn_procs_on_fake_host, spawn_procs_on_this_host],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+@pytest.mark.parametrize(
+    "actor_class",
+    [ExceptionActor, ExceptionActorSync],
+)
+@pytest.mark.parametrize("num_procs", [1, 2])
+async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
+    """
+    Test that exceptions raised in actor initializers are propagated as supervision faults.
+    In queue dispatch mode, __init__ exceptions become supervision errors delivered to the
+    unhandled_fault_hook.
+    """
+    faults = []
+    faulted = asyncio.Event()
+
+    def fault_hook(failure):
+        faults.append(failure)
+        if len(faults) >= num_procs:
+            faulted.set()
+
+    with override_fault_hook(fault_hook):
+        proc = mesh({"gpus": num_procs})
+        proc.spawn("exception_actor", actor_class, except_on_init=True)
+
+        # Wait for the faults to arrive at the hook
+        await asyncio.wait_for(faulted.wait(), timeout=5.0)
+
+    # Verify the fault was received
+    assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
+    for fault in faults:
+        fault_str = str(fault)
+        assert "exception_actor" in fault_str
+        assert "This is an exception from __init__" in fault_str
+
+
+@parametrize_config(actor_queue_dispatch={True})
+@pytest.mark.parametrize(
+    "mesh",
+    [spawn_procs_on_fake_host, spawn_procs_on_this_host],
+    ids=["local_proc_mesh", "distributed_proc_mesh"],
+)
+@pytest.mark.parametrize(
+    "actor_class",
+    [ExceptionActor, ExceptionActorSync],
+)
+@pytest.mark.parametrize("num_procs", [1, 2])
+def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
+    """
+    Test that exceptions raised in actor initializers are propagated as supervision faults.
+    In queue dispatch mode, __init__ exceptions become supervision errors delivered to the
+    unhandled_fault_hook.
+    """
+    import threading
+
+    faults = []
+    faulted = threading.Event()
+
+    def fault_hook(failure):
+        faults.append(failure)
+        if len(faults) >= num_procs:
+            faulted.set()
+
+    with override_fault_hook(fault_hook):
+        proc = mesh({"gpus": num_procs})
+        proc.spawn("exception_actor", actor_class, except_on_init=True)
+
+        # Wait for the faults to arrive at the hook
+        assert faulted.wait(timeout=5.0), "Timed out waiting for faults"
+
+    # Verify the fault was received
+    assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
+    for fault in faults:
+        fault_str = str(fault)
+        assert "exception_actor" in fault_str
+        assert "This is an exception from __init__" in fault_str
+
+
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -335,11 +444,13 @@ def test_proc_mesh_bootstrap_error():
 
     # Assert that the subprocess exited with a non-zero code
     assert "Started function error_bootstrap" in process.stdout.decode()
-    assert (
-        process.returncode != 0
-    ), f"Expected non-zero exit code, got {process.returncode}"
+    assert process.returncode != 0, (
+        f"Expected non-zero exit code, got {process.returncode}"
+    )
 
 
+@pytest.mark.oss_skip
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize("raise_on_getstate", [True, False])
 @pytest.mark.parametrize("raise_on_setstate", [True, False])
 @pytest.mark.parametrize("num_procs", [1, 2])
@@ -570,6 +681,7 @@ class Manager(Actor):
         return await self.workers.work.call_one()
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_errors_propagated() -> None:
     p_mesh = spawn_procs_on_this_host({"gpus": 1})
     mesh = p_mesh.spawn("manager", Manager)
@@ -581,7 +693,9 @@ async def test_errors_propagated() -> None:
     assert "value error" in str(err_info.value)
 
 
+@pytest.mark.oss_skip
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_supervision_handling() -> None:
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
@@ -663,6 +777,7 @@ class Intermediate(Actor):
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
     proc = spawn_procs_on_this_host({"gpus": 1})
 
@@ -693,6 +808,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     await intermediate_actor.forward_healthy_check.call()
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -733,6 +849,7 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
         await asyncio.sleep(5)
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "error_actor_cls",
     [ErrorActor, SyncErrorActor],
@@ -783,6 +900,7 @@ class FaultActor(Actor):
 
 
 @pytest.mark.timeout(180)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_sigsegv_handling():
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
@@ -819,6 +937,7 @@ async def test_sigsegv_handling():
     await actor.check.call()
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -852,6 +971,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
 
 
 @pytest.mark.timeout(120)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_stop() -> None:
     class Printer(Actor):
         @endpoint
@@ -954,6 +1074,7 @@ async def test_supervision_with_sending_error() -> None:
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_slice_supervision() -> None:
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
@@ -999,6 +1120,7 @@ async def test_slice_supervision() -> None:
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_mesh_slices_inherit_parent_errors() -> None:
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
@@ -1114,6 +1236,7 @@ class ErrorActorWithSupervise(ErrorActor):
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
     # TODO: When using the same proc mesh for both, it occasionally fails with:
@@ -1143,6 +1266,7 @@ async def test_supervise_callback_handled():
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_without_await_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
     # TODO: When using the same proc mesh for both, it occasionally fails with:
@@ -1172,6 +1296,7 @@ async def test_supervise_callback_without_await_handled():
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_with_mesh_ref():
     # Ensure that supervision events go to the
     pm = spawn_procs_on_this_host({"gpus": 1})
@@ -1214,6 +1339,7 @@ async def test_supervise_callback_with_mesh_ref():
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_when_procs_killed():
     pm = spawn_procs_on_this_host({"gpus": 1})
     second_mesh = spawn_procs_on_this_host({"gpus": 4})
@@ -1240,6 +1366,7 @@ async def test_supervise_callback_when_procs_killed():
 
 
 @pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_unhandled():
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
@@ -1297,3 +1424,38 @@ async def test_actor_mesh_supervision_controller_dead() -> None:
             await inner_mesh.check.call()
 
     await pm.stop()
+
+
+@pytest.mark.timeout(60)
+async def test_actor_abort() -> None:
+    class AbortActor(Actor):
+        @endpoint
+        def abort(self, reason: Optional[str] = None) -> None:
+            context().actor_instance.abort(reason)
+
+    for reason in (None, "test abort reason"):
+        fut: asyncio.Future[str] = asyncio.Future()
+
+        def make_fault_hook(
+            future: asyncio.Future[str],
+        ) -> Callable[[MeshFailure], None]:
+            loop = asyncio.get_running_loop()
+
+            def fault_hook(failure: MeshFailure) -> None:
+                report = failure.report()
+                # Due to poor test isolation, we might observe MeshFailures from
+                # other tests here, but we only care about the AbortActor.
+                if "AbortActor" in report:
+                    loop.call_soon_threadsafe(future.set_result, report)
+
+            return fault_hook
+
+        with override_fault_hook(make_fault_hook(fut)):
+            pm = this_host().spawn_procs({"gpus": 1})
+            actor = pm.spawn("abort", AbortActor)
+            # This call will succeed, but the actor will abort.
+            await actor.abort.call(reason)
+            if reason is None:
+                assert "no reason provided" in await fut
+            else:
+                assert reason in await fut

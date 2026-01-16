@@ -10,7 +10,6 @@ import pickle
 from typing import Any, Callable, cast, Coroutine, Iterable, List, TYPE_CHECKING, Union
 
 import pytest
-
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PanicFlag,
@@ -18,7 +17,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
-
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
@@ -198,12 +196,12 @@ async def verify_cast_to_call(
         rcv_ranks.append((cast_rank, root_rank))
     rcv_ranks.sort(key=lambda pair: pair[0])
     recv_cast_ranks, recv_root_ranks = zip(*rcv_ranks)
-    assert recv_root_ranks == tuple(
-        root_ranks
-    ), f"recv_root_ranks={recv_root_ranks}, root_ranks={tuple(root_ranks)}"
-    assert recv_cast_ranks == tuple(
-        range(len(root_ranks))
-    ), f"recv_cast_ranks={recv_cast_ranks}, root_ranks={tuple(root_ranks)}"
+    assert recv_root_ranks == tuple(root_ranks), (
+        f"recv_root_ranks={recv_root_ranks}, root_ranks={tuple(root_ranks)}"
+    )
+    assert recv_cast_ranks == tuple(range(len(root_ranks))), (
+        f"recv_cast_ranks={recv_cast_ranks}, root_ranks={tuple(root_ranks)}"
+    )
     # verify no more messages are received
     with pytest.raises(TimeoutError):
         await receiver.recv_task().with_timeout(1)

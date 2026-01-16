@@ -85,9 +85,9 @@ class ExecutionTimer:
             name = "default"
 
         if not cls._enable_cuda or use_cpu:
-            assert (
-                name in cls._cpu_start_times
-            ), f"No CPU start time found for {name}, did you run start()?"
+            assert name in cls._cpu_start_times, (
+                f"No CPU start time found for {name}, did you run start()?"
+            )
             start_time = cls._cpu_start_times[name].pop()
             elapsed_time_ms = (time.perf_counter() - start_time) * 1000
             with cls._lock:

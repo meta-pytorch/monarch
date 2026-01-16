@@ -14,7 +14,7 @@ configuration overrides.
 """
 
 import contextlib
-from typing import Any, Dict, Iterator
+from typing import Any, Callable, Dict, Iterator
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import (
@@ -33,6 +33,7 @@ __all__ = [
     "Encoding",
     "get_global_config",
     "get_runtime_config",
+    "parametrize_config",
 ]
 
 
@@ -76,6 +77,7 @@ def configure(
     supervision_liveness_timeout: str | None = None,
     proc_stop_max_idle: str | None = None,
     get_proc_state_max_idle: str | None = None,
+    actor_queue_dispatch: bool | None = None,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -236,6 +238,8 @@ def configure(
         params["proc_stop_max_idle"] = proc_stop_max_idle
     if get_proc_state_max_idle is not None:
         params["get_proc_state_max_idle"] = get_proc_state_max_idle
+    if actor_queue_dispatch is not None:
+        params["actor_queue_dispatch"] = actor_queue_dispatch
 
     _configure(**params)
 
@@ -290,7 +294,7 @@ def configured(**overrides) -> Iterator[Dict[str, Any]]:
       * re-applying the saved snapshot.
 
     `configured` alters the global configuration; thus other threads
-    will be subject to the overriden configuration while the context
+    will be subject to the overridden configuration while the context
     manager is active.
 
     Thus: this is intended for tests, which run as single threads;
@@ -324,3 +328,92 @@ def configured(**overrides) -> Iterator[Dict[str, Any]]:
         # Restore previous runtime
         clear_runtime_config()
         configure(**prev)
+
+
+def parametrize_config(
+    **config_options: set[Any],
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Create a pytest parametrize decorator for configuration cross-products.
+
+    This decorator runs the test function under every combination of the
+    specified configuration values. Each test invocation wraps the test body
+    in a `configured(...)` context manager with the corresponding settings.
+
+    Args:
+        **config_options: Configuration keys mapped to sets of values to test.
+            Each key should be a valid argument to `configure()`.
+
+    Returns:
+        A decorator that parametrizes and wraps the test function.
+
+    Example:
+        >>> from monarch.config import parametrize_config
+        >>>
+        >>> @parametrize_config(
+        ...     actor_queue_dispatch={True, False},
+        ...     shared_asyncio_runtime={True, False},
+        ... )
+        ... async def test_actor_feature():
+        ...     # Test runs 4 times: all combinations of the two bool options
+        ...     pass
+    """
+    import asyncio
+    import functools
+    import inspect
+    import itertools
+
+    import pytest  # pyre-ignore[21]: pytest is a test-only dependency
+
+    if not config_options:
+        raise ValueError("parametrize_config requires at least one config option")
+
+    keys = list(config_options.keys())
+    value_lists = [list(config_options[k]) for k in keys]
+    combinations = list(itertools.product(*value_lists))
+
+    # Create parameter IDs for clearer test output
+    param_ids = [
+        "-".join(f"{k}={v}" for k, v in zip(keys, combo)) for combo in combinations
+    ]
+
+    # Create the config dicts for each combination
+    config_dicts = [dict(zip(keys, combo)) for combo in combinations]
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        # Get original function's signature and add _config_overrides as first param
+        orig_sig = inspect.signature(fn)
+        new_params = [
+            inspect.Parameter(
+                "_config_overrides", inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+        ] + list(orig_sig.parameters.values())
+        new_sig = orig_sig.replace(parameters=new_params)
+
+        if asyncio.iscoroutinefunction(fn):
+
+            async def async_wrapper(
+                _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
+            ) -> Any:
+                with configured(**_config_overrides):
+                    return await fn(*args, **kwargs)
+
+            functools.update_wrapper(async_wrapper, fn)
+            async_wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
+            wrapped = async_wrapper
+        else:
+
+            def sync_wrapper(
+                _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
+            ) -> Any:
+                with configured(**_config_overrides):
+                    return fn(*args, **kwargs)
+
+            functools.update_wrapper(sync_wrapper, fn)
+            sync_wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
+            wrapped = sync_wrapper
+
+        return pytest.mark.parametrize(
+            "_config_overrides", config_dicts, ids=param_ids
+        )(wrapped)
+
+    return decorator

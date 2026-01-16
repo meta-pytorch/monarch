@@ -110,6 +110,7 @@ def test_pickle() -> None:
     host = create_local_host_mesh(
         Extent(["replicas", "hosts"], [2, 4]),
     )
+    host.initialized.get()
     _unused, pickled = flatten(host, lambda _: False)
     unpickled = unflatten(pickled.freeze(), _unused)
     assert isinstance(unpickled, HostMesh)
@@ -149,6 +150,7 @@ def test_shutdown_sliced_host_mesh_throws_exception() -> None:
 @pytest.mark.timeout(60)
 def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
     hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    hm.initialized.get()
     hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
     with pytest.raises(RuntimeError):
         hm_unpickled.shutdown().get()
@@ -206,9 +208,12 @@ def test_this_host_on_controllers_can_spawn_actual_os_processes() -> None:
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_host_meshes() -> None:
     orig_get_client_context = _client_context.get
-    with patch.object(_client_context, "get") as mock_get_client_context, patch.object(
-        monarch._src.actor.host_mesh, "create_local_host_mesh"
-    ) as mock_create_local:
+    with (
+        patch.object(_client_context, "get") as mock_get_client_context,
+        patch.object(
+            monarch._src.actor.host_mesh, "create_local_host_mesh"
+        ) as mock_create_local,
+    ):
         mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():

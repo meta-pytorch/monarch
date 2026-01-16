@@ -436,6 +436,20 @@ Runtime and Buffering
     Writes at or above this size are stored as zero-copy references.
 
 
+Actor Configuration
+-------------------
+
+``actor_queue_dispatch``
+    Enable queue-based dispatch for actor message handling.
+
+    - **Type**: ``bool``
+    - **Default**: ``False``
+    - **Environment**: ``HYPERACTOR_ACTOR_QUEUE_DISPATCH``
+
+    When ``True``, actor messages are dispatched through a queue rather than
+    directly. This can improve throughput in high-message-volume scenarios.
+
+
 Mesh Configuration
 ------------------
 

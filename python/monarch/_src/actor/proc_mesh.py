@@ -17,7 +17,6 @@ import warnings
 from contextlib import AbstractContextManager
 from functools import cache
 from pathlib import Path
-
 from typing import (
     Any,
     Awaitable,
@@ -39,7 +38,11 @@ from weakref import WeakSet
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import (
+    PendingPickle,
+    PythonTask,
+    Shared,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
     ProcMesh as HyProcMesh,
@@ -63,7 +66,6 @@ from monarch._src.actor.code_sync import (
     WorkspaceShape,
 )
 from monarch._src.actor.device_utils import _local_device_count
-
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
@@ -247,19 +249,9 @@ class ProcMesh(MeshTrait):
         host_mesh: "HostMesh",
         region: Region,
         root_region: Region,
-        _initialized_hy_proc_mesh: Optional[HyProcMesh],
         _device_mesh: Optional["DeviceMesh"] = None,
     ) -> None:
         _proc_mesh_registry.add(self)
-
-        self._initialized_proc_mesh = _initialized_hy_proc_mesh
-        if not self._initialized_proc_mesh:
-
-            async def task(hy_proc_mesh_task: Shared[HyProcMesh]) -> HyProcMesh:
-                self._initialized_proc_mesh = await hy_proc_mesh_task
-                return self._initialized_proc_mesh
-
-            hy_proc_mesh = PythonTask.from_coroutine(task(hy_proc_mesh)).spawn()
 
         self._proc_mesh = hy_proc_mesh
         self._host_mesh = host_mesh
@@ -312,25 +304,21 @@ class ProcMesh(MeshTrait):
             else self._maybe_device_mesh._new_with_shape(shape)
         )
 
-        initialized_pm: Optional[HyProcMesh] = (
-            None
-            if self._initialized_proc_mesh is None
-            else self._initialized_proc_mesh.sliced(shape.region)
-        )
+        sliced_hy_pm: Shared[HyProcMesh]
+        if (pm := self._proc_mesh.poll()) is not None:
+            sliced_hy_pm = Shared.from_value(pm.sliced(shape.region))
+        else:
 
-        async def task() -> HyProcMesh:
-            return (
-                initialized_pm
-                if initialized_pm
-                else (await self._proc_mesh).sliced(shape.region)
-            )
+            async def task() -> HyProcMesh:
+                return (await self._proc_mesh).sliced(shape.region)
+
+            sliced_hy_pm = PythonTask.from_coroutine(task()).spawn()
 
         return ProcMesh(
-            PythonTask.from_coroutine(task()).spawn(),
+            sliced_hy_pm,
             self._host_mesh,
             shape.region,
             self._root_region,
-            initialized_pm,
             _device_mesh=device_mesh,
         )
 
@@ -612,22 +600,16 @@ class ProcMesh(MeshTrait):
         region: Region,
         root_region: Region,
     ) -> "ProcMesh":
-        async def task() -> HyProcMesh:
-            return hy_proc_mesh
-
         return ProcMesh(
-            PythonTask.from_coroutine(task()).spawn(),
+            Shared.from_value(hy_proc_mesh),
             host_mesh,
             region,
             root_region,
-            _initialized_hy_proc_mesh=hy_proc_mesh,
         )
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return ProcMesh._from_initialized_hy_proc_mesh, (
-            self._initialized_proc_mesh
-            if self._initialized_proc_mesh
-            else self._proc_mesh.block_on(),
+            self._proc_mesh.poll() or PendingPickle(self._proc_mesh),
             self._host_mesh,
             self._region,
             self._root_region,

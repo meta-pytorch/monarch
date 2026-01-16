@@ -16,14 +16,12 @@ from unittest.mock import MagicMock
 
 from monarch._src.tools import commands
 from monarch._src.tools.commands import component_args_from_cli, server_ready
-
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
 )
 from monarch.tools.config.workspace import Workspace
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
-
 from torchx.specs import AppDef, AppDryRunInfo, AppState, AppStatus, Role, RoleStatus
 from torchx.specs.api import ReplicaState, ReplicaStatus
 
@@ -372,18 +370,19 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
             server(AppState.SUCCEEDED, name="123"),
         ]:
             with self.subTest(existing_state=existing_state):
-                with mock.patch(
-                    CMD_INFO,
-                    side_effect=[
-                        # -- state for slurm:///123
-                        existing_state,
-                        # -- states for (new) slurm:///456
-                        server(AppState.PENDING, name="456"),
-                        server(AppState.RUNNING, name="456"),
-                    ],
-                ) as mock_info, mock.patch(
-                    CMD_CREATE, return_value="slurm:///456"
-                ) as mock_create:
+                with (
+                    mock.patch(
+                        CMD_INFO,
+                        side_effect=[
+                            # -- state for slurm:///123
+                            existing_state,
+                            # -- states for (new) slurm:///456
+                            server(AppState.PENDING, name="456"),
+                            server(AppState.RUNNING, name="456"),
+                        ],
+                    ) as mock_info,
+                    mock.patch(CMD_CREATE, return_value="slurm:///456") as mock_create,
+                ):
                     config = Config(
                         scheduler="slurm",
                         scheduler_args={},
@@ -462,21 +461,23 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_get_or_create_force_restart(self) -> None:
-        with mock.patch(
-            CMD_INFO,
-            side_effect=[
-                # -- state for slurm:///123
-                server(AppState.RUNNING, name="123"),
-                # -- force_restart kills the server
-                server(AppState.CANCELLED, name="123"),
-                # -- states for (new) slurm:///456
-                server(AppState.SUBMITTED, name="456"),
-                server(AppState.PENDING, name="456"),
-                server(AppState.RUNNING, name="456"),
-            ],
-        ) as mock_info, mock.patch(
-            CMD_CREATE, return_value="slurm:///456"
-        ) as mock_create, mock.patch(CMD_KILL) as mock_kill:
+        with (
+            mock.patch(
+                CMD_INFO,
+                side_effect=[
+                    # -- state for slurm:///123
+                    server(AppState.RUNNING, name="123"),
+                    # -- force_restart kills the server
+                    server(AppState.CANCELLED, name="123"),
+                    # -- states for (new) slurm:///456
+                    server(AppState.SUBMITTED, name="456"),
+                    server(AppState.PENDING, name="456"),
+                    server(AppState.RUNNING, name="456"),
+                ],
+            ) as mock_info,
+            mock.patch(CMD_CREATE, return_value="slurm:///456") as mock_create,
+            mock.patch(CMD_KILL) as mock_kill,
+        ):
             config = Config(
                 scheduler="slurm",
                 scheduler_args={},

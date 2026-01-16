@@ -6,15 +6,12 @@
 
 # pyre-unsafe
 import logging
-
 import os
 import socket
-
 from abc import ABC, abstractmethod
 from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 from monarch._src.actor.shape import iter_ranks, Slices as Ranks
-
 from monarch.common import messages
 from monarch_supervisor import (
     Context,
@@ -100,8 +97,7 @@ class ProcessBackend(Backend):
                 handler(ranks, command)
 
     def CreatePipe(self, ranks: Ranks, msg: messages.CreatePipe):
-        pipe_ranks = list(enumerate(iter_ranks(ranks)))
-        for i, rank in pipe_ranks:
+        for rank in iter_ranks(ranks):
             # In general, pipes on different workers may need to have different behavior.
             # For example, two data loader pipes operating on the same dataset should
             # load different shards of the dataset. In order to do this, each pipe process

@@ -108,6 +108,7 @@ fn pickle_python_result(
             rank: Some(worker_rank),
         },
         data.take_part(),
+        None,
     ))
 }
 
@@ -978,7 +979,7 @@ impl StreamActor {
 
         let broker = BrokerId::new(params.broker_id).resolve(cx).await;
         broker
-            .send(message)
+            .send(cx, message)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
         let result = recv
             .recv()

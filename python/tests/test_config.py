@@ -10,7 +10,6 @@ import contextlib
 
 import monarch
 import pytest
-
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_host
@@ -340,6 +339,8 @@ def test_integer_params(param_name, test_value, default_value):
         # Logging config
         ("force_file_log", False),
         ("prefix_with_rank", True),
+        # Actor queue dispatch
+        ("actor_queue_dispatch", False),
     ],
 )
 def test_boolean_params(param_name, default_value):
@@ -447,6 +448,8 @@ def test_all_params_together():
         # Host mesh timeouts
         proc_stop_max_idle="45s",
         get_proc_state_max_idle="90s",
+        # Actor queue dispatch
+        actor_queue_dispatch=True,
     ) as config:
         # Verify all values are set correctly
         assert config["process_exit_timeout"] == "20s"
@@ -476,6 +479,7 @@ def test_all_params_together():
         assert config["supervision_liveness_timeout"] == "1m 30s"
         assert config["proc_stop_max_idle"] == "45s"
         assert config["get_proc_state_max_idle"] == "1m 30s"
+        assert config["actor_queue_dispatch"] is True
 
     # Verify all values are restored to defaults
     config = get_global_config()
@@ -506,6 +510,7 @@ def test_all_params_together():
     assert config["supervision_liveness_timeout"] == "30s"
     assert config["proc_stop_max_idle"] == "30s"
     assert config["get_proc_state_max_idle"] == "1m"
+    assert config["actor_queue_dispatch"] is False
 
 
 def test_params_type_errors():

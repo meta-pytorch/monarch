@@ -328,9 +328,14 @@ pub enum ActorErrorKind {
     /// An error that occurred while trying to handle a supervision event.
     #[error("{0} while handling {1}")]
     ErrorDuringHandlingSupervision(String, Box<ActorSupervisionEvent>),
+
     /// The actor did not attempt to handle
     #[error("{0}")]
     UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
+
+    /// The actor was explicitly aborted with the provided reason.
+    #[error("actor explicitly aborted due to: {0}")]
+    Aborted(String),
 }
 
 impl ActorErrorKind {
@@ -443,6 +448,11 @@ pub enum Signal {
 
     /// The direct child with the given PID was stopped.
     ChildStopped(Index),
+
+    /// Abort the actor. This will exit the actor loop with an error,
+    /// causing a supervision event to propagate up the supervision
+    /// hierarchy.
+    Abort(String),
 }
 wirevalue::register_type!(Signal);
 
@@ -452,6 +462,7 @@ impl fmt::Display for Signal {
             Signal::DrainAndStop => write!(f, "DrainAndStop"),
             Signal::Stop => write!(f, "Stop"),
             Signal::ChildStopped(index) => write!(f, "ChildStopped({})", index),
+            Signal::Abort(reason) => write!(f, "Abort({})", reason),
         }
     }
 }
@@ -628,7 +639,12 @@ impl<A: Actor> ActorHandle<A> {
 
     /// Send a message to the actor. Messages sent through the handle
     /// are always queued in process, and do not require serialization.
-    pub fn send<M: Message>(&self, message: M) -> Result<(), MailboxSenderError>
+    pub fn send<M: Message>(
+        &self,
+        // TODO(pzhang): use this parameter to generate sequence number.
+        _cx: &impl context::Actor,
+        message: M,
+    ) -> Result<(), MailboxSenderError>
     where
         A: Handler<M>,
     {
@@ -789,11 +805,11 @@ mod tests {
     #[tokio::test]
     async fn test_server_basic() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
-        handle.send(123u64).unwrap();
+        handle.send(&client, 123u64).unwrap();
         handle.drain_and_stop().unwrap();
         handle.await;
 
@@ -803,7 +819,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_pong() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let (client, _) = proc.instance("client").unwrap();
         let (undeliverable_msg_tx, _) = client.open_port();
 
         let ping_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
@@ -814,7 +830,10 @@ mod tests {
         let (local_port, local_receiver) = client.open_once_port();
 
         ping_handle
-            .send(PingPongMessage(10, pong_handle.bind(), local_port.bind()))
+            .send(
+                &client,
+                PingPongMessage(10, pong_handle.bind(), local_port.bind()),
+            )
             .unwrap();
 
         assert!(local_receiver.recv().await.unwrap());
@@ -823,7 +842,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_pong_on_handler_error() {
         let proc = Proc::local();
-        let client = proc.attach("client").unwrap();
+        let (client, _) = proc.instance("client").unwrap();
         let (undeliverable_msg_tx, _) = client.open_port();
 
         // Need to set a supervison coordinator for this Proc because there will
@@ -842,11 +861,14 @@ mod tests {
         let (local_port, local_receiver) = client.open_once_port();
 
         ping_handle
-            .send(PingPongMessage(
-                error_ttl + 1, // will encounter an error at TTL=66
-                pong_handle.bind(),
-                local_port.bind(),
-            ))
+            .send(
+                &client,
+                PingPongMessage(
+                    error_ttl + 1, // will encounter an error at TTL=66
+                    pong_handle.bind(),
+                    local_port.bind(),
+                ),
+            )
             .unwrap();
 
         // TODO: Fix this receiver hanging issue in T200423722.
@@ -884,10 +906,10 @@ mod tests {
         let proc = Proc::local();
         let actor = InitActor(false);
         let handle = proc.spawn::<InitActor>("init", actor).unwrap();
-        let client = proc.attach("client").unwrap();
+        let (client, _) = proc.instance("client").unwrap();
 
         let (port, receiver) = client.open_once_port();
-        handle.send(port).unwrap();
+        handle.send(&client, port).unwrap();
         assert!(receiver.recv().await.unwrap());
 
         handle.drain_and_stop().unwrap();
@@ -958,12 +980,12 @@ mod tests {
             M: RemoteMessage,
             MultiActor: Handler<M>,
         {
-            self.handle.send(message).unwrap()
+            self.handle.send(&self.client, message).unwrap()
         }
 
         async fn sync(&self) {
             let (port, done) = self.client.open_once_port::<bool>();
-            self.handle.send(port).unwrap();
+            self.handle.send(&self.client, port).unwrap();
             assert!(done.recv().await.unwrap());
         }
 

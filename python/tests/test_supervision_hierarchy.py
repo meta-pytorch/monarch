@@ -14,6 +14,7 @@ from typing import Callable, Optional, TypeVar
 import monarch.actor
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch.actor import Actor, endpoint, this_host
+from monarch.config import parametrize_config
 
 
 T = TypeVar("T")
@@ -88,9 +89,9 @@ class FaultCapture:
 
     def assert_fault_occurred(self, pattern: Optional[str] = None):
         """Assert that a fault was captured, optionally checking the message."""
-        assert (
-            self.captured_failure is not None
-        ), "Expected a fault to be captured, but none occurred"
+        assert self.captured_failure is not None, (
+            "Expected a fault to be captured, but none occurred"
+        )
         if pattern:
             report = self.captured_failure.report()
             assert re.search(pattern, report), (
@@ -99,6 +100,7 @@ class FaultCapture:
             )
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 def test_actor_failure():
     """
     If an actor dies, the client should receive an unhandled fault.
@@ -110,6 +112,7 @@ def test_actor_failure():
     capture.assert_fault_occurred("This occurred because the actor itself failed\\.")
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 def test_proc_failure():
     """
     If a proc dies, the client should receive an unhandled fault.
@@ -124,6 +127,7 @@ def test_proc_failure():
     capture.assert_fault_occurred("process failure: Killed\\(sig=9\\)")
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
 def test_nested_mesh_kills_actor_actor_error():
     """
     If a nested actor errors, the fault should propagate to the client.
