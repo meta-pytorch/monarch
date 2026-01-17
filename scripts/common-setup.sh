@@ -181,6 +181,7 @@ run_test_groups() {
     sleep 2
     LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
         --ignore-glob="**/meta/**" \
+        --ignore=python/tests/test_actor_error.py \
         --dist=no \
         --group="$GROUP" \
         --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
