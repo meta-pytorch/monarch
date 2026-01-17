@@ -229,7 +229,7 @@ class Net(nn.Module):
     def __init__(self):
         super().__init__()
         layers = []
-        for x in range(8):
+        for _ in range(8):
             layers.append(nn.Linear(4, 4))
             layers.append(nn.ReLU())
         self.layers = nn.Sequential(*layers)
