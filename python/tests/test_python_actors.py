@@ -26,6 +26,7 @@ from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 
+import cloudpickle
 import monarch.actor
 import pytest
 import torch
@@ -40,7 +41,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.allocator import ProcessAllocator
@@ -53,7 +54,11 @@ from monarch._src.actor.host_mesh import (
     this_host,
     this_proc,
 )
-from monarch._src.actor.proc_mesh import _get_bootstrap_args, get_or_spawn_controller
+from monarch._src.actor.proc_mesh import (
+    _get_bootstrap_args,
+    get_or_spawn_controller,
+    HyProcMesh,
+)
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch.actor import (
     Accumulator,
@@ -1272,6 +1277,7 @@ def test_mesh_len():
     assert 12 == len(s)
 
 
+@pytest.mark.oss_skip
 def test_long_endpoint_completes() -> None:
     """Tests that a mesh with endpoints that take a long time to complete still
     complete and don't hit supervision errors"""
@@ -1837,3 +1843,19 @@ def test_get_or_spawn_controller_on_unpickled_proc_mesh():
     child_pm = this_host().spawn_procs(per_host={"procs": 1})
     my_actor.register_pm.call(child_pm).get()
     assert my_actor.spawn_and_get_from_store.call_one(ChildActor, "a").get() == 1
+
+
+@pytest.mark.timeout(60)
+def test_raw_actor_mesh_pickle_blocks_on_proc_mesh_init() -> None:
+    async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
+        time.sleep(15)
+        return await pm
+
+    proc_mesh = this_host().spawn_procs(name="test_proc")
+    proc_mesh._proc_mesh = PythonTask.from_coroutine(
+        sleep_then_mesh(proc_mesh._proc_mesh)
+    ).spawn()
+    actor_mesh = proc_mesh.spawn("test", Hello)
+    assert proc_mesh._proc_mesh.poll() is None
+    cloudpickle.dumps(actor_mesh)
+    assert proc_mesh._proc_mesh.poll() is not None

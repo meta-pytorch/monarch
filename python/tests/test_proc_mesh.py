@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 
-import asyncio
 import os
 import threading
 import time
@@ -345,3 +344,18 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
     assert proc_mesh._proc_mesh.poll() is None
     proc_mesh.spawn("pid", PidActor)
     assert proc_mesh._proc_mesh.poll() is None
+
+
+@pytest.mark.timeout(60)
+def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
+    async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
+        time.sleep(15)
+        return await pm
+
+    proc_mesh = this_host().spawn_procs(name="test_proc")
+    proc_mesh._proc_mesh = PythonTask.from_coroutine(
+        sleep_then_mesh(proc_mesh._proc_mesh)
+    ).spawn()
+    assert proc_mesh._proc_mesh.poll() is None
+    cloudpickle.dumps(proc_mesh)
+    assert proc_mesh._proc_mesh.poll() is not None

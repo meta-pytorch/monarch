@@ -28,6 +28,7 @@ use hyperactor_mesh::reference::ActorMeshRef;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::shared_cell::SharedCellRef;
+use monarch_types::py_global;
 use ndslice::Selection;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
@@ -53,9 +54,16 @@ use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
+use crate::runtime::signal_safe_block_on;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
+
+py_global!(
+    is_pending_pickle_allowed,
+    "monarch._src.actor.pickle",
+    "is_pending_pickle_allowed"
+);
 
 /// Trait defining the common interface for actor mesh, mesh ref and actor mesh implementations.
 /// This corresponds to the Python ActorMeshProtocol ABC.
@@ -697,6 +705,10 @@ impl ActorMeshProtocol for AsyncActorMesh {
         match fut.peek().cloned() {
             Some(mesh) => mesh?.__reduce__(py),
             None => {
+                if !is_pending_pickle_allowed(py).call0()?.is_truthy()? {
+                    return signal_safe_block_on(py, fut)??.__reduce__(py);
+                }
+
                 let ident = py
                     .import("monarch._rust_bindings.monarch_hyperactor.actor_mesh")?
                     .getattr("py_identity")?;

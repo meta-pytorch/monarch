@@ -30,6 +30,7 @@ from monarch._src.actor.allocator import (
     ProcessAllocator,
 )
 from monarch._src.actor.future import Future
+from monarch._src.actor.pickle import is_pending_pickle_allowed
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch.tools.config.workspace import Workspace
@@ -262,7 +263,12 @@ class HostMesh(MeshTrait):
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return HostMesh._from_initialized_hy_host_mesh, (
-            self._hy_host_mesh.poll() or PendingPickle(self._hy_host_mesh),
+            self._hy_host_mesh.poll()
+            or (
+                PendingPickle(self._hy_host_mesh)
+                if is_pending_pickle_allowed()
+                else self._hy_host_mesh.block_on()
+            ),
             self._region,
             self.stream_logs,
             self.is_fake_in_process,
