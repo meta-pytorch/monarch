@@ -28,6 +28,7 @@ use hyperactor::context;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -79,12 +80,6 @@ struct HealthState {
     owner: Option<PortRef<MeshFailure>>,
     /// A set of subscribers to send messages to when events are encountered.
     subscribers: HashSet<PortRef<Option<MeshFailure>>>,
-    /// A set of subscribers that are known to be undeliverable to. This is used
-    /// to avoid causing errors in handle_undeliverable_message, and is cleared
-    /// before a the set of subscribers is sent to.
-    /// This should only be queried by handle_undeliverable_message, and not used
-    /// to prevent sending messages. A port id may be reused later.
-    undeliverable_subscribers: HashSet<PortRef<Option<MeshFailure>>>,
 }
 
 impl HealthState {
@@ -98,7 +93,6 @@ impl HealthState {
             crashed_ranks: HashMap::new(),
             owner,
             subscribers: HashSet::new(),
-            undeliverable_subscribers: HashSet::new(),
         }
     }
 }
@@ -193,12 +187,20 @@ impl<A: Referable> ActorMeshController<A> {
     }
 }
 
+declare_attrs! {
+    /// If present in a message header, the message is from an ActorMeshController
+    /// to a subscriber and can be safely dropped if it is returned as undeliverable.
+    pub attr ACTOR_MESH_SUBSCRIBER_MESSAGE: bool;
+}
+
 fn send_subscriber_message(
     cx: &impl context::Actor,
     subscriber: &PortRef<Option<MeshFailure>>,
     message: MeshFailure,
 ) {
-    if let Err(error) = subscriber.send(cx, Some(message.clone())) {
+    let mut headers = Attrs::new();
+    headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
+    if let Err(error) = subscriber.send_with_headers(cx, headers, Some(message.clone())) {
         tracing::warn!(
             event = %message,
             "failed to send supervision event to subscriber {}: {}",
@@ -229,7 +231,12 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         // of a mesh will still return any failed state.
         self.monitor = Some(());
         self.self_check_state_message(this)?;
-        tracing::info!(actor = %this.self_id(), "started mesh controller for {}", self.mesh.name());
+        let owner = if let Some(owner) = &self.health_state.owner {
+            owner.to_string()
+        } else {
+            String::from("None")
+        };
+        tracing::info!(actor_id = %this.self_id(), %owner, "started mesh controller for {}", self.mesh.name());
         Ok(())
     }
 
@@ -241,6 +248,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         // If the monitor hasn't been dropped yet, send a stop message to the
         // proc mesh.
         if self.monitor.take().is_some() {
+            tracing::info!(actor_id = %this.self_id(), actor_mesh = %self.mesh.name(), "starting cleanup for ActorMeshController, stopping actor mesh");
             self.stop(this).await?;
         }
         Ok(())
@@ -249,34 +257,28 @@ impl<A: Referable> Actor for ActorMeshController<A> {
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
-        envelope: Undeliverable<MessageEnvelope>,
+        mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        // The only part of the port that is used for equality checks is the port id,
-        // so create a new one just for the comparison.
-        let dest_port_id = envelope.clone().into_inner().dest().clone();
-        let port = PortRef::<Option<MeshFailure>>::attest(dest_port_id);
-        // If we sent a message to a subscriber that could not receive it, remove
-        // it from the subscriber set instead of generating an error.
-        let did_exist = self.health_state.subscribers.remove(&port);
-        if did_exist {
-            tracing::debug!(
-                actor = %cx.self_id(),
-                "ActorMeshController: handle_undeliverable_message: removed subscriber {} from mesh controller",
-                port.port_id()
-            );
-            // Add this to a set of ports that we know are undeliverable.
-            self.health_state.undeliverable_subscribers.insert(port);
-            Ok(())
-        } else if self.health_state.undeliverable_subscribers.contains(&port) {
-            // If this was already removed from the subscriber set, don't cause an
-            // error. We may have sent multiple messages to the same subscriber,
-            // and they all come back as undeliverable.
-            // This set is cleared periodically to avoid growing too large.
+        // Update the destination in case this was a casting message.
+        envelope = update_undeliverable_envelope_for_casting(envelope);
+        if let Some(true) = envelope.0.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
+            // Remove from the subscriber list (if it existed) so we don't
+            // send to this subscriber again.
+            // NOTE: The only part of the port that is used for equality checks is
+            // the port id, so create a new one just for the comparison.
+            let dest_port_id = envelope.0.dest().clone();
+            let port = PortRef::<Option<MeshFailure>>::attest(dest_port_id);
+            let did_exist = self.health_state.subscribers.remove(&port);
+            if did_exist {
+                tracing::debug!(
+                    actor_id = %cx.self_id(),
+                    "ActorMeshController: handle_undeliverable_message: removed subscriber {} from mesh controller",
+                    port.port_id()
+                );
+            }
             Ok(())
         } else {
-            // If the destination was a cast message, update the sender to avoid
-            // an assert from handle_undeliverable_message.
-            handle_undeliverable_message(cx, update_undeliverable_envelope_for_casting(envelope))
+            handle_undeliverable_message(cx, envelope)
         }
     }
 }
@@ -299,15 +301,20 @@ impl<A: Referable> Handler<Subscribe> for ActorMeshController<A> {
                 send_subscriber_message(cx, &message.0, msg.clone());
             }
         }
-        self.health_state.subscribers.insert(message.0);
+        let port_id = message.0.port_id().clone();
+        if self.health_state.subscribers.insert(message.0) {
+            tracing::debug!(actor_id = %cx.self_id(), num_subscribers = self.health_state.subscribers.len(), "added subscriber {} to mesh controller", port_id);
+        }
         Ok(())
     }
 }
 
 #[async_trait]
 impl<A: Referable> Handler<Unsubscribe> for ActorMeshController<A> {
-    async fn handle(&mut self, _cx: &Context<Self>, message: Unsubscribe) -> anyhow::Result<()> {
-        self.health_state.subscribers.remove(&message.0);
+    async fn handle(&mut self, cx: &Context<Self>, message: Unsubscribe) -> anyhow::Result<()> {
+        if self.health_state.subscribers.remove(&message.0) {
+            tracing::debug!(actor_id = %cx.self_id(), num_subscribers = self.health_state.subscribers.len(), "removed subscriber {} from mesh controller", message.0.port_id());
+        }
         Ok(())
     }
 }
@@ -377,12 +384,10 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
         // This message is idempotent because multiple stops only send out one
         // set of messages to subscribers.
         if self.monitor.take().is_none() {
-            tracing::debug!(actor = %cx.self_id(), %mesh_name, "duplicate stop request, actor mesh is already stopped");
+            tracing::debug!(actor_id = %cx.self_id(), actor_mesh = %mesh_name, "duplicate stop request, actor mesh is already stopped");
             return Ok(());
         }
-        // See comment in GetState, we want to keep this set pruned to be able
-        // to detect real errors.
-        self.health_state.undeliverable_subscribers.clear();
+        tracing::info!(actor_id = %cx.self_id(), actor_mesh = %mesh_name, "forwarding stop request from ActorMeshController to proc mesh");
 
         // Let the client know that the controller has stopped. Since the monitor
         // is cancelled, it will not alert the owner or the subscribers.
@@ -452,7 +457,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             }
         }
 
-        tracing::info!(actor = %cx.self_id(), %mesh_name, "stopped mesh");
+        tracing::info!(actor_id = %cx.self_id(), actor_mesh = %mesh_name, "stopped mesh");
         Ok(())
     }
 }
@@ -470,7 +475,9 @@ fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
     );
 
     for subscriber in health_state.subscribers.iter() {
-        if let Err(e) = subscriber.send(cx, None) {
+        let mut headers = Attrs::new();
+        headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
+        if let Err(e) = subscriber.send_with_headers(cx, headers, None) {
             tracing::warn!(subscriber = %subscriber.port_id(), "error sending heartbeat message: {:?}", e);
         }
     }
@@ -494,14 +501,14 @@ fn send_state_change(
     if is_failed {
         tracing::warn!(
             name = "SupervisionEvent",
-            %mesh_name,
+            actor_mesh = %mesh_name,
             %event,
             "detected supervision error on monitored mesh: name={mesh_name}",
         );
     } else {
         tracing::debug!(
             name = "SupervisionEvent",
-            %mesh_name,
+            actor_mesh = %mesh_name,
             %event,
             "detected non-error supervision event on monitored mesh: name={mesh_name}",
         );
@@ -527,7 +534,7 @@ fn send_state_change(
             if let Err(error) = owner.send(cx, failure_message.clone()) {
                 tracing::warn!(
                     name = "SupervisionEvent",
-                    %mesh_name,
+                    actor_mesh = %mesh_name,
                     %event,
                     %error,
                     "failed to send supervision event to owner {}: {}. dropping event",
@@ -535,7 +542,7 @@ fn send_state_change(
                     error
                 );
             } else {
-                tracing::info!(%mesh_name, %event, "sent supervision failure message to owner {}", owner.port_id());
+                tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_id());
             }
         }
     }
@@ -602,11 +609,6 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
         // Wait in between checking to avoid using too much network.
         let mesh = &self.mesh;
         let supervision_display_name = &self.supervision_display_name;
-        // Before sending any new messages to subscribers, purge the set of undeliverable.
-        // We are guaranteed if a subscriber is in undeliverable, it will not be in subscribers.
-        // This way we can still get some errors if we send to an actor that isn't
-        // listening.
-        self.health_state.undeliverable_subscribers.clear();
         // First check if the proc mesh is dead before trying to query their agents.
         let proc_states = mesh.proc_mesh().proc_states(cx).await;
         if let Err(e) = proc_states {
