@@ -321,6 +321,13 @@ class SPMDJob(JobTrait):
         if not status.roles or not status.roles[0].replicas:
             return "Job is RUNNING but waiting for replicas to be available"
 
+        # Check that all replicas are running (use min to find least progressive)
+        replica_state = min(r.state for r in status.roles[0].replicas)
+        if replica_state < AppState.RUNNING:
+            return f"Waiting for replicas to be RUNNING (current: {replica_state})"
+        if replica_state > AppState.RUNNING:
+            raise ValueError(f"Replica in terminal state: {replica_state}")
+
         return True
 
     def _wait_for_job_ready(self, check_interval_seconds: float = 5.0) -> None:
