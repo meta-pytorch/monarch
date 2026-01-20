@@ -146,6 +146,24 @@ def _parse_torchrun(
     return (script_args, nproc_per_node)
 
 
+def _get_worker_addr(scheduler: str, hostname: str) -> str:
+    """Build worker address for the given scheduler and hostname."""
+    if scheduler.startswith("mast"):
+        if not hostname.endswith(".facebook.com"):
+            hostname = hostname + ".facebook.com"
+        return f"metatls://{hostname}:26600"
+    else:
+        return f"tcp://{hostname}:26600"
+
+
+def _get_channel_transport(scheduler: str) -> ChannelTransport:
+    """Get channel transport for the given scheduler."""
+    if scheduler.startswith("mast"):
+        return ChannelTransport.MetaTlsWithHostname
+    else:
+        return ChannelTransport.TcpWithHostname
+
+
 def serve(
     appdef: AppDef,
     scheduler: str = "mast_conda",
@@ -201,6 +219,7 @@ def serve(
 
     # Cache original entrypoints before modifying
     original_roles = []
+    scheme = "metatls" if scheduler.startswith("mast") else "tcp"
     for role in appdef.roles:
         original_roles.append(
             {
@@ -214,8 +233,7 @@ def serve(
             "-X",
             "faulthandler",
             "-c",
-            # Use socket.getfqdn() to get FQDN - wildcard (*) causes routing failures
-            'import socket; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(ca="trust_all_connections", address=f"metatls://{socket.getfqdn()}:26600")',
+            f'import socket; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(ca="trust_all_connections", address=f"{scheme}://{{socket.getfqdn()}}:26600")',
         ]
 
     # Fall back to cwd if no workspace defined in appdef
@@ -336,13 +354,10 @@ class SPMDJob(JobTrait):
         ]
         self._hostnames = hostnames
 
-        configure(default_transport=ChannelTransport.MetaTlsWithHostname)
-        # TODO generalize away from just mast
+        configure(default_transport=_get_channel_transport(self._scheduler))
         workers = attach_to_workers(
             ca="trust_all_connections",
-            workers=[
-                f"metatls://{hostname}.facebook.com:26600" for hostname in hostnames
-            ],
+            workers=[_get_worker_addr(self._scheduler, h) for h in hostnames],
         )
 
         return JobState({"workers": workers})
