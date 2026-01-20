@@ -1028,6 +1028,19 @@ class Port(Generic[R]):
             (self._port_ref, self._rank),
         )
 
+    @property
+    def return_undeliverable(self) -> bool:
+        """Whether to return undeliverable messages to the sender. By default, this is True.
+        Setting to False means that if the user of this port cannot deliver the message, it will
+        not be returned to the sender and will be dropped. Use this sparingly as
+        it could lead to unexpected hangs instead of errors that propagate back
+        to the owner of the actor"""
+        return self._port_ref.return_undeliverable
+
+    @return_undeliverable.setter
+    def return_undeliverable(self, value: bool) -> None:
+        self._port_ref.return_undeliverable = value
+
 
 class DroppingPort:
     """
@@ -1047,6 +1060,14 @@ class DroppingPort:
         # we deliver each error exactly once, so if there is no port to respond to,
         # the error is sent to the current actor as an exception.
         raise obj from None
+
+    @property
+    def return_undeliverable(self) -> bool:
+        return True
+
+    @return_undeliverable.setter
+    def return_undeliverable(self, value: bool) -> None:
+        pass
 
 
 R = TypeVar("R")
