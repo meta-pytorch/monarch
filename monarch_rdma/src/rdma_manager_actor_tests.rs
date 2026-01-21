@@ -304,8 +304,8 @@ mod tests {
     }
 
     // Helper function to check if GPU supports P2P
-    async fn does_gpu_support_p2p() -> bool {
-        validate_execution_context().await.is_ok()
+    fn does_gpu_support_p2p() -> bool {
+        validate_execution_context().is_ok()
     }
 
     // Test that RDMA write can be performed between two actors on separate devices with CUDA.
@@ -315,7 +315,7 @@ mod tests {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
-        if !does_gpu_support_p2p().await {
+        if !does_gpu_support_p2p() {
             println!("Skipping test: GPU P2P not supported");
             return Ok(());
         }
@@ -338,7 +338,7 @@ mod tests {
             )
             .await?;
         qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
-        ring_db_gpu(&mut qp_1).await?;
+        ring_db_gpu(&qp_1).await?;
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
@@ -354,7 +354,7 @@ mod tests {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
-        if !does_gpu_support_p2p().await {
+        if !does_gpu_support_p2p() {
             println!("Skipping test: GPU P2P not supported");
             return Ok(());
         }
@@ -392,7 +392,7 @@ mod tests {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
         }
-        if !does_gpu_support_p2p().await {
+        if !does_gpu_support_p2p() {
             println!("Skipping test: GPU P2P not supported");
             return Ok(());
         }
@@ -437,7 +437,7 @@ mod tests {
             rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
         )
         .await?;
-        ring_db_gpu(&mut qp_2).await?;
+        ring_db_gpu(&qp_2).await?;
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 10).await?;
         wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
         env.verify_buffers(BSIZE, 0).await?;

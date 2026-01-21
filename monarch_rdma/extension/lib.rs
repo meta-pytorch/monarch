@@ -19,11 +19,14 @@ use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_hyperactor::v1::proc_mesh::PyProcMesh as PyProcMeshV1;
+use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::rdma_supported;
 use monarch_rdma::register_segment_scanner;
+use monarch_rdma::validate_execution_context;
+use monarch_types::py_module_add_function;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyValueError;
@@ -34,6 +37,160 @@ use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+/// Python-exposed RDMA configuration.
+///
+/// This struct exposes the commonly-used IbverbsConfig fields to Python.
+/// Fields not specified will use sensible defaults.
+#[pyclass(name = "_IbverbsConfig", module = "monarch._rust_bindings.rdma")]
+#[derive(Clone)]
+pub struct PyIbverbsConfig {
+    inner: IbverbsConfig,
+}
+
+#[pymethods]
+impl PyIbverbsConfig {
+    /// Create a new IbverbsConfig with default values.
+    ///
+    /// # Arguments
+    /// * `use_gpu_direct` - Whether to enable GPU Direct RDMA support (default: false)
+    /// * `cq_entries` - Number of completion queue entries (default: 1024)
+    /// * `max_send_wr` - Maximum outstanding send work requests (default: 512)
+    /// * `max_recv_wr` - Maximum outstanding receive work requests (default: 512)
+    /// * `max_send_sge` - Maximum scatter/gather elements in send (default: 30)
+    /// * `max_recv_sge` - Maximum scatter/gather elements in receive (default: 30)
+    /// * `retry_cnt` - Number of retry attempts (default: 7)
+    /// * `rnr_retry` - RNR retry attempts (default: 7)
+    /// * `qp_timeout` - Queue pair timeout (default: 14, 4.096µs * 2^14 = ~67ms)
+    /// * `hw_init_delay_ms` - Hardware init delay in ms (default: 2)
+    #[new]
+    #[pyo3(signature = (
+        use_gpu_direct = false,
+        cq_entries = None,
+        max_send_wr = None,
+        max_recv_wr = None,
+        max_send_sge = None,
+        max_recv_sge = None,
+        retry_cnt = None,
+        rnr_retry = None,
+        qp_timeout = None,
+        hw_init_delay_ms = None
+    ))]
+    fn new(
+        use_gpu_direct: bool,
+        cq_entries: Option<i32>,
+        max_send_wr: Option<u32>,
+        max_recv_wr: Option<u32>,
+        max_send_sge: Option<u32>,
+        max_recv_sge: Option<u32>,
+        retry_cnt: Option<u8>,
+        rnr_retry: Option<u8>,
+        qp_timeout: Option<u8>,
+        hw_init_delay_ms: Option<u64>,
+    ) -> Self {
+        let mut config = IbverbsConfig {
+            use_gpu_direct,
+            ..Default::default()
+        };
+        if let Some(v) = cq_entries {
+            config.cq_entries = v;
+        }
+        if let Some(v) = max_send_wr {
+            config.max_send_wr = v;
+        }
+        if let Some(v) = max_recv_wr {
+            config.max_recv_wr = v;
+        }
+        if let Some(v) = max_send_sge {
+            config.max_send_sge = v;
+        }
+        if let Some(v) = max_recv_sge {
+            config.max_recv_sge = v;
+        }
+        if let Some(v) = retry_cnt {
+            config.retry_cnt = v;
+        }
+        if let Some(v) = rnr_retry {
+            config.rnr_retry = v;
+        }
+        if let Some(v) = qp_timeout {
+            config.qp_timeout = v;
+        }
+        if let Some(v) = hw_init_delay_ms {
+            config.hw_init_delay_ms = v;
+        }
+        Self { inner: config }
+    }
+
+    #[getter]
+    fn use_gpu_direct(&self) -> bool {
+        self.inner.use_gpu_direct
+    }
+
+    #[getter]
+    fn cq_entries(&self) -> i32 {
+        self.inner.cq_entries
+    }
+
+    #[getter]
+    fn max_send_wr(&self) -> u32 {
+        self.inner.max_send_wr
+    }
+
+    #[getter]
+    fn max_recv_wr(&self) -> u32 {
+        self.inner.max_recv_wr
+    }
+
+    #[getter]
+    fn max_send_sge(&self) -> u32 {
+        self.inner.max_send_sge
+    }
+
+    #[getter]
+    fn max_recv_sge(&self) -> u32 {
+        self.inner.max_recv_sge
+    }
+
+    #[getter]
+    fn retry_cnt(&self) -> u8 {
+        self.inner.retry_cnt
+    }
+
+    #[getter]
+    fn rnr_retry(&self) -> u8 {
+        self.inner.rnr_retry
+    }
+
+    #[getter]
+    fn qp_timeout(&self) -> u8 {
+        self.inner.qp_timeout
+    }
+
+    #[getter]
+    fn hw_init_delay_ms(&self) -> u64 {
+        self.inner.hw_init_delay_ms
+    }
+
+    #[pyo3(name = "__repr__")]
+    fn repr(&self) -> String {
+        format!(
+            "<IbverbsConfig(use_gpu_direct={}, cq_entries={}, max_send_wr={}, max_recv_wr={}, \
+             max_send_sge={}, max_recv_sge={}, retry_cnt={}, rnr_retry={}, qp_timeout={}, \
+             hw_init_delay_ms={})>",
+            self.inner.use_gpu_direct,
+            self.inner.cq_entries,
+            self.inner.max_send_wr,
+            self.inner.max_recv_wr,
+            self.inner.max_send_sge,
+            self.inner.max_recv_sge,
+            self.inner.retry_cnt,
+            self.inner.rnr_retry,
+            self.inner.qp_timeout,
+            self.inner.hw_init_delay_ms
+        )
+    }
+}
 
 /// Segment scanner callback that uses PyTorch's memory snapshot API.
 ///
@@ -344,13 +501,22 @@ impl PyRdmaManager {
     }
     /// Creates an RDMA manager actor on the given ProcMesh (async version).
     /// Returns the actor mesh if RDMA is supported, None otherwise.
+    ///
+    /// # Arguments
+    /// * `proc_mesh` - The proc mesh to spawn the RDMA manager on
+    /// * `client` - The actor instance that will create the RDMA manager
+    /// * `config` - The IbverbsConfig to use for the RDMA manager
     #[classmethod]
+    #[pyo3(signature = (proc_mesh, client, config))]
     fn create_rdma_manager_nonblocking(
         _cls: &Bound<'_, PyType>,
         proc_mesh: &Bound<'_, PyAny>,
         client: PyInstance,
+        config: PyIbverbsConfig,
     ) -> PyResult<PyPythonTask> {
         tracing::debug!("spawning RDMA manager on target proc_mesh nodes");
+
+        let config = Some(config.inner);
 
         if let Ok(v0) = proc_mesh.downcast::<PyProcMesh>() {
             let tracked_proc_mesh = v0.borrow().try_inner()?;
@@ -358,9 +524,7 @@ impl PyRdmaManager {
                 // Spawns the `RdmaManagerActor` on the target proc_mesh.
                 // This allows the `RdmaController` to run on any node while real RDMA operations occur on appropriate hardware.
                 let actor_mesh: SharedCell<RootActorMesh<RdmaManagerActor>> = tracked_proc_mesh
-                    // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
-                    // TODO - make IbverbsConfig configurable
-                    .spawn(client.deref(), "rdma_manager", &None)
+                    .spawn(client.deref(), "rdma_manager", &config)
                     .await
                     .map_err(|err| PyException::new_err(err.to_string()))?;
 
@@ -374,9 +538,7 @@ impl PyRdmaManager {
             let proc_mesh = proc_mesh.downcast::<PyProcMeshV1>()?.borrow().mesh_ref()?;
             PyPythonTask::new(async move {
                 let actor_mesh: hyperactor_mesh::v1::ActorMesh<RdmaManagerActor> = proc_mesh
-                    // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
-                    // TODO - make IbverbsConfig configurable
-                    .spawn_service(client.deref(), "rdma_manager", &None)
+                    .spawn_service(client.deref(), "rdma_manager", &config)
                     .await
                     .map_err(|err| PyException::new_err(err.to_string()))?;
 
@@ -392,12 +554,37 @@ impl PyRdmaManager {
     }
 }
 
+/// Validates that the execution environment supports GPU Direct RDMA.
+///
+/// This checks:
+/// 1. The `nvidia_peermem` kernel module is loaded
+/// 2. The `PeerMappingOverride=1` parameter is set
+///
+/// Returns True if the environment supports GPU Direct RDMA, False otherwise.
+/// If unavailable, logs the reason via tracing::info!.
+#[pyfunction]
+fn gpu_direct_rdma_supported() -> bool {
+    match validate_execution_context() {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::info!("GPU Direct RDMA not supported: {}", e);
+            false
+        }
+    }
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the PyTorch segment scanner callback.
     // This calls torch.cuda.memory._snapshot() to get CUDA memory segments.
     register_segment_scanner(Some(pytorch_segment_scanner));
 
+    module.add_class::<PyIbverbsConfig>()?;
     module.add_class::<PyRdmaBuffer>()?;
     module.add_class::<PyRdmaManager>()?;
+    py_module_add_function!(
+        module,
+        "monarch._rust_bindings.rdma",
+        gpu_direct_rdma_supported
+    );
     Ok(())
 }
