@@ -418,7 +418,7 @@ impl Proc {
 
     /// Handle a supervision event received by the proc. Attempt to forward it to the
     /// supervision coordinator port if one is set, otherwise crash the process.
-    pub fn handle_supervision_event(&self, event: ActorSupervisionEvent) {
+    pub fn handle_unhandled_supervision_event(&self, event: ActorSupervisionEvent) {
         let result = match self.state().supervision_coordinator_port.get() {
             Some(port) => port.send(event.clone()).map_err(anyhow::Error::from),
             None => Err(anyhow::anyhow!(
@@ -1300,7 +1300,7 @@ impl<A: Actor> Instance<A> {
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
             if let Some(event) = event {
-                self.inner.proc.handle_supervision_event(event);
+                self.inner.proc.handle_unhandled_supervision_event(event);
             }
         }
     }
