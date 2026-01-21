@@ -261,7 +261,7 @@ pub type RdmaxcelSegmentScannerFn = rdmaxcel_segment_scanner_fn;
 unsafe extern "C" {
     pub fn rdmaxcel_error_string(error_code: std::os::raw::c_int) -> *const std::os::raw::c_char;
     pub fn get_cuda_pci_address_from_ptr(
-        cuda_ptr: u64,
+        cuda_ptr: CUdeviceptr,
         pci_addr_out: *mut std::os::raw::c_char,
         pci_addr_size: usize,
     ) -> std::os::raw::c_int;
