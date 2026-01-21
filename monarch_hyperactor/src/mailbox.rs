@@ -313,6 +313,16 @@ impl PythonPortRef {
     fn port_id(&self) -> PyResult<PyPortId> {
         Ok(self.inner.port_id().clone().into())
     }
+
+    #[getter]
+    fn get_return_undeliverable(&self) -> bool {
+        self.inner.get_return_undeliverable()
+    }
+
+    #[setter]
+    fn set_return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.inner.return_undeliverable(return_undeliverable);
+    }
 }
 
 impl From<PortRef<PythonMessage>> for PythonPortRef {
@@ -494,6 +504,18 @@ impl PythonOncePortRef {
     #[getter]
     fn port_id(&self) -> PyResult<PyPortId> {
         Ok(self.inner.as_ref().unwrap().port_id().clone().into())
+    }
+
+    #[getter]
+    fn get_return_undeliverable(&self) -> bool {
+        self.inner.as_ref().unwrap().get_return_undeliverable()
+    }
+
+    #[setter]
+    fn set_return_undeliverable(&mut self, return_undeliverable: bool) {
+        if let Some(ref mut inner) = self.inner {
+            inner.return_undeliverable(return_undeliverable);
+        }
     }
 }
 

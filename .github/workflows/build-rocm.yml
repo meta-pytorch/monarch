@@ -25,7 +25,7 @@ jobs:
         include:
           - name: 4xlargegpu
             runs-on: linux.rocm.gpu.gfx942.8.meta-pytorch
-            torch-spec: 'torch --index-url https://download.pytorch.org/whl/nightly/rocm7.1/'
+            torch-spec: 'torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/'
             gpu-arch-type: "rocm"
             gpu-arch-version: "7.1"
     with:

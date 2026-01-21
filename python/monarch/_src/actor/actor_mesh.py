@@ -100,7 +100,7 @@ from monarch._src.actor.metrics import endpoint_message_size_histogram
 from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct patching
     Receiver,
 )
-from monarch._src.actor.pickle import flatten, unflatten
+from monarch._src.actor.pickle import allow_pending_pickle_mesh, flatten, unflatten
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
@@ -616,7 +616,8 @@ def _create_endpoint_message(
         PythonMessage ready to be sent to the actor mesh
     """
     _check_endpoint_arguments(method_name, signature, args, kwargs)
-    objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox_or_pending_pickle)
+    with allow_pending_pickle_mesh():
+        objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox_or_pending_pickle)
 
     has_ref = False
     has_pending_pickle = False
@@ -1028,6 +1029,19 @@ class Port(Generic[R]):
             (self._port_ref, self._rank),
         )
 
+    @property
+    def return_undeliverable(self) -> bool:
+        """Whether to return undeliverable messages to the sender. By default, this is True.
+        Setting to False means that if the user of this port cannot deliver the message, it will
+        not be returned to the sender and will be dropped. Use this sparingly as
+        it could lead to unexpected hangs instead of errors that propagate back
+        to the owner of the actor"""
+        return self._port_ref.return_undeliverable
+
+    @return_undeliverable.setter
+    def return_undeliverable(self, value: bool) -> None:
+        self._port_ref.return_undeliverable = value
+
 
 class DroppingPort:
     """
@@ -1047,6 +1061,14 @@ class DroppingPort:
         # we deliver each error exactly once, so if there is no port to respond to,
         # the error is sent to the current actor as an exception.
         raise obj from None
+
+    @property
+    def return_undeliverable(self) -> bool:
+        return True
+
+    @return_undeliverable.setter
+    def return_undeliverable(self, value: bool) -> None:
+        pass
 
 
 R = TypeVar("R")
@@ -1552,7 +1574,8 @@ def _is_ref_or_mailbox_or_pending_pickle(x: object) -> bool:
 def _flatten_with_pending_pickle(
     x: object,
 ) -> Tuple[List[Any], Buffer, Optional[PendingPickleState]]:
-    objs, buff = flatten(x, _is_ref_or_mailbox_or_pending_pickle)
+    with allow_pending_pickle_mesh():
+        objs, buff = flatten(x, _is_ref_or_mailbox_or_pending_pickle)
     pending_pickle_state = None
     if any(isinstance(obj, PendingPickle) for obj in objs):
         pending_pickle_state = PendingPickleState(

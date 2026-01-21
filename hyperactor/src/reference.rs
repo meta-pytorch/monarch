@@ -1065,7 +1065,10 @@ impl<M: RemoteMessage> PortRef<M> {
     /// coerce it into OncePortRef so we can send messages to this port from
     /// APIs requires OncePortRef.
     pub fn into_once(self) -> OncePortRef<M> {
-        OncePortRef::attest(self.into_port_id())
+        let return_undeliverable = self.return_undeliverable;
+        let mut once = OncePortRef::attest(self.into_port_id());
+        once.return_undeliverable = return_undeliverable;
+        once
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1114,6 +1117,12 @@ impl<M: RemoteMessage> PortRef<M> {
     /// Convert this port into a sink that can be used to send messages using the given capability.
     pub fn into_sink<C: context::Actor>(self, cx: C) -> PortSink<C, M> {
         PortSink::new(cx, self)
+    }
+
+    /// Get whether or not messages sent to this port that are undeliverable should
+    /// be returned to the sender.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
     }
 
     /// Set whether or not messages sent to this port that are undeliverable
@@ -1208,6 +1217,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
 pub struct OncePortRef<M> {
     port_id: PortId,
     reducer_spec: Option<ReducerSpec>,
+    return_undeliverable: bool,
     phantom: PhantomData<M>,
 }
 
@@ -1216,6 +1226,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
         Self {
             port_id,
             reducer_spec: None,
+            return_undeliverable: true,
             phantom: PhantomData,
         }
     }
@@ -1226,6 +1237,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
         Self {
             port_id,
             reducer_spec,
+            return_undeliverable: true,
             phantom: PhantomData,
         }
     }
@@ -1266,8 +1278,25 @@ impl<M: RemoteMessage> OncePortRef<M> {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        cx.post(self.port_id.clone(), headers, serialized, true);
+        cx.post(
+            self.port_id.clone(),
+            headers,
+            serialized,
+            self.return_undeliverable,
+        );
         Ok(())
+    }
+
+    /// Get whether or not messages sent to this port that are undeliverable should
+    /// be returned to the sender.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
+    }
+
+    /// Set whether or not messages sent to this port that are undeliverable
+    /// should be returned to the sender.
+    pub fn return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
     }
 }
 
@@ -1276,6 +1305,7 @@ impl<M: RemoteMessage> Clone for OncePortRef<M> {
         Self {
             port_id: self.port_id.clone(),
             reducer_spec: self.reducer_spec.clone(),
+            return_undeliverable: self.return_undeliverable,
             phantom: PhantomData,
         }
     }

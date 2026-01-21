@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import argparse
 import os
 import time
 import warnings
@@ -20,23 +21,62 @@ from torchx.runner import Runner
 from torchx.specs import AppDef, AppState
 
 
+def _get_torchrun_parser() -> argparse.ArgumentParser:
+    """
+    Build argparse parser for torchrun torch/distributed/run.py arguments.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+
+    parser.add_argument("--nnodes", type=str, default="1:1")
+    parser.add_argument("--nproc-per-node", "--nproc_per_node", type=str, default="1")
+
+    parser.add_argument("--rdzv-backend", "--rdzv_backend", type=str)
+    parser.add_argument("--rdzv-endpoint", "--rdzv_endpoint", type=str)
+    parser.add_argument("--rdzv-id", "--rdzv_id", type=str)
+    parser.add_argument("--rdzv-conf", "--rdzv_conf", type=str)
+    parser.add_argument("--standalone", action="store_true")
+
+    parser.add_argument("--max-restarts", "--max_restarts", type=int)
+    parser.add_argument("--monitor-interval", "--monitor_interval", type=float)
+    parser.add_argument("--start-method", "--start_method", type=str)
+    parser.add_argument("--role", type=str)
+    parser.add_argument("-m", "--module", action="store_true")
+    parser.add_argument("--no-python", "--no_python", action="store_true")
+    parser.add_argument("--run-path", "--run_path", action="store_true")
+
+    parser.add_argument("--log-dir", "--log_dir", type=str)
+    parser.add_argument("-r", "--redirects", type=str)
+    parser.add_argument("-t", "--tee", type=str)
+    parser.add_argument("--local-ranks-filter", "--local_ranks_filter", type=str)
+
+    parser.add_argument("--node-rank", "--node_rank", type=int)
+    parser.add_argument("--master-addr", "--master_addr", type=str)
+    parser.add_argument("--master-port", "--master_port", type=int)
+    parser.add_argument("--local-addr", "--local_addr", type=str)
+
+    parser.add_argument("training_script", nargs="?")
+    parser.add_argument("training_script_args", nargs=argparse.REMAINDER)
+
+    return parser
+
+
 def _parse_torchrun(
     original_roles: List[Dict[str, Any]],
 ) -> Tuple[List[str], int]:
     """
-    Parse torchrun args to extract script/module args and nproc-per-node.
+    Parse torchrun args using argparse to match real torchrun torch/distributed/run.py behavior.
 
     The original role structure looks like:
-        {
-            'entrypoint': 'workspace/entrypoint.sh',
-            'args': ['torchrun', '--nnodes=1', '--nproc-per-node=8', '-m', 'train', '--lr', '0.001']
-        }
+    {
+        'entrypoint': 'workspace/entrypoint.sh',
+        'args': ['torchrun', '--nnodes=1', '--nproc-per-node=8', '-m', 'train', '--lr', '0.001']
+    }
 
-    Supports these patterns:
+    Supports:
         - ['torchrun', '--nproc-per-node=8', '-m', 'train', ...]
         - ['python', '-m', 'torch.distributed.run', '--nproc-per-node=8', '-m', 'train', ...]
         - ['python', '-m', 'torchrun', '--nproc-per-node=8', '-m', 'train', ...]
-        - ['python', 'train.py', ...]  (single proc)
+        - ['python', 'train.py', ...] (single proc)
 
     Returns:
         (script_args, nproc_per_node) tuple
@@ -47,6 +87,10 @@ def _parse_torchrun(
     """
     if not original_roles:
         raise ValueError("No roles provided")
+    if len(original_roles) > 1:
+        raise ValueError(
+            "Multiple roles provided. monarch.spmd supports single-role SPMD jobs"
+        )
 
     role = original_roles[0]
     full_args = role.get("args", [])
@@ -54,58 +98,70 @@ def _parse_torchrun(
     if not full_args:
         raise ValueError("Role has no args")
 
-    nproc_per_node = 1
-    script_args: List[str] = []
-
-    # Determine start index for torchrun options
-    # Handle: torchrun ..., python -m torch.distributed.run ..., python -m torchrun ...
+    # Determine where torchrun args start
     torchrun_modules = ("torch.distributed.run", "torchrun")
 
     if full_args[0] in ("torchrun", "torch.distributed.run"):
-        # Direct torchrun invocation
-        start_idx = 1
+        args_to_parse = full_args[1:]
     elif full_args[0] in ("python", "python3"):
-        # Check for python -m torch.distributed.run or python -m torchrun
         if (
             len(full_args) >= 3
             and full_args[1] == "-m"
             and full_args[2] in torchrun_modules
         ):
-            start_idx = 3  # Skip: python -m torch.distributed.run
+            args_to_parse = full_args[3:]
         else:
-            # Plain python script - no torchrun options to parse
-            start_idx = 1
+            # Plain python script - return script and args, nproc=1
+            return (list(full_args[1:]), 1)
     else:
         raise ValueError(
             f"Expected args to start with torchrun, torch.distributed.run, "
             f"python, or python3, got: {full_args[0]}"
         )
 
-    # Parse nproc-per-node from args (after start_idx)
-    for arg in full_args[start_idx:]:
-        if arg.startswith("--nproc-per-node=") or arg.startswith("--nproc_per_node="):
-            try:
-                nproc_per_node = int(arg.split("=", 1)[1])
-            except ValueError:
-                pass
-            break
+    # Parse using argparse
+    parser = _get_torchrun_parser()
+    args, _ = parser.parse_known_args(args_to_parse)
 
-    # Extract script args (skip torchrun options until we hit -m or script path)
-    i = start_idx
-    while i < len(full_args):
-        arg = full_args[i]
-        if arg == "-m":
-            script_args = list(full_args[i:])
-            break
-        elif arg.startswith("--"):
-            i += 1
-        elif arg.startswith("-") and arg != "-m":
-            i += 1
-        else:
-            script_args = list(full_args[i:])
-            break
+    # Extract nproc_per_node
+    nproc_per_node = 1
+    nproc_str = getattr(args, "nproc_per_node", "1")
+    try:
+        nproc_per_node = int(nproc_str)
+    except ValueError:
+        warnings.warn(
+            f"--nproc-per-node={nproc_str} is not an integer, defaulting to 1. "
+            f"Use an explicit integer value instead of '{nproc_str}'.",
+            stacklevel=2,
+        )
+
+    # Build script_args
+    script_args: List[str] = []
+    if args.module:
+        script_args.append("-m")
+    if args.training_script:
+        script_args.append(args.training_script)
+    script_args.extend(args.training_script_args or [])
 
     return (script_args, nproc_per_node)
+
+
+def _get_worker_addr(scheduler: str, hostname: str) -> str:
+    """Build worker address for the given scheduler and hostname."""
+    if scheduler.startswith("mast"):
+        if not hostname.endswith(".facebook.com"):
+            hostname = hostname + ".facebook.com"
+        return f"metatls://{hostname}:26600"
+    else:
+        return f"tcp://{hostname}:26600"
+
+
+def _get_channel_transport(scheduler: str) -> ChannelTransport:
+    """Get channel transport for the given scheduler."""
+    if scheduler.startswith("mast"):
+        return ChannelTransport.MetaTlsWithHostname
+    else:
+        return ChannelTransport.TcpWithHostname
 
 
 def serve(
@@ -163,6 +219,7 @@ def serve(
 
     # Cache original entrypoints before modifying
     original_roles = []
+    scheme = "metatls" if scheduler.startswith("mast") else "tcp"
     for role in appdef.roles:
         original_roles.append(
             {
@@ -176,8 +233,7 @@ def serve(
             "-X",
             "faulthandler",
             "-c",
-            # Use socket.getfqdn() to get FQDN - wildcard (*) causes routing failures
-            'import socket; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(ca="trust_all_connections", address=f"metatls://{socket.getfqdn()}:26600")',
+            f'import socket; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(ca="trust_all_connections", address=f"{scheme}://{{socket.getfqdn()}}:26600")',
         ]
 
     # Fall back to cwd if no workspace defined in appdef
@@ -265,6 +321,13 @@ class SPMDJob(JobTrait):
         if not status.roles or not status.roles[0].replicas:
             return "Job is RUNNING but waiting for replicas to be available"
 
+        # Check that all replicas are running (use min to find least progressive)
+        replica_state = min(r.state for r in status.roles[0].replicas)
+        if replica_state < AppState.RUNNING:
+            return f"Waiting for replicas to be RUNNING (current: {replica_state})"
+        if replica_state > AppState.RUNNING:
+            raise ValueError(f"Replica in terminal state: {replica_state}")
+
         return True
 
     def _wait_for_job_ready(self, check_interval_seconds: float = 5.0) -> None:
@@ -298,13 +361,10 @@ class SPMDJob(JobTrait):
         ]
         self._hostnames = hostnames
 
-        configure(default_transport=ChannelTransport.MetaTlsWithHostname)
-        # TODO generalize away from just mast
+        configure(default_transport=_get_channel_transport(self._scheduler))
         workers = attach_to_workers(
             ca="trust_all_connections",
-            workers=[
-                f"metatls://{hostname}.facebook.com:26600" for hostname in hostnames
-            ],
+            workers=[_get_worker_addr(self._scheduler, h) for h in hostnames],
         )
 
         return JobState({"workers": workers})
