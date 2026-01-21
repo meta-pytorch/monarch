@@ -497,7 +497,7 @@ impl RemoteSpawn for RdmaManagerActor {
 
         // check config and hardware support align
         if config.use_gpu_direct {
-            match validate_execution_context().await {
+            match validate_execution_context() {
                 Ok(_) => {
                     tracing::info!("GPU Direct RDMA execution context validated successfully");
                 }

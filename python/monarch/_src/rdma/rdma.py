@@ -18,7 +18,7 @@ from monarch._src.actor.proc_mesh import ProcMesh
 from typing_extensions import Self
 
 try:
-    from monarch._rust_bindings.rdma import _RdmaBuffer, _RdmaManager
+    from monarch._rust_bindings.rdma import _IbverbsConfig, _RdmaBuffer, _RdmaManager
 except ImportError as e:
     logging.error("RDMA is not available: {}".format(e))
     raise e
@@ -136,7 +136,11 @@ class RdmaController(Actor):
                 )
                 return none_throws(
                     await _RdmaManager.create_rdma_manager_nonblocking(
-                        proc_mesh_result, context().actor_instance
+                        proc_mesh_result,
+                        context().actor_instance,
+                        # Always use GPU direct RDMA if it's available on the target nodes.
+                        # It will fall back to standard CPU RDMA if GPU direct is not available.
+                        _IbverbsConfig(use_gpu_direct=True),
                     )
                 )
 

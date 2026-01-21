@@ -38,6 +38,16 @@ macro_rules! py_global {
     };
 }
 
+/// Macro to register a function to a Python module.
+#[macro_export]
+macro_rules! py_module_add_function {
+    ($mod:ident, $mod_name:literal, $fn:ident) => {
+        let f = pyo3::wrap_pyfunction!($fn, $mod)?;
+        f.setattr("__module__", $mod_name)?;
+        $mod.add_function(f)?;
+    };
+}
+
 pub trait MapPyErr<T> {
     fn map_pyerr(self) -> Result<T, PyErr>;
 }

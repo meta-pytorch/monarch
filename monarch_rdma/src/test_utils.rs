@@ -541,7 +541,7 @@ pub mod test_utils {
         let parsed_idx = idx.parse::<usize>().unwrap();
 
         if backend == "cuda" {
-            config.use_gpu_direct = validate_execution_context().await.is_ok();
+            config.use_gpu_direct = validate_execution_context().is_ok();
             eprintln!("Using GPU Direct: {}", config.use_gpu_direct);
         }
 

@@ -12,6 +12,7 @@ Monarch Actor API - Public interface for actor functionality.
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
+from monarch._rust_bindings.rdma import gpu_direct_rdma_supported
 from monarch._src.actor import config
 from monarch._src.actor.actor_mesh import (
     Accumulator,
@@ -90,4 +91,5 @@ __all__ = [
     "unhandled_fault_hook",
     "MeshFailure",
     "config",
+    "gpu_direct_rdma_supported",
 ]

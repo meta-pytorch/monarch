@@ -1415,7 +1415,7 @@ impl RdmaQueuePair {
 ///
 /// * `Ok(())` if the execution context is valid
 /// * `Err(anyhow::Error)` if the execution context is invalid
-pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
+pub fn validate_execution_context() -> Result<(), anyhow::Error> {
     // Check for nvidia peermem
     match fs::read_to_string("/proc/modules") {
         Ok(contents) => {

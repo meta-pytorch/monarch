@@ -13,15 +13,45 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 class _RdmaMemoryRegionView:
     def __init__(self, addr: int, size_in_bytes: int) -> None: ...
 
+def gpu_direct_rdma_supported() -> bool: ...
+@final
+class _IbverbsConfig:
+    use_gpu_direct: bool
+    cq_entries: int
+    max_send_wr: int
+    max_recv_wr: int
+    max_send_sge: int
+    max_recv_sge: int
+    retry_cnt: int
+    rnr_retry: int
+    qp_timeout: int
+    hw_init_delay_ms: int
+
+    def __init__(
+        self,
+        use_gpu_direct: bool = False,
+        cq_entries: int | None = None,
+        max_send_wr: int | None = None,
+        max_recv_wr: int | None = None,
+        max_send_sge: int | None = None,
+        max_recv_sge: int | None = None,
+        retry_cnt: int | None = None,
+        rnr_retry: int | None = None,
+        qp_timeout: int | None = None,
+        hw_init_delay_ms: int | None = None,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+
 @final
 class _RdmaManager:
     device: str
     def __repr__(self) -> str: ...
     @classmethod
     def create_rdma_manager_nonblocking(
-        self,
+        cls,
         proc_mesh: Any,
         client: Any,
+        config: _IbverbsConfig,
     ) -> PythonTask[_RdmaManager | None]: ...
 
 @final
