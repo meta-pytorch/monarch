@@ -312,16 +312,32 @@ _context: contextvars.ContextVar[Context] = contextvars.ContextVar(
 
 
 class _ActorFilter(logging.Filter):
+    """
+    Logging filter that adds actor context to log messages.
+
+    This filter is automatically added to all logging handlers when code runs
+    inside a Monarch actor. It prefixes log messages with the actor's identity,
+    e.g. "[actor=<root>.MyActor] my log message".
+
+    We skip empty messages because torch.compile uses them for structured trace
+    logging. If we modify those, torch's formatter fails with "expected empty
+    string for trace".
+    """
+
     def __init__(self) -> None:
         super().__init__()
 
-    def filter(self, record: Any) -> bool:
+    def filter(self, record: logging.LogRecord) -> bool:
         try:
             if not config.prefix_python_logs_with_actor:
                 return True
             ctx = _context.get(None)
             if ctx is not None:
-                record.msg = f"[actor={ctx.actor_instance}] {record.msg}"
+                actor_prefix = f"[actor={ctx.actor_instance}] "
+                record.actor_prefix = actor_prefix  # type: ignore[attr-defined]
+                # Skip empty messages (used for structured logging, e.g. torch.compile)
+                if record.msg:
+                    record.msg = f"{actor_prefix}{record.msg}"
         except Exception as e:
             warnings.warn(
                 f"failed to add monarch actor information to python logs: {e}",
