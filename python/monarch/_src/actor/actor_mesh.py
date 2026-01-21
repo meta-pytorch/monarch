@@ -79,7 +79,6 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
 )
-from monarch._rust_bindings.monarch_hyperactor.telemetry import PySpan
 from monarch._rust_bindings.monarch_hyperactor.v1.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh as HyValueMesh,
@@ -1256,9 +1255,6 @@ class _Actor:
 
         # Initialize method_name before try block so it's always defined
         method_name = method.name
-        # Initialize endpoint_span before try block so it's always defined
-        # In the case that `the_method` raises an exception, we will exit the span
-        endpoint_span: PySpan | None = None
 
         # response_port can be None. If so, then sending to port will drop the response,
         # and raise any exceptions to the caller.
@@ -1339,36 +1335,34 @@ class _Actor:
 
             if inspect.iscoroutinefunction(the_method):
                 if should_instrument:
-                    # We generally want to use the context manager for entering/exiting
-                    # spans, but we want to introduce as little overhead as possible
-                    # here so we will manually enter and exit this span.
-                    endpoint_span = PySpan(
-                        method_name, actor_id=str(ctx.actor_instance.actor_id)
-                    )
-                    result = await the_method(*args, **kwargs)
-                    endpoint_span.exit()
+                    # TODO(T12345): Replace with a lower-overhead tracing solution.
+                    # Using TRACER context manager for now to avoid thread-safety
+                    # issues with PySpan across async/await boundaries.
+                    with TRACER.start_as_current_span(
+                        method_name,
+                        attributes={"actor_id": str(ctx.actor_instance.actor_id)},
+                    ):
+                        result = await the_method(*args, **kwargs)
                 else:
                     result = await the_method(*args, **kwargs)
                 self._maybe_exit_debugger()
             else:
                 with fake_sync_state():
                     if should_instrument:
-                        # We generally want to use the context manager for entering/exiting
-                        # spans, but we want to introduce as little overhead as possible
-                        # here so we will manually enter and exit this span.
-                        endpoint_span = PySpan(
-                            method_name, actor_id=str(ctx.actor_instance.actor_id)
-                        )
-                        result = the_method(*args, **kwargs)
-                        endpoint_span.exit()
+                        # TODO(T12345): Replace with a lower-overhead tracing solution.
+                        # Using TRACER context manager for now to avoid thread-safety
+                        # issues with PySpan across async/await boundaries.
+                        with TRACER.start_as_current_span(
+                            method_name,
+                            attributes={"actor_id": str(ctx.actor_instance.actor_id)},
+                        ):
+                            result = the_method(*args, **kwargs)
                     else:
                         result = the_method(*args, **kwargs)
                     self._maybe_exit_debugger()
 
             response_port.send(result)
         except Exception as e:
-            if endpoint_span is not None:
-                endpoint_span.exit()
             log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
             self._post_mortem_debug(e.__traceback__)
             response_port.exception(
@@ -1379,8 +1373,6 @@ class _Actor:
             )
             return
         except BaseException as e:
-            if endpoint_span is not None:
-                endpoint_span.exit()
             self._post_mortem_debug(e.__traceback__)
             # A BaseException can be thrown in the case of a Rust panic.
             # In this case, we need a way to signal the panic to the Rust side.
