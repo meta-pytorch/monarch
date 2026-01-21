@@ -12,8 +12,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::ActorHandle;
+use crate::Instance;
 // for macros
 use crate::Message;
+use crate::Proc;
 use crate::actor::ActorStatus;
 use crate::id;
 use crate::mailbox::DeliveryError;
@@ -98,8 +101,13 @@ pub(crate) fn return_undeliverable(
     envelope: MessageEnvelope,
 ) {
     if envelope.return_undeliverable() {
+        // A global client for returning undeliverable messages.
+        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
+        let client = &CLIENT
+            .get_or_init(|| Proc::runtime().instance("global_return_client").unwrap())
+            .0;
         let envelope_copy = envelope.clone();
-        if (return_handle.send(Undeliverable(envelope))).is_err() {
+        if (return_handle.send(client, Undeliverable(envelope))).is_err() {
             UndeliverableMailboxSender.post(envelope_copy, /*unused*/ return_handle)
         }
     }
@@ -146,6 +154,9 @@ pub fn supervise_undeliverable_messages_with<R, F>(
     F: Fn(&MessageEnvelope) + Send + Sync + 'static,
 {
     crate::init::get_runtime().spawn(async move {
+        // Create a local client for this task.
+        let proc = Proc::local();
+        let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
         while let Ok(Undeliverable(mut env)) = rx.recv().await {
             // Let caller log/trace before we mutate.
             on_undeliverable(&env);
@@ -162,12 +173,15 @@ pub fn supervise_undeliverable_messages_with<R, F>(
                     let actor_id = env.dest().actor_id().clone();
                     let headers = env.headers().clone();
 
-                    if let Err(e) = sink.send(ActorSupervisionEvent::new(
-                        actor_id,
-                        None,
-                        ActorStatus::generic_failure(format!("message not delivered: {}", env)),
-                        Some(headers),
-                    )) {
+                    if let Err(e) = sink.send(
+                        &client,
+                        ActorSupervisionEvent::new(
+                            actor_id,
+                            None,
+                            ActorStatus::generic_failure(format!("message not delivered: {}", env)),
+                            Some(headers),
+                        ),
+                    ) {
                         tracing::warn!(
                             %e,
                             actor=%env.dest().actor_id(),

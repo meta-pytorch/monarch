@@ -114,7 +114,7 @@ class OncePortHandle:
     A variant of PortHandle that can only send a single message.
     """
 
-    def send(self, message: PythonMessage) -> None:
+    def send(self, instance: Instance, message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
 

@@ -479,7 +479,7 @@ pub struct GetLocalProc {
 impl Handler<GetLocalProc> for HostMeshAgent {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         GetLocalProc { proc_mesh_agent }: GetLocalProc,
     ) -> anyhow::Result<()> {
         let agent = self.local_mesh_agent.get_or_init(|| {
@@ -488,7 +488,7 @@ impl Handler<GetLocalProc> for HostMeshAgent {
 
         match agent {
             Err(e) => anyhow::bail!("error booting local proc: {}", e),
-            Ok(agent) => proc_mesh_agent.send(agent.clone())?,
+            Ok(agent) => proc_mesh_agent.send(cx, agent.clone())?,
         };
 
         Ok(())

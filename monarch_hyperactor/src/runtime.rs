@@ -16,6 +16,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
+use hyperactor::Proc;
+use hyperactor::mailbox::BoxedMailboxSender;
+use hyperactor::mailbox::PanickingMailboxSender;
+use hyperactor::reference::ProcId;
+use hyperactor::reference::id;
 use once_cell::unsync::OnceCell as UnsyncOnceCell;
 use pyo3::PyResult;
 use pyo3::Python;
@@ -75,6 +80,15 @@ pub fn shutdown_tokio_runtime(py: Python<'_>) {
             x.shutdown_timeout(Duration::from_secs(1));
         }
     });
+}
+
+/// A global runtime proc used by this crate.
+pub(crate) fn get_proc_runtime() -> &'static Proc {
+    static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
+    RUNTIME_PROC.get_or_init(|| {
+        let proc_id = ProcId::Ranked(id!(monarch_hyperactor_runtime), 0);
+        Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
+    })
 }
 
 /// Stores the native thread ID of the main Python thread.

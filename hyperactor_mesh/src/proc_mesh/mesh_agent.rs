@@ -789,11 +789,11 @@ pub struct NewClientInstance {
 impl Handler<NewClientInstance> for ProcMeshAgent {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         NewClientInstance { client_instance }: NewClientInstance,
     ) -> anyhow::Result<()> {
         let (instance, _handle) = self.proc.instance("client")?;
-        client_instance.send(instance)?;
+        client_instance.send(cx, instance)?;
         Ok(())
     }
 }
@@ -810,10 +810,10 @@ pub struct GetProc {
 impl Handler<GetProc> for ProcMeshAgent {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         GetProc { proc }: GetProc,
     ) -> anyhow::Result<()> {
-        proc.send(self.proc.clone())?;
+        proc.send(cx, self.proc.clone())?;
         Ok(())
     }
 }
