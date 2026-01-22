@@ -58,7 +58,7 @@ use crate::alloc::Alloc;
 use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
 use crate::assign::Ranks;
-use crate::comm::CommActorMode;
+use crate::comm::CommMeshConfig;
 use crate::proc_mesh::mesh_agent;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
@@ -263,7 +263,7 @@ impl ProcMesh {
             // mesh mode.
             for (rank, comm_actor) in &address_book {
                 comm_actor
-                    .send(cx, CommActorMode::Mesh(*rank, address_book.clone()))
+                    .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
                     .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
             }
 

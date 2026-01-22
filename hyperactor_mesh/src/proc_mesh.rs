@@ -77,7 +77,7 @@ use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
 use crate::alloc::ProcStopReason;
 use crate::assign::Ranks;
-use crate::comm::CommActorMode;
+use crate::comm::CommMeshConfig;
 use crate::proc_mesh::mesh_agent::GspawnResult;
 use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
@@ -566,7 +566,7 @@ impl ProcMesh {
         // mesh mode.
         for (rank, comm_actor) in comm_actors.iter().enumerate() {
             comm_actor
-                .send(&client, CommActorMode::Mesh(rank, address_book.clone()))
+                .send(&client, CommMeshConfig::new(rank, address_book.clone()))
                 .map_err(anyhow::Error::from)?;
         }
 

@@ -24,7 +24,6 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
-use hyperactor::WorldId;
 use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
@@ -83,7 +82,7 @@ struct ReceiveState {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        CommActorMode,
+        CommMeshConfig,
         CastMessage,
         ForwardMessage,
     ],
@@ -94,70 +93,37 @@ pub struct CommActor {
     /// Each sender is a unique stream.
     recv_state: HashMap<(ActorMeshId, ActorId), ReceiveState>,
 
-    /// The comm actor's mode.
-    mode: CommActorMode,
+    /// The comm actor's mesh configuration.
+    mesh_config: Option<CommMeshConfig>,
 }
 
 /// Configuration for how a `CommActor` determines its own rank and locates peers.
-///
-/// - In `Mesh` mode, the comm actor is assigned an explicit rank and a mapping to each peer by rank.
-/// - In `Implicit` mode, the comm actor infers its rank and peers from its own actor ID.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
-#[derive(Default)]
-pub enum CommActorMode {
-    /// When configured as a mesh, the comm actor is assigned a rank
-    /// and a set of references for each peer rank.
-    Mesh(usize, HashMap<usize, ActorRef<CommActor>>),
-
-    /// In an implicit mode, the comm actor derives its rank and
-    /// peers from its own ID.
-    #[default]
-    Implicit,
-
-    /// Like `Implicit`, but override the destination world id.
-    /// This is useful for setups where comm actors may not reside
-    /// in the destination world. It is meant as a temporary bridge
-    /// until we are fully onto ActorMeshes.
-    // TODO: T224926642 Remove this once we are fully onto ActorMeshes.
-    ImplicitWithWorldId(WorldId),
+pub struct CommMeshConfig {
+    /// The rank of this comm actor on the root mesh.
+    rank: usize,
+    /// Key is the rank of the peer on the root mesh. Value is the peer's comm actor.
+    peers: HashMap<usize, ActorRef<CommActor>>,
 }
-wirevalue::register_type!(CommActorMode);
+wirevalue::register_type!(CommMeshConfig);
 
-impl CommActorMode {
-    /// Return the peer comm actor for the given rank, given a self id,
-    /// destination port, and rank.
-    fn peer_for_rank(&self, self_id: &ActorId, rank: usize) -> Result<ActorRef<CommActor>> {
-        match self {
-            Self::Mesh(_self_rank, peers) => peers
-                .get(&rank)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("no peer for rank {}", rank)),
-            Self::Implicit => {
-                let world_id = self_id
-                    .proc_id()
-                    .world_id()
-                    .ok_or_else(|| anyhow::anyhow!("comm actor must be on a ranked proc"))?;
-                let proc_id = world_id.proc_id(rank);
-                let actor_id = ActorId::root(proc_id, self_id.name().to_string());
-                Ok(ActorRef::<CommActor>::attest(actor_id))
-            }
-            Self::ImplicitWithWorldId(world_id) => {
-                let proc_id = world_id.proc_id(rank);
-                let actor_id = ActorId::root(proc_id, self_id.name().to_string());
-                Ok(ActorRef::<CommActor>::attest(actor_id))
-            }
-        }
+impl CommMeshConfig {
+    /// Create a new mesh configuration with the given rank and peer mapping.
+    pub fn new(rank: usize, peers: HashMap<usize, ActorRef<CommActor>>) -> Self {
+        Self { rank, peers }
     }
 
-    /// Return the rank of the comm actor, given a self id.
-    fn self_rank(&self, self_id: &ActorId) -> Result<usize> {
-        match self {
-            Self::Mesh(rank, _) => Ok(*rank),
-            Self::Implicit | Self::ImplicitWithWorldId(_) => self_id
-                .proc_id()
-                .rank()
-                .ok_or_else(|| anyhow::anyhow!("comm actor must be on a ranked proc")),
-        }
+    /// Return the peer comm actor for the given rank.
+    fn peer_for_rank(&self, rank: usize) -> Result<ActorRef<CommActor>> {
+        self.peers
+            .get(&rank)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no peer for rank {}", rank))
+    }
+
+    /// Return the rank of the comm actor.
+    fn self_rank(&self) -> usize {
+        self.rank
     }
 }
 
@@ -244,18 +210,18 @@ impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
     fn forward(
         cx: &Instance<Self>,
-        mode: &CommActorMode,
+        config: &CommMeshConfig,
         rank: usize,
         message: ForwardMessage,
     ) -> Result<()> {
-        let child = mode.peer_for_rank(cx.self_id(), rank)?;
+        let child = config.peer_for_rank(rank)?;
         child.send(cx, message)?;
         Ok(())
     }
 
     fn handle_message(
         cx: &Context<Self>,
-        mode: &CommActorMode,
+        config: &CommMeshConfig,
         deliver_here: bool,
         next_steps: HashMap<usize, Vec<RoutingFrame>>,
         sender: ActorId,
@@ -271,7 +237,7 @@ impl CommActor {
 
         // Deliver message here, if necessary.
         if deliver_here {
-            let rank_on_root_mesh = mode.self_rank(cx.self_id())?;
+            let rank_on_root_mesh = config.self_rank();
             let cast_rank = message.relative_rank(rank_on_root_mesh)?;
             let cast_shape = message.shape();
             let cast_point = cast_shape
@@ -301,7 +267,7 @@ impl CommActor {
                 let last_seq = last_seqs.entry(peer).or_default();
                 Self::forward(
                     cx,
-                    mode,
+                    config,
                     peer,
                     ForwardMessage {
                         dests,
@@ -375,9 +341,9 @@ fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyh
 }
 
 #[async_trait]
-impl Handler<CommActorMode> for CommActor {
-    async fn handle(&mut self, _cx: &Context<Self>, mode: CommActorMode) -> Result<()> {
-        self.mode = mode;
+impl Handler<CommMeshConfig> for CommActor {
+    async fn handle(&mut self, _cx: &Context<Self>, config: CommMeshConfig) -> Result<()> {
+        self.mesh_config = Some(config);
         Ok(())
     }
 }
@@ -407,16 +373,17 @@ impl Handler<CastMessage> for CommActor {
             last_seq,
         };
 
+        let config = self
+            .mesh_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CommMeshConfig has not been set yet"))?;
+
         // Optimization: if forwarding to ourselves, handle inline instead of
         // going through the message queue
-        if self
-            .mode
-            .self_rank(cx.self_id())
-            .is_ok_and(|self_rank| self_rank == rank)
-        {
+        if config.self_rank() == rank {
             Handler::<ForwardMessage>::handle(self, cx, fwd_message).await?;
         } else {
-            Self::forward(cx, &self.mode, rank, fwd_message)?;
+            Self::forward(cx, config, rank, fwd_message)?;
         }
         Ok(())
     }
@@ -434,8 +401,13 @@ impl Handler<ForwardMessage> for CommActor {
             last_seq,
         } = fwd_message;
 
+        let config = self
+            .mesh_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CommMeshConfig has not been set yet"))?;
+
         // Resolve/dedup routing frames.
-        let rank = self.mode.self_rank(cx.self_id())?;
+        let rank = config.self_rank();
         let (deliver_here, next_steps) =
             ndslice::selection::routing::resolve_routing(rank, dests, &mut |_| {
                 panic!("Choice encountered in CommActor routing")
@@ -448,7 +420,7 @@ impl Handler<ForwardMessage> for CommActor {
                 // We got an in-order operation, so handle it now.
                 Self::handle_message(
                     cx,
-                    &self.mode,
+                    config,
                     deliver_here,
                     next_steps,
                     sender.clone(),
@@ -469,7 +441,7 @@ impl Handler<ForwardMessage> for CommActor {
                 {
                     Self::handle_message(
                         cx,
-                        &self.mode,
+                        config,
                         deliver_here,
                         next_steps,
                         sender.clone(),
