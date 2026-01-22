@@ -44,10 +44,14 @@ pub struct Uslice {
 }
 
 /// An envelope that carries a message destined to a group of actors.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+#[derive(Debug, Serialize, Deserialize, Clone, Named)]
 pub struct CastMessageEnvelope {
     /// The destination actor mesh id.
     actor_mesh_id: ActorMeshId,
+    /// Headers that should be added to all messages sent between cast tree
+    /// nodes. Specifically, this includes source->comm, comm->comm, and
+    /// comm->dest.
+    header_props: Attrs,
     /// The sender of this message.
     sender: ActorId,
     /// The destination port of the message. It could match multiple actors with
@@ -66,6 +70,7 @@ impl CastMessageEnvelope {
         actor_mesh_id: ActorMeshId,
         sender: ActorId,
         shape: Shape,
+        header_props: Attrs,
         message: M,
     ) -> Result<Self, anyhow::Error>
     where
@@ -79,6 +84,7 @@ impl CastMessageEnvelope {
         };
         Ok(Self {
             actor_mesh_id,
+            header_props,
             sender,
             dest_port: DestinationPort::new::<A, M>(actor_name),
             data,
@@ -94,11 +100,13 @@ impl CastMessageEnvelope {
         sender: ActorId,
         dest_port: DestinationPort,
         shape: Shape,
+        header_props: Attrs,
         data: wirevalue::Any,
     ) -> Self {
         Self {
             actor_mesh_id,
             sender,
+            header_props,
             dest_port,
             data: ErasedUnbound::new(data),
             shape,
@@ -107,6 +115,10 @@ impl CastMessageEnvelope {
 
     pub(crate) fn sender(&self) -> &ActorId {
         &self.sender
+    }
+
+    pub(crate) fn header_props(&self) -> &Attrs {
+        &self.header_props
     }
 
     pub(crate) fn dest_port(&self) -> &DestinationPort {

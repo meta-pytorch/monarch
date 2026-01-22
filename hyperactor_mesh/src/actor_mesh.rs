@@ -139,10 +139,13 @@ where
         "message_variant" => message.arm().unwrap_or_default(),
     ));
 
+    let mut header_props = Attrs::new();
+    header_props.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
     let message = CastMessageEnvelope::new::<A, M>(
-        actor_mesh_id.clone(),
+        actor_mesh_id,
         cx.mailbox().actor_id().clone(),
         cast_mesh_shape.clone(),
+        header_props.clone(),
         message,
     )?;
 
@@ -180,12 +183,10 @@ where
         message,
     };
 
-    let mut headers = Attrs::new();
-    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
-
+    // header_props needs to be set for source->comm message too.
     comm_actor_ref
         .port()
-        .send_with_headers(cx, headers, cast_message)?;
+        .send_with_headers(cx, header_props, cast_message)?;
 
     Ok(())
 }
