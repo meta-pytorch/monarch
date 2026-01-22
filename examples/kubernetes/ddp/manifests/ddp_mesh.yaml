@@ -1,0 +1,118 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# MonarchMesh CRD for DDP training example.
+# Provisions GPU-enabled worker pods for distributed data parallel training.
+#
+# Prerequisites:
+# - Kubernetes cluster with Monarch operator installed
+# - GPU nodes with nvidia.com/gpu resources available
+# - monarch-tests namespace created
+---
+# ServiceAccount for the controller pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+---
+# Role granting permission to list and get pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# Bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+subjects:
+  - kind: ServiceAccount
+    name: ddp-controller
+    namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: ddp-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: monarch.pytorch.org/v1alpha1
+kind: MonarchMesh
+metadata:
+  name: ddpmesh
+  namespace: monarch-tests
+spec:
+  # Number of worker pods (hosts) in the mesh
+  replicas: 2
+
+  # Port for Monarch worker communication
+  port: 26600
+
+  podTemplate:
+    containers:
+    - name: worker
+      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+
+      resources:
+        limits:
+          nvidia.com/gpu: 4
+        requests:
+          nvidia.com/gpu: 4
+
+      env:
+        - name: MONARCH_PORT
+          value: "26600"
+
+      command:
+        - python
+        - -u
+        - -c
+        - |
+          import os
+          import socket
+          import logging
+          from monarch.actor import run_worker_loop_forever
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("monarch-worker")
+          port = os.environ.get("MONARCH_PORT", "26600")
+          # Use FQDN for cross-pod DNS resolution
+          hostname = socket.getfqdn()
+          address = f"tcp://{hostname}:{port}"
+          logger.info(f"--- Starting Monarch Worker ---")
+          logger.info(f"Identity: {hostname}")
+          logger.info(f"Listening on: {address}")
+          run_worker_loop_forever(address=address, ca="trust_all_connections")
+
+      # Shared memory for NCCL (default 64MB is insufficient)
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+
+    volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "16Gi"
+---
+# Controller pod for running the DDP training script
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+spec:
+  containers:
+    - name: controller
+      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      command: ["sleep"]
+      args: ["infinity"]
+  serviceAccountName: ddp-controller
