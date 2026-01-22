@@ -10,6 +10,7 @@
 //! on a background thread, eliminating redundant capture and moving work off the application
 //! thread.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -43,7 +44,7 @@ pub(crate) enum TraceEvent {
         fields: IndexMap<String, FieldValue>,
         timestamp: SystemTime,
         parent_id: Option<u64>,
-        thread_name: String,
+        thread_name: &'static str,
         file: Option<&'static str>,
         line: Option<u32>,
     },
@@ -61,8 +62,8 @@ pub(crate) enum TraceEvent {
         fields: IndexMap<String, FieldValue>,
         timestamp: SystemTime,
         parent_span: Option<u64>,
-        thread_id: String,
-        thread_name: String,
+        thread_id: &'static str,
+        thread_name: &'static str,
         module_path: Option<&'static str>,
         file: Option<&'static str>,
         line: Option<u32>,
@@ -118,6 +119,53 @@ pub(crate) trait TraceEventSink: Send + 'static {
     fn name(&self) -> &str {
         std::any::type_name::<Self>()
     }
+}
+
+thread_local! {
+    /// Cached thread info (thread_name, thread_id) for minimal overhead.
+    /// Strings are leaked once per thread to get &'static str - threads are long-lived so this is fine.
+    /// Uses Cell since (&'static str, &'static str) is Copy.
+    static CACHED_THREAD_INFO: Cell<Option<(&'static str, &'static str)>> = const { Cell::new(None) };
+}
+
+#[inline(always)]
+fn get_thread_info() -> (&'static str, &'static str) {
+    CACHED_THREAD_INFO.with(|cache| {
+        if let Some(info) = cache.get() {
+            return info;
+        }
+
+        let thread_name: &'static str = Box::leak(
+            std::thread::current()
+                .name()
+                .unwrap_or("")
+                .to_string()
+                .into_boxed_str(),
+        );
+
+        #[cfg(target_os = "linux")]
+        let thread_id: &'static str = {
+            // SAFETY: syscall(SYS_gettid) is always safe to call - it's a read-only
+            // syscall that returns the current thread's kernel thread ID (TID).
+            // The cast to u64 is safe because gettid() returns a positive pid_t.
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) as u64 };
+            Box::leak(tid.to_string().into_boxed_str())
+        };
+        #[cfg(not(target_os = "linux"))]
+        let thread_id: &'static str = {
+            let tid = std::thread::current().id();
+            // SAFETY: ThreadId is a newtype wrapper around a u64 counter.
+            // This transmute relies on the internal representation of ThreadId,
+            // which is stable in practice but not guaranteed by Rust's API.
+            // On non-Linux platforms this is a best-effort approximation.
+            // See: https://doc.rust-lang.org/std/thread/struct.ThreadId.html
+            let tid_num = unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) };
+            Box::leak(tid_num.to_string().into_boxed_str())
+        };
+
+        cache.set(Some((thread_name, thread_id)));
+        (thread_name, thread_id)
+    })
 }
 
 /// The trace event dispatcher that captures events once and dispatches to multiple sinks
@@ -222,17 +270,7 @@ impl TraceEventDispatcher {
 
     fn send_drop_event(&self, total_dropped: u64) {
         if let Some(dropped_sender) = &self.dropped_sender {
-            #[cfg(target_os = "linux")]
-            let thread_id_num = {
-                // SAFETY: syscall(SYS_gettid) is always safe to call
-                unsafe { libc::syscall(libc::SYS_gettid) as u64 }
-            };
-            #[cfg(not(target_os = "linux"))]
-            let thread_id_num = {
-                let tid = std::thread::current().id();
-                // SAFETY: ThreadId transmute for non-Linux platforms
-                unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) }
-            };
+            let (thread_name, thread_id) = get_thread_info();
 
             let mut fields = IndexMap::new();
             fields.insert(
@@ -253,11 +291,8 @@ impl TraceEventDispatcher {
                 fields,
                 timestamp: SystemTime::now(),
                 parent_span: None,
-                thread_id: thread_id_num.to_string(),
-                thread_name: std::thread::current()
-                    .name()
-                    .unwrap_or_default()
-                    .to_string(),
+                thread_id,
+                thread_name,
                 module_path: Some(module_path!()),
                 file: Some(file!()),
                 line: Some(line!()),
@@ -302,10 +337,7 @@ where
             ctx.current_span().id().map(|id| id.into_u64())
         };
 
-        let thread_name = std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .to_string();
+        let (thread_name, _) = get_thread_info();
 
         let event = TraceEvent::NewSpan {
             id: id.into_u64(),
@@ -349,29 +381,7 @@ where
 
         let parent_span = ctx.event_span(event).map(|span| span.id().into_u64());
 
-        #[cfg(target_os = "linux")]
-        let thread_id_num = {
-            // SAFETY: syscall(SYS_gettid) is always safe to call - it's a read-only
-            // syscall that returns the current thread's kernel thread ID (TID).
-            // The cast to u64 is safe because gettid() returns a positive pid_t.
-            unsafe { libc::syscall(libc::SYS_gettid) as u64 }
-        };
-        #[cfg(not(target_os = "linux"))]
-        let thread_id_num = {
-            let tid = std::thread::current().id();
-            // SAFETY: ThreadId is a newtype wrapper around a u64 counter.
-            // This transmute relies on the internal representation of ThreadId,
-            // which is stable in practice but not guaranteed by Rust's API.
-            // On non-Linux platforms this is a best-effort approximation.
-            // See: https://doc.rust-lang.org/std/thread/struct.ThreadId.html
-            unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) }
-        };
-        let thread_id_str = thread_id_num.to_string();
-
-        let thread_name = std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .to_string();
+        let (thread_name, thread_id) = get_thread_info();
 
         let trace_event = TraceEvent::Event {
             name: metadata.name(),
@@ -380,7 +390,7 @@ where
             fields,
             timestamp: SystemTime::now(),
             parent_span,
-            thread_id: thread_id_str,
+            thread_id,
             thread_name,
             module_path: metadata.module_path(),
             file: metadata.file(),
