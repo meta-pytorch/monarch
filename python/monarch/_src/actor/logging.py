@@ -175,3 +175,16 @@ class LoggingManager:
             # accessing shared resources via logging_mesh_client. Flush works fine
             # but shared resource management under loggingMeshClient needs to be investigated
             pass
+
+    async def flush_async(self) -> None:
+        """Async version of flush for use in async contexts."""
+        if self._logging_mesh_client is None:
+            return
+        try:
+            await (
+                self._logging_mesh_client.flush(context().actor_instance._as_rust())
+                .spawn()
+                .task()
+            )
+        except Exception:
+            pass

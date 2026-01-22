@@ -492,6 +492,7 @@ mod tests {
     use crate::actor::PythonActor;
     use crate::pytokio::AwaitPyExt;
     use crate::pytokio::ensure_python;
+    use crate::runtime::monarch_with_gil;
 
     /// Bring up a minimal "world" suitable for integration-style
     /// tests.
@@ -562,13 +563,14 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding disabled)");
 
-            Python::with_gil(|py| {
+            monarch_with_gil(|py| {
                 let client_ref = client_py.borrow(py);
                 assert!(
                     client_ref.forwarder_mesh.is_none(),
                     "forwarder_mesh should be None when forwarding disabled"
                 );
-            });
+            })
+            .await;
 
             drop(client_py); // See "NOTE ON LIFECYCLE / CLEANUP"
         }
@@ -585,13 +587,14 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding enabled)");
 
-            Python::with_gil(|py| {
+            monarch_with_gil(|py| {
                 let client_ref = client_py.borrow(py);
                 assert!(
                     client_ref.forwarder_mesh.is_some(),
                     "forwarder_mesh should be Some(..) when forwarding is enabled"
                 );
-            });
+            })
+            .await;
 
             drop(client_py); // See "NOTE ON LIFECYCLE / CLEANUP"
         }
@@ -619,7 +622,7 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding disabled)");
 
-            Python::with_gil(|py| {
+            monarch_with_gil(|py| {
                 let client_ref = client_py.borrow(py);
 
                 // (a) stream_to_client = false, no aggregate window
@@ -661,7 +664,8 @@ mod tests {
                     );
                 }
                 */
-            });
+            })
+            .await;
 
             drop(client_py); // See note "NOTE ON LIFECYCLE / CLEANUP"
         }
@@ -678,7 +682,7 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding enabled)");
 
-            Python::with_gil(|py| {
+            monarch_with_gil(|py| {
                 let client_ref = client_py.borrow(py);
 
                 // (d) stream_to_client = true, aggregate_window_sec =
@@ -706,7 +710,8 @@ mod tests {
                         "unexpected err when setting window but disabling streaming: {msg}"
                     );
                 }
-            });
+            })
+            .await;
 
             drop(client_py); // See note "NOTE ON LIFECYCLE / CLEANUP"
         }
@@ -735,12 +740,13 @@ mod tests {
                 .expect("spawn failed (forwarding disabled)");
 
             // Call flush() and bring the PyPythonTask back out.
-            let flush_task = Python::with_gil(|py| {
+            let flush_task = monarch_with_gil(|py| {
                 let client_ref = client_py.borrow(py);
                 client_ref
                     .flush(&py_instance)
                     .expect("flush() PyPythonTask (forwarding disabled)")
-            });
+            })
+            .await;
 
             // Await the returned PyPythonTask's future outside the
             // GIL.
@@ -767,12 +773,13 @@ mod tests {
 
             // Call flush() to exercise the barrier path, and pull the
             // PyPythonTask out.
-            let flush_task = Python::with_gil(|py| {
+            let flush_task = monarch_with_gil(|py| {
                 client_py
                     .borrow(py)
                     .flush(&py_instance)
                     .expect("flush() PyPythonTask (forwarding enabled)")
-            });
+            })
+            .await;
 
             // Await the returned PyPythonTask's future outside the
             // GIL.

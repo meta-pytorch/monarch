@@ -17,6 +17,7 @@ use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
+use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_hyperactor::v1::proc_mesh::PyProcMesh as PyProcMeshV1;
 use monarch_rdma::RdmaBuffer;
@@ -47,6 +48,8 @@ unsafe extern "C" fn pytorch_segment_scanner(
     max_segments: usize,
 ) -> usize {
     // Acquire the GIL to call Python code
+    // Note: We use Python::with_gil here instead of monarch_with_gil_blocking because
+    // the raw pointer segments_out is not Sync and monarch_with_gil_blocking requires Send.
     let result = Python::with_gil(|py| -> PyResult<usize> {
         // Check if torch is already imported - don't import it ourselves
         let sys = py.import("sys")?;
@@ -285,7 +288,7 @@ impl PyRdmaBuffer {
     }
 
     fn __reduce__(&self) -> PyResult<(PyObject, PyObject)> {
-        Python::with_gil(|py| {
+        monarch_with_gil_blocking(|py| {
             let ctor = py.get_type::<PyRdmaBuffer>().into_py_any(py)?;
             let json = serde_json::to_string(self).map_err(|e| {
                 PyErr::new::<PyValueError, _>(format!("Serialization failed: {}", e))

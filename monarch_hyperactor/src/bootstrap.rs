@@ -27,6 +27,7 @@ use pyo3::types::PyModuleMethods;
 use pyo3::wrap_pyfunction;
 
 use crate::pytokio::PyPythonTask;
+use crate::runtime::monarch_with_gil;
 use crate::v1::host_mesh::PyHostMesh;
 
 #[pyfunction]
@@ -120,7 +121,7 @@ pub fn attach_to_workers<'py>(
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
 
-        let addresses: Result<Vec<ChannelAddr>, anyhow::Error> = Python::with_gil(|py| {
+        let addresses: Result<Vec<ChannelAddr>, anyhow::Error> = monarch_with_gil(|py| {
             results
                 .into_iter()
                 .map(|result| {
@@ -128,7 +129,8 @@ pub fn attach_to_workers<'py>(
                     ChannelAddr::from_zmq_url(&url_str)
                 })
                 .collect()
-        });
+        })
+        .await;
         let addresses = addresses?;
 
         let host_mesh = HostMesh::take(HostMeshRef::from_hosts(name, addresses));

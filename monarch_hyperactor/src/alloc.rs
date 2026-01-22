@@ -40,6 +40,8 @@ use tokio::process::Command;
 use crate::channel::PyChannelAddr;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
+use crate::runtime::monarch_with_gil;
+use crate::runtime::monarch_with_gil_blocking;
 use crate::v1::host_mesh::PyBootstrapCommand;
 
 /// Convert a PyDict to an Extent
@@ -379,15 +381,16 @@ impl PyRemoteProcessAllocInitializer {
     ///   `monarch/python/monarch/_rust_bindings/monarch_hyperactor/alloc.pyi`
     async fn py_initialize_alloc(&self) -> PyResult<Vec<String>> {
         let args = (&self.constraints.match_labels,);
-        let coro = Python::with_gil(|py| -> PyResult<PyObject> {
+        let coro = monarch_with_gil(|py| -> PyResult<PyObject> {
             self.py_inner
                 .bind(py)
                 .call_method1("initialize_alloc", args)
                 .map(|x| x.unbind())
-        })?;
+        })
+        .await?;
         let r = get_tokio_runtime().spawn_blocking(move || -> PyResult<Vec<String>> {
             // call the function as implemented in python
-            Python::with_gil(|py| {
+            monarch_with_gil_blocking(|py| {
                 let asyncio = py.import("asyncio").unwrap();
                 let addrs = asyncio.call_method1("run", (coro,))?;
                 let addrs: PyResult<Vec<String>> = addrs.extract();
@@ -464,7 +467,7 @@ impl Clone for PyRemoteAllocator {
     fn clone(&self) -> Self {
         Self {
             world_id: self.world_id.clone(),
-            initializer: Python::with_gil(|py| Py::clone_ref(&self.initializer, py)),
+            initializer: monarch_with_gil_blocking(|py| Py::clone_ref(&self.initializer, py)),
         }
     }
 }
@@ -473,7 +476,7 @@ impl Allocator for PyRemoteAllocator {
     type Alloc = RemoteProcessAlloc;
 
     async fn allocate(&mut self, spec: AllocSpec) -> Result<Self::Alloc, AllocatorError> {
-        let py_inner = Python::with_gil(|py| Py::clone_ref(&self.initializer, py));
+        let py_inner = monarch_with_gil(|py| Py::clone_ref(&self.initializer, py)).await;
         let constraints = spec.constraints.clone();
         let initializer = PyRemoteProcessAllocInitializer {
             py_inner,
@@ -487,7 +490,7 @@ impl Allocator for PyRemoteAllocator {
 
         let mut spec = spec;
         if spec.transport != transport {
-            Python::with_gil(|py| -> PyResult<()> {
+            monarch_with_gil(|py| -> PyResult<()> {
                 // TODO(slurye): Temporary until we start enforcing that people have properly
                 // configured the default transport.
                 py.import("warnings")?.getattr("warn")?.call1((format!(
@@ -503,6 +506,7 @@ impl Allocator for PyRemoteAllocator {
                 spec.transport = transport;
                 Ok(())
             })
+            .await
             .map_err(|e| AllocatorError::Other(e.into()))?;
         }
 

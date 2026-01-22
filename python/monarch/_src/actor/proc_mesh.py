@@ -567,7 +567,7 @@ class ProcMesh(MeshTrait):
 
         async def _stop_nonblocking(instance: HyInstance) -> None:
             pm = await self._proc_mesh
-            await PythonTask.spawn_blocking(lambda: self._logging_manager.flush())
+            await self._logging_manager.flush_async()
             await pm.stop_nonblocking(instance)
             self._stopped = True
 

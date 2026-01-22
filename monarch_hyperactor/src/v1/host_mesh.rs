@@ -42,6 +42,7 @@ use crate::actor::to_py_error;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
 use crate::pytokio::PyPythonTask;
+use crate::runtime::monarch_with_gil;
 use crate::shape::PyExtent;
 use crate::shape::PyRegion;
 use crate::v1::proc_mesh::PyProcMesh;
@@ -324,9 +325,10 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             .await
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let (instance, _handle) = Python::with_gil(|py| {
+        let (instance, _handle) = monarch_with_gil(|py| {
             PythonActor::bootstrap_client_inner(py, local_proc, &ROOT_CLIENT_INSTANCE_FOR_HOST)
-        });
+        })
+        .await;
 
         Ok((
             PyHostMesh::new_ref(host_mesh),

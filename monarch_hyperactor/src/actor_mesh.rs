@@ -54,6 +54,8 @@ use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
+use crate::runtime::monarch_with_gil;
+use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
@@ -358,7 +360,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
     fn stop<'py>(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
         let actor_mesh = self.inner.clone();
-        let instance = Python::with_gil(|_| instance.clone());
+        let instance = monarch_with_gil_blocking(|_| instance.clone());
         PyPythonTask::new(async move {
             let actor_mesh = actor_mesh
                 .take()
@@ -587,7 +589,7 @@ impl From<PyErr> for ClonePyErr {
 
 impl Clone for ClonePyErr {
     fn clone(&self) -> Self {
-        Python::with_gil(|py| self.inner.clone_ref(py).into())
+        monarch_with_gil_blocking(|py| self.inner.clone_ref(py).into())
     }
 }
 
@@ -668,8 +670,8 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 mesh.await?.cast(message, selection, &instance)
             }
             .await;
-            match (port, result) {
-                (Some(p), Err(pyerr)) => Python::with_gil(|py: Python<'_>| {
+            if let (Some(p), Err(pyerr)) = (port, result) {
+                let _ = monarch_with_gil(|py: Python<'_>| {
                     let port_ref = match p {
                         EitherPortRef::Once(p) => p.into_bound_py_any(py),
                         EitherPortRef::Unbounded(p) => p.into_bound_py_any(py),
@@ -681,8 +683,9 @@ impl ActorMeshProtocol for AsyncActorMesh {
                         .call_method1("Port", (port_ref, instance, 0))
                         .unwrap();
                     port.call_method1("exception", (pyerr.value(py),)).unwrap();
-                }),
-                _ => (),
+                    Ok::<_, PyErr>(())
+                })
+                .await;
             }
         });
         Ok(())
@@ -732,7 +735,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
         if !self.supervised {
             return Ok(None);
         }
-        let instance = Python::with_gil(|_py| instance.clone());
+        let instance = monarch_with_gil_blocking(|_py| instance.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mesh = self.mesh.clone();
         self.push(async move {
@@ -762,7 +765,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
             return Ok(());
         }
         let mesh = self.mesh.clone();
-        let instance = Python::with_gil(|_py| instance.clone());
+        let instance = monarch_with_gil_blocking(|_py| instance.clone());
         self.push(async move {
             let mesh = mesh.await;
             if let Ok(mesh) = mesh {
@@ -775,7 +778,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
 
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
         let mesh = self.mesh.clone();
-        let instance = Python::with_gil(|_py| instance.clone());
+        let instance = monarch_with_gil_blocking(|_py| instance.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.push(async move {
             let result = async move { mesh.await?.stop(&instance)?.take_task()?.await }.await;

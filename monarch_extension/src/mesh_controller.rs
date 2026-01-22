@@ -555,7 +555,7 @@ impl History {
 
     /// Propagate worker error to the invocation with the given Seq. This will also propagate
     /// to all seqs that depend on this seq directly or indirectly.
-    pub fn propagate_exception(
+    pub async fn propagate_exception(
         &mut self,
         sender: &impl context::Actor,
         seq: Seq,
@@ -565,34 +565,37 @@ impl History {
         // TODO: supplement PythonMessage with the stack trace we have in invocation
         let invocation = self.inflight_invocations.get(&seq).unwrap().clone();
 
-        let python_message = Arc::new(Python::with_gil(|py| {
-            let traceback = invocation
-                .lock()
-                .unwrap()
-                .tracebacks
-                .bind(py)
-                .get_item(0)
-                .unwrap();
-            let remote_exception = py
-                .import("monarch.mesh_controller")
-                .unwrap()
-                .getattr("RemoteException")
-                .unwrap();
-            let pickle = py
-                .import("monarch._src.actor.actor_mesh")
-                .unwrap()
-                .getattr("_pickle")
-                .unwrap();
-            let exe = remote_exception
-                .call1((exception.backtrace, traceback, rank))
-                .unwrap();
-            let mut data: Buffer = pickle.call1((exe,)).unwrap().extract().unwrap();
-            PythonMessage::new_from_buf(
-                PythonMessageKind::Exception { rank: Some(rank) },
-                data.take_part(),
-                None,
-            )
-        }));
+        let python_message = Arc::new(
+            monarch_hyperactor::runtime::monarch_with_gil(|py| {
+                let traceback = invocation
+                    .lock()
+                    .unwrap()
+                    .tracebacks
+                    .bind(py)
+                    .get_item(0)
+                    .unwrap();
+                let remote_exception = py
+                    .import("monarch.mesh_controller")
+                    .unwrap()
+                    .getattr("RemoteException")
+                    .unwrap();
+                let pickle = py
+                    .import("monarch._src.actor.actor_mesh")
+                    .unwrap()
+                    .getattr("_pickle")
+                    .unwrap();
+                let exe = remote_exception
+                    .call1((exception.backtrace, traceback, rank))
+                    .unwrap();
+                let mut data: Buffer = pickle.call1((exe,)).unwrap().extract().unwrap();
+                PythonMessage::new_from_buf(
+                    PythonMessageKind::Exception { rank: Some(rank) },
+                    data.take_part(),
+                    None,
+                )
+            })
+            .await,
+        );
 
         let mut invocation = invocation.lock().unwrap();
 
@@ -735,9 +738,9 @@ impl MeshControllerActor {
         self.brokers.as_ref().unwrap().borrow().unwrap()
     }
 
-    fn handle_debug(
+    async fn handle_debug(
         &mut self,
-        this: &Context<Self>,
+        this: &Context<'_, Self>,
         debugger_actor_id: ActorId,
         action: DebuggerAction,
     ) -> anyhow::Result<()> {
@@ -757,7 +760,7 @@ impl MeshControllerActor {
                     self.debugger_active = None;
                 }
                 DebuggerAction::Read { requested_size } => {
-                    Python::with_gil(|py| {
+                    monarch_hyperactor::runtime::monarch_with_gil(|py| {
                         let read = py
                             .import("monarch.controller.debugger")
                             .unwrap()
@@ -772,18 +775,22 @@ impl MeshControllerActor {
                                 action: DebuggerAction::Write { bytes },
                             },
                         )
-                    })?;
+                    })
+                    .await?;
                 }
                 DebuggerAction::Write { bytes } => {
-                    Python::with_gil(|py| -> Result<(), anyhow::Error> {
-                        let write = py
-                            .import("monarch.controller.debugger")
-                            .unwrap()
-                            .getattr("write")
-                            .unwrap();
-                        write.call1((String::from_utf8(bytes)?,)).unwrap();
-                        Ok(())
-                    })?;
+                    monarch_hyperactor::runtime::monarch_with_gil(
+                        |py| -> Result<(), anyhow::Error> {
+                            let write = py
+                                .import("monarch.controller.debugger")
+                                .unwrap()
+                                .getattr("write")
+                                .unwrap();
+                            write.call1((String::from_utf8(bytes)?,)).unwrap();
+                            Ok(())
+                        },
+                    )
+                    .await?;
                 }
                 _ => {
                     anyhow::bail!("unexpected action: {:?}", action);
@@ -875,7 +882,7 @@ impl Handler<ControllerMessage> for MeshControllerActor {
                 debugger_actor_id,
                 action,
             } => {
-                self.handle_debug(this, debugger_actor_id, action)?;
+                self.handle_debug(this, debugger_actor_id, action).await?;
             }
             ControllerMessage::Status {
                 seq,
@@ -894,7 +901,9 @@ impl Handler<ControllerMessage> for MeshControllerActor {
             }
             ControllerMessage::RemoteFunctionFailed { seq, error } => {
                 let rank = self.rank_of_worker(&error.worker_actor_id);
-                self.history.propagate_exception(this, seq, error, rank)?;
+                self.history
+                    .propagate_exception(this, seq, error, rank)
+                    .await?;
             }
             message => {
                 panic!("unexpected message: {:?}", message);

@@ -26,6 +26,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::runtime::monarch_with_gil;
+
 #[derive(
     Debug,
     Clone,
@@ -72,7 +74,8 @@ impl RemoteSpawn for LoggerRuntimeActor {
 
     async fn new(_: ()) -> Result<Self, anyhow::Error> {
         let logger =
-            Python::with_gil(|py| Self::get_logger(py).map_err(SerializablePyErr::from_fn(py)))?;
+            monarch_with_gil(|py| Self::get_logger(py).map_err(SerializablePyErr::from_fn(py)))
+                .await?;
         Ok(Self {
             logger: Arc::new(logger),
         })
@@ -84,10 +87,11 @@ impl RemoteSpawn for LoggerRuntimeActor {
 impl LoggerRuntimeMessageHandler for LoggerRuntimeActor {
     async fn set_logging(&mut self, _cx: &Context<Self>, level: u8) -> Result<(), anyhow::Error> {
         let logger: Arc<_> = self.logger.clone();
-        Python::with_gil(|py| {
+        monarch_with_gil(|py| {
             Self::set_logger_level(py, logger.as_ref(), level)
                 .map_err(SerializablePyErr::from_fn(py))
-        })?;
+        })
+        .await?;
         Ok(())
     }
 }

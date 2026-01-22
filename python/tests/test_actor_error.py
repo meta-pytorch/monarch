@@ -9,10 +9,12 @@
 import asyncio
 import contextlib
 import ctypes
+import datetime
 import importlib.resources
 import os
 import re
 import subprocess
+import sys
 import time
 from typing import Callable, cast, Optional
 
@@ -22,6 +24,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch._rust_bindings.monarch_hyperactor.v1.actor_mesh import hold_gil_for_test
 from monarch._src.actor.actor_mesh import ActorMesh, context
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import ProcMesh
@@ -647,7 +650,11 @@ class ErrorActor(Actor):
         raise ActorFailureError("Simulated actor failure for supervision testing")
 
     @endpoint
-    async def check(self) -> str:
+    async def check(self, i: int | None = None) -> str:
+        if i is not None:
+            print(f"---start checking: {i}")
+            await asyncio.sleep(5)
+            print(f"---end checking: {i}")
         return "this is a healthy check"
 
     @endpoint
@@ -1459,3 +1466,51 @@ async def test_actor_abort() -> None:
                 assert "no reason provided" in await fut
             else:
                 assert reason in await fut
+
+
+@pytest.mark.timeout(500)
+async def test_gil_stall():
+    """Test that many concurrent actor calls don't cause GIL stall issues.
+
+    This test spawns actors and sends many concurrent requests while
+    simultaneously holding the GIL in a background thread to simulate
+    GIL contention. This verifies that the actor system doesn't deadlock
+    when the GIL is held for extended periods.
+
+    We use the Rust hold_gil_for_test function because Python code releases
+    the GIL periodically (every sys.getswitchinterval() seconds). Rust's
+    Python::with_gil with thread::sleep holds the GIL continuously.
+    """
+    # Set environment variables for actor/proc state polling intervals
+    os.environ["HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE"] = "1s"
+    os.environ["HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE"] = "2s"
+
+    def timestamp():
+        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+    print(f"[{timestamp()}] spawning the procs", file=sys.stderr)
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    print(f"[{timestamp()}] spawning the actors", file=sys.stderr)
+    supervisor = pm.spawn("error", ErrorActor)
+    rets = []
+
+    # Start a background thread that will hold the GIL for 15 seconds
+    # after a 2 second delay (to let requests start flowing).
+    # This creates GIL contention - without the async GIL_LOCK in monarch_with_gil,
+    # multiple tokio workers would block simultaneously on Python::with_gil,
+    # starving the runtime. With GIL_LOCK, only one tokio task blocks at a time
+    # while others await the async mutex.
+    hold_gil_for_test(delay_secs=2.0, hold_secs=15.0)
+
+    print(f"[{timestamp()}] start sending requests", file=sys.stderr)
+
+    for i in range(0, 600):
+        rets.append(supervisor.check.call(i))
+    print(f"[{timestamp()}] all requests are sent", file=sys.stderr)
+    gather_start = time.time()
+    await asyncio.gather(*rets)
+    gather_end = time.time()
+    print(
+        f"[{timestamp()}] all requests completed, gathering took {gather_end - gather_start:.3f} seconds",
+        file=sys.stderr,
+    )

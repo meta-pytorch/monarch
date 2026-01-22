@@ -14,6 +14,7 @@ use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyActorId;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
+use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_messages::client::ClientMessage;
 use monarch_messages::client::Exception;
@@ -445,7 +446,7 @@ impl ClientActor {
             instance.lock().await.next_message(timeout_msec).await
         })?;
 
-        Python::with_gil(|py| match result {
+        monarch_with_gil_blocking(|py| match result {
             Ok(Some(ClientMessage::Result { seq, result })) => {
                 WorkerResponse { seq, result }.into_py_any(py)
             }

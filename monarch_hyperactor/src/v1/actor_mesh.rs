@@ -9,6 +9,8 @@
 use std::clone::Clone;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use hyperactor::ActorRef;
 use hyperactor_mesh::v1::actor_mesh::ActorMesh;
@@ -36,6 +38,7 @@ use crate::context::PyInstance;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
+use crate::runtime::monarch_with_gil_blocking;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
 
@@ -102,7 +105,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
         let mesh = self.mesh_ref();
-        let instance = Python::with_gil(|_py| instance.clone());
+        let instance = monarch_with_gil_blocking(|_py| instance.clone());
         let shared = PyPythonTask::new::<_, ()>(async move {
             let supervision_failure = mesh
                 .next_supervision_event(instance.deref())
@@ -137,7 +140,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
-        let (slf, instance) = Python::with_gil(|_py| (self.clone(), instance.clone()));
+        let (slf, instance) = monarch_with_gil_blocking(|_py| (self.clone(), instance.clone()));
         match slf {
             PythonActorMeshImpl::Owned(mut mesh) => PyPythonTask::new(async move {
                 mesh.mesh
@@ -245,16 +248,57 @@ impl PythonActorMeshImpl {
 }
 
 #[pyfunction]
-fn py_actor_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
+fn py_actor_mesh_from_bytes(
+    bytes: &Bound<'_, PyBytes>,
+) -> PyResult<crate::actor_mesh::PythonActorMesh> {
     let r: PyResult<ActorMeshRef<PythonActor>> =
         bincode::deserialize(bytes.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()));
     r.map(|r| AsyncActorMesh::from_impl(Arc::new(PythonActorMeshImpl::new_ref(r))))
         .map(|r| PythonActorMesh::from_impl(Arc::from(r)))
 }
 
+/// Holds the GIL for the specified number of seconds without releasing it.
+///
+/// This is a test utility function that spawns a background thread which
+/// acquires the GIL using Rust's Python::with_gil and holds it for the
+/// specified duration using thread::sleep. Unlike Python code which
+/// periodically releases the GIL, this function holds it continuously.
+///
+/// We intentionally use `std::thread::sleep` here (not `Clock::sleep` or async sleep)
+/// because the purpose is to simulate a blocking operation that holds the GIL without
+/// releasing it. Using an async sleep would release the GIL periodically, defeating
+/// the purpose of this test utility.
+///
+/// Args:
+///     delay_secs: Seconds to wait before acquiring the GIL
+///     hold_secs: Seconds to hold the GIL
+#[pyfunction]
+#[pyo3(name = "hold_gil_for_test", signature = (delay_secs, hold_secs))]
+#[allow(clippy::disallowed_methods)] // Intentional: we need blocking sleep to hold the GIL
+pub fn hold_gil_for_test(delay_secs: f64, hold_secs: f64) {
+    thread::spawn(move || {
+        // Wait before grabbing the GIL (blocking sleep is fine here, we're in a spawned thread)
+        #[allow(clippy::disallowed_methods)]
+        thread::sleep(Duration::from_secs_f64(delay_secs));
+        // Acquire and hold the GIL - MUST use blocking sleep to keep GIL held
+        Python::with_gil(|_py| {
+            tracing::info!("start holding the gil...");
+            #[allow(clippy::disallowed_methods)]
+            thread::sleep(Duration::from_secs_f64(hold_secs));
+            tracing::info!("end holding the gil...");
+        });
+    });
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PythonActorMeshImpl>()?;
     let f = wrap_pyfunction!(py_actor_mesh_from_bytes, hyperactor_mod)?;
+    f.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.v1.actor_mesh",
+    )?;
+    hyperactor_mod.add_function(f)?;
+    let f = wrap_pyfunction!(hold_gil_for_test, hyperactor_mod)?;
     f.setattr(
         "__module__",
         "monarch._rust_bindings.monarch_hyperactor.v1.actor_mesh",

@@ -50,6 +50,8 @@ use crate::mailbox::PyMailbox;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::pytokio::PythonTask;
+use crate::runtime::monarch_with_gil;
+use crate::runtime::monarch_with_gil_blocking;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
 use crate::supervision::Unhealthy;
@@ -348,7 +350,7 @@ impl PyProcMesh {
         let meshimpl = async move {
             let proc_mesh = task.await?;
             let (proc_mesh, pickled_type, unhealthy_event, keepalive) =
-                Python::with_gil(|py| -> PyResult<_> {
+                monarch_with_gil(|py| -> PyResult<_> {
                     let slf: Bound<PyProcMesh> = proc_mesh.extract(py)?;
                     let slf = slf.borrow();
                     let unhealthy_event = Arc::clone(&slf.unhealthy_event);
@@ -356,7 +358,8 @@ impl PyProcMesh {
                     let proc_mesh = slf.try_inner()?;
                     let keepalive = slf.keepalive.clone();
                     Ok((proc_mesh, pickled_type, unhealthy_event, keepalive))
-                })?;
+                })
+                .await?;
             ensure_mesh_healthy(&unhealthy_event).await?;
             // TODO: thread through context, or access the actual python context;
             // for now this is basically equivalent (arguably better) to using the proc mesh client.
@@ -380,7 +383,7 @@ impl PyProcMesh {
             },
             true,
         );
-        Python::with_gil(|py| r.into_py_any(py))
+        monarch_with_gil_blocking(|py| r.into_py_any(py))
     }
 
     // User can call this to monitor the proc mesh events. This will override
@@ -422,7 +425,7 @@ impl PyProcMesh {
 
         Ok(PythonTask::new(async move {
             Self::stop_mesh(inner, proc_events).await?;
-            Python::with_gil(|py| Ok(py.None()))
+            monarch_with_gil(|py| Ok(py.None())).await
         })?
         .into())
     }

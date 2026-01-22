@@ -155,6 +155,7 @@ mod tests {
     use hyperactor::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::Proc;
+    use monarch_hyperactor::runtime::monarch_with_gil_blocking;
     use monarch_messages::controller::ControllerMessage;
     use typeuri::Named;
 
@@ -170,7 +171,7 @@ mod tests {
     }
 
     fn receive_on_debugger(actor: &mut PdbActor) -> DebuggerAction {
-        Python::with_gil(|py| {
+        monarch_with_gil_blocking(|py| {
             let msg = actor.receive(py).unwrap();
             let action: DebuggerAction = msg.extract(py).unwrap();
             action
@@ -180,7 +181,7 @@ mod tests {
     fn receive_on_controller(
         rx: Arc<Mutex<PortReceiver<ControllerMessage>>>,
     ) -> (ActorId, DebuggerAction) {
-        let msg = Python::with_gil(|py| {
+        let msg = monarch_with_gil_blocking(|py| {
             signal_safe_block_on(py, async move { rx.lock().await.recv().await.unwrap() }).unwrap()
         });
         match msg {
@@ -220,7 +221,7 @@ mod tests {
         let mut actor = PdbActor::new().unwrap();
         let debugger_actor_id = actor.instance.blocking_lock().actor_id().clone();
 
-        Python::with_gil(|py| actor.send(py, DebuggerAction::Paused()).unwrap());
+        monarch_with_gil_blocking(|py| actor.send(py, DebuggerAction::Paused()).unwrap());
 
         let (received_actor_id, action) = receive_on_controller(controller_rx.clone());
         assert_eq!(received_actor_id, debugger_actor_id);
@@ -232,7 +233,7 @@ mod tests {
         let action = receive_on_debugger(&mut actor);
         assert_eq!(action, DebuggerAction::Attach());
 
-        Python::with_gil(|py| {
+        monarch_with_gil_blocking(|py| {
             actor
                 .send(py, DebuggerAction::Read { requested_size: 4 })
                 .unwrap()
@@ -258,7 +259,7 @@ mod tests {
             }
         );
 
-        Python::with_gil(|py| {
+        monarch_with_gil_blocking(|py| {
             actor
                 .send(
                     py,
@@ -283,6 +284,6 @@ mod tests {
         let action = receive_on_debugger(&mut actor);
         assert_eq!(action, DebuggerAction::Detach());
 
-        Python::with_gil(|py| actor.drain_and_stop(py).unwrap());
+        monarch_with_gil_blocking(|py| actor.drain_and_stop(py).unwrap());
     }
 }

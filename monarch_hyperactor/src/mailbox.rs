@@ -51,6 +51,8 @@ use crate::context::PyInstance;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
+use crate::runtime::monarch_with_gil;
+use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
 
 #[derive(Clone, Debug)]
@@ -342,13 +344,14 @@ pub(super) struct PythonPortReceiver {
 async fn recv_async(
     receiver: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
 ) -> PyResult<PyObject> {
-    receiver
+    let message = receiver
         .lock()
         .await
         .recv()
         .await
-        .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))
-        .and_then(|message| Python::with_gil(|py| message.into_py_any(py)))
+        .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+
+    monarch_with_gil(|py| message.into_py_any(py)).await
 }
 
 #[pymethods]
@@ -541,11 +544,12 @@ impl PythonOncePortReceiver {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
         let fut = async move {
-            receiver
+            let message = receiver
                 .recv()
                 .await
-                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))
-                .and_then(|message| Python::with_gil(|py| message.into_py_any(py)))
+                .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+
+            monarch_with_gil(|py| message.into_py_any(py)).await
         };
         Ok(PythonTask::new(fut)?.into())
     }
@@ -598,10 +602,12 @@ impl PythonReducer {
     fn new(params: Option<wirevalue::Any>) -> anyhow::Result<Self> {
         let p = params.ok_or_else(|| anyhow::anyhow!("params cannot be None"))?;
         let obj: PickledPyObject = p.deserialized()?;
-        Ok(Python::with_gil(|py: Python<'_>| -> PyResult<Self> {
-            let unpickled = obj.unpickle(py)?;
-            Ok(Self(unpickled.unbind()))
-        })?)
+        Ok(monarch_with_gil_blocking(
+            |py: Python<'_>| -> PyResult<Self> {
+                let unpickled = obj.unpickle(py)?;
+                Ok(Self(unpickled.unbind()))
+            },
+        )?)
     }
 }
 
@@ -609,10 +615,11 @@ impl CommReducer for PythonReducer {
     type Update = PythonMessage;
 
     fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        Python::with_gil(|py: Python<'_>| {
+        monarch_with_gil_blocking(|py: Python<'_>| -> PyResult<PythonMessage> {
             let result = self.0.call(py, (left, right), None)?;
-            Ok(result.extract::<PythonMessage>(py)?)
+            result.extract::<PythonMessage>(py)
         })
+        .map_err(Into::into)
     }
 }
 
@@ -646,7 +653,7 @@ impl Accumulator for PythonAccumulator {
     type Update = PythonMessage;
 
     fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
-        Python::with_gil(|py: Python<'_>| {
+        monarch_with_gil_blocking(|py: Python<'_>| -> PyResult<()> {
             // Initialize state if it is empty.
             if matches!(state.kind, PythonMessageKind::Uninit {}) {
                 *state = self
@@ -662,6 +669,7 @@ impl Accumulator for PythonAccumulator {
             *state = result.extract::<PythonMessage>(py)?;
             Ok(())
         })
+        .map_err(Into::into)
     }
 
     fn reducer_spec(&self) -> Option<ReducerSpec> {

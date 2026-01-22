@@ -70,6 +70,8 @@ use tokio::task::JoinHandle;
 use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::runtime::get_tokio_runtime;
+use crate::runtime::monarch_with_gil;
+use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
 
 declare_attrs! {
@@ -87,7 +89,7 @@ py_global!(actor_mesh_module, "monarch._src.actor", "actor_mesh");
 
 fn current_traceback() -> PyResult<Option<PyObject>> {
     if hyperactor_config::global::get(ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK) {
-        Python::with_gil(|py| {
+        monarch_with_gil_blocking(|py| {
             Ok(Some(
                 py.import("traceback")?
                     .call_method0("extract_stack")?
@@ -186,7 +188,7 @@ impl PythonTaskAwaitIterator {
             .ok_or_else(|| PyStopIteration::new_err((value,)))
     }
     fn throw(&mut self, value: PyObject) -> PyResult<PyObject> {
-        Err(Python::with_gil(|py| {
+        Err(monarch_with_gil_blocking(|py| {
             PyErr::from_value(value.into_bound(py))
         }))
     }
@@ -199,12 +201,12 @@ impl PyPythonTask {
     fn new_with_traceback<F, T>(fut: F, traceback: Option<PyObject>) -> PyResult<Self>
     where
         F: Future<Output = PyResult<T>> + Send + 'static,
-        T: for<'py> IntoPyObject<'py>,
+        T: for<'py> IntoPyObject<'py> + Send,
     {
         Ok(PythonTask::new_with_traceback(
             async {
-                fut.await
-                    .and_then(|t| Python::with_gil(|py| t.into_py_any(py)))
+                let result = fut.await?;
+                monarch_with_gil(|py| result.into_py_any(py)).await
             },
             traceback,
         )
@@ -214,7 +216,7 @@ impl PyPythonTask {
     pub fn new<F, T>(fut: F) -> PyResult<Self>
     where
         F: Future<Output = PyResult<T>> + Send + 'static,
-        T: for<'py> IntoPyObject<'py>,
+        T: for<'py> IntoPyObject<'py> + Send,
     {
         Self::new_with_traceback(fut, current_traceback()?)
     }
@@ -239,7 +241,7 @@ impl PyPythonTask {
 
     fn traceback(&self) -> PyResult<Option<PyObject>> {
         if let Some(task) = &self.inner {
-            Ok(Python::with_gil(|py| {
+            Ok(monarch_with_gil_blocking(|py| {
                 task.traceback().as_ref().map(|t| t.clone_ref(py))
             }))
         } else {
@@ -280,7 +282,7 @@ fn send_result(
     // a SendErr just means that there are no consumers of the value left.
     match tx.send(Some(result)) {
         Err(tokio::sync::watch::error::SendError(Some(Err(pyerr)))) => {
-            Python::with_gil(|py| {
+            monarch_with_gil_blocking(|py| {
                 let tb = if let Some(tb) = traceback {
                     format_traceback(py, &tb).unwrap()
                 } else {
@@ -346,18 +348,19 @@ impl PyPythonTask {
         // maintained inside the tokio runtime.
         let monarch_context = context(py).call0()?.unbind();
         PyPythonTask::new(async move {
-            let (coroutine_iterator, none) = Python::with_gil(|py| {
+            let (coroutine_iterator, none) = monarch_with_gil(|py| {
                 coro.into_bound(py)
                     .call_method0("__await__")
                     .map(|x| (x.unbind(), py.None()))
-            })?;
+            })
+            .await?;
             let mut last: PyResult<PyObject> = Ok(none);
             enum Action {
                 Return(PyObject),
                 Wait(Pin<Box<dyn Future<Output = Result<Py<PyAny>, PyErr>> + Send + 'static>>),
             }
             loop {
-                let action: PyResult<Action> = Python::with_gil(|py| {
+                let action = monarch_with_gil(|py| -> PyResult<Action> {
                     // We may be executing in a new thread at this point, so we need to set the value
                     // of context().
                     let _context = actor_mesh_module(py).getattr("_context")?;
@@ -394,8 +397,9 @@ impl PyPythonTask {
                             }
                         }
                     }
-                });
-                match action? {
+                })
+                .await?;
+                match action {
                     Action::Return(x) => {
                         return Ok(x);
                     }
@@ -425,15 +429,16 @@ impl PyPythonTask {
     fn spawn_blocking(py: Python<'_>, f: PyObject) -> PyResult<PyShared> {
         let (tx, rx) = watch::channel(None);
         let traceback = current_traceback()?;
-        let traceback1 = traceback
-            .as_ref()
-            .map_or_else(|| None, |t| Python::with_gil(|py| Some(t.clone_ref(py))));
+        let traceback1 = traceback.as_ref().map_or_else(
+            || None,
+            |t| monarch_with_gil_blocking(|py| Some(t.clone_ref(py))),
+        );
         let monarch_context = context(py).call0()?.unbind();
         // The `_context` contextvar needs to be propagated through to the thread that
         // runs the blocking tokio task. Upon completion, the original value of `_context`
         // is restored.
         let handle = get_tokio_runtime().spawn_blocking(move || {
-            let result = Python::with_gil(|py| {
+            let result = monarch_with_gil_blocking(|py| {
                 let _context = actor_mesh_module(py).getattr("_context")?;
                 let old_context = _context.call_method1("get", (PyNone::get(py),))?;
                 _context
@@ -525,17 +530,26 @@ impl PyShared {
         let mut rx = self.rx.clone();
         PyPythonTask::new_with_traceback(
             async move {
-                rx.changed().await.map_err(to_py_error)?;
-                let b = rx.borrow();
-                let r = b.as_ref().unwrap();
-                Python::with_gil(|py| match r {
-                    Ok(v) => Ok(v.bind(py).clone().unbind()),
-                    Err(err) => Err(err.clone_ref(py)),
+                // Check if a value is already available (not None).
+                // The channel is initialized with None, and the sender sets it to Some(result).
+                // If it's still None, wait for a change. Otherwise, the value is ready.
+                if rx.borrow().is_none() {
+                    rx.changed().await.map_err(to_py_error)?;
+                }
+                // We need to hold the GIL when cloning Python objects (Py<PyAny> and PyErr).
+                monarch_with_gil(|py| {
+                    let borrowed = rx.borrow();
+                    match borrowed.as_ref().unwrap() {
+                        Ok(v) => Ok(v.bind(py).clone().unbind()),
+                        Err(err) => Err(err.clone_ref(py)),
+                    }
                 })
+                .await
             },
-            self.traceback
-                .as_ref()
-                .map_or_else(|| None, |t| Python::with_gil(|py| Some(t.clone_ref(py)))),
+            self.traceback.as_ref().map_or_else(
+                || None,
+                |t| monarch_with_gil_blocking(|py| Some(t.clone_ref(py))),
+            ),
         )
     }
 
@@ -764,7 +778,7 @@ impl AwaitPyExt for PyPythonTask {
         let py_any: Py<PyAny> = fut.await?;
 
         // Convert Py<PyAny> -> Py<T>.
-        Python::with_gil(|py| {
+        monarch_with_gil(|py| {
             let bound_any = py_any.bind(py);
 
             // Try extract a Py<T>.
@@ -774,6 +788,7 @@ impl AwaitPyExt for PyPythonTask {
 
             Ok(obj)
         })
+        .await
     }
 
     async fn await_unit(mut self) -> Result<(), PyErr> {
