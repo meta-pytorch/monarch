@@ -225,16 +225,15 @@ class RDMATest(Actor):
         print(f"  Standard deviation: {std_time * 1000:.3f} ms")
 
         if calc_bwd:
-            # Calculate bandwidth (Gbps)
-            def calc_bandwidth_gbps(size_bytes: int, time_seconds: float) -> float:
+            # Calculate throughput (GB/s where GB = 1000^3 bytes)
+            def calc_throughput_gbs(size_bytes: int, time_seconds: float) -> float:
                 if time_seconds == 0:
                     return 0.0
-                bits_transferred = size_bytes * 8
-                return bits_transferred / (time_seconds * 1e9)
+                return size_bytes / (time_seconds * 1e9)
 
-            avg_bandwidth = calc_bandwidth_gbps(avg_size, avg_time)
-            max_bandwidth = calc_bandwidth_gbps(avg_size, min_time)
-            min_bandwidth = calc_bandwidth_gbps(avg_size, max_time)
+            avg_throughput = calc_throughput_gbs(avg_size, avg_time)
+            max_throughput = calc_throughput_gbs(avg_size, min_time)
+            min_throughput = calc_throughput_gbs(avg_size, max_time)
 
             # Print results
             print(f"Total iterations completed: {len(timings)}")
@@ -242,10 +241,10 @@ class RDMATest(Actor):
             print(f"Total data transferred: {total_data / (1024 * 1024):.1f} MB")
             print()
 
-            print("INDIVIDUAL OPERATION BANDWIDTH:")
-            print(f"  Average bandwidth: {avg_bandwidth:.2f} Gbps")
-            print(f"  Maximum bandwidth: {max_bandwidth:.2f} Gbps")
-            print(f"  Minimum bandwidth: {min_bandwidth:.2f} Gbps")
+            print("INDIVIDUAL OPERATION THROUGHPUT (GB = 1000^3 bytes):")
+            print(f"  Average throughput: {avg_throughput:.2f} GB/s")
+            print(f"  Maximum throughput: {max_throughput:.2f} GB/s")
+            print(f"  Minimum throughput: {min_throughput:.2f} GB/s")
             print("=" * 60)
 
     @endpoint
@@ -276,27 +275,26 @@ class RDMATest(Actor):
         print(f"  Standard deviation: {std_batch_time * 1000:.3f} ms")
         print(f"  Average data per batch: {avg_batch_size / (1024 * 1024):.1f} MB")
 
-        # Calculate bandwidth (Gbps)
-        def calc_bandwidth_gbps(size_bytes: int, time_seconds: float) -> float:
+        # Calculate throughput (GB/s where GB = 1000^3 bytes)
+        def calc_throughput_gbs(size_bytes: int, time_seconds: float) -> float:
             if time_seconds == 0:
                 return 0.0
-            bits_transferred = size_bytes * 8
-            return bits_transferred / (time_seconds * 1e9)
+            return size_bytes / (time_seconds * 1e9)
 
-        avg_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, avg_batch_time)
-        max_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, min_batch_time)
-        min_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, max_batch_time)
+        avg_aggregate_tp = calc_throughput_gbs(avg_batch_size, avg_batch_time)
+        max_aggregate_tp = calc_throughput_gbs(avg_batch_size, min_batch_time)
+        min_aggregate_tp = calc_throughput_gbs(avg_batch_size, max_batch_time)
 
-        print(f"\nAGGREGATE BANDWIDTH (concurrency={concurrency}):")
-        print(f"  Average aggregate bandwidth: {avg_aggregate_bw:.2f} Gbps")
-        print(f"  Maximum aggregate bandwidth: {max_aggregate_bw:.2f} Gbps")
-        print(f"  Minimum aggregate bandwidth: {min_aggregate_bw:.2f} Gbps")
+        print(f"\nAGGREGATE THROUGHPUT (concurrency={concurrency}, GB = 1000^3 bytes):")
+        print(f"  Average aggregate throughput: {avg_aggregate_tp:.2f} GB/s")
+        print(f"  Maximum aggregate throughput: {max_aggregate_tp:.2f} GB/s")
+        print(f"  Minimum aggregate throughput: {min_aggregate_tp:.2f} GB/s")
 
-        total_throughput = calc_bandwidth_gbps(total_data, total_elapsed_time)
-        print("\nTOTAL SUSTAINED THROUGHPUT:")
+        total_throughput = calc_throughput_gbs(total_data, total_elapsed_time)
+        print("\nTOTAL SUSTAINED THROUGHPUT (GB = 1000^3 bytes):")
         print(f"  Total wall-clock time: {total_elapsed_time:.3f} s")
         print(f"  Total data transferred: {total_data / (1024 * 1024):.1f} MB")
-        print(f"  Sustained throughput: {total_throughput:.2f} Gbps")
+        print(f"  Sustained throughput: {total_throughput:.2f} GB/s")
         if concurrency > 1:
             print(f"  (Accounts for {concurrency}x concurrent overlapping operations)")
 
