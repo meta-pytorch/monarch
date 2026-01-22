@@ -989,43 +989,6 @@ impl Future for MailboxServerHandle {
     }
 }
 
-// A `MailboxServer` (such as a router) can receive a message
-// that couldn't reach its destination. We can use the fact that
-// servers are `MailboxSender`s to attempt to forward them back to
-// their senders.
-fn server_return_handle<T: MailboxServer>(server: T) -> PortHandle<Undeliverable<MessageEnvelope>> {
-    let (return_handle, mut rx) = undeliverable::new_undeliverable_port();
-
-    tokio::task::spawn(async move {
-        while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-            if let Ok(Undeliverable(e)) = envelope.deserialized::<Undeliverable<MessageEnvelope>>()
-            {
-                // A non-returnable undeliverable.
-                UndeliverableMailboxSender.post(e, monitored_return_handle());
-                continue;
-            }
-            envelope.set_error(DeliveryError::BrokenLink(
-                "message was undeliverable".to_owned(),
-            ));
-            server.post(
-                MessageEnvelope::new(
-                    envelope.sender().clone(),
-                    PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
-                        envelope.sender(),
-                    )
-                    .port_id()
-                    .clone(),
-                    wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
-                    Attrs::new(),
-                ),
-                monitored_return_handle(),
-            );
-        }
-    });
-
-    return_handle
-}
-
 /// Serve a port on the provided [`channel::Rx`]. This dispatches all
 /// channel messages directly to the port.
 pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
