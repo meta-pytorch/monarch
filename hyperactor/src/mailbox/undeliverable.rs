@@ -154,7 +154,9 @@ pub fn supervise_undeliverable_messages_with<R, F>(
     F: Fn(&MessageEnvelope) + Send + Sync + 'static,
 {
     crate::init::get_runtime().spawn(async move {
-        // Create a local client for this task.
+        // Create a local client for this task. Since we only use this client
+        // to send message with PortHandle, it is okay this proc does not have
+        // a forwarder.
         let proc = Proc::local();
         let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
         while let Ok(Undeliverable(mut env)) = rx.recv().await {

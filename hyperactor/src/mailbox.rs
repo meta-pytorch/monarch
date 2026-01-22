@@ -111,6 +111,8 @@ use typeuri::Named;
 use crate as hyperactor; // for macros
 use crate::OncePortRef;
 use crate::PortRef;
+use crate::Proc;
+use crate::ProcId;
 use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
@@ -1006,6 +1008,16 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         let (return_handle, mut undeliverable_rx) = undeliverable::new_undeliverable_port();
         let server = self.clone();
         tokio::task::spawn(async move {
+            // Create a client for this task.
+            static NEXT_RANK: AtomicUsize = AtomicUsize::new(0);
+            let proc_id = ProcId::Ranked(
+                id!(mailbox_server),
+                NEXT_RANK.fetch_add(1, Ordering::Relaxed),
+            );
+            // Use this mailbox server as the forwarder, so we can use it to
+            // return message back to the sender.
+            let proc = Proc::new(proc_id, BoxedMailboxSender::new(server));
+            let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
             while let Ok(Undeliverable(mut envelope)) = undeliverable_rx.recv().await {
                 if let Ok(Undeliverable(e)) =
                     envelope.deserialized::<Undeliverable<MessageEnvelope>>()
@@ -1017,18 +1029,13 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 envelope.set_error(DeliveryError::BrokenLink(
                     "message was undeliverable".to_owned(),
                 ));
-                server.post(
-                    MessageEnvelope::new(
-                        envelope.sender().clone(),
-                        PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
-                            envelope.sender(),
-                        )
-                        .port_id()
-                        .clone(),
-                        wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
-                        Attrs::new(),
-                    ),
-                    monitored_return_handle(),
+                let return_port = PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
+                    envelope.sender(),
+                );
+                return_port.send_serialized(
+                    &client,
+                    Attrs::new(),
+                    wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
                 );
             }
         });
