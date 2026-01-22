@@ -21,6 +21,7 @@ use std::time::SystemTime;
 use indexmap::IndexMap;
 use tracing::Id;
 use tracing::Subscriber;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Layer;
@@ -126,7 +127,7 @@ pub struct TraceEventDispatcher {
     /// Separate channel so we are always notified of when the main queue is full and events are being dropped.
     dropped_sender: Option<mpsc::Sender<TraceEvent>>,
     _worker_handle: WorkerHandle,
-    max_level: Option<tracing::level_filters::LevelFilter>,
+    max_level: Option<LevelFilter>,
     dropped_events: Arc<AtomicU64>,
 }
 
@@ -143,11 +144,9 @@ impl TraceEventDispatcher {
     ///
     /// # Arguments
     /// * `sinks` - List of sinks to dispatch events to.
-    /// * `max_level` - Maximum level filter hint (None for no filtering)
-    pub(crate) fn new(
-        sinks: Vec<Box<dyn TraceEventSink>>,
-        max_level: Option<tracing::level_filters::LevelFilter>,
-    ) -> Self {
+    pub(crate) fn new(sinks: Vec<Box<dyn TraceEventSink>>) -> Self {
+        let max_level = Self::derive_max_level(&sinks);
+
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let (dropped_sender, dropped_receiver) = mpsc::channel();
         let dropped_events = Arc::new(AtomicU64::new(0));
@@ -169,6 +168,40 @@ impl TraceEventDispatcher {
             max_level,
             dropped_events,
         }
+    }
+
+    fn derive_max_level(sinks: &[Box<dyn TraceEventSink>]) -> Option<LevelFilter> {
+        let mut max_level: Option<LevelFilter> = None;
+
+        for sink in sinks {
+            let sink_max = match sink.target_filter() {
+                None => LevelFilter::TRACE,
+                Some(targets) => {
+                    let levels = [
+                        (tracing::Level::TRACE, LevelFilter::TRACE),
+                        (tracing::Level::DEBUG, LevelFilter::DEBUG),
+                        (tracing::Level::INFO, LevelFilter::INFO),
+                        (tracing::Level::WARN, LevelFilter::WARN),
+                        (tracing::Level::ERROR, LevelFilter::ERROR),
+                    ];
+                    let mut result = LevelFilter::OFF;
+                    for (level, filter) in levels {
+                        if targets.would_enable("", &level) {
+                            result = filter;
+                            break;
+                        }
+                    }
+                    result
+                }
+            };
+
+            max_level = Some(match max_level {
+                None => sink_max,
+                Some(current) => std::cmp::max(current, sink_max),
+            });
+        }
+
+        max_level
     }
 
     fn send_event(&self, event: TraceEvent) {
@@ -366,7 +399,7 @@ where
         self.send_event(event);
     }
 
-    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+    fn max_level_hint(&self) -> Option<LevelFilter> {
         self.max_level
     }
 }

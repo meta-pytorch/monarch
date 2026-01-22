@@ -37,6 +37,7 @@ use std::io::Write;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -72,6 +73,7 @@ use tracing_perfetto_sdk_schema::track_event::NameField as EventNameField;
 use tracing_perfetto_sdk_schema::track_event::Type as TrackEventType;
 use tracing_subscriber::filter::Targets;
 
+use crate::config::MONARCH_FILE_LOG_LEVEL;
 use crate::trace_dispatcher::FieldValue;
 use crate::trace_dispatcher::TraceEvent;
 use crate::trace_dispatcher::TraceEventSink;
@@ -276,10 +278,14 @@ impl PerfettoFileSink {
             process_track: 0,
             pid,
             process_name: process_name.to_string(),
-            target_filter: Targets::new()
-                .with_target("tokio", LevelFilter::OFF)
-                .with_target("runtime", LevelFilter::OFF)
-                .with_default(LevelFilter::TRACE),
+            target_filter: Targets::new().with_default({
+                let log_level_str =
+                    hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
+                        .unwrap_or_else(|| "info".to_string());
+                let level =
+                    tracing::Level::from_str(&log_level_str).unwrap_or(tracing::Level::INFO);
+                LevelFilter::from_level(level)
+            }),
             trace_mode: hyperactor_config::global::get(PERFETTO_TRACE_MODE),
         };
 
