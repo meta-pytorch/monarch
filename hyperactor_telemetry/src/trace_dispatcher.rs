@@ -19,7 +19,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::SystemTime;
 
-use indexmap::IndexMap;
+use smallvec::SmallVec;
 use tracing::Id;
 use tracing::Subscriber;
 use tracing::level_filters::LevelFilter;
@@ -29,6 +29,15 @@ use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
 const QUEUE_CAPACITY: usize = 100_000;
+
+/// Type alias for trace event fields
+/// We expect that most trace events have fewer than 4 fields.
+pub(crate) type TraceFields = SmallVec<[(&'static str, FieldValue); 4]>;
+
+#[inline]
+pub(crate) fn get_field<'a>(fields: &'a TraceFields, key: &str) -> Option<&'a FieldValue> {
+    fields.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
+}
 
 /// Unified representation of a trace event captured from the tracing layer.
 /// This is captured once on the application thread, then sent to the background
@@ -41,7 +50,7 @@ pub(crate) enum TraceEvent {
         name: &'static str,
         target: &'static str,
         level: tracing::Level,
-        fields: IndexMap<String, FieldValue>,
+        fields: TraceFields,
         timestamp: SystemTime,
         parent_id: Option<u64>,
         thread_name: &'static str,
@@ -59,7 +68,7 @@ pub(crate) enum TraceEvent {
         name: &'static str,
         target: &'static str,
         level: tracing::Level,
-        fields: IndexMap<String, FieldValue>,
+        fields: TraceFields,
         timestamp: SystemTime,
         parent_span: Option<u64>,
         thread_id: &'static str,
@@ -272,15 +281,15 @@ impl TraceEventDispatcher {
         if let Some(dropped_sender) = &self.dropped_sender {
             let (thread_name, thread_id) = get_thread_info();
 
-            let mut fields = IndexMap::new();
-            fields.insert(
-                "message".to_string(),
+            let mut fields = TraceFields::new();
+            fields.push((
+                "message",
                 FieldValue::Str(format!(
                     "Telemetry events and log lines dropped due to full queue (capacity: {}). Worker may be falling behind.",
                     QUEUE_CAPACITY
                 )),
-            );
-            fields.insert("dropped_count".to_string(), FieldValue::U64(total_dropped));
+            ));
+            fields.push(("dropped_count", FieldValue::U64(total_dropped)));
 
             // We want to just directly construct and send a `TraceEvent::Event` here so we don't need to
             // reason very hard about whether or not we are creating a DoS loop
@@ -326,7 +335,7 @@ where
 {
     fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let metadata = attrs.metadata();
-        let mut fields = IndexMap::new();
+        let mut fields = TraceFields::new();
 
         let mut visitor = FieldVisitor(&mut fields);
         attrs.record(&mut visitor);
@@ -375,7 +384,7 @@ where
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let metadata = event.metadata();
-        let mut fields = IndexMap::new();
+        let mut fields = TraceFields::new();
         let mut visitor = FieldVisitor(&mut fields);
         event.record(&mut visitor);
 
@@ -414,39 +423,33 @@ where
     }
 }
 
-struct FieldVisitor<'a>(&'a mut IndexMap<String, FieldValue>);
+struct FieldVisitor<'a>(&'a mut TraceFields);
 
 impl<'a> tracing::field::Visit for FieldVisitor<'a> {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::Bool(value));
+        self.0.push((field.name(), FieldValue::Bool(value)));
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::I64(value));
+        self.0.push((field.name(), FieldValue::I64(value)));
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::U64(value));
+        self.0.push((field.name(), FieldValue::U64(value)));
     }
 
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::F64(value));
+        self.0.push((field.name(), FieldValue::F64(value)));
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         self.0
-            .insert(field.name().to_string(), FieldValue::Str(value.to_string()));
+            .push((field.name(), FieldValue::Str(value.to_string())));
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.insert(
-            field.name().to_string(),
-            FieldValue::Debug(format!("{:?}", value)),
-        );
+        self.0
+            .push((field.name(), FieldValue::Debug(format!("{:?}", value))));
     }
 }
 

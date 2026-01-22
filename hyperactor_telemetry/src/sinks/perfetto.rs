@@ -49,7 +49,6 @@ use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::AttrValue;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::typeuri::Named;
-use indexmap::IndexMap;
 use prost::Message;
 use serde::Deserialize;
 use serde::Serialize;
@@ -77,6 +76,8 @@ use crate::config::MONARCH_FILE_LOG_LEVEL;
 use crate::trace_dispatcher::FieldValue;
 use crate::trace_dispatcher::TraceEvent;
 use crate::trace_dispatcher::TraceEventSink;
+use crate::trace_dispatcher::TraceFields;
+use crate::trace_dispatcher::get_field;
 
 /// The target prefix for user-facing telemetry spans.
 pub const USER_TELEMETRY_PREFIX: &str = "monarch_hyperactor::telemetry";
@@ -175,7 +176,7 @@ struct SpanInfo {
     track: u64,
     /// Fully qualified name: {target}::{name}
     fq_name: String,
-    fields: IndexMap<String, FieldValue>,
+    fields: TraceFields,
     file: Option<&'static str>,
     line: Option<u32>,
 }
@@ -452,7 +453,7 @@ impl PerfettoFileSink {
         track: u64,
         timestamp: SystemTime,
         name: &str,
-        fields: &IndexMap<String, FieldValue>,
+        fields: &TraceFields,
         file: Option<&str>,
         line: Option<u32>,
     ) {
@@ -515,7 +516,7 @@ impl PerfettoFileSink {
         track: u64,
         timestamp: SystemTime,
         name: &str,
-        fields: &IndexMap<String, FieldValue>,
+        fields: &TraceFields,
     ) {
         self.flush_interned_data();
 
@@ -569,7 +570,7 @@ impl TraceEventSink for PerfettoFileSink {
                 // In user mode, prefer the "name" field if present for display
                 // In dev mode, use the fully qualified name
                 let display_name = if self.trace_mode == PerfettoTraceMode::User {
-                    if let Some(FieldValue::Str(n)) = fields.get("name") {
+                    if let Some(FieldValue::Str(n)) = get_field(fields, "name") {
                         n.clone()
                     } else {
                         name.to_string()
@@ -626,7 +627,7 @@ impl TraceEventSink for PerfettoFileSink {
                 // In user mode, prefer the "message" field if present for display
                 // In dev mode, use the fully qualified name
                 let display_name = if self.trace_mode == PerfettoTraceMode::User {
-                    if let Some(FieldValue::Str(msg)) = fields.get("message") {
+                    if let Some(FieldValue::Str(msg)) = get_field(fields, "message") {
                         msg.clone()
                     } else {
                         name.to_string()
