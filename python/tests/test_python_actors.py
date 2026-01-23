@@ -1459,10 +1459,8 @@ def test_simple_bootstrap():
             proc = subprocess.Popen(
                 [
                     sys.executable,
-                    "-m",
-                    "monarch.tools.worker",
-                    "--addr",
-                    addr,
+                    "-c",
+                    f'import sys; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")',
                 ],
                 env=env,
             )
@@ -1547,10 +1545,8 @@ class FakeLocalLoginJob(LoginJob):
         proc = subprocess.Popen(
             [
                 sys.executable,
-                "-m",
-                "monarch.tools.worker",
-                "--addr",
-                addr,
+                "-c",
+                f'from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")',
             ],
             env=env,
             start_new_session=True,
