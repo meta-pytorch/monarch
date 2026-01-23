@@ -29,7 +29,19 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::comm::CommMeshConfig;
 use crate::reference::ActorMeshId;
+
+// A temporary trait used to share code in v0/v1 migration. Can be deleted after
+// v0 casting is deleted.
+pub(crate) trait CastEnvelope {
+    fn dest_port(&self) -> &DestinationPort;
+    fn header_props(&self) -> &Attrs;
+    fn sender(&self) -> &ActorId;
+    fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point>;
+    fn data(&self) -> &ErasedUnbound;
+    fn data_mut(&mut self) -> &mut ErasedUnbound;
+}
 
 /// A union of slices that can be used to represent arbitrary subset of
 /// ranks in a gang. It is represented by a Slice together with a Selection.
@@ -63,6 +75,39 @@ pub struct CastMessageEnvelope {
     shape: Shape,
 }
 wirevalue::register_type!(CastMessageEnvelope);
+
+impl CastEnvelope for CastMessageEnvelope {
+    fn sender(&self) -> &ActorId {
+        &self.sender
+    }
+
+    fn header_props(&self) -> &Attrs {
+        &self.header_props
+    }
+
+    fn dest_port(&self) -> &DestinationPort {
+        &self.dest_port
+    }
+
+    fn data(&self) -> &ErasedUnbound {
+        &self.data
+    }
+
+    fn data_mut(&mut self) -> &mut ErasedUnbound {
+        &mut self.data
+    }
+
+    fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point> {
+        let rank_on_root_mesh = config.self_rank();
+        let cast_rank = self.relative_rank(rank_on_root_mesh)?;
+        let cast_shape = self.shape();
+        let cast_point = cast_shape
+            .extent()
+            .point_of_rank(cast_rank)
+            .expect("rank out of bounds");
+        Ok(cast_point)
+    }
+}
 
 impl CastMessageEnvelope {
     /// Create a new CastMessageEnvelope.
@@ -111,26 +156,6 @@ impl CastMessageEnvelope {
             data: ErasedUnbound::new(data),
             shape,
         }
-    }
-
-    pub(crate) fn sender(&self) -> &ActorId {
-        &self.sender
-    }
-
-    pub(crate) fn header_props(&self) -> &Attrs {
-        &self.header_props
-    }
-
-    pub(crate) fn dest_port(&self) -> &DestinationPort {
-        &self.dest_port
-    }
-
-    pub(crate) fn data(&self) -> &ErasedUnbound {
-        &self.data
-    }
-
-    pub(crate) fn data_mut(&mut self) -> &mut ErasedUnbound {
-        &mut self.data
     }
 
     pub(crate) fn shape(&self) -> &Shape {
