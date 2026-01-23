@@ -29,7 +29,19 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::comm::CommMeshConfig;
 use crate::reference::ActorMeshId;
+
+// A temporary trait used to share code in v0/v1 migration. Can be deleted after
+// v0 casting is deleted.
+pub(crate) trait CastEnvelope {
+    fn dest_port(&self) -> &DestinationPort;
+    fn header_props(&self) -> &Attrs;
+    fn sender(&self) -> &ActorId;
+    fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point>;
+    fn data(&self) -> &ErasedUnbound;
+    fn data_mut(&mut self) -> &mut ErasedUnbound;
+}
 
 /// A union of slices that can be used to represent arbitrary subset of
 /// ranks in a gang. It is represented by a Slice together with a Selection.
@@ -44,10 +56,14 @@ pub struct Uslice {
 }
 
 /// An envelope that carries a message destined to a group of actors.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+#[derive(Debug, Serialize, Deserialize, Clone, Named)]
 pub struct CastMessageEnvelope {
     /// The destination actor mesh id.
     actor_mesh_id: ActorMeshId,
+    /// Headers that should be added to all messages sent between cast tree
+    /// nodes. Specifically, this includes source->comm, comm->comm, and
+    /// comm->dest.
+    header_props: Attrs,
     /// The sender of this message.
     sender: ActorId,
     /// The destination port of the message. It could match multiple actors with
@@ -60,12 +76,46 @@ pub struct CastMessageEnvelope {
 }
 wirevalue::register_type!(CastMessageEnvelope);
 
+impl CastEnvelope for CastMessageEnvelope {
+    fn sender(&self) -> &ActorId {
+        &self.sender
+    }
+
+    fn header_props(&self) -> &Attrs {
+        &self.header_props
+    }
+
+    fn dest_port(&self) -> &DestinationPort {
+        &self.dest_port
+    }
+
+    fn data(&self) -> &ErasedUnbound {
+        &self.data
+    }
+
+    fn data_mut(&mut self) -> &mut ErasedUnbound {
+        &mut self.data
+    }
+
+    fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point> {
+        let rank_on_root_mesh = config.self_rank();
+        let cast_rank = self.relative_rank(rank_on_root_mesh)?;
+        let cast_shape = self.shape();
+        let cast_point = cast_shape
+            .extent()
+            .point_of_rank(cast_rank)
+            .expect("rank out of bounds");
+        Ok(cast_point)
+    }
+}
+
 impl CastMessageEnvelope {
     /// Create a new CastMessageEnvelope.
     pub fn new<A, M>(
         actor_mesh_id: ActorMeshId,
         sender: ActorId,
         shape: Shape,
+        header_props: Attrs,
         message: M,
     ) -> Result<Self, anyhow::Error>
     where
@@ -79,6 +129,7 @@ impl CastMessageEnvelope {
         };
         Ok(Self {
             actor_mesh_id,
+            header_props,
             sender,
             dest_port: DestinationPort::new::<A, M>(actor_name),
             data,
@@ -94,31 +145,17 @@ impl CastMessageEnvelope {
         sender: ActorId,
         dest_port: DestinationPort,
         shape: Shape,
+        header_props: Attrs,
         data: wirevalue::Any,
     ) -> Self {
         Self {
             actor_mesh_id,
             sender,
+            header_props,
             dest_port,
             data: ErasedUnbound::new(data),
             shape,
         }
-    }
-
-    pub(crate) fn sender(&self) -> &ActorId {
-        &self.sender
-    }
-
-    pub(crate) fn dest_port(&self) -> &DestinationPort {
-        &self.dest_port
-    }
-
-    pub(crate) fn data(&self) -> &ErasedUnbound {
-        &self.data
-    }
-
-    pub(crate) fn data_mut(&mut self) -> &mut ErasedUnbound {
-        &mut self.data
     }
 
     pub(crate) fn shape(&self) -> &Shape {

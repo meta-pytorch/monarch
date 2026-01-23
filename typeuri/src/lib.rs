@@ -18,6 +18,9 @@ pub use dashmap;
 // Re-export the Named derive macro from typeuri_macros
 pub use typeuri_macros::Named;
 
+/// Actor handler port should have its most significant bit set to 1.
+pub static ACTOR_PORT_BIT: u64 = 1 << 63;
+
 /// A [`Named`] type is a type that has a globally unique name.
 pub trait Named: Sized + 'static {
     /// The globally unique type name for the type.
@@ -41,7 +44,7 @@ pub trait Named: Sized + 'static {
     /// The globally unique port for this type. Typed ports are in the range
     /// of 1<<63..1<<64-1.
     fn port() -> u64 {
-        Self::typehash() | (1 << 63)
+        Self::typehash() | ACTOR_PORT_BIT
     }
 
     /// If the named type is an enum, this returns the name of the arm
