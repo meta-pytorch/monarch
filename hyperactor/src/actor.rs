@@ -1264,7 +1264,7 @@ mod tests {
 
         // By disabling the actor side re-ordering buffer, the mssages will
         // be processed in the same order as they sent out.
-        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, false);
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, false);
         assert_out_of_order_delivery(
             vec![
                 ("second".to_string(), 2),
@@ -1277,7 +1277,7 @@ mod tests {
 
         // By enabling the actor side re-ordering buffer, the mssages will
         // be re-ordered before being processed.
-        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         assert_out_of_order_delivery(
             vec![
                 ("first".to_string(), 1),
@@ -1299,7 +1299,7 @@ mod tests {
 
         // By enabling the actor side re-ordering buffer, the mssages will
         // be re-ordered before being processed.
-        let _guard = config.override_key(config::ENABLE_CLIENT_SEQ_ASSIGNMENT, true);
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         let expected = (0..10000)
             .map(|i| (format!("msg{i}"), i + 1))
             .collect::<Vec<_>>();

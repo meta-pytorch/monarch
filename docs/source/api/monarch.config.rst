@@ -369,7 +369,7 @@ Message Handling
 
     - **Type**: ``bool``
     - **Default**: ``False``
-    - **Environment**: ``HYPERACTOR_ENABLE_CLIENT_SEQ_ASSIGNMENT``
+    - **Environment**: ``HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER``
 
 
 Message Encoding
