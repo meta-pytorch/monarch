@@ -57,10 +57,7 @@ fn process_state_span(
     session_id: u64,
     next: &Next,
     rcv_raw_frame_count: u64,
-    last_ack_time: tokio::time::Instant,
 ) -> Span {
-    let since_last_ack_str = humantime::format_duration(last_ack_time.elapsed()).to_string();
-
     let pending_ack_count = if next.seq > next.ack {
         next.seq - next.ack - 1
     } else {
@@ -69,13 +66,13 @@ fn process_state_span(
 
     hyperactor_telemetry::context_span!(
         "net i/o loop",
-        session_id = format!("{}.{}", dest, session_id),
-        source = source.to_string(),
+        dest = %dest,
+        session_id = session_id,
+        source = %source,
         next_seq = next.seq,
         last_ack = next.ack,
         pending_ack_count = pending_ack_count,
         rcv_raw_frame_count = rcv_raw_frame_count,
-        since_last_ack = since_last_ack_str.as_str(),
     )
 }
 
@@ -414,7 +411,6 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 session_id,
                 &next,
                 rcv_raw_frame_count,
-                last_ack_time,
             );
 
             let (new_next, break_info) = self

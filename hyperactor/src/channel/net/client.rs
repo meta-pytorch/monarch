@@ -685,6 +685,17 @@ where
 {
     let deliveries = state.deliveries();
 
+    // At INFO level and above, skip expensive field computation
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return hyperactor_telemetry::context_span!(
+            "net i/o loop",
+            dest = %link.dest(),
+            session_id = session_id,
+            connected = conn.is_connected(),
+            next_seq = deliveries.outbox.next_seq,
+        );
+    }
+
     use valuable::NamedField;
     use valuable::Structable;
     use valuable::Tuplable;
@@ -795,7 +806,8 @@ where
 
     hyperactor_telemetry::context_span!(
         "net i/o loop",
-        session = format!("{}.{}", link.dest(), session_id),
+        dest = %link.dest(),
+        session_id = session_id,
         connected = conn.is_connected(),
         next_seq = deliveries.outbox.next_seq,
         largest_acked = largest_acked.as_value(),
