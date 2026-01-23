@@ -34,12 +34,14 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::reference::UnboundPort;
 use hyperactor::reference::UnboundPortKind;
+use hyperactor_config::Attrs;
 use ndslice::Point;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::ForwardMessage;
@@ -209,13 +211,14 @@ impl Actor for CommActor {
 impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
     fn forward(
-        cx: &Instance<Self>,
+        cx: &Context<Self>,
         config: &CommMeshConfig,
         rank: usize,
         message: ForwardMessage,
     ) -> Result<()> {
         let child = config.peer_for_rank(rank)?;
-        child.send(cx, message)?;
+        let headers = message.message.header_props().clone();
+        child.send_with_headers(cx, headers, message)?;
         Ok(())
     }
 
@@ -248,7 +251,10 @@ impl CommActor {
             // Replace ranks with self ranks.
             replace_with_self_ranks(&cast_point, message.data_mut())?;
 
-            let mut headers = cx.headers().clone();
+            // We should not copy cx.headers() because it contains auto-generated
+            // headers from mailbox. We want fresh headers only containing
+            // user-provided headers.
+            let mut headers = message.header_props().clone();
             set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
             cx.post(
                 cx.self_id()
