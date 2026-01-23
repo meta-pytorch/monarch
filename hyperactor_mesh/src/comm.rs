@@ -7,6 +7,7 @@
  */
 
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
+use crate::comm::multicast::CastEnvelope;
 use crate::reference::ActorMeshId;
 use crate::resource;
 pub mod multicast;
@@ -24,6 +25,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
+use hyperactor::RemoteMessage;
 use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
@@ -41,7 +43,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::ForwardMessage;
@@ -210,15 +211,18 @@ impl Actor for CommActor {
 
 impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
-    fn forward(
+    fn forward<M: RemoteMessage>(
         cx: &Context<Self>,
         config: &CommMeshConfig,
         rank: usize,
-        message: ForwardMessage,
-    ) -> Result<()> {
+        header_props: Attrs,
+        message: M,
+    ) -> Result<()>
+    where
+        CommActor: hyperactor::RemoteHandles<M>,
+    {
         let child = config.peer_for_rank(rank)?;
-        let headers = message.message.header_props().clone();
-        child.send_with_headers(cx, headers, message)?;
+        child.send_with_headers(cx, header_props, message)?;
         Ok(())
     }
 
@@ -232,38 +236,15 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
-        // Compute peer count for OncePort splitting. This is the number of
-        // destinations the message will be delivered to, so that the split
-        // port can correctly accumulate responses.
-        let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
-        split_ports(cx, message.data_mut(), peer_count, deliver_here)?;
+        split_ports(cx, message.data_mut(), deliver_here, &next_steps)?;
 
         // Deliver message here, if necessary.
         if deliver_here {
-            let rank_on_root_mesh = config.self_rank();
-            let cast_rank = message.relative_rank(rank_on_root_mesh)?;
-            let cast_shape = message.shape();
-            let cast_point = cast_shape
-                .extent()
-                .point_of_rank(cast_rank)
-                .expect("rank out of bounds");
-
-            // Replace ranks with self ranks.
-            replace_with_self_ranks(&cast_point, message.data_mut())?;
-
             // We should not copy cx.headers() because it contains auto-generated
             // headers from mailbox. We want fresh headers only containing
             // user-provided headers.
-            let mut headers = message.header_props().clone();
-            set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
-            cx.post(
-                cx.self_id()
-                    .proc_id()
-                    .actor_id(message.dest_port().actor_name(), 0)
-                    .port_id(message.dest_port().port()),
-                headers,
-                wirevalue::Any::serialize(message.data())?,
-            );
+            let headers = message.header_props().clone();
+            Self::deliver_to_dest(cx, headers, &mut message, config)?;
         }
 
         // Forward to peers.
@@ -275,6 +256,7 @@ impl CommActor {
                     cx,
                     config,
                     peer,
+                    message.header_props().clone(),
                     ForwardMessage {
                         dests,
                         sender: sender.clone(),
@@ -290,6 +272,29 @@ impl CommActor {
 
         Ok(())
     }
+
+    fn deliver_to_dest<M: CastEnvelope>(
+        cx: &Context<Self>,
+        mut headers: Attrs,
+        message: &mut M,
+        config: &CommMeshConfig,
+    ) -> anyhow::Result<()> {
+        let cast_point = message.cast_point(config)?;
+        // Replace ranks with self ranks.
+        replace_with_self_ranks(&cast_point, message.data_mut())?;
+
+        set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
+        cx.post(
+            cx.self_id()
+                .proc_id()
+                .actor_id(message.dest_port().actor_name(), 0)
+                .port_id(message.dest_port().port()),
+            headers,
+            wirevalue::Any::serialize(message.data())?,
+        );
+
+        Ok(())
+    }
 }
 
 // Split ports, if any, and update message with new ports. In this
@@ -298,9 +303,8 @@ impl CommActor {
 fn split_ports(
     cx: &Context<CommActor>,
     data: &mut ErasedUnbound,
-    peer_count: usize,
-    // append parameter name with _ because it is only used in test.
-    _deliver_here: bool,
+    deliver_here: bool,
+    next_steps: &HashMap<usize, Vec<RoutingFrame>>,
 ) -> anyhow::Result<()> {
     // Split ports, if any, and update message with new ports. In this
     // way, children actors will reply to this comm actor's ports, instead
@@ -320,7 +324,13 @@ fn split_ports(
                     // unicast and broadcast messages.
                     return Ok(());
                 }
-                UnboundPortKind::Once => ReducerMode::Once(peer_count),
+                UnboundPortKind::Once => {
+                    // Compute peer count for OncePort splitting. This is the number of
+                    // destinations the message will be delivered to, so that the split
+                    // port can correctly accumulate responses.
+                    let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
+                    ReducerMode::Once(peer_count)
+                }
             };
 
             let split = port_id.split(
@@ -331,7 +341,7 @@ fn split_ports(
             )?;
 
             #[cfg(test)]
-            tests::collect_split_port(port_id, &split, _deliver_here);
+            tests::collect_split_port(port_id, &split, deliver_here);
 
             *port_id = split;
             Ok(())
@@ -389,7 +399,13 @@ impl Handler<CastMessage> for CommActor {
         if config.self_rank() == rank {
             Handler::<ForwardMessage>::handle(self, cx, fwd_message).await?;
         } else {
-            Self::forward(cx, config, rank, fwd_message)?;
+            Self::forward(
+                cx,
+                config,
+                rank,
+                fwd_message.message.header_props().clone(),
+                fwd_message,
+            )?;
         }
         Ok(())
     }
