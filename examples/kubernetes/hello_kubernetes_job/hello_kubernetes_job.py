@@ -31,7 +31,7 @@ def main():
     parser.add_argument(
         "--volcano",
         action="store_true",
-        help="Use Volcano scheduler with volcano_workers.yaml",
+        help="Use Volcano scheduler with manifests/volcano_workers.yaml",
     )
     args = parser.parse_args()
 
