@@ -35,6 +35,15 @@ _RFC_1123_MAX_LEN = 63
 
 
 class KubernetesJob(JobTrait):
+    """
+    Job implementation for Kubernetes that connects to pre-provisioned pods.
+
+    It primarily uses Kubernetes label selectors to discover pods, making it compatible
+    with pods from the MonarchMesh CRD and operator, third-party schedulers, or manually
+    provisioned pods. Once discovered, it waits for pods to be ready and connects workers
+    in rank order (0 to N-1) for deterministic communication.
+    """
+
     def __init__(
         self,
         namespace: str,
@@ -62,7 +71,8 @@ class KubernetesJob(JobTrait):
         pod_rank_label: str = "apps.kubernetes.io/pod-index",
     ) -> None:
         """
-        Add a mesh specification. Meshes are discovered by label selector which expects to contain app.kubernetes.io/name=monarch-worker and monarch.pytorch.org/mesh-name=<name> by default if using MonarchMesh CRD and operator.
+        Add a mesh specification. Meshes are discovered by label selector which expects to contain
+        "app.kubernetes.io/name=monarch-worker" and "monarch.pytorch.org/mesh-name=<name>" by default if using MonarchMesh CRD and operator.
 
         Requires all pod ranks from 0 to num_replicas-1 specified by pod rank label to be ready before the mesh becomes available.
 

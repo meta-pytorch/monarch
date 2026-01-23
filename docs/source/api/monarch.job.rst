@@ -78,6 +78,15 @@ SlurmJob
    :show-inheritance:
    :exclude-members: __init__
 
+KubernetesJob
+-------------
+
+.. autoclass:: monarch.job.kubernetes.KubernetesJob
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :exclude-members: __init__
+
 
 Serialization
 =============
