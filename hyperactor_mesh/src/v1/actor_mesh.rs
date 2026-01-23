@@ -398,7 +398,7 @@ impl<A: Referable> ActorMeshRef<A> {
     /// engine. If you use this for anything else, you will be fired (you too, OSS
     /// contributor).
     #[allow(clippy::result_large_err)]
-    pub(crate) fn cast_for_tensor_engine_only_do_not_use<M>(
+    pub fn cast_for_tensor_engine_only_do_not_use<M>(
         &self,
         cx: &impl context::Actor,
         sel: Selection,

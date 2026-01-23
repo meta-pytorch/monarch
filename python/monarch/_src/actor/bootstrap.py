@@ -14,11 +14,9 @@ from monarch._rust_bindings.monarch_hyperactor.bootstrap import (
     attach_to_workers as _attach_to_workers,
     run_worker_loop_forever as _run_worker_loop_forever,
 )
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
-    HostMesh as HyHostMesh,
-)
 from monarch._src.actor.actor_mesh import _Lazy
 from monarch._src.actor.future import _Unawaited, Future
 from monarch._src.actor.host_mesh import HostMesh

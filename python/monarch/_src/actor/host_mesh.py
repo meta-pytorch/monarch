@@ -9,19 +9,17 @@
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+    BootstrapCommand,
+    HostMesh as HyHostMesh,
+)
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import (
     PendingPickle,
     PythonTask,
     Shared,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
-from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
-    BootstrapCommand,
-    HostMesh as HyHostMesh,
-)
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as HyProcMesh,
-)
 from monarch._src.actor.actor_mesh import _Lazy, context
 from monarch._src.actor.allocator import (
     AllocateMixin,

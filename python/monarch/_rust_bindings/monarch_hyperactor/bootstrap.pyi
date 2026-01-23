@@ -12,8 +12,8 @@ from typing import List, Literal, Optional, Union
 PrivateKey = Union[bytes, Path, None]
 CA = Union[bytes, Path, Literal["trust_all_connections"]]
 
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import HostMesh
 
 def bootstrap_main() -> None: ...
 def run_worker_loop_forever(address: str) -> PythonTask[None]: ...

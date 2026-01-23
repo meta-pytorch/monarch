@@ -41,15 +41,15 @@ use crate::actor::PythonActor;
 use crate::actor::to_py_error;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
+use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::monarch_with_gil;
 use crate::shape::PyExtent;
 use crate::shape::PyRegion;
-use crate::v1::proc_mesh::PyProcMesh;
 
 #[pyclass(
     name = "BootstrapCommand",
-    module = "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh"
+    module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
 )]
 #[derive(Clone)]
 pub struct PyBootstrapCommand {
@@ -110,7 +110,7 @@ impl PyBootstrapCommand {
 
 #[pyclass(
     name = "HostMesh",
-    module = "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh"
+    module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
 )]
 pub(crate) enum PyHostMesh {
     Owned(PyHostMeshImpl),
@@ -198,7 +198,7 @@ impl PyHostMesh {
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let from_bytes =
-            PyModule::import(py, "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh")?
+            PyModule::import(py, "monarch._rust_bindings.monarch_hyperactor.host_mesh")?
                 .getattr("py_host_mesh_from_bytes")?;
         Ok((from_bytes, py_bytes))
     }
@@ -238,14 +238,14 @@ impl PyHostMesh {
 #[derive(Clone)]
 #[pyclass(
     name = "HostMeshImpl",
-    module = "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh"
+    module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
 )]
 pub(crate) struct PyHostMeshImpl(SharedCell<HostMesh>);
 
 #[derive(Debug, Clone)]
 #[pyclass(
     name = "HostMeshRefImpl",
-    module = "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh"
+    module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
 )]
 pub(crate) struct PyHostMeshRefImpl(HostMeshRef);
 
@@ -375,21 +375,21 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     let f = wrap_pyfunction!(py_host_mesh_from_bytes, hyperactor_mod)?;
     f.setattr(
         "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh",
+        "monarch._rust_bindings.monarch_hyperactor.host_mesh",
     )?;
     hyperactor_mod.add_function(f)?;
 
     let f2 = wrap_pyfunction!(bootstrap_host, hyperactor_mod)?;
     f2.setattr(
         "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh",
+        "monarch._rust_bindings.monarch_hyperactor.host_mesh",
     )?;
     hyperactor_mod.add_function(f2)?;
 
     let f3 = wrap_pyfunction!(shutdown_local_host_mesh, hyperactor_mod)?;
     f3.setattr(
         "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.v1.host_mesh",
+        "monarch._rust_bindings.monarch_hyperactor.host_mesh",
     )?;
     hyperactor_mod.add_function(f3)?;
 

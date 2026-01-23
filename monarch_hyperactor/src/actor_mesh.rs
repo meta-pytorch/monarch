@@ -10,26 +10,25 @@ use std::future::Future;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Weak;
+use std::thread;
+use std::time::Duration;
 
 use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::ActorRef;
-use hyperactor::actor::ActorStatus;
-use hyperactor::id;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_mesh::Mesh;
-use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::actor_mesh::ActorMesh;
-use hyperactor_mesh::actor_mesh::ActorSupervisionEvents;
-use hyperactor_mesh::dashmap::DashMap;
-use hyperactor_mesh::reference::ActorMeshRef;
 use hyperactor_mesh::sel;
-use hyperactor_mesh::shared_cell::SharedCell;
-use hyperactor_mesh::shared_cell::SharedCellRef;
+use hyperactor_mesh::selection::Selection;
+use hyperactor_mesh::v1::actor_mesh::ActorMesh;
+use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::py_global;
-use ndslice::Selection;
+use monarch_types::py_module_add_function;
+use ndslice::Region;
+use ndslice::Slice;
+use ndslice::selection::structurally_equal;
+use ndslice::view::Ranked;
+use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyNotImplementedError;
@@ -37,8 +36,6 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use serde::Deserialize;
-use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -47,9 +44,7 @@ use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
 use crate::mailbox::EitherPortRef;
-use crate::mailbox::PyMailbox;
 use crate::proc::PyActorId;
-use crate::proc_mesh::Keepalive;
 use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
@@ -59,7 +54,6 @@ use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
-use crate::supervision::Unhealthy;
 
 py_global!(
     is_pending_pickle_allowed,
@@ -196,378 +190,6 @@ impl PythonActorMesh {
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.inner.__reduce__(py)
-    }
-
-    #[staticmethod]
-    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
-        let r: PyResult<PythonActorMeshRef> = bincode::deserialize(bytes.as_bytes())
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
-        r.map(|r| PythonActorMesh { inner: Arc::new(r) })
-    }
-}
-
-#[pyclass(
-    name = "PythonActorMeshImpl",
-    module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
-)]
-pub(crate) struct PythonActorMeshImpl {
-    inner: SharedCell<RootActorMesh<'static, PythonActor>>,
-    #[allow(dead_code)]
-    client: PyMailbox, // Never read.
-    _keepalive: Keepalive,
-    monitor: tokio::task::JoinHandle<()>,
-    health_state: Arc<RootHealthState>,
-}
-
-impl PythonActorMeshImpl {
-    /// Create a new [`PythonActorMesh`] with a monitor that will observe supervision
-    /// errors for this mesh, and update its state properly.
-    pub(crate) fn new(
-        inner: SharedCell<RootActorMesh<'static, PythonActor>>,
-        client: PyMailbox,
-        keepalive: Keepalive,
-        events: ActorSupervisionEvents,
-    ) -> Self {
-        let (user_monitor_sender, _) =
-            tokio::sync::broadcast::channel::<Option<ActorSupervisionEvent>>(1);
-        let health_state = Arc::new(RootHealthState {
-            user_monitor_sender,
-            unhealthy_event: std::sync::Mutex::new(Unhealthy::SoFarSoGood),
-            crashed_ranks: DashMap::new(),
-        });
-        let monitor = tokio::spawn(Self::actor_mesh_monitor(events, health_state.clone()));
-        PythonActorMeshImpl {
-            inner,
-            client,
-            _keepalive: keepalive,
-            monitor,
-            health_state,
-        }
-    }
-    /// Monitor of the actor mesh. It processes supervision errors for the mesh, and keeps mesh
-    /// health state up to date.
-    async fn actor_mesh_monitor(
-        mut events: ActorSupervisionEvents,
-        health_state: Arc<RootHealthState>,
-    ) {
-        loop {
-            let event = events.next().await;
-            tracing::debug!("actor_mesh_monitor received supervision event: {event:?}");
-            {
-                let mut inner_unhealthy_event = health_state.unhealthy_event.lock().unwrap();
-                match &event {
-                    None => *inner_unhealthy_event = Unhealthy::StreamClosed,
-                    Some(event) => {
-                        health_state
-                            .crashed_ranks
-                            .insert(event.actor_id.rank(), event.clone());
-                        *inner_unhealthy_event = Unhealthy::Crashed(event.clone())
-                    }
-                }
-            }
-
-            // Ignore the sender error when there is no receiver,
-            // which happens when there is no active requests to this
-            // mesh.
-            let ret = health_state.user_monitor_sender.send(event.clone());
-            tracing::debug!("actor_mesh_monitor user_sender send: {ret:?}");
-
-            if event.is_none() {
-                // The mesh is stopped, so we can stop the monitor.
-                break;
-            }
-        }
-    }
-
-    fn try_inner(&self) -> PyResult<SharedCellRef<RootActorMesh<'static, PythonActor>>> {
-        self.inner.borrow().map_err(|_| {
-            SupervisionError::new_err("`PythonActorMesh` has already been stopped".to_string())
-        })
-    }
-
-    fn bind(&self) -> PyResult<PythonActorMeshRef> {
-        let mesh = self.try_inner()?;
-        let root_health_state = Some(Arc::downgrade(&self.health_state));
-        Ok(PythonActorMeshRef {
-            inner: mesh.bind(),
-            root_health_state,
-        })
-    }
-}
-
-impl ActorMeshProtocol for PythonActorMeshImpl {
-    fn cast(
-        &self,
-        message: PythonMessage,
-        selection: Selection,
-        instance: &PyInstance,
-    ) -> PyResult<()> {
-        let unhealthy_event = self
-            .health_state
-            .unhealthy_event
-            .lock()
-            .expect("failed to acquire unhealthy_event lock");
-
-        match &*unhealthy_event {
-            Unhealthy::SoFarSoGood => (),
-            Unhealthy::Crashed(event) => {
-                return Err(SupervisionError::new_err(format!(
-                    "Actor {:?} is unhealthy with reason: {}",
-                    event.actor_id, event.actor_status
-                )));
-            }
-            Unhealthy::StreamClosed => {
-                return Err(SupervisionError::new_err(
-                    "actor mesh is stopped due to proc mesh shutdown".to_string(),
-                ));
-            }
-        }
-
-        self.try_inner()?
-            .cast(instance.deref(), selection, message)
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(())
-    }
-
-    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        let mut receiver = self.health_state.user_monitor_sender.subscribe();
-        PyPythonTask::new(async move {
-            let event = receiver.recv().await;
-            let event = match event {
-                Ok(Some(event)) => PyActorSupervisionEvent::from(event.clone()),
-                Ok(None) | Err(_) => PyActorSupervisionEvent::from(ActorSupervisionEvent::new(
-                    // Dummy actor as placeholder to indicate the whole mesh is stopped
-                    // TODO(albertli): remove this when pushing all supervision logic to rust.
-                    id!(default[0].actor[0]),
-                    None,
-                    ActorStatus::generic_failure("actor mesh is stopped due to proc mesh shutdown"),
-                    None,
-                )),
-            };
-            Ok(SupervisionError::new_err(format!(
-                "Actor {:?} exited because of the following reason: {}",
-                event.actor_id(),
-                event.__repr__()?
-            )))
-        })
-        // If the monitor is deleted, there's no need to keep awaiting this result.
-        .map(|mut x| x.spawn_abortable().map(Some))?
-    }
-
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        self.bind()?.new_with_region(region)
-    }
-
-    fn stop<'py>(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
-        let actor_mesh = self.inner.clone();
-        let instance = monarch_with_gil_blocking(|_| instance.clone());
-        PyPythonTask::new(async move {
-            let actor_mesh = actor_mesh
-                .take()
-                .await
-                .map_err(|_| PyRuntimeError::new_err("`ActorMesh` has already been stopped"))?;
-            actor_mesh.stop(instance.deref()).await.map_err(|err| {
-                PyException::new_err(format!("Failed to stop actor mesh: {}", err))
-            })?;
-            Ok(())
-        })
-    }
-    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        self.bind()?.__reduce__(py)
-    }
-}
-
-#[pymethods]
-impl PythonActorMeshImpl {
-    fn get_supervision_event(&self) -> PyResult<Option<PyActorSupervisionEvent>> {
-        let unhealthy_event = self
-            .health_state
-            .unhealthy_event
-            .lock()
-            .expect("failed to acquire unhealthy_event lock");
-
-        match &*unhealthy_event {
-            Unhealthy::SoFarSoGood => Ok(None),
-            Unhealthy::StreamClosed => {
-                Ok(Some(PyActorSupervisionEvent::from(
-                    ActorSupervisionEvent::new(
-                        // Dummy actor as placeholder to indicate the whole mesh is stopped
-                        // TODO(albertli): remove this when pushing all supervision logic to rust.
-                        id!(default[0].actor[0]),
-                        None,
-                        ActorStatus::generic_failure(
-                            "actor mesh is stopped due to proc mesh shutdown",
-                        ),
-                        None,
-                    ),
-                )))
-            }
-            Unhealthy::Crashed(event) => Ok(Some(PyActorSupervisionEvent::from(event.clone()))),
-        }
-    }
-
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        ActorMeshProtocol::supervision_event(self, instance)
-    }
-    fn start_supervision(
-        &self,
-        instance: &PyInstance,
-        supervision_display_name: String,
-    ) -> PyResult<()> {
-        ActorMeshProtocol::start_supervision(self, instance, supervision_display_name)
-    }
-
-    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
-        ActorMeshProtocol::stop(self, instance)
-    }
-    // Consider defining a "PythonActorRef", which carries specifically
-    // a reference to python message actors.
-    fn get(&self, rank: usize) -> PyResult<Option<PyActorId>> {
-        Ok(self
-            .try_inner()?
-            .get(rank)
-            .map(ActorRef::into_actor_id)
-            .map(PyActorId::from))
-    }
-
-    #[getter]
-    fn stopped(&self) -> PyResult<bool> {
-        Ok(self.inner.borrow().is_err())
-    }
-}
-
-#[derive(Debug)]
-struct RootHealthState {
-    user_monitor_sender: tokio::sync::broadcast::Sender<Option<ActorSupervisionEvent>>,
-    unhealthy_event: std::sync::Mutex<Unhealthy<ActorSupervisionEvent>>,
-    crashed_ranks: DashMap<usize, ActorSupervisionEvent>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PythonActorMeshRef {
-    inner: ActorMeshRef<PythonActor>,
-    #[serde(skip)]
-    // If the reference has been serialized and sent over the wire
-    // we no longer have access to the underlying mesh's state
-    root_health_state: Option<Weak<RootHealthState>>,
-}
-
-impl ActorMeshProtocol for PythonActorMeshRef {
-    fn cast(
-        &self,
-        message: PythonMessage,
-        selection: Selection,
-        instance: &PyInstance,
-    ) -> PyResult<()> {
-        if let Some(root_health_state) = &self.root_health_state {
-            // MeshRef has not been serialized and sent over the wire so we can actually validate
-            // if the underlying mesh still exists
-            if let Some(root_health_state) = root_health_state.upgrade() {
-                // iterate through all crashed ranks in the root mesh and take first rank
-                // that is in the sliced mesh
-                match self.inner.shape().slice().iter().find_map(|rank| {
-                    root_health_state
-                        .crashed_ranks
-                        .get(&rank)
-                        .map(|entry| entry.value().clone())
-                }) {
-                    Some(event) => {
-                        return Err(SupervisionError::new_err(format!(
-                            "Actor {:?} is unhealthy with reason: {}",
-                            event.actor_id, event.actor_status
-                        )));
-                    }
-                    None => {
-                        if matches!(
-                            &*root_health_state
-                                .unhealthy_event
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner()),
-                            Unhealthy::StreamClosed
-                        ) {
-                            return Err(SupervisionError::new_err(
-                                "actor mesh is stopped due to proc mesh shutdown".to_string(),
-                            ));
-                        }
-                    }
-                }
-            } else {
-                return Err(SupervisionError::new_err(
-                    "actor mesh is stopped due to proc mesh shutdown".to_string(),
-                ));
-            }
-        }
-
-        self.inner
-            .cast(instance.deref(), selection, message)
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-        Ok(())
-    }
-
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        let sliced = self
-            .inner
-            .new_with_shape(region.as_inner().into())
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-        Ok(Box::new(Self {
-            inner: sliced,
-            root_health_state: self.root_health_state.clone(),
-        }))
-    }
-
-    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        match self.root_health_state.as_ref().and_then(|x| x.upgrade()) {
-            Some(root_health_state) => {
-                let mut receiver = root_health_state.user_monitor_sender.subscribe();
-                let slice = self.inner.shape().slice().clone();
-                PyPythonTask::new(async move {
-                    while let Ok(Some(event)) =  receiver.recv().await {
-                        if slice.iter().any(|rank| rank == event.actor_id.rank()) {
-                            return Ok(SupervisionError::new_err(format!(
-                                "Actor {:?} exited because of the following reason: {}",
-                                event.actor_id, event.actor_status
-                            )));
-                        }
-                    }
-                    Ok(SupervisionError::new_err(format!(
-                        "Actor {:?} exited because of the following reason: actor mesh is stopped due to proc mesh shutdown",
-                        id!(default[0].actor[0])
-                    )))
-                })
-                .map(|mut x| x.spawn().map(Some))?
-            }
-            None => Ok(None),
-        }
-    }
-    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes =
-            bincode::serialize(self).map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
-        let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
-        let module = py
-            .import("monarch._rust_bindings.monarch_hyperactor.actor_mesh")
-            .unwrap();
-        let from_bytes = module
-            .getattr("PythonActorMesh")
-            .unwrap()
-            .getattr("from_bytes")
-            .unwrap();
-        Ok((from_bytes, py_bytes))
-    }
-}
-
-impl Drop for PythonActorMeshImpl {
-    fn drop(&mut self) {
-        if let Ok(mesh) = self.inner.borrow() {
-            tracing::debug!("Dropping PythonActorMesh: {}", mesh.name());
-        } else {
-            tracing::debug!(
-                "Dropping stopped PythonActorMesh. The underlying mesh is already stopped."
-            );
-        }
-        // Guard against panics during interpreter shutdown when tokio runtime may be gone
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.monitor.abort();
-        }));
     }
 }
 
@@ -721,7 +343,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
                     (PendingPickle::from_future(
                         async move {
                             let mesh = PythonActorMesh::from_impl(fut.await?);
-                            Python::with_gil(|py| mesh.into_py_any(py))
+                            monarch_with_gil(|py| mesh.into_py_any(py)).await
                         }
                         .boxed(),
                     )?,)
@@ -798,6 +420,219 @@ impl ActorMeshProtocol for AsyncActorMesh {
     }
 }
 
+#[derive(Debug, Clone)]
+#[pyclass(
+    name = "PyActorMesh",
+    module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
+)]
+pub(crate) struct PyActorMesh {
+    mesh: ActorMesh<PythonActor>,
+}
+
+#[derive(Debug, Clone)]
+#[pyclass(
+    name = "PyActorMeshRef",
+    module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
+)]
+pub(crate) struct PyActorMeshRef {
+    mesh: ActorMeshRef<PythonActor>,
+}
+
+#[derive(Debug, Clone)]
+#[pyclass(
+    name = "PythonActorMeshImpl",
+    module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
+)]
+pub(crate) enum PythonActorMeshImpl {
+    Owned(PyActorMesh),
+    Ref(PyActorMeshRef),
+}
+
+impl PythonActorMeshImpl {
+    /// Get a new owned [`PythonActorMeshImpl`].
+    pub(crate) fn new_owned(inner: ActorMesh<PythonActor>) -> Self {
+        PythonActorMeshImpl::Owned(PyActorMesh { mesh: inner })
+    }
+
+    /// Get a new ref-based [`PythonActorMeshImpl`].
+    pub(crate) fn new_ref(inner: ActorMeshRef<PythonActor>) -> Self {
+        PythonActorMeshImpl::Ref(PyActorMeshRef { mesh: inner })
+    }
+
+    fn mesh_ref(&self) -> ActorMeshRef<PythonActor> {
+        match self {
+            PythonActorMeshImpl::Owned(inner) => (*inner.mesh).clone(),
+            PythonActorMeshImpl::Ref(inner) => inner.mesh.clone(),
+        }
+    }
+}
+
+impl ActorMeshProtocol for PythonActorMeshImpl {
+    fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
+        let mesh_ref = self.mesh_ref();
+
+        <ActorMeshRef<PythonActor> as ActorMeshProtocol>::cast(
+            &mesh_ref, message, selection, instance,
+        )
+    }
+
+    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
+        let mesh = self.mesh_ref();
+        let instance = monarch_with_gil_blocking(|_py| instance.clone());
+        let shared = PyPythonTask::new::<_, ()>(async move {
+            let supervision_failure = mesh
+                .next_supervision_event(instance.deref())
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let event = supervision_failure.event;
+            let pyerr = SupervisionError::new_err(format!(
+                "Actor {} exited because of the following reason: {}",
+                event.actor_id, event,
+            ));
+            Err(pyerr)
+        })?
+        .spawn_abortable()?;
+        Ok(Some(shared))
+    }
+
+    fn start_supervision(
+        &self,
+        _instance: &PyInstance,
+        _supervision_display_name: String,
+    ) -> PyResult<()> {
+        // This function is a no-op since moving the monitor loop to ActorMeshController.
+        // Initializing the receiver changes no received events.
+        Ok(())
+    }
+
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
+        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
+        Ok(Box::new(PythonActorMeshImpl::new_ref(
+            self.mesh_ref().sliced(region.as_inner().clone()),
+        )))
+    }
+
+    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        let (slf, instance) = monarch_with_gil_blocking(|_py| (self.clone(), instance.clone()));
+        match slf {
+            PythonActorMeshImpl::Owned(mut mesh) => PyPythonTask::new(async move {
+                mesh.mesh
+                    .stop(instance.deref())
+                    .await
+                    .map_err(|err| PyValueError::new_err(err.to_string()))
+            }),
+            PythonActorMeshImpl::Ref(_) => Err(PyNotImplementedError::new_err(
+                "Cannot call stop on an ActorMeshRef, requires an owned ActorMesh",
+            )),
+        }
+    }
+
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        self.mesh_ref().__reduce__(py)
+    }
+}
+
+impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
+    fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
+        if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
+            self.cast(instance.deref(), message.clone())
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+        } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
+            let region = Ranked::region(self);
+            let random_rank = fastrand::usize(0..region.num_ranks());
+            let offset = region
+                .slice()
+                .get(random_rank)
+                .map_err(anyhow::Error::from)?;
+            let singleton_region = Region::new(
+                Vec::new(),
+                Slice::new(offset, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
+            );
+            self.sliced(singleton_region)
+                .cast(instance.deref(), message.clone())
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+        } else {
+            return Err(PyRuntimeError::new_err(format!(
+                "invalid selection: {:?}",
+                selection
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
+        Err(PyNotImplementedError::new_err(
+            "This should never be called on ActorMeshRef directly",
+        ))
+    }
+
+    fn start_supervision(
+        &self,
+        _instance: &PyInstance,
+        _supervision_display_name: String,
+    ) -> PyResult<()> {
+        Err(PyNotImplementedError::new_err(
+            "This should never be called on ActorMeshRef directly",
+        ))
+    }
+
+    /// Stop the actor mesh asynchronously.
+    fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
+        Err(PyNotImplementedError::new_err(
+            "This cannot be used on ActorMeshRef, only on owned ActorMesh",
+        ))
+    }
+
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
+        let sliced = self.sliced(region.as_inner().clone());
+        Ok(Box::new(sliced))
+    }
+
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let bytes = bincode::serialize(self).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
+        let module = py
+            .import("monarch._rust_bindings.monarch_hyperactor.actor_mesh")
+            .unwrap();
+        let from_bytes = module.getattr("py_actor_mesh_from_bytes").unwrap();
+        Ok((from_bytes, py_bytes))
+    }
+}
+
+#[pymethods]
+impl PythonActorMeshImpl {
+    fn get(&self, rank: usize) -> PyResult<Option<PyActorId>> {
+        Ok(self
+            .mesh_ref()
+            .get(rank)
+            .map(|r| ActorRef::into_actor_id(r.clone()))
+            .map(PyActorId::from))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PythonActorMeshImpl({:?})", self.mesh_ref())
+    }
+}
+
+#[pyfunction]
+fn py_actor_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
+    let r: PyResult<ActorMeshRef<PythonActor>> =
+        bincode::deserialize(bytes.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()));
+    r.map(|r| AsyncActorMesh::from_impl(Arc::new(PythonActorMeshImpl::new_ref(r))))
+        .map(|r| PythonActorMesh::from_impl(Arc::from(r)))
+}
+
 #[pyclass(
     name = "ActorSupervisionEvent",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
@@ -835,13 +670,55 @@ fn py_identity(obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
     Ok(obj)
 }
 
+/// Holds the GIL for the specified number of seconds without releasing it.
+///
+/// This is a test utility function that spawns a background thread which
+/// acquires the GIL using Rust's Python::with_gil and holds it for the
+/// specified duration using thread::sleep. Unlike Python code which
+/// periodically releases the GIL, this function holds it continuously.
+///
+/// We intentionally use `std::thread::sleep` here (not `Clock::sleep` or async sleep)
+/// because the purpose is to simulate a blocking operation that holds the GIL without
+/// releasing it. Using an async sleep would release the GIL periodically, defeating
+/// the purpose of this test utility.
+///
+/// Args:
+///     delay_secs: Seconds to wait before acquiring the GIL
+///     hold_secs: Seconds to hold the GIL
+#[pyfunction]
+#[pyo3(name = "hold_gil_for_test", signature = (delay_secs, hold_secs))]
+#[allow(clippy::disallowed_methods)] // Intentional: we need blocking sleep to hold the GIL
+pub fn hold_gil_for_test(delay_secs: f64, hold_secs: f64) {
+    thread::spawn(move || {
+        // Wait before grabbing the GIL (blocking sleep is fine here, we're in a spawned thread)
+        #[allow(clippy::disallowed_methods)]
+        thread::sleep(Duration::from_secs_f64(delay_secs));
+        // Acquire and hold the GIL - MUST use blocking sleep to keep GIL held
+        Python::with_gil(|_py| {
+            tracing::info!("start holding the gil...");
+            #[allow(clippy::disallowed_methods)]
+            thread::sleep(Duration::from_secs_f64(hold_secs));
+            tracing::info!("end holding the gil...");
+        });
+    });
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
-    let f = wrap_pyfunction!(py_identity, hyperactor_mod)?;
-    f.setattr(
-        "__module__",
+    py_module_add_function!(
+        hyperactor_mod,
         "monarch._rust_bindings.monarch_hyperactor.actor_mesh",
-    )?;
-    hyperactor_mod.add_function(f)?;
+        py_identity
+    );
+    py_module_add_function!(
+        hyperactor_mod,
+        "monarch._rust_bindings.monarch_hyperactor.actor_mesh",
+        py_actor_mesh_from_bytes
+    );
+    py_module_add_function!(
+        hyperactor_mod,
+        "monarch._rust_bindings.monarch_hyperactor.actor_mesh",
+        hold_gil_for_test
+    );
     hyperactor_mod.add_class::<PythonActorMesh>()?;
     hyperactor_mod.add_class::<PythonActorMeshImpl>()?;
     hyperactor_mod.add_class::<PyActorSupervisionEvent>()?;

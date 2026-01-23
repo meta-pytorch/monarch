@@ -7,7 +7,7 @@
 # pyre-unsafe
 
 import pickle
-from typing import Any, Callable, cast, Coroutine, Iterable, List, TYPE_CHECKING, Union
+from typing import Any, Callable, cast, Coroutine, Iterable, List, TYPE_CHECKING
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.actor import (
@@ -30,16 +30,13 @@ from monarch._src.actor.proc_mesh import _get_bootstrap_args
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
 
-from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
-from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     BootstrapCommand,
     HostMesh,
 )
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as ProcMeshV1,
-)
+from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor.actor_mesh import Context, context, Instance
 
 
@@ -60,12 +57,7 @@ async def alloc() -> Alloc:
 
 
 async def allocate() -> ProcMesh:
-    proc_mesh = await ProcMesh.allocate_nonblocking(await alloc())
-    return proc_mesh
-
-
-async def allocate_v1() -> ProcMeshV1:
-    proc_mesh = await ProcMeshV1.allocate_nonblocking(
+    proc_mesh = await ProcMesh.allocate_nonblocking(
         context().actor_instance._as_rust(), await alloc(), "proc_mesh"
     )
     return proc_mesh
@@ -107,41 +99,29 @@ class MyActor:
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("use_v1", [True, False])
-async def test_bind_and_pickling(use_v1: bool) -> None:
+async def test_bind_and_pickling() -> None:
     @run_on_tokio
     async def run() -> None:
-        if not use_v1:
-            proc_mesh = await allocate()
-            actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-        else:
-            proc_mesh = await allocate_v1()
-            actor_mesh = await proc_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(), "test", MyActor
-            )
+        proc_mesh = await allocate()
+        actor_mesh = await proc_mesh.spawn_nonblocking(
+            context().actor_instance._as_rust(), "test", MyActor
+        )
         pickle.dumps(actor_mesh)
 
         actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
         obj = pickle.dumps(actor_mesh_ref)
         pickle.loads(obj)
-        if not use_v1:
-            assert isinstance(proc_mesh, ProcMesh)
-            await proc_mesh.stop_nonblocking()
-        else:
-            assert isinstance(proc_mesh, ProcMeshV1)
-            instance = context().actor_instance._as_rust()
-            await proc_mesh.stop_nonblocking(instance)
+
+        instance = context().actor_instance._as_rust()
+        await proc_mesh.stop_nonblocking(instance)
 
     run()
 
 
-async def spawn_actor_mesh(proc_mesh: Union[ProcMesh, ProcMeshV1]) -> PythonActorMesh:
-    if isinstance(proc_mesh, ProcMeshV1):
-        actor_mesh = await proc_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(), "test", MyActor
-        )
-    else:
-        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+async def spawn_actor_mesh(proc_mesh: ProcMesh) -> PythonActorMesh:
+    actor_mesh = await proc_mesh.spawn_nonblocking(
+        context().actor_instance._as_rust(), "test", MyActor
+    )
     # init actors to record their root ranks
     receiver: PortReceiver
     instance = context().actor_instance
@@ -210,26 +190,17 @@ async def verify_cast_to_call(
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("use_v1", [True, False])
-async def test_cast_handle(use_v1: bool) -> None:
+async def test_cast_handle() -> None:
     @run_on_tokio
     async def run() -> None:
-        if use_v1:
-            proc_mesh = await allocate_v1()
-        else:
-            proc_mesh = await allocate()
+        proc_mesh = await allocate()
         actor_mesh = await spawn_actor_mesh(proc_mesh)
         await verify_cast_to_call(
             actor_mesh, context().actor_instance, list(range(3 * 8 * 8))
         )
 
-        if not use_v1:
-            assert isinstance(proc_mesh, ProcMesh)
-            await proc_mesh.stop_nonblocking()
-        else:
-            assert isinstance(proc_mesh, ProcMeshV1)
-            instance = context().actor_instance._as_rust()
-            await proc_mesh.stop_nonblocking(instance)
+        instance = context().actor_instance._as_rust()
+        await proc_mesh.stop_nonblocking(instance)
 
     run()
 
@@ -237,26 +208,17 @@ async def test_cast_handle(use_v1: bool) -> None:
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("use_v1", [True, False])
-async def test_cast_ref(use_v1: bool) -> None:
+async def test_cast_ref() -> None:
     @run_on_tokio
     async def run() -> None:
-        if use_v1:
-            proc_mesh = await allocate_v1()
-        else:
-            proc_mesh = await allocate()
+        proc_mesh = await allocate()
         actor_mesh = await spawn_actor_mesh(proc_mesh)
         actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
         await verify_cast_to_call(
             actor_mesh_ref, context().actor_instance, list(range(3 * 8 * 8))
         )
-        if not use_v1:
-            assert isinstance(proc_mesh, ProcMesh)
-            await proc_mesh.stop_nonblocking()
-        else:
-            assert isinstance(proc_mesh, ProcMeshV1)
-            instance = context().actor_instance._as_rust()
-            await proc_mesh.stop_nonblocking(instance)
+        instance = context().actor_instance._as_rust()
+        await proc_mesh.stop_nonblocking(instance)
 
     run()
 

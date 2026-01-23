@@ -20,6 +20,7 @@ pub mod channel;
 pub mod code_sync;
 pub mod config;
 pub mod context;
+pub mod host_mesh;
 pub mod local_state_broker;
 pub mod logging;
 pub mod mailbox;
@@ -37,7 +38,6 @@ pub mod shape;
 pub mod supervision;
 pub mod telemetry;
 mod testresource;
-pub mod v1;
 pub mod value_mesh;
 
 #[cfg(fbcode_build)]

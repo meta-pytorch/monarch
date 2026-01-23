@@ -17,11 +17,9 @@ import monarch._src.actor.host_mesh
 import monarch.actor
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as HyProcMesh,
-)
 from monarch._src.actor.actor_mesh import (
     _client_context,
     Actor,

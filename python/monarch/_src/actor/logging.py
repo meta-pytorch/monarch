@@ -8,16 +8,10 @@
 
 import logging
 import threading
-from typing import Optional, TextIO, Tuple, Union
+from typing import Optional, TextIO, Tuple
 
-from monarch._rust_bindings.monarch_extension.logging import LoggingMeshClient
+from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.v1.logging import (
-    LoggingMeshClient as LoggingMeshClientV1,
-)
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as HyProcMeshV1,
-)
 from monarch._src.actor.actor_mesh import context
 from monarch._src.actor.future import Future
 from monarch._src.actor.ipython_check import is_ipython
@@ -32,7 +26,7 @@ _global_flush_lock = threading.Lock()
 FD_READ_CHUNK_SIZE = 4096
 
 
-def flush_all_proc_mesh_logs(v1: bool = False) -> None:
+def flush_all_proc_mesh_logs() -> None:
     """Flush logs from all active ProcMesh instances."""
     from monarch._src.actor.proc_mesh import get_active_proc_meshes
 
@@ -43,26 +37,16 @@ def flush_all_proc_mesh_logs(v1: bool = False) -> None:
 
 class LoggingManager:
     def __init__(self) -> None:
-        self._logging_mesh_client: Optional[
-            Union[LoggingMeshClient, LoggingMeshClientV1]
-        ] = None
+        self._logging_mesh_client: Optional[LoggingMeshClient] = None
 
-    async def init(
-        self, proc_mesh: Union[HyProcMesh, HyProcMeshV1], stream_to_client: bool
-    ) -> None:
+    async def init(self, proc_mesh: HyProcMesh, stream_to_client: bool) -> None:
         if self._logging_mesh_client is not None:
             return
 
         instance = context().actor_instance._as_rust()
-        if isinstance(proc_mesh, HyProcMesh):
-            self._logging_mesh_client = await LoggingMeshClient.spawn(
-                instance, proc_mesh=proc_mesh
-            )
-        else:
-            assert isinstance(proc_mesh, HyProcMeshV1)
-            self._logging_mesh_client = await LoggingMeshClientV1.spawn(
-                instance, proc_mesh=proc_mesh
-            )
+        self._logging_mesh_client = await LoggingMeshClient.spawn(
+            instance, proc_mesh=proc_mesh
+        )
         self._logging_mesh_client.set_mode(
             instance,
             stream_to_client=stream_to_client,
@@ -84,12 +68,7 @@ class LoggingManager:
                     assert ipython is not None
                     ipython.events.register(
                         "post_run_cell",
-                        lambda _: flush_all_proc_mesh_logs(
-                            self._logging_mesh_client is not None
-                            and isinstance(
-                                self._logging_mesh_client, LoggingMeshClientV1
-                            )
-                        ),
+                        lambda _: flush_all_proc_mesh_logs(),
                     )
                     _global_flush_registered = True
 

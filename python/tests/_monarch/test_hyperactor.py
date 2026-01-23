@@ -22,6 +22,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor.allocator import LocalAllocator
 from monarch._src.actor.pickle import flatten, unflatten
+from monarch.actor import context
 
 
 class MyActor:
@@ -82,8 +83,10 @@ async def test_proc_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
-    proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
-    assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
+    proc_mesh = await ProcMesh.allocate_nonblocking(
+        context().actor_instance._as_rust(), alloc, "test"
+    )
+    assert str(proc_mesh).startswith("<ProcMesh: ")
 
 
 @_python_task_test
@@ -91,8 +94,12 @@ async def test_actor_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
-    proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    proc_mesh = await ProcMesh.allocate_nonblocking(
+        context().actor_instance._as_rust(), alloc, "test"
+    )
+    actor_mesh = await proc_mesh.spawn_nonblocking(
+        context().actor_instance._as_rust(), "test", MyActor
+    )
 
     await actor_mesh.initialized()
 

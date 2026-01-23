@@ -98,7 +98,9 @@ async def allocate() -> ProcMesh:
     spec = AllocSpec(AllocConstraints(), replica=1)
     allocator = LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
-    return await ProcMesh.allocate_nonblocking(alloc)
+    return await ProcMesh.allocate_nonblocking(
+        context().actor_instance._as_rust(), alloc, "test"
+    )
 
 
 def _python_task_test(
@@ -169,7 +171,9 @@ class MyActor:
 @_python_task_test
 async def test_reducer() -> None:
     proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    actor_mesh = await proc_mesh.spawn_nonblocking(
+        context().actor_instance._as_rust(), "test", MyActor
+    )
     ins = context().actor_instance
 
     def my_accumulate(state: str, update: str) -> str:
@@ -199,4 +203,4 @@ async def test_reducer() -> None:
     assert "[reduced](start+msg0)" in value
 
     #  Note: occasionally test would hang without this stop
-    await proc_mesh.stop_nonblocking()
+    await proc_mesh.stop_nonblocking(context().actor_instance._as_rust())

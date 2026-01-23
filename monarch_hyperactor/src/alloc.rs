@@ -38,11 +38,11 @@ use pyo3::types::PyDict;
 use tokio::process::Command;
 
 use crate::channel::PyChannelAddr;
+use crate::host_mesh::PyBootstrapCommand;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
-use crate::v1::host_mesh::PyBootstrapCommand;
 
 /// Convert a PyDict to an Extent
 fn pydict_to_extent(shape: &Bound<'_, PyDict>) -> PyResult<Extent> {

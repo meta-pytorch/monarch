@@ -38,15 +38,13 @@ from weakref import WeakSet
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import (
     PendingPickle,
     PythonTask,
     Shared,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as HyProcMesh,
-)
 from monarch._src.actor.actor_mesh import (
     _Actor,
     _create_endpoint_message,
@@ -368,9 +366,6 @@ class ProcMesh(MeshTrait):
         assert asyncio.get_running_loop() is not None
         return await Future(coro=self._proc_mesh.task())
 
-    async def monitor(self) -> None:
-        logger.debug("monitor is not implemented for v1 ProcMesh")
-
     @classmethod
     def from_host_mesh(
         self,
@@ -638,7 +633,7 @@ class ProcMesh(MeshTrait):
         auto_reload: bool = False,
     ) -> None:
         raise NotImplementedError(
-            "sync_workspace is not implemented for v1 ProcMesh. Use HostMesh.sync_workspace instead."
+            "sync_workspace is not implemented for ProcMesh. Use HostMesh.sync_workspace instead."
         )
 
     async def _sync_workspace(
