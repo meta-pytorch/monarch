@@ -59,7 +59,7 @@ def configure(
     default_encoding: Encoding | None = None,
     channel_net_rx_buffer_full_check_interval: str | None = None,
     message_latency_sampling_rate: float | None = None,
-    enable_client_seq_assignment: bool | None = None,
+    enable_dest_actor_reordering_buffer: bool | None = None,
     mesh_bootstrap_enable_pdeathsig: bool | None = None,
     mesh_terminate_concurrency: int | None = None,
     mesh_terminate_timeout: str | None = None,
@@ -119,7 +119,7 @@ def configure(
             default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
             channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
             message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
-            enable_client_seq_assignment: Enable client-side sequence assignment.
+            enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor.
 
         Mesh bootstrap configuration:
             mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes.
@@ -201,8 +201,10 @@ def configure(
         )
     if message_latency_sampling_rate is not None:
         params["message_latency_sampling_rate"] = message_latency_sampling_rate
-    if enable_client_seq_assignment is not None:
-        params["enable_client_seq_assignment"] = enable_client_seq_assignment
+    if enable_dest_actor_reordering_buffer is not None:
+        params["enable_dest_actor_reordering_buffer"] = (
+            enable_dest_actor_reordering_buffer
+        )
     if mesh_bootstrap_enable_pdeathsig is not None:
         params["mesh_bootstrap_enable_pdeathsig"] = mesh_bootstrap_enable_pdeathsig
     if mesh_terminate_concurrency is not None:

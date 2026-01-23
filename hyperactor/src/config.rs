@@ -113,12 +113,12 @@ declare_attrs! {
     })
     pub attr MESSAGE_LATENCY_SAMPLING_RATE: f32 = 0.01;
 
-    /// Whether to enable client sequence assignment.
+    /// Whether to enable dest actor reordering buffer.
     @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_ENABLE_CLIENT_SEQ_ASSIGNMENT".to_string()),
-        py_name: Some("enable_client_seq_assignment".to_string()),
+        env_name: Some("HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER".to_string()),
+        py_name: Some("enable_dest_actor_reordering_buffer".to_string()),
     })
-    pub attr ENABLE_CLIENT_SEQ_ASSIGNMENT: bool = false;
+    pub attr ENABLE_DEST_ACTOR_REORDERING_BUFFER: bool = false;
 
     /// Timeout for [`Host::spawn`] to await proc readiness.
     ///

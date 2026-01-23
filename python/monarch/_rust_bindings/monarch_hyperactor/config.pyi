@@ -60,7 +60,7 @@ def configure(
     default_encoding: Encoding = ...,
     channel_net_rx_buffer_full_check_interval: str = ...,
     message_latency_sampling_rate: float = ...,
-    enable_client_seq_assignment: bool = ...,
+    enable_dest_actor_reordering_buffer: bool = ...,
     mesh_bootstrap_enable_pdeathsig: bool = ...,
     mesh_terminate_concurrency: int = ...,
     mesh_terminate_timeout: str = ...,
@@ -131,7 +131,7 @@ def configure(
             check interval (humantime)
         message_latency_sampling_rate: Sampling rate for message latency
             (0.0 to 1.0)
-        enable_client_seq_assignment: Enable client-side sequence
+        enable_dest_actor_reordering_buffer: Enable client-side sequence
             assignment
         mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for
             spawned processes

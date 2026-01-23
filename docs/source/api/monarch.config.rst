@@ -364,12 +364,12 @@ Message Handling
     A value of ``0.01`` means 1% of messages are sampled. Use ``1.0`` for
     100% sampling (all messages) or ``0.0`` to disable sampling.
 
-``enable_client_seq_assignment``
-    Enable client-side sequence assignment for messages.
+``enable_dest_actor_reordering_buffer``
+    Enable reordering buffer in dest actor.
 
     - **Type**: ``bool``
     - **Default**: ``False``
-    - **Environment**: ``HYPERACTOR_ENABLE_CLIENT_SEQ_ASSIGNMENT``
+    - **Environment**: ``HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER``
 
 
 Message Encoding
