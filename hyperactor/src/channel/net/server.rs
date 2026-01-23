@@ -694,7 +694,7 @@ where
                         let source : ChannelAddr = addr.into();
                         tracing::debug!(
                             source = %source,
-                            addr = %listener_channel_addr,
+                            dest = %listener_channel_addr,
                             "new connection accepted"
                         );
                         metrics::CHANNEL_CONNECTIONS.add(
@@ -760,7 +760,7 @@ where
                         );
 
                         tracing::info!(
-                            addr = %listener_channel_addr,
+                            dest = %listener_channel_addr,
                             error = %err,
                             "accept error"
                         );
@@ -770,7 +770,7 @@ where
 
             _ = parent_cancel_token.cancelled() => {
                 tracing::info!(
-                    addr = %listener_channel_addr,
+                    dest = %listener_channel_addr,
                     "received parent token cancellation"
                 );
                 break Ok(());
@@ -779,7 +779,7 @@ where
             result = join_nonempty(&mut connections) => {
                 if let Err(err) = result {
                     tracing::info!(
-                        addr = %listener_channel_addr,
+                        dest = %listener_channel_addr,
                         error = %err,
                         "connection task join error"
                     );
@@ -829,7 +829,7 @@ impl ServerHandle {
     pub(crate) fn stop(&self, reason: &str) {
         tracing::info!(
             name = "ChannelServerStatus",
-            addr = %self.channel_addr,
+            dest = %self.channel_addr,
             status = "Stop::Sent",
             reason,
             "sent Stop signal; check server logs for the stop progress"

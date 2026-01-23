@@ -165,7 +165,7 @@ impl<M: RemoteMessage> Rx<M> for NetRx<M> {
     async fn recv(&mut self) -> Result<M, ChannelError> {
         tracing::trace!(
             name = "recv",
-            source = %self.1,
+            dest = %self.1,
             "receiving message"
         );
         self.0.recv().await.ok_or(ChannelError::Closed)
