@@ -274,8 +274,8 @@ def test_duration_config_multiple() -> None:
         ("mesh_terminate_timeout", "20s", "20s", "10s"),
         # Proc mesh timeouts
         ("actor_spawn_max_idle", "45s", "45s", "30s"),
-        ("get_actor_state_max_idle", "90s", "1m 30s", "1m"),
-        ("supervision_liveness_timeout", "90s", "1m 30s", "30s"),
+        ("get_actor_state_max_idle", "90s", "1m 30s", "30s"),
+        ("supervision_watchdog_timeout", "90s", "1m 30s", "2m"),
         # Host mesh timeouts
         ("proc_stop_max_idle", "45s", "45s", "30s"),
         ("get_proc_state_max_idle", "90s", "1m 30s", "1m"),
@@ -444,7 +444,7 @@ def test_all_params_together():
         # Proc mesh timeouts
         actor_spawn_max_idle="45s",
         get_actor_state_max_idle="90s",
-        supervision_liveness_timeout="90s",
+        supervision_watchdog_timeout="90s",
         # Host mesh timeouts
         proc_stop_max_idle="45s",
         get_proc_state_max_idle="90s",
@@ -476,7 +476,7 @@ def test_all_params_together():
         assert config["prefix_with_rank"] is True
         assert config["actor_spawn_max_idle"] == "45s"
         assert config["get_actor_state_max_idle"] == "1m 30s"
-        assert config["supervision_liveness_timeout"] == "1m 30s"
+        assert config["supervision_watchdog_timeout"] == "1m 30s"
         assert config["proc_stop_max_idle"] == "45s"
         assert config["get_proc_state_max_idle"] == "1m 30s"
         assert config["actor_queue_dispatch"] is True
@@ -506,8 +506,8 @@ def test_all_params_together():
     assert config["force_file_log"] is False
     assert config["prefix_with_rank"] is True
     assert config["actor_spawn_max_idle"] == "30s"
-    assert config["get_actor_state_max_idle"] == "1m"
-    assert config["supervision_liveness_timeout"] == "30s"
+    assert config["get_actor_state_max_idle"] == "30s"
+    assert config["supervision_watchdog_timeout"] == "2m"
     assert config["proc_stop_max_idle"] == "30s"
     assert config["get_proc_state_max_idle"] == "1m"
     assert config["actor_queue_dispatch"] is False

@@ -194,12 +194,12 @@ Timeouts
     - **Default**: ``"1m"``
     - **Environment**: ``HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE``
 
-``supervision_liveness_timeout``
+``supervision_watchdog_timeout``
     Liveness timeout for the actor-mesh supervision stream.
 
     - **Type**: ``str`` (duration format)
-    - **Default**: ``"30s"``
-    - **Environment**: ``HYPERACTOR_MESH_SUPERVISION_LIVENESS_TIMEOUT``
+    - **Default**: ``"2m"``
+    - **Environment**: ``HYPERACTOR_MESH_SUPERVISION_WATCHDOG_TIMEOUT``
 
     During actor-mesh supervision, the controller is expected to
     periodically publish on the subscription stream (including benign

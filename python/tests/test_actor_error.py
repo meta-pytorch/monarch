@@ -261,6 +261,7 @@ def test_actor_init_exception_sync_buggered(mesh, actor_class, num_procs) -> Non
         time.sleep(3)
 
 
+@pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True})
 @pytest.mark.parametrize(
     "mesh",
@@ -291,7 +292,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
         proc.spawn("exception_actor", actor_class, except_on_init=True)
 
         # Wait for the faults to arrive at the hook
-        await asyncio.wait_for(faulted.wait(), timeout=5.0)
+        await asyncio.wait_for(faulted.wait(), timeout=15.0)
 
     # Verify the fault was received
     assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
@@ -301,6 +302,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
         assert "This is an exception from __init__" in fault_str
 
 
+@pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True})
 @pytest.mark.parametrize(
     "mesh",
@@ -333,7 +335,7 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
         proc.spawn("exception_actor", actor_class, except_on_init=True)
 
         # Wait for the faults to arrive at the hook
-        assert faulted.wait(timeout=5.0), "Timed out waiting for faults"
+        assert faulted.wait(timeout=15.0), "Timed out waiting for faults"
 
     # Verify the fault was received
     assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
@@ -1158,6 +1160,7 @@ class ErrorActorWithSupervise(ErrorActor):
         super().__init__()
         self.mesh = proc_mesh.spawn("error_actor", ErrorActor)
         self.failures = []
+        self.faulted = asyncio.Event()
         self.should_handle = should_handle
 
     @endpoint
@@ -1222,7 +1225,7 @@ class ErrorActorWithSupervise(ErrorActor):
         self.mesh.fail_with_supervision_error.broadcast()
         # Give time for the failure to occur before returning, so get_failures
         # will have a non-empty result.
-        await asyncio.sleep(10)
+        await asyncio.wait_for(self.faulted.wait(), timeout=30)
 
     @endpoint
     async def get_failures(self) -> list[str]:
@@ -1238,6 +1241,7 @@ class ErrorActorWithSupervise(ErrorActor):
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         self.failures.append(failure)
+        self.faulted.set()
         # Returning true suppresses the error.
         return self.should_handle
 
@@ -1272,7 +1276,7 @@ async def test_supervise_callback_handled():
     await pm.stop()
 
 
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_without_await_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
@@ -1345,7 +1349,7 @@ async def test_supervise_callback_with_mesh_ref():
     await pm.stop()
 
 
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_when_procs_killed():
     pm = spawn_procs_on_this_host({"gpus": 1})
@@ -1397,12 +1401,14 @@ async def test_supervise_callback_unhandled():
     # handle the supervision message to propagate it.
     # Calling a second endpoint would also raise the same message.
     with pytest.raises(SupervisionError, match=message):
-        await supervisor.subworker_fail.call(sleep=5)
+        await supervisor.subworker_fail.call(sleep=15)
 
     await pm.stop()
 
 
-@pytest.mark.timeout(60)
+# This test takes up to 3 minutes to run because the timeout on controller
+# unreachable is 120 seconds.
+@pytest.mark.timeout(180)
 async def test_actor_mesh_supervision_controller_dead() -> None:
     """Tests what happens when the owner of an actor crashes ungracefully, and
     another proc has a ref to that actor. That actor should stop and the ref
@@ -1423,7 +1429,8 @@ async def test_actor_mesh_supervision_controller_dead() -> None:
             await wrapper_mesh.self_ungraceful_fail.call_one()
 
         # The inner mesh should not be reachable, and have a good error message
-        # explaining the problem.
+        # explaining the problem. This will take as long as SUPERVISION_WATCHDOG_TIMEOUT
+        # because that is how long we wait before assuming the controller is dead.
         with pytest.raises(
             SupervisionError,
             match="timed out reaching controller.*for mesh error_actor",

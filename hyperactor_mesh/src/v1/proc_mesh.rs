@@ -88,11 +88,13 @@ declare_attrs! {
     })
     pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
+    /// The maximum idle time between updates while waiting for a response to GetState
+    /// from ProcMeshAgent.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
         py_name: Some("get_actor_state_max_idle".to_string()),
     })
-    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
+    pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(30);
 }
 
 /// A reference to a single [`hyperactor::Proc`].

@@ -59,10 +59,13 @@ use crate::v1::Error;
 use crate::v1::Name;
 use crate::v1::ProcMeshRef;
 use crate::v1::ValueMesh;
+use crate::v1::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::v1::mesh_controller::ActorMeshController;
+use crate::v1::mesh_controller::SUPERVISION_POLL_FREQUENCY;
 use crate::v1::mesh_controller::Subscribe;
 use crate::v1::mesh_controller::Unsubscribe;
+use crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 
 declare_attrs! {
     /// Liveness watchdog for the supervision stream. If no
@@ -70,14 +73,14 @@ declare_attrs! {
     /// this duration, the controller is assumed to be unreachable and
     /// the mesh is treated as unhealthy. This timeout is about
     /// detecting silence, not slow messages.
-    /// This value must be > SUPERVISION_POLL_FREQUENCY + GET_ACTOR_STATE_MAX_IDLE
+    /// This value must be > poll frequency + get actor state timeout + get proc state timeout
     /// or else it is possible to declare the controller dead before it could
-    /// feasibly send a message.
+    /// feasibly have received a healthy reply.
     @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_SUPERVISION_LIVENESS_TIMEOUT".to_string()),
-        py_name: Some("supervision_liveness_timeout".to_string()),
+        env_name: Some("HYPERACTOR_MESH_SUPERVISION_WATCHDOG_TIMEOUT".to_string()),
+        py_name: Some("supervision_watchdog_timeout".to_string()),
     })
-    pub attr SUPERVISION_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+    pub attr SUPERVISION_WATCHDOG_TIMEOUT: Duration = Duration::from_mins(2);
 }
 
 /// An ActorMesh is a collection of ranked A-typed actors.
@@ -309,14 +312,28 @@ fn into_watch<M: Send + Sync + Clone + Default + 'static>(
     mut rx: PortReceiver<M>,
 ) -> watch::Receiver<MessageOrFailure<M>> {
     let (sender, receiver) = watch::channel(MessageOrFailure::<M>::default());
-    // Apply a liveness timeout to the supervision stream. If no
+    // Apply a watchdog timeout to the supervision stream. If no
     // supervision message (healthy or unhealthy) is observed within
     // this window, we assume the controller is unreachable and
     // surface a terminal failure on the watch channel. This is a
     // watchdog against indefinite silence, not a message-delivery
     // guarantee, and may conservatively treat a quiet but healthy
     // controller as failed.
-    let timeout = hyperactor_config::global::get(SUPERVISION_LIVENESS_TIMEOUT);
+    let timeout = hyperactor_config::global::get(SUPERVISION_WATCHDOG_TIMEOUT);
+    let poll_frequency = hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY);
+    let get_actor_state_max_idle = hyperactor_config::global::get(GET_ACTOR_STATE_MAX_IDLE);
+    let get_proc_state_max_idle = hyperactor_config::global::get(GET_PROC_STATE_MAX_IDLE);
+    let total_time = poll_frequency + get_actor_state_max_idle + get_proc_state_max_idle;
+    if timeout < total_time {
+        tracing::warn!(
+            "HYPERACTOR_MESH_SUPERVISION_WATCHDOG_TIMEOUT={} is too short. It should be >= {} (SUPERVISION_POLL_FREQUENCY={} + GET_ACTOR_STATE_MAX_IDLE={} + GET_PROC_STATE_MAX_IDLE={})",
+            humantime::format_duration(timeout),
+            humantime::format_duration(total_time),
+            humantime::format_duration(poll_frequency),
+            humantime::format_duration(get_actor_state_max_idle),
+            humantime::format_duration(get_proc_state_max_idle),
+        );
+    }
     tokio::spawn(async move {
         loop {
             let message = match RealClock.timeout(timeout, rx.recv()).await {
@@ -1077,7 +1094,7 @@ mod tests {
         // Wait for a supervision event to reach the wrapper actor.
         for _ in 0..num_replicas {
             let failure = RealClock
-                .timeout(Duration::from_secs(10), supervision_receiver.recv())
+                .timeout(Duration::from_secs(20), supervision_receiver.recv())
                 .await
                 .expect("timeout")
                 .unwrap();
@@ -1164,7 +1181,7 @@ mod tests {
         // Wait for a supervision event to occur on these actors.
         for _ in 0..num_replicas {
             let failure = RealClock
-                .timeout(Duration::from_secs(10), supervision_receiver.recv())
+                .timeout(Duration::from_secs(20), supervision_receiver.recv())
                 .await
                 .expect("timeout")
                 .unwrap();
@@ -1214,7 +1231,7 @@ mod tests {
 
         for _ in 0..sliced_replicas {
             let supervision_message = RealClock
-                .timeout(Duration::from_secs(10), supervision_receiver.recv())
+                .timeout(Duration::from_secs(20), supervision_receiver.recv())
                 .await
                 .expect("timeout")
                 .unwrap();

@@ -86,6 +86,8 @@ declare_attrs! {
     })
     pub attr PROC_STOP_MAX_IDLE: Duration = Duration::from_secs(30);
 
+    /// The maximum idle time between updates while querying host meshes
+    /// for their proc states.
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
         py_name: Some("get_proc_state_max_idle".to_string()),

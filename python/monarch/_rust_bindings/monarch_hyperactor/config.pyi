@@ -75,7 +75,7 @@ def configure(
     prefix_with_rank: bool = ...,
     actor_spawn_max_idle: str = ...,
     get_actor_state_max_idle: str = ...,
-    supervision_liveness_timeout: str = ...,
+    supervision_watchdog_timeout: str = ...,
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
     actor_queue_dispatch: bool = ...,
@@ -158,7 +158,7 @@ def configure(
             (humantime)
         get_actor_state_max_idle: Maximum idle time for actor state
             queries (humantime)
-        supervision_liveness_timeout: Liveness timeout for the
+        supervision_watchdog_timeout: Liveness timeout for the
             actor-mesh supervision stream; prolonged silence is
             interpreted as the controller being unreachable
             (humantime)

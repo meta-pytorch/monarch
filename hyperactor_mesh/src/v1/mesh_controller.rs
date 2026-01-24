@@ -66,7 +66,7 @@ declare_attrs! {
         env_name: Some("HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY".to_string()),
         py_name: None,
     })
-    pub attr SUPERVISION_POLL_FREQUENCY: Duration = Duration::from_secs(3);
+    pub attr SUPERVISION_POLL_FREQUENCY: Duration = Duration::from_secs(10);
 }
 
 #[derive(Debug)]
@@ -272,6 +272,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
             if did_exist {
                 tracing::debug!(
                     actor_id = %cx.self_id(),
+                    num_subscribers = self.health_state.subscribers.len(),
                     "ActorMeshController: handle_undeliverable_message: removed subscriber {} from mesh controller",
                     port.port_id()
                 );
@@ -470,8 +471,8 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
 /// Without sending these hearbeats, subscribers will assume the mesh is dead.
 fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
     tracing::debug!(
-        "sending heartbeat to subscribers, num subscribers = {}",
-        health_state.subscribers.len()
+        num_subscribers = health_state.subscribers.len(),
+        "sending heartbeat to subscribers",
     );
 
     for subscriber in health_state.subscribers.iter() {

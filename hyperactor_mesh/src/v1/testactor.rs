@@ -391,7 +391,7 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
         };
         let failure = match RealClock
             .timeout(
-                tokio::time::Duration::from_secs(10),
+                tokio::time::Duration::from_secs(20),
                 mesh.next_supervision_event(cx),
             )
             .await

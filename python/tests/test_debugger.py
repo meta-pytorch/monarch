@@ -219,10 +219,6 @@ async def _wait_for_breakpoints(
 
 
 async def _test_debug(nested: bool) -> None:
-    # Increase supervision liveness timeout for opt mode where PAR
-    # extraction causes slower startup.
-    configure(supervision_liveness_timeout="45s")
-
     if not nested:
         proc = proc_mesh(hosts=2, gpus=2)
         debugee = proc.spawn("debugee", DebugeeActor)

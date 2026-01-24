@@ -78,7 +78,7 @@ class FaultCapture:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.failure_happened.wait(timeout=10)
+        self.failure_happened.wait(timeout=30)
         monarch.actor.unhandled_fault_hook = self.original_hook
 
     def capture_fault(self, failure: MeshFailure) -> None:
