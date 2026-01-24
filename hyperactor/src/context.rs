@@ -36,6 +36,7 @@ use crate::config;
 use crate::mailbox;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
+use crate::ordering::SEQ_INFO;
 use crate::time::Alarm;
 
 /// A mailbox context provides a mailbox.
@@ -82,7 +83,13 @@ static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
 
 /// Only actors CanSend because they need a return port.
 impl<T: Actor + Send + Sync> MailboxExt for T {
-    fn post(&self, dest: PortId, headers: Attrs, data: wirevalue::Any, return_undeliverable: bool) {
+    fn post(
+        &self,
+        dest: PortId,
+        mut headers: Attrs,
+        data: wirevalue::Any,
+        return_undeliverable: bool,
+    ) {
         let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
             let actor_id = self.mailbox().actor_id();
             if CAN_SEND_WARNED_MAILBOXES
@@ -98,6 +105,12 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             }
             mailbox::monitored_return_handle()
         });
+
+        // This method is infallible so is okay to assign the sequence number
+        // without worrying about rollback.
+        let sequencer = self.instance().sequencer();
+        let seq_info = sequencer.assign_seq(&dest);
+        headers.set(SEQ_INFO, seq_info);
 
         let mut envelope =
             MessageEnvelope::new(self.mailbox().actor_id().clone(), dest, data, headers);
