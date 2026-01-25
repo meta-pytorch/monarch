@@ -1242,7 +1242,9 @@ where
                                 error = %err,
                                 session_id = session_id,
                                 elapsed_secs = elapsed.as_secs_f64(),
-                                "failed to reconnect after {:.1}s", elapsed.as_secs_f64()
+                                "failed to reconnect after {:.1}s; check {} metric to verify server is alive",
+                                elapsed.as_secs_f64(),
+                                metrics::SERVER_HEARTBEAT_METRIC_NAME
                             );
                         } else {
                             tracing::debug!(
