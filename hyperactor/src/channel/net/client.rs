@@ -532,7 +532,10 @@ impl<'a, M: RemoteMessage> fmt::Display for State<'a, M> {
 #[derive(EnumAsInner)]
 enum Conn<S: Stream> {
     /// Disconnected.
-    Disconnected(Box<dyn Backoff + Send>),
+    Disconnected {
+        backoff: Box<dyn Backoff + Send>,
+        first_failure_at: Instant,
+    },
     /// Connected and ready to go.
     Connected {
         reader: FrameReader<ReadHalf<S>>,
@@ -542,19 +545,25 @@ enum Conn<S: Stream> {
 
 impl<S: Stream> Conn<S> {
     fn reconnect_with_default() -> Self {
-        Self::Disconnected(Box::new(
-            ExponentialBackoffBuilder::new()
-                .with_initial_interval(Duration::from_millis(1))
-                .with_multiplier(2.0)
-                .with_randomization_factor(0.1)
-                .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None) // Allow infinite retries
-                .build(),
-        ))
+        Self::Disconnected {
+            backoff: Box::new(
+                ExponentialBackoffBuilder::new()
+                    .with_initial_interval(Duration::from_millis(1))
+                    .with_multiplier(2.0)
+                    .with_randomization_factor(0.1)
+                    .with_max_interval(Duration::from_millis(1000))
+                    .with_max_elapsed_time(None) // Allow infinite retries
+                    .build(),
+            ),
+            first_failure_at: RealClock.now(),
+        }
     }
 
-    fn reconnect(backoff: impl Backoff + Send + 'static) -> Self {
-        Self::Disconnected(Box::new(backoff))
+    fn reconnect(backoff: impl Backoff + Send + 'static, first_failure_at: Instant) -> Self {
+        Self::Disconnected {
+            backoff: Box::new(backoff),
+            first_failure_at,
+        }
     }
 }
 
@@ -598,7 +607,10 @@ async fn run<M: RemoteMessage>(
             break (state, conn);
         }
 
-        if let Conn::Disconnected(ref mut backoff) = conn {
+        if let Conn::Disconnected {
+            ref mut backoff, ..
+        } = conn
+        {
             RealClock.sleep(backoff.next_backoff().unwrap()).await;
         }
     }; // loop
@@ -666,7 +678,7 @@ async fn run<M: RemoteMessage>(
                 let _ = w.shutdown().await;
             }
         }
-        Conn::Disconnected(_) => (),
+        Conn::Disconnected { .. } => (),
     };
 
     tracing::info!(
@@ -1113,7 +1125,10 @@ where
                 mut outbox,
                 unacked,
             }),
-            Conn::Disconnected(mut backoff),
+            Conn::Disconnected {
+                mut backoff,
+                first_failure_at,
+            },
         ) => {
             // If delivering this message is taking too long,
             // consider the link broken.
@@ -1211,17 +1226,34 @@ where
                                     write_state: WriteState::Idle(writer),
                                 }
                             } else {
-                                Conn::reconnect(backoff)
+                                Conn::reconnect(backoff, first_failure_at)
                             },
                         )
                     }
                     Err(err) => {
-                        tracing::debug!(
-                            dest = %link.dest(),
-                            error = %err,
-                            session_id = session_id,
-                            "failed to connect"
-                        );
+                        let elapsed = first_failure_at.elapsed();
+                        let timeout =
+                            hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT);
+
+                        // Error if elapsed > 20s or > 2/3 of timeout
+                        if elapsed > Duration::from_secs(20) || elapsed > timeout * 2 / 3 {
+                            tracing::error!(
+                                dest = %link.dest(),
+                                error = %err,
+                                session_id = session_id,
+                                elapsed_secs = elapsed.as_secs_f64(),
+                                "failed to reconnect after {:.1}s", elapsed.as_secs_f64()
+                            );
+                        } else {
+                            tracing::debug!(
+                                dest = %link.dest(),
+                                error = %err,
+                                session_id = session_id,
+                                elapsed_secs = elapsed.as_secs_f64(),
+                                "failed to reconnect after {:.1}s", elapsed.as_secs_f64()
+                            );
+                        }
+
                         // Track connection error for this channel pair
                         metrics::CHANNEL_ERRORS.add(
                             1,
@@ -1233,7 +1265,7 @@ where
                         );
                         (
                             State::Running(Deliveries { outbox, unacked }),
-                            Conn::reconnect(backoff),
+                            Conn::reconnect(backoff, first_failure_at),
                         )
                     }
                 }
