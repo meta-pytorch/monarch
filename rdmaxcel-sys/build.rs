@@ -208,8 +208,15 @@ fn main() {
             .include(&source_dir)
             .include(rdma_include)
             .include(&compute_include_path)
-            .flag("-fPIC")
-            .compile("rdmaxcel");
+            .flag("-fPIC");
+
+        if is_rocm {
+            c_build
+                .define("__HIP_PLATFORM_AMD__", "1")
+                .define("USE_ROCM", "1");
+        }
+
+        c_build.compile("rdmaxcel");
     }
 
     // Compile C++ sources
@@ -307,7 +314,15 @@ fn hipify_sources(src_dir: &Path, hip_dir: &Path, manifest_dir: &str) {
         .expect("Failed to find project root")
         .to_path_buf();
 
-    build_utils::run_hipify_torch(&project_root, &source_files, hip_dir)
+    // Use custom mapping file for RDMA-specific conversions
+    let custom_map = project_root.join(".hipify/rdmaxcel_custom_map.json");
+    let custom_map_opt = if custom_map.exists() {
+        Some(custom_map.as_path())
+    } else {
+        None
+    };
+
+    build_utils::run_hipify_torch(&project_root, &source_files, hip_dir, custom_map_opt)
         .expect("hipify_torch failed");
 
     println!("cargo:warning=Hipification complete");

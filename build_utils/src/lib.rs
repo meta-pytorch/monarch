@@ -516,10 +516,12 @@ pub fn get_rocm_lib_dir() -> Result<String, BuildError> {
 /// * `project_root` - Root directory containing deps/hipify_torch
 /// * `source_files` - CUDA source files to hipify
 /// * `output_dir` - Directory to write hipified files
+/// * `custom_map_json` - Optional path to custom mapping JSON file
 pub fn run_hipify_torch(
     project_root: &Path,
     source_files: &[PathBuf],
     output_dir: &Path,
+    custom_map_json: Option<&Path>,
 ) -> Result<(), BuildError> {
     // Create output directory
     fs::create_dir_all(output_dir).map_err(|e| {
@@ -550,13 +552,20 @@ pub fn run_hipify_torch(
     let python = find_python_interpreter();
 
     // Run hipify_torch
-    let output = Command::new(&python)
-        .arg(&hipify_script)
+    let mut cmd = Command::new(&python);
+    cmd.arg(&hipify_script)
         .arg("--project-directory")
         .arg(output_dir)
         .arg("--v2")
         .arg("--output-directory")
-        .arg(output_dir)
+        .arg(output_dir);
+
+    // Add custom mapping file if provided
+    if let Some(custom_map) = custom_map_json {
+        cmd.arg("--custom-map-json").arg(custom_map);
+    }
+
+    let output = cmd
         .output()
         .map_err(|e| BuildError::CommandFailed(format!("Failed to run hipify_torch: {}", e)))?;
 
