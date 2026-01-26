@@ -68,6 +68,7 @@ use crate::actor::Binds;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
+use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -1010,6 +1011,9 @@ struct InstanceState<A: Actor> {
 
     /// Used to assign sequence numbers for messages sent from this actor.
     sequencer: Sequencer,
+
+    /// Per-instance local storage.
+    instance_locals: ActorLocalStorage,
 }
 
 impl<A: Actor> InstanceState<A> {
@@ -1096,6 +1100,7 @@ impl<A: Actor> Instance<A> {
             status_tx,
             sequencer: Sequencer::new(instance_id),
             id: instance_id,
+            instance_locals: ActorLocalStorage::new(),
         });
         (Self { inner }, actor_loop_receivers, work_rx)
     }
@@ -1187,6 +1192,11 @@ impl<A: Actor> Instance<A> {
     /// receiver may receive a single message.
     pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
         self.inner.mailbox.open_once_port()
+    }
+
+    /// Get the per-instance local storage.
+    pub fn locals(&self) -> &ActorLocalStorage {
+        &self.inner.instance_locals
     }
 
     /// Send a message to the actor running on the proc.
