@@ -32,6 +32,7 @@ dependencies = [
     "opentelemetry-api",
     "clusterscope",
     "torch",
+    "filelock",
 ]
 
 # PyTorch nightly build indices for different platforms
