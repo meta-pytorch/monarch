@@ -78,13 +78,12 @@ graph LR
 stateDiagram-v2
     [*] --> Creating: spawn()
     Creating --> Constructing: allocate resources
-    Constructing --> Initializing: new()
-    Initializing --> Running: init()
+    Constructing --> Running: __init__()
     Running --> Running: handle messages
     Running --> Terminating: stop/error
     Terminating --> [*]: cleanup
 
-    Initializing --> Failed: init error
+    Constructing --> Failed: __init__ error
     Running --> Failed: unhandled error
     Failed --> [*]: propagate to parent
 ```
@@ -123,36 +122,15 @@ class DataProcessor(Actor):
         self.buffer_size = buffer_size
         self.buffer = []
         self.processed_count = 0
-
-        # NO MESSAGING YET - actor not fully registered
 ```
 
 **Important Notes:**
 - `__init__` is called during actor construction
-- Actor cannot send/receive messages yet
-- No access to runtime services
-- Should only initialize state
+- Arguments passed to `spawn()` are forwarded to `__init__`
+- Initialize all actor state here
+- After `__init__` completes, the actor is ready to receive messages
 
-### 3. Initialization Phase
-
-**The `init` Hook (Optional):**
-
-In Rust-based actors or custom Python actors, you can override the `init` method:
-
-```python
-class WorkerActor(Actor):
-    def __init__(self, config):
-        self.config = config
-        self.resources = None
-
-    async def init(self, this):
-        # Now we have access to runtime
-        # Can spawn child actors, send messages, etc.
-        self.resources = await self.acquire_resources()
-        self.worker_id = this.actor_id
-```
-
-### 4. Running Phase
+### 3. Running Phase
 
 Once initialized, the actor enters its main lifecycle where it processes messages.
 
@@ -177,7 +155,7 @@ sequenceDiagram
 - Invokes corresponding endpoint handler
 - Returns result or sends to port
 
-### 5. Termination Phase
+### 4. Termination Phase
 
 **Normal Termination:**
 - All child actors terminated
@@ -1036,18 +1014,16 @@ async def test_calculator():
 ```mermaid
 graph LR
     A[Spawn] --> B[__init__]
-    B --> C[init hook]
-    C --> D[Running]
-    D --> E[Handle Messages]
-    E --> D
-    D --> F[Terminate]
+    B --> C[Running]
+    C --> D[Handle Messages]
+    D --> C
+    C --> E[Terminate]
 
     style A fill:#855b9d
     style B fill:#007c88
     style C fill:#007c88
-    style D fill:#007c88
-    style E fill:#13a3a4
-    style F fill:#0072c7
+    style D fill:#13a3a4
+    style E fill:#0072c7
 ```
 
 <!-- ### Next Steps
