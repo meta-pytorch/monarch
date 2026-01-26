@@ -775,8 +775,22 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
             send_heartbeat(cx, &self.health_state);
         }
 
-        // Reschedule a self send after a waiting period.
-        self.self_check_state_message(cx)?;
+        // If all ranks are in a terminal state, we don't need to continue checking,
+        // as statuses cannot change.
+        // Any new subscribers will get an immediate message saying the mesh is stopped.
+        let all_ranks_terminal = self
+            .health_state
+            .statuses
+            .values()
+            .all(|s| s.is_terminating());
+        if !all_ranks_terminal {
+            // Schedule a self send after a waiting period.
+            self.self_check_state_message(cx)?;
+        } else {
+            // There's no need to send a stop message during cleanup if all the
+            // ranks are already terminal.
+            self.monitor.take();
+        }
         return Ok(());
     }
 }
