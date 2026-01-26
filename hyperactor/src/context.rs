@@ -106,11 +106,13 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             mailbox::monitored_return_handle()
         });
 
-        // This method is infallible so is okay to assign the sequence number
-        // without worrying about rollback.
-        let sequencer = self.instance().sequencer();
-        let seq_info = sequencer.assign_seq(&dest);
-        headers.set(SEQ_INFO, seq_info);
+        if !headers.contains_key(SEQ_INFO) {
+            // This method is infallible so is okay to assign the sequence number
+            // without worrying about rollback.
+            let sequencer = self.instance().sequencer();
+            let seq_info = sequencer.assign_seq(&dest);
+            headers.set(SEQ_INFO, seq_info);
+        }
 
         let mut envelope =
             MessageEnvelope::new(self.mailbox().actor_id().clone(), dest, data, headers);

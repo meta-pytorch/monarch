@@ -120,6 +120,13 @@ declare_attrs! {
     })
     pub attr ENABLE_DEST_ACTOR_REORDERING_BUFFER: bool = false;
 
+    /// Whether to use native v1 casting in v1 ActorMesh.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_ENABLE_NATIVE_V1_CASTING".to_string()),
+        py_name: Some("enable_native_v1_casting".to_string()),
+    })
+    pub attr ENABLE_NATIVE_V1_CASTING: bool = false;
+
     /// Timeout for [`Host::spawn`] to await proc readiness.
     ///
     /// Default: 30 seconds. If set to zero, disables the timeout and
