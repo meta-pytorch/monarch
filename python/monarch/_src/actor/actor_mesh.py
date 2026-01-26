@@ -76,6 +76,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
+    Supervisor,
 )
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh,  # noqa (re-export)
@@ -616,7 +617,7 @@ def _create_endpoint_message(
     signature: inspect.Signature,
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[Port[Any]]",
+    port: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
 ) -> PythonMessage:
     """
@@ -652,9 +653,7 @@ def _create_endpoint_message(
 
     if not has_ref:
         message = PythonMessage(
-            PythonMessageKind.CallMethod(
-                method_name, None if port is None else port._port_ref
-            ),
+            PythonMessageKind.CallMethod(method_name, port),
             buffer,
             pending_pickle_state,
         )
@@ -688,13 +687,16 @@ class ActorEndpoint(Endpoint[P, R]):
     def _call_name(self) -> MethodSpecifier:
         return self._name
 
+    def _get_extent(self) -> Extent:
+        return Extent(self._shape.labels, self._shape.ndslice.sizes)
+
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
 
@@ -710,21 +712,18 @@ class ActorEndpoint(Endpoint[P, R]):
         )
 
         self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
-        shape = self._shape
-        return Extent(shape.labels, shape.ndslice.sizes)
 
-    def _full_name(self) -> str:
+    def _qualified_endpoint_name(self) -> str:
         return f"{self._mesh_name}.{self._get_method_name()}()"
 
-    def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
-        p, r = super()._port(once=once)
-        instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
-        )
-
-        r._attach_supervision(monitor, self._full_name())
-        return (p, r)
+    def _get_supervisor(self) -> "Supervisor | None":
+        # Only return a supervisor if the mesh is a PythonActorMesh (Rust class).
+        # For pure Python implementations like _SingletonActorAdapator,
+        # return None to skip supervision (which is correct since those
+        # implementations don't support supervision anyway).
+        if isinstance(self._actor_mesh, PythonActorMesh):
+            return self._actor_mesh.as_supervisor()
+        return None
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
@@ -837,7 +836,9 @@ def send(
         port: Handle to send the response to.
         selection: Selection query representing a subset of the mesh.
     """
-    endpoint._send(args, kwargs, port, selection)
+    endpoint._send(
+        args, kwargs, port._port_ref if port is not None else None, selection
+    )
 
 
 class Port(Generic[R]):
