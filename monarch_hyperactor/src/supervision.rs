@@ -6,9 +6,79 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use hyperactor::Instance;
 use hyperactor_mesh::supervision::MeshFailure;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+
+use crate::actor::PythonActor;
+use crate::context::PyInstance;
+
+/// Trait for types that can provide supervision events.
+///
+/// This trait abstracts the supervision functionality, allowing endpoint
+/// operations to work with any type that can monitor actor health without
+/// depending on the full ActorMesh interface.
+#[async_trait]
+pub trait Supervisable: Send + Sync {
+    /// Wait for the next supervision event indicating an actor failure.
+    ///
+    /// Returns `Some(PyErr)` if a supervision failure is detected,
+    /// or `None` if supervision is not available or the mesh is healthy.
+    async fn next_supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr>;
+
+    /// Start supervision monitoring on this mesh.
+    /// This function is idempotent, and is used to start the channel that
+    /// will provide "supervision_event" with events.
+    /// The default implementation does nothing, and it is not required that
+    /// it has to be called before supervision_event.
+    fn start_supervision(
+        &self,
+        _instance: &PyInstance,
+        _supervision_display_name: String,
+    ) -> PyResult<()> {
+        Ok(())
+    }
+}
+
+/// Python-exposed wrapper for supervision functionality.
+///
+/// This provides a concrete pyclass that can be passed to endpoint collectors
+/// while abstracting over different supervision implementations.
+#[pyclass(
+    name = "Supervisor",
+    module = "monarch._rust_bindings.monarch_hyperactor.supervision"
+)]
+#[derive(Clone)]
+pub struct PySupervisor {
+    inner: Arc<dyn Supervisable>,
+}
+
+impl PySupervisor {
+    pub fn new<S: Supervisable + 'static>(supervisable: S) -> Self {
+        Self {
+            inner: Arc::new(supervisable),
+        }
+    }
+
+    pub fn from_arc(inner: Arc<dyn Supervisable>) -> Self {
+        Self { inner }
+    }
+
+    pub async fn next_supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
+        self.inner.next_supervision_event(instance).await
+    }
+}
+
+#[pymethods]
+impl PySupervisor {
+    fn __repr__(&self) -> String {
+        "Supervisor(...)".to_string()
+    }
+}
 
 #[pyclass(
     name = "SupervisionError",
@@ -53,6 +123,21 @@ impl SupervisionError {
             format!("SupervisionError(endpoint='{}', '{}')", ep, self.message)
         } else {
             format!("SupervisionError('{}')", self.message)
+        }
+    }
+}
+
+impl SupervisionError {
+    /// Set the endpoint on a PyErr containing a SupervisionError.
+    ///
+    /// If the error is a SupervisionError, sets its endpoint field and returns a new
+    /// error with the endpoint prefix. If not a SupervisionError, returns the original error.
+    pub fn set_endpoint_on_err(py: Python<'_>, err: PyErr, endpoint: String) -> PyErr {
+        if let Ok(mut supervision_err) = err.value(py).extract::<SupervisionError>() {
+            supervision_err.endpoint = Some(endpoint);
+            PyErr::new::<Self, _>((supervision_err.message, supervision_err.endpoint))
+        } else {
+            err
         }
     }
 }
@@ -115,6 +200,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add the exception to the module using its type object
     module.add("SupervisionError", py.get_type::<SupervisionError>())?;
     module.add("MeshFailure", py.get_type::<PyMeshFailure>())?;
+    module.add_class::<PySupervisor>()?;
     Ok(())
 }
 

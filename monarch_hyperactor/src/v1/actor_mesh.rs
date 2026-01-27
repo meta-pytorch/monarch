@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use hyperactor::ActorRef;
+use hyperactor::Instance;
 use hyperactor_mesh::v1::actor_mesh::ActorMesh;
 use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use ndslice::Region;
@@ -37,9 +39,9 @@ use crate::actor_mesh::PythonActorMesh;
 use crate::context::PyInstance;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
-use crate::pytokio::PyShared;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::shape::PyRegion;
+use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 
 #[derive(Debug, Clone)]
@@ -89,6 +91,24 @@ impl PythonActorMeshImpl {
     }
 }
 
+#[async_trait]
+impl Supervisable for PythonActorMeshImpl {
+    async fn next_supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
+        let mesh = self.mesh_ref();
+        match mesh.next_supervision_event(instance).await {
+            Ok(supervision_failure) => {
+                let event = supervision_failure.event;
+                Some(SupervisionError::new_err(format!(
+                    "Actor {} exited because of the following reason: {}",
+                    event.actor_id, event,
+                )))
+            }
+            Err(e) => Some(SupervisionError::new_err(e.to_string())),
+        }
+    }
+}
+
+#[async_trait]
 impl ActorMeshProtocol for PythonActorMeshImpl {
     fn cast(
         &self,
@@ -101,35 +121,6 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         <ActorMeshRef<PythonActor> as ActorMeshProtocol>::cast(
             &mesh_ref, message, selection, instance,
         )
-    }
-
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        let mesh = self.mesh_ref();
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
-        let shared = PyPythonTask::new::<_, ()>(async move {
-            let supervision_failure = mesh
-                .next_supervision_event(instance.deref())
-                .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let event = supervision_failure.event;
-            let pyerr = SupervisionError::new_err(format!(
-                "Actor {} exited because of the following reason: {}",
-                event.actor_id, event,
-            ));
-            Err(pyerr)
-        })?
-        .spawn_abortable()?;
-        Ok(Some(shared))
-    }
-
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        // This function is a no-op since moving the monitor loop to ActorMeshController.
-        // Initializing the receiver changes no received events.
-        Ok(())
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
@@ -159,15 +150,33 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 }
 
+#[async_trait]
+impl Supervisable for ActorMeshRef<PythonActor> {
+    async fn next_supervision_event(&self, _instance: &Instance<PythonActor>) -> Option<PyErr> {
+        panic!("This should never be called on ActorMeshRef directly");
+    }
+
+    fn start_supervision(
+        &self,
+        _instance: &PyInstance,
+        _supervision_display_name: String,
+    ) -> PyResult<()> {
+        Err(PyNotImplementedError::new_err(
+            "This should never be called on ActorMeshRef directly",
+        ))
+    }
+}
+
+#[async_trait]
 impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     fn cast(
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
-            self.cast(instance.deref(), message.clone())
+            self.cast(instance, message.clone())
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
             let region = Ranked::region(self);
@@ -181,7 +190,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                 Slice::new(offset, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
             );
             self.sliced(singleton_region)
-                .cast(instance.deref(), message.clone())
+                .cast(instance, message.clone())
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         } else {
             return Err(PyRuntimeError::new_err(format!(
@@ -191,22 +200,6 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         }
 
         Ok(())
-    }
-
-    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        Err(PyNotImplementedError::new_err(
-            "This should never be called on ActorMeshRef directly",
-        ))
-    }
-
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        Err(PyNotImplementedError::new_err(
-            "This should never be called on ActorMeshRef directly",
-        ))
     }
 
     /// Stop the actor mesh asynchronously.

@@ -18,8 +18,6 @@ import warnings
 from abc import abstractmethod, abstractproperty
 from dataclasses import dataclass
 from functools import cache
-from pprint import pformat
-from textwrap import indent
 from traceback import TracebackException
 from typing import (
     Any,
@@ -31,7 +29,6 @@ from typing import (
     Generator,
     Generic,
     Iterable,
-    Iterator,
     List,
     Literal,
     Optional,
@@ -54,6 +51,9 @@ from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuff
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
+from monarch._rust_bindings.monarch_hyperactor.endpoint import (
+    ActorEndpoint as RustActorEndpoint,
+)
 from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -79,9 +79,10 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
+    Supervisor,
 )
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
-    ValueMesh as HyValueMesh,
+    ValueMesh,  # noqa (re-export)
 )
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -89,13 +90,11 @@ from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
     Endpoint,
     EndpointProperty,
-    Extent,
     NotAnEndpoint,
     Propagator,
     Selection,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.metrics import endpoint_message_size_histogram
 from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct patching
     Receiver,
 )
@@ -104,7 +103,7 @@ from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
-from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message
+from monarch._src.actor.tensor_engine_shim import create_actor_message
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer
 from typing_extensions import Self
@@ -121,6 +120,7 @@ if TYPE_CHECKING:
     )
     from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
 from monarch._src.actor.telemetry import get_monarch_tracer
+
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -618,7 +618,7 @@ def _create_endpoint_message(
     signature: inspect.Signature,
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[Port[Any]]",
+    port: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
 ) -> PythonMessage:
     """
@@ -654,9 +654,7 @@ def _create_endpoint_message(
 
     if not has_ref:
         message = PythonMessage(
-            PythonMessageKind.CallMethod(
-                method_name, None if port is None else port._port_ref
-            ),
+            PythonMessageKind.CallMethod(method_name, port),
             buffer,
             pending_pickle_state,
         )
@@ -666,75 +664,6 @@ def _create_endpoint_message(
         )
 
     return message
-
-
-class ActorEndpoint(Endpoint[P, R]):
-    def __init__(
-        self,
-        actor_mesh: "ActorMeshProtocol",
-        mesh_name: str,
-        shape: Shape,
-        proc_mesh: "Optional[ProcMesh]",
-        name: MethodSpecifier,
-        impl: Callable[Concatenate[Any, P], Awaitable[R]],
-        propagator: Propagator,
-    ) -> None:
-        super().__init__(propagator)
-        self._actor_mesh = actor_mesh
-        self._mesh_name = mesh_name
-        self._name = name
-        self._shape = shape
-        self._proc_mesh = proc_mesh
-        self._signature: inspect.Signature = inspect.signature(impl)
-
-    def _call_name(self) -> MethodSpecifier:
-        return self._name
-
-    def _send(
-        self,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
-        selection: Selection = "all",
-    ) -> Extent:
-        """
-        Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
-
-        This sends the message to all actors but does not wait for any result.
-        """
-        message = _create_endpoint_message(
-            self._name, self._signature, args, kwargs, port, self._proc_mesh
-        )
-
-        # Record the message size with method name attribute
-        endpoint_message_size_histogram.record(
-            len(message.message), {"method": self._get_method_name()}
-        )
-
-        self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
-        shape = self._shape
-        return Extent(shape.labels, shape.ndslice.sizes)
-
-    def _full_name(self) -> str:
-        return f"{self._mesh_name}.{self._get_method_name()}()"
-
-    def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
-        p, r = super()._port(once=once)
-        instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
-        )
-
-        r._attach_supervision(monitor, self._full_name())
-        return (p, r)
-
-    def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
-        _check_endpoint_arguments(self._name, self._signature, args, kwargs)
-        refs, buffer, pending_pickle_state = _flatten_with_pending_pickle(
-            (args, kwargs)
-        )
-
-        return actor_rref(self, buffer, refs, pending_pickle_state)
 
 
 @overload
@@ -819,148 +748,6 @@ class Accumulator(Generic[P, R, A]):
         return Future(coro=impl())
 
 
-class ValueMesh(MeshTrait, Generic[R]):
-    """
-    A mesh that holds the result of an endpoint invocation.
-
-    ValueMesh is returned when calling `.get()` on a Future from an endpoint
-    invocation on an ActorMesh or ProcMesh, or by awaiting the Future directly.
-    It contains the return values from all actors in the mesh, organized by
-    their coordinates.
-
-    Iteration:
-        The most efficient way to iterate over a ValueMesh is using `.items()`,
-        which yields (point, value) tuples:
-
-        >>> for point, result in value_mesh.items():
-        ...     rank = point["hosts"] * gpus_per_host + point["gpus"]
-        ...     print(f"Rank {rank}: {result}")
-
-        You can also iterate over just values:
-
-        >>> for result in value_mesh.values():
-        ...     process(result)
-
-    Accessing specific values:
-        Use `.item()` to extract a single value from a singleton mesh:
-
-        >>> single_value = value_mesh.slice(hosts=0, gpus=0).item()
-
-        Or with keyword arguments for multi-dimensional access:
-
-        >>> value = value_mesh.item(hosts=0, gpus=0)
-
-    Mesh operations:
-        ValueMesh supports the same operations as other MeshTrait types:
-
-        - `.flatten(dimension)`: Flatten to a single dimension
-        - `.slice(**coords)`: Select a subset of the mesh
-
-    Examples:
-        >>> # Sync API - Get results from all actors
-        >>> results = actor_mesh.endpoint.call(arg).get()
-        >>> for point, result in results.items():
-        ...     print(f"Actor at {point}: {result}")
-        >>>
-        >>> # Async API - Await the future directly
-        >>> results = await actor_mesh.endpoint.call(arg)
-        >>> for point, result in results.items():
-        ...     print(f"Actor at {point}: {result}")
-        >>>
-        >>> # Access a specific actor's result
-        >>> result_0 = results.item(hosts=0, gpus=0)
-        >>>
-        >>> # Flatten and iterate
-        >>> for point, result in results.flatten("rank").items():
-        ...     print(f"Rank {point.rank}: {result}")
-    """
-
-    def __init__(self, shape: Shape, values: List[R]) -> None:
-        self._shape = shape
-        self._hy: HyValueMesh = HyValueMesh(shape, values)
-
-    def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
-        # Build a map from current global ranks -> local indices.
-        cur_ranks = list(self._shape.ranks())
-        pos = {g: i for i, g in enumerate(cur_ranks)}
-        # For each global rank of the target shape, pull from our
-        # current local index.
-        remapped = [self._hy.get(pos[g]) for g in shape.ranks()]
-        return ValueMesh(shape, remapped)
-
-    def item(self, **kwargs: int) -> R:
-        """
-        Get the value at the given coordinates.
-
-        Args:
-            kwargs: Coordinates to get the value at.
-
-        Returns:
-            Value at the given coordinate.
-
-        Raises:
-            KeyError: If invalid coordinates are provided.
-        """
-        coordinates = [kwargs.pop(label) for label in self._labels]
-        if kwargs:
-            raise KeyError(f"item has extra dimensions: {list(kwargs.keys())}")
-
-        global_rank = self._ndslice.nditem(coordinates)  # May include offset.
-        # Map global -> local (position in this shape's rank order).
-        ranks = list(self._shape.ranks())
-        try:
-            local_idx = ranks.index(global_rank)
-        except ValueError:
-            # Shouldn't happen if Shape is consistent, but keep a clear
-            # error.
-            raise IndexError(f"rank {global_rank} not in current shape")
-        return self._hy.get(local_idx)
-
-    def items(self) -> Iterable[Tuple[Point, R]]:
-        """
-        Generator that returns values for the provided coordinates.
-
-        Returns:
-            Values at all coordinates.
-        """
-        extent = self._shape.extent
-        for i, _global_rank in enumerate(self._shape.ranks()):
-            yield Point(i, extent), self._hy.get(i)
-
-    def values(self) -> Iterable[R]:
-        """
-        Generator that iterates over just the values in the mesh.
-
-        Returns:
-            Values at all coordinates.
-        """
-        for _, value in self.items():
-            yield value
-
-    def __iter__(self) -> Iterator[Tuple[Point, R]]:
-        return iter(self.items())
-
-    def __repr__(self) -> str:
-        body = indent(pformat(tuple(self.items())), "  ")
-        return f"ValueMesh({self._shape.extent}):\n{body}"
-
-    @property
-    def _ndslice(self) -> NDSlice:
-        return self._shape.ndslice
-
-    @property
-    def _labels(self) -> Iterable[str]:
-        return self._shape.labels
-
-    def __getstate__(self) -> Dict[str, Any]:
-        return {"shape": self._shape, "values": self._hy.values()}
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self._shape = state["shape"]
-        vals = state["values"]
-        self._hy = HyValueMesh(self._shape, vals)
-
-
 def send(
     endpoint: Endpoint[P, R],
     args: Tuple[Any, ...],
@@ -981,7 +768,9 @@ def send(
         port: Handle to send the response to.
         selection: Selection query representing a subset of the mesh.
     """
-    endpoint._send(args, kwargs, port, selection)
+    endpoint._send(
+        args, kwargs, port._port_ref if port is not None else None, selection
+    )
 
 
 class Port(Generic[R]):
@@ -1720,14 +1509,14 @@ class ActorMesh(MeshTrait, Generic[T]):
         impl: Callable[Concatenate[Any, P], Awaitable[R]],
         propagator: Propagator,
     ) -> Any:
-        return ActorEndpoint(
+        # Use the Rust ActorEndpoint for better performance
+        return RustActorEndpoint(
             self._inner,
-            self._mesh_name,
-            self._shape,
-            self._proc_mesh,
             name,
-            impl,
-            propagator,
+            self._shape,
+            self._mesh_name,
+            inspect.signature(impl),
+            self._proc_mesh,
         )
 
     @classmethod

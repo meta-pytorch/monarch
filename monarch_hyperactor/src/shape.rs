@@ -124,6 +124,18 @@ impl From<PyExtent> for Extent {
     }
 }
 
+impl PyExtent {
+    pub(crate) fn num_ranks(&self) -> usize {
+        self.inner.num_ranks()
+    }
+}
+
+impl PyExtent {
+    pub fn get_inner(&self) -> &Extent {
+        &self.inner
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[pyclass(
     name = "Region",
@@ -217,6 +229,10 @@ pub struct PyShape {
 impl PyShape {
     pub fn get_inner(&self) -> &Shape {
         &self.inner
+    }
+
+    pub(crate) fn extent(&self) -> PyExtent {
+        self.inner.extent().into()
     }
 }
 
@@ -344,9 +360,9 @@ impl PyShape {
         Shape::unity().into()
     }
 
-    #[getter]
-    fn extent(&self) -> PyExtent {
-        self.inner.extent().into()
+    #[getter(extent)]
+    fn py_extent(&self) -> PyExtent {
+        self.extent()
     }
 
     #[getter]
