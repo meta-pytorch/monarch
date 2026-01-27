@@ -121,20 +121,6 @@ class Endpoint(ABC, Generic[P, R]):
     ) -> "HyPortReceiver | HyOncePortReceiver":
         return r
 
-    def _get_supervisor(self) -> "Supervisor | None":
-        """
-        Returns a Supervisor for monitoring actor health during endpoint calls.
-        Override in subclasses to provide supervision for actor meshes.
-        """
-        return None
-
-    def _qualified_endpoint_name(self) -> str | None:
-        """
-        Returns the full name of the endpoint for error messages.
-        Override in subclasses to provide a meaningful name.
-        """
-        return None
-
     # the following are all 'adverbs' or different ways to handle the
     # return values of this endpoint. Adverbs should only ever take *args, **kwargs
     # of the original call. If we want to add syntax sugar for something that needs additional
@@ -153,9 +139,7 @@ class Endpoint(ABC, Generic[P, R]):
 
         port_ref, task = value_collector(
             method_name,
-            self._get_supervisor(),
             actor_instance._as_rust(),
-            self._qualified_endpoint_name(),
             EndpointAdverb.Choose,
         )
 
@@ -179,9 +163,7 @@ class Endpoint(ABC, Generic[P, R]):
 
         port_ref, task = value_collector(
             method_name,
-            self._get_supervisor(),
             actor_instance._as_rust(),
-            self._qualified_endpoint_name(),
             EndpointAdverb.CallOne,
         )
 
@@ -203,9 +185,7 @@ class Endpoint(ABC, Generic[P, R]):
         port_ref, task = valuemesh_collector(
             extent,
             method_name,
-            self._get_supervisor(),
             actor_instance._as_rust(),
-            self._qualified_endpoint_name(),
             EndpointAdverb.Call,
         )
 
@@ -234,9 +214,7 @@ class Endpoint(ABC, Generic[P, R]):
         port_ref, value_stream = stream_collector(
             extent,
             method_name,
-            self._get_supervisor(),
             actor_instance._as_rust(),
-            self._qualified_endpoint_name(),
         )
 
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]

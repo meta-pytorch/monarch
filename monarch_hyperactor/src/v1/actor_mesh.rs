@@ -173,10 +173,10 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
-            self.cast(instance.deref(), message.clone())
+            self.cast(instance, message.clone())
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
             let region = Ranked::region(self);
@@ -190,7 +190,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                 Slice::new(offset, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
             );
             self.sliced(singleton_region)
-                .cast(instance.deref(), message.clone())
+                .cast(instance, message.clone())
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         } else {
             return Err(PyRuntimeError::new_err(format!(

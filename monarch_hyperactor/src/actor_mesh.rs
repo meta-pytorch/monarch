@@ -45,7 +45,6 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::mailbox::EitherPortRef;
 use crate::proc::PyActorId;
 use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
@@ -73,7 +72,7 @@ pub(crate) trait ActorMeshProtocol: Supervisable + Send + Sync {
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)>;
@@ -120,6 +119,10 @@ impl PythonActorMesh {
     pub(crate) fn from_impl(inner: Arc<dyn ActorMeshProtocol>) -> Self {
         PythonActorMesh { inner }
     }
+
+    pub(crate) fn get_inner(&self) -> Arc<dyn ActorMeshProtocol> {
+        self.inner.clone()
+    }
 }
 
 #[async_trait]
@@ -150,7 +153,7 @@ impl PythonActorMesh {
         instance: &PyInstance,
     ) -> PyResult<()> {
         let sel = to_hy_sel(selection)?;
-        self.inner.cast(message.clone(), sel, instance)
+        self.inner.cast(message.clone(), sel, instance.deref())
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
@@ -180,12 +183,14 @@ impl PythonActorMesh {
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.inner.__reduce__(py)
     }
+}
 
+impl PythonActorMesh {
     /// Returns a Supervisor that can be used to monitor actor health.
     ///
     /// This is used by endpoint operations to race supervision events
     /// against message receipt.
-    fn as_supervisor(&self) -> PySupervisor {
+    pub fn as_supervisor(&self) -> PySupervisor {
         PySupervisor::new(self.clone())
     }
 }
@@ -274,10 +279,10 @@ impl ActorMeshProtocol for AsyncActorMesh {
         &self,
         mut message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         let mesh = self.mesh.clone();
-        let instance = instance.clone();
+        let instance = instance.clone_for_py();
         self.push(async move {
             let port = match &message.kind {
                 PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
@@ -290,19 +295,21 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 mesh.await?.cast(message, selection, &instance)
             }
             .await;
-            if let (Some(p), Err(pyerr)) = (port, result) {
+            if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
                 let _ = monarch_with_gil(|py: Python<'_>| {
-                    let port_ref = match p {
-                        EitherPortRef::Once(p) => p.into_bound_py_any(py),
-                        EitherPortRef::Unbounded(p) => p.into_bound_py_any(py),
-                    }
-                    .unwrap();
-                    let port = py
-                        .import("monarch._src.actor.actor_mesh")
-                        .unwrap()
-                        .call_method1("Port", (port_ref, instance, 0))
+                    let actor_mesh = py.import("monarch._src.actor.actor_mesh")?;
+                    let buffer = actor_mesh.call_method1("_pickle", (pyerr,))?;
+
+                    let message = PythonMessage::new(
+                        PythonMessageKind::Exception { rank: Some(0) },
+                        buffer,
+                        None,
+                    )?;
+
+                    port_ref
+                        .send(&instance, message)
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
                         .unwrap();
-                    port.call_method1("exception", (pyerr.value(py),)).unwrap();
                     Ok::<_, PyErr>(())
                 })
                 .await;
@@ -477,7 +484,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         let mesh_ref = self.mesh_ref();
 
@@ -536,10 +543,10 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
-            self.cast(instance.deref(), message.clone())
+            self.cast(instance, message.clone())
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
             let region = Ranked::region(self);
@@ -553,7 +560,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                 Slice::new(offset, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
             );
             self.sliced(singleton_region)
-                .cast(instance.deref(), message.clone())
+                .cast(instance, message.clone())
                 .map_err(|err| PyException::new_err(err.to_string()))?;
         } else {
             return Err(PyRuntimeError::new_err(format!(

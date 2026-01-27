@@ -230,6 +230,10 @@ impl PyShape {
     pub fn get_inner(&self) -> &Shape {
         &self.inner
     }
+
+    pub(crate) fn extent(&self) -> PyExtent {
+        self.inner.extent().into()
+    }
 }
 
 #[pymethods]
@@ -356,9 +360,9 @@ impl PyShape {
         Shape::unity().into()
     }
 
-    #[getter]
-    fn extent(&self) -> PyExtent {
-        self.inner.extent().into()
+    #[getter(extent)]
+    fn py_extent(&self) -> PyExtent {
+        self.extent()
     }
 
     #[getter]

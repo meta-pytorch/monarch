@@ -101,6 +101,16 @@ pub enum MethodSpecifier {
     Init {},
 }
 
+impl MethodSpecifier {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            MethodSpecifier::ReturnsResponse { name } => name,
+            MethodSpecifier::ExplicitPort { name } => name,
+            MethodSpecifier::Init {} => "__init__",
+        }
+    }
+}
+
 impl std::fmt::Display for MethodSpecifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
@@ -109,13 +119,9 @@ impl std::fmt::Display for MethodSpecifier {
 
 #[pymethods]
 impl MethodSpecifier {
-    #[getter]
-    fn name(&self) -> &str {
-        match self {
-            MethodSpecifier::ReturnsResponse { name } => name,
-            MethodSpecifier::ExplicitPort { name } => name,
-            MethodSpecifier::Init {} => "__init__",
-        }
+    #[getter(name)]
+    fn py_name(&self) -> &str {
+        self.name()
     }
 }
 
