@@ -127,6 +127,8 @@ pub(crate) enum MeshAgentMessage {
         actor_id: ActorId,
         /// The timeout for waiting for the actor to stop
         timeout_ms: u64,
+        /// The reason for stopping the actor
+        reason: String,
         /// The result when trying to stop the actor
         #[reply]
         stopped: OncePortRef<StopActorResult>,
@@ -278,9 +280,10 @@ impl ProcMeshAgent {
         &mut self,
         cx: &Context<'a, Self>,
         timeout: tokio::time::Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         self.proc
-            .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true)
+            .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
             .await
     }
 }
@@ -384,6 +387,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         _cx: &Context<Self>,
         actor_id: ActorId,
         timeout_ms: u64,
+        reason: String,
     ) -> Result<StopActorResult, anyhow::Error> {
         tracing::info!(
             name = "StopActor",
@@ -391,7 +395,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
             actor_name = actor_id.name(),
         );
 
-        if let Some(mut status) = self.proc.stop_actor(&actor_id) {
+        if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
             match RealClock
                 .timeout(
                     tokio::time::Duration::from_millis(timeout_ms),
@@ -595,7 +599,7 @@ impl Handler<resource::Stop> for ProcMeshAgent {
         if let Some(actor_id) = actor_id {
             // While this function returns a Result, it never returns an Err
             // value so we can simply expect without any failure handling.
-            self.stop_actor(cx, actor_id, timeout.as_millis() as u64)
+            self.stop_actor(cx, actor_id, timeout.as_millis() as u64, message.reason)
                 .await
                 .expect("stop_actor cannot fail");
         }
@@ -613,12 +617,14 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
-        _message: resource::StopAll,
+        message: resource::StopAll,
     ) -> anyhow::Result<()> {
         let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         // By passing in the self context, destroy_and_wait will stop this agent
         // last, after all others are stopped.
-        let stop_result = self.destroy_and_wait_except_current(cx, timeout).await;
+        let stop_result = self
+            .destroy_and_wait_except_current(cx, timeout, &message.reason)
+            .await;
         // Exit here to cleanup all remaining resources held by the process.
         // This means ProcMeshAgent will never run cleanup or any other code
         // from exiting its root actor. Senders of this message should never

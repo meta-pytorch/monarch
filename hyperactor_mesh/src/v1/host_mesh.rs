@@ -531,7 +531,7 @@ impl HostMesh {
 
         match &mut self.allocation {
             HostMeshAllocation::ProcMesh { proc_mesh, .. } => {
-                proc_mesh.stop(cx).await?;
+                proc_mesh.stop(cx, "host mesh shutdown".to_string()).await?;
             }
             HostMeshAllocation::Owned { .. } => {}
         }
@@ -1038,6 +1038,7 @@ impl HostMeshRef {
         proc_mesh_name: &Name,
         procs: impl IntoIterator<Item = ProcId>,
         region: Region,
+        reason: String,
     ) -> anyhow::Result<()> {
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
@@ -1072,6 +1073,7 @@ impl HostMeshRef {
                 cx,
                 resource::Stop {
                     name: proc_name.clone(),
+                    reason: reason.clone(),
                 },
             )?;
             host.mesh_agent()

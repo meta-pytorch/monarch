@@ -203,4 +203,6 @@ async def test_reducer() -> None:
     assert "[reduced](start+msg0)" in value
 
     #  Note: occasionally test would hang without this stop
-    await proc_mesh.stop_nonblocking(context().actor_instance._as_rust())
+    await proc_mesh.stop_nonblocking(
+        context().actor_instance._as_rust(), "test cleanup"
+    )

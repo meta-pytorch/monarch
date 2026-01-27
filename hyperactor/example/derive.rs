@@ -201,7 +201,7 @@ async fn main() -> Result<(), anyhow::Error> {
     );
 
     let _ = proc
-        .destroy_and_wait::<()>(Duration::from_secs(1), None)
+        .destroy_and_wait::<()>(Duration::from_secs(1), None, "example cleanup")
         .await?;
     Ok(())
 }

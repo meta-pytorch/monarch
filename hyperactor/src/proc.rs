@@ -674,13 +674,17 @@ impl Proc {
 
     /// Signals to a root actor to stop,
     /// returning a status observer if successful.
-    pub fn stop_actor(&self, actor_id: &ActorId) -> Option<watch::Receiver<ActorStatus>> {
+    pub fn stop_actor(
+        &self,
+        actor_id: &ActorId,
+        reason: String,
+    ) -> Option<watch::Receiver<ActorStatus>> {
         if let Some(entry) = self.state().ledger.roots.get(actor_id) {
             match entry.value().upgrade() {
                 None => None, // the root's cell has been dropped
                 Some(cell) => {
                     tracing::info!("sending stop signal to {}", cell.actor_id());
-                    if let Err(err) = cell.signal(Signal::DrainAndStop) {
+                    if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
                         tracing::error!(
                             "{}: failed to send stop signal to pid {}: {:?}",
                             self.proc_id(),
@@ -710,8 +714,9 @@ impl Proc {
         &mut self,
         timeout: Duration,
         cx: Option<&Context<'_, A>>,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
-        self.destroy_and_wait_except_current::<A>(timeout, cx, false)
+        self.destroy_and_wait_except_current::<A>(timeout, cx, false, reason)
             .await
     }
 
@@ -730,6 +735,7 @@ impl Proc {
         timeout: Duration,
         cx: Option<&Context<'_, A>>,
         except_current: bool,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         tracing::debug!("{}: proc stopping", self.proc_id());
 
@@ -749,7 +755,7 @@ impl Proc {
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>()
         {
-            if let Some(status) = self.stop_actor(&actor_id) {
+            if let Some(status) = self.stop_actor(&actor_id, reason.to_string()) {
                 statuses.insert(actor_id, status);
             }
         }
@@ -1159,16 +1165,22 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Signal the actor to stop.
-    pub fn stop(&self) -> Result<(), ActorError> {
-        tracing::info!("Instance::stop called, {}", self.inner.cell.actor_id());
-        self.inner.cell.signal(Signal::DrainAndStop)
+    pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
+        tracing::info!(
+            actor_id = %self.inner.cell.actor_id(),
+            reason,
+            "Instance::stop called",
+        );
+        self.inner
+            .cell
+            .signal(Signal::DrainAndStop(reason.to_string()))
     }
 
     /// Signal the actor to abort with a provided reason.
     pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!(
-            actor_id = ?self.inner.cell.actor_id(),
-            abort_reason = reason,
+            actor_id = %self.inner.cell.actor_id(),
+            reason,
             "Instance::abort called",
         );
         self.inner.cell.signal(Signal::Abort(reason.to_string()))
@@ -1366,7 +1378,10 @@ impl<A: Actor> Instance<A> {
         // so we can safely read the current child keys.
         let mut to_unlink = Vec::new();
         for child in self.inner.cell.child_iter() {
-            if let Err(err) = child.value().signal(Signal::Stop) {
+            if let Err(err) = child
+                .value()
+                .signal(Signal::Stop("parent stopping".to_string()))
+            {
                 tracing::error!(
                     "{}: failed to send stop signal to child pid {}: {:?}",
                     self.self_id(),
@@ -1456,6 +1471,7 @@ impl<A: Actor> Instance<A> {
             .await
             .map_err(|err| ActorError::new(self.self_id(), ActorErrorKind::init(err)))?;
         let need_drain;
+        let stop_reason;
         'messages: loop {
             self.change_status(ActorStatus::Idle);
             let metric_pairs =
@@ -1481,8 +1497,14 @@ impl<A: Actor> Instance<A> {
                     let signal = signal.map_err(ActorError::from);
                     tracing::debug!("Received signal {signal:?}");
                     match signal? {
-                        signal@(Signal::Stop | Signal::DrainAndStop) => {
-                            need_drain = matches!(signal, Signal::DrainAndStop);
+                        Signal::Stop(reason) => {
+                            need_drain = false;
+                            stop_reason = reason;
+                            break 'messages;
+                        },
+                        Signal::DrainAndStop(reason) => {
+                            need_drain = true;
+                            stop_reason = reason;
                             break 'messages;
                         },
                         Signal::ChildStopped(pid) => {
@@ -1517,7 +1539,11 @@ impl<A: Actor> Instance<A> {
             }
             tracing::debug!("drained {} messages", n);
         }
-        tracing::debug!("exited actor loop: {}", self.self_id());
+        tracing::debug!(
+            actor_id = %self.self_id(),
+            reason = stop_reason,
+            "exited actor loop",
+        );
         Ok(())
     }
 
@@ -2403,7 +2429,7 @@ mod tests {
             .await
             .unwrap();
 
-        handle.drain_and_stop().unwrap();
+        handle.drain_and_stop("test").unwrap();
         handle.await;
         assert_matches!(*state.borrow(), ActorStatus::Stopped);
     }
@@ -2484,7 +2510,7 @@ mod tests {
                 .unwrap()
         );
 
-        target_actor.drain_and_stop().unwrap();
+        target_actor.drain_and_stop("test").unwrap();
         target_actor.await;
 
         assert!(
@@ -2494,7 +2520,7 @@ mod tests {
                 .unwrap()
         );
 
-        lookup_actor.drain_and_stop().unwrap();
+        lookup_actor.drain_and_stop("test").unwrap();
         lookup_actor.await;
     }
 
@@ -2562,20 +2588,20 @@ mod tests {
         // Supervision tree is torn down correctly.
         // Once each actor is stopped, it should have no linked children.
         let third_cell = third.cell().clone();
-        third.drain_and_stop().unwrap();
+        third.drain_and_stop("test").unwrap();
         third.await;
         assert!(third_cell.inner.children.is_empty());
         drop(third_cell);
         validate_link(second.cell(), first.cell());
 
         let second_cell = second.cell().clone();
-        second.drain_and_stop().unwrap();
+        second.drain_and_stop("test").unwrap();
         second.await;
         assert!(second_cell.inner.children.is_empty());
         drop(second_cell);
 
         let first_cell = first.cell().clone();
-        first.drain_and_stop().unwrap();
+        first.drain_and_stop("test").unwrap();
         first.await;
         assert!(first_cell.inner.children.is_empty());
     }
@@ -2590,7 +2616,7 @@ mod tests {
         let root_2 = TestActor::spawn_child(&client, &root).await;
         let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
 
-        root.drain_and_stop().unwrap();
+        root.drain_and_stop("test").unwrap();
         root.await;
 
         for actor in [root_1, root_2, root_2_1] {
@@ -2683,7 +2709,7 @@ mod tests {
 
         // Stop the 2nd root. It should be excluded from the snapshot after it
         // is stopped.
-        another_root.drain_and_stop().unwrap();
+        another_root.drain_and_stop("test").unwrap();
         another_root.await;
         {
             let snapshot = proc.state().ledger.snapshot();
@@ -2821,7 +2847,7 @@ mod tests {
         }
 
         // Stop root_1. This should remove it, and its child, from snapshot.
-        root_1.drain_and_stop().unwrap();
+        root_1.drain_and_stop("test").unwrap();
         root_1.await;
         // root also needs to stop processing messages to get a reliable number.
         wait_until_idle(&root).await;
@@ -2857,7 +2883,7 @@ mod tests {
         }
 
         // Finally stop root. No roots should be left in snapshot.
-        root.drain_and_stop().unwrap();
+        root.drain_and_stop("test").unwrap();
         root.await;
         {
             let snapshot = proc.state().ledger.snapshot();
@@ -2910,7 +2936,7 @@ mod tests {
         let usize_handle = rx.recv().await.unwrap();
         usize_handle.send(&client, 123).unwrap();
 
-        handle.drain_and_stop().unwrap();
+        handle.drain_and_stop("test").unwrap();
         handle.await;
 
         assert_eq!(state.load(Ordering::SeqCst), 123);
@@ -3093,7 +3119,7 @@ mod tests {
         let message = receiver.recv().await.unwrap();
         assert_eq!(message, "hello");
 
-        child_actor.drain_and_stop().unwrap();
+        child_actor.drain_and_stop("test").unwrap();
         child_actor.await;
 
         assert_eq!(*handle.status().borrow(), ActorStatus::Client);

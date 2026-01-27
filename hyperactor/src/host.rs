@@ -441,12 +441,14 @@ pub trait SingleTerminate: Send + Sync {
     /// # Parameters
     /// - `timeout`: Per-child grace period before escalation to a
     ///   forceful stop.
+    /// - `reason`: Human-readable reason for termination.
     /// Returns a tuple of (polite shutdown actors vec, forceful stop actors vec)
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
         proc: &ProcId,
         timeout: std::time::Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error>;
 }
 
@@ -488,6 +490,7 @@ pub trait BulkTerminate: Send + Sync {
         cx: &impl context::Actor,
         timeout: std::time::Duration,
         max_in_flight: usize,
+        reason: &str,
     ) -> TerminateSummary;
 }
 
@@ -512,8 +515,11 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
+        reason: &str,
     ) -> TerminateSummary {
-        self.manager.terminate_all(cx, timeout, max_in_flight).await
+        self.manager
+            .terminate_all(cx, timeout, max_in_flight, reason)
+            .await
     }
 }
 
@@ -524,8 +530,9 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
         cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
-        self.manager.terminate_proc(cx, proc, timeout).await
+        self.manager.terminate_proc(cx, proc, timeout, reason).await
     }
 }
 
@@ -667,10 +674,16 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     /// value `wait()` will return). Never fabricates terminal states:
     /// this is only returned after the exit monitor observes
     /// termination.
+    ///
+    /// # Parameters
+    /// - `cx`: The actor context for sending messages.
+    /// - `timeout`: Grace period before escalation.
+    /// - `reason`: Human-readable reason for termination.
     async fn terminate(
         &self,
         cx: &impl context::Actor,
         timeout: Duration,
+        reason: &str,
     ) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>>;
 
     /// Force the proc down immediately. For in-process managers this
@@ -764,6 +777,7 @@ where
         _cx: &impl context::Actor,
         timeout: std::time::Duration,
         max_in_flight: usize,
+        reason: &str,
     ) -> TerminateSummary {
         // Snapshot procs so we don't hold the lock across awaits.
         let procs: Vec<Proc> = {
@@ -775,7 +789,7 @@ where
 
         let results = stream::iter(procs.into_iter().map(|mut p| async move {
             // For local manager, graceful proc-level stop.
-            match p.destroy_and_wait::<()>(timeout, None).await {
+            match p.destroy_and_wait::<()>(timeout, None, reason).await {
                 Ok(_) => true,
                 Err(e) => {
                     tracing::warn!(error=%e, "terminate_all(local): destroy_and_wait failed");
@@ -807,6 +821,7 @@ where
         _cx: &impl context::Actor,
         proc: &ProcId,
         timeout: std::time::Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         // Snapshot procs so we don't hold the lock across awaits.
         let procs: Option<Proc> = {
@@ -814,7 +829,7 @@ where
             guard.remove(proc)
         };
         if let Some(mut p) = procs {
-            p.destroy_and_wait::<()>(timeout, None).await
+            p.destroy_and_wait::<()>(timeout, None, reason).await
         } else {
             Err(anyhow::anyhow!("proc {} doesn't exist", proc))
         }
@@ -892,6 +907,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         &self,
         _cx: &impl context::Actor,
         timeout: Duration,
+        reason: &str,
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         let mut proc = {
             let guard = self.procs.lock().await;
@@ -908,7 +924,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         // Graceful stop of the *proc* (actors) with a deadline. This
         // will drain and then abort remaining actors at expiry.
         let _ = proc
-            .destroy_and_wait::<()>(timeout, None)
+            .destroy_and_wait::<()>(timeout, None, reason)
             .await
             .map_err(TerminateError::Io)?;
 
@@ -927,7 +943,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         };
 
         let _ = proc
-            .destroy_and_wait::<()>(Duration::from_millis(0), None)
+            .destroy_and_wait::<()>(Duration::from_millis(0), None, "kill")
             .await
             .map_err(TerminateError::Io)?;
 
@@ -1120,6 +1136,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
         &self,
         _cx: &impl context::Actor,
         _deadline: Duration,
+        _reason: &str,
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         Err(TerminateError::Unsupported)
     }
@@ -1555,6 +1572,7 @@ mod tests {
             &self,
             _cx: &impl context::Actor,
             _timeout: Duration,
+            _reason: &str,
         ) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>> {
             Err(TerminateError::Unsupported)
         }

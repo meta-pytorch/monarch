@@ -113,7 +113,7 @@ async def test_bind_and_pickling() -> None:
         pickle.loads(obj)
 
         instance = context().actor_instance._as_rust()
-        await proc_mesh.stop_nonblocking(instance)
+        await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
     run()
 
@@ -200,7 +200,7 @@ async def test_cast_handle() -> None:
         )
 
         instance = context().actor_instance._as_rust()
-        await proc_mesh.stop_nonblocking(instance)
+        await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
     run()
 
@@ -218,7 +218,7 @@ async def test_cast_ref() -> None:
             actor_mesh_ref, context().actor_instance, list(range(3 * 8 * 8))
         )
         instance = context().actor_instance._as_rust()
-        await proc_mesh.stop_nonblocking(instance)
+        await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
     run()
 

@@ -815,7 +815,7 @@ mod tests {
         assert!(val, "allreduce sum produced unexpected value: {val}");
 
         for worker in workers.into_iter() {
-            worker.drain_and_stop().unwrap();
+            worker.drain_and_stop("test").unwrap();
             worker.await;
         }
 
@@ -993,9 +993,9 @@ mod tests {
             .unwrap();
         assert!(val, "send_tensor result was unexpected value: {val}");
 
-        handle1.drain_and_stop().unwrap();
+        handle1.drain_and_stop("test").unwrap();
         assert_matches!(handle1.await, ActorStatus::Stopped);
-        handle2.drain_and_stop().unwrap();
+        handle2.drain_and_stop("test").unwrap();
         assert_matches!(handle2.await, ActorStatus::Stopped);
 
         let error_responses = controller_rx.drain();
@@ -1134,7 +1134,7 @@ mod tests {
             .unwrap();
         assert!(val, "send_tensor_local result was unexpected value: {val}");
 
-        handle.drain_and_stop().unwrap();
+        handle.drain_and_stop("test").unwrap();
         assert_matches!(handle.await, ActorStatus::Stopped);
 
         let error_responses = controller_rx.drain();

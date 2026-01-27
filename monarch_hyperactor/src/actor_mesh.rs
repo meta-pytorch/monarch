@@ -95,7 +95,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
 
     /// Stop the actor mesh asynchronously.
     /// Default implementation raises NotImplementedError for types that don't support stopping.
-    fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
+    fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(format!(
             "stop() is not supported for {}",
             std::any::type_name::<Self>()
@@ -180,8 +180,8 @@ impl PythonActorMesh {
             .start_supervision(instance, supervision_display_name)
     }
 
-    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
-        self.inner.stop(instance)
+    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
+        self.inner.stop(instance, reason)
     }
 
     fn initialized(&self) -> PyResult<PyPythonTask> {
@@ -398,12 +398,13 @@ impl ActorMeshProtocol for AsyncActorMesh {
         Ok(())
     }
 
-    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         let mesh = self.mesh.clone();
         let instance = monarch_with_gil_blocking(|_py| instance.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.push(async move {
-            let result = async move { mesh.await?.stop(&instance)?.take_task()?.await }.await;
+            let result =
+                async move { mesh.await?.stop(&instance, reason)?.take_task()?.await }.await;
             if tx.send(result).is_err() {
                 panic!("oneshot failed");
             }
@@ -517,12 +518,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         )))
     }
 
-    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         let (slf, instance) = monarch_with_gil_blocking(|_py| (self.clone(), instance.clone()));
         match slf {
             PythonActorMeshImpl::Owned(mut mesh) => PyPythonTask::new(async move {
                 mesh.mesh
-                    .stop(instance.deref())
+                    .stop(instance.deref(), reason)
                     .await
                     .map_err(|err| PyValueError::new_err(err.to_string()))
             }),
@@ -588,7 +589,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     /// Stop the actor mesh asynchronously.
-    fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
+    fn stop(&self, _instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(
             "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))

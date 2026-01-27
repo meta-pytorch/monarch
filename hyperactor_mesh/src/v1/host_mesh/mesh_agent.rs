@@ -90,11 +90,12 @@ impl HostAgentMode {
         cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         #[allow(clippy::match_same_arms)]
         match self {
-            HostAgentMode::Process(host) => host.terminate_proc(cx, proc, timeout).await,
-            HostAgentMode::Local(host) => host.terminate_proc(cx, proc, timeout).await,
+            HostAgentMode::Process(host) => host.terminate_proc(cx, proc, timeout, reason).await,
+            HostAgentMode::Local(host) => host.terminate_proc(cx, proc, timeout, reason).await,
         }
     }
 }
@@ -227,6 +228,12 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
 #[async_trait]
 impl Handler<resource::Stop> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
+        tracing::info!(
+            name = "HostMeshAgentStatus",
+            proc_name = %message.name,
+            reason = %message.reason,
+            "stopping proc"
+        );
         let host = self
             .host
             .as_mut()
@@ -255,7 +262,8 @@ impl Handler<resource::Stop> for HostMeshAgent {
                 !*stopped
             };
             if should_stop {
-                host.terminate_proc(&cx, proc_id, timeout).await?;
+                host.terminate_proc(&cx, proc_id, timeout, &message.reason)
+                    .await?;
                 *stopped = true;
             }
         }
@@ -355,13 +363,18 @@ impl Handler<ShutdownHost> for HostMeshAgent {
             match host_mode {
                 HostAgentMode::Process(host) => {
                     let summary = host
-                        .terminate_children(cx, msg.timeout, msg.max_in_flight.clamp(1, 256))
+                        .terminate_children(
+                            cx,
+                            msg.timeout,
+                            msg.max_in_flight.clamp(1, 256),
+                            "shutdown host",
+                        )
                         .await;
                     tracing::info!(?summary, "terminated children on host");
                 }
                 HostAgentMode::Local(host) => {
                     let summary = host
-                        .terminate_children(cx, msg.timeout, msg.max_in_flight)
+                        .terminate_children(cx, msg.timeout, msg.max_in_flight, "shutdown host")
                         .await;
                     tracing::info!(?summary, "terminated children on local host");
                 }

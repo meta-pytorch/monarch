@@ -573,7 +573,7 @@ class _SingletonActorAdapator:
     ) -> None:
         return None
 
-    def stop(self, instance: HyInstance) -> "PythonTask[None]":
+    def stop(self, instance: HyInstance, reason: str) -> "PythonTask[None]":
         raise NotImplementedError("stop()")
 
     def initialized(self) -> "PythonTask[None]":
@@ -1814,9 +1814,9 @@ class ActorMesh(MeshTrait, Generic[T]):
     def __repr__(self) -> str:
         return f"ActorMesh(class={self._class}, shape={self._shape}), inner={type(self._inner)})"
 
-    def stop(self) -> "Future[None]":
+    def stop(self, reason: str = "stopped by client") -> "Future[None]":
         instance = context().actor_instance._as_rust()
-        return Future(coro=self._inner.stop(instance))
+        return Future(coro=self._inner.stop(instance, reason))
 
     @property
     def initialized(self) -> Future[None]:
