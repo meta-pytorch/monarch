@@ -23,6 +23,11 @@ mod inner {
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+    // In ROCm builds, bindgen generates hipDeviceptr_t instead of CUdeviceptr.
+    // Alias CUdeviceptr to hipDeviceptr_t so Rust code can use CUdeviceptr consistently.
+    #[cfg(use_rocm)]
+    pub type CUdeviceptr = hipDeviceptr_t;
+
     #[repr(C, packed(1))]
     #[derive(Debug, Default, Clone, Copy)]
     pub struct mlx5_wqe_ctrl_seg {
@@ -245,8 +250,13 @@ pub type RdmaxcelSegmentScannerFn = rdmaxcel_segment_scanner_fn;
 // These provide a place for doc comments and explicit signatures.
 unsafe extern "C" {
     pub fn rdmaxcel_error_string(error_code: std::os::raw::c_int) -> *const std::os::raw::c_char;
+
+    /// Get PCI address from a CUDA/HIP device pointer
+    ///
+    /// In CUDA builds, cuda_ptr is CUdeviceptr (u64).
+    /// In ROCm builds, cuda_ptr is CUdeviceptr (aliased to hipDeviceptr_t = void*).
     pub fn get_cuda_pci_address_from_ptr(
-        cuda_ptr: u64,
+        cuda_ptr: CUdeviceptr,
         pci_addr_out: *mut std::os::raw::c_char,
         pci_addr_size: usize,
     ) -> std::os::raw::c_int;

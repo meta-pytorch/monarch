@@ -198,6 +198,12 @@ fn main() {
     println!("cargo:rustc-cfg=cargo");
     println!("cargo:rustc-check-cfg=cfg(cargo)");
 
+    // Emit cfg for ROCm so Rust code can conditionally compile
+    if is_rocm {
+        println!("cargo:rustc-cfg=use_rocm");
+    }
+    println!("cargo:rustc-check-cfg=cfg(use_rocm)");
+
     // Compile C sources
     if !c_sources.is_empty() {
         let mut c_build = cc::Build::new();
