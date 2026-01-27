@@ -23,9 +23,9 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - name: 7.1
+          - name: "7.1"
             torch-spec: 'torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/'
-          - name: 7.0
+          - name: "7.0"
             torch-spec: 'torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.0/'
     with:
       timeout: 60
