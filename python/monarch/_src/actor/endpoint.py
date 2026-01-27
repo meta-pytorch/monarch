@@ -9,7 +9,6 @@ from __future__ import annotations
 # pyre-strict
 
 import functools
-import time
 from abc import ABC, abstractmethod
 from typing import (
     Any,
@@ -17,11 +16,9 @@ from typing import (
     Callable,
     cast,
     Concatenate,
-    Coroutine,
     Dict,
     Generator,
     Generic,
-    List,
     Literal,
     Optional,
     overload,
@@ -33,78 +30,33 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
+from monarch._rust_bindings.monarch_hyperactor.endpoint import (
+    EndpointAdverb,
+    stream_collector,
+    value_collector,
+    valuemesh_collector,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 from monarch._src.actor.future import Future
 from monarch._src.actor.metrics import (
     endpoint_broadcast_error_counter,
     endpoint_broadcast_throughput_counter,
-    endpoint_call_error_counter,
-    endpoint_call_latency_histogram,
-    endpoint_call_one_error_counter,
-    endpoint_call_one_latency_histogram,
-    endpoint_call_one_throughput_counter,
-    endpoint_call_throughput_counter,
-    endpoint_choose_error_counter,
-    endpoint_choose_latency_histogram,
-    endpoint_choose_throughput_counter,
-    endpoint_stream_latency_histogram,
-    endpoint_stream_throughput_counter,
 )
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
-from opentelemetry.metrics import Counter, Histogram
 
 T = TypeVar("T")
-
-
-def _observe_latency_and_error(
-    coro: Coroutine[Any, Any, T],
-    start_time_ns: int,
-    histogram: Histogram,
-    error_counter: Counter,
-    method_name: str,
-    actor_count: int,
-) -> Coroutine[Any, Any, T]:
-    """
-    Observe and record latency and errors of an async operation.
-
-    Args:
-        coro: The coroutine to observe
-        histogram: The histogram to record latency metrics to
-        error_counter: The counter to record error metrics to
-        method_name: Name of the method being called
-        actor_count: Number of actors involved in the call
-
-    Returns:
-        A wrapped coroutine that records error and latency metrics
-    """
-
-    async def _wrapper() -> T:
-        error_occurred = False
-        try:
-            return await coro
-        except Exception:
-            error_occurred = True
-            raise
-        finally:
-            duration_us = int((time.monotonic_ns() - start_time_ns) / 1_000)
-            attributes = {
-                "method": method_name,
-                "actor_count": actor_count,
-            }
-            histogram.record(duration_us, attributes=attributes)
-            if error_occurred:
-                error_counter.add(1, attributes=attributes)
-
-    return _wrapper()
 
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.mailbox import (
         OncePortReceiver as HyOncePortReceiver,
+        OncePortRef,
         PortReceiver as HyPortReceiver,
+        PortRef,
     )
-    from monarch._src.actor.actor_mesh import ActorMesh, Port, PortReceiver, ValueMesh
+    from monarch._rust_bindings.monarch_hyperactor.supervision import Supervisor
+    from monarch._src.actor.actor_mesh import ActorMesh, Port, ValueMesh
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -134,51 +86,18 @@ class Endpoint(ABC, Generic[P, R]):
             # could happen for class Remote https://fburl.com/code/4ny98bul
             return "unknown"
 
-    def _with_telemetry(
-        self,
-        start_time_ns: int,
-        histogram: Histogram,
-        error_counter: Counter,
-        actor_count: int,
-    ) -> Any:
-        """
-        Decorator factory to add telemetry (latency and error tracking) to async functions.
-
-        Args:
-            histogram: The histogram to record latency metrics to
-            error_counter: The counter to record error metrics to
-            actor_count: Number of actors involved in the operation
-
-        Returns:
-            A decorator that wraps async functions with telemetry measurement
-        """
-        method_name: str = self._get_method_name()
-
-        def decorator(func: Any) -> Any:
-            @functools.wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                coro = func(*args, **kwargs)
-                return _observe_latency_and_error(
-                    coro,
-                    start_time_ns,
-                    histogram,
-                    error_counter,
-                    method_name,
-                    actor_count,
-                )
-
-            return wrapper
-
-        return decorator
+    @abstractmethod
+    def _get_extent(self) -> Extent:
+        pass
 
     @abstractmethod
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Implements sending a message to the endpoint. The return value of the endpoint will
         be sent to port if provided. If port is not provided, the return will be dropped,
@@ -189,11 +108,6 @@ class Endpoint(ABC, Generic[P, R]):
         this will be the size of the currently active proc_mesh.
         """
         pass
-
-    def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
-        from monarch._src.actor.actor_mesh import Channel
-
-        return Channel[R].open(once)
 
     @abstractmethod
     def _call_name(self) -> MethodSpecifier:
@@ -207,102 +121,98 @@ class Endpoint(ABC, Generic[P, R]):
     ) -> "HyPortReceiver | HyOncePortReceiver":
         return r
 
+    def _get_supervisor(self) -> "Supervisor | None":
+        """
+        Returns a Supervisor for monitoring actor health during endpoint calls.
+        Override in subclasses to provide supervision for actor meshes.
+        """
+        return None
+
+    def _qualified_endpoint_name(self) -> str | None:
+        """
+        Returns the full name of the endpoint for error messages.
+        Override in subclasses to provide a meaningful name.
+        """
+        return None
+
     # the following are all 'adverbs' or different ways to handle the
     # return values of this endpoint. Adverbs should only ever take *args, **kwargs
     # of the original call. If we want to add syntax sugar for something that needs additional
     # arguments, it should be implemented as function indepdendent of endpoint like `send`
     # and `Accumulator`
     def choose(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+        from monarch._src.actor.actor_mesh import context
+
         """
         Load balanced sends a message to one chosen actor and awaits a result.
 
         Load balanced RPC-style entrypoint for request/response messaging.
         """
-        # Track throughput at method entry
         method_name: str = self._get_method_name()
-        endpoint_choose_throughput_counter.add(1, attributes={"method": method_name})
+        actor_instance = context().actor_instance
 
-        p, r_port = self._port(once=True)
-        r: "PortReceiver[R]" = r_port
-        start_time: int = time.monotonic_ns()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=p, selection="choose")
-
-        @self._with_telemetry(
-            start_time,
-            endpoint_choose_latency_histogram,
-            endpoint_choose_error_counter,
-            1,
+        port_ref, task = value_collector(
+            method_name,
+            self._get_supervisor(),
+            actor_instance._as_rust(),
+            self._qualified_endpoint_name(),
+            EndpointAdverb.Choose,
         )
-        async def process() -> R:
-            result = await r.recv()
-            return result
 
-        return Future(coro=process())
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref, selection="choose")
+
+        return Future(coro=task)
 
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
-        # Track throughput at method entry
-        method_name: str = self._get_method_name()
-        endpoint_call_one_throughput_counter.add(1, attributes={"method": method_name})
+        from monarch._src.actor.actor_mesh import context
 
-        p, r_port = self._port(once=True)
-        r: PortReceiver[R] = r_port
-        start_time: int = time.monotonic_ns()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent = self._send(args, kwargs, port=p, selection="choose")
+        method_name: str = self._get_method_name()
+
+        extent = self._get_extent()
         if extent.nelements != 1:
             raise ValueError(
                 f"Can only use 'call_one' on a single Actor but this actor has shape {extent}"
             )
 
-        @self._with_telemetry(
-            start_time,
-            endpoint_call_one_latency_histogram,
-            endpoint_call_one_error_counter,
-            1,
-        )
-        async def process() -> R:
-            result = await r.recv()
-            return result
+        actor_instance = context().actor_instance
 
-        return Future(coro=process())
+        port_ref, task = value_collector(
+            method_name,
+            self._get_supervisor(),
+            actor_instance._as_rust(),
+            self._qualified_endpoint_name(),
+            EndpointAdverb.CallOne,
+        )
+
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref, selection="choose")
+
+        return Future(coro=task)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
-        from monarch._src.actor.actor_mesh import RankedPortReceiver, ValueMesh
+        from monarch._src.actor.actor_mesh import context
 
-        start_time: int = time.monotonic_ns()
-        # Track throughput at method entry
         method_name: str = self._get_method_name()
         instant_event(f"calling {method_name} message")
-        endpoint_call_throughput_counter.add(1, attributes={"method": method_name})
-        p, unranked = self._port()
-        r: RankedPortReceiver[R] = unranked.ranked()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p)
 
-        @self._with_telemetry(
-            start_time,
-            endpoint_call_latency_histogram,
-            endpoint_call_error_counter,
-            extent.nelements,
+        extent: Extent = self._get_extent()
+
+        actor_instance = context().actor_instance
+
+        port_ref, task = valuemesh_collector(
+            extent,
+            method_name,
+            self._get_supervisor(),
+            actor_instance._as_rust(),
+            self._qualified_endpoint_name(),
+            EndpointAdverb.Call,
         )
-        async def process() -> "ValueMesh[R]":
-            from monarch._rust_bindings.monarch_hyperactor.shape import Shape
-            from monarch._src.actor.shape import NDSlice
 
-            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
-            for _ in range(extent.nelements):
-                rank, value = await r._recv()
-                results[rank] = value
-            call_shape = Shape(
-                extent.labels,
-                NDSlice.new_row_major(extent.sizes),
-            )
-            instant_event(f"{method_name} response received")
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref)
 
-            return ValueMesh(call_shape, results)
-
-        return Future(coro=process())
+        return Future(coro=task)
 
     def stream(
         self, *args: P.args, **kwargs: P.kwargs
@@ -313,34 +223,27 @@ class Endpoint(ABC, Generic[P, R]):
         This enables processing results from multiple actors incrementally as
         they become available. Returns an async generator of response values.
         """
-        # Track throughput at method entry
+        from monarch._src.actor.actor_mesh import context
+
         method_name: str = self._get_method_name()
-        endpoint_stream_throughput_counter.add(1, attributes={"method": method_name})
 
-        p, r_port = self._port()
-        start_time: int = time.monotonic_ns()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p)
-        r: "PortReceiver[R]" = r_port
+        extent: Extent = self._get_extent()
 
-        # Note: stream doesn't track errors per-yield since errors propagate to caller
-        latency_decorator: Any = self._with_telemetry(
-            start_time,
-            endpoint_stream_latency_histogram,
-            endpoint_broadcast_error_counter,  # Placeholder, errors not tracked per-yield
-            extent.nelements,
+        actor_instance = context().actor_instance
+
+        port_ref, value_stream = stream_collector(
+            extent,
+            method_name,
+            self._get_supervisor(),
+            actor_instance._as_rust(),
+            self._qualified_endpoint_name(),
         )
 
-        def _stream() -> Generator[Future[R], None, None]:
-            for _ in range(extent.nelements):
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref)
 
-                @latency_decorator
-                async def receive() -> R:
-                    return await r._recv()
-
-                yield Future(coro=receive())
-
-        return _stream()
+        for task in value_stream:
+            yield Future(coro=task)
 
     def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
         """

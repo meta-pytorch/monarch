@@ -124,6 +124,18 @@ impl From<PyExtent> for Extent {
     }
 }
 
+impl PyExtent {
+    pub(crate) fn num_ranks(&self) -> usize {
+        self.inner.num_ranks()
+    }
+}
+
+impl PyExtent {
+    pub fn get_inner(&self) -> &Extent {
+        &self.inner
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[pyclass(
     name = "Region",
