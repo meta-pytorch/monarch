@@ -36,6 +36,8 @@
 
 Monarch is a distributed programming framework for PyTorch based on scalable actor messaging. It provides remote actors with scalable messaging, fault tolerance through supervision trees, point-to-point RDMA transfers, and distributed tensors.
 
+**If you are writing code that uses the Monarch Python API, read `docs/DOCS_INDEX.md` first for an index of tutorials, API docs, and examples.**
+
 **Key Components:**
 - **Rust Core**: The core actor system, messaging, RDMA, and tensor operations are implemented in Rust
 - **Python API**: Python bindings expose the functionality through a simple API
@@ -325,4 +327,5 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 
 - Full documentation: https://meta-pytorch.org/monarch/
 - README.md - Installation instructions and overview
+- docs/DOCS_INDEX.md - Index of tutorials, API docs, and examples for using Monarch from Python
 - docs/DOCUMENTATION_GUIDE.md - How to contribute to documentation

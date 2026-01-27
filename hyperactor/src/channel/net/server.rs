@@ -29,6 +29,7 @@ use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
 use tokio::time::Duration;
+use tokio::time::Interval;
 use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -685,6 +686,11 @@ where
     let child_cancel_token = CancellationToken::new();
 
     let manager = SessionManager::new();
+
+    // Heartbeat timer for server health metrics
+    let heartbeat_interval = hyperactor_config::global::get(config::SERVER_HEARTBEAT_INTERVAL);
+    let mut heartbeat_timer: Interval = tokio::time::interval(heartbeat_interval);
+
     let result: Result<(), ServerError> = loop {
         let _ = tracing::info_span!("channel_listen_accept_loop");
         tokio::select! {
@@ -766,6 +772,15 @@ where
                         );
                     }
                 }
+            }
+
+            _ = heartbeat_timer.tick() => {
+                metrics::SERVER_HEARTBEAT.add(
+                    1,
+                    hyperactor_telemetry::kv_pairs!(
+                        "dest" => listener_channel_addr.to_string()
+                    ),
+                );
             }
 
             _ = parent_cancel_token.cancelled() => {

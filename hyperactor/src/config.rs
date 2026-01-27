@@ -129,6 +129,14 @@ declare_attrs! {
         py_name: Some("host_spawn_ready_timeout".to_string()),
     })
     pub attr HOST_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Heartbeat interval for server health metrics. The server emits a
+    /// heartbeat metric at this interval to indicate it is alive.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_SERVER_HEARTBEAT_INTERVAL".to_string()),
+        py_name: Some("server_heartbeat_interval".to_string()),
+    })
+    pub attr SERVER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 }
 
 #[cfg(test)]
