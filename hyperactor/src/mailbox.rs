@@ -97,6 +97,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use futures::Sink;
 use futures::Stream;
+use hyperactor_config::LazyAttrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -214,7 +215,8 @@ pub struct MessageEnvelope {
     errors: Vec<DeliveryError>,
 
     /// Additional context for this message.
-    headers: Attrs,
+    /// Stored lazily to avoid deserialization overhead on passthrough.
+    headers: LazyAttrs,
 
     /// Decremented at every `MailboxSender` hop.
     ttl: u8,
@@ -234,7 +236,7 @@ impl MessageEnvelope {
             dest,
             data,
             errors: Vec::new(),
-            headers,
+            headers: LazyAttrs::from_attrs(headers),
             ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
             return_undeliverable: true,
@@ -254,7 +256,7 @@ impl MessageEnvelope {
         headers: Attrs,
     ) -> Result<Self, wirevalue::Error> {
         Ok(Self {
-            headers,
+            headers: LazyAttrs::from_attrs(headers),
             data: wirevalue::Any::serialize(value)?,
             sender: source,
             dest,
@@ -325,8 +327,9 @@ impl MessageEnvelope {
     }
 
     /// The message headers.
+    /// Lazily deserializes headers on first access.
     pub fn headers(&self) -> &Attrs {
-        &self.headers
+        self.headers.attrs()
     }
 
     /// Tells whether this is a signal message.
@@ -456,8 +459,9 @@ impl MessageEnvelope {
     }
 
     /// Get a mutable reference to this envelope's headers.
+    /// Lazily deserializes headers on first access.
     pub fn headers_mut(&mut self) -> &mut Attrs {
-        &mut self.headers
+        self.headers.attrs_mut()
     }
 }
 
@@ -484,7 +488,7 @@ pub struct MessageMetadata {
     sender: ActorId,
     dest: PortId,
     errors: Vec<DeliveryError>,
-    headers: Attrs,
+    headers: LazyAttrs,
     ttl: u8,
     return_undeliverable: bool,
 }
@@ -1547,6 +1551,8 @@ impl MailboxSender for Mailbox {
                     return_undeliverable,
                 } = metadata;
 
+                let headers = headers.into_attrs();
+
                 // We use the entry API here so that we can remove the
                 // entry while holding an (entry) reference. The DashMap
                 // documentation suggests that deadlocks are possible
@@ -1569,7 +1575,7 @@ impl MailboxSender for Mailbox {
 
                         MessageEnvelope::seal(
                             MessageMetadata {
-                                headers,
+                                headers: LazyAttrs::from_attrs(headers),
                                 sender,
                                 dest,
                                 errors: metadata_errors,
