@@ -14,6 +14,7 @@ mod inner {
     #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
     #![allow(unused_attributes)]
+    #![allow(dead_code)] // bindgen generates many functions we may not use
     #[cfg(not(cargo))]
     use crate::ibv_wc_flags;
     #[cfg(not(cargo))]
@@ -88,102 +89,16 @@ mod inner {
         }
 
         /// Returns the number of bytes transferred.
-        ///
-        /// Relevant if the Receive Queue for incoming Send or RDMA Write with immediate operations.
-        /// This value doesn't include the length of the immediate data, if such exists. Relevant in
-        /// the Send Queue for RDMA Read and Atomic operations.
-        ///
-        /// For the Receive Queue of a UD QP that is not associated with an SRQ or for an SRQ that is
-        /// associated with a UD QP this value equals to the payload of the message plus the 40 bytes
-        /// reserved for the GRH. The number of bytes transferred is the payload of the message plus
-        /// the 40 bytes reserved for the GRH, whether or not the GRH is present
         pub fn len(&self) -> usize {
             self.byte_len as usize
         }
 
         /// Check if this work requested completed successfully.
-        ///
-        /// A successful work completion (`IBV_WC_SUCCESS`) means that the corresponding Work Request
-        /// (and all of the unsignaled Work Requests that were posted previous to it) ended, and the
-        /// memory buffers that this Work Request refers to are ready to be (re)used.
         pub fn is_valid(&self) -> bool {
             self.status == ibv_wc_status::IBV_WC_SUCCESS
         }
 
-        /// Returns the work completion status and vendor error syndrome (`vendor_err`) if the work
-        /// request did not completed successfully.
-        ///
-        /// Possible statuses include:
-        ///
-        ///  - `IBV_WC_LOC_LEN_ERR`: Local Length Error: this happens if a Work Request that was posted
-        ///    in a local Send Queue contains a message that is greater than the maximum message size
-        ///    that is supported by the RDMA device port that should send the message or an Atomic
-        ///    operation which its size is different than 8 bytes was sent. This also may happen if a
-        ///    Work Request that was posted in a local Receive Queue isn't big enough for holding the
-        ///    incoming message or if the incoming message size if greater the maximum message size
-        ///    supported by the RDMA device port that received the message.
-        ///  - `IBV_WC_LOC_QP_OP_ERR`: Local QP Operation Error: an internal QP consistency error was
-        ///    detected while processing this Work Request: this happens if a Work Request that was
-        ///    posted in a local Send Queue of a UD QP contains an Address Handle that is associated
-        ///    with a Protection Domain to a QP which is associated with a different Protection Domain
-        ///    or an opcode which isn't supported by the transport type of the QP isn't supported (for
-        ///    example:
-        ///    RDMA Write over a UD QP).
-        ///  - `IBV_WC_LOC_EEC_OP_ERR`: Local EE Context Operation Error: an internal EE Context
-        ///    consistency error was detected while processing this Work Request (unused, since its
-        ///    relevant only to RD QPs or EE Context, which aren’t supported).
-        ///  - `IBV_WC_LOC_PROT_ERR`: Local Protection Error: the locally posted Work Request’s buffers
-        ///    in the scatter/gather list does not reference a Memory Region that is valid for the
-        ///    requested operation.
-        ///  - `IBV_WC_WR_FLUSH_ERR`: Work Request Flushed Error: A Work Request was in process or
-        ///    outstanding when the QP transitioned into the Error State.
-        ///  - `IBV_WC_MW_BIND_ERR`: Memory Window Binding Error: A failure happened when tried to bind
-        ///    a MW to a MR.
-        ///  - `IBV_WC_BAD_RESP_ERR`: Bad Response Error: an unexpected transport layer opcode was
-        ///    returned by the responder. Relevant for RC QPs.
-        ///  - `IBV_WC_LOC_ACCESS_ERR`: Local Access Error: a protection error occurred on a local data
-        ///    buffer during the processing of a RDMA Write with Immediate operation sent from the
-        ///    remote node. Relevant for RC QPs.
-        ///  - `IBV_WC_REM_INV_REQ_ERR`: Remote Invalid Request Error: The responder detected an
-        ///    invalid message on the channel. Possible causes include the operation is not supported
-        ///    by this receive queue (qp_access_flags in remote QP wasn't configured to support this
-        ///    operation), insufficient buffering to receive a new RDMA or Atomic Operation request, or
-        ///    the length specified in a RDMA request is greater than 2^{31} bytes. Relevant for RC
-        ///    QPs.
-        ///  - `IBV_WC_REM_ACCESS_ERR`: Remote Access Error: a protection error occurred on a remote
-        ///    data buffer to be read by an RDMA Read, written by an RDMA Write or accessed by an
-        ///    atomic operation. This error is reported only on RDMA operations or atomic operations.
-        ///    Relevant for RC QPs.
-        ///  - `IBV_WC_REM_OP_ERR`: Remote Operation Error: the operation could not be completed
-        ///    successfully by the responder. Possible causes include a responder QP related error that
-        ///    prevented the responder from completing the request or a malformed WQE on the Receive
-        ///    Queue. Relevant for RC QPs.
-        ///  - `IBV_WC_RETRY_EXC_ERR`: Transport Retry Counter Exceeded: The local transport timeout
-        ///    retry counter was exceeded while trying to send this message. This means that the remote
-        ///    side didn't send any Ack or Nack. If this happens when sending the first message,
-        ///    usually this mean that the connection attributes are wrong or the remote side isn't in a
-        ///    state that it can respond to messages. If this happens after sending the first message,
-        ///    usually it means that the remote QP isn't available anymore. Relevant for RC QPs.
-        ///  - `IBV_WC_RNR_RETRY_EXC_ERR`: RNR Retry Counter Exceeded: The RNR NAK retry count was
-        ///    exceeded. This usually means that the remote side didn't post any WR to its Receive
-        ///    Queue. Relevant for RC QPs.
-        ///  - `IBV_WC_LOC_RDD_VIOL_ERR`: Local RDD Violation Error: The RDD associated with the QP
-        ///    does not match the RDD associated with the EE Context (unused, since its relevant only
-        ///    to RD QPs or EE Context, which aren't supported).
-        ///  - `IBV_WC_REM_INV_RD_REQ_ERR`: Remote Invalid RD Request: The responder detected an
-        ///    invalid incoming RD message. Causes include a Q_Key or RDD violation (unused, since its
-        ///    relevant only to RD QPs or EE Context, which aren't supported)
-        ///  - `IBV_WC_REM_ABORT_ERR`: Remote Aborted Error: For UD or UC QPs associated with a SRQ,
-        ///    the responder aborted the operation.
-        ///  - `IBV_WC_INV_EECN_ERR`: Invalid EE Context Number: An invalid EE Context number was
-        ///    detected (unused, since its relevant only to RD QPs or EE Context, which aren't
-        ///    supported).
-        ///  - `IBV_WC_INV_EEC_STATE_ERR`: Invalid EE Context State Error: Operation is not legal for
-        ///    the specified EE Context state (unused, since its relevant only to RD QPs or EE Context,
-        ///    which aren't supported).
-        ///  - `IBV_WC_FATAL_ERR`: Fatal Error.
-        ///  - `IBV_WC_RESP_TIMEOUT_ERR`: Response Timeout Error.
-        ///  - `IBV_WC_GENERAL_ERR`: General Error: other error which isn't one of the above errors.
+        /// Returns the work completion status and vendor error syndrome if failed.
         pub fn error(&self) -> Option<(ibv_wc_status::Type, u32)> {
             match self.status {
                 ibv_wc_status::IBV_WC_SUCCESS => None,
@@ -192,20 +107,11 @@ mod inner {
         }
 
         /// Returns the operation that the corresponding Work Request performed.
-        ///
-        /// This value controls the way that data was sent, the direction of the data flow and the
-        /// valid attributes in the Work Completion.
         pub fn opcode(&self) -> ibv_wc_opcode::Type {
             self.opcode
         }
 
-        /// Returns a 32 bits number, in network order, in an SEND or RDMA WRITE opcodes that is being
-        /// sent along with the payload to the remote side and placed in a Receive Work Completion and
-        /// not in a remote memory buffer
-        ///
-        /// Note that IMM is only returned if `IBV_WC_WITH_IMM` is set in `wc_flags`. If this is not
-        /// the case, no immediate value was provided, and `imm_data` should be interpreted
-        /// differently. See `man ibv_poll_cq` for details.
+        /// Returns immediate data if present.
         pub fn imm_data(&self) -> Option<u32> {
             if self.is_valid() && ((self.wc_flags & ibv_wc_flags::IBV_WC_WITH_IMM).0 != 0) {
                 Some(self.imm_data)
@@ -236,7 +142,116 @@ mod inner {
     }
 }
 
+// --- Pointer Attribute Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::HIP_POINTER_ATTRIBUTE_MEMORY_TYPE as CU_POINTER_ATTRIBUTE_MEMORY_TYPE;
+// --- Status/Success Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::HIP_SUCCESS as CUDA_SUCCESS;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipCtx_t as CUcontext;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipDevice_t as CUdevice;
+// =============================================================================
+// ROCm/HIP Compatibility Aliases
+// =============================================================================
+// These allow monarch_rdma to use CUDA names transparently on ROCm builds.
+//
+// IMPORTANT: The C++ wrapper functions keep their rdmaxcel_cu* names for API
+// stability on both ROCm 6.x and ROCm 7+. Only the internal implementations
+// differ (HSA vs native HIP).
+
+// --- Basic Type Aliases ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipDeviceptr_t as CUdeviceptr;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipError_t as CUresult;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAccessDesc as CUmemAccessDesc;
+// --- Memory Access Flags Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAccessFlagsProtReadWrite as CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+// --- Memory Allocation Granularity Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAllocationGranularityMinimum as CU_MEM_ALLOC_GRANULARITY_MINIMUM;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAllocationProp as CUmemAllocationProp;
+// --- Memory Allocation Type Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemAllocationTypePinned as CU_MEM_ALLOCATION_TYPE_PINNED;
+// --- Memory Allocation Types ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemGenericAllocationHandle_t as CUmemGenericAllocationHandle;
+// --- Memory Handle Type Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemHandleTypePosixFileDescriptor as CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+// --- Memory Location Type Constants ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::hipMemLocationTypeDevice as CU_MEM_LOCATION_TYPE_DEVICE;
 pub use inner::*;
+
+// --- Dmabuf Handle Type Constants ---
+#[cfg(rocm_6_x)]
+pub const CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD: i32 = 0;
+
+#[cfg(rocm_7_plus)]
+pub use inner::hipMemRangeHandleTypeDmaBufFd as CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD;
+// --- Context Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuCtxCreate_v2;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuCtxSetCurrent;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuDeviceGet;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuDeviceGetCount;
+// --- Error Handling Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuGetErrorString;
+// =============================================================================
+// Driver API Wrapper Functions
+// =============================================================================
+// The C++ exports rdmaxcel_cu* names for both ROCm 6.x and 7+.
+// These are re-exported directly without renaming.
+
+// --- Driver Init/Device Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuInit;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemAddressFree;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemAddressReserve;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemCreate;
+// --- Memory Management Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemGetAllocationGranularity;
+// --- Dmabuf Function ---
+// Both ROCm 6.x and 7+ export rdmaxcel_cuMemGetHandleForAddressRange from C++
+// (ROCm 6.x uses HSA internally, ROCm 7+ uses native hipMemGetHandleForAddressRange)
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemGetHandleForAddressRange;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemMap;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemRelease;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemSetAccess;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemUnmap;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemcpyDtoH_v2;
+// --- Memory Copy/Set Functions ---
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemcpyHtoD_v2;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuMemsetD8_v2;
+#[cfg(any(rocm_6_x, rocm_7_plus))]
+pub use inner::rdmaxcel_cuPointerGetAttribute;
+
+// =============================================================================
+// Helper Types & Externs
+// =============================================================================
 
 // Segment scanner callback type - type alias for the bindgen-generated type
 pub type RdmaxcelSegmentScannerFn = rdmaxcel_segment_scanner_fn;
@@ -246,7 +261,7 @@ pub type RdmaxcelSegmentScannerFn = rdmaxcel_segment_scanner_fn;
 unsafe extern "C" {
     pub fn rdmaxcel_error_string(error_code: std::os::raw::c_int) -> *const std::os::raw::c_char;
     pub fn get_cuda_pci_address_from_ptr(
-        cuda_ptr: u64,
+        cuda_ptr: CUdeviceptr,
         pci_addr_out: *mut std::os::raw::c_char,
         pci_addr_size: usize,
     ) -> std::os::raw::c_int;

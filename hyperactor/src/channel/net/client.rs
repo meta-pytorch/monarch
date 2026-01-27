@@ -714,6 +714,7 @@ where
     use valuable::Valuable;
     use valuable::Value;
 
+    #[derive(Debug)]
     struct TimestampValue(Instant);
 
     impl From<Instant> for TimestampValue {
@@ -739,7 +740,7 @@ where
         }
     }
 
-    #[derive(Valuable)]
+    #[derive(Debug, Valuable)]
     struct QueueEntryValue {
         seq: u64,
         since_received: TimestampValue,
@@ -756,7 +757,7 @@ where
         }
     }
 
-    #[derive(Valuable)]
+    #[derive(Debug, Valuable)]
     enum QueueValue {
         Empty,
         NonEmpty {
@@ -781,7 +782,7 @@ where
             }
         }
     }
-
+    #[derive(Debug)]
     struct AckedSeqValue(AckedSeq);
 
     static ACKED_SEQ_FIELDS: &[NamedField<'static>] =
@@ -822,9 +823,9 @@ where
         session_id = session_id,
         connected = conn.is_connected(),
         next_seq = deliveries.outbox.next_seq,
-        largest_acked = largest_acked.as_value(),
-        outbox = QueueValue::from(&deliveries.outbox.deque).as_value(),
-        unacked = QueueValue::from(&deliveries.unacked.deque).as_value(),
+        largest_acked = ?largest_acked,
+        outbox = ?QueueValue::from(&deliveries.outbox.deque),
+        unacked = ?QueueValue::from(&deliveries.unacked.deque),
     )
 }
 

@@ -10,9 +10,24 @@ use cxx::ExternType;
 use cxx::type_id;
 
 /// SAFETY: bindings
+#[cfg(not(rocm))]
 unsafe impl ExternType for CUstream_st {
     type Id = type_id!("CUstream_st");
     type Kind = cxx::kind::Opaque;
+}
+
+/// SAFETY: bindings
+#[cfg(rocm)]
+unsafe impl ExternType for ihipStream_t {
+    type Id = type_id!("ihipStream_t");
+    type Kind = cxx::kind::Opaque;
+}
+
+/// SAFETY: bindings
+/// Trivial because this is POD struct
+unsafe impl ExternType for ncclConfig_t {
+    type Id = type_id!("ncclConfig_t");
+    type Kind = cxx::kind::Trivial;
 }
 
 /// SAFETY: bindings
@@ -26,12 +41,14 @@ unsafe impl ExternType for ncclComm {
 #[allow(non_camel_case_types)]
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
+#[allow(dead_code)]
 mod inner {
     use serde::Deserialize;
     use serde::Deserializer;
     use serde::Serialize;
     use serde::Serializer;
     use serde::ser::SerializeSeq;
+
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -74,6 +91,16 @@ mod inner {
     }
 }
 
+// =============================================================================
+// ROCm/HIP Compatibility Aliases
+// =============================================================================
+// These allow consumers (like torch-sys-cuda) to use CUDA names transparently on ROCm.
+#[cfg(rocm)]
+pub use inner::hipError_t as cudaError_t;
+#[cfg(rocm)]
+pub use inner::hipSetDevice as cudaSetDevice;
+#[cfg(rocm)]
+pub use inner::hipStream_t as cudaStream_t;
 pub use inner::*;
 
 #[cfg(test)]

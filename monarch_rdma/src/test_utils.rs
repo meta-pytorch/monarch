@@ -111,8 +111,8 @@ pub mod test_utils {
     unsafe impl Send for SendSyncCudaContext {}
     unsafe impl Sync for SendSyncCudaContext {}
 
-    /// Actor responsible for CUDA initialization and buffer management within its own process context.  
-    /// This is important because you preform CUDA operations within the same process as the RDMA operations.  
+    /// Actor responsible for CUDA initialization and buffer management within its own process context.
+    /// This is important because you preform CUDA operations within the same process as the RDMA operations.
     #[hyperactor::export(
         spawn = true,
         handlers = [
@@ -200,7 +200,10 @@ pub mod test_utils {
                         .device
                         .ok_or_else(|| anyhow::anyhow!("Device not initialized"))?;
 
-                    let (dptr, padded_size) = unsafe {
+                    // Convert dptr to usize inside the unsafe block before the await
+                    // This is important because hipDeviceptr_t is *mut c_void (not Send)
+                    // while CUdeviceptr is an integer type (Send)
+                    let (dptr_usize, padded_size) = unsafe {
                         cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(self.context.0));
 
                         let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
@@ -213,8 +216,18 @@ pub mod test_utils {
                         prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
                         prop.location.id = device;
                         prop.allocFlags.gpuDirectRDMACapable = 1;
-                        prop.requestedHandleTypes =
-                            rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+                        // HIP uses requestedHandleType (singular), CUDA uses requestedHandleTypes (plural)
+                        #[cfg(any(rocm_6_x, rocm_7_plus))]
+                        {
+                            prop.requestedHandleType =
+                                rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                        }
+                        #[cfg(not(any(rocm_6_x, rocm_7_plus)))]
+                        {
+                            prop.requestedHandleTypes =
+                                rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                        }
 
                         cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
                             &mut granularity as *mut usize,
@@ -258,14 +271,14 @@ pub mod test_utils {
                             1
                         ));
 
-                        (dptr, padded_size)
+                        (dptr as usize, padded_size)
                     };
 
                     let rdma_handle = rdma_actor
-                        .request_buffer(cx, dptr as usize, padded_size)
+                        .request_buffer(cx, dptr_usize, padded_size)
                         .await?;
 
-                    reply.send(cx, (rdma_handle, dptr as usize))?;
+                    reply.send(cx, (rdma_handle, dptr_usize))?;
                     Ok(())
                 }
                 CudaActorMessage::FillBuffer {
