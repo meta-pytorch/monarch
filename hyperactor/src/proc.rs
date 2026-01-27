@@ -48,7 +48,6 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
-use tracing::Level;
 use tracing::Span;
 use typeuri::Named as _;
 use uuid::Uuid;
@@ -529,23 +528,29 @@ impl Proc {
     /// unique.
     pub fn spawn<A: Actor>(&self, name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_root_id(name)?;
-        let span = tracing::span!(
-            Level::INFO,
-            "spawn_actor",
-            actor_name = name,
-            actor_type = std::any::type_name::<A>(),
-            actor_id = actor_id.to_string(),
-        );
-        let (instance, mut actor_loop_receivers, work_rx) = {
-            let _guard = span.clone().entered();
-            Instance::new(self.clone(), actor_id.clone(), false, None)
-        };
-        // Add this actor to the proc's actor ledger. We do not actively remove
-        // inactive actors from ledger, because the actor's state can be inferred
-        // from its weak cell.
-        self.state()
-            .ledger
-            .insert(actor_id.clone(), instance.inner.cell.downgrade())?;
+        self.spawn_inner(actor_id, actor, None)
+    }
+
+    /// Common spawn logic for both root and child actors.
+    /// Creates a tracing span with the correct actor_id before starting the actor.
+    /// For root actors, inserts into the ledger.
+    #[hyperactor::instrument(fields(actor_id = actor_id.to_string(), actor_name = actor_id.name(), actor_type = std::any::type_name::<A>()))]
+    fn spawn_inner<A: Actor>(
+        &self,
+        actor_id: ActorId,
+        actor: A,
+        parent: Option<InstanceCell>,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let is_root = parent.is_none();
+        let (instance, mut actor_loop_receivers, work_rx) =
+            Instance::new(self.clone(), actor_id.clone(), false, parent);
+
+        // Root actors are added to the ledger
+        if is_root {
+            self.state()
+                .ledger
+                .insert(actor_id, instance.inner.cell.downgrade())?;
+        }
 
         Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
     }
@@ -622,9 +627,7 @@ impl Proc {
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.allocate_child_id(parent.actor_id())?;
-        let (instance, mut actor_loop_receivers, work_rx) =
-            Instance::new(self.clone(), actor_id, false, Some(parent.clone()));
-        Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
+        self.spawn_inner(actor_id, actor, Some(parent))
     }
 
     /// Call `abort` on the `JoinHandle` associated with the given
