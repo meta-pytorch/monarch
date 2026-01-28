@@ -37,9 +37,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
-use hyperactor_config::AttrValue;
 use hyperactor_config::attrs::Attrs;
-use hyperactor_config::attrs::declare_attrs;
 use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
@@ -96,6 +94,8 @@ use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 use crate::ordering::OrderedSender;
 use crate::ordering::OrderedSenderError;
+use crate::ordering::SEQ_INFO;
+use crate::ordering::SeqInfo;
 use crate::ordering::Sequencer;
 use crate::ordering::ordered_channel;
 use crate::panic_handler;
@@ -2100,42 +2100,6 @@ pub struct Ports<A: Actor> {
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
     workq: OrderedSender<WorkCell<A>>,
-}
-
-/// A message's sequencer number infomation.
-#[derive(Serialize, Deserialize, Clone, typeuri::Named, AttrValue)]
-pub struct SeqInfo {
-    /// Message's session ID
-    pub session_id: Uuid,
-    /// Message's sequence number in the given session.
-    pub seq: u64,
-}
-wirevalue::register_type!(SeqInfo);
-
-impl fmt::Display for SeqInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.session_id, self.seq)
-    }
-}
-
-impl std::str::FromStr for SeqInfo {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<_> = s.split(':').collect();
-        if parts.len() != 2 {
-            return Err(anyhow::anyhow!("invalid SeqInfo: {}", s));
-        }
-        let session_id: Uuid = parts[0].parse()?;
-        let seq: u64 = parts[1].parse()?;
-        Ok(SeqInfo { session_id, seq })
-    }
-}
-
-declare_attrs! {
-    /// The sender of this message, the session ID, and the message's sequence
-    /// number assigned by this session.
-    pub attr SEQ_INFO: SeqInfo;
 }
 
 impl<A: Actor> Ports<A> {

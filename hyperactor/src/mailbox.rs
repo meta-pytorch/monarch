@@ -83,7 +83,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
@@ -124,6 +123,8 @@ use crate::channel::TxStatus;
 use crate::context;
 use crate::id;
 use crate::metrics;
+use crate::ordering::SEQ_INFO;
+use crate::ordering::SeqInfo;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
@@ -1327,7 +1328,7 @@ impl Mailbox {
                 mailbox: self.clone(),
                 port_index,
                 sender: UnboundedPortSender::Func(Arc::new(enqueue)),
-                bound: Arc::new(OnceLock::new()),
+                bound: Arc::new(RwLock::new(None)),
                 reducer_spec,
                 streaming_opts,
             },
@@ -1346,7 +1347,7 @@ impl Mailbox {
             mailbox: self.clone(),
             port_index: self.inner.allocate_port(),
             sender: UnboundedPortSender::Func(Arc::new(enqueue)),
-            bound: Arc::new(OnceLock::new()),
+            bound: Arc::new(RwLock::new(None)),
             reducer_spec: None,
             streaming_opts: StreamingReducerOpts::default(),
         }
@@ -1598,13 +1599,13 @@ pub struct PortHandle<M: Message> {
     mailbox: Mailbox,
     port_index: u64,
     sender: UnboundedPortSender<M>,
-    // We would like this to be a Arc<OnceLock<PortRef<M>>>, but we cannot
+    // We would like this to be a Arc<RwLock<Option<PortRef<M>>>>, but we cannot
     // write down the type PortRef<M> (M: Message), even though we cannot
     // legally construct such a value without M: RemoteMessage. We could consider
     // making PortRef<M> valid for M: Message, but constructible only for
     // M: RemoteMessage, but the guarantees offered by the impossibilty of even
     // writing down the type are appealing.
-    bound: Arc<OnceLock<PortId>>,
+    bound: Arc<RwLock<Option<PortId>>>,
     // Typehash of an optional reducer. When it's defined, we include it in port
     /// references to optionally enable incremental accumulation.
     reducer_spec: Option<ReducerSpec>,
@@ -1618,27 +1619,45 @@ impl<M: Message> PortHandle<M> {
             mailbox,
             port_index,
             sender,
-            bound: Arc::new(OnceLock::new()),
+            bound: Arc::new(RwLock::new(None)),
             reducer_spec: None,
             streaming_opts: StreamingReducerOpts::default(),
         }
     }
 
-    fn location(&self) -> PortLocation {
-        match self.bound.get() {
+    pub(crate) fn location(&self) -> PortLocation {
+        match self.bound.read().unwrap().as_ref() {
             Some(port_id) => PortLocation::Bound(port_id.clone()),
             None => PortLocation::new_unbound::<M>(self.mailbox.actor_id().clone()),
         }
     }
 
     /// Send a message to this port.
-    pub fn send(&self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+    pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
         let mut headers = Attrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
-        // TODO(pzhang) Use cx to add SEQ_INFO header.
-
+        // Hold read lock while checking and sending to prevent race with bind().
+        // Message sent from handle is delivered immediately. It could race with
+        // messages from refs. So we need to assign seq if the handle is bound.
+        let bound_guard = self.bound.read().unwrap();
+        if let Some(bound_port) = bound_guard.as_ref() {
+            let sequencer = cx.instance().sequencer();
+            let seq_info = sequencer.assign_seq(bound_port);
+            headers.set(SEQ_INFO, seq_info);
+        }
+        // Encountering error means the port is closed. So we do not need to
+        // rollback the seq, because no message can be delivered to it, and
+        // subsequently do not need to worry about out-of-sequence for messages
+        // after this seq.
+        //
+        // Theoretically, we could have deadlock if
+        //   1. `sender.send` attempts to hold read lock of this PortHandle's
+        //      `bound` field, and in the meantime,
+        //   2.  another thread is trying to bind and thus waiting for write lock.
+        // But we do not expect `sender.send` to use the same PortHandle, so this
+        // deadlock scenario should not happen.
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
@@ -1669,10 +1688,14 @@ impl<M: Message> PortHandle<M> {
 impl<M: RemoteMessage> PortHandle<M> {
     /// Bind this port, making it accessible to remote actors.
     pub fn bind(&self) -> PortRef<M> {
+        let port_id = {
+            let mut guard = self.bound.write().unwrap();
+            guard
+                .get_or_insert_with(|| self.mailbox.bind(self).port_id().clone())
+                .clone()
+        };
         PortRef::attest_reducible(
-            self.bound
-                .get_or_init(|| self.mailbox.bind(self).port_id().clone())
-                .clone(),
+            port_id,
             self.reducer_spec.clone(),
             self.streaming_opts.clone(),
         )
@@ -1685,15 +1708,16 @@ impl<M: RemoteMessage> PortHandle<M> {
     /// This is not intended for general use.
     pub(crate) fn bind_actor_port(&self) {
         let port_id = self.mailbox.actor_id().port_id(M::port());
-        self.bound
-            .set(port_id)
-            .map_err(|p| {
-                format!(
-                    "could not bind port handle {} as {p}: already bound",
+        {
+            let mut guard = self.bound.write().unwrap();
+            if guard.is_some() {
+                panic!(
+                    "could not bind port handle {} as {port_id}: already bound",
                     self.port_index
-                )
-            })
-            .unwrap();
+                );
+            }
+            *guard = Some(port_id);
+        }
         self.mailbox.bind_to_actor_port(self);
     }
 }
@@ -1736,6 +1760,15 @@ impl<M: Message> OncePortHandle<M> {
     /// Send a message to this port. The send operation will consume the
     /// port handle, as the port accepts at most one message.
     pub fn send(self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+        // TODO: Assign seq to the message if the port is bound to an actor port
+        // in the future.
+        assert!(
+            !self.port_id().is_actor_port(),
+            "OncePortHandle currently does not support actor ports; a \
+            prerequisite of that support is to assign seq to messages \
+            if the port is actor port."
+        );
+
         let actor_id = self.mailbox.actor_id().clone();
         self.sender.send(message).map_err(|_| {
             // Here, the value is returned when the port is
