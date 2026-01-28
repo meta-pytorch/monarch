@@ -30,6 +30,7 @@ use typeuri::Named;
 
 pub mod attrs;
 pub mod global;
+pub mod lazy_attrs;
 
 // Re-export commonly used items
 pub use attrs::AttrKeyInfo;
@@ -41,6 +42,7 @@ pub use attrs::SerializableValue;
 pub use hyperactor_config_macros::AttrValue;
 // Re-export macros needed by declare_attrs!
 pub use inventory::submit;
+pub use lazy_attrs::LazyAttrs;
 pub use paste::paste;
 // Re-export typeuri for macro usage
 #[doc(hidden)]
