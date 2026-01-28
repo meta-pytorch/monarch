@@ -45,6 +45,7 @@ use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_telemetry::env;
 use hyperactor_telemetry::log_file_path;
+use ndslice::Point;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io;
@@ -1014,7 +1015,7 @@ impl Actor for LogForwardActor {
 impl hyperactor::RemoteSpawn for LogForwardActor {
     type Params = ActorRef<LogClientActor>;
 
-    async fn new(logging_client_ref: Self::Params) -> Result<Self> {
+    async fn new(logging_client_ref: Self::Params, _spawn_point: Option<Point>) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
             Err(err) => {
@@ -1599,10 +1600,12 @@ mod tests {
         unsafe {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
-        let log_client_actor = LogClientActor::new(()).await.unwrap();
+        let log_client_actor = LogClientActor::new((), None).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), None)
+            .await
+            .unwrap();
         let log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()

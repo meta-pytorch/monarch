@@ -18,6 +18,7 @@ use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
+use ndslice::Point;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -46,7 +47,7 @@ impl Actor for BenchActor {}
 #[async_trait]
 impl RemoteSpawn for BenchActor {
     type Params = Duration;
-    async fn new(params: Duration) -> Result<Self, anyhow::Error> {
+    async fn new(params: Duration, _spawn_point: Option<Point>) -> Result<Self, anyhow::Error> {
         Ok(Self {
             processing_time: params,
         })

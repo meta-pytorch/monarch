@@ -201,12 +201,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    None,
+                )
                 .await?,
             )
             .unwrap();
@@ -353,12 +356,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    None,
+                )
                 .await
                 .unwrap(),
             )

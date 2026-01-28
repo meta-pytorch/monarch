@@ -30,6 +30,7 @@ use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::proc_mesh::global_root_client;
 use hyperactor_mesh::supervision::MeshFailure;
 use ndslice::extent;
+use ndslice::view::Point;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
@@ -71,7 +72,10 @@ impl Actor for TestActor {}
 impl RemoteSpawn for TestActor {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(
+        _params: Self::Params,
+        _spawn_point: Option<Point>,
+    ) -> Result<Self, anyhow::Error> {
         Ok(Self)
     }
 }
@@ -122,7 +126,10 @@ impl Actor for ProxyActor {
 impl RemoteSpawn for ProxyActor {
     type Params = String;
 
-    async fn new(exe_path: Self::Params) -> anyhow::Result<Self, anyhow::Error> {
+    async fn new(
+        exe_path: Self::Params,
+        _spawn_point: Option<Point>,
+    ) -> anyhow::Result<Self, anyhow::Error> {
         let mut cmd = Command::new(PathBuf::from(&exe_path));
         cmd.arg("--bootstrap");
 

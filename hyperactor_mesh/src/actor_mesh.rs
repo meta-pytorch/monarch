@@ -37,6 +37,7 @@ use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::declare_attrs;
+use ndslice::Point;
 use ndslice::Range;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -825,7 +826,10 @@ pub(crate) mod test_util {
     impl RemoteSpawn for ProxyActor {
         type Params = ();
 
-        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+        async fn new(
+            _params: Self::Params,
+            _spawn_point: Option<Point>,
+        ) -> Result<Self, anyhow::Error> {
             // The actor creates a mesh.
             use std::sync::Arc;
 
@@ -1770,6 +1774,7 @@ mod tests {
         use hyperactor::clock::RealClock;
         use ndslice::Extent;
         use ndslice::Selection;
+        use ndslice::view::Point;
 
         use crate::Mesh;
         use crate::ProcMesh;
@@ -1794,7 +1799,10 @@ mod tests {
         impl RemoteSpawn for EchoActor {
             type Params = ChannelAddr;
 
-            async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {
+            async fn new(
+                params: ChannelAddr,
+                _spawn_point: Option<Point>,
+            ) -> Result<Self, anyhow::Error> {
                 Ok(Self(dial::<usize>(params)?))
             }
         }

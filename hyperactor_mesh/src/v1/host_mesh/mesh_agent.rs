@@ -34,6 +34,7 @@ use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
 use hyperactor::host::SingleTerminate;
+use ndslice::Point;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -539,7 +540,10 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         bool, /* local? */
     );
 
-    async fn new((transport, reply_port, command, local): Self::Params) -> anyhow::Result<Self> {
+    async fn new(
+        (transport, reply_port, command, local): Self::Params,
+        _spawn_point: Option<Point>,
+    ) -> anyhow::Result<Self> {
         let host = if local {
             let spawn: ProcManagerSpawnFn =
                 Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));

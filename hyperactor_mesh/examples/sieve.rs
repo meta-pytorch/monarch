@@ -31,6 +31,7 @@ use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
+use ndslice::Point;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -86,7 +87,7 @@ impl Handler<NextNumber> for SieveActor {
                     msg.prime_collector.send(cx, msg.number)?;
 
                     self.next = Some(
-                        SieveActor::new(SieveParams { prime: msg.number })
+                        SieveActor::new(SieveParams { prime: msg.number }, None)
                             .await?
                             .spawn(cx)?,
                     );
@@ -104,7 +105,7 @@ impl RemoteSpawn for SieveActor {
     type Params = SieveParams;
 
     /// Creates a sieve actor for `prime`.
-    async fn new(params: Self::Params) -> Result<Self> {
+    async fn new(params: Self::Params, _spawn_point: Option<Point>) -> Result<Self> {
         Ok(Self {
             prime: params.prime,
             next: None,

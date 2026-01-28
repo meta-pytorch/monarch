@@ -572,7 +572,7 @@ pub mod test_utils {
     impl hyperactor::RemoteSpawn for TestActor {
         type Params = TestActorParams;
 
-        async fn new(params: Self::Params) -> Result<Self> {
+        async fn new(params: Self::Params, _spawn_point: Option<Point>) -> Result<Self> {
             let Self::Params { forward_port } = params;
             Ok(Self { forward_port })
         }
