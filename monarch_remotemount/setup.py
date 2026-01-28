@@ -1,7 +1,14 @@
-from setuptools import setup
+from setuptools import setup, Extension
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
+
+fast_pack_ext = Extension(
+    "remotemount._fast_pack",
+    sources=["remotemount/_fast_pack.c"],
+    extra_compile_args=["-O3", "-pthread"],
+    extra_link_args=["-pthread"],
+)
 
 setup(
     name="remotemount",
@@ -12,7 +19,8 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/remotemount",
-    py_modules=["remotemount"],
+    packages=["remotemount"],
+    ext_modules=[fast_pack_ext],
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
