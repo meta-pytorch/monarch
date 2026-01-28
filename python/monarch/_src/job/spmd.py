@@ -4,6 +4,14 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+Internal implementation of SPMD job primitives.
+
+Provides the :func:`serve` function and :class:`SPMDJob` class for launching
+torchrun-style SPMD training jobs. Parses torchrun arguments and creates a Monarch
+mesh to run the training script, replicating torchrun behavior.
+"""
+
 import argparse
 import os
 import time
