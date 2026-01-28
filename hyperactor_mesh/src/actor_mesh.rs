@@ -28,6 +28,7 @@ use hyperactor::Unbind;
 use hyperactor::WorldId;
 use hyperactor::actor::Referable;
 use hyperactor::context;
+use hyperactor::mailbox;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -139,13 +140,15 @@ where
         "message_variant" => message.arm().unwrap_or_default(),
     ));
 
-    let mut header_props = Attrs::new();
-    header_props.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
+    let mut headers = Attrs::new();
+    mailbox::headers::set_send_timestamp(&mut headers);
+    mailbox::headers::set_rust_message_type::<M>(&mut headers);
+    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
     let message = CastMessageEnvelope::new::<A, M>(
-        actor_mesh_id,
+        actor_mesh_id.clone(),
         cx.mailbox().actor_id().clone(),
         cast_mesh_shape.clone(),
-        header_props.clone(),
+        headers,
         message,
     )?;
 
@@ -183,10 +186,13 @@ where
         message,
     };
 
-    // header_props needs to be set for source->comm message too.
+    // TEMPORARY: remove with v0 support
+    let mut headers = Attrs::new();
+    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
+
     comm_actor_ref
         .port()
-        .send_with_headers(cx, header_props, cast_message)?;
+        .send_with_headers(cx, headers, cast_message)?;
 
     Ok(())
 }
