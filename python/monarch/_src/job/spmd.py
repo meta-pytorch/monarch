@@ -197,7 +197,7 @@ def serve(
         job = serve(
             appdef=appdef("--lr", "0.001", h="gtt_any", nnodes=2),
             scheduler="mast_conda",
-            scheduler_cfg={"hpcClusterUuid": "MastProdCluster"}
+            scheduler_cfg={"hpcClusterUuid": "MastGenAICluster"}
         )
     """
     # Clean up stale job state file
