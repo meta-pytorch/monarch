@@ -6,7 +6,7 @@
 
 # pyre-strict
 import getpass
-from typing import Optional
+from typing import Any, Optional
 
 from monarch.tools import mesh_spec
 from monarch.tools.config import NOT_SET
@@ -29,6 +29,7 @@ def host_mesh(
     env: Optional[dict[str, str]] = None,
     port: int = mesh_spec.DEFAULT_REMOTE_ALLOCATOR_PORT,
     program: str = "monarch_bootstrap",  # installed with monarch wheel (as console script)
+    metadata: Optional[dict[str, Any]] = None,
 ) -> specs.AppDef:
     """
     Args:
@@ -38,6 +39,7 @@ def host_mesh(
         env: environment variables to be passed to the main command (e.g. ENV1=v1,ENV2=v2,ENV3=v3)
         port: the port that the remote process allocator runs on (must be reachable from the client)
         program: path to the binary that the remote process allocator spawns on an allocation request
+        metadata: scheduler-specific metadata to pass to each role
     """
 
     appdef = specs.AppDef(name=NOT_SET)
@@ -55,6 +57,7 @@ def host_mesh(
             resource=specs.resource(h=mesh.host_type),
             env=env or {},
             port_map={"mesh": port},
+            metadata=metadata or {},
         )
         appdef.roles.append(mesh_role)
 
