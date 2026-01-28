@@ -531,7 +531,7 @@ impl HostMesh {
 
         match &mut self.allocation {
             HostMeshAllocation::ProcMesh { proc_mesh, .. } => {
-                proc_mesh.stop(cx).await?;
+                proc_mesh.stop(cx, "host mesh shutdown".to_string()).await?;
             }
             HostMeshAllocation::Owned { .. } => {}
         }
@@ -1038,6 +1038,7 @@ impl HostMeshRef {
         proc_mesh_name: &Name,
         procs: impl IntoIterator<Item = ProcId>,
         region: Region,
+        reason: String,
     ) -> anyhow::Result<()> {
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
@@ -1072,6 +1073,7 @@ impl HostMeshRef {
                 cx,
                 resource::Stop {
                     name: proc_name.clone(),
+                    reason: reason.clone(),
                 },
             )?;
             host.mesh_agent()
@@ -1399,7 +1401,27 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_allocate() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+
+        let poll = Duration::from_secs(3);
+        let get_actor = Duration::from_mins(1);
+        let get_proc = Duration::from_mins(1);
+        // 3m watchdog total: 3m - (poll + get_actor + get_proc) = 180s - 123s = 57s
+        let slack = Duration::from_secs(57);
+
+        let _pdeath_sig =
+            config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _poll =
+            config.override_key(crate::v1::mesh_controller::SUPERVISION_POLL_FREQUENCY, poll);
+        let _get_actor =
+            config.override_key(crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE, get_actor);
+        let _get_proc =
+            config.override_key(crate::v1::host_mesh::GET_PROC_STATE_MAX_IDLE, get_proc);
+
+        // Must be >= poll + get_actor + get_proc (+ slack).
+        let _watchdog = config.override_key(
+            crate::v1::actor_mesh::SUPERVISION_WATCHDOG_TIMEOUT,
+            poll + get_actor + get_proc + slack,
+        );
 
         let instance = testing::instance();
 

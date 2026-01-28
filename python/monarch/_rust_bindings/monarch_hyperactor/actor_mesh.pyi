@@ -20,6 +20,15 @@ class ActorMeshProtocol(Protocol):
     Protocol defining the common interface for actor mesh and mesh ref.
     """
 
+    @property
+    def region(self) -> Region:
+        """Get the region of the mesh."""
+        ...
+
+    def get(self, rank: int) -> Optional[ActorId]:
+        """Get the actor id at the given rank."""
+        ...
+
     def cast(
         self,
         message: PythonMessage,
@@ -34,7 +43,7 @@ class ActorMeshProtocol(Protocol):
     def start_supervision(
         self, instance: Instance, supervision_display_name: str
     ) -> None: ...
-    def stop(self, instance: Instance) -> PythonTask[None]: ...
+    def stop(self, instance: Instance, reason: str) -> PythonTask[None]: ...
     def initialized(self) -> PythonTask[None]: ...
 
 @final

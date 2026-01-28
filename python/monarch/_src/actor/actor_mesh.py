@@ -552,7 +552,16 @@ class _SingletonActorAdapator:
         self._inner: ActorId = inner
         if region is None:
             region = singleton_shape.region
-        self._region = region
+        self._region: Region = region
+
+    @property
+    def region(self) -> Region:
+        return self._region
+
+    def get(self, rank: int) -> Optional[ActorId]:
+        if rank == 0:
+            return self._inner
+        return None
 
     def cast(
         self,
@@ -562,7 +571,7 @@ class _SingletonActorAdapator:
     ) -> None:
         Instance._as_py(instance)._mailbox.post(self._inner, message)
 
-    def new_with_region(self, region: Region) -> "ActorMeshProtocol":
+    def new_with_region(self, region: Region) -> "_SingletonActorAdapator":
         return _SingletonActorAdapator(self._inner, self._region)
 
     def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
@@ -573,7 +582,7 @@ class _SingletonActorAdapator:
     ) -> None:
         return None
 
-    def stop(self, instance: HyInstance) -> "PythonTask[None]":
+    def stop(self, instance: HyInstance, reason: str) -> "PythonTask[None]":
         raise NotImplementedError("stop()")
 
     def initialized(self) -> "PythonTask[None]":
@@ -1814,9 +1823,9 @@ class ActorMesh(MeshTrait, Generic[T]):
     def __repr__(self) -> str:
         return f"ActorMesh(class={self._class}, shape={self._shape}), inner={type(self._inner)})"
 
-    def stop(self) -> "Future[None]":
+    def stop(self, reason: str = "stopped by client") -> "Future[None]":
         instance = context().actor_instance._as_rust()
-        return Future(coro=self._inner.stop(instance))
+        return Future(coro=self._inner.stop(instance, reason))
 
     @property
     def initialized(self) -> Future[None]:

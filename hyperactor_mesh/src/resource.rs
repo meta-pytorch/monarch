@@ -283,6 +283,8 @@ wirevalue::register_type!(CreateOrUpdate<ActorSpec>);
 pub struct Stop {
     /// The name of the resource to stop.
     pub name: Name,
+    /// The reason for stopping the resource.
+    pub reason: String,
 }
 wirevalue::register_type!(Stop);
 
@@ -301,7 +303,10 @@ wirevalue::register_type!(Stop);
     Bind,
     Unbind
 )]
-pub struct StopAll {}
+pub struct StopAll {
+    /// The reason for stopping.
+    pub reason: String,
+}
 wirevalue::register_type!(StopAll);
 
 /// Retrieve the current state of the resource.

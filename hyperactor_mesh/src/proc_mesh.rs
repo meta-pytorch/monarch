@@ -827,6 +827,7 @@ impl ProcMesh {
         &self,
         cx: &impl context::Actor,
         mesh_name: &str,
+        reason: &str,
     ) -> Result<(), anyhow::Error> {
         match &self.inner {
             ProcMeshKind::V0 { client, .. } => {
@@ -839,7 +840,12 @@ impl ProcMesh {
                         actor_id.clone(),
                         agent
                             .clone()
-                            .stop_actor(client, actor_id, timeout.as_millis() as u64)
+                            .stop_actor(
+                                client,
+                                actor_id,
+                                timeout.as_millis() as u64,
+                                reason.to_string(),
+                            )
                             .await,
                     )
                 }))
@@ -854,7 +860,7 @@ impl ProcMesh {
                             tracing::warn!("no actor {} on proc {}", actor_id, actor_id.proc_id());
                         }
                         Ok(StopActorResult::Success) => {
-                            tracing::info!("stopped actor {}", actor_id);
+                            tracing::info!("stopped actor {} with reason: {}", actor_id, reason);
                         }
                         Err(e) => {
                             tracing::warn!("error stopping actor {}: {}", actor_id, e);
@@ -865,7 +871,7 @@ impl ProcMesh {
             }
             ProcMeshKind::V1(proc_mesh) => {
                 proc_mesh
-                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name)?)
+                    .stop_actor_by_name(cx, Name::new_reserved(mesh_name)?, reason.to_string())
                     .await?;
                 Ok(())
             }

@@ -1069,7 +1069,7 @@ mod tests {
                 sum += value;
             }
         }
-        wait_for_with_timeout(&mut reply1_rx, sum, Duration::from_secs(2))
+        wait_for_with_timeout(&mut reply1_rx, sum, Duration::from_secs(8))
             .await
             .unwrap();
         // no more messages

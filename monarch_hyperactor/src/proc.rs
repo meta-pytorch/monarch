@@ -90,7 +90,7 @@ impl PyProc {
         let mut inner = self.inner.clone();
         let (_stopped, aborted) = signal_safe_block_on(py, async move {
             inner
-                .destroy_and_wait::<()>(Duration::from_secs(timeout_in_secs), None)
+                .destroy_and_wait::<()>(Duration::from_secs(timeout_in_secs), None, "destroy")
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })??;
@@ -373,7 +373,10 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         // flow for this.
         // TODO: T208289078
         let signals = self.signal_receiver.drain();
-        if signals.into_iter().any(|sig| matches!(sig, Signal::Stop)) {
+        if signals
+            .into_iter()
+            .any(|sig| matches!(sig, Signal::Stop(_)))
+        {
             self.status = InstanceStatus::Stopped;
             anyhow::bail!("actor has been stopped");
         }

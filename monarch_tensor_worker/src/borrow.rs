@@ -321,7 +321,7 @@ mod tests {
             .unwrap();
         assert!(result);
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
         let error_responses = controller_rx.drain();
         assert!(
@@ -436,7 +436,7 @@ mod tests {
             .await?;
 
         // Stop/drain worker before asserts to avoid hangs.
-        worker_handle.drain_and_stop()?;
+        worker_handle.drain_and_stop("test")?;
         worker_handle.await;
         let error_responses = controller_rx.drain();
 
