@@ -28,21 +28,29 @@ jobs:
     needs: build-cpu
     uses: ./.github/workflows/test-cpu-python.yml
     with:
-      artifact-name: monarch-cpu-${{ github.sha }}
+      artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
   test-gpu-python:
     name: Test GPU Python
     needs: build-cuda
     uses: ./.github/workflows/test-gpu-python.yml
     with:
-      artifact-name: monarch-cuda-${{ github.sha }}
+      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
 
   test-gpu-rust:
     name: Test GPU Rust
     needs: build-cuda
     uses: ./.github/workflows/test-gpu-rust.yml
     with:
-      artifact-name: monarch-cuda-${{ github.sha }}
+      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
+
+  build-docker:
+    name: Build Docker image
+    needs: build-cuda
+    uses: ./.github/workflows/build-docker.yml
+    with:
+      # Docker image requires python 3.12
+      artifact-name: monarch-cuda-${{ github.sha }}-py3.12
 
   status-check:
     name: Status Check

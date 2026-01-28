@@ -2,9 +2,12 @@ name: Build and publish nightly monarch wheels
 
 on:
   workflow_dispatch:
-  pull_request:
+  push:
+    branches:
+      - main
+    # Run as soon as any changes to .github actions land
     paths:
-      - '.github/workflows/wheels.yml'
+      - .github/**
   schedule:
     - cron: '0 0 * * *'  # Daily at midnight UTC
 
@@ -13,54 +16,14 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    name: cuda12.6-py${{ matrix.python-version }}-${{ matrix.name }}
-    strategy:
-      fail-fast: false  # Changed to false to see results from all Python versions
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-        include:
-          - name: 4xlarge
-            runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu126'
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "12.6"
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: ./.github/workflows/build-dist.yml
     with:
-      timeout: 60
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      submodules: recursive
-      upload-artifact: monarch-${{ matrix.python-version }}-${{ matrix.gpu-arch-type }}${{ matrix.gpu-arch-version }}
-      script: |
-        source scripts/common-setup.sh
-        setup_build_environment ${{ matrix.python-version }}
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu126'
+      gpu-arch-type: 'cuda'
+      gpu-arch-version: '12.6'
 
-        # Install torch nightly before installing the wheel,
-        # so that we can test the wheel against the latest nightly
-        pip install ${{ matrix.torch-spec }}
-        pip install -r build-requirements.txt
-
-        # Setup Tensor Engine dependencies
-        setup_tensor_engine
-
-        cargo install --path monarch_hyperactor
-
-        # Build wheel
-        export MONARCH_VERSION=0.3.0.dev$(date +'%Y%m%d')
-        export MONARCH_BUILD_MESH_ONLY=0
-
-        python setup.py bdist_wheel
-
-        # hacky until the right distribution wheel can be made...
-        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
-        ls -la dist/
-
-        # Run tests
-        install_python_test_dependencies
-        pip install dist/*.whl
-        python -c "import monarch"
-  publish:
+  publish-to-pypi:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
@@ -83,3 +46,52 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
+
+  publish-to-container-registry:
+    name: Publish to Github Container Registry
+    needs: build
+    runs-on: ubuntu-latest
+    environment: nightly
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: read
+      packages: write # Grant write permission for packages (GHCR)
+    steps:
+      # This step is required to avoid the "no space left on device" error from
+      # the large pytorch docker image.
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # Use the already built and tested wheels.
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Get tag for publishing
+        run: echo "DOCKER_TAG=$(date +'%Y-%m-%d')-nightly" >> $GITHUB_ENV
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: . # Build context is the root directory
+          file: ./Dockerfile.nightly
+          push: true # Push the image to the registry
+          tags: ghcr.io/${{ github.repository }}:${{ env.DOCKER_TAG }}
+          build-args: |
+            PYTORCH_TAG=2.11.0.dev20260109-cuda12.6-cudnn9-runtime
+            MONARCH_WHEELS=dist

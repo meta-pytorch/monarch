@@ -1255,6 +1255,7 @@ impl BootstrapProcHandle {
         cx: &impl context::Actor,
         agent: ActorRef<ProcMeshAgent>,
         timeout: Duration,
+        reason: &str,
     ) -> anyhow::Result<ProcStatus> {
         // For all of the messages and replies in this function:
         // if the proc is already dead, then the message will be undeliverable,
@@ -1264,7 +1265,12 @@ impl BootstrapProcHandle {
         // killing the process.
         let mut agent_port = agent.port();
         agent_port.return_undeliverable(false);
-        agent_port.send(cx, resource::StopAll {})?;
+        agent_port.send(
+            cx,
+            resource::StopAll {
+                reason: reason.to_string(),
+            },
+        )?;
         // The agent handling Stop should exit the process, if it doesn't within
         // the time window, we escalate to SIGTERM.
         match RealClock.timeout(timeout, self.wait()).await {
@@ -1360,6 +1366,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     /// # Parameters
     /// - `timeout`: Grace period to wait after `SIGTERM` before
     ///   escalating.
+    /// - `reason`: Human-readable reason for termination.
     ///
     /// # Returns
     /// - `Ok(ProcStatus)` if the process exited during the
@@ -1370,6 +1377,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         &self,
         cx: &impl context::Actor,
         timeout: Duration,
+        reason: &str,
     ) -> Result<ProcStatus, hyperactor::host::TerminateError<Self::TerminalStatus>> {
         const HARD_WAIT_AFTER_KILL: Duration = Duration::from_secs(5);
 
@@ -1396,7 +1404,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         // they are in the Ready state and have an Agent we can message.
         let agent = self.agent_ref();
         if let Some(agent) = agent {
-            match self.send_stop_all(cx, agent.clone(), timeout).await {
+            match self.send_stop_all(cx, agent.clone(), timeout, reason).await {
                 Ok(st) => return Ok(st),
                 Err(e) => {
                     // Variety of possible errors, proceed with SIGTERM.
@@ -2066,6 +2074,7 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
         cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         // Snapshot to avoid holding the lock across awaits.
         let proc_handle: Option<BootstrapProcHandle> = {
@@ -2074,7 +2083,7 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
         };
 
         if let Some(h) = proc_handle {
-            h.terminate(cx, timeout)
+            h.terminate(cx, timeout, reason)
                 .await
                 .map(|_| (Vec::new(), Vec::new()))
                 .map_err(|e| e.into())
@@ -2104,6 +2113,7 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
         cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
+        reason: &str,
     ) -> TerminateSummary {
         // Snapshot to avoid holding the lock across awaits.
         let handles: Vec<BootstrapProcHandle> = {
@@ -2115,7 +2125,7 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
         let mut ok = 0usize;
 
         let results = stream::iter(handles.into_iter().map(|h| async move {
-            match h.terminate(cx, timeout).await {
+            match h.terminate(cx, timeout, reason).await {
                 Ok(_) | Err(hyperactor::host::TerminateError::AlreadyTerminated(_)) => {
                     // Treat "already terminal" as success.
                     true
@@ -2191,7 +2201,11 @@ async fn bootstrap_v0_proc_mesh(config: Option<Attrs>) -> anyhow::Error {
         let _cleanup_guard = hyperactor::register_signal_cleanup_scoped(Box::pin(async move {
             for proc_to_stop in procs_for_cleanup.lock().await.iter_mut() {
                 if let Err(err) = proc_to_stop
-                    .destroy_and_wait::<()>(Duration::from_millis(10), None)
+                    .destroy_and_wait::<()>(
+                        Duration::from_millis(10),
+                        None,
+                        "execute cleanup callback",
+                    )
                     .await
                 {
                     tracing::error!(
@@ -2278,7 +2292,11 @@ async fn bootstrap_v0_proc_mesh(config: Option<Attrs>) -> anyhow::Error {
                     {
                         for proc_to_stop in procs.lock().await.iter_mut() {
                             if let Err(err) = proc_to_stop
-                                .destroy_and_wait::<()>(Duration::from_millis(10), None)
+                                .destroy_and_wait::<()>(
+                                    Duration::from_millis(10),
+                                    None,
+                                    "stop and exit",
+                                )
                                 .await
                             {
                                 tracing::error!(
@@ -3570,7 +3588,10 @@ mod tests {
 
         let deadline = Duration::from_secs(2);
         match RealClock
-            .timeout(deadline * 2, handle.terminate(&instance, deadline))
+            .timeout(
+                deadline * 2,
+                handle.terminate(&instance, deadline, "test terminate"),
+            )
             .await
         {
             Err(_) => panic!("terminate() future hung"),

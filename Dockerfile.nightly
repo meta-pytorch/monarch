@@ -1,17 +1,27 @@
-# Override on build from CI.
-ARG PYTORCH_TAG=2.9.1-cuda12.6-cudnn9-runtime
+# Override on build from CI, default only to prevent warnings.
+ARG PYTORCH_TAG=2.11.0.dev20260109-cuda12.6-cudnn9-runtime
 
-# Build from latest pytorch stable image; should be relatively in sync with torchmonarch and pytorch.
-FROM ghcr.io/pytorch/pytorch:${PYTORCH_TAG}
+# Build from latest pytorch nightly base image; should be relatively in sync with torchmonarch and pytorch-nightly.
+FROM ghcr.io/pytorch/pytorch-nightly:${PYTORCH_TAG}
 
+# Path to prebuilt wheels from github actions. This way they are built and tested
+# only once.
+ARG MONARCH_WHEELS
+# Add the prebuilt wheels to be installed from.
+COPY $MONARCH_WHEELS ./dist
+
+# Only compatible with docker format, not OCI.
 SHELL ["/bin/bash", "-c"]
 
 # System dependencies.
 RUN apt-get update -y && \
     apt-get install curl clang liblzma-dev libunwind-dev libibverbs-dev librdmacm-dev protobuf-compiler -y
 
-# Install monarch w/ kubernetes.
-RUN pip install torchmonarch[kubernetes] --break-system-packages
+RUN python --version
+RUN ls -la ./dist
+
+# Install monarch from input wheels. These were already tested.
+RUN pip install ./dist/torchmonarch-*.whl --break-system-packages
 
 # Install torchx-nightly w/ kubernetes.
 RUN pip install torchx-nightly[kubernetes] --break-system-packages

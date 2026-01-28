@@ -492,7 +492,7 @@ impl Drop for LoggingMeshClient {
         // During Python teardown, the tokio runtime or channels may already be
         // deallocated, and attempting to drain could cause a segfault.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match self.client_actor.drain_and_stop() {
+            match self.client_actor.drain_and_stop("logging client shutdown") {
                 Ok(_) => {}
                 Err(e) => {
                     // it is ok as during shutdown, the channel might already be closed

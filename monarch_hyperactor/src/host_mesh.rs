@@ -122,7 +122,7 @@ impl PyHostMesh {
         Self::Owned(PyHostMeshImpl(SharedCell::from(inner)))
     }
 
-    fn new_ref(inner: HostMeshRef) -> Self {
+    pub(crate) fn new_ref(inner: HostMeshRef) -> Self {
         Self::Ref(PyHostMeshRefImpl(inner))
     }
 

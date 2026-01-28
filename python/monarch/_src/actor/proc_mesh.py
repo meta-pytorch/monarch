@@ -552,7 +552,7 @@ class ProcMesh(MeshTrait):
             raise RuntimeError("`ProcMesh` has already been stopped")
         return self
 
-    def stop(self) -> Future[None]:
+    def stop(self, reason: str = "stopped by client") -> Future[None]:
         """
         This will stop all processes (and actors) in the mesh and
         release any resources associated with the mesh.
@@ -563,7 +563,7 @@ class ProcMesh(MeshTrait):
         async def _stop_nonblocking(instance: HyInstance) -> None:
             pm = await self._proc_mesh
             await self._logging_manager.flush_async()
-            await pm.stop_nonblocking(instance)
+            await pm.stop_nonblocking(instance, reason)
             self._stopped = True
 
         return Future(coro=_stop_nonblocking(instance))

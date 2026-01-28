@@ -69,6 +69,7 @@
 
 pub mod accum;
 pub mod actor;
+pub mod actor_local;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
@@ -111,6 +112,10 @@ pub use actor::ActorHandle;
 pub use actor::Handler;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
+pub use actor_local::ActorLocal;
+pub use actor_local::Entry;
+pub use actor_local::OccupiedEntry;
+pub use actor_local::VacantEntry;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]

@@ -246,7 +246,7 @@ impl _Controller {
             .map_err(PyRuntimeError::new_err)?;
         self.controller_handle
             .blocking_lock()
-            .drain_and_stop()
+            .drain_and_stop("mesh controller shutdown")
             .map_err(to_py_error)
     }
 }
@@ -938,8 +938,14 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
                 self.history.report_exit(port);
             }
             ClientToControllerMessage::StopWorkers { response_port } => {
-                let worker_stop_result = self.workers_mut().stop(this).await;
-                let broker_stop_result = self.brokers_mut().stop(this).await;
+                let worker_stop_result = self
+                    .workers_mut()
+                    .stop(this, "client requested stop".to_string())
+                    .await;
+                let broker_stop_result = self
+                    .brokers_mut()
+                    .stop(this, "client requested stop".to_string())
+                    .await;
                 if worker_stop_result.is_ok() && broker_stop_result.is_ok() {
                     response_port.send(this, Ok(()))?;
                 } else {
