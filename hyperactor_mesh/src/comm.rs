@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastEnvelope;
 use crate::reference::ActorMeshId;
@@ -147,8 +148,7 @@ impl Actor for CommActor {
             let sender = message.sender();
             let return_port = PortRef::attest_message_port(sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
-                "comm actor {} failed to forward the cast message; return to \
-                its original sender's port {}",
+                "comm actor {} failed to forward the cast message; returning to origin {}",
                 cx.self_id(),
                 return_port.port_id(),
             )));
@@ -181,7 +181,7 @@ impl Actor for CommActor {
             let return_port = PortRef::attest_message_port(sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to deliver the cast message to the dest \
-                actor; return to its original sender's port {}",
+                actor; returning to origin {}",
                 cx.self_id(),
                 return_port.port_id(),
             )));
@@ -189,8 +189,8 @@ impl Actor for CommActor {
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
                     let error = DeliveryError::BrokenLink(format!(
-                        "error occured when returning cast message to the original \
-                        sender's port {}; error is: {}",
+                        "error occured when returning cast message to the origin \
+                        sender {}; error is: {}",
                         return_port.port_id(),
                         err,
                     ));
@@ -215,14 +215,20 @@ impl CommActor {
         cx: &Context<Self>,
         config: &CommMeshConfig,
         rank: usize,
-        header_props: Attrs,
         message: M,
     ) -> Result<()>
     where
         CommActor: hyperactor::RemoteHandles<M>,
     {
         let child = config.peer_for_rank(rank)?;
-        child.send_with_headers(cx, header_props, message)?;
+        // TEMPORARY: until dropping v0 support
+        if let Some(cast_actor_mesh_id) = cx.headers().get(CAST_ACTOR_MESH_ID) {
+            let mut headers = Attrs::new();
+            headers.set(CAST_ACTOR_MESH_ID, cast_actor_mesh_id.clone());
+            child.send_with_headers(cx, headers, message);
+        } else {
+            child.send(cx, message)?;
+        }
         Ok(())
     }
 
@@ -243,7 +249,7 @@ impl CommActor {
             // We should not copy cx.headers() because it contains auto-generated
             // headers from mailbox. We want fresh headers only containing
             // user-provided headers.
-            let headers = message.header_props().clone();
+            let headers = message.headers().clone();
             Self::deliver_to_dest(cx, headers, &mut message, config)?;
         }
 
@@ -256,7 +262,6 @@ impl CommActor {
                     cx,
                     config,
                     peer,
-                    message.header_props().clone(),
                     ForwardMessage {
                         dests,
                         sender: sender.clone(),
@@ -399,13 +404,7 @@ impl Handler<CastMessage> for CommActor {
         if config.self_rank() == rank {
             Handler::<ForwardMessage>::handle(self, cx, fwd_message).await?;
         } else {
-            Self::forward(
-                cx,
-                config,
-                rank,
-                fwd_message.message.header_props().clone(),
-                fwd_message,
-            )?;
+            Self::forward(cx, config, rank, fwd_message)?;
         }
         Ok(())
     }
