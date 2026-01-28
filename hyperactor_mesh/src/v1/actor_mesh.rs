@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::OnceLock as OnceCell;
 use std::time::Duration;
 
+use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
 use hyperactor::PortRef;
 use hyperactor::RemoteHandles;
@@ -37,7 +38,6 @@ use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
-use ndslice::view::Ranked;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -194,7 +194,8 @@ impl<A: Referable> ActorMesh<A> {
                 )))
             }?;
             // Update health state with the new statuses.
-            let mut health_state = self.health_state.lock().expect("lock poisoned");
+            let mut entry = self.health_state.entry(cx).or_default();
+            let health_state = entry.get_mut();
             health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
                 actor_mesh_name: Some(self.name().to_string()),
                 rank: None,
@@ -374,13 +375,14 @@ pub struct ActorMeshRef<A: Referable> {
     /// Recorded health issues with the mesh, to quickly consult before sending
     /// out any casted messages. This is a locally updated copy of the authoritative
     /// state stored on the ActorMeshController.
-    health_state: Arc<std::sync::Mutex<HealthState>>,
+    health_state: ActorLocal<HealthState>,
     /// Shared cloneable receiver for supervision events, used by next_supervision_event.
-    /// Not a OnceCell since we need mutable borrows for "watch::Receiver::wait_for"
-    /// mutable borrows of OnceCell are an unstable library feature.
-    receiver: Arc<
-        tokio::sync::Mutex<
-            Option<(
+    /// Needs tokio mutex because it is held across an await point.
+    /// Should not be shared across actors because each actor context needs its
+    /// own subscriber.
+    receiver: ActorLocal<
+        Arc<
+            tokio::sync::Mutex<(
                 PortRef<Option<MeshFailure>>,
                 watch::Receiver<MessageOrFailure<Option<MeshFailure>>>,
             )>,
@@ -442,41 +444,23 @@ impl<A: Referable> ActorMeshRef<A> {
     {
         // First check if the mesh is already dead before sending out any messages
         // to a possibly undeliverable actor.
-        let health_state = self
-            .health_state()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let region = Ranked::region(self);
-        match &health_state.unhealthy_event {
-            Some(Unhealthy::StreamClosed(_)) => {
-                return Err(v1::Error::Other(anyhow::anyhow!(
-                    "actor mesh is stopped due to proc mesh shutdown",
-                )));
-            }
-            Some(Unhealthy::Crashed(failure)) => {
-                return Err(v1::Error::Other(anyhow::anyhow!(
-                    "Actor {} is unhealthy with reason: {}",
-                    failure.event.actor_id,
-                    failure.event.actor_status
-                )));
-            }
-            None => {
-                // Further check crashed ranks in case those were updated from another
-                // slice of the same mesh.
-                if let Some(event) = region
-                    .slice()
-                    .iter()
-                    .find_map(|rank| health_state.crashed_ranks.get(&rank).clone())
-                {
-                    return Err(v1::Error::Other(anyhow::anyhow!(
-                        "Actor {} is unhealthy with reason: {}",
-                        event.actor_id,
-                        event.actor_status
-                    )));
+        {
+            let health_state = self.health_state.entry(cx).or_default();
+            let health_state = health_state.get();
+            match &health_state.unhealthy_event {
+                Some(Unhealthy::StreamClosed(failure)) => {
+                    return Err(v1::Error::Supervision(Box::new(failure.clone())));
+                }
+                Some(Unhealthy::Crashed(failure)) => {
+                    return Err(v1::Error::Supervision(Box::new(failure.clone())));
+                }
+                None => {
+                    // If crashed ranks has any entries, then unhealthy_event should be set.
+                    // This is because all slices get a distinct health state.
+                    assert!(health_state.crashed_ranks.is_empty());
                 }
             }
         }
-        drop(health_state);
 
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
@@ -583,8 +567,8 @@ impl<A: Referable> ActorMeshRef<A> {
             proc_mesh,
             name,
             controller,
-            health_state: Arc::new(std::sync::Mutex::new(HealthState::default())),
-            receiver: Arc::new(tokio::sync::Mutex::new(None)),
+            health_state: ActorLocal::new(),
+            receiver: ActorLocal::new(),
             pages: OnceCell::new(),
             page_size: page_size.max(1),
         }
@@ -650,10 +634,6 @@ impl<A: Referable> ActorMeshRef<A> {
         }))
     }
 
-    fn health_state(&self) -> &Arc<std::sync::Mutex<HealthState>> {
-        &self.health_state
-    }
-
     fn init_supervision_receiver(
         controller: &ActorRef<ActorMeshController<A>>,
         cx: &impl context::Actor,
@@ -682,7 +662,8 @@ impl<A: Referable> ActorMeshRef<A> {
         let controller = if let Some(c) = self.controller() {
             c
         } else {
-            let health_state = self.health_state.lock().expect("lock poisoned");
+            let health_state = self.health_state.entry(cx).or_default();
+            let health_state = health_state.get();
             return match &health_state.unhealthy_event {
                 Some(Unhealthy::StreamClosed(f)) => Ok(f.clone()),
                 Some(Unhealthy::Crashed(f)) => Ok(f.clone()),
@@ -691,11 +672,20 @@ impl<A: Referable> ActorMeshRef<A> {
                 )),
             };
         };
-        let message = {
+        let rx = {
             // Make sure to create only one PortReceiver per context.
-            let mut receiver = self.receiver.lock().await;
-            let rx =
-                receiver.get_or_insert_with(|| Self::init_supervision_receiver(controller, cx));
+            let entry = self.receiver.entry(cx).or_insert_with(|| {
+                Arc::new(tokio::sync::Mutex::new(Self::init_supervision_receiver(
+                    controller, cx,
+                )))
+            });
+            // Need to clone so the lifetime is disconnected from entry, which
+            // isn't Send so can't be held across an await point.
+            Arc::clone(entry.get())
+        };
+        let message = {
+            let mut rx = rx.lock().await;
+            let subscriber_port = rx.0.clone();
             let message =
                 rx.1.wait_for(|message| {
                     // Filter out messages that do not apply to these ranks. This
@@ -734,8 +724,11 @@ impl<A: Referable> ActorMeshRef<A> {
                 let mut port = controller.port();
                 // We don't care if the controller is unreachable for an unsubscribe.
                 port.return_undeliverable(false);
-                let _ = port.send(cx, Unsubscribe(rx.0.clone()));
+                let _ = port.send(cx, Unsubscribe(subscriber_port));
             }
+            // If we successfully got a message back, we can't unsubscribe because
+            // the receiver might be shared with other calls to next_supervision_event,
+            // or with clones of this ActorMeshRef.
             match message {
                 MessageOrFailure::Message(message) => Ok::<MeshFailure, anyhow::Error>(
                     message.expect("filter excludes any None messages"),
@@ -765,7 +758,8 @@ impl<A: Referable> ActorMeshRef<A> {
         let rank = message.rank.unwrap_or_default();
         let event = &message.event;
         // Make sure not to hold this lock across an await point.
-        let mut health_state = self.health_state.lock().expect("lock poisoned");
+        let mut entry = self.health_state.entry(cx).or_default();
+        let health_state = entry.get_mut();
         if let ActorStatus::Failed(_) = event.actor_status {
             health_state.crashed_ranks.insert(rank, event.clone());
         }
@@ -776,6 +770,22 @@ impl<A: Referable> ActorMeshRef<A> {
         };
         Ok(message)
     }
+
+    /// Same as Clone, but includes a shared supervision receiver. This copy will
+    /// share the same health state and get the same supervision events.
+    /// Will have a separate cache.
+    pub fn clone_with_supervision_receiver(&self) -> Self {
+        Self {
+            proc_mesh: self.proc_mesh.clone(),
+            name: self.name.clone(),
+            controller: self.controller.clone(),
+            health_state: self.health_state.clone(),
+            receiver: self.receiver.clone(),
+            // Cache does not support Clone at this time.
+            pages: OnceCell::new(),
+            page_size: self.page_size,
+        }
+    }
 }
 
 impl<A: Referable> Clone for ActorMeshRef<A> {
@@ -784,10 +794,10 @@ impl<A: Referable> Clone for ActorMeshRef<A> {
             proc_mesh: self.proc_mesh.clone(),
             name: self.name.clone(),
             controller: self.controller.clone(),
-            // Cloning does not need to use the same health state, receiver,
-            // or future.
-            health_state: Arc::new(std::sync::Mutex::new(HealthState::default())),
-            receiver: Arc::new(tokio::sync::Mutex::new(None)),
+            // Cloning should not use the same health state or receiver, because
+            // it should make a new subscriber.
+            health_state: ActorLocal::new(),
+            receiver: ActorLocal::new(),
             pages: OnceCell::new(), // No clone cache.
             page_size: self.page_size,
         }

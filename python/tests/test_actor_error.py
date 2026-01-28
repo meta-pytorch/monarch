@@ -733,8 +733,10 @@ async def test_actor_mesh_supervision_handling() -> None:
 
         # new call should fail with check of health state of actor mesh
         with pytest.raises(
-            SupervisionError,
-            match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+            RuntimeError,
+            match="failure on mesh.*error.*with event: "
+            "The actor.*ErrorActor error.* and all its descendants have failed|"
+            "Actor.*error.*exited because of the following",
         ):
             await e.check.call()
         print("after subsequent endpoint call")
@@ -809,7 +811,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     # calling success endpoint should fail with ActorError, but with supervision msg.
     with pytest.raises(
         ActorError,
-        match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+        match="The actor.*Intermediate intermediate.*ErrorActor error.*and all its descendants have failed",
     ):
         await intermediate_actor.forward_success.call()
 
@@ -847,10 +849,15 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
         ):
             await error_actor.fail_with_supervision_error.call_one()
 
-        # Subsequent calls should fail with a health state error
+        # Subsequent calls should fail with a health state error, including
+        # the previous error that had occurred.
         with pytest.raises(
             RuntimeError,
-            match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+            match="failure on mesh .*error.* at rank 0 with event:.*"
+            "The actor .*ErrorActor error.*and all its descendants have failed.*"
+            "|"
+            "Actor .*error.*exited because of the following reason:"
+            ".*ErrorActor error.*and all its descendants have failed",
         ):
             await error_actor.check.call()
         # The above check call is undeliverable and might get returned to the client
@@ -887,7 +894,11 @@ async def test_process_exit_handling(error_actor_cls) -> None:
         # Subsequent calls should fail with a health state error
         with pytest.raises(
             RuntimeError,
-            match=base_match.format("error.check"),
+            # Message changes depending on actor_queue_dispatch.
+            match="failure on mesh .*error.* at rank 0 with event: "
+            "The actor.*ErrorActor error.*was running on a process which and all its descendants have failed"
+            "|"
+            "Actor.*error.*exited because of the following reason",
         ):
             await error_actor.check.call()
 
@@ -912,38 +923,38 @@ class FaultActor(Actor):
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_sigsegv_handling():
     # This test doesn't want the client process to crash during testing.
-    monarch.actor.unhandled_fault_hook = lambda failure: None
-    hosts = this_host()
-    procs = hosts.spawn_procs({"gpus": 2})
-    actor = procs.spawn("fault", FaultActor)
+    with override_fault_hook():
+        hosts = this_host()
+        procs = hosts.spawn_procs({"gpus": 2})
+        actor = procs.spawn("fault", FaultActor)
 
-    # Make sure the actor is healthy first
-    await actor.check.call()
-
-    # Depending on the timing, any of these messages could come back first.
-    error_msg = (
-        "actor mesh is stopped due to proc mesh shutdown|"
-        'actor mesh is stopped due to proc mesh shutdown.*Failed\\("Killed\\(sig=11.*\\)"\\)|'
-        "Actor .* exited because of the following reason|"
-        "Actor .* is unhealthy with reason"
-    )
-    with pytest.raises(SupervisionError, match=error_msg):
-        await actor.sigsegv.call()
-
-    # Check that a second call still fails and doesn't hang.
-    with pytest.raises(SupervisionError, match=error_msg):
+        # Make sure the actor is healthy first
         await actor.check.call()
 
-    # Check that proc_mesh.stop() still works, even though the processes are dead.
-    # It should check for the procs status without trying to kill them again.
-    await procs.stop()
+        with pytest.raises(
+            SupervisionError,
+            match="Actor .* and all its descendants have failed",
+        ):
+            await actor.sigsegv.call()
 
-    # Re-spawn on the same host mesh should work.
-    procs = hosts.spawn_procs({"gpus": 2})
-    actor = procs.spawn("fault", FaultActor)
+        # Check that a second call still fails and doesn't hang.
+        with pytest.raises(
+            RuntimeError,
+            match="failure on mesh.*fault.*with event.*|"
+            "Actor.*fault.*exited because of the following reason",
+        ):
+            await actor.check.call()
 
-    # Results don't matter, just make sure there's no exception.
-    await actor.check.call()
+        # Check that proc_mesh.stop() still works, even though the processes are dead.
+        # It should check for the procs status without trying to kill them again.
+        await procs.stop()
+
+        # Re-spawn on the same host mesh should work.
+        procs = hosts.spawn_procs({"gpus": 2})
+        actor = procs.spawn("fault", FaultActor)
+
+        # Results don't matter, just make sure there's no exception.
+        await actor.check.call()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -1107,12 +1118,16 @@ async def test_slice_supervision() -> None:
 
         print("before slice_3.check")
         # Slice containing only gpus=3 is unhealthy
-        with pytest.raises(SupervisionError, match=match):
+        with pytest.raises(
+            RuntimeError,
+            match="failure on mesh.*error.*at rank 3 with event: The actor.*ErrorActor error.* and all its descendants have failed|"
+            "Actor.*error.*exited because of the following",
+        ):
             await slice_3.check.call()
 
         print("before slice_1.check")
         # Slice containing gpus=3 is unhealthy
-        with pytest.raises(SupervisionError, match=match):
+        with pytest.raises(RuntimeError, match=match):
             await slice_1.check.call()
 
         print("before slice_2.check")
