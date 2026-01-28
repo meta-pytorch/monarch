@@ -39,6 +39,8 @@ from monarch._src.actor.proc_mesh import (
     _get_bootstrap_args,
     get_or_spawn_controller,
     ProcMesh,
+    register_proc_mesh_spawn_callback,
+    unregister_proc_mesh_spawn_callback,
 )
 
 
@@ -357,3 +359,66 @@ def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     assert proc_mesh._proc_mesh.poll() is None
     cloudpickle.dumps(proc_mesh)
     assert proc_mesh._proc_mesh.poll() is not None
+
+
+@pytest.mark.timeout(60)
+def test_proc_mesh_spawn_callback() -> None:
+    """Test that registered callbacks are invoked when a ProcMesh is spawned."""
+    spawned_meshes: list[ProcMesh] = []
+
+    def callback(pm: ProcMesh) -> None:
+        spawned_meshes.append(pm)
+
+    register_proc_mesh_spawn_callback(callback)
+    try:
+        host = create_local_host_mesh()
+        proc_mesh = host.spawn_procs(name="test_proc")
+
+        assert len(spawned_meshes) == 1
+        assert spawned_meshes[0] is proc_mesh
+    finally:
+        unregister_proc_mesh_spawn_callback(callback)
+
+
+@pytest.mark.timeout(60)
+def test_proc_mesh_spawn_callback_multiple() -> None:
+    """Test that multiple callbacks are all invoked."""
+    callback1_meshes: list[ProcMesh] = []
+    callback2_meshes: list[ProcMesh] = []
+
+    def callback1(pm: ProcMesh) -> None:
+        callback1_meshes.append(pm)
+
+    def callback2(pm: ProcMesh) -> None:
+        callback2_meshes.append(pm)
+
+    register_proc_mesh_spawn_callback(callback1)
+    register_proc_mesh_spawn_callback(callback2)
+    try:
+        host = create_local_host_mesh()
+        proc_mesh = host.spawn_procs(name="test_proc")
+
+        assert len(callback1_meshes) == 1
+        assert len(callback2_meshes) == 1
+        assert callback1_meshes[0] is proc_mesh
+        assert callback2_meshes[0] is proc_mesh
+    finally:
+        unregister_proc_mesh_spawn_callback(callback1)
+        unregister_proc_mesh_spawn_callback(callback2)
+
+
+@pytest.mark.timeout(60)
+def test_proc_mesh_spawn_callback_unregister() -> None:
+    """Test that unregistered callbacks are not invoked."""
+    spawned_meshes: list[ProcMesh] = []
+
+    def callback(pm: ProcMesh) -> None:
+        spawned_meshes.append(pm)
+
+    register_proc_mesh_spawn_callback(callback)
+    unregister_proc_mesh_spawn_callback(callback)
+
+    host = create_local_host_mesh()
+    host.spawn_procs(name="test_proc")
+
+    assert len(spawned_meshes) == 0
