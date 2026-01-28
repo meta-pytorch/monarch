@@ -8,6 +8,9 @@ This demo gives an example of running a GPU collective across ranks using native
 # Run the worker mesh
 kubectl apply -f manifests/gpu_mesh.yaml
 
+# Create the service account for the controller and bind the cluster role to it:
+kubectl apply -f manifests/client-rbac.yaml
+
 # Start the controller
 kubectl apply -f manifests/simple_controller.yaml
 

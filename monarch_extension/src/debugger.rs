@@ -105,7 +105,7 @@ impl PdbActor {
                 .debugger_message(&instance, actor_id, action)
                 .await
                 .map_err(|err| PyRuntimeError::new_err(err.to_string()));
-            let _ = handle.drain_and_stop();
+            let _ = handle.drain_and_stop("debugger cleanup");
             result
         })?
     }

@@ -1,0 +1,27 @@
+# RBAC setup for MonarchJob client pods.
+# Apply this before running simple_controller.yaml.
+#
+# Usage:
+#   kubectl create namespace monarch-tests
+#   kubectl apply -f client-rbac.yaml
+#   kubectl apply -f simple_controller.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monarch-client
+  namespace: monarch-tests
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monarch-client-binding
+  namespace: monarch-tests
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: monarch-client-role
+subjects:
+  - kind: ServiceAccount
+    name: monarch-client
+    namespace: monarch-tests

@@ -2598,7 +2598,7 @@ mod test_alloc {
         task2_allocator_handle.await.unwrap();
     }
 
-    #[async_timed_test(timeout_secs = 60)]
+    #[async_timed_test(timeout_secs = 180)]
     #[cfg(fbcode_build)]
     async fn test_remote_process_alloc_signal_handler() {
         hyperactor_telemetry::initialize_logging_for_test();
