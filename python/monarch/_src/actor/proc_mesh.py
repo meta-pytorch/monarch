@@ -243,9 +243,7 @@ def register_proc_mesh_spawn_callback(callback: Callable[["ProcMesh"], None]) ->
     _proc_mesh_spawn_callbacks.append(callback)
 
 
-def unregister_proc_mesh_spawn_callback(
-    callback: Callable[["ProcMesh"], None]
-) -> None:
+def unregister_proc_mesh_spawn_callback(callback: Callable[["ProcMesh"], None]) -> None:
     """
     Unregister a previously registered spawn callback.
 

@@ -261,7 +261,7 @@ if not skip_legacy_builds:
     )
 
 # Main Python extension (always built)
-rust_features = ["extension-module"]
+rust_features = ["extension-module", "distributed_sql"]
 if build_tensor_engine:
     rust_features.append("tensor_engine")
 
