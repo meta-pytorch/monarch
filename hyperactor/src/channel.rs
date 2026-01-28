@@ -1016,7 +1016,6 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 
 /// Serve on the provided channel address. The server is turned down
 /// when the returned Rx is dropped.
-#[crate::instrument]
 #[track_caller]
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
