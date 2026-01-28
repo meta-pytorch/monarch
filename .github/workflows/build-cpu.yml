@@ -14,6 +14,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        python-version: ['3.10']
         include:
           - name: 4xlarge
             runs-on: linux.4xlarge
@@ -21,13 +22,13 @@ jobs:
       timeout: 60
       runner: ${{ matrix.runs-on }}
       submodules: recursive
-      upload-artifact: monarch-cpu-${{ github.sha }}
+      upload-artifact: monarch-cpu-${{ github.sha }}-py${{ matrix.python-version }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
 
         # Setup build environment (conda + system deps + rust + build deps)
-        setup_build_environment
+        setup_build_environment ${{ matrix.python-version }}
 
         # Install torch nightly (CPU version)
         pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu

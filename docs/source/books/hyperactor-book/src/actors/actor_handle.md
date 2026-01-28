@@ -49,10 +49,10 @@ pub fn actor_id(&self) -> &ActorId {
 
 ### `drain_and_stop`
 
-Signals the actor to drain any pending messages and then stop. This enables a graceful shutdown procedure.
+Signals the actor to drain any pending messages and then stop. This enables a graceful shutdown procedure. A reason string is provided to explain why the actor is being stopped.
 ```rust
-pub fn drain_and_stop(&self) -> Result<(), ActorError> {
-    self.cell.signal(Signal::DrainAndStop)
+pub fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
+    self.cell.signal(Signal::DrainAndStop(reason.to_string()))
 }
 ```
 

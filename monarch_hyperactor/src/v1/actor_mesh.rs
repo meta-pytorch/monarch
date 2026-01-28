@@ -139,12 +139,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         )))
     }
 
-    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         let (slf, instance) = monarch_with_gil_blocking(|_py| (self.clone(), instance.clone()));
         match slf {
             PythonActorMeshImpl::Owned(mut mesh) => PyPythonTask::new(async move {
                 mesh.mesh
-                    .stop(instance.deref())
+                    .stop(instance.deref(), reason)
                     .await
                     .map_err(|err| PyValueError::new_err(err.to_string()))
             }),
@@ -210,7 +210,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     /// Stop the actor mesh asynchronously.
-    fn stop(&self, _instance: &PyInstance) -> PyResult<PyPythonTask> {
+    fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(
             "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))

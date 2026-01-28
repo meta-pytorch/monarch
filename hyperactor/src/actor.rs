@@ -441,10 +441,10 @@ impl From<MailboxSenderError> for ActorError {
 #[derive(Clone, Debug, Serialize, Deserialize, typeuri::Named)]
 pub enum Signal {
     /// Stop the actor, after draining messages.
-    DrainAndStop,
+    DrainAndStop(String),
 
     /// Stop the actor immediately.
-    Stop,
+    Stop(String),
 
     /// The direct child with the given PID was stopped.
     ChildStopped(Index),
@@ -459,8 +459,8 @@ wirevalue::register_type!(Signal);
 impl fmt::Display for Signal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Signal::DrainAndStop => write!(f, "DrainAndStop"),
-            Signal::Stop => write!(f, "Stop"),
+            Signal::DrainAndStop(reason) => write!(f, "DrainAndStop({})", reason),
+            Signal::Stop(reason) => write!(f, "Stop({})", reason),
             Signal::ChildStopped(index) => write!(f, "ChildStopped({})", index),
             Signal::Abort(reason) => write!(f, "Abort({})", reason),
         }
@@ -627,9 +627,9 @@ impl<A: Actor> ActorHandle<A> {
     }
 
     /// Signal the actor to drain its current messages and then stop.
-    pub fn drain_and_stop(&self) -> Result<(), ActorError> {
+    pub fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!("ActorHandle::drain_and_stop called: {}", self.actor_id());
-        self.cell.signal(Signal::DrainAndStop)
+        self.cell.signal(Signal::DrainAndStop(reason.to_string()))
     }
 
     /// A watch that observes the lifecycle state of the actor.
@@ -809,7 +809,7 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
         handle.send(&client, 123u64).unwrap();
-        handle.drain_and_stop().unwrap();
+        handle.drain_and_stop("test").unwrap();
         handle.await;
 
         assert_eq!(rx.drain(), vec![123u64]);
@@ -911,7 +911,7 @@ mod tests {
         handle.send(&client, port).unwrap();
         assert!(receiver.recv().await.unwrap());
 
-        handle.drain_and_stop().unwrap();
+        handle.drain_and_stop("test").unwrap();
         handle.await;
     }
 
@@ -1088,7 +1088,7 @@ mod tests {
         assert!(cell.downcast_handle::<EchoActor>().is_none());
 
         let handle = cell.downcast_handle::<NothingActor>().unwrap();
-        handle.drain_and_stop().unwrap();
+        handle.drain_and_stop("test").unwrap();
         handle.await;
     }
 }

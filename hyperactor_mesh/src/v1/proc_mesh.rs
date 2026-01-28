@@ -525,7 +525,7 @@ impl ProcMesh {
     }
 
     /// Stop this mesh gracefully.
-    pub async fn stop(&mut self, cx: &impl context::Actor) -> anyhow::Result<()> {
+    pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         let region = self.region.clone();
         match &mut self.allocation {
             ProcMeshAllocation::Allocated {
@@ -561,7 +561,9 @@ impl ProcMesh {
                 let procs = self.current_ref.proc_ids().collect::<Vec<ProcId>>();
                 // We use the proc mesh region rather than the host mesh region
                 // because the host agent stores one entry per proc, not per host.
-                hosts.stop_proc_mesh(cx, &self.name, procs, region).await
+                hosts
+                    .stop_proc_mesh(cx, &self.name, procs, region, reason)
+                    .await
             }
         }
     }
@@ -1132,10 +1134,11 @@ impl ProcMeshRef {
         &self,
         cx: &impl context::Actor,
         mesh_name: Name,
+        reason: String,
     ) -> v1::Result<ValueMesh<Status>> {
         tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Attempt");
         tracing::info!(name = "ActorMeshStatus", status = "Stop::Attempt");
-        let result = self.stop_actor_by_name_inner(cx, mesh_name).await;
+        let result = self.stop_actor_by_name_inner(cx, mesh_name, reason).await;
         match &result {
             Ok(_) => {
                 tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Success");
@@ -1153,6 +1156,7 @@ impl ProcMeshRef {
         &self,
         cx: &impl context::Actor,
         mesh_name: Name,
+        reason: String,
     ) -> v1::Result<ValueMesh<Status>> {
         let region = self.region().clone();
         let agent_mesh = self.agent_mesh();
@@ -1160,6 +1164,7 @@ impl ProcMeshRef {
             cx,
             resource::Stop {
                 name: mesh_name.clone(),
+                reason,
             },
         )?;
 

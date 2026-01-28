@@ -138,7 +138,7 @@ impl<A: Referable> ActorMesh<A> {
     }
 
     /// Stop actors on this mesh across all procs.
-    pub async fn stop(&mut self, cx: &impl context::Actor) -> v1::Result<()> {
+    pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> v1::Result<()> {
         // Remove the controller as an optimization so all future meshes
         // created from this one (such as slices) know they are already stopped.
         // Refs and slices on other machines will still be able to query the
@@ -151,6 +151,7 @@ impl<A: Referable> ActorMesh<A> {
                     cx,
                     resource::Stop {
                         name: self.name.clone(),
+                        reason,
                     },
                 )
                 .map_err(|e| v1::Error::SendingError(controller.actor_id().clone(), Box::new(e)))?;
@@ -1355,7 +1356,10 @@ mod tests {
         );
 
         // Now stop the pong actor mesh to break communication
-        pong_mesh.stop(instance).await.unwrap();
+        pong_mesh
+            .stop(instance, "test stop".to_string())
+            .await
+            .unwrap();
 
         // Give it a moment to fully stop
         RealClock.sleep(std::time::Duration::from_millis(200)).await;
@@ -1447,7 +1451,7 @@ mod tests {
         // Now stop the mesh - actors won't respond in time, should be
         // aborted. Time this operation to verify abort behavior.
         let stop_start = RealClock.now();
-        let result = sleep_mesh.stop(instance).await;
+        let result = sleep_mesh.stop(instance, "test stop".to_string()).await;
         let stop_duration = RealClock.now().duration_since(stop_start);
 
         // Stop will return an error because actors didn't stop within
@@ -1520,7 +1524,7 @@ mod tests {
 
         // Time the stop operation
         let stop_start = RealClock.now();
-        let result = actor_mesh.stop(instance).await;
+        let result = actor_mesh.stop(instance, "test stop".to_string()).await;
         let stop_duration = RealClock.now().duration_since(stop_start);
 
         // Graceful stop should succeed (return Ok)

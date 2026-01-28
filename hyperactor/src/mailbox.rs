@@ -2667,7 +2667,6 @@ mod tests {
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::context::Mailbox as MailboxContext;
-    use crate::context::Mailbox as _;
     use crate::id;
     use crate::proc::Proc;
     use crate::reference::ProcId;
@@ -3147,7 +3146,7 @@ mod tests {
                 quux[0].foo[0] to corge[0].bar[0][9999] was undeliverable and returned"
         ));
 
-        proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None)
+        proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None, "test cleanup")
             .await
             .unwrap();
     }
