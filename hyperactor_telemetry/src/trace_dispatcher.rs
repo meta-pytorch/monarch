@@ -9,9 +9,15 @@
 //! Unified telemetry layer that captures trace events once and fans out to multiple exporters
 //! on a background thread, eliminating redundant capture and moving work off the application
 //! thread.
+//!
+//! Uses thread-local SPSC ring buffers for minimal latency and jitter on the hot path.
 
 use std::cell::Cell;
+use std::cell::UnsafeCell;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -28,7 +34,13 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
-const QUEUE_CAPACITY: usize = 100_000;
+/// Capacity for each thread-local ring buffer.
+const THREAD_RING_CAPACITY: usize = 8192;
+
+/// Number of producers to pre-allocate and pre-touch during initialization.
+/// initialization can take around a millisecond per producer and we want to avoid doing this
+/// on the first application thread that hits some on_ hook
+const PREALLOC_PRODUCER_COUNT: usize = 32;
 
 /// Type alias for trace event fields
 /// We expect that most trace events have fewer than 4 fields.
@@ -77,6 +89,18 @@ pub(crate) enum TraceEvent {
         file: Option<&'static str>,
         line: Option<u32>,
     },
+}
+
+impl TraceEvent {
+    fn timestamp(&self) -> SystemTime {
+        match self {
+            TraceEvent::NewSpan { timestamp, .. } => *timestamp,
+            TraceEvent::SpanEnter { timestamp, .. } => *timestamp,
+            TraceEvent::SpanExit { timestamp, .. } => *timestamp,
+            TraceEvent::SpanClose { timestamp, .. } => *timestamp,
+            TraceEvent::Event { timestamp, .. } => *timestamp,
+        }
+    }
 }
 
 /// Simplified field value representation for trace events
@@ -130,11 +154,155 @@ pub(crate) trait TraceEventSink: Send + 'static {
     }
 }
 
+// This owns all the consumers.
+// Whenever a a new producer/consumer pair is created it will be sent here
+// The worker thread will own one instance struct to pop events from
+struct ConsumerRegistry {
+    /// Channel for receiving new consumers when a producer/consumer pair is created.
+    new_consumer_rx: mpsc::Receiver<rtrb::Consumer<TraceEvent>>,
+    consumers: Vec<rtrb::Consumer<TraceEvent>>,
+}
+
+impl ConsumerRegistry {
+    fn new(rx: mpsc::Receiver<rtrb::Consumer<TraceEvent>>) -> Self {
+        Self {
+            new_consumer_rx: rx,
+            consumers: Vec::new(),
+        }
+    }
+
+    /// Reads events from consumers into `buffer` in timestamp order.
+    /// Drains all events then sorts - O(n log n)
+    /// Benchmarks show that this actually performs the same as a O(n log k) k-way merge
+    /// as popping dominates
+    ///
+    /// Returns the number of events read
+    fn drain_into(&mut self, buffer: &mut Vec<TraceEvent>) -> usize {
+        while let Ok(consumer) = self.new_consumer_rx.try_recv() {
+            self.consumers.push(consumer);
+        }
+
+        let mut count = 0;
+        for consumer in &mut self.consumers {
+            while let Ok(event) = consumer.pop() {
+                buffer.push(event);
+                count += 1;
+            }
+        }
+
+        buffer.sort_by_key(|e| e.timestamp());
+
+        count
+    }
+}
+
+/// Handle for registering new thread-local producers.
+/// Cloned into thread-local storage to register new ring buffers.
+#[derive(Clone)]
+struct ProducerRegistration {
+    /// Channel to send new consumers to the worker.
+    sender: mpsc::Sender<rtrb::Consumer<TraceEvent>>,
+    alive: Arc<AtomicBool>,
+    /// Pool of pre-allocated and pre-touched producers.
+    /// Threads take from here first to avoid initialization latency.
+    producer_pool: Arc<Mutex<Vec<rtrb::Producer<TraceEvent>>>>,
+}
+
+impl ProducerRegistration {
+    /// Create a new producer for this thread and register its consumer with the worker.
+    /// First tries to take from the pre-allocated pool, then creates new if empty.
+    fn create_producer(&self) -> Option<rtrb::Producer<TraceEvent>> {
+        if !self.alive.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        if let Ok(mut pool) = self.producer_pool.lock() {
+            if let Some(producer) = pool.pop() {
+                return Some(producer);
+            }
+        }
+
+        let (producer, consumer) = rtrb::RingBuffer::new(THREAD_RING_CAPACITY);
+
+        let _ = self.sender.send(consumer);
+
+        Some(producer)
+    }
+}
+
+/// Thread-local state for the trace producer.
+/// Uses UnsafeCell + MaybeUninit for zero-overhead access on the hot path.
+/// The `initialized` flag guards access to the uninitialized producer.
+struct ThreadLocalProducer {
+    /// The SPSC producer. Only valid to access when `initialized` is true.
+    producer: UnsafeCell<MaybeUninit<rtrb::Producer<TraceEvent>>>,
+    dropped_count: UnsafeCell<u64>,
+    /// Whether this thread-local has been initialized.
+    /// This is the only branch on the hot path.
+    initialized: UnsafeCell<bool>,
+}
+
+impl ThreadLocalProducer {
+    const fn new() -> Self {
+        Self {
+            producer: UnsafeCell::new(MaybeUninit::uninit()),
+            dropped_count: UnsafeCell::new(0),
+            initialized: UnsafeCell::new(false),
+        }
+    }
+
+    /// Only call when initialized
+    /// Returns true if pushed successfully, false if buffer full.
+    #[inline(always)]
+    unsafe fn push_unchecked(&self, event: TraceEvent) -> bool {
+        // SAFETY: Caller guarantees we're initialized
+        unsafe {
+            let producer = (*self.producer.get()).assume_init_mut();
+            producer.push(event).is_ok()
+        }
+    }
+
+    #[inline(always)]
+    fn is_initialized(&self) -> bool {
+        // SAFETY: Single-threaded access
+        unsafe { *self.initialized.get() }
+    }
+
+    fn initialize(&self, producer_registration: &ProducerRegistration) {
+        // SAFETY: Single-threaded access
+        unsafe {
+            if !*self.initialized.get() {
+                if let Some(producer) = producer_registration.create_producer() {
+                    (*self.producer.get()).write(producer);
+                    *self.initialized.get() = true;
+                }
+            }
+        }
+    }
+
+    fn increment_dropped(&self) {
+        // SAFETY: Single-threaded access
+        unsafe {
+            let count = self.dropped_count.get();
+            *count += 1;
+            if *count == 1 || (*count).is_multiple_of(1000) {
+                let (thread_name, _) = get_thread_info();
+                eprintln!(
+                    "thread '{}' dropped {} telemetry events (buffer full)",
+                    thread_name, *count
+                );
+            }
+        }
+    }
+}
+
 thread_local! {
     /// Cached thread info (thread_name, thread_id) for minimal overhead.
     /// Strings are leaked once per thread to get &'static str - threads are long-lived so this is fine.
     /// Uses Cell since (&'static str, &'static str) is Copy.
     static CACHED_THREAD_INFO: Cell<Option<(&'static str, &'static str)>> = const { Cell::new(None) };
+    /// Each thread's SPSC producer. Uses UnsafeCell for minimal overhead.
+    static THREAD_PRODUCER: ThreadLocalProducer = const { ThreadLocalProducer::new() };
 }
 
 #[inline(always)]
@@ -180,7 +348,8 @@ fn get_thread_info() -> (&'static str, &'static str) {
 /// The trace event dispatcher that captures events once and dispatches to multiple sinks
 /// on a background thread.
 pub struct TraceEventDispatcher {
-    sender: Option<mpsc::SyncSender<TraceEvent>>,
+    /// Registration handle for creating new thread-local producers.
+    producer_registration: ProducerRegistration,
     /// Separate channel so we are always notified of when the main queue is full and events are being dropped.
     dropped_sender: Option<mpsc::Sender<TraceEvent>>,
     _worker_handle: WorkerHandle,
@@ -194,30 +363,58 @@ struct WorkerHandle {
 
 impl TraceEventDispatcher {
     /// Create a new trace event dispatcher with the given sinks.
-    /// Uses a bounded channel (capacity QUEUE_CAPACITY) to ensure telemetry never blocks
-    /// the application. Events are dropped with a warning if the queue is full.
-    /// A separate unbounded priority channel guarantees delivery of critical events
-    /// like drop notifications (safe because drop events are rate-limited).
+    /// Uses thread-local SPSC ring buffers to ensure low-latency, low-jitter
+    /// event capture. Events are dropped if the thread's ring buffer is full.
     ///
     /// # Arguments
     /// * `sinks` - List of sinks to dispatch events to.
     pub(crate) fn new(sinks: Vec<Box<dyn TraceEventSink>>) -> Self {
         let max_level = Self::derive_max_level(&sinks);
 
-        let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+        let (consumer_tx, consumer_rx) = mpsc::channel();
         let (dropped_sender, dropped_receiver) = mpsc::channel();
         let dropped_events = Arc::new(AtomicU64::new(0));
         let dropped_events_worker = Arc::clone(&dropped_events);
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_worker = Arc::clone(&alive);
+
+        let mut producer_pool = Vec::with_capacity(PREALLOC_PRODUCER_COUNT);
+        // It's better that we take a few ms to warm once at startup than randomly take a ms to warmup the first time
+        // a thread needs a producer, or to have a cold start
+        for _ in 0..PREALLOC_PRODUCER_COUNT {
+            let (mut producer, consumer) = rtrb::RingBuffer::new(THREAD_RING_CAPACITY);
+            for _ in 0..THREAD_RING_CAPACITY - 1 {
+                let _ = producer.push(TraceEvent::SpanClose {
+                    id: 0,
+                    timestamp: SystemTime::UNIX_EPOCH,
+                });
+            }
+            let _ = consumer_tx.send(consumer);
+            producer_pool.push(producer);
+        }
+        let producer_pool = Arc::new(Mutex::new(producer_pool));
 
         let worker_handle = std::thread::Builder::new()
             .name("telemetry-worker".into())
             .spawn(move || {
-                worker_loop(receiver, dropped_receiver, sinks, dropped_events_worker);
+                worker_loop(
+                    ConsumerRegistry::new(consumer_rx),
+                    dropped_receiver,
+                    sinks,
+                    dropped_events_worker,
+                    alive_worker,
+                );
             })
             .expect("failed to spawn telemetry worker thread");
 
+        let producer_registration = ProducerRegistration {
+            sender: consumer_tx,
+            alive,
+            producer_pool,
+        };
+
         Self {
-            sender: Some(sender),
+            producer_registration,
             dropped_sender: Some(dropped_sender),
             _worker_handle: WorkerHandle {
                 join_handle: Some(worker_handle),
@@ -261,19 +458,47 @@ impl TraceEventDispatcher {
         max_level
     }
 
+    #[inline(always)]
     fn send_event(&self, event: TraceEvent) {
-        if let Some(sender) = &self.sender {
-            if let Err(mpsc::TrySendError::Full(_)) = sender.try_send(event) {
-                let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
-
-                if dropped == 1 || dropped.is_multiple_of(1000) {
-                    eprintln!(
-                        "[telemetry]: {}  events and log lines dropped que to full queue (capacity: {})",
-                        dropped, QUEUE_CAPACITY
-                    );
-                    self.send_drop_event(dropped);
+        THREAD_PRODUCER.with(|producer| {
+            if producer.is_initialized() {
+                // SAFETY: is_initialized() returned true
+                if unsafe { !producer.push_unchecked(event) } {
+                    self.drop_event(producer);
                 }
+            } else {
+                self.send_event_uninitialized(producer, event);
             }
+        });
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn send_event_uninitialized(&self, producer: &ThreadLocalProducer, event: TraceEvent) {
+        producer.initialize(&self.producer_registration);
+
+        if producer.is_initialized() {
+            // SAFETY: just initialized
+            unsafe {
+                producer.push_unchecked(event);
+            }
+        } else {
+            self.drop_event(producer);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn drop_event(&self, producer: &ThreadLocalProducer) {
+        producer.increment_dropped();
+        let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
+
+        if dropped == 1 || dropped.is_multiple_of(1000) {
+            eprintln!(
+                "[telemetry]: {} events and log lines dropped que to full buffer (capacity: {})",
+                dropped, THREAD_RING_CAPACITY
+            );
+            self.send_drop_event(dropped);
         }
     }
 
@@ -285,8 +510,8 @@ impl TraceEventDispatcher {
             fields.push((
                 "message",
                 FieldValue::Str(format!(
-                    "Telemetry events and log lines dropped due to full queue (capacity: {}). Worker may be falling behind.",
-                    QUEUE_CAPACITY
+                    "Telemetry events and log lines dropped due to full buffer (capacity: {}). Worker may be falling behind.",
+                    THREAD_RING_CAPACITY
                 )),
             ));
             fields.push(("dropped_count", FieldValue::U64(total_dropped)));
@@ -321,10 +546,9 @@ impl TraceEventDispatcher {
 
 impl Drop for TraceEventDispatcher {
     fn drop(&mut self) {
-        // Explicitly drop both senders to close the channels.
-        // The next field to be dropped is `worker_handle` which
-        // will run its own drop impl to join the thread and flush
-        drop(self.sender.take());
+        self.producer_registration
+            .alive
+            .store(false, Ordering::Release);
         drop(self.dropped_sender.take());
     }
 }
@@ -453,19 +677,21 @@ impl<'a> tracing::field::Visit for FieldVisitor<'a> {
     }
 }
 
-/// Background worker loop that receives events from both regular and priority channels,
+/// Background worker loop drains events from all rtrb::Consumers and priority channels,
 /// and dispatches them to sinks. Priority events are processed first.
-/// Runs until both senders are dropped.
+/// Runs until the alive flag is set to false and all buffers are drained.
 fn worker_loop(
-    receiver: mpsc::Receiver<TraceEvent>,
+    mut consumers: ConsumerRegistry,
     dropped_receiver: mpsc::Receiver<TraceEvent>,
     mut sinks: Vec<Box<dyn TraceEventSink>>,
     dropped_events: Arc<AtomicU64>,
+    alive: Arc<AtomicBool>,
 ) {
     const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
     const FLUSH_EVENT_COUNT: usize = 1000;
     let mut last_flush = std::time::Instant::now();
     let mut events_since_flush = 0;
+    let mut buffer = Vec::with_capacity(256);
 
     fn flush_sinks(sinks: &mut [Box<dyn TraceEventSink>]) {
         for sink in sinks {
@@ -502,24 +728,28 @@ fn worker_loop(
             events_since_flush += 1;
         }
 
-        match receiver.recv_timeout(FLUSH_INTERVAL) {
-            Ok(event) => {
-                dispatch_to_sinks(&mut sinks, event);
-                events_since_flush += 1;
+        buffer.clear();
+        let event_count = consumers.drain_into(&mut buffer);
 
-                if events_since_flush >= FLUSH_EVENT_COUNT || last_flush.elapsed() >= FLUSH_INTERVAL
-                {
-                    flush_sinks(&mut sinks);
-                    last_flush = std::time::Instant::now();
-                    events_since_flush = 0;
-                }
+        if event_count > 0 {
+            for event in buffer.drain(..) {
+                dispatch_to_sinks(&mut sinks, event);
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            events_since_flush += event_count;
+
+            if events_since_flush >= FLUSH_EVENT_COUNT || last_flush.elapsed() >= FLUSH_INTERVAL {
                 flush_sinks(&mut sinks);
                 last_flush = std::time::Instant::now();
                 events_since_flush = 0;
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+        } else {
+            if last_flush.elapsed() >= FLUSH_INTERVAL {
+                flush_sinks(&mut sinks);
+                last_flush = std::time::Instant::now();
+                events_since_flush = 0;
+            }
+
+            if !alive.load(Ordering::Acquire) {
                 break;
             }
         }
@@ -528,7 +758,10 @@ fn worker_loop(
     while let Ok(event) = dropped_receiver.try_recv() {
         dispatch_to_sinks(&mut sinks, event);
     }
-    while let Ok(event) = receiver.try_recv() {
+
+    buffer.clear();
+    consumers.drain_into(&mut buffer);
+    for event in buffer.drain(..) {
         dispatch_to_sinks(&mut sinks, event);
     }
 
