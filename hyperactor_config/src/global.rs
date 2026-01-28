@@ -284,18 +284,198 @@ fn layer_attrs_mut(l: &mut Layer) -> &mut Attrs {
     }
 }
 
-/// Return the index of the [`Layer::TestOverride`] within the
-/// [`Layers`] vector.
-///
-/// If a TestOverride layer is present, its position in the ordered
-/// list is returned; otherwise, `None` is returned. This is used to
-/// locate the active test override layer for inserting or restoring
-/// temporary configuration values.
-fn test_override_index(layers: &Layers) -> Option<usize> {
-    layers
-        .ordered
-        .iter()
-        .position(|l| matches!(l, Layer::TestOverride { .. }))
+impl Layers {
+    // Mutation methods:
+
+    /// Insert or replace a configuration layer for the given source.
+    ///
+    /// If a layer with the same [`Source`] already exists, its contents
+    /// are replaced with the provided `attrs`. Otherwise a new layer is
+    /// added. After insertion, layers are re-sorted so that
+    /// higher-priority sources (e.g. [`Source::TestOverride`],
+    /// [`Source::Env`]) appear before lower-priority ones
+    /// ([`Source::Runtime`], [`Source::File`]).
+    fn set(&mut self, source: Source, attrs: Attrs) {
+        if let Some(l) = self.ordered.iter_mut().find(|l| layer_source(l) == source) {
+            *layer_attrs_mut(l) = attrs;
+        } else {
+            self.ordered.push(make_layer(source, attrs));
+        }
+        self.ordered.sort_by_key(|l| priority(layer_source(l)));
+    }
+
+    /// Insert or update a configuration layer for the given [`Source`].
+    ///
+    /// If a layer with the same [`Source`] already exists, its attributes
+    /// are **updated in place**: all keys present in `attrs` are absorbed
+    /// into the existing layer, overwriting any previous values for those
+    /// keys while leaving all other keys in that layer unchanged.
+    ///
+    /// If no layer for `source` exists yet, this behaves like [`set`]: a
+    /// new layer is created with the provided `attrs`.
+    fn merge(&mut self, source: Source, attrs: Attrs) {
+        if let Some(layer) = self.ordered.iter_mut().find(|l| layer_source(l) == source) {
+            layer_attrs_mut(layer).merge(attrs);
+        } else {
+            self.ordered.push(make_layer(source, attrs));
+        }
+        self.ordered.sort_by_key(|l| priority(layer_source(l)));
+    }
+
+    /// Remove the configuration layer for the given [`Source`], if
+    /// present.
+    ///
+    /// After this call, values from that source will no longer contribute
+    /// to resolution in [`get`], [`get_cloned`], or [`attrs`]. Defaults
+    /// and any remaining layers continue to apply in their normal
+    /// priority order.
+    fn clear(&mut self, source: Source) {
+        self.ordered.retain(|l| layer_source(l) != source);
+    }
+
+    /// Reset the global configuration to only Defaults (for testing).
+    ///
+    /// This clears all explicit layers (`File`, `Env`, `Runtime`,
+    /// `ClientOverride`, and `TestOverride`). Subsequent lookups will
+    /// resolve keys entirely from their declared defaults.
+    fn reset(&mut self) {
+        self.ordered.clear();
+    }
+
+    // Read methods:
+
+    /// Return a complete, merged snapshot of the effective configuration
+    /// **(only keys marked with `@meta(CONFIG = ...)`)**.
+    ///
+    /// Resolution per key:
+    /// 1) First explicit value found in layers (TestOverride → Env →
+    ///    Runtime → File → ClientOverride).
+    /// 2) Otherwise, the key's default (if any).
+    fn materialize(&self) -> Attrs {
+        let mut merged = Attrs::new();
+        for info in inventory::iter::<AttrKeyInfo>() {
+            if info.meta.get(CONFIG).is_none() {
+                continue;
+            }
+            let name = info.name;
+            let mut chosen: Option<Box<dyn crate::attrs::SerializableValue>> = None;
+            for layer in &self.ordered {
+                if let Some(v) = layer_attrs(layer).get_value_by_name(name) {
+                    chosen = Some(v.cloned());
+                    break;
+                }
+            }
+            let boxed = match chosen {
+                Some(b) => b,
+                None => {
+                    if let Some(default) = info.default {
+                        default.cloned()
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            merged.insert_value_by_name_unchecked(name, boxed);
+        }
+        merged
+    }
+
+    /// Get a key from the configuration (Copy types).
+    ///
+    /// Resolution order: TestOverride -> Env -> Runtime -> File ->
+    /// ClientOverride -> Default. Panics if the key has no default and is
+    /// not set in any layer.
+    fn get_value<T: AttrValue + Copy>(&self, key: Key<T>) -> T {
+        for layer in &self.ordered {
+            if let Some(value) = layer_attrs(layer).get_value_by_name(key.name()) {
+                let t = value.as_any().downcast_ref::<T>().unwrap_or_else(|| {
+                    panic!(
+                        "cannot cast to type {} for key {}",
+                        std::any::type_name::<T>(),
+                        key.name()
+                    )
+                });
+                return *t;
+            }
+        }
+        *key.default().expect("key must have a default")
+    }
+
+    /// Try to get a cloned value from layers, falling back to default.
+    ///
+    /// Resolution order: TestOverride -> Env -> Runtime -> File ->
+    /// ClientOverride -> Default. Returns None if the key has no default
+    /// and is not set in any layer.
+    fn try_get_value_cloned<T: AttrValue>(&self, key: Key<T>) -> Option<T> {
+        for layer in &self.ordered {
+            let a = layer_attrs(layer);
+            if a.contains_key(key) {
+                return a.get(key).cloned();
+            }
+        }
+        key.default().cloned()
+    }
+
+    /// Return a snapshot of the attributes for a specific configuration
+    /// source.
+    ///
+    /// If a layer with the given [`Source`] exists, this clones and
+    /// returns its [`Attrs`]. Otherwise an empty [`Attrs`] is returned.
+    fn layer_attrs_for(&self, source: Source) -> Attrs {
+        if let Some(layer) = self.ordered.iter().find(|l| layer_source(l) == source) {
+            layer_attrs(layer).clone()
+        } else {
+            Attrs::new()
+        }
+    }
+
+    // Test override support:
+
+    /// Ensure TestOverride layer exists, return mutable access to its
+    /// attrs and stacks.
+    fn ensure_test_override(&mut self) -> (&mut Attrs, &mut HashMap<&'static str, OverrideStack>) {
+        let idx = if let Some(i) = self
+            .ordered
+            .iter()
+            .position(|l| matches!(l, Layer::TestOverride { .. }))
+        {
+            i
+        } else {
+            self.ordered.push(Layer::TestOverride {
+                attrs: Attrs::new(),
+                stacks: HashMap::new(),
+            });
+            self.ordered.sort_by_key(|l| priority(layer_source(l)));
+            self.ordered
+                .iter()
+                .position(|l| matches!(l, Layer::TestOverride { .. }))
+                .expect("just inserted TestOverride layer")
+        };
+        match &mut self.ordered[idx] {
+            Layer::TestOverride { attrs, stacks } => (attrs, stacks),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Get mutable access to TestOverride layer if it exists.
+    fn test_override_mut(
+        &mut self,
+    ) -> Option<(&mut Attrs, &mut HashMap<&'static str, OverrideStack>)> {
+        let idx = self
+            .ordered
+            .iter()
+            .position(|l| matches!(l, Layer::TestOverride { .. }))?;
+        match &mut self.ordered[idx] {
+            Layer::TestOverride { attrs, stacks } => Some((attrs, stacks)),
+            _ => None,
+        }
+    }
+
+    /// Remove the TestOverride layer entirely.
+    fn remove_test_override(&mut self) {
+        self.ordered
+            .retain(|l| !matches!(l, Layer::TestOverride { .. }));
+    }
 }
 
 /// Global layered configuration store.
@@ -398,21 +578,7 @@ pub fn init_from_yaml<P: AsRef<Path>>(path: P) -> Result<(), anyhow::Error> {
 /// ClientOverride -> Default. Panics if the key has no default and is
 /// not set in any layer.
 pub fn get<T: AttrValue + Copy>(key: Key<T>) -> T {
-    let layers = LAYERS.read().unwrap();
-    for layer in &layers.ordered {
-        let a = layer_attrs(layer);
-        if let Some(value) = a.get_value_by_name(key.name()) {
-            let t = value.as_any().downcast_ref::<T>().unwrap_or_else(|| {
-                panic!(
-                    "cannot cast to type {} for key {}",
-                    std::any::type_name::<T>(),
-                    key.name()
-                )
-            });
-            return *t;
-        }
-    }
-    *key.default().expect("key must have a default")
+    LAYERS.read().unwrap().get_value(key)
 }
 
 /// Return the override value for `key` if it is explicitly present in
@@ -442,14 +608,7 @@ pub fn get_cloned<T: AttrValue>(key: Key<T>) -> T {
 /// ClientOverride -> Default. Returns None if the key has no default
 /// and is not set in any layer.
 pub fn try_get_cloned<T: AttrValue>(key: Key<T>) -> Option<T> {
-    let layers = LAYERS.read().unwrap();
-    for layer in &layers.ordered {
-        let a = layer_attrs(layer);
-        if a.contains_key(key) {
-            return a.get(key).cloned();
-        }
-    }
-    key.default().cloned()
+    LAYERS.read().unwrap().try_get_value_cloned(key)
 }
 
 /// Construct a [`Layer`] for the given [`Source`] using the provided
@@ -483,13 +642,7 @@ fn make_layer(source: Source, attrs: Attrs) -> Layer {
 /// `init_from_env`, `init_from_yaml`) and by tests when overriding
 /// configuration values.
 pub fn set(source: Source, attrs: Attrs) {
-    let mut g = LAYERS.write().unwrap();
-    if let Some(l) = g.ordered.iter_mut().find(|l| layer_source(l) == source) {
-        *layer_attrs_mut(l) = attrs;
-    } else {
-        g.ordered.push(make_layer(source, attrs));
-    }
-    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Env < Runtime < File < ClientOverride
+    LAYERS.write().unwrap().set(source, attrs);
 }
 
 /// Insert or update a configuration layer for the given [`Source`].
@@ -510,13 +663,7 @@ pub fn set(source: Source, attrs: Attrs) {
 /// By contrast, [`set`] replaces the entire layer for `source` with
 /// `attrs`, discarding any existing values in that layer.
 pub fn create_or_merge(source: Source, attrs: Attrs) {
-    let mut g = LAYERS.write().unwrap();
-    if let Some(layer) = g.ordered.iter_mut().find(|l| layer_source(l) == source) {
-        layer_attrs_mut(layer).merge(attrs);
-    } else {
-        g.ordered.push(make_layer(source, attrs));
-    }
-    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Env < Runtime < File < ClientOverride
+    LAYERS.write().unwrap().merge(source, attrs);
 }
 
 /// Remove the configuration layer for the given [`Source`], if
@@ -527,8 +674,7 @@ pub fn create_or_merge(source: Source, attrs: Attrs) {
 /// and any remaining layers continue to apply in their normal
 /// priority order.
 pub fn clear(source: Source) {
-    let mut g = LAYERS.write().unwrap();
-    g.ordered.retain(|l| layer_source(l) != source);
+    LAYERS.write().unwrap().clear(source);
 }
 
 /// Return a complete, merged snapshot of the effective configuration
@@ -544,47 +690,7 @@ pub fn clear(source: Source) {
 ///   CONFIG-marked keys, so it's self-contained.
 /// - Keys without `CONFIG` meta are excluded.
 pub fn attrs() -> Attrs {
-    let layers = LAYERS.read().unwrap();
-    let mut merged = Attrs::new();
-
-    // Iterate all declared keys (registered via `declare_attrs!` +
-    // inventory).
-    for info in inventory::iter::<AttrKeyInfo>() {
-        // Skip keys not marked as `CONFIG`.
-        if info.meta.get(CONFIG).is_none() {
-            continue;
-        }
-
-        let name = info.name;
-
-        // Try to resolve from highest -> lowest priority layer.
-        let mut chosen: Option<Box<dyn crate::attrs::SerializableValue>> = None;
-        for layer in &layers.ordered {
-            if let Some(v) = layer_attrs(layer).get_value_by_name(name) {
-                chosen = Some(v.cloned());
-                break;
-            }
-        }
-
-        // If no explicit value, materialize the default if there is
-        // one.
-        let boxed = match chosen {
-            Some(b) => b,
-            None => {
-                if let Some(default) = info.default {
-                    default.cloned()
-                } else {
-                    // No explicit value and no default — skip
-                    // this key.
-                    continue;
-                }
-            }
-        };
-
-        merged.insert_value_by_name_unchecked(name, boxed);
-    }
-
-    merged
+    LAYERS.read().unwrap().materialize()
 }
 
 /// Return a snapshot of the attributes for a specific configuration
@@ -596,12 +702,7 @@ pub fn attrs() -> Attrs {
 /// does **not** affect the underlying layer; use [`set`] or
 /// [`create_or_merge`] to modify layers.
 fn layer_attrs_for(source: Source) -> Attrs {
-    let layers = LAYERS.read().unwrap();
-    if let Some(layer) = layers.ordered.iter().find(|l| layer_source(l) == source) {
-        layer_attrs(layer).clone()
-    } else {
-        Attrs::new()
-    }
+    LAYERS.read().unwrap().layer_attrs_for(source)
 }
 
 /// Snapshot the current attributes in the **Runtime** configuration
@@ -624,8 +725,7 @@ pub fn runtime_attrs() -> Attrs {
 /// Note: Should be called while holding [`global::lock`] in tests, to
 /// ensure no concurrent modifications happen.
 pub fn reset_to_defaults() {
-    let mut g = LAYERS.write().unwrap();
-    g.ordered.clear();
+    LAYERS.write().unwrap().reset();
 }
 
 /// A guard that holds the global configuration lock and provides
@@ -661,23 +761,8 @@ impl ConfigLock {
 
         let mut g = LAYERS.write().unwrap();
 
-        // Ensure TestOverride layer exists.
-        let idx = if let Some(i) = test_override_index(&g) {
-            i
-        } else {
-            g.ordered.push(Layer::TestOverride {
-                attrs: Attrs::new(),
-                stacks: HashMap::new(),
-            });
-            g.ordered.sort_by_key(|l| priority(layer_source(l)));
-            test_override_index(&g).expect("just inserted TestOverride layer")
-        };
-
-        // Mutably access TestOverride's attrs + stacks.
-        let (attrs, stacks) = match &mut g.ordered[idx] {
-            Layer::TestOverride { attrs, stacks } => (attrs, stacks),
-            _ => unreachable!(),
-        };
+        // Ensure TestOverride layer exists and get mutable access.
+        let (attrs, stacks) = g.ensure_test_override();
 
         // Compute env var (if any) for this key once.
         let (env_var, env_str) = if let Some(cfg) = key.attrs().get(crate::CONFIG) {
@@ -736,10 +821,7 @@ impl ConfigLock {
 /// itself is released.
 impl Drop for ConfigLock {
     fn drop(&mut self) {
-        let mut guard = LAYERS.write().unwrap();
-        if let Some(pos) = test_override_index(&guard) {
-            guard.ordered.remove(pos);
-        }
+        LAYERS.write().unwrap().remove_test_override();
     }
 }
 
@@ -774,16 +856,8 @@ pub struct ConfigValueGuard<'a, T: 'static> {
 impl<T: 'static> Drop for ConfigValueGuard<'_, T> {
     fn drop(&mut self) {
         let mut g = LAYERS.write().unwrap();
-        let i = if let Some(i) = test_override_index(&g) {
-            i
-        } else {
+        let Some((attrs, stacks)) = g.test_override_mut() else {
             return;
-        };
-
-        // Access TestOverride internals
-        let (attrs, stacks) = match &mut g.ordered[i] {
-            Layer::TestOverride { attrs, stacks } => (attrs, stacks),
-            _ => unreachable!("TestOverride index points to non-TestOverride layer"),
         };
 
         let key_name = self.key.name();
