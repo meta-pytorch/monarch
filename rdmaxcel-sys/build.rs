@@ -436,7 +436,6 @@ fn compile_gpu_source(
         &gpu_source.to_string_lossy(),
         "-o",
         &obj_path.to_string_lossy(),
-        "-fPIC",
         "-std=c++14",
         &format!("-I{}", compute_include),
         &format!("-I{}", source_dir.display()),
@@ -444,7 +443,11 @@ fn compile_gpu_source(
     ]);
 
     if is_rocm {
-        cmd.args(&["-D__HIP_PLATFORM_AMD__=1", "-DUSE_ROCM=1"]);
+        cmd.args(&[
+            "-fPIC",
+            "-D__HIP_PLATFORM_AMD__=1",
+            "-DUSE_ROCM=1",
+        ]);
     } else {
         cmd.args(&[
             "--compiler-options",
