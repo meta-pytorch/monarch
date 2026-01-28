@@ -244,7 +244,12 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     type Params: RemoteMessage;
 
     /// Creates a new actor instance given its instantiation parameters.
-    async fn new(params: Self::Params) -> anyhow::Result<Self>;
+    /// The `spawn_point` is the point in the mesh at which the actor is being spawned,
+    /// if spawned as part of a cast operation.
+    async fn new(
+        params: Self::Params,
+        spawn_point: Option<ndslice::view::Point>,
+    ) -> anyhow::Result<Self>;
 
     /// A type-erased entry point to spawn this actor. This is
     /// primarily used by hyperactor's remote actor registration
@@ -254,12 +259,13 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         proc: &Proc,
         name: &str,
         serialized_params: Data,
+        spawn_point: Option<ndslice::view::Point>,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
             let params = bincode::deserialize(&serialized_params)?;
-            let actor = Self::new(params).await?;
+            let actor = Self::new(params, spawn_point).await?;
             let handle = proc.spawn(&name, actor)?;
             // We return only the ActorId, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
@@ -288,7 +294,10 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
 impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
+    async fn new(
+        _params: Self::Params,
+        _spawn_point: Option<ndslice::view::Point>,
+    ) -> anyhow::Result<Self> {
         Ok(Default::default())
     }
 }

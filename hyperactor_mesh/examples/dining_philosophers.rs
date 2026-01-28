@@ -29,6 +29,7 @@ use hyperactor_mesh::proc_mesh::global_root_client;
 use hyperactor_mesh::v1::ActorMesh;
 use hyperactor_mesh::v1::ActorMeshRef;
 use hyperactor_mesh::v1::host_mesh::HostMesh;
+use ndslice::Point;
 use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
@@ -91,7 +92,7 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _spawn_point: Option<Point>) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start

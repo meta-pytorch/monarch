@@ -264,6 +264,7 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
 
     async fn new(
         _params: Self::Params,
+        _spawn_point: Option<Point>,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Err(anyhow::anyhow!("test failure"))
     }
@@ -333,6 +334,7 @@ impl hyperactor::RemoteSpawn for WrapperActor {
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
+        _spawn_point: Option<Point>,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Ok(Self {
             proc_mesh,

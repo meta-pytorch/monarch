@@ -82,6 +82,7 @@ use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
+use ndslice::Point;
 use ndslice::extent;
 use ndslice::selection;
 use serde::Deserialize;
@@ -129,7 +130,10 @@ impl Actor for ParameterServerActor {
 impl RemoteSpawn for ParameterServerActor {
     type Params = (ActorRef<RdmaManagerActor>, usize);
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(
+        _params: Self::Params,
+        _spawn_point: Option<Point>,
+    ) -> Result<Self, anyhow::Error> {
         let (owner_ref, worker_world_size) = _params;
         tracing::info!("creating parameter server actor");
         let weights_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
@@ -265,7 +269,10 @@ impl Actor for WorkerActor {
 impl RemoteSpawn for WorkerActor {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(
+        _params: Self::Params,
+        _spawn_point: Option<Point>,
+    ) -> Result<Self, anyhow::Error> {
         let weights_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         let local_gradients = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         Ok(Self {

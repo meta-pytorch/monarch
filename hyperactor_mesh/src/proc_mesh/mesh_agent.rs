@@ -53,6 +53,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::actor_mesh::CAST_ACTOR_MESH_ID;
+use crate::comm::multicast::CastInfo;
 use crate::proc_mesh::SupervisionEventState;
 use crate::reference::ActorMeshId;
 use crate::resource;
@@ -363,7 +364,13 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         );
         let actor_id = match self
             .remote
-            .gspawn(&self.proc, &actor_type, &actor_name, params_data)
+            .gspawn(
+                &self.proc,
+                &actor_type,
+                &actor_name,
+                params_data,
+                Some(cx.cast_point()),
+            )
             .await
         {
             Ok(id) => id,
@@ -518,7 +525,7 @@ wirevalue::register_type!(ActorState);
 impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         create_or_update: resource::CreateOrUpdate<ActorSpec>,
     ) -> anyhow::Result<()> {
         if self.actor_states.contains_key(&create_or_update.name) {
@@ -558,6 +565,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
                         &actor_type,
                         &create_or_update.name.to_string(),
                         params_data,
+                        Some(cx.cast_point()),
                     )
                     .await,
                 stopped: false,

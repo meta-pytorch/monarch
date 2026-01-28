@@ -655,12 +655,15 @@ mod tests {
         let workers = try_join_all((0..world_size).map(async |rank| {
             proc.spawn(
                 &format!("worker{}", rank),
-                WorkerActor::new(WorkerParams {
-                    world_size,
-                    rank,
-                    device_index: Some(rank.try_into()?),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size,
+                        rank,
+                        device_index: Some(rank.try_into()?),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    None,
+                )
                 .await
                 .unwrap(),
             )
@@ -839,12 +842,15 @@ mod tests {
         let handle1 = proc
             .spawn(
                 "worker1",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    None,
+                )
                 .await
                 .unwrap(),
             )
@@ -852,12 +858,15 @@ mod tests {
         let handle2 = proc
             .spawn(
                 "worker2",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 1,
-                    device_index: Some(1),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 1,
+                        device_index: Some(1),
+                        controller_actor: controller_ref,
+                    },
+                    None,
+                )
                 .await
                 .unwrap(),
             )
@@ -1018,12 +1027,15 @@ mod tests {
         let handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref,
+                    },
+                    None,
+                )
                 .await
                 .unwrap(),
             )

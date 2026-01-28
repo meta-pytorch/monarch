@@ -14,6 +14,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
+use ndslice::Point;
+
 use crate::Actor;
 use crate::Data;
 use crate::proc::Proc;
@@ -66,6 +68,7 @@ pub struct SpawnableActor {
         &Proc,
         &str,
         Data,
+        Option<Point>,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>>,
 
     /// A function to retrieve the type id of the actor itself. This is
@@ -122,12 +125,13 @@ impl Remote {
         actor_type: &str,
         actor_name: &str,
         params: Data,
+        spawn_point: Option<Point>,
     ) -> Result<ActorId, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn)(proc, actor_name, params).await
+        (entry.gspawn)(proc, actor_name, params, spawn_point).await
     }
 }
 
@@ -154,7 +158,7 @@ mod tests {
     impl RemoteSpawn for MyActor {
         type Params = bool;
 
-        async fn new(params: bool) -> Result<Self, anyhow::Error> {
+        async fn new(params: bool, _spawn_point: Option<Point>) -> Result<Self, anyhow::Error> {
             if params {
                 Ok(MyActor)
             } else {
@@ -186,6 +190,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
                 bincode::serialize(&true).unwrap(),
+                None,
             )
             .await
             .unwrap();
@@ -196,6 +201,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
                 bincode::serialize(&false).unwrap(),
+                None,
             )
             .await
             .unwrap_err();

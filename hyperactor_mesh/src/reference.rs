@@ -250,6 +250,7 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor_mesh_macros::sel;
     use ndslice::Extent;
+    use ndslice::Point;
     use ndslice::extent;
 
     use super::*;
@@ -295,7 +296,10 @@ mod tests {
     impl hyperactor::RemoteSpawn for MeshPingPongActor {
         type Params = MeshPingPongActorParams;
 
-        async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+        async fn new(
+            params: Self::Params,
+            _spawn_point: Option<Point>,
+        ) -> Result<Self, anyhow::Error> {
             Ok(Self {
                 mesh_ref: ActorMeshRef::attest(params.mesh_id, params.shape, params.comm_actor_ref),
             })
