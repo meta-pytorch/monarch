@@ -12,10 +12,8 @@
 //! and CUDA installation detection used by various build scripts.
 
 use std::env;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 use glob::glob;
 use which::which;

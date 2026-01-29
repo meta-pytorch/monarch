@@ -9,6 +9,14 @@
 #pragma once
 #include <cuda.h>
 
+// ROCm/HIP compatibility: hipify_torch converts most CUDA->HIP automatically,
+// but these CUDA Driver API types/constants are not in hipify's mappings.
+// We typedef them to their HIP equivalents so the code compiles on ROCm.
+#ifdef USE_ROCM
+  typedef hipMemRangeHandleType CUmemRangeHandleType;
+  #define CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD hipMemRangeHandleTypeDmaBufFd
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

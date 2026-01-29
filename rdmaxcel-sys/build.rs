@@ -320,15 +320,9 @@ fn hipify_sources(src_dir: &Path, hip_dir: &Path, manifest_dir: &str) {
         .expect("Failed to find project root")
         .to_path_buf();
 
-    // Use custom mapping file for RDMA-specific conversions
-    let custom_map = project_root.join(".hipify/rdmaxcel_custom_map.json");
-    let custom_map_opt = if custom_map.exists() {
-        Some(custom_map.as_path())
-    } else {
-        None
-    };
-
-    build_utils::rocm::run_hipify_torch(&project_root, &source_files, hip_dir, custom_map_opt)
+    // No custom mapping needed - CUDA Driver API differences handled via #ifdef USE_ROCM
+    // in the source files (driver_api.h, driver_api.cpp, rdmaxcel.cpp)
+    build_utils::rocm::run_hipify_torch(&project_root, &source_files, hip_dir, None)
         .expect("hipify_torch failed");
 
     println!("cargo:warning=Hipification complete");
