@@ -9,16 +9,18 @@
 from typing import Any, Literal
 
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
-from monarch._rust_bindings.monarch_hyperactor.mailbox import PortRef
+from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortRef
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import Supervisor
+from monarch._rust_bindings.monarch_hyperactor.value_mesh import ValueMesh
 
 def value_collector(
     method_name: str,
     supervisor: Supervisor | None,
     instance: Instance,
     qualified_endpoint_name: str | None,
-    adverb: Literal["call_one"],
+    adverb: Literal["call_one", "choose"],
 ) -> tuple[PortRef, PythonTask[Any]]:
     """
     Create a collector for a single response.
@@ -28,7 +30,7 @@ def value_collector(
         supervisor: Optional supervisor for monitoring actor health.
         instance: Actor instance for opening ports.
         qualified_endpoint_name: Optional full endpoint name for error messages.
-        adverb: The type of endpoint operation ("call_one") for metrics.
+        adverb: The type of endpoint operation ("call_one", "choose") for metrics.
 
     Returns:
         A tuple of (PortRef, PythonTask) where:

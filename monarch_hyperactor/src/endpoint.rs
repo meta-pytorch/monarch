@@ -7,6 +7,9 @@
  */
 
 use std::cell::Cell;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use hyperactor::Instance;
 use hyperactor::clock::Clock;
@@ -27,10 +30,15 @@ use crate::mailbox::PythonPortRef;
 use crate::metrics::ENDPOINT_CALL_ONE_ERROR;
 use crate::metrics::ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CALL_ONE_THROUGHPUT;
+use crate::metrics::ENDPOINT_CHOOSE_ERROR;
+use crate::metrics::ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM;
+use crate::metrics::ENDPOINT_CHOOSE_THROUGHPUT;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
+use crate::shape::PyExtent;
 use crate::supervision::PySupervisor;
 use crate::supervision::SupervisionError;
+use crate::value_mesh::PyValueMesh;
 
 py_global!(pickle_unflatten, "monarch._src.actor.pickle", "unflatten");
 py_global!(make_future, "monarch._src.actor.future", "Future");
@@ -83,13 +91,15 @@ fn unflatten<'py>(
 #[derive(Clone, Copy, Debug)]
 enum EndpointAdverb {
     CallOne,
+    Choose,
 }
 
 fn to_endpoint_adverb(adverb: &str) -> PyResult<EndpointAdverb> {
     match adverb {
         "call_one" => Ok(EndpointAdverb::CallOne),
+        "choose" => Ok(EndpointAdverb::Choose),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "only literal 'call_one' expected to be received from Python. got: {}",
+            "only literals ['call_one', 'choose'] expected to be received from Python. got: {}",
             adverb
         ))),
     }
@@ -120,6 +130,9 @@ impl EndpointTelemetry {
         match adverb {
             EndpointAdverb::CallOne => {
                 ENDPOINT_CALL_ONE_THROUGHPUT.add(1, attributes);
+            }
+            EndpointAdverb::Choose => {
+                ENDPOINT_CHOOSE_THROUGHPUT.add(1, attributes);
             }
             _ => {}
         }
@@ -153,6 +166,9 @@ impl Drop for EndpointTelemetry {
             EndpointAdverb::CallOne => {
                 ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
             }
+            EndpointAdverb::Choose => {
+                ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
+            }
             _ => {}
         }
 
@@ -160,6 +176,9 @@ impl Drop for EndpointTelemetry {
             match self.adverb {
                 EndpointAdverb::CallOne => {
                     ENDPOINT_CALL_ONE_ERROR.add(1, attributes);
+                }
+                EndpointAdverb::Choose => {
+                    ENDPOINT_CHOOSE_ERROR.add(1, attributes);
                 }
                 _ => {}
             }
