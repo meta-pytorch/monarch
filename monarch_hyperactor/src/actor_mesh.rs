@@ -539,6 +539,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         )))
     }
 
+    fn region(&self) -> PyResult<PyRegion> {
+        Ok(ndslice::view::Ranked::region(&self.mesh_ref())
+            .clone()
+            .into())
+    }
+
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         let (slf, instance) = monarch_with_gil_blocking(|_py| (self.clone(), instance.clone()));
         match slf {
@@ -556,12 +562,6 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.mesh_ref().__reduce__(py)
-    }
-
-    fn region(&self) -> PyResult<PyRegion> {
-        Ok(ndslice::view::Ranked::region(&self.mesh_ref())
-            .clone()
-            .into())
     }
 }
 

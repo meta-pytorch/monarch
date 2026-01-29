@@ -86,6 +86,25 @@ def configure_in_memory_namespace(name: str) -> None:
     """
     ...
 
+def configure_smc_namespace(name: str, tier: str | None = None) -> None:
+    """
+    Configure the global namespace with an SMC backend.
+    This is used for production deployments where meshes need to be
+    discovered across different processes and hosts.
+
+    Args:
+        name: The namespace name (e.g., "monarch" or "my.namespace")
+        tier: Optional SMC tier name. If not provided, uses the default tier
+              from configuration.
+
+    Raises:
+        RuntimeError: If the global namespace has already been configured
+
+    Note:
+        This function is only available in fbcode builds.
+    """
+    ...
+
 def is_global_namespace_configured() -> bool:
     """
     Check if the global namespace has been configured.
