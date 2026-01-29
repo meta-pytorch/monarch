@@ -230,7 +230,9 @@ where
 }
 
 impl PyPythonTask {
-    pub(crate) fn take_task(
+    /// Take the inner future from this PythonTask.
+    /// Can only be called once; subsequent calls will fail.
+    pub fn take_task(
         &mut self,
     ) -> PyResult<Pin<Box<dyn Future<Output = Result<Py<PyAny>, PyErr>> + Send + 'static>>> {
         self.inner
