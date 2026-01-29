@@ -309,6 +309,19 @@ class ProcMesh(MeshTrait):
         return Future(coro=task())
 
     @property
+    def name(self) -> Future[str]:
+        """
+        Future completes with the name of the ProcMesh when initialized.
+        """
+        pm: Shared[HyProcMesh] = self._proc_mesh
+
+        async def task() -> str:
+            hy_proc_mesh = await pm
+            return hy_proc_mesh.name
+
+        return Future(coro=task())
+
+    @property
     def host_mesh(self) -> "HostMesh":
         if self.extent.nelements != 1:
             raise NotImplementedError(
@@ -446,6 +459,44 @@ class ProcMesh(MeshTrait):
         # Invoke registered spawn callbacks
         for callback in _proc_mesh_spawn_callbacks:
             callback(pm)
+
+        return pm
+
+    @classmethod
+    def from_ref(
+        cls,
+        hy_proc_mesh: HyProcMesh,
+        host_mesh: "HostMesh",
+    ) -> "ProcMesh":
+        """
+        Create a ProcMesh wrapper from a loaded HyProcMesh reference.
+
+        This is used when loading a ProcMesh from the namespace. The loaded
+        mesh can be used to spawn actors, but has some limitations:
+        - No setup function execution
+        - No log streaming configuration (uses host_mesh settings)
+        - Controller is attached to current context
+
+        Args:
+            hy_proc_mesh: The Rust ProcMesh reference loaded from namespace.
+            host_mesh: The parent HostMesh wrapper (also loaded from namespace or provided).
+
+        Returns:
+            A ProcMesh wrapper that can be used to spawn actors.
+        """
+        region = hy_proc_mesh.region
+        pm = cls(
+            Shared.from_value(hy_proc_mesh),
+            host_mesh,
+            region,
+            region,
+            None,
+        )
+
+        # Attach to the current context's controller
+        instance = context().actor_instance
+        pm._controller_controller = instance._controller_controller
+        instance._add_child(pm)
 
         return pm
 

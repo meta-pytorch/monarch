@@ -109,6 +109,9 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>>;
+
+    /// Get the region of this actor mesh.
+    fn region(&self) -> PyResult<PyRegion>;
 }
 
 /// This just forwards to the rust trait that can implement these bindings
@@ -186,6 +189,11 @@ impl PythonActorMesh {
 
     fn initialized(&self) -> PyResult<PyPythonTask> {
         self.inner.initialized()
+    }
+
+    #[getter]
+    fn region(&self) -> PyResult<PyRegion> {
+        self.inner.region()
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -419,6 +427,15 @@ impl ActorMeshProtocol for AsyncActorMesh {
             Ok(None::<()>)
         })
     }
+
+    fn region(&self) -> PyResult<PyRegion> {
+        match self.mesh.peek().cloned() {
+            Some(mesh) => mesh?.region(),
+            None => Err(PyRuntimeError::new_err(
+                "Cannot get region: actor mesh is not yet initialized",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -512,10 +529,20 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
+        assert!(
+            region
+                .as_inner()
+                .is_subset(ndslice::view::Ranked::region(&self.mesh_ref()))
+        );
         Ok(Box::new(PythonActorMeshImpl::new_ref(
             self.mesh_ref().sliced(region.as_inner().clone()),
         )))
+    }
+
+    fn region(&self) -> PyResult<PyRegion> {
+        Ok(ndslice::view::Ranked::region(&self.mesh_ref())
+            .clone()
+            .into())
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
@@ -589,7 +616,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     /// Stop the actor mesh asynchronously.
-    fn stop(&self, _instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
+    fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(
             "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))
@@ -609,6 +636,10 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         let from_bytes = module.getattr("py_actor_mesh_from_bytes").unwrap();
         Ok((from_bytes, py_bytes))
     }
+
+    fn region(&self) -> PyResult<PyRegion> {
+        Ok(Ranked::region(self).clone().into())
+    }
 }
 
 #[pymethods]
@@ -619,6 +650,56 @@ impl PythonActorMeshImpl {
             .get(rank)
             .map(|r| ActorRef::into_actor_id(r.clone()))
             .map(PyActorId::from))
+    }
+
+    #[getter]
+    fn region(&self) -> PyRegion {
+        ndslice::view::Ranked::region(&self.mesh_ref())
+            .clone()
+            .into()
+    }
+
+    fn cast(
+        &self,
+        message: &PythonMessage,
+        selection: &str,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
+        let sel = to_hy_sel(selection)?;
+        <Self as ActorMeshProtocol>::cast(self, message.clone(), sel, instance)
+    }
+
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMeshImpl> {
+        let mesh_ref = self.mesh_ref();
+        assert!(
+            region
+                .as_inner()
+                .is_subset(ndslice::view::Ranked::region(&mesh_ref))
+        );
+        Ok(PythonActorMeshImpl::new_ref(
+            mesh_ref.sliced(region.as_inner().clone()),
+        ))
+    }
+
+    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
+        <Self as ActorMeshProtocol>::supervision_event(self, instance)
+    }
+
+    fn start_supervision(
+        &self,
+        instance: &PyInstance,
+        supervision_display_name: String,
+    ) -> PyResult<()> {
+        <Self as ActorMeshProtocol>::start_supervision(self, instance, supervision_display_name)
+    }
+
+    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
+        <Self as ActorMeshProtocol>::stop(self, instance, reason)
+    }
+
+    fn initialized(&self) -> PyResult<PyPythonTask> {
+        // PythonActorMeshImpl doesn't have an async initialization; it's already initialized
+        PyPythonTask::new(async { Ok(None::<()>) })
     }
 
     fn __repr__(&self) -> String {
