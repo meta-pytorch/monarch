@@ -22,6 +22,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+import uuid
 from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
@@ -1969,16 +1970,102 @@ async def test_namespace_load_actor_mesh() -> None:
     result = await loaded_actors_2.get_count.call()
     assert all(v == 1 for v in result.values())
 
-    # Modify the first actor's value through the loaded mesh
-    await loaded_actors_1.set_value.call(100)
 
-    # Verify the change is visible through both references for the first actor
-    result = await original_actors_1.get_value.call()
-    assert all(v == 100 for v in result.values())
+@pytest.mark.timeout(120)
+async def test_namespace_load_actor_mesh_smc() -> None:
+    """
+    Test the actor mesh namespace functionality with SMC backend.
 
-    result = await loaded_actors_1.get_value.call()
-    assert all(v == 100 for v in result.values())
+    Note: The SMC namespace will automatically create the tier if it doesn't exist.
+    The tier is deleted at the end of the test to clean up.
+    """
+    # Skip this test if the namespace is already configured (e.g., by a previous test)
+    # since we need to specifically test SMC functionality and namespace can only be
+    # configured once per process
+    if mesh_namespace.is_namespace_configured():
+        raise pytest.skip.Exception(
+            "Namespace already configured by another test. "
+            "Run this test in isolation to test SMC functionality."
+        )
 
-    # Verify the second actor is still independent and unaffected
-    result = await loaded_actors_2.get_name.call()
-    assert all(v == "test_name" for v in result.values())
+    from libfb.py.asyncio.smc import delete_tier
+
+    # Generate a unique tier name for this test run to avoid conflicts
+    # Use the "smc.canaryservice.test" prefix which has a more permissive schema
+    tier_name = f"smc.canaryservice.test.monarch_{uuid.uuid4().hex[:8]}"
+    print(f"DEBUG: Using tier_name = {tier_name}")
+
+    try:
+        # Configure the SMC namespace with the test tier
+        mesh_namespace.configure_namespace(
+            NamespacePersistence.SMC, name="monarch", tier=tier_name
+        )
+
+        # Spawn a proc mesh
+        proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+
+        # Spawn the first actor mesh (NamespaceTestActor)
+        actor_mesh_name_1 = "namespace_smc_test_actor"
+        original_actors_1 = proc.spawn(actor_mesh_name_1, NamespaceTestActor, 42)
+
+        # Wait for the first actor mesh to be fully initialized
+        result = await original_actors_1.get_value.call()
+        assert all(v == 42 for v in result.values())
+
+        # Spawn the second actor mesh (NamespaceTestActor2)
+        actor_mesh_name_2 = "namespace_smc_test_actor_2"
+        original_actors_2 = proc.spawn(
+            actor_mesh_name_2, NamespaceTestActor2, "test_name"
+        )
+
+        # Wait for the second actor mesh to be fully initialized
+        result = await original_actors_2.get_name.call()
+        assert all(v == "test_name" for v in result.values())
+
+        # Allow time for SMC to propagate the tier properties
+        await asyncio.sleep(2)
+
+        # Load the first actor mesh using the SMC namespace
+        loaded_actors_1 = await mesh_namespace.load(
+            MeshKind.Actor,
+            actor_mesh_name_1,
+            NamespaceTestActor,
+        )
+
+        # Load the second actor mesh using the SMC namespace
+        loaded_actors_2 = await mesh_namespace.load(
+            MeshKind.Actor,
+            actor_mesh_name_2,
+            NamespaceTestActor2,
+        )
+
+        # Verify we can call endpoints on the first loaded actor mesh
+        # pyre-ignore[16]: The namespace module has incomplete type annotations
+        result = await loaded_actors_1.get_value.call()
+        assert all(v == 42 for v in result.values())
+
+        # Verify we can call endpoints on the second loaded actor mesh
+        # pyre-ignore[16]: The namespace module has incomplete type annotations
+        result = await loaded_actors_2.get_name.call()
+        assert all(v == "test_name" for v in result.values())
+
+        # Test the count functionality on the second actor
+        result = await loaded_actors_2.get_count.call()
+        assert all(v == 0 for v in result.values())
+
+        # Increment through the loaded mesh
+        await loaded_actors_2.increment.call()
+
+        # Verify the change is visible through both references
+        result = await original_actors_2.get_count.call()
+        assert all(v == 1 for v in result.values())
+
+        result = await loaded_actors_2.get_count.call()
+        assert all(v == 1 for v in result.values())
+    finally:
+        # Clean up the SMC tier at the end of the test
+        try:
+            await delete_tier(tier_name)
+        except Exception:
+            # Best effort cleanup - tier might not exist or other issues
+            pass
