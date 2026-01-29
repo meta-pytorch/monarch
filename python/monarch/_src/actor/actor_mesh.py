@@ -696,13 +696,16 @@ class ActorEndpoint(Endpoint[P, R]):
     def _call_name(self) -> MethodSpecifier:
         return self._name
 
+    def _get_extent(self) -> Extent:
+        return Extent(self._shape.labels, self._shape.ndslice.sizes)
+
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
         port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
 
@@ -718,8 +721,6 @@ class ActorEndpoint(Endpoint[P, R]):
         )
 
         self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
-        shape = self._shape
-        return Extent(shape.labels, shape.ndslice.sizes)
 
     def _full_name(self) -> str:
         return f"{self._mesh_name}.{self._get_method_name()}()"
