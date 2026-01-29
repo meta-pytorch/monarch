@@ -10,15 +10,14 @@
 DDP on Kubernetes Using Monarch
 ===============================
 
-This tutorial extends the :doc:`../spmd_ddp` tutorial to run PyTorch's Distributed
-Data Parallel (DDP) on Kubernetes using Monarch's ``KubernetesJob``.
+This tutorial extends the :doc:`spmd_ddp` tutorial to run PyTorch's Distributed
+Data Parallel (DDP) on Kubernetes using Monarch's ``SPMDActor`` and ``KubernetesJob``.
 
 This example shows:
 
 - How to provision GPU workers on Kubernetes using the MonarchMesh CRD
 - How to connect to Kubernetes pods using ``KubernetesJob``
-- How to set up torch.distributed environment variables across pods
-- How to run multi-node DDP training on Kubernetes
+- How to run multi-node DDP training using ``SPMDActor``
 
 Prerequisites
 -------------
@@ -68,122 +67,76 @@ Deploy with::
 
 See the `complete manifest on GitHub <https://github.com/meta-pytorch/monarch/tree/main/docs/source/examples/ddp/manifests>`_
 including RBAC configuration and controller pod.
+
+Training Script
+---------------
+
+The training script (``train.py``) is a standard PyTorch DDP script::
+
+    import os
+
+    import torch
+    import torch.distributed as dist
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+
+    def main():
+        dist.init_process_group("nccl")
+        rank = dist.get_rank()
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+
+        model = nn.Linear(10, 1).cuda()
+        ddp_model = DDP(model)
+
+        optimizer = optim.SGD(ddp_model.parameters(), lr=0.01)
+
+        for step in range(5):
+            inputs = torch.randn(4, 10).cuda()
+            outputs = ddp_model(inputs)
+            loss = outputs.sum()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            print(f"[Rank {rank}] Step {step} loss={loss.item()}")
+
+        dist.destroy_process_group()
+
+
+    if __name__ == "__main__":
+        main()
+
+This script:
+
+- Initializes NCCL process group (environment variables set by ``SPMDActor``)
+- Creates a simple linear model wrapped in DDP
+- Runs 5 training steps
+- Cleans up the process group
 """
 
 # %%
 # Imports
 # -------
-# We import the standard PyTorch DDP components along with Monarch's Kubernetes
-# support and distributed environment setup utilities.
+# We import Monarch's Kubernetes job support and SPMDActor.
 
 import asyncio
-import os
 
-import torch
-import torch.distributed as dist
-import torch.nn as nn
-import torch.optim as optim
-from monarch.actor import Actor, current_rank, endpoint
 from monarch.job.kubernetes import KubernetesJob
-from monarch.spmd import setup_torch_elastic_env_async
+from monarch.spmd import SPMDActor
 from monarch.tools.network import AddrType
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 
-# %%
-# Model Definition
-# ----------------
-# We use a simple toy model, identical to the local DDP example.
-
-
-class ToyModel(nn.Module):
-    """A simple toy model for demonstration purposes."""
-
-    def __init__(self):
-        super(ToyModel, self).__init__()
-        self.net1 = nn.Linear(10, 10)
-        self.relu = nn.ReLU()
-        self.net2 = nn.Linear(10, 5)
-
-    def forward(self, x):
-        return self.net2(self.relu(self.net1(x)))
-
-
-# %%
-# DDP Actor
-# ---------
-# The ``DDPActor`` wraps PyTorch DDP functionality. Unlike the local example,
-# we use ``nccl`` backend for GPU communication and read environment variables
-# set by ``setup_torch_elastic_env_async``.
-
-
-class DDPActor(Actor):
-    """Actor that wraps PyTorch DDP functionality for Kubernetes.
-
-    This actor reads distributed environment from environment variables
-    (RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT) that are
-    configured by Monarch's ``setup_torch_elastic_env_async``.
-    """
-
-    def __init__(self):
-        self.rank = current_rank().rank
-
-    def _rprint(self, msg):
-        """Helper method to print with rank information."""
-        print(f"rank={self.rank} {msg}", flush=True)
-
-    @endpoint
-    async def setup(self):
-        """Initialize the PyTorch distributed process group.
-
-        Uses NCCL backend for efficient GPU-to-GPU communication.
-        Environment variables are set by setup_torch_elastic_env_async.
-        """
-        self._rprint("Initializing torch distributed")
-
-        world_size = int(os.environ["WORLD_SIZE"])
-        rank = int(os.environ["RANK"])
-
-        dist.init_process_group("nccl", rank=rank, world_size=world_size)
-        self._rprint("Finished initializing torch distributed")
-
-    @endpoint
-    async def cleanup(self):
-        """Clean up the PyTorch distributed process group."""
-        self._rprint("Cleaning up torch distributed")
-        dist.destroy_process_group()
-
-    @endpoint
-    async def demo_basic(self):
-        """Run a basic DDP training example."""
-        self._rprint("Running basic DDP example")
-
-        local_rank = int(os.environ["LOCAL_RANK"])
-        self._rprint(f"local_rank={local_rank}")
-
-        # Create model and move to GPU
-        model = ToyModel().to(local_rank)
-        ddp_model = DDP(model, device_ids=[local_rank])
-
-        loss_fn = nn.MSELoss()
-        optimizer = optim.SGD(ddp_model.parameters(), lr=0.001)
-
-        # Forward pass
-        optimizer.zero_grad()
-        outputs = ddp_model(torch.randn(20, 10).to(local_rank))
-        labels = torch.randn(20, 5).to(local_rank)
-
-        # Backward pass
-        loss_fn(outputs, labels).backward()
-        optimizer.step()
-
-        self._rprint("Finished running basic DDP example")
+# Path to train.py on worker pods (must be copied manually, see instructions below)
+TRAIN_SCRIPT = "/tmp/train.py"
 
 
 # %%
 # Main Function
 # -------------
-# The main function connects to Kubernetes pods and runs DDP training.
+# The main function connects to Kubernetes pods and runs DDP training
+# using ``SPMDActor`` to execute the training script.
 
 
 async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddpmesh"):
@@ -220,30 +173,23 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
     proc_mesh = host_mesh.spawn_procs({"gpus": gpus_per_host})
 
     # %%
-    # Setup Distributed Environment
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # Configure environment variables for torch.distributed:
-    #
-    # - ``RANK``: Global rank (0 to world_size-1)
-    # - ``LOCAL_RANK``: Rank within the node (0 to gpus_per_host-1)
-    # - ``WORLD_SIZE``: Total number of processes
-    # - ``MASTER_ADDR``: Address of rank 0 for rendezvous
-    # - ``MASTER_PORT``: Port for rendezvous
-    #
+    # Run DDP Training with SPMDActor
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # Spawn ``SPMDActor`` on the process mesh. The actor configures torch elastic
+    # environment variables (RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT)
+    # and executes the training script.
+
+    spmd_actors = proc_mesh.spawn("_SPMDActor", SPMDActor)
+
+    # Get master address/port from first actor (all coordinates = 0)
     # We use IPv4 addresses since short hostnames may not resolve across pods.
+    first_values = dict.fromkeys(proc_mesh._labels, 0)
+    master_addr, master_port = await spmd_actors.slice(
+        **first_values
+    ).get_host_port.call_one(AddrType.IPv4)
 
-    await setup_torch_elastic_env_async(proc_mesh, use_ipaddr=AddrType.IPv4)
-
-    # %%
-    # Run DDP Training
-    # ~~~~~~~~~~~~~~~~
-    # Spawn the DDP actor on the process mesh and run the training steps.
-
-    ddp_actor = proc_mesh.spawn("ddp_actor", DDPActor)
-
-    await ddp_actor.setup.call()
-    await ddp_actor.demo_basic.call()
-    await ddp_actor.cleanup.call()
+    # Execute training script across the mesh
+    await spmd_actors.main.call(master_addr, master_port, [TRAIN_SCRIPT])
 
     print("=" * 60)
     print("DDP example completed successfully!")
@@ -266,16 +212,23 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
 #
 #        kubectl get pods -n monarch-tests -l app.kubernetes.io/name=monarch-worker
 #
-# 3. Run from the controller pod::
+# 3. Copy train.py to each worker pod (in production, code is typically baked into
+#    the image, git synced, or loaded from shared storage)::
+#
+#        for pod in $(kubectl get pods -n monarch-tests -l app.kubernetes.io/name=monarch-worker -o name); do
+#            kubectl cp train.py monarch-tests/${pod#pod/}:/tmp/train.py
+#        done
+#
+# 4. Run from the controller pod::
 #
 #        kubectl exec -it ddp-controller -n monarch-tests -- \
 #            python kubernetes_ddp.py
 #
-# 4. View worker logs::
+# 5. View worker logs::
 #
 #        kubectl logs -n monarch-tests -l app.kubernetes.io/name=monarch-worker
 #
-# 5. Clean up::
+# 6. Clean up::
 #
 #        kubectl delete -f manifests/ddp_mesh.yaml
 #
