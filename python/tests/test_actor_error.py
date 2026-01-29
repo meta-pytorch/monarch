@@ -25,8 +25,10 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch._src.actor import namespace as actor_namespace
 from monarch._src.actor.actor_mesh import ActorMesh, context
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
+from monarch._src.actor.namespace import MeshKind, NamespacePersistence
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import Actor, ActorError, endpoint, MeshFailure
 from monarch.config import configured, parametrize_config
@@ -1536,3 +1538,72 @@ async def test_gil_stall():
         f"[{timestamp()}] all requests completed, gathering took {gather_end - gather_start:.3f} seconds",
         file=sys.stderr,
     )
+
+
+@pytest.mark.parametrize(
+    "mesh",
+    [spawn_procs_on_fake_host, spawn_procs_on_this_host],
+    ids=["local_proc_mesh", "proc_mesh"],
+)
+@pytest.mark.parametrize(
+    "error_actor_cls",
+    [ErrorActor, SyncErrorActor],
+)
+@pytest.mark.timeout(30)
+async def test_supervision_with_mesh_namespace(mesh, error_actor_cls) -> None:
+    """Test that actor mesh refs loaded from namespace also see supervision errors.
+
+    This test verifies that when an actor mesh is loaded from the namespace
+    and the original actor experiences a supervision error, the loaded ref
+    also sees the SupervisionError when calling endpoints.
+    """
+    # Configure the in-memory namespace (for testing)
+    if not actor_namespace.is_namespace_configured():
+        actor_namespace.configure_namespace(NamespacePersistence.IN_MEMORY)
+
+    # This test doesn't want the client process to crash during testing.
+    with override_fault_hook():
+        proc = mesh({"gpus": 1})
+
+        # Spawn the error actor
+        actor_mesh_name = "error_actor_for_namespace_test"
+        error_actor = proc.spawn(actor_mesh_name, error_actor_cls)
+
+        # First check() call should succeed
+        await error_actor.check.call()
+
+        # Load the actor mesh reference from the namespace
+        loaded_actor = await actor_namespace.load(
+            MeshKind.Actor,
+            actor_mesh_name,
+            error_actor_cls,
+        )
+
+        # Verify loaded ref works before any failure
+        # pyre-ignore[16]: The namespace module has incomplete type annotations
+        await loaded_actor.check.call()
+
+        # Trigger a supervision error via the original actor reference
+        with pytest.raises(
+            SupervisionError,
+            match=".*Actor .* exited because of the following reason",
+        ):
+            await error_actor.fail_with_supervision_error.call_one()
+
+        # Subsequent calls on the original ref should fail with a health state error
+        with pytest.raises(
+            RuntimeError,
+            match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+        ):
+            await error_actor.check.call()
+
+        # The loaded ref from namespace should also see the supervision error
+        with pytest.raises(
+            RuntimeError,
+            match="Actor .* (is unhealthy with reason|exited because of the following reason)",
+        ):
+            await loaded_actor.check.call()
+
+        # The above check call is undeliverable and might get returned to the client
+        # later on. We need to wait for it to be processed.
+        await asyncio.sleep(5)

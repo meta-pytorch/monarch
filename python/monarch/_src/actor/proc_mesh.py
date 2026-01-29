@@ -309,6 +309,19 @@ class ProcMesh(MeshTrait):
         return Future(coro=task())
 
     @property
+    def name(self) -> Future[str]:
+        """
+        Future completes with the name of the ProcMesh when initialized.
+        """
+        pm: Shared[HyProcMesh] = self._proc_mesh
+
+        async def task() -> str:
+            hy_proc_mesh = await pm
+            return hy_proc_mesh.name
+
+        return Future(coro=task())
+
+    @property
     def host_mesh(self) -> "HostMesh":
         if self.extent.nelements != 1:
             raise NotImplementedError(

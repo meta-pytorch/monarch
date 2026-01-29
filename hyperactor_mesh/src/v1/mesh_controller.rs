@@ -51,6 +51,8 @@ use crate::v1::Name;
 use crate::v1::ValueMesh;
 use crate::v1::actor_mesh::ActorMeshRef;
 use crate::v1::host_mesh::HostMeshRef;
+use crate::v1::namespace::Namespace;
+use crate::v1::namespace::global_namespace;
 use crate::v1::proc_mesh::ProcMeshRef;
 use crate::v1::view::Point;
 
@@ -229,6 +231,24 @@ impl<A: Referable> Debug for ActorMeshController<A> {
 #[async_trait]
 impl<A: Referable> Actor for ActorMeshController<A> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Set the controller reference on self.mesh. This breaks the circular
+        // dependency: the controller needs the mesh ref, and the mesh ref needs
+        // the controller.
+        self.mesh.set_controller(Some(this.bind()));
+
+        // Register the actor mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the actor mesh name (without UUID suffix) for registration.
+            let name = self.mesh.name().name();
+            namespace.register(name, &self.mesh).await.map_err(|e| {
+                anyhow::anyhow!("failed to register actor mesh ref to namespace: {}", e)
+            })?;
+            tracing::info!(
+                name = %name,
+                "registered actor mesh to global namespace"
+            );
+        }
+
         // Start the monitor task.
         // There's a shared monitor for all whole mesh ref. Note that slices do
         // not share the health state. This is fine because requerying a slice
@@ -249,6 +269,24 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
+        // Unregister the actor mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the actor mesh name (without UUID suffix) for unregistration.
+            let name = self.mesh.name().name();
+            if let Err(e) = namespace.unregister::<ActorMeshRef<A>>(name).await {
+                tracing::warn!(
+                    name = %name,
+                    error = %e,
+                    "failed to unregister actor mesh from namespace"
+                );
+            } else {
+                tracing::info!(
+                    name = %name,
+                    "unregistered actor mesh from global namespace"
+                );
+            }
+        }
+
         // If the monitor hasn't been dropped yet, send a stop message to the
         // proc mesh.
         if self.monitor.take().is_some() {

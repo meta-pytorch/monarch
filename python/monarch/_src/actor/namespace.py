@@ -18,7 +18,9 @@ from typing import Any, cast, overload, Type, TypeVar, Union
 
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.namespace import (
-    create_in_memory_namespace,
+    configure_in_memory_namespace,
+    get_global_namespace as get_rust_global_namespace,
+    is_global_namespace_configured,
     MeshKind,
     Namespace,
 )
@@ -45,10 +47,6 @@ class NamespacePersistence(Enum):
     IN_MEMORY = "in_memory"
 
 
-# Global namespace instance
-_global_namespace: Namespace | None = None
-
-
 def is_namespace_configured() -> bool:
     """
     Check if the global namespace has been configured.
@@ -56,7 +54,7 @@ def is_namespace_configured() -> bool:
     Returns:
         True if the namespace is configured, False otherwise
     """
-    return _global_namespace is not None
+    return is_global_namespace_configured()
 
 
 def get_global_namespace() -> Namespace | None:
@@ -66,7 +64,7 @@ def get_global_namespace() -> Namespace | None:
     Returns:
         The global Namespace instance if configured, None otherwise.
     """
-    return _global_namespace
+    return get_rust_global_namespace()
 
 
 def configure_namespace(
@@ -87,12 +85,11 @@ def configure_namespace(
         RuntimeError: If the namespace has already been configured.
         ValueError: If an unknown persistence is specified.
     """
-    global _global_namespace
-    if _global_namespace is not None:
+    if is_global_namespace_configured():
         raise RuntimeError("Global namespace has already been configured")
 
     if persistence == NamespacePersistence.IN_MEMORY:
-        _global_namespace = create_in_memory_namespace(name)
+        configure_in_memory_namespace(name)
     else:
         raise ValueError(f"Unknown namespace persistence: {persistence}")
 
