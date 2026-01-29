@@ -15,6 +15,34 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import Supervisor
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import ValueMesh
 
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.value_mesh import ValueMesh
+
+def valuemesh_collector(
+    extent: Extent,
+    method_name: str,
+    supervisor: Supervisor | None,
+    instance: Instance,
+    qualified_endpoint_name: str | None,
+) -> tuple[PortRef, PythonTask[ValueMesh[Any]]]:
+    """
+    Create a collector for multiple responses into a ValueMesh.
+
+    Args:
+        extent: The extent describing the shape of expected responses.
+        method_name: The name of the method being called (for telemetry).
+        supervisor: Optional supervisor for monitoring actor health.
+        instance: Actor instance for opening ports.
+        qualified_endpoint_name: Optional full endpoint name for error messages.
+        adverb: The type of endpoint operation (Call, CallOne, Choose) for metrics.
+
+    Returns:
+        A tuple of (PortRef, PythonTask) where:
+        - PortRef: The port reference to send to actors for responses.
+        - PythonTask: A task that awaits all responses and returns a ValueMesh.
+    """
+    ...
+
 def value_collector(
     method_name: str,
     supervisor: Supervisor | None,
