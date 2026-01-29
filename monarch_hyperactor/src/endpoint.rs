@@ -1,0 +1,301 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use std::cell::Cell;
+
+use hyperactor::Instance;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
+use hyperactor::mailbox::PortReceiver;
+use monarch_types::py_global;
+use monarch_types::py_module_add_function;
+use pyo3::prelude::*;
+use serde_multipart::Part;
+
+use crate::actor::PythonActor;
+use crate::actor::PythonMessage;
+use crate::actor::PythonMessageKind;
+use crate::buffers::FrozenBuffer;
+use crate::context::PyInstance;
+use crate::mailbox::PyMailbox;
+use crate::mailbox::PythonPortRef;
+use crate::metrics::ENDPOINT_CALL_ONE_ERROR;
+use crate::metrics::ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM;
+use crate::metrics::ENDPOINT_CALL_ONE_THROUGHPUT;
+use crate::pytokio::PyPythonTask;
+use crate::pytokio::PythonTask;
+use crate::supervision::PySupervisor;
+use crate::supervision::SupervisionError;
+
+py_global!(pickle_unflatten, "monarch._src.actor.pickle", "unflatten");
+py_global!(make_future, "monarch._src.actor.future", "Future");
+
+/// An infinite iterator that yields the same mailbox value forever.
+/// Used as local_state for unflatten, replacing Python's itertools.repeat(mailbox).
+#[pyclass(
+    name = "RepeatMailbox",
+    module = "monarch._rust_bindings.monarch_hyperactor.endpoint"
+)]
+struct RepeatMailbox {
+    mailbox: PyObject,
+}
+
+#[pymethods]
+impl RepeatMailbox {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self) -> PyObject {
+        self.mailbox.clone()
+    }
+}
+
+#[tracing::instrument(skip_all)]
+fn unflatten<'py>(
+    py: Python<'py>,
+    part: &Part,
+    mailbox: impl Into<PyMailbox>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let unflatten_fn = pickle_unflatten(py);
+    let mailbox: PyMailbox = mailbox.into();
+    let mailbox_iter = RepeatMailbox {
+        mailbox: mailbox.into_pyobject(py)?.unbind().into(),
+    };
+
+    unflatten_fn.call1((
+        FrozenBuffer {
+            inner: part.to_bytes(),
+        }
+        .into_pyobject(py)?,
+        mailbox_iter,
+    ))
+}
+
+/// The type of endpoint operation being performed.
+///
+/// Used to select the appropriate telemetry metrics for each operation type.
+#[derive(Clone, Copy, Debug)]
+enum EndpointAdverb {
+    CallOne,
+}
+
+fn to_endpoint_adverb(adverb: &str) -> PyResult<EndpointAdverb> {
+    match adverb {
+        "call_one" => Ok(EndpointAdverb::CallOne),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "only literal 'call_one' expected to be received from Python. got: {}",
+            adverb
+        ))),
+    }
+}
+
+/// RAII guard for recording endpoint call telemetry.
+///
+/// Records latency on drop, similar to Python's `@_with_telemetry` decorator.
+/// Call `mark_error()` before dropping to also record an error.
+pub struct EndpointTelemetry {
+    start: tokio::time::Instant,
+    method_name: String,
+    actor_count: usize,
+    adverb: EndpointAdverb,
+    error_occurred: Cell<bool>,
+}
+
+impl EndpointTelemetry {
+    fn new(
+        start: tokio::time::Instant,
+        method_name: String,
+        actor_count: usize,
+        adverb: EndpointAdverb,
+    ) -> Self {
+        let attributes = hyperactor_telemetry::kv_pairs!(
+            "method" => method_name.clone()
+        );
+        match adverb {
+            EndpointAdverb::CallOne => {
+                ENDPOINT_CALL_ONE_THROUGHPUT.add(1, attributes);
+            }
+            _ => {}
+        }
+
+        Self {
+            start,
+            method_name,
+            actor_count,
+            adverb,
+            error_occurred: Cell::new(false),
+        }
+    }
+
+    fn mark_error(&self) {
+        self.error_occurred.set(true);
+    }
+}
+
+impl Drop for EndpointTelemetry {
+    fn drop(&mut self) {
+        let actor_count_str = self.actor_count.to_string();
+        let attributes = hyperactor_telemetry::kv_pairs!(
+            "method" => self.method_name.clone(),
+            "actor_count" => actor_count_str
+        );
+        tracing::info!(message = "response received", method = self.method_name);
+
+        let duration_us = self.start.elapsed().as_micros();
+
+        match self.adverb {
+            EndpointAdverb::CallOne => {
+                ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
+            }
+            _ => {}
+        }
+
+        if self.error_occurred.get() {
+            match self.adverb {
+                EndpointAdverb::CallOne => {
+                    ENDPOINT_CALL_ONE_ERROR.add(1, attributes);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn supervision_error_to_pyerr(err: PyErr, qualified_endpoint_name: &Option<String>) -> PyErr {
+    match qualified_endpoint_name {
+        Some(endpoint) => {
+            Python::with_gil(|py| SupervisionError::set_endpoint_on_err(py, err, endpoint.clone()))
+        }
+        None => err,
+    }
+}
+
+enum RaceResult {
+    Message(PythonMessage),
+    SupervisionError(PyErr),
+    RecvError(String),
+}
+
+async fn collect_value(
+    rx: &mut PortReceiver<PythonMessage>,
+    supervisor: &Option<PySupervisor>,
+    instance: &Instance<PythonActor>,
+    qualified_endpoint_name: &Option<String>,
+) -> PyResult<(Part, Option<usize>)> {
+    let race_result = match supervisor {
+        Some(sup) => {
+            tokio::select! {
+                biased;
+                result = sup.supervision_event(instance) => {
+                    match result {
+                        Some(err) => RaceResult::SupervisionError(err),
+                        None => {
+                            match rx.recv().await {
+                                Ok(msg) => RaceResult::Message(msg),
+                                Err(e) => RaceResult::RecvError(e.to_string()),
+                            }
+                        }
+                    }
+                }
+                msg = rx.recv() => {
+                    match msg {
+                        Ok(m) => RaceResult::Message(m),
+                        Err(e) => RaceResult::RecvError(e.to_string()),
+                    }
+                }
+            }
+        }
+        _ => match rx.recv().await {
+            Ok(msg) => RaceResult::Message(msg),
+            Err(e) => RaceResult::RecvError(e.to_string()),
+        },
+    };
+
+    match race_result {
+        RaceResult::Message(PythonMessage {
+            kind: PythonMessageKind::Result { rank, .. },
+            message,
+            ..
+        }) => Ok((message, rank)),
+        RaceResult::Message(PythonMessage {
+            kind: PythonMessageKind::Exception { .. },
+            message,
+            ..
+        }) => Python::with_gil(|py| {
+            Err(PyErr::from_value(unflatten(
+                py,
+                &message,
+                instance.mailbox_for_py().clone(),
+            )?))
+        }),
+        RaceResult::Message(msg) => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unexpected message kind {:?}",
+            msg.kind
+        ))),
+        RaceResult::RecvError(e) => Err(pyo3::exceptions::PyEOFError::new_err(format!(
+            "Port closed: {}",
+            e
+        ))),
+        RaceResult::SupervisionError(err) => {
+            Err(supervision_error_to_pyerr(err, qualified_endpoint_name))
+        }
+    }
+}
+
+/// Create a task that opens a port and processes a single response.
+///
+/// Returns a tuple of (PortRef, PythonTask) where:
+/// - PortRef: The port reference to send to an actor for the response
+/// - PythonTask: A task that awaits the single response and returns the unpickled value
+#[pyfunction]
+#[pyo3(name = "value_collector")]
+fn py_value_collector(
+    method_name: String,
+    supervisor: Option<PySupervisor>,
+    instance: PyInstance,
+    qualified_endpoint_name: Option<String>,
+    adverb: &str,
+) -> PyResult<(PythonPortRef, PyPythonTask)> {
+    let adverb = to_endpoint_adverb(adverb)?;
+    let mailbox = instance.mailbox_for_py();
+    let (p, mut r) = mailbox.open_port::<PythonMessage>();
+    let instance = instance.into_instance();
+    Ok((
+        PythonPortRef { inner: p.bind() },
+        PythonTask::new(async move {
+            let start = RealClock.now();
+
+            let telemetry = EndpointTelemetry::new(start, method_name.clone(), 1, adverb);
+
+            match collect_value(&mut r, &supervisor, &instance, &qualified_endpoint_name).await {
+                Ok((message, _)) => Python::with_gil(|py| {
+                    unflatten(py, &message, instance.mailbox_for_py().clone())
+                        .map(|obj| obj.unbind())
+                }),
+                Err(e) => {
+                    telemetry.mark_error();
+                    Err(e)
+                }
+            }
+        })?
+        .into(),
+    ))
+}
+
+pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    py_module_add_function!(
+        module,
+        "monarch._rust_bindings.monarch_hyperactor.endpoint",
+        py_value_collector
+    );
+
+    module.add_class::<RepeatMailbox>()?;
+
+    Ok(())
+}
