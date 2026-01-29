@@ -43,7 +43,7 @@ pub(crate) fn get_field<'a>(fields: &'a TraceFields, key: &str) -> Option<&'a Fi
 /// This is captured once on the application thread, then sent to the background
 /// worker for fan-out to multiple exporters.
 #[derive(Debug, Clone)]
-pub(crate) enum TraceEvent {
+pub enum TraceEvent {
     /// A new span was created (on_new_span)
     NewSpan {
         id: u64,
@@ -81,7 +81,7 @@ pub(crate) enum TraceEvent {
 
 /// Simplified field value representation for trace events
 #[derive(Debug, Clone)]
-pub(crate) enum FieldValue {
+pub enum FieldValue {
     Bool(bool),
     I64(i64),
     U64(u64),
@@ -93,7 +93,7 @@ pub(crate) enum FieldValue {
 /// Trait for sinks that receive trace events from the dispatcher.
 /// Implementations run on the background worker thread and can perform
 /// expensive I/O operations without blocking the application.
-pub(crate) trait TraceEventSink: Send + 'static {
+pub trait TraceEventSink: Send + 'static {
     /// Consume a single event. Called on background thread.
     fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error>;
 
@@ -177,6 +177,12 @@ fn get_thread_info() -> (&'static str, &'static str) {
     })
 }
 
+/// Control messages for the dispatcher (e.g., adding sinks dynamically)
+pub enum DispatcherControl {
+    /// Add a new sink to receive events
+    AddSink(Box<dyn TraceEventSink>),
+}
+
 /// The trace event dispatcher that captures events once and dispatches to multiple sinks
 /// on a background thread.
 pub struct TraceEventDispatcher {
@@ -199,6 +205,9 @@ impl TraceEventDispatcher {
     /// A separate unbounded priority channel guarantees delivery of critical events
     /// like drop notifications (safe because drop events are rate-limited).
     ///
+    /// Takes the global control receiver for dynamic sink registration. Sinks registered
+    /// via `register_sink()` before or after this call will be added to the dispatcher.
+    ///
     /// # Arguments
     /// * `sinks` - List of sinks to dispatch events to.
     pub(crate) fn new(sinks: Vec<Box<dyn TraceEventSink>>) -> Self {
@@ -206,13 +215,21 @@ impl TraceEventDispatcher {
 
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let (dropped_sender, dropped_receiver) = mpsc::channel();
+        // Take the global control receiver - sinks registered via register_sink() will be received here
+        let control_receiver = crate::take_sink_control_receiver();
         let dropped_events = Arc::new(AtomicU64::new(0));
         let dropped_events_worker = Arc::clone(&dropped_events);
 
         let worker_handle = std::thread::Builder::new()
             .name("telemetry-worker".into())
             .spawn(move || {
-                worker_loop(receiver, dropped_receiver, sinks, dropped_events_worker);
+                worker_loop(
+                    receiver,
+                    dropped_receiver,
+                    control_receiver,
+                    sinks,
+                    dropped_events_worker,
+                );
             })
             .expect("failed to spawn telemetry worker thread");
 
@@ -459,6 +476,7 @@ impl<'a> tracing::field::Visit for FieldVisitor<'a> {
 fn worker_loop(
     receiver: mpsc::Receiver<TraceEvent>,
     dropped_receiver: mpsc::Receiver<TraceEvent>,
+    control_receiver: Option<mpsc::Receiver<DispatcherControl>>,
     mut sinks: Vec<Box<dyn TraceEventSink>>,
     dropped_events: Arc<AtomicU64>,
 ) {
@@ -500,6 +518,17 @@ fn worker_loop(
         while let Ok(event) = dropped_receiver.try_recv() {
             dispatch_to_sinks(&mut sinks, event);
             events_since_flush += 1;
+        }
+
+        // Process any pending control messages (e.g., adding new sinks)
+        if let Some(ref ctrl_rx) = control_receiver {
+            while let Ok(control) = ctrl_rx.try_recv() {
+                match control {
+                    DispatcherControl::AddSink(sink) => {
+                        sinks.push(sink);
+                    }
+                }
+            }
         }
 
         match receiver.recv_timeout(FLUSH_INTERVAL) {
