@@ -2,6 +2,15 @@ name: Build and publish nightly monarch wheels
 
 on:
   workflow_dispatch:
+  # For testing changes to this workflow.
+  pull_request:
+    branches:
+      - main
+      - gh/**
+    paths:
+      - .github/workflows/wheels.yml
+      - .github/workflows/build-dist.yml
+      - Dockerfile.nightly
   push:
     branches:
       - main
@@ -19,9 +28,9 @@ jobs:
     uses: ./.github/workflows/build-dist.yml
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
-      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu126'
-      gpu-arch-type: 'cuda'
-      gpu-arch-version: '12.6'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+      gpu-arch-type: cuda
+      gpu-arch-version: '12.8'
 
   publish-to-pypi:
     name: Publish to PyPI
@@ -69,6 +78,8 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
+          # Docker container only has python 3.12, so we need to use the 3.12 wheel.
+          name: monarch-py3.12-cuda12.8
           path: dist
           merge-multiple: true
 
@@ -92,6 +103,7 @@ jobs:
           file: ./Dockerfile.nightly
           push: true # Push the image to the registry
           tags: ghcr.io/${{ github.repository }}:${{ env.DOCKER_TAG }}
+          # TODO: find docker tag that gets updated automatically.
           build-args: |
-            PYTORCH_TAG=2.11.0.dev20260109-cuda12.6-cudnn9-runtime
+            PYTORCH_TAG=2.11.0.dev20260109-cuda12.8-cudnn9-runtime
             MONARCH_WHEELS=dist
