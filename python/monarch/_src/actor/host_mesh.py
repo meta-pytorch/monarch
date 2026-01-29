@@ -141,6 +141,31 @@ class HostMesh(MeshTrait):
         hm._code_sync_proc_mesh = _Lazy(lambda: hm.spawn_procs(name="code_sync"))
         return hm
 
+    @classmethod
+    def from_ref(cls, hy_host_mesh: HyHostMesh) -> "HostMesh":
+        """
+        Create a HostMesh wrapper from a loaded HyHostMesh reference.
+
+        This is used when loading a HostMesh from the namespace. The loaded
+        mesh has limited functionality compared to a freshly allocated mesh:
+        - No log streaming (stream_logs=False)
+        - Not fake in-process
+        - No code sync proc mesh
+
+        Args:
+            hy_host_mesh: The Rust HostMesh reference loaded from namespace.
+
+        Returns:
+            A HostMesh wrapper that can be used to spawn proc meshes.
+        """
+        return cls(
+            Shared.from_value(hy_host_mesh),
+            hy_host_mesh.region,
+            stream_logs=False,
+            is_fake_in_process=False,
+            _code_sync_proc_mesh=None,
+        )
+
     def spawn_procs(
         self,
         per_host: Dict[str, int] | None = None,

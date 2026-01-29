@@ -193,6 +193,12 @@ impl PyHostMesh {
         Ok(PyRegion::from(self.mesh_ref()?.region()))
     }
 
+    /// Get the name of this host mesh (without UUID suffix).
+    #[getter]
+    fn name(&self) -> PyResult<String> {
+        Ok(self.mesh_ref()?.name().name().to_string())
+    }
+
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         let bytes = bincode::serialize(&self.mesh_ref()?)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;

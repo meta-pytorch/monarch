@@ -2069,3 +2069,176 @@ async def test_namespace_load_actor_mesh_smc() -> None:
         except Exception:
             # Best effort cleanup - tier might not exist or other issues
             pass
+
+
+@pytest.mark.timeout(120)
+async def test_namespace_load_host_and_proc_mesh_smc() -> None:
+    """
+    Test the host mesh and proc mesh namespace functionality with SMC backend.
+
+    This test verifies that:
+    1. When a host mesh is allocated, it gets automatically registered to the namespace
+    2. When a proc mesh is spawned, it gets automatically registered to the namespace
+    3. We can load the host mesh using the namespace and spawn new proc meshes on it
+    4. We can load the proc mesh using the namespace and spawn actors on it
+
+    Note: The SMC namespace will automatically create the tier if it doesn't exist.
+    The tier is deleted at the end of the test to clean up.
+    """
+    # Skip this test if the namespace is already configured (e.g., by a previous test)
+    # since we need to specifically test SMC functionality and namespace can only be
+    # configured once per process
+    if mesh_namespace.is_namespace_configured():
+        raise pytest.skip.Exception(
+            "Namespace already configured by another test. "
+            "Run this test in isolation to test SMC functionality."
+        )
+
+    from libfb.py.asyncio.smc import delete_tier
+
+    # Generate a unique tier name for this test run to avoid conflicts
+    # Use the "smc.canaryservice.test" prefix which has a more permissive schema
+    tier_name = f"smc.canaryservice.test.monarch_{uuid.uuid4().hex[:8]}"
+    print(f"DEBUG: Using tier_name = {tier_name}")
+
+    try:
+        # Configure the SMC namespace with the test tier
+        mesh_namespace.configure_namespace(
+            NamespacePersistence.SMC, name="monarch", tier=tier_name
+        )
+
+        # Create a host mesh with a specific name so we can load it from namespace
+        from monarch._rust_bindings.monarch_hyperactor.shape import Extent
+        from monarch._src.actor.allocator import LocalAllocator
+        from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
+
+        host_mesh_name = "namespace_smc_test_host"
+        host = HostMesh.allocate_nonblocking(
+            host_mesh_name,
+            Extent([], []),
+            LocalAllocator(),
+            bootstrap_cmd=_bootstrap_cmd(),
+        )
+
+        # Spawn a proc mesh with a specific name on the host mesh
+        proc_mesh_name = "namespace_smc_test_proc"
+        proc = host.spawn_procs(per_host={"gpus": 2}, name=proc_mesh_name)
+
+        # Spawn an actor to ensure the proc mesh is fully initialized
+        original_actors = proc.spawn("test_actor", NamespaceTestActor, 42)
+
+        # Wait for the actor mesh to be fully initialized
+        result = await original_actors.get_value.call()
+        assert all(v == 42 for v in result.values())
+
+        # Allow time for SMC to propagate the tier properties
+        await asyncio.sleep(2)
+
+        # ============================================
+        # Test 1: Load and verify host mesh
+        # ============================================
+        loaded_host = await mesh_namespace.load(MeshKind.Host, host_mesh_name)
+
+        # Verify the loaded host mesh is a HostMesh wrapper
+        assert isinstance(loaded_host, HostMesh)
+
+        # Spawn a new proc mesh on the LOADED host mesh to verify it's functional
+        new_proc_mesh_name = "namespace_smc_test_proc_from_loaded_host"
+        loaded_host_proc = loaded_host.spawn_procs(
+            per_host={"workers": 3}, name=new_proc_mesh_name
+        )
+
+        # Spawn actors on the proc mesh created from the loaded host mesh
+        loaded_host_actors = loaded_host_proc.spawn(
+            "test_actor_via_loaded_host", NamespaceTestActor, 200
+        )
+
+        # Verify the actors work correctly
+        result = await loaded_host_actors.get_value.call()
+        assert all(v == 200 for v in result.values())
+
+        # ============================================
+        # Test 2: Load and verify proc mesh
+        # ============================================
+        # Load the proc mesh using the SMC namespace
+        # This should return a fully-wrapped ProcMesh, not a raw HyProcMesh
+        loaded_proc = await mesh_namespace.load(
+            MeshKind.Proc,
+            proc_mesh_name,
+        )
+
+        # Verify the loaded proc mesh is a ProcMesh wrapper (not raw HyProcMesh)
+        assert isinstance(loaded_proc, ProcMesh)
+
+        # Verify the loaded proc mesh has a valid region with expected shape
+        # The proc mesh should have 2 GPUs
+        assert list(loaded_proc._region.labels) == ["gpus"]
+
+        # Spawn an actor on the LOADED proc mesh to verify it's fully functional
+        loaded_actors = loaded_proc.spawn(
+            "test_actor_via_loaded", NamespaceTestActor, 100
+        )
+
+        # Verify we can call endpoints on the actors spawned via the loaded proc mesh
+        result = await loaded_actors.get_value.call()
+        assert all(v == 100 for v in result.values())
+
+        # Verify the original proc mesh still works
+        result = await original_actors.get_value.call()
+        assert all(v == 42 for v in result.values())
+
+        # ============================================
+        # Test 3: Load and verify actor mesh
+        # ============================================
+        # The actor mesh spawned via the loaded proc mesh should also be registered
+        loaded_actor_mesh = await mesh_namespace.load(
+            MeshKind.Actor,
+            "test_actor_via_loaded",
+            NamespaceTestActor,
+        )
+
+        # Verify the loaded actor mesh is an ActorMesh wrapper
+        from monarch._src.actor.actor_mesh import ActorMesh
+
+        assert isinstance(loaded_actor_mesh, ActorMesh)
+
+        # Verify we can call endpoints on the loaded actor mesh
+        # pyre-ignore[16]: The namespace module has incomplete type annotations
+        result = await loaded_actor_mesh.get_value.call()
+        assert all(v == 100 for v in result.values())
+
+        # ============================================
+        # Test 4: Verify registrations don't clear each other
+        # ============================================
+        # After all registrations, verify we can still load all meshes
+        # This ensures new registrations don't accidentally clear existing entries
+
+        # Re-load host mesh - should still be accessible
+        reloaded_host = await mesh_namespace.load(MeshKind.Host, host_mesh_name)
+        assert isinstance(reloaded_host, HostMesh)
+
+        # Re-load original proc mesh - should still be accessible
+        reloaded_proc = await mesh_namespace.load(MeshKind.Proc, proc_mesh_name)
+        assert isinstance(reloaded_proc, ProcMesh)
+
+        # Re-load proc mesh from loaded host - should still be accessible
+        reloaded_host_proc = await mesh_namespace.load(
+            MeshKind.Proc, new_proc_mesh_name
+        )
+        assert isinstance(reloaded_host_proc, ProcMesh)
+
+        # Re-load original actor mesh - should still be accessible
+        reloaded_original_actors = await mesh_namespace.load(
+            MeshKind.Actor, "test_actor", NamespaceTestActor
+        )
+        assert isinstance(reloaded_original_actors, ActorMesh)
+        result = await reloaded_original_actors.get_value.call()
+        assert all(v == 42 for v in result.values())
+
+    finally:
+        # Clean up the SMC tier at the end of the test
+        try:
+            await delete_tier(tier_name)
+        except Exception:
+            # Best effort cleanup - tier might not exist or other issues
+            pass

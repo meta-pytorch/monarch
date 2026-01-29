@@ -859,11 +859,44 @@ impl ProcMeshController {
 
 #[async_trait]
 impl Actor for ProcMeshController {
+    async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Register the proc mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the proc mesh name (without UUID suffix) for registration.
+            let name = self.mesh.name().name();
+            namespace.register(name, &self.mesh).await.map_err(|e| {
+                anyhow::anyhow!("failed to register proc mesh ref to namespace: {}", e)
+            })?;
+            tracing::info!(
+                name = %name,
+                "registered proc mesh to global namespace"
+            );
+        }
+        Ok(())
+    }
+
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
+        // Unregister the proc mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            let name = self.mesh.name().name();
+            if let Err(e) = namespace.unregister::<ProcMeshRef>(name).await {
+                tracing::warn!(
+                    name = %name,
+                    error = %e,
+                    "failed to unregister proc mesh from namespace"
+                );
+            } else {
+                tracing::info!(
+                    name = %name,
+                    "unregistered proc mesh from global namespace"
+                );
+            }
+        }
+
         // Cannot use "ProcMesh::stop" as it's only defined on ProcMesh, not ProcMeshRef.
         let names = self.mesh.proc_ids().collect::<Vec<ProcId>>();
         let region = self.mesh.region().clone();
@@ -898,12 +931,45 @@ impl HostMeshController {
 
 #[async_trait]
 impl Actor for HostMeshController {
+    async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Register the host mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the host mesh name (without UUID suffix) for registration.
+            let name = self.mesh.name().name();
+            namespace.register(name, &self.mesh).await.map_err(|e| {
+                anyhow::anyhow!("failed to register host mesh ref to namespace: {}", e)
+            })?;
+            tracing::info!(
+                name = %name,
+                "registered host mesh to global namespace"
+            );
+        }
+        Ok(())
+    }
+
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
-        // Cannot use "HostMesh::shutdown" as it's only defined on HostMesh, not HostMeshRef.
+        // Unregister the host mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            let name = self.mesh.name().name();
+            if let Err(e) = namespace.unregister::<HostMeshRef>(name).await {
+                tracing::warn!(
+                    name = %name,
+                    error = %e,
+                    "failed to unregister host mesh from namespace"
+                );
+            } else {
+                tracing::info!(
+                    name = %name,
+                    "unregistered host mesh from global namespace"
+                );
+            }
+        }
+
+        // Shutdown all hosts in the mesh.
         for host in self.mesh.values() {
             if let Err(e) = host.shutdown(this).await {
                 tracing::warn!(host = %host, error = %e, "host shutdown failed");
