@@ -48,7 +48,12 @@ class ActorMeshProtocol(Protocol):
 
 @final
 class PythonActorMesh(ActorMeshProtocol):
-    pass
+    @property
+    def region(self) -> Region:
+        """
+        The region of the actor mesh.
+        """
+        ...
 
 @final
 class ActorSupervisionEvent:

@@ -27,6 +27,8 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 
 use async_trait::async_trait;
@@ -211,6 +213,101 @@ impl Namespace for InMemoryNamespace {
             .map_err(|e| NamespaceError::OperationError(e.to_string()))?
             .contains_key(&key))
     }
+}
+
+/// A shared namespace that can be either in-memory or SMC-backed.
+#[derive(Debug)]
+pub enum SharedNamespaceInner {
+    /// In-memory namespace for testing.
+    InMemory(InMemoryNamespace),
+    /// SMC-backed namespace for production (fbcode only).
+    #[cfg(fbcode_build)]
+    Smc(crate::v1::meta::SmcNamespace),
+}
+
+#[async_trait]
+impl Namespace for SharedNamespaceInner {
+    fn name(&self) -> &str {
+        match self {
+            SharedNamespaceInner::InMemory(ns) => ns.name(),
+            #[cfg(fbcode_build)]
+            SharedNamespaceInner::Smc(ns) => ns.name(),
+        }
+    }
+
+    async fn register<T: Registrable>(&self, name: &str, mesh: &T) -> Result<(), NamespaceError> {
+        match self {
+            SharedNamespaceInner::InMemory(ns) => ns.register(name, mesh).await,
+            #[cfg(fbcode_build)]
+            SharedNamespaceInner::Smc(ns) => ns.register(name, mesh).await,
+        }
+    }
+
+    async fn get<T: Registrable>(&self, name: &str) -> Result<T, NamespaceError> {
+        match self {
+            SharedNamespaceInner::InMemory(ns) => ns.get(name).await,
+            #[cfg(fbcode_build)]
+            SharedNamespaceInner::Smc(ns) => ns.get(name).await,
+        }
+    }
+
+    async fn unregister<T: Registrable>(&self, name: &str) -> Result<(), NamespaceError> {
+        match self {
+            SharedNamespaceInner::InMemory(ns) => ns.unregister::<T>(name).await,
+            #[cfg(fbcode_build)]
+            SharedNamespaceInner::Smc(ns) => ns.unregister::<T>(name).await,
+        }
+    }
+
+    async fn contains<T: Registrable>(&self, name: &str) -> Result<bool, NamespaceError> {
+        match self {
+            SharedNamespaceInner::InMemory(ns) => ns.contains::<T>(name).await,
+            #[cfg(fbcode_build)]
+            SharedNamespaceInner::Smc(ns) => ns.contains::<T>(name).await,
+        }
+    }
+}
+
+/// Type alias for a shared namespace.
+pub type SharedNamespace = Arc<SharedNamespaceInner>;
+
+/// Global namespace holder.
+static GLOBAL_NAMESPACE: OnceLock<SharedNamespace> = OnceLock::new();
+
+/// Set the global namespace. Can only be called once.
+pub fn set_global_namespace(namespace: SharedNamespace) -> Result<(), SharedNamespace> {
+    GLOBAL_NAMESPACE.set(namespace)
+}
+
+/// Get the global namespace, if configured.
+pub fn global_namespace() -> Option<&'static SharedNamespace> {
+    GLOBAL_NAMESPACE.get()
+}
+
+/// Create a shared in-memory namespace.
+pub fn create_in_memory_namespace(name: impl Into<String>) -> SharedNamespace {
+    Arc::new(SharedNamespaceInner::InMemory(InMemoryNamespace::new(name)))
+}
+
+/// Create a shared SMC namespace.
+#[cfg(fbcode_build)]
+pub fn create_smc_namespace(
+    fb: fbinit::FacebookInit,
+    namespace_name: String,
+    tier: String,
+) -> Result<SharedNamespace, NamespaceError> {
+    let smc_ns = crate::v1::meta::SmcNamespace::new(fb, namespace_name, tier)?;
+    Ok(Arc::new(SharedNamespaceInner::Smc(smc_ns)))
+}
+
+/// Create a shared SMC namespace from configuration.
+#[cfg(fbcode_build)]
+pub fn create_smc_namespace_from_config(
+    fb: fbinit::FacebookInit,
+    namespace_name: String,
+) -> Result<SharedNamespace, NamespaceError> {
+    let smc_ns = crate::v1::meta::SmcNamespace::from_config(fb, namespace_name)?;
+    Ok(Arc::new(SharedNamespaceInner::Smc(smc_ns)))
 }
 
 #[cfg(test)]

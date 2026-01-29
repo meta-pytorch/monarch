@@ -47,6 +47,7 @@ clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.0"
 erased-serde = "0.4.9"
+fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"
 humantime = "2.1"
@@ -72,6 +73,7 @@ systemd = { version = "0.10.1", optional = true }
 tempfile = "3.22"
 thiserror = "2.0.12"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tokio-retry = "0.3"
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
