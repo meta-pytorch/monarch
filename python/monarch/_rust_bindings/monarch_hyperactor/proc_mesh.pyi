@@ -75,6 +75,13 @@ class ProcMesh:
         """
         ...
 
+    @property
+    def host_mesh_name(self) -> str | None:
+        """
+        Get the name of the parent host mesh, if this proc mesh was spawned from one.
+        """
+        ...
+
     def stop_nonblocking(self, instance: Instance, reason: str) -> PythonTask[None]:
         """
         Stop the proc mesh.
