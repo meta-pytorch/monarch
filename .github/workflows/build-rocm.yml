@@ -33,7 +33,7 @@ jobs:
       gpu-arch-type: rocm
       gpu-arch-version: ${{ matrix.name }}
       submodules: recursive
-      upload-artifact: monarch-rocm-${{ github.sha }}
+      upload-artifact: monarch-rocm${{ matrix.name }}-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
