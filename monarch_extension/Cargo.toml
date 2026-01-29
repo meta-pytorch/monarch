@@ -19,9 +19,7 @@ async-trait = "0.1.86"
 bincode = "1.3.3"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
-hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
-hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.139"
 monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs", optional = true }
@@ -37,7 +35,6 @@ rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }
-tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [build-dependencies]
