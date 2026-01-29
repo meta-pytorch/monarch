@@ -309,6 +309,18 @@ impl<T: Send + Sync + 'static> ActorLocal<T> {
     }
 }
 
+// Can't use derive(Clone) because it enforces T: Clone which is not necessary.
+impl<T: Send + Sync + 'static> Clone for ActorLocal<T> {
+    /// Clones only the key, not the value. If this clone is used from a different
+    /// context it'll get a different value.
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

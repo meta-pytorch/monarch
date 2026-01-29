@@ -225,7 +225,7 @@ impl CommActor {
         if let Some(cast_actor_mesh_id) = cx.headers().get(CAST_ACTOR_MESH_ID) {
             let mut headers = Attrs::new();
             headers.set(CAST_ACTOR_MESH_ID, cast_actor_mesh_id.clone());
-            child.send_with_headers(cx, headers, message);
+            child.send_with_headers(cx, headers, message)?;
         } else {
             child.send(cx, message)?;
         }

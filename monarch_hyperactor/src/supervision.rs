@@ -57,6 +57,17 @@ impl SupervisionError {
     }
 }
 
+impl SupervisionError {
+    // Not From<MeshFailure> because the return type needs to be PyErr.
+    pub(crate) fn new_err_from(failure: MeshFailure) -> PyErr {
+        let event = failure.event;
+        Self::new_err(format!(
+            "Actor {} exited because of the following reason: {}",
+            event.actor_id, event,
+        ))
+    }
+}
+
 // TODO: find out how to extend a Python exception and have internal data.
 #[derive(Clone, Debug)]
 #[pyclass(
