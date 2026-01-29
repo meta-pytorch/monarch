@@ -47,7 +47,7 @@ async fn bootstrap_canonical_simple() {
     //     stores the `BootstrapProcManager` for later spawns.
     //
     // (3) Install HostMeshAgent (still no new OS process).
-    //     `host.system_proc().spawn::<HostMeshAgent>("agent",
+    //     `host.system_proc().spawn::<HostMeshAgent>("host_agent",
     //     host).await?` creates the HostMeshAgent actor in that
     //     service proc.
     //

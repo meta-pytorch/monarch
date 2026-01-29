@@ -28,7 +28,7 @@ impl ShowCommand {
 
                 // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
                 let agent: ActorRef<HostMeshAgent> = ActorRef::attest(
-                    ProcId::Direct(host, "service".to_string()).actor_id("agent", 0),
+                    ProcId::Direct(host, "service".to_string()).actor_id(HOST_AGENT, 0),
                 );
 
                 let state = agent.get_state(&client, proc.parse().unwrap()).await?;

@@ -52,6 +52,9 @@ type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcMeshAgent>>> + Send>>;
 type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture + Send + Sync>;
 
+/// The well-known name of the host mesh agent actor.
+pub static HOST_AGENT: &str = "host_agent";
+
 /// Represents the different ways a [`Host`] can be managed by an agent.
 ///
 /// A host can either:
@@ -558,7 +561,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         };
 
         let system_proc = host.system_proc().clone();
-        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host))?;
+        let host_mesh_agent = system_proc.spawn(HOST_AGENT, HostMeshAgent::new(host))?;
 
         Ok(Self {
             host_mesh_agent,
