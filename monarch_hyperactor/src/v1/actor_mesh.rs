@@ -134,7 +134,11 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
+        assert!(
+            region
+                .as_inner()
+                .is_subset(Ranked::region(&self.mesh_ref()))
+        );
         Ok(Box::new(PythonActorMeshImpl::new_ref(
             self.mesh_ref().sliced(region.as_inner().clone()),
         )))
@@ -157,6 +161,10 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.mesh_ref().__reduce__(py)
+    }
+
+    fn region(&self) -> PyResult<PyRegion> {
+        Ok(Ranked::region(&self.mesh_ref()).clone().into())
     }
 }
 
@@ -241,6 +249,10 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         let from_bytes = module.getattr("py_actor_mesh_from_bytes").unwrap();
         Ok((from_bytes, py_bytes))
     }
+
+    fn region(&self) -> PyResult<PyRegion> {
+        Ok(Ranked::region(self).clone().into())
+    }
 }
 
 #[pymethods]
@@ -251,6 +263,11 @@ impl PythonActorMeshImpl {
             .get(rank)
             .map(|r| ActorRef::into_actor_id(r.clone()))
             .map(PyActorId::from))
+    }
+
+    #[getter]
+    fn region(&self) -> PyRegion {
+        Ranked::region(&self.mesh_ref()).clone().into()
     }
 
     fn __repr__(&self) -> String {

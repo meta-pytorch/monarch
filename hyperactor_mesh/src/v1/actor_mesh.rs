@@ -587,7 +587,7 @@ impl<A: Referable> ActorMeshRef<A> {
         &self.controller
     }
 
-    fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
+    pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.controller = controller;
     }
 
