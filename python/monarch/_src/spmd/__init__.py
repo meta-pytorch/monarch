@@ -4,7 +4,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""SPMD (Single Program Multiple Data) distributed training support."""
+"""
+Internal implementation of SPMD primitives.
+
+Provides functions to configure torch elastic environment variables across a Monarch
+ProcMesh, enabling torchrun-style SPMD scripts to run on Monarch's actor system.
+"""
 
 from typing import Optional
 
