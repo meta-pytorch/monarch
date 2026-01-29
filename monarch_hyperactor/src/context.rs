@@ -11,6 +11,7 @@ use hyperactor::context;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use ndslice::Extent;
 use ndslice::Point;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
@@ -85,6 +86,15 @@ impl PyInstance {
     fn abort(&self, reason: Option<&str>) -> PyResult<()> {
         let reason = reason.unwrap_or("(no reason provided)");
         Ok(self.inner.abort(reason).map_err(anyhow::Error::from)?)
+    }
+
+    #[pyo3(signature = (reason = None))]
+    fn _stop_instance(&self, reason: Option<&str>) -> PyResult<()> {
+        tracing::info!(actor_id = %self.inner.self_id(), "stopping PyInstance");
+        let reason = reason.unwrap_or("(no reason provided)");
+        self.inner
+            .stop(reason)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 
