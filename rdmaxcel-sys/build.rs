@@ -271,8 +271,8 @@ fn main() {
 /// Detect whether to use ROCm or CUDA
 fn detect_platform() -> (bool, String) {
     // Try ROCm first (ROCm systems may have CUDA installed too)
-    if let Ok(rocm_home) = build_utils::validate_rocm_installation() {
-        let version = build_utils::get_rocm_version(&rocm_home)
+    if let Ok(rocm_home) = build_utils::rocm::validate_rocm_installation() {
+        let version = build_utils::rocm::get_rocm_version(&rocm_home)
             .unwrap_or_else(|_| panic!("Failed to get ROCm version"));
 
         if version.0 < 7 {
@@ -328,7 +328,7 @@ fn hipify_sources(src_dir: &Path, hip_dir: &Path, manifest_dir: &str) {
         None
     };
 
-    build_utils::run_hipify_torch(&project_root, &source_files, hip_dir, custom_map_opt)
+    build_utils::rocm::run_hipify_torch(&project_root, &source_files, hip_dir, custom_map_opt)
         .expect("hipify_torch failed");
 
     println!("cargo:warning=Hipification complete");
