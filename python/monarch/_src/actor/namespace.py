@@ -18,10 +18,27 @@ from typing import Any, cast, overload, Type, TypeVar, Union
 
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.namespace import (
-    create_in_memory_namespace,
+    configure_in_memory_namespace,
+    get_global_namespace as _rust_get_global_namespace,
+    is_namespace_configured as _rust_is_namespace_configured,
     MeshKind,
     Namespace,
 )
+
+# SMC namespace is only available in fbcode builds
+try:
+    from monarch._rust_bindings.monarch_hyperactor.namespace import (
+        configure_smc_namespace as _configure_smc_namespace,
+    )
+except ImportError:
+
+    def _configure_smc_namespace(name: str, tier: str | None = None) -> None:
+        raise NotImplementedError(
+            "SMC namespace is not available in this build. "
+            "It is only available in fbcode builds."
+        )
+
+
 from monarch._src.actor.actor_mesh import ActorMesh
 from monarch._src.actor.future import Future
 
@@ -43,10 +60,7 @@ class NamespacePersistence(Enum):
     """NamespacePersistence types for namespace configuration."""
 
     IN_MEMORY = "in_memory"
-
-
-# Global namespace instance
-_global_namespace: Namespace | None = None
+    SMC = "smc"
 
 
 def is_namespace_configured() -> bool:
@@ -56,7 +70,7 @@ def is_namespace_configured() -> bool:
     Returns:
         True if the namespace is configured, False otherwise
     """
-    return _global_namespace is not None
+    return _rust_is_namespace_configured()
 
 
 def get_global_namespace() -> Namespace | None:
@@ -66,7 +80,7 @@ def get_global_namespace() -> Namespace | None:
     Returns:
         The global Namespace instance if configured, None otherwise.
     """
-    return _global_namespace
+    return _rust_get_global_namespace()
 
 
 def configure_namespace(
@@ -80,19 +94,27 @@ def configure_namespace(
     Args:
         persistence: The namespace persistence to use. Currently supported:
             - NamespacePersistence.IN_MEMORY: In-memory namespace for testing
+            - NamespacePersistence.SMC: SMC-backed namespace for production (fbcode only)
         name: The namespace name (e.g., "monarch" or "my.namespace")
         **kwargs: Additional configuration options for the persistence.
+            For SMC backend:
+                - tier: Optional SMC tier name. If not provided, uses the
+                        default tier from configuration.
 
     Raises:
         RuntimeError: If the namespace has already been configured.
         ValueError: If an unknown persistence is specified.
     """
-    global _global_namespace
-    if _global_namespace is not None:
+    if _rust_is_namespace_configured():
         raise RuntimeError("Global namespace has already been configured")
 
     if persistence == NamespacePersistence.IN_MEMORY:
-        _global_namespace = create_in_memory_namespace(name)
+        configure_in_memory_namespace(name)
+    elif persistence == NamespacePersistence.SMC:
+        tier = kwargs.get("tier")
+        if tier is not None and not isinstance(tier, str):
+            raise ValueError("tier must be a string")
+        _configure_smc_namespace(name, tier)
     else:
         raise ValueError(f"Unknown namespace persistence: {persistence}")
 

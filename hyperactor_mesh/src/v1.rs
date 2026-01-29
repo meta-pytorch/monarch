@@ -13,6 +13,8 @@
 pub mod actor_mesh;
 pub mod host_mesh;
 pub mod mesh_controller;
+#[cfg(fbcode_build)]
+pub mod meta;
 pub mod namespace;
 pub mod proc_mesh;
 pub mod testactor;
@@ -37,6 +39,15 @@ pub use namespace::MeshKind;
 pub use namespace::Namespace;
 pub use namespace::NamespaceError;
 pub use namespace::Registrable;
+pub use namespace::SharedNamespace;
+pub use namespace::SharedNamespaceInner;
+pub use namespace::create_in_memory_namespace;
+#[cfg(fbcode_build)]
+pub use namespace::create_smc_namespace;
+#[cfg(fbcode_build)]
+pub use namespace::create_smc_namespace_from_config;
+pub use namespace::global_namespace;
+pub use namespace::set_global_namespace;
 use ndslice::view;
 pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;

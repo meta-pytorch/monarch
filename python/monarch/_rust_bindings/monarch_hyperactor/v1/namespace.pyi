@@ -73,35 +73,39 @@ class Namespace:
 
     def __repr__(self) -> str: ...
 
-def create_in_memory_namespace(name: str) -> Namespace:
-    """
-    Create an in-memory namespace for testing.
-
-    Args:
-        name: The namespace name (e.g., "my.namespace")
-
-    Returns:
-        A Namespace instance backed by in-memory storage
-    """
-    ...
-
 def configure_in_memory_namespace(name: str) -> None:
     """
     Configure the global namespace with an in-memory backend.
     This is primarily used for testing.
 
-    This function creates an in-memory namespace and sets it as the global
-    namespace, enabling automatic registration of actor meshes when they spawn.
-
     Args:
-        name: The namespace name (e.g., "monarch")
+        name: The namespace name
 
     Raises:
         RuntimeError: If the global namespace has already been configured
     """
     ...
 
-def is_namespace_configured() -> bool:
+def configure_smc_namespace(name: str, tier: str | None = None) -> None:
+    """
+    Configure the global namespace with an SMC backend.
+    This is used for production deployments where meshes need to be
+    discovered across different processes and hosts.
+
+    Args:
+        name: The namespace name (e.g., "monarch" or "my.namespace")
+        tier: Optional SMC tier name. If not provided, uses the default tier
+              from configuration.
+
+    Raises:
+        RuntimeError: If the global namespace has already been configured
+
+    Note:
+        This function is only available in fbcode builds.
+    """
+    ...
+
+def is_global_namespace_configured() -> bool:
     """
     Check if the global namespace has been configured.
 
@@ -116,21 +120,5 @@ def get_global_namespace() -> Namespace | None:
 
     Returns:
         The global Namespace instance if configured, None otherwise.
-    """
-    ...
-
-def configure_smc_namespace(name: str, tier: str | None = None) -> None:
-    """
-    Configure the global namespace with an SMC backend.
-
-    Args:
-        name: The namespace name (e.g., "monarch")
-        tier: Optional SMC tier name. If not provided, uses "monarch" as default.
-
-    Raises:
-        RuntimeError: If the global namespace has already been configured
-
-    Note:
-        This function is only available in fbcode builds.
     """
     ...
