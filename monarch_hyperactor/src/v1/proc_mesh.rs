@@ -205,6 +205,11 @@ impl PyProcMesh {
         Ok(self.mesh_ref()?.region().into())
     }
 
+    #[getter]
+    fn name(&self) -> PyResult<String> {
+        Ok(self.mesh_ref()?.name().to_string())
+    }
+
     fn stop_nonblocking(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         // Clone the necessary fields from self to avoid capturing self in the async block
         let (owned_inner, instance) = monarch_with_gil_blocking(|_py| {

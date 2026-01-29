@@ -68,6 +68,13 @@ class ProcMesh:
         """
         ...
 
+    @property
+    def name(self) -> str:
+        """
+        The name of the mesh.
+        """
+        ...
+
     def stop_nonblocking(self, instance: Instance, reason: str) -> PythonTask[None]:
         """
         Stop the proc mesh.
