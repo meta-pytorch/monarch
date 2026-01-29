@@ -18,6 +18,7 @@
 | monarch.rdma | `docs/source/api/monarch.rdma.rst` |
 | monarch.config | `docs/source/api/monarch.config.rst` |
 | monarch.job | `docs/source/api/monarch.job.rst` |
+| monarch.spmd | `docs/source/api/monarch.spmd.rst` |
 
 ## Examples
 
@@ -27,4 +28,6 @@
 | distributed_tensors.py | `docs/source/examples/distributed_tensors.py` |
 | ping_pong.py | `docs/source/examples/ping_pong.py` |
 | crawler.py | `docs/source/examples/crawler.py` |
-| spmd_ddp.py | `docs/source/examples/spmd_ddp.py` |
+| spmd_ddp.py | `docs/source/examples/ddp/spmd_ddp.py` |
+| kubernetes_ddp.py | `docs/source/examples/ddp/kubernetes_ddp.py` |
+| train.py | `docs/source/examples/ddp/train.py` |
