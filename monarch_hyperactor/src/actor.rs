@@ -579,7 +579,8 @@ impl PythonActor {
             let mut signal_rx = signal_rx;
             let mut supervision_rx = supervision_rx;
             let mut work_rx = work_rx;
-            let err = 'messages: loop {
+            let mut need_drain = false;
+            let mut err = 'messages: loop {
                 tokio::select! {
                     work = work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
@@ -601,34 +602,64 @@ impl PythonActor {
                             if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
                                 for supervision_event in supervision_rx.drain() {
                                     if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                        break 'messages err;
+                                        break 'messages Some(err);
                                     }
                                 }
-                                break err;
+                                break Some(err);
                             }
                         }
                     }
-                    _ = signal_rx.recv() => {
-                        // TODO: do we need any signal handling for the root client?
+                    signal = signal_rx.recv() => {
+                        let signal = signal.map_err(ActorError::from);
+                        tracing::info!(actor_id = %instance.self_id(), "client received signal {signal:?}");
+                        match signal {
+                            Ok(signal@(Signal::Stop(_) | Signal::DrainAndStop(_))) => {
+                                need_drain = matches!(signal, Signal::DrainAndStop(_));
+                                break None;
+                            },
+                            Ok(Signal::ChildStopped(_)) => {},
+                            Ok(Signal::Abort(reason)) => {
+                                break Some(ActorError { actor_id: Box::new(instance.self_id().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
+                            },
+                            Err(err) => break Some(err),
+                        }
                     }
                     Ok(supervision_event) = supervision_rx.recv() => {
                         if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                            break err;
+                            break Some(err);
                         }
                     }
                 };
             };
-            let event = actor_error_to_event(instance, &actor, err);
-            // The proc supervision handler will send to ProcMeshAgent, which
-            // just records it in v1. We want to crash instead, as nothing will
-            // monitor the client ProcMeshAgent for now.
-            tracing::error!(
-                "{}: could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
-                instance.self_id(),
-                event,
-            );
+            if need_drain {
+                let mut n = 0;
+                while let Ok(work) = work_rx.try_recv() {
+                    if let Err(e) = work.handle(&mut actor, instance).await {
+                        err = Some(ActorError {
+                            actor_id: Box::new(instance.self_id().clone()),
+                            kind: Box::new(ActorErrorKind::processing(e)),
+                        });
+                        break;
+                    }
+                    n += 1;
+                }
+                tracing::debug!(actor_id = %instance.self_id(), "client drained {} messages before stopping", n);
+            }
+            if let Some(err) = err {
+                let event = actor_error_to_event(instance, &actor, err);
+                // The proc supervision handler will send to ProcMeshAgent, which
+                // just records it in v1. We want to crash instead, as nothing will
+                // monitor the client ProcMeshAgent for now.
+                tracing::error!(
+                    actor_id = %instance.self_id(),
+                    "could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
+                    event,
+                );
 
-            std::process::exit(1);
+                std::process::exit(1);
+            } else {
+                tracing::info!(actor_id = %instance.self_id(), "client stopped");
+            }
         });
 
         (root_client_instance.get().unwrap(), handle)
