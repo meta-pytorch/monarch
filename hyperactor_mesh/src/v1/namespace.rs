@@ -27,6 +27,8 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 
 use async_trait::async_trait;
@@ -211,6 +213,22 @@ impl Namespace for InMemoryNamespace {
             .map_err(|e| NamespaceError::OperationError(e.to_string()))?
             .contains_key(&key))
     }
+}
+
+/// Type alias for a shared namespace.
+pub type SharedNamespace = Arc<InMemoryNamespace>;
+
+/// Global namespace holder.
+static GLOBAL_NAMESPACE: OnceLock<SharedNamespace> = OnceLock::new();
+
+/// Set the global namespace. Can only be called once.
+pub fn set_global_namespace(namespace: SharedNamespace) -> Result<(), SharedNamespace> {
+    GLOBAL_NAMESPACE.set(namespace)
+}
+
+/// Get the global namespace, if configured.
+pub fn global_namespace() -> Option<&'static SharedNamespace> {
+    GLOBAL_NAMESPACE.get()
 }
 
 #[cfg(test)]

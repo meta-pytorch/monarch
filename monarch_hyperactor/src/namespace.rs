@@ -20,7 +20,6 @@ use hyperactor_mesh::v1::MeshKind;
 use hyperactor_mesh::v1::Namespace;
 use hyperactor_mesh::v1::NamespaceError;
 use hyperactor_mesh::v1::ProcMeshRef;
-use hyperactor_mesh::v1::Registrable;
 use pyo3::exceptions::PyKeyError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -209,9 +208,48 @@ fn create_in_memory_namespace(name: String) -> PyNamespace {
     PyNamespace::new(Arc::new(InMemoryNamespace::new(name)))
 }
 
+/// Configure the global namespace with an in-memory backend.
+/// This is primarily used for testing.
+///
+/// This function creates an in-memory namespace and sets it as the global
+/// namespace, enabling automatic registration of actor meshes when they spawn.
+///
+/// Args:
+///     name: The namespace name (e.g., "monarch")
+///
+/// Raises:
+///     RuntimeError: If the global namespace has already been configured
+#[pyfunction]
+fn configure_in_memory_namespace(name: String) -> PyResult<()> {
+    let namespace = Arc::new(InMemoryNamespace::new(name));
+    hyperactor_mesh::v1::namespace::set_global_namespace(namespace)
+        .map_err(|_| PyRuntimeError::new_err("Global namespace has already been configured"))
+}
+
+/// Check if the global namespace has been configured.
+///
+/// Returns:
+///     True if the namespace is configured, False otherwise
+#[pyfunction]
+fn is_global_namespace_configured() -> bool {
+    hyperactor_mesh::v1::namespace::global_namespace().is_some()
+}
+
+/// Get the global namespace.
+///
+/// Returns:
+///     The global Namespace instance if configured, None otherwise.
+#[pyfunction]
+fn get_global_namespace() -> Option<PyNamespace> {
+    hyperactor_mesh::v1::namespace::global_namespace().map(|ns| PyNamespace::new(ns.clone()))
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMeshKind>()?;
     module.add_class::<PyNamespace>()?;
     module.add_function(wrap_pyfunction!(create_in_memory_namespace, module)?)?;
+    module.add_function(wrap_pyfunction!(configure_in_memory_namespace, module)?)?;
+    module.add_function(wrap_pyfunction!(is_global_namespace_configured, module)?)?;
+    module.add_function(wrap_pyfunction!(get_global_namespace, module)?)?;
     Ok(())
 }
