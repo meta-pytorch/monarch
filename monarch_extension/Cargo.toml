@@ -25,6 +25,7 @@ hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros"
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.139"
 monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs", optional = true }
+monarch_distributed_telemetry = { path = "../monarch_distributed_telemetry", optional = true }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true }
 monarch_rdma_extension = { version = "0.0.0", path = "../monarch_rdma/extension", optional = true }
@@ -45,5 +46,6 @@ monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs", optional = true
 
 [features]
 default = ["tensor_engine"]
+distributed_sql_telemetry = ["dep:monarch_distributed_telemetry"]
 extension-module = ["pyo3/extension-module"]
 tensor_engine = ["dep:monarch_cpp_static_libs", "dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:nccl-sys", "dep:rdmaxcel-sys", "dep:torch-sys-cuda"]
