@@ -19,6 +19,7 @@ use monarch_types::py_global;
 use monarch_types::py_module_add_function;
 use ndslice::Extent;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use serde_multipart::Part;
 
 use crate::actor::PythonActor;
@@ -37,6 +38,9 @@ use crate::metrics::ENDPOINT_CALL_THROUGHPUT;
 use crate::metrics::ENDPOINT_CHOOSE_ERROR;
 use crate::metrics::ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CHOOSE_THROUGHPUT;
+use crate::metrics::ENDPOINT_STREAM_ERROR;
+use crate::metrics::ENDPOINT_STREAM_LATENCY_US_HISTOGRAM;
+use crate::metrics::ENDPOINT_STREAM_THROUGHPUT;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::shape::PyExtent;
@@ -97,6 +101,7 @@ enum EndpointAdverb {
     Call,
     CallOne,
     Choose,
+    Stream,
 }
 
 fn to_endpoint_adverb(adverb: &str) -> PyResult<EndpointAdverb> {
@@ -142,7 +147,9 @@ impl EndpointTelemetry {
             EndpointAdverb::Choose => {
                 ENDPOINT_CHOOSE_THROUGHPUT.add(1, attributes);
             }
-            _ => {}
+            EndpointAdverb::Stream => {
+                // Throughput already recorded once at stream creation in py_stream_collector
+            }
         }
 
         Self {
@@ -180,7 +187,9 @@ impl Drop for EndpointTelemetry {
             EndpointAdverb::Choose => {
                 ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
             }
-            _ => {}
+            EndpointAdverb::Stream => {
+                ENDPOINT_STREAM_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
+            }
         }
 
         if self.error_occurred.get() {
@@ -194,7 +203,9 @@ impl Drop for EndpointTelemetry {
                 EndpointAdverb::Choose => {
                     ENDPOINT_CHOOSE_ERROR.add(1, attributes);
                 }
-                _ => {}
+                EndpointAdverb::Stream => {
+                    ENDPOINT_STREAM_ERROR.add(1, attributes);
+                }
             }
         }
     }
@@ -406,6 +417,125 @@ fn py_value_collector(
     ))
 }
 
+/// A streaming iterator that yields futures for each response from actors.
+///
+/// Implements Python's iterator protocol (`__iter__`/`__next__`) to yield
+/// `Future` objects that resolve to individual actor responses.
+#[pyclass(
+    name = "ValueStream",
+    module = "monarch._rust_bindings.monarch_hyperactor.endpoint"
+)]
+pub struct PyValueStream {
+    receiver: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
+    /// Supervisor for monitoring actor health during streaming.
+    supervisor: Option<PySupervisor>,
+    instance: Instance<PythonActor>,
+    remaining: AtomicUsize,
+    method_name: String,
+    qualified_endpoint_name: Option<String>,
+    start: tokio::time::Instant,
+    actor_count: usize,
+    future_class: PyObject,
+}
+
+#[pymethods]
+impl PyValueStream {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        let remaining = self.remaining.load(Ordering::Relaxed);
+        if remaining == 0 {
+            return Ok(None);
+        }
+        self.remaining.store(remaining - 1, Ordering::Relaxed);
+
+        let receiver = self.receiver.clone();
+        let supervisor = self.supervisor.clone();
+        let instance = self.instance.clone_for_py();
+        let qualified_endpoint_name = self.qualified_endpoint_name.clone();
+        let start = self.start;
+        let method_name = self.method_name.clone();
+        let actor_count = self.actor_count;
+
+        let task: PyPythonTask = PythonTask::new(async move {
+            let telemetry =
+                EndpointTelemetry::new(start, method_name, actor_count, EndpointAdverb::Stream);
+
+            let mut rx_guard = receiver.lock().await;
+
+            match collect_value(
+                &mut rx_guard,
+                &supervisor,
+                &instance,
+                &qualified_endpoint_name,
+            )
+            .await
+            {
+                Ok((message, _)) => Python::with_gil(|py| {
+                    unflatten(py, &message, instance.mailbox_for_py().clone())
+                        .map(|obj| obj.unbind())
+                }),
+                Err(e) => {
+                    telemetry.mark_error();
+                    Err(e)
+                }
+            }
+        })?
+        .into();
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("coro", task)?;
+        let future = self.future_class.call(py, (), Some(&kwargs))?;
+        Ok(Some(future))
+    }
+}
+
+/// Create a streaming iterator for processing multiple responses incrementally.
+///
+/// Returns a tuple of (PortRef, ValueStream) where:
+/// - PortRef: The port reference to send to actors for responses
+/// - ValueStream: An iterator that yields PythonTask objects for each response
+#[pyfunction]
+#[pyo3(name = "stream_collector")]
+fn py_stream_collector(
+    py: Python<'_>,
+    extent: PyExtent,
+    method_name: String,
+    supervisor: Option<PySupervisor>,
+    instance: PyInstance,
+    qualified_endpoint_name: Option<String>,
+) -> PyResult<(PythonPortRef, PyValueStream)> {
+    let start = RealClock.now();
+
+    let actor_count = extent.num_ranks();
+    let instance = instance.into_instance();
+    let (p, r) = instance.open_port::<PythonMessage>();
+
+    let attributes = hyperactor_telemetry::kv_pairs!(
+        "method" => method_name.clone()
+    );
+    ENDPOINT_STREAM_THROUGHPUT.add(1, attributes);
+
+    let future_class = make_future(py).unbind();
+
+    Ok((
+        PythonPortRef { inner: p.bind() },
+        PyValueStream {
+            receiver: Arc::new(tokio::sync::Mutex::new(r)),
+            supervisor,
+            instance,
+            remaining: AtomicUsize::new(actor_count),
+            method_name,
+            qualified_endpoint_name,
+            start,
+            actor_count,
+            future_class,
+        },
+    ))
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     py_module_add_function!(
         module,
@@ -419,6 +549,13 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         py_value_collector
     );
 
+    py_module_add_function!(
+        module,
+        "monarch._rust_bindings.monarch_hyperactor.endpoint",
+        py_stream_collector
+    );
+
+    module.add_class::<PyValueStream>()?;
     module.add_class::<RepeatMailbox>()?;
 
     Ok(())
