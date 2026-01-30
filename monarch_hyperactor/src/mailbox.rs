@@ -595,6 +595,30 @@ impl Bind for EitherPortRef {
     }
 }
 
+impl EitherPortRef {
+    /// Send a message through this port reference.
+    /// The message is first resolved for any pending pickle state before sending.
+    pub fn send(
+        &mut self,
+        cx: &impl hyperactor::context::Actor,
+        message: crate::actor::PythonMessage,
+    ) -> anyhow::Result<()> {
+        let message = resolve_pending_pickle_blocking(message)?;
+
+        match self {
+            EitherPortRef::Unbounded(port_ref) => port_ref.inner.send(cx, message)?,
+            EitherPortRef::Once(once_port_ref) => {
+                let port = once_port_ref
+                    .inner
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
+                port.send(cx, message)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Named)]
 struct PythonReducer(PyObject);
 
