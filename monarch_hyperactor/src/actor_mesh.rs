@@ -143,15 +143,15 @@ pub(crate) fn to_hy_sel(selection: &str) -> PyResult<Selection> {
 #[pymethods]
 impl PythonActorMesh {
     #[hyperactor::instrument]
-    fn cast(
+    #[pyo3(name = "cast")]
+    fn py_cast(
         &self,
         message: &PythonMessage,
         selection: &str,
         instance: &PyInstance,
     ) -> PyResult<()> {
         let sel = to_hy_sel(selection)?;
-        self.inner
-            .cast(message.clone(), sel, &instance.clone().into_instance())
+        self.cast(message.clone(), sel, &instance.clone().into_instance())
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
@@ -181,12 +181,23 @@ impl PythonActorMesh {
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.inner.__reduce__(py)
     }
+}
 
+impl PythonActorMesh {
+    #[hyperactor::instrument]
+    pub fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+    ) -> PyResult<()> {
+        self.inner.cast(message, selection, instance)
+    }
     /// Returns a Supervisor that can be used to monitor actor health.
     ///
     /// This is used by endpoint operations to race supervision events
     /// against message receipt.
-    fn as_supervisor(&self) -> PySupervisor {
+    pub fn as_supervisor(&self) -> PySupervisor {
         PySupervisor::new(self.clone())
     }
 }
