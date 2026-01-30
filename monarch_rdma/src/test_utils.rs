@@ -95,6 +95,7 @@ pub mod test_utils {
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
     use hyperactor_mesh::proc_mesh::global_root_client;
+    use hyperactor_config::Attrs;
     use ndslice::extent;
 
     use crate::IbverbsConfig;
@@ -131,7 +132,7 @@ pub mod test_utils {
     impl RemoteSpawn for CudaActor {
         type Params = i32;
 
-        async fn new(device_id: i32) -> Result<Self, anyhow::Error> {
+        async fn new(device_id: i32, _environment: Attrs) -> Result<Self, anyhow::Error> {
             unsafe {
                 cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
                 let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();

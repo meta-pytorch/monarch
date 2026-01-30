@@ -831,7 +831,10 @@ pub(crate) mod test_util {
     impl RemoteSpawn for ProxyActor {
         type Params = ();
 
-        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+        async fn new(
+            _params: Self::Params,
+            _environment: Attrs,
+        ) -> Result<Self, anyhow::Error> {
             // The actor creates a mesh.
             use std::sync::Arc;
 
@@ -1785,6 +1788,7 @@ mod tests {
         use crate::alloc::Allocator;
         use crate::alloc::LocalAllocator;
         use crate::config::MAX_CAST_DIMENSION_SIZE;
+        use hyperactor_config::Attrs;
 
         #[derive(Debug)]
         #[hyperactor::export(
@@ -1800,7 +1804,10 @@ mod tests {
         impl RemoteSpawn for EchoActor {
             type Params = ChannelAddr;
 
-            async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {
+            async fn new(
+                params: ChannelAddr,
+                _environment: Attrs,
+            ) -> Result<Self, anyhow::Error> {
                 Ok(Self(dial::<usize>(params)?))
             }
         }

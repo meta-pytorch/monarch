@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use hyperactor_config::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -244,7 +245,9 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     type Params: RemoteMessage;
 
     /// Creates a new actor instance given its instantiation parameters.
-    async fn new(params: Self::Params) -> anyhow::Result<Self>;
+    /// The `environment` allows whoever is responsible for spawning this actor
+    /// to pass in additional context that may be useful.
+    async fn new(params: Self::Params, environment: Attrs) -> anyhow::Result<Self>;
 
     /// A type-erased entry point to spawn this actor. This is
     /// primarily used by hyperactor's remote actor registration
@@ -254,12 +257,13 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         proc: &Proc,
         name: &str,
         serialized_params: Data,
+        environment: Attrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
             let params = bincode::deserialize(&serialized_params)?;
-            let actor = Self::new(params).await?;
+            let actor = Self::new(params, environment).await?;
             let handle = proc.spawn(&name, actor)?;
             // We return only the ActorId, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
@@ -288,7 +292,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
 impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
+    async fn new(_params: Self::Params, _environment: Attrs) -> anyhow::Result<Self> {
         Ok(Default::default())
     }
 }
@@ -501,8 +505,9 @@ pub enum ActorStatus {
     Loading(SystemTime),
     /// The actor is stopping. It is draining messages.
     Stopping,
-    /// The actor is stopped. It is no longer processing messages.
-    Stopped,
+    /// The actor is stopped with a provided reason.
+    /// It is no longer processing messages.
+    Stopped(String),
     /// The actor failed with the provided actor error.
     Failed(ActorErrorKind),
 }
@@ -590,7 +595,7 @@ impl fmt::Display for ActorStatus {
                 )
             }
             Self::Stopping => write!(f, "stopping"),
-            Self::Stopped => write!(f, "stopped"),
+            Self::Stopped(reason) => write!(f, "stopped: {}", reason),
             Self::Failed(err) => write!(f, "failed: {}", err),
         }
     }
