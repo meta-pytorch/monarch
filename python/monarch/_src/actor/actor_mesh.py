@@ -76,6 +76,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
+    Supervisor,
 )
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh,  # noqa (re-export)
@@ -726,12 +727,22 @@ class ActorEndpoint(Endpoint[P, R]):
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
         instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
+        supervisor = self._get_supervisor()
+        monitor: Optional[Shared[Exception]] = (
+            None if supervisor is None else supervisor.supervision_event_task(instance)
         )
 
         r._attach_supervision(monitor, self._full_name())
         return (p, r)
+
+    def _get_supervisor(self) -> "Supervisor | None":
+        # Only return a supervisor if the mesh is a PythonActorMesh (Rust class).
+        # For pure Python implementations like _SingletonActorAdapator,
+        # return None to skip supervision (which is correct since those
+        # implementations don't support supervision anyway).
+        if isinstance(self._actor_mesh, PythonActorMesh):
+            return self._actor_mesh.as_supervisor()
+        return None
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
