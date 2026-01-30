@@ -30,10 +30,12 @@ use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
+use hyperactor::context::Mailbox as _;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
 use hyperactor::host::SingleTerminate;
+use hyperactor::mailbox::PortSender as _;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -356,8 +358,10 @@ wirevalue::register_type!(ShutdownHost);
 #[async_trait]
 impl Handler<ShutdownHost> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
-        // Ack immediately so caller can await.
-        msg.ack.send(cx, ())?;
+        // Ack immediately so caller can stop waiting.
+        let (return_handle, mut return_receiver) = cx.mailbox().open_port();
+        cx.mailbox()
+            .serialize_and_send(&msg.ack, (), return_handle)?;
 
         if let Some(host_mode) = self.host.take() {
             match host_mode {
@@ -380,6 +384,12 @@ impl Handler<ShutdownHost> for HostMeshAgent {
                 }
             }
         }
+
+        // If message is returned, it means it ack was not sent successfully.
+        if return_receiver.recv().await.is_ok() {
+            tracing::warn!("failed to send ack");
+        }
+
         // Drop the host to release any resources that somehow survived.
         let _ = self.host.take();
 

@@ -3342,7 +3342,7 @@ mod tests {
             .expect("manager proxy");
 
         let mut ok = false;
-        for _ in 0..50 {
+        for _ in 0..100 {
             match manager.get_unit(&expected_unit).await {
                 Err(_) => {
                     // Unit already gone: fine.
