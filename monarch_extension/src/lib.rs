@@ -230,7 +230,7 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.trace",
     )?)?;
 
-    #[cfg(feature = "distributed_sql")]
+    #[cfg(feature = "distributed_sql_telemetry")]
     monarch_distributed_telemetry::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.distributed_telemetry",

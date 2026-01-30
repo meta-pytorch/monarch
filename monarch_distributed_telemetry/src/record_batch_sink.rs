@@ -13,6 +13,8 @@
 //! - `span_events`: Enter/exit/close events for spans
 //! - `events`: Tracing events (e.g., tracing::info!())
 
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use datafusion::arrow::record_batch::RecordBatch;
@@ -20,6 +22,20 @@ use hyperactor_telemetry::FieldValue;
 use hyperactor_telemetry::TraceEvent;
 use hyperactor_telemetry::TraceEventSink;
 use record_batch_derive::RecordBatchRow;
+
+/// Global counter for the number of batches flushed by the counting sink.
+/// This can be checked from tests to verify that the sink is active.
+static FLUSH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Get the total number of batches flushed by counting sinks.
+pub fn get_flush_count() -> usize {
+    FLUSH_COUNT.load(Ordering::SeqCst)
+}
+
+/// Reset the flush counter to zero. Useful for tests.
+pub fn reset_flush_count() {
+    FLUSH_COUNT.store(0, Ordering::SeqCst);
+}
 
 /// Helper to convert SystemTime to microseconds since Unix epoch.
 fn timestamp_to_micros(timestamp: &SystemTime) -> i64 {
@@ -99,7 +115,6 @@ pub type FlushCallback = Box<dyn Fn(&str, RecordBatch) + Send>;
 /// Auto-implemented by the RecordBatchRow derive macro.
 pub trait RecordBatchBuffer {
     fn len(&self) -> usize;
-    fn is_empty(&self) -> bool;
     fn to_record_batch(&mut self) -> anyhow::Result<RecordBatch>;
 }
 
@@ -216,6 +231,7 @@ impl RecordBatchSink {
         Self::new(
             batch_size,
             Box::new(|table_name, batch| {
+                FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
                 println!(
                     "[RecordBatchSink] Table: {}, rows: {}, schema: {:?}",
                     table_name,
@@ -227,12 +243,6 @@ impl RecordBatchSink {
                         .map(|f| f.name())
                         .collect::<Vec<_>>()
                 );
-                let schema = batch.schema();
-                for col_idx in 0..batch.num_columns() {
-                    let col = batch.column(col_idx);
-                    let field = schema.field(col_idx);
-                    println!("  {}: {:?}", field.name(), col);
-                }
             }),
         )
     }
@@ -329,8 +339,11 @@ impl TraceEventSink for RecordBatchSink {
     }
 
     fn flush(&mut self) -> Result<(), anyhow::Error> {
-        // Use the shared flush implementation
-        RecordBatchSink::flush(self)
+        // No-op: we don't flush on the periodic timer from the telemetry worker.
+        // Instead, flush happens:
+        // 1. Automatically in consume() when buffers reach batch_size
+        // 2. Explicitly via RecordBatchSink::flush() before queries
+        Ok(())
     }
 
     fn name(&self) -> &str {

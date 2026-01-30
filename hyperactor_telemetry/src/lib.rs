@@ -65,11 +65,6 @@ pub mod trace;
 pub mod trace_dispatcher;
 
 // Re-export key types for external sink implementations
-pub use trace_dispatcher::DispatcherControl;
-pub use trace_dispatcher::FieldValue;
-pub use trace_dispatcher::TraceEvent;
-pub use trace_dispatcher::TraceEventSink;
-
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -83,6 +78,10 @@ pub use opentelemetry::Key;
 pub use opentelemetry::KeyValue;
 pub use opentelemetry::Value;
 pub use opentelemetry::global::meter;
+pub use trace_dispatcher::DispatcherControl;
+pub use trace_dispatcher::FieldValue;
+pub use trace_dispatcher::TraceEvent;
+pub use trace_dispatcher::TraceEventSink;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::non_blocking::NonBlocking;

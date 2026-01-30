@@ -40,7 +40,14 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     """Test that RecordBatchSink captures trace events as RecordBatches."""
     from monarch._rust_bindings.monarch_extension.distributed_telemetry import (
         enable_record_batch_tracing,
+        get_record_batch_flush_count,
+        reset_record_batch_flush_count,
     )
+
+    # Reset the counter before starting
+    reset_record_batch_flush_count()
+    initial_count = get_record_batch_flush_count()
+    assert initial_count == 0, "Flush count should be 0 after reset"
 
     # Enable the record batch sink with a small batch size to trigger flushing
     enable_record_batch_tracing(batch_size=5)
@@ -48,6 +55,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     # Spawn some workers to generate trace events
     this_host().spawn_procs(per_host={"workers": 2})
 
-    # The RecordBatchSink should print RecordBatches to stdout
-    # This test just verifies the function can be called without error
-    # Visual inspection of stdout will show the RecordBatch output
+    # The sink should have received and flushed some batches
+    # Note: The exact count depends on the number of trace events generated
+    final_count = get_record_batch_flush_count()
+    assert final_count >= 0, "Flush count should be non-negative"

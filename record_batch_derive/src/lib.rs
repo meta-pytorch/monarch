@@ -24,18 +24,18 @@
 //! - `SpanBuffer` struct with `Vec<T>` for each field
 //! - `insert(&mut self, row: Span)` method
 //! - `schema() -> SchemaRef` method
-//! - `impl RecordBatchBuffer` with `len()`, `is_empty()`, and `to_record_batch()` methods
+//! - `impl RecordBatchBuffer` with `len()` and `to_record_batch()` methods
 //!
 //! The `RecordBatchBuffer` trait must be in scope where the derive is used.
 
 use proc_macro::TokenStream;
 use quote::format_ident;
 use quote::quote;
-use syn::parse_macro_input;
 use syn::DeriveInput;
 use syn::Field;
 use syn::Fields;
 use syn::Type;
+use syn::parse_macro_input;
 
 /// Derive macro for generating Arrow RecordBatch buffer types.
 #[proc_macro_derive(RecordBatchRow)]
@@ -105,10 +105,6 @@ pub fn derive_record_batch_row(input: TokenStream) -> TokenStream {
         impl RecordBatchBuffer for #buffer_name {
             fn len(&self) -> usize {
                 self.#first_field.len()
-            }
-
-            fn is_empty(&self) -> bool {
-                self.#first_field.is_empty()
             }
 
             fn to_record_batch(&mut self) -> anyhow::Result<datafusion::arrow::record_batch::RecordBatch> {
