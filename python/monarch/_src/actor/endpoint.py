@@ -106,6 +106,7 @@ if TYPE_CHECKING:
         PortReceiver as HyPortReceiver,
         PortRef,
     )
+    from monarch._rust_bindings.monarch_hyperactor.supervision import Supervisor
     from monarch._src.actor.actor_mesh import ActorMesh, Port, PortReceiver, ValueMesh
 
 P = ParamSpec("P")
@@ -208,6 +209,13 @@ class Endpoint(ABC, Generic[P, R]):
         self, r: "HyPortReceiver | HyOncePortReceiver"
     ) -> "HyPortReceiver | HyOncePortReceiver":
         return r
+
+    def _get_supervisor(self) -> "Supervisor | None":
+        """
+        Returns a Supervisor for monitoring actor health during endpoint calls.
+        Override in subclasses to provide supervision for actor meshes.
+        """
+        return None
 
     # the following are all 'adverbs' or different ways to handle the
     # return values of this endpoint. Adverbs should only ever take *args, **kwargs
