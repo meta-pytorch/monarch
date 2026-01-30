@@ -77,5 +77,5 @@ jobs:
           context: . # Build context is the root directory
           file: ./Dockerfile
           push: true # Push the image to the registry
-          tags: ghcr.io/${{ github.repository }}:latest
+          tags: ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }}-cuda12.8
           build-args: PYTORCH_TAG=2.10.0-cuda12.8-cudnn9-runtime
