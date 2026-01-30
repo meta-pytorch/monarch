@@ -284,7 +284,13 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
+            .spawn(
+                "agent",
+                HostMeshAgent::new(HostAgentMode::Process {
+                    host,
+                    exit_on_shutdown: false,
+                }),
+            )
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 
@@ -323,6 +329,7 @@ impl HostMesh {
                 addr: addr.clone(),
                 command: Some(command.clone()),
                 config: Some(hyperactor_config::global::attrs()),
+                exit_on_shutdown: false,
             };
 
             let mut cmd = command.new();
@@ -1545,6 +1552,7 @@ mod tests {
                 addr: host.clone(),
                 command: None, // use current binary
                 config: None,
+                exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
             cmd.kill_on_drop(true);
@@ -1590,6 +1598,7 @@ mod tests {
                 config: None,
                 // The entire purpose of this is to fail:
                 command: Some(BootstrapCommand::from("false")),
+                exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
             cmd.kill_on_drop(true);
@@ -1635,6 +1644,7 @@ mod tests {
                 addr: host.clone(),
                 config: None,
                 command,
+                exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
             cmd.kill_on_drop(true);

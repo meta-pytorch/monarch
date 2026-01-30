@@ -289,10 +289,12 @@ async fn halt<R>() -> R {
 /// - `addr`: the listening address of the host; this is used to bind the frontend address;
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
 /// - `config`: optional runtime config overlay.
+/// - `exit_on_shutdown`: if true, exit the process after handling a shutdown request.
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
+    exit_on_shutdown: bool,
 ) -> anyhow::Result<ActorHandle<HostMeshAgent>> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
@@ -312,8 +314,13 @@ pub async fn host(
         .await?;
     let addr = host.addr().clone();
     let system_proc = host.system_proc().clone();
-    let host_mesh_agent = system_proc
-        .spawn::<HostMeshAgent>("agent", HostMeshAgent::new(HostAgentMode::Process(host)))?;
+    let host_mesh_agent = system_proc.spawn::<HostMeshAgent>(
+        "agent",
+        HostMeshAgent::new(HostAgentMode::Process {
+            host,
+            exit_on_shutdown,
+        }),
+    )?;
 
     tracing::info!(
         "serving host at {}, agent: {}",
@@ -367,6 +374,8 @@ pub enum Bootstrap {
         /// as the `ClientOverride` layer so the parent's effective config
         /// takes precedence over Defaults.
         config: Option<Attrs>,
+        /// If true, exit the process after handling a shutdown request.
+        exit_on_shutdown: bool,
     },
 
     /// Bootstrap as a legacy "v0" proc.
@@ -545,8 +554,9 @@ impl Bootstrap {
                 addr,
                 command,
                 config,
+                exit_on_shutdown,
             } => {
-                ok!(host(addr, command, config).await);
+                ok!(host(addr, command, config, exit_on_shutdown).await);
                 halt().await
             }
             Bootstrap::V0ProcMesh { config } => bootstrap_v0_proc_mesh(config).await,
@@ -2378,6 +2388,7 @@ mod tests {
             addr: ChannelAddr::any(ChannelTransport::Unix),
             command: None,
             config: None,
+            exit_on_shutdown: false,
         };
 
         let safe = value.to_env_safe_string().unwrap();
@@ -2436,6 +2447,7 @@ mod tests {
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 command: None,
                 config: Some(attrs.clone()),
+                exit_on_shutdown: false,
             };
             let env_str = original.to_env_safe_string().expect("encode bootstrap");
             let decoded = Bootstrap::from_env_safe_string(&env_str).expect("decode bootstrap");
@@ -3386,9 +3398,14 @@ mod tests {
         let temp_proc = Proc::local();
         let (temp_instance, _) = temp_proc.instance("temp").unwrap();
 
-        let handle = host(any_addr_for_test(), Some(BootstrapCommand::test()), None)
-            .await
-            .unwrap();
+        let handle = host(
+            any_addr_for_test(),
+            Some(BootstrapCommand::test()),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
 
         let local_proc = handle.get_local_proc(&temp_instance).await.unwrap();
         let _local_instance = local_proc

@@ -286,6 +286,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
+            false,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
