@@ -94,7 +94,7 @@ fn fmt_status<'a>(
     let mut f = indented(f).with_str(" ");
 
     match status {
-        ActorStatus::Stopped if actor_id.name() == "agent" => {
+        ActorStatus::Stopped(_) if actor_id.name() == "agent" => {
             // Host agent stopped - use simplified message from D86984496
             let name = match actor_id.proc_id() {
                 crate::reference::ProcId::Direct(addr, _) => addr.to_string(),
