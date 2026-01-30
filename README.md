@@ -122,7 +122,7 @@ USE_TENSOR_ENGINE=0 uv sync
 ```
 
 **Note**: Building without tensor_engine means you won't have access to the
-distributed tensor or RDMA APIs.
+distributed tensor or RDMA APIs. Torch is required to use tensor_engine, and the latest stable torch is ABI compatible with the latest versioned torchmonarch
 
 #### Build Dependencies by Platform
 
