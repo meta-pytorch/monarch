@@ -10,7 +10,12 @@
 # Prerequisites:
 # - Kubernetes cluster with Monarch operator installed
 # - GPU nodes with nvidia.com/gpu resources available
-# - monarch-tests namespace created
+---
+# Namespace for the DDP example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monarch-tests
 ---
 # ServiceAccount for the controller pod
 apiVersion: v1

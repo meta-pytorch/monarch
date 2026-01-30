@@ -121,6 +121,7 @@ This script:
 # -------
 # We import Monarch's Kubernetes job support and SPMDActor.
 
+import argparse
 import asyncio
 
 from monarch.job.kubernetes import KubernetesJob
@@ -210,7 +211,11 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
 #
 # 2. Wait for pods to be ready::
 #
+#        # Check worker pods
 #        kubectl get pods -n monarch-tests -l app.kubernetes.io/name=monarch-worker
+#
+#        # Check controller pod
+#        kubectl get pods -n monarch-tests ddp-controller
 #
 # 3. Copy train.py to each worker pod (in production, code is typically baked into
 #    the image, git synced, or loaded from shared storage)::
@@ -219,10 +224,20 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
 #            kubectl cp train.py monarch-tests/${pod#pod/}:/tmp/train.py
 #        done
 #
-# 4. Run from the controller pod::
+# 4. Run from the controller pod. You can either get a shell::
 #
-#        kubectl exec -it ddp-controller -n monarch-tests -- \
-#            python kubernetes_ddp.py
+#        # Copy the script to the controller
+#        kubectl cp kubernetes_ddp.py monarch-tests/ddp-controller:/tmp/kubernetes_ddp.py
+#
+#        # Get a shell into the controller
+#        kubectl exec -it ddp-controller -n monarch-tests -- /bin/bash
+#
+#        # Inside the controller, run the DDP example
+#        python /tmp/kubernetes_ddp.py --num_hosts 2 --gpus_per_host 4
+#
+#    Or run directly without a shell::
+#
+#        kubectl exec -it ddp-controller -n monarch-tests -- python /tmp/kubernetes_ddp.py
 #
 # 5. View worker logs::
 #
@@ -232,8 +247,31 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
 #
 #        kubectl delete -f manifests/ddp_mesh.yaml
 #
-# For the full instruction, see the
-# `Kubernetes DDP README <https://github.com/meta-pytorch/monarch/tree/main/docs/source/examples/ddp>`_.
+# Command-line Arguments
+# ~~~~~~~~~~~~~~~~~~~~~~
+# - ``--num_hosts``: Number of worker pods (must match ``spec.replicas`` in YAML)
+# - ``--gpus_per_host``: GPUs per pod (must match ``nvidia.com/gpu`` in YAML)
+# - ``--mesh_name``: Name of the MonarchMesh resource (must match ``metadata.name`` in YAML)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Run DDP training on Kubernetes")
+    parser.add_argument(
+        "--num_hosts",
+        type=int,
+        default=2,
+        help="Number of worker pods (must match spec.replicas in YAML)",
+    )
+    parser.add_argument(
+        "--gpus_per_host",
+        type=int,
+        default=4,
+        help="GPUs per pod (must match nvidia.com/gpu in YAML)",
+    )
+    parser.add_argument(
+        "--mesh_name",
+        type=str,
+        default="ddpmesh",
+        help="Name of the MonarchMesh resource (must match metadata.name in YAML)",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(args.num_hosts, args.gpus_per_host, args.mesh_name))
