@@ -54,6 +54,9 @@ type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcMeshAgent>>> + Send>>;
 type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture + Send + Sync>;
 
+/// The well-known name of the host mesh agent actor.
+pub static HOST_AGENT: &str = "host_agent";
+
 /// Represents the different ways a [`Host`] can be managed by an agent.
 ///
 /// A host can either:
@@ -568,7 +571,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         };
 
         let system_proc = host.system_proc().clone();
-        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host))?;
+        let host_mesh_agent = system_proc.spawn(HOST_AGENT, HostMeshAgent::new(host))?;
 
         Ok(Self {
             host_mesh_agent,
@@ -607,6 +610,7 @@ mod tests {
 
     use super::*;
     use crate::bootstrap::ProcStatus;
+    use crate::proc_mesh::mesh_agent::PROC_AGENT;
     use crate::resource::CreateOrUpdateClient;
     use crate::resource::GetStateClient;
 
@@ -623,7 +627,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
+            .spawn(HOST_AGENT, HostMeshAgent::new(HostAgentMode::Process(host)))
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
@@ -659,7 +663,7 @@ mod tests {
                 }),
             } if name == resource_name
               && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id("agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id(PROC_AGENT, 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
