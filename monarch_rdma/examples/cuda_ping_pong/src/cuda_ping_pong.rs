@@ -82,6 +82,7 @@ use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::cu_check;
+use hyperactor_config::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
@@ -274,7 +275,7 @@ impl Actor for CudaRdmaActor {
 impl RemoteSpawn for CudaRdmaActor {
     type Params = (ActorRef<RdmaManagerActor>, usize, usize);
 
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
         let (rdma_manager, device_id, buffer_size) = params;
         let cpu_buffer = vec![0u8; buffer_size].into_boxed_slice();
 

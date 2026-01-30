@@ -47,6 +47,7 @@ use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::clock::Clock;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -482,7 +483,7 @@ impl RdmaManagerActor {
 impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbverbsConfig>;
 
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
         if !ibverbs_supported() {
             return Err(anyhow::anyhow!(
                 "Cannot create RdmaManagerActor because RDMA is not supported on this machine"

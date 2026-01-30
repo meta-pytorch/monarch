@@ -36,6 +36,7 @@ use hyperactor::context;
 #[cfg(test)]
 use hyperactor::mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Attrs;
 use hyperactor_config::global::Source;
 use ndslice::Point;
 #[cfg(test)]
@@ -264,6 +265,7 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
 
     async fn new(
         _params: Self::Params,
+        _environment: Attrs,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Err(anyhow::anyhow!("test failure"))
     }
@@ -333,6 +335,7 @@ impl hyperactor::RemoteSpawn for WrapperActor {
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
+        _environment: Attrs,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Ok(Self {
             proc_mesh,
