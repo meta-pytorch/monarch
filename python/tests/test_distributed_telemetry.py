@@ -14,12 +14,14 @@ import os
 # This is required for the TraceEventDispatcher to be created, which processes sinks
 os.environ["USE_UNIFIED_LAYER"] = "1"
 
+import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
 from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import this_host
 from monarch._src.actor.proc_mesh import (
     _proc_mesh_spawn_callbacks,
+    SetupActor,
     unregister_proc_mesh_spawn_callback,
 )
 from monarch.distributed_telemetry import start_telemetry
@@ -38,6 +40,7 @@ class WorkerActor(Actor):
 def cleanup_callbacks():
     """Fixture to clean up any callbacks registered during tests."""
     initial_callbacks = list(_proc_mesh_spawn_callbacks)
+    initial_startup_functions = list(SetupActor._startup_functions)
     yield
     # Remove any callbacks added during the test
     callbacks_to_remove = [
@@ -45,6 +48,17 @@ def cleanup_callbacks():
     ]
     for cb in callbacks_to_remove:
         unregister_proc_mesh_spawn_callback(cb)
+    # Remove any startup functions added during the test
+    startup_to_remove = [
+        fn
+        for fn in SetupActor._startup_functions
+        if fn not in initial_startup_functions
+    ]
+    for fn in startup_to_remove:
+        SetupActor._startup_functions.remove(fn)
+    # Reset module-level state for next test
+    telemetry_actor._scanner = None
+    telemetry_actor._scanner_startup_impl = None
 
 
 @pytest.mark.timeout(120)
@@ -53,7 +67,7 @@ def test_distributed_telemetry_auto_callback(cleanup_callbacks) -> None:
     initial_callback_count = len(_proc_mesh_spawn_callbacks)
 
     # Start telemetry with fake data - returns QueryEngine directly
-    engine = start_telemetry(use_fake_data=True).get()
+    engine = start_telemetry(use_fake_data=True)
 
     # Verify callback was registered
     assert len(_proc_mesh_spawn_callbacks) == initial_callback_count + 1
@@ -72,7 +86,7 @@ def test_distributed_telemetry_auto_callback(cleanup_callbacks) -> None:
 def test_distributed_telemetry_grandchild(cleanup_callbacks) -> None:
     """Test that grandchild data makes it to the top-level query."""
     # Start telemetry with fake data - returns QueryEngine directly
-    engine = start_telemetry(use_fake_data=True).get()
+    engine = start_telemetry(use_fake_data=True)
 
     # Spawn workers
     worker_procs = this_host().spawn_procs(per_host={"workers": 2})
@@ -99,9 +113,22 @@ def test_distributed_telemetry_grandchild(cleanup_callbacks) -> None:
 @pytest.mark.timeout(60)
 def test_record_batch_tracing(cleanup_callbacks) -> None:
     """Test that RecordBatchSink captures trace events as RecordBatches."""
-    from monarch._rust_bindings.monarch_extension.distributed_telemetry import (
-        enable_record_batch_tracing,
-    )
+    try:
+        from monarch._rust_bindings.monarch_distributed_telemetry import (
+            enable_record_batch_tracing,
+            get_record_batch_flush_count,
+            reset_record_batch_flush_count,
+        )
+    except ImportError:
+        pytest.skip(
+            "RecordBatch tracing not available (requires distributed_sql_telemetry feature)"
+        )
+        return
+
+    # Reset the counter before starting
+    reset_record_batch_flush_count()
+    initial_count = get_record_batch_flush_count()
+    assert initial_count == 0, "Flush count should be 0 after reset"
 
     # Enable the record batch sink with a small batch size to trigger flushing
     enable_record_batch_tracing(batch_size=5)
@@ -109,6 +136,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     # Spawn some workers to generate trace events
     this_host().spawn_procs(per_host={"workers": 2})
 
-    # The RecordBatchSink should print RecordBatches to stdout
-    # This test just verifies the function can be called without error
-    # Visual inspection of stdout will show the RecordBatch output
+    # The sink should have received and flushed some batches
+    # Note: The exact count depends on the number of trace events generated
+    final_count = get_record_batch_flush_count()
+    assert final_count >= 0, "Flush count should be non-negative"

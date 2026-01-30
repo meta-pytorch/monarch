@@ -88,7 +88,7 @@ def main() -> None:
 
     # Start telemetry with real data collection (no fake data)
     print("Starting telemetry with real data collection...")
-    engine = start_telemetry(use_fake_data=False).get()
+    engine = start_telemetry(use_fake_data=False)
 
     # Spawn worker processes - telemetry automatically tracks them
     print(f"Spawning {NUM_WORKERS} worker processes...")

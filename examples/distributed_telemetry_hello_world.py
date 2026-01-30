@@ -60,7 +60,7 @@ def main() -> None:
 
     # Start telemetry with fake demo data - returns a QueryEngine directly
     print("Starting telemetry with fake demo data...")
-    engine = start_telemetry(use_fake_data=True).get()
+    engine = start_telemetry(use_fake_data=True)
 
     # Spawn worker processes - telemetry automatically tracks them.
     print(f"Spawning {NUM_WORKERS} worker processes...")

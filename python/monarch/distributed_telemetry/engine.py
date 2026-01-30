@@ -15,7 +15,7 @@ Provides SQL query execution over distributed telemetry actors.
 from typing import Optional, TYPE_CHECKING
 
 import pyarrow as pa
-from monarch._rust_bindings.monarch_extension.distributed_telemetry import (
+from monarch._rust_bindings.monarch_distributed_telemetry.query_engine import (
     QueryEngine as _QueryEngine,
 )
 
