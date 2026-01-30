@@ -48,6 +48,7 @@ use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
 use crate::proc_mesh::DEFAULT_TRANSPORT;
+use crate::proc_mesh::mesh_agent::PROC_AGENT;
 use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
@@ -60,6 +61,7 @@ use crate::v1::Name;
 use crate::v1::ProcMesh;
 use crate::v1::ProcMeshRef;
 use crate::v1::ValueMesh;
+use crate::v1::host_mesh::mesh_agent::HOST_AGENT;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 pub use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
@@ -103,7 +105,7 @@ wirevalue::register_type!(HostRef);
 impl HostRef {
     /// The host mesh agent associated with this host.
     fn mesh_agent(&self) -> ActorRef<HostMeshAgent> {
-        ActorRef::attest(self.service_proc().actor_id("agent", 0))
+        ActorRef::attest(self.service_proc().actor_id(HOST_AGENT, 0))
     }
 
     /// The ProcId for the proc with name `name` on this host.
@@ -284,7 +286,7 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
+            .spawn(HOST_AGENT, HostMeshAgent::new(HostAgentMode::Process(host)))
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 
@@ -919,7 +921,7 @@ impl HostMeshRef {
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
-                    ActorRef::attest(host.named_proc(&proc_name).actor_id("agent", 0)),
+                    ActorRef::attest(host.named_proc(&proc_name).actor_id(PROC_AGENT, 0)),
                 ));
             }
         }
