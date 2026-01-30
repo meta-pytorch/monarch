@@ -114,6 +114,8 @@ use crate::PortRef;
 use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
+use crate::actor::ActorErrorKind;
+use crate::actor::ActorStatus;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
 use crate::channel;
@@ -542,6 +544,14 @@ pub enum MailboxErrorKind {
     /// There was an error during a channel operation.
     #[error(transparent)]
     Channel(#[from] ChannelError),
+
+    /// The owning actor stopped.
+    #[error("actor is stopped: {0}")]
+    ActorStopped(String),
+
+    /// The owning actor failed.
+    #[error("actor failed: {0}")]
+    ActorFailed(ActorErrorKind),
 }
 
 impl MailboxError {
@@ -1232,23 +1242,39 @@ pub struct Mailbox {
 
 impl Mailbox {
     /// Create a new mailbox associated with the provided actor ID, using the provided
-    /// forwarder for external destinations.
-    pub fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -> Self {
+    /// forwarder for external destinations and status_watcher for actor status.
+    pub fn new(
+        actor_id: ActorId,
+        forwarder: BoxedMailboxSender,
+        status_watcher: Option<watch::Receiver<ActorStatus>>,
+    ) -> Self {
         Self {
-            inner: Arc::new(State::new(actor_id, forwarder)),
+            inner: Arc::new(State::new(actor_id, forwarder, status_watcher)),
         }
     }
 
     /// Create a new detached mailbox associated with the provided actor ID.
     pub fn new_detached(actor_id: ActorId) -> Self {
         Self {
-            inner: Arc::new(State::new(actor_id, BOXED_PANICKING_MAILBOX_SENDER.clone())),
+            inner: Arc::new(State::new(
+                actor_id,
+                BOXED_PANICKING_MAILBOX_SENDER.clone(),
+                None,
+            )),
         }
     }
 
     /// The actor id associated with this mailbox.
     pub fn actor_id(&self) -> &ActorId {
         &self.inner.actor_id
+    }
+
+    /// Get the status of the owning actor, if this mailbox is not detached.
+    fn check_actor_status(&self) -> Option<ActorStatus> {
+        self.inner
+            .status_watcher
+            .as_ref()
+            .map(|s| s.borrow().clone())
     }
 
     /// Open a new port that accepts M-typed messages. The returned
@@ -1523,6 +1549,21 @@ impl MailboxSender for Mailbox {
             return self.inner.forwarder.post(envelope, return_handle);
         }
 
+        // Check if the actor is stopped or failed before delivering locally.
+        if let Some(status) = self.check_actor_status() {
+            match status {
+                ActorStatus::Stopped(reason) => {
+                    let err = format!("actor {} is stopped: {}", self.inner.actor_id, reason);
+                    return envelope.undeliverable(DeliveryError::Mailbox(err), return_handle);
+                }
+                ActorStatus::Failed(actor_error) => {
+                    let err = format!("actor {} failed: {}", self.inner.actor_id, actor_error);
+                    return envelope.undeliverable(DeliveryError::Mailbox(err), return_handle);
+                }
+                _ => {}
+            }
+        }
+
         match self.inner.ports.entry(envelope.dest().index()) {
             Entry::Vacant(_) => {
                 let err = DeliveryError::Unroutable(format!(
@@ -1633,6 +1674,32 @@ impl<M: Message> PortHandle<M> {
 
     /// Send a message to this port.
     pub fn send(&self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+        if let Some(status) = self.mailbox.check_actor_status() {
+            match status {
+                ActorStatus::Stopped(reason) => {
+                    let err = MailboxError {
+                        actor_id: self.mailbox.actor_id().clone(),
+                        kind: MailboxErrorKind::ActorStopped(reason),
+                    };
+                    return Err(MailboxSenderError::new_unbound::<M>(
+                        self.mailbox.actor_id().clone(),
+                        MailboxSenderErrorKind::Mailbox(err),
+                    ));
+                }
+                ActorStatus::Failed(actor_error) => {
+                    let err = MailboxError {
+                        actor_id: self.mailbox.actor_id().clone(),
+                        kind: MailboxErrorKind::ActorFailed(actor_error),
+                    };
+                    return Err(MailboxSenderError::new_unbound::<M>(
+                        self.mailbox.actor_id().clone(),
+                        MailboxSenderErrorKind::Mailbox(err),
+                    ));
+                }
+                _ => (),
+            }
+        }
+
         let mut headers = Attrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
@@ -2191,11 +2258,18 @@ struct State {
 
     /// The forwarder for this mailbox.
     forwarder: BoxedMailboxSender,
+
+    /// Watches the actor status to reject messages to stopped/failed actors.
+    status_watcher: Option<watch::Receiver<ActorStatus>>,
 }
 
 impl State {
     /// Create a new state with the provided owning ActorId.
-    fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -> Self {
+    fn new(
+        actor_id: ActorId,
+        forwarder: BoxedMailboxSender,
+        status_watcher: Option<watch::Receiver<ActorStatus>>,
+    ) -> Self {
         Self {
             actor_id,
             ports: DashMap::new(),
@@ -2203,6 +2277,7 @@ impl State {
             // Other port IDs are ephemeral.
             next_port: AtomicU64::new(USER_PORT_OFFSET),
             forwarder,
+            status_watcher,
         }
     }
 
@@ -2261,11 +2336,6 @@ impl MailboxMuxer {
         }
     }
 
-    /// Convenience function to bind a mailbox.
-    pub fn bind_mailbox(&self, mailbox: Mailbox) -> bool {
-        self.bind(mailbox.actor_id().clone(), mailbox)
-    }
-
     /// Unbind the sender associated with the provided actor ID. After
     /// unbinding, the muxer will no longer be able to send messages to
     /// that actor.
@@ -2286,7 +2356,7 @@ impl MailboxSender for MailboxMuxer {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_actor_id = envelope.dest().actor_id();
-        match self.mailboxes.get(envelope.dest().actor_id()) {
+        match self.mailboxes.get(dest_actor_id) {
             None => {
                 let err = format!("no mailbox for actor {} registered in muxer", dest_actor_id);
                 envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
@@ -3198,8 +3268,11 @@ mod tests {
         fn create_receiver<M>(coalesce: bool) -> (mpsc::UnboundedSender<M>, PortReceiver<M>) {
             // Create dummy state and port_id to create PortReceiver. They are
             // not used in the test.
-            let dummy_state =
-                State::new(id!(world[0].actor), BOXED_PANICKING_MAILBOX_SENDER.clone());
+            let dummy_state = State::new(
+                id!(world[0].actor),
+                BOXED_PANICKING_MAILBOX_SENDER.clone(),
+                None,
+            );
             let dummy_port_id = PortId(id!(world[0].actor), 0);
             let (sender, receiver) = mpsc::unbounded_channel::<M>();
             let receiver = PortReceiver {
@@ -3820,6 +3893,7 @@ mod tests {
         let mailbox = Mailbox::new(
             actor_id.clone(),
             BoxedMailboxSender::new(AsyncLoopForwarder),
+            None,
         );
         let (ret_port, mut ret_rx) = mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
 
@@ -3867,6 +3941,7 @@ mod tests {
         let mailbox = Mailbox::new(
             actor_id.clone(),
             BoxedMailboxSender::new(PanickingMailboxSender),
+            None,
         );
         let (_undeliverable_tx, mut undeliverable_rx) =
             mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
@@ -3957,5 +4032,165 @@ mod tests {
         assert_matches!(handle.location(), PortLocation::Bound(port) if port.index() == handle.port_index);
         // Since handle is already bound, call bind_to() on it will cause panic.
         handle.bind_actor_port();
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_post_fails_when_actor_stopped() {
+        use tokio::sync::watch;
+
+        use crate::actor::ActorStatus;
+
+        let actor_id = id!(test[0].stopped_actor);
+        let (status_tx, status_rx) = watch::channel(ActorStatus::Stopped("test stop".to_string()));
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+            Some(status_rx),
+        );
+
+        let (user_port, _user_rx) = mailbox.open_port::<u64>();
+
+        // Use a separate detached mailbox for the return handle since
+        // the main mailbox is stopped and won't accept messages.
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        let envelope = MessageEnvelope::serialize(
+            actor_id.clone(),
+            user_port.bind().port_id().clone(),
+            &42u64,
+            Attrs::new(),
+        )
+        .expect("serialize");
+
+        mailbox.post(envelope, return_handle);
+
+        let undeliverable = RealClock
+            .timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed");
+
+        let err = undeliverable.0.error_msg().expect("expected error");
+        assert!(
+            err.contains(&format!("actor {} is stopped", actor_id)),
+            "error should indicate actor stopped: {}",
+            err
+        );
+
+        drop(status_tx);
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_post_fails_when_actor_failed() {
+        use tokio::sync::watch;
+
+        use crate::actor::ActorErrorKind;
+        use crate::actor::ActorStatus;
+
+        let actor_id = id!(test[0].failed_actor);
+        let (status_tx, status_rx) = watch::channel(ActorStatus::Failed(ActorErrorKind::Generic(
+            "test failure".to_string(),
+        )));
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+            Some(status_rx),
+        );
+
+        let (user_port, _user_rx) = mailbox.open_port::<u64>();
+
+        // Use a separate detached mailbox for the return handle since
+        // the main mailbox is failed and won't accept messages.
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        let envelope = MessageEnvelope::serialize(
+            actor_id.clone(),
+            user_port.bind().port_id().clone(),
+            &42u64,
+            Attrs::new(),
+        )
+        .expect("serialize");
+
+        mailbox.post(envelope, return_handle);
+
+        let undeliverable = RealClock
+            .timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed");
+
+        let err = undeliverable.0.error_msg().expect("expected error");
+        assert!(
+            err.contains(&format!("actor {} failed", actor_id)),
+            "error should indicate actor failed: {}",
+            err
+        );
+
+        drop(status_tx);
+    }
+
+    #[tokio::test]
+    async fn test_port_handle_send_fails_when_actor_stopped() {
+        use tokio::sync::watch;
+
+        use crate::actor::ActorStatus;
+
+        let actor_id = id!(test[0].stopped_actor);
+        let (_status_tx, status_rx) = watch::channel(ActorStatus::Stopped("test stop".to_string()));
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+            Some(status_rx),
+        );
+
+        let (port_handle, _rx) = mailbox.open_port::<u64>();
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        let result = port_handle.send(&client, 42u64);
+
+        assert!(result.is_err(), "send should fail when actor is stopped");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(mailbox_err.kind(), MailboxErrorKind::ActorStopped(reason) if reason == "test stop")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_port_handle_send_fails_when_actor_failed() {
+        use tokio::sync::watch;
+
+        use crate::actor::ActorErrorKind;
+        use crate::actor::ActorStatus;
+
+        let actor_id = id!(test[0].failed_actor);
+        let (_status_tx, status_rx) = watch::channel(ActorStatus::Failed(ActorErrorKind::Generic(
+            "test failure".to_string(),
+        )));
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+            Some(status_rx),
+        );
+
+        let (port_handle, _rx) = mailbox.open_port::<u64>();
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        let result = port_handle.send(&client, 42u64);
+
+        assert!(result.is_err(), "send should fail when actor is failed");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(mailbox_err.kind(), MailboxErrorKind::ActorFailed(ActorErrorKind::Generic(msg)) if msg == "test failure")
+        );
     }
 }
