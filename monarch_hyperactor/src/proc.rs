@@ -116,7 +116,7 @@ impl PyProc {
             Ok(PythonActorHandle {
                 inner: proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type)?,
+                    PythonActor::new(pickled_type, None, None)?,
                 )?,
             })
         })
@@ -135,7 +135,7 @@ impl PyProc {
             inner: signal_safe_block_on(py, async move {
                 proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type)?,
+                    PythonActor::new(pickled_type, None, None)?,
                 )
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,

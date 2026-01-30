@@ -1740,56 +1740,6 @@ class ActorMesh(MeshTrait, Generic[T]):
         )
 
     @classmethod
-    def _create(
-        cls,
-        Class: Type[T],
-        name: str,
-        actor_mesh: "PythonActorMesh",
-        shape: Shape,
-        proc_mesh: "ProcMesh",
-        controller_controller: Optional["_ControllerController"],
-        # args and kwargs are passed to the __init__ method of the user defined
-        # python actor object.
-        *args: Any,
-        **kwargs: Any,
-    ) -> "ActorMesh[T]":
-        mesh = cls(Class, name, actor_mesh, shape, proc_mesh)
-
-        # We don't start the supervision polling loop until the first call to
-        # supervision_event, which needs an Instance. Initialize here so events
-        # can be collected even without any endpoints being awaited.
-        instance = context().actor_instance
-        # Supervision display name is unused here now, it is set in ProcMesh::spawn.
-        mesh._inner.start_supervision(instance._as_rust(), "")
-
-        async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
-            return None
-
-        # send __init__ message to the mesh to initialize the user defined
-        # python actor object.
-        ep = mesh._endpoint(
-            MethodSpecifier.Init(),
-            null_func,
-            None,
-        )
-        send(
-            ep,
-            (
-                ActorInitArgs(
-                    cast(Type[Actor], mesh._class),
-                    proc_mesh,
-                    controller_controller,
-                    name,
-                    context().actor_instance._as_creator(),
-                    args,
-                ),
-            ),
-            kwargs,
-        )
-
-        return mesh
-
-    @classmethod
     def from_actor_id(
         cls,
         Class: Type[T],
