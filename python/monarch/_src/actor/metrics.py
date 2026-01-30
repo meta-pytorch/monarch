@@ -10,17 +10,11 @@
 Telemetry metrics for endpoint operations.
 
 This module defines histograms and counters used to track endpoint
-performance metrics. Metrics (call_one, choose) are now implemented in Rust
+performance metrics. Metrics (call_one, choose, call) are now implemented in Rust
 """
 
 from monarch._src.actor.telemetry import METER
 from opentelemetry.metrics import Counter, Histogram
-
-# Histogram for measuring endpoint call latency
-endpoint_call_latency_histogram: Histogram = METER.create_histogram(
-    name="endpoint_call_latency.us",
-    description="Latency of endpoint call operations in microseconds",
-)
 
 
 # Histogram for measuring endpoint stream latency per yield
@@ -36,21 +30,9 @@ endpoint_message_size_histogram: Histogram = METER.create_histogram(
     description="Size of endpoint messages",
 )
 
-# Counters for measuring endpoint errors
-endpoint_call_error_counter: Counter = METER.create_counter(
-    name="endpoint_call_error.count",
-    description="Count of errors in endpoint call operations",
-)
-
 endpoint_broadcast_error_counter: Counter = METER.create_counter(
     name="endpoint_broadcast_error.count",
     description="Count of errors in endpoint broadcast operations",
-)
-
-# Counters for measuring endpoint throughput (call counts)
-endpoint_call_throughput_counter: Counter = METER.create_counter(
-    name="endpoint_call_throughput.count",
-    description="Count of endpoint call invocations for throughput measurement",
 )
 
 endpoint_stream_throughput_counter: Counter = METER.create_counter(
