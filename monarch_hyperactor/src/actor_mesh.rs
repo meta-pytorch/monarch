@@ -53,7 +53,6 @@ use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyRegion;
-use crate::supervision::PySupervisor;
 use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 
@@ -197,8 +196,8 @@ impl PythonActorMesh {
     ///
     /// This is used by endpoint operations to race supervision events
     /// against message receipt.
-    pub fn as_supervisor(&self) -> PySupervisor {
-        PySupervisor::new(self.clone())
+    pub fn get_supervisor(&self) -> Arc<dyn Supervisable> {
+        self.inner.clone()
     }
 }
 

@@ -35,18 +35,3 @@ class MeshFailure:
         User-readable error report for this particular failure.
         """
         ...
-
-@final
-class Supervisor:
-    """
-    A wrapper for supervision functionality.
-
-    This provides a concrete type that can be passed to endpoint collectors
-    to monitor actor health during endpoint operations.
-    """
-
-    ...
-
-    def supervision_event_task(
-        self, instance: Instance
-    ) -> Optional[Shared[Exception]]: ...
