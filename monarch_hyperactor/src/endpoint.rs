@@ -54,7 +54,7 @@ use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::shape::PyExtent;
 use crate::shape::PyShape;
-use crate::supervision::PySupervisor;
+use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 use crate::value_mesh::PyValueMesh;
 
@@ -248,7 +248,7 @@ enum RaceResult {
 
 async fn collect_value(
     rx: &mut PortReceiver<PythonMessage>,
-    supervisor: &Option<PySupervisor>,
+    supervisor: &Option<Arc<dyn Supervisable>>,
     instance: &Instance<PythonActor>,
     qualified_endpoint_name: &Option<String>,
 ) -> PyResult<(Part, Option<usize>)> {
@@ -316,7 +316,7 @@ async fn collect_valuemesh(
     extent: Extent,
     mut rx: PortReceiver<PythonMessage>,
     method_name: String,
-    supervisor: Option<PySupervisor>,
+    supervisor: Option<Arc<dyn Supervisable>>,
     instance: &Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
 ) -> PyResult<Py<PyAny>> {
@@ -366,7 +366,7 @@ async fn collect_valuemesh(
 fn value_collector(
     mut receiver: PortReceiver<PythonMessage>,
     method_name: String,
-    supervisor: Option<PySupervisor>,
+    supervisor: Option<Arc<dyn Supervisable>>,
     instance: Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
     adverb: EndpointAdverb,
@@ -407,7 +407,7 @@ fn value_collector(
 pub struct PyValueStream {
     receiver: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
     /// Supervisor for monitoring actor health during streaming.
-    supervisor: Option<PySupervisor>,
+    supervisor: Option<Arc<dyn Supervisable>>,
     instance: Instance<PythonActor>,
     remaining: AtomicUsize,
     method_name: String,
@@ -499,7 +499,7 @@ pub(crate) trait Endpoint {
     ) -> PyResult<()>;
 
     /// Get the supervisor for this endpoint (if any).
-    fn get_supervisor(&self) -> Option<PySupervisor>;
+    fn get_supervisor(&self) -> Option<Arc<dyn Supervisable>>;
 
     /// Get the qualified endpoint name for error messages (if any).
     fn get_qualified_name(&self) -> Option<String>;
@@ -752,8 +752,8 @@ impl Endpoint for ActorEndpoint {
         self.inner.cast(message, selection.into(), instance)
     }
 
-    fn get_supervisor(&self) -> Option<PySupervisor> {
-        Some(self.inner.as_supervisor())
+    fn get_supervisor(&self) -> Option<Arc<dyn Supervisable>> {
+        Some(self.inner.get_supervisor())
     }
 
     fn get_qualified_name(&self) -> Option<String> {
@@ -1016,7 +1016,7 @@ impl Endpoint for Remote {
         Ok(())
     }
 
-    fn get_supervisor(&self) -> Option<PySupervisor> {
+    fn get_supervisor(&self) -> Option<Arc<dyn Supervisable>> {
         None // Remote endpoints don't have supervisors
     }
 
