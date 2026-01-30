@@ -377,6 +377,39 @@ fn py_valuemesh_collector(
     ))
 }
 
+fn value_collector(
+    mut receiver: PortReceiver<PythonMessage>,
+    method_name: String,
+    supervisor: Option<PySupervisor>,
+    instance: Instance<PythonActor>,
+    qualified_endpoint_name: Option<String>,
+    adverb: EndpointAdverb,
+) -> PyResult<PyPythonTask> {
+    Ok(PythonTask::new(async move {
+        let start = RealClock.now();
+
+        let telemetry = EndpointTelemetry::new(start, method_name.clone(), 1, adverb);
+
+        match collect_value(
+            &mut receiver,
+            &supervisor,
+            &instance,
+            &qualified_endpoint_name,
+        )
+        .await
+        {
+            Ok((message, _)) => Python::with_gil(|py| {
+                unflatten(py, &message, instance.mailbox_for_py().clone()).map(|obj| obj.unbind())
+            }),
+            Err(e) => {
+                telemetry.mark_error();
+                Err(e)
+            }
+        }
+    })?
+    .into())
+}
+
 /// Create a task that opens a port and processes a single response.
 ///
 /// Returns a tuple of (PortRef, PythonTask) where:
@@ -395,26 +428,16 @@ fn py_value_collector(
     let mailbox = instance.mailbox_for_py();
     let (p, mut r) = mailbox.open_port::<PythonMessage>();
     let instance = instance.into_instance();
-    Ok((
-        PythonPortRef { inner: p.bind() },
-        PythonTask::new(async move {
-            let start = RealClock.now();
 
-            let telemetry = EndpointTelemetry::new(start, method_name.clone(), 1, adverb);
-
-            match collect_value(&mut r, &supervisor, &instance, &qualified_endpoint_name).await {
-                Ok((message, _)) => Python::with_gil(|py| {
-                    unflatten(py, &message, instance.mailbox_for_py().clone())
-                        .map(|obj| obj.unbind())
-                }),
-                Err(e) => {
-                    telemetry.mark_error();
-                    Err(e)
-                }
-            }
-        })?
-        .into(),
-    ))
+    let task = value_collector(
+        r,
+        method_name,
+        supervisor,
+        instance,
+        qualified_endpoint_name,
+        adverb,
+    )?;
+    Ok((PythonPortRef { inner: p.bind() }, task))
 }
 
 /// A streaming iterator that yields futures for each response from actors.
