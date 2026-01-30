@@ -20,6 +20,7 @@ use hyperactor::ActorRef;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::selection::Selection;
+use hyperactor_mesh::v1;
 use hyperactor_mesh::v1::actor_mesh::ActorMesh;
 use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::py_global;
@@ -30,7 +31,6 @@ use ndslice::selection::structurally_equal;
 use ndslice::view::Ranked;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
-use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -460,10 +460,10 @@ impl PythonActorMeshImpl {
         PythonActorMeshImpl::Ref(PyActorMeshRef { mesh: inner })
     }
 
-    fn mesh_ref(&self) -> ActorMeshRef<PythonActor> {
+    fn mesh_ref(&self) -> &ActorMeshRef<PythonActor> {
         match self {
-            PythonActorMeshImpl::Owned(inner) => (*inner.mesh).clone(),
-            PythonActorMeshImpl::Ref(inner) => inner.mesh.clone(),
+            PythonActorMeshImpl::Owned(inner) => &inner.mesh,
+            PythonActorMeshImpl::Ref(inner) => &inner.mesh,
         }
     }
 }
@@ -475,27 +475,28 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         selection: Selection,
         instance: &PyInstance,
     ) -> PyResult<()> {
-        let mesh_ref = self.mesh_ref();
-
         <ActorMeshRef<PythonActor> as ActorMeshProtocol>::cast(
-            &mesh_ref, message, selection, instance,
+            self.mesh_ref(),
+            message,
+            selection,
+            instance,
         )
     }
 
     fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        let mesh = self.mesh_ref();
+        // We clone here so the future can outlive the self reference, but we want
+        // to share the supervision receiver with the original mesh. This way
+        // if a second endpoint is started, it can reuse the same subscriber.
+        let mesh = self.mesh_ref().clone_with_supervision_receiver();
         let instance = monarch_with_gil_blocking(|_py| instance.clone());
         let shared = PyPythonTask::new::<_, ()>(async move {
             let supervision_failure = mesh
                 .next_supervision_event(instance.deref())
                 .await
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let event = supervision_failure.event;
-            let pyerr = SupervisionError::new_err(format!(
-                "Actor {} exited because of the following reason: {}",
-                event.actor_id, event,
-            ));
-            Err(pyerr)
+            // Don't Unsubscribe here, as the receiver may have other copies being
+            // used.
+            Err(SupervisionError::new_err_from(supervision_failure))
         })?
         .spawn_abortable()?;
         Ok(Some(shared))
@@ -538,6 +539,16 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 }
 
+// Convert a v1::Error to a Python exception. v1::Error::Supervision becomes a SupervisionError,
+// all others become a RuntimeError.
+fn cast_error_to_py_error(err: v1::Error) -> PyErr {
+    if let v1::Error::Supervision(failure) = err {
+        SupervisionError::new_err_from(*failure)
+    } else {
+        PyRuntimeError::new_err(err.to_string())
+    }
+}
+
 impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     fn cast(
         &self,
@@ -547,7 +558,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     ) -> PyResult<()> {
         if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
             self.cast(instance.deref(), message.clone())
-                .map_err(|err| PyException::new_err(err.to_string()))?;
+                .map_err(cast_error_to_py_error)?;
         } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
             let region = Ranked::region(self);
             let random_rank = fastrand::usize(0..region.num_ranks());
@@ -561,7 +572,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
             );
             self.sliced(singleton_region)
                 .cast(instance.deref(), message.clone())
-                .map_err(|err| PyException::new_err(err.to_string()))?;
+                .map_err(cast_error_to_py_error)?;
         } else {
             return Err(PyRuntimeError::new_err(format!(
                 "invalid selection: {:?}",
