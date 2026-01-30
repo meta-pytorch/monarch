@@ -29,6 +29,7 @@ use crate::actor::MethodSpecifier;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
+use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::to_hy_sel;
 use crate::buffers::FrozenBuffer;
@@ -685,7 +686,7 @@ pub(crate) trait Endpoint {
     module = "monarch._rust_bindings.monarch_hyperactor.endpoint"
 )]
 pub struct ActorEndpoint {
-    inner: PythonActorMesh,
+    inner: Arc<dyn ActorMeshProtocol>,
     shape: Shape,
     method: MethodSpecifier,
     mesh_name: String,
@@ -753,7 +754,7 @@ impl Endpoint for ActorEndpoint {
     }
 
     fn get_supervisor(&self) -> Option<Arc<dyn Supervisable>> {
-        Some(self.inner.get_supervisor())
+        Some(self.inner.clone())
     }
 
     fn get_qualified_name(&self) -> Option<String> {
@@ -776,7 +777,7 @@ impl ActorEndpoint {
         propagator: Option<PyObject>,
     ) -> Self {
         Self {
-            inner: actor_mesh,
+            inner: actor_mesh.get_inner(),
             shape: shape.get_inner().clone(),
             method,
             mesh_name,
@@ -808,7 +809,7 @@ impl ActorEndpoint {
     /// Get the actor mesh (used by actor_rref for sending messages).
     #[getter]
     fn _actor_mesh(&self) -> PythonActorMesh {
-        self.inner.clone()
+        PythonActorMesh::from_impl(self.inner.clone())
     }
 
     /// Propagation method for tensor shape inference.
