@@ -363,7 +363,13 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         );
         let actor_id = match self
             .remote
-            .gspawn(&self.proc, &actor_type, &actor_name, params_data)
+            .gspawn(
+                &self.proc,
+                &actor_type,
+                &actor_name,
+                params_data,
+                cx.headers().clone(),
+            )
             .await
         {
             Ok(id) => id,
@@ -518,7 +524,7 @@ wirevalue::register_type!(ActorState);
 impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         create_or_update: resource::CreateOrUpdate<ActorSpec>,
     ) -> anyhow::Result<()> {
         if self.actor_states.contains_key(&create_or_update.name) {
@@ -558,6 +564,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
                         &actor_type,
                         &create_or_update.name.to_string(),
                         params_data,
+                        cx.headers().clone(),
                     )
                     .await,
                 stopped: false,
