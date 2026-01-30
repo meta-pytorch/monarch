@@ -6,6 +6,8 @@
 
 # pyre-unsafe
 
+from __future__ import annotations
+
 import functools
 import logging
 from logging import Logger
@@ -26,9 +28,11 @@ from typing import (
 
 import monarch.common.messages as messages
 import torch
+from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
+from monarch._rust_bindings.monarch_hyperactor.endpoint import Remote
 from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape
-from monarch._src.actor.endpoint import Selection
+from monarch._src.actor.endpoint import _do_propagate, Endpoint, Selection
 from monarch._src.actor.future import Future
 from monarch.common import _coalescing, device_mesh, stream
 from monarch.common.future import Future as OldFuture
@@ -36,7 +40,12 @@ from monarch.common.future import Future as OldFuture
 if TYPE_CHECKING:
     from monarch.common.client import Client
 
-from monarch._src.actor.endpoint import Endpoint
+    def _assert_implements_endpoint(x: Endpoint[..., Any]) -> None: ...
+
+    def _check_remote_satisfies_protocol(ep: Remote[..., Any]) -> None:
+        _assert_implements_endpoint(ep)
+
+
 from monarch.common.device_mesh import RemoteProcessGroup
 from monarch.common.fake import fake_call
 from monarch.common.function import (
@@ -64,9 +73,10 @@ R = TypeVar("R")
 T = TypeVar("T")
 
 
-class Remote(Generic[P, R], Endpoint[P, R]):
+class RemoteImpl(Generic[P, R]):
     def __init__(self, impl: Any, propagator_arg: Propagator):
-        super().__init__(propagator_arg)
+        self._propagator_arg = propagator_arg
+        self._cache: Dict[Any, Any] = {}
         self._remote_impl = impl
 
     def _call_name(self) -> Any:
@@ -155,6 +165,63 @@ class Remote(Generic[P, R], Endpoint[P, R]):
             stream._active,
         )
 
+    def rref(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        return self._rref(args, kwargs)
+
+    def _propagate(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+        fake_args: Tuple[Any, ...],
+        fake_kwargs: Dict[str, Any],
+    ) -> Any:
+        return _do_propagate(
+            self._propagator_arg,
+            args,
+            kwargs,
+            fake_args,
+            fake_kwargs,
+            cache=self._cache,
+            resolvable=self._resolvable,
+        )
+
+    def _fetch_propagate(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+        fake_args: Tuple[Any, ...],
+        fake_kwargs: Dict[str, Any],
+    ) -> Any:
+        if self._propagator_arg is None:
+            return None  # no propagator provided, so we just assume no mutations
+        return self._propagate(args, kwargs, fake_args, fake_kwargs)
+
+    def _pipe_propagate(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+        fake_args: Tuple[Any, ...],
+        fake_kwargs: Dict[str, Any],
+    ) -> Any:
+        if not callable(self._propagator_arg):
+            raise ValueError("Must specify explicit callable for pipe")
+        return self._propagate(args, kwargs, fake_args, fake_kwargs)
+
+    def _get_method_name(self) -> str:
+        """
+        Extract method name from this endpoint's method specifier.
+
+        Returns:
+            The method name, or "unknown" if not available
+        """
+        call_name = self._call_name()
+        if isinstance(call_name, MethodSpecifier):
+            return call_name.name
+        else:
+            # could happen for class Remote https://fburl.com/code/4ny98bul
+            return "unknown"
+
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return self.rref(*args, **kwargs)
 
@@ -192,10 +259,10 @@ def remote(*, propagate: Propagator = None) -> RemoteIfy: ...  # type: ignore
 def remote(function: Any = None, *, propagate: Propagator = None) -> Any:
     if function is None:
         return functools.partial(remote, propagate=propagate)
-    return Remote(function, propagate)
+    return Remote(RemoteImpl(function, propagate))
 
 
-remote_identity = Remote(None, lambda x: x)
+remote_identity = Remote(RemoteImpl(None, lambda x: x))
 
 
 def call_on_shard_and_fetch(
@@ -355,7 +422,11 @@ def _cached_propagation(_cache, rfunction: ResolvableFunction, args, kwargs):
         _miss += 1
         args_no_pg, kwargs_no_pg = tree_map(_mock_pgs, (args, kwargs))
         result_with_placeholders, output_pattern = call_on_shard_and_fetch(
-            _propagate, function=rfunction, args=args_no_pg, kwargs=kwargs_no_pg
+            # pyre-fixme[6]: Remote with concrete types doesn't match Endpoint[P, R] variance
+            _propagate,
+            function=rfunction,
+            args=args_no_pg,
+            kwargs=kwargs_no_pg,
         ).result()
 
         _, unflatten_result = flatten(
