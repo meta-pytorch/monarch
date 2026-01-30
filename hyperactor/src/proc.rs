@@ -501,11 +501,15 @@ impl Proc {
 
     /// Bind a mailbox to the proc.
     fn bind_mailbox(&self, actor_id: ActorId) -> Mailbox {
-        let mbox = Mailbox::new(actor_id, BoxedMailboxSender::new(self.downgrade()));
+        let mbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(self.downgrade()),
+            None,
+        );
 
         // TODO: T210748165 tie the muxer entry to the lifecycle of the mailbox held
         // by the caller. This will likely require a weak reference.
-        self.state().proc_muxer.bind_mailbox(mbox.clone());
+        self.state().proc_muxer.bind(actor_id, mbox.clone());
         mbox
     }
 
@@ -1045,7 +1049,7 @@ impl<A: Actor> Drop for InstanceState<A> {
                     prev_status = status.arm().unwrap_or("unknown"),
                     "instance is dropped",
                 );
-                *status = ActorStatus::Stopped;
+                *status = ActorStatus::Stopped("instance is dropped".into());
                 true
             }
         });
@@ -1065,14 +1069,20 @@ impl<A: Actor> Instance<A> {
         mpsc::UnboundedReceiver<WorkCell<A>>,
     ) {
         // Set up messaging
-        let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
+        let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(proc.downgrade()),
+            Some(status_rx.clone()),
+        );
         let (work_tx, work_rx) = ordered_channel(
             actor_id.to_string(),
             hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
         );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
-        proc.state().proc_muxer.bind_mailbox(mailbox.clone());
-        let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
+        proc.state()
+            .proc_muxer
+            .bind(actor_id.clone(), mailbox.clone());
 
         let actor_type = match TypeInfo::of::<A>() {
             Some(info) => ActorType::Named(info),
@@ -1280,19 +1290,18 @@ impl<A: Actor> Instance<A> {
         mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
     ) {
         // `run_actor_tree` borrows `work_rx` instead of taking ownership because
-        // `work_rx` needs to remain alive until this function returns. If the owning
-        // proc's `supervision_coordinator_port` is a port on this instance, if `work_rx`
-        // is dropped before `self.proc.handle_supervision_event` is called, the process
-        // will exit due to a "channel closed" failure.
+        // `work_rx` needs to remain alive until this function returns and the actor
+        // has been marked as either stopped or failed. This prevents undeliverable
+        // message errors being returned with the unhelpful "channel closed" reason.
         let result = self
             .run_actor_tree(&mut actor, actor_loop_receivers, &mut work_rx)
             .await;
 
         assert!(self.is_stopping());
         let event = match result {
-            Ok(_) => {
+            Ok(stop_reason) => {
                 // success exit case
-                self.change_status(ActorStatus::Stopped);
+                self.change_status(ActorStatus::Stopped(stop_reason));
                 None
             }
             Err(err) => {
@@ -1351,13 +1360,14 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Runs the actor, and manages its supervision tree. When the function returns,
-    /// the whole tree rooted at this actor has stopped.
+    /// the whole tree rooted at this actor has stopped. On success, returns the reason
+    /// why the actor stopped. On failure, returns the error that caused the failure.
     async fn run_actor_tree(
         &mut self,
         actor: &mut A,
         mut actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) -> Result<(), ActorError> {
+    ) -> Result<String, ActorError> {
         // It is okay to catch all panics here, because we are in a tokio task,
         // and tokio will catch the panic anyway:
         // https://docs.rs/tokio/latest/tokio/task/struct.JoinError.html#method.is_panic
@@ -1466,16 +1476,18 @@ impl<A: Actor> Instance<A> {
         }
         // If the original exit was not an error, let cleanup errors be
         // surfaced.
-        result.and(cleanup_result)
+        result.and_then(|reason| cleanup_result.map(|_| reason))
     }
 
-    /// Initialize and run the actor until it fails or is stopped.
+    /// Initialize and run the actor until it fails or is stopped. On success,
+    /// returns the reason why the actor stopped. On failure, returns the error
+    /// that caused the failure.
     async fn run(
         &mut self,
         actor: &mut A,
         actor_loop_receivers: &mut (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) -> Result<(), ActorError> {
+    ) -> Result<String, ActorError> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
         self.change_status(ActorStatus::Initializing);
@@ -1557,7 +1569,7 @@ impl<A: Actor> Instance<A> {
             reason = stop_reason,
             "exited actor loop",
         );
-        Ok(())
+        Ok(stop_reason)
     }
 
     /// Handle a supervision event using the provided actor.
@@ -2444,7 +2456,7 @@ mod tests {
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
-        assert_matches!(*state.borrow(), ActorStatus::Stopped);
+        assert_matches!(&*state.borrow(), ActorStatus::Stopped(reason) if reason == "test");
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -2634,7 +2646,7 @@ mod tests {
 
         for actor in [root_1, root_2, root_2_1] {
             assert!(actor.send(&client, TestActorMessage::Noop()).is_err());
-            assert_matches!(actor.await, ActorStatus::Stopped);
+            assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
         }
     }
 
@@ -2670,8 +2682,8 @@ mod tests {
             root.await,
             ActorStatus::Failed(err) if err.to_string().contains("some random failure")
         );
-        assert_eq!(root_2_1.await, ActorStatus::Stopped);
-        assert_eq!(root_1.await, ActorStatus::Stopped);
+        assert_matches!(root_2_1.await, ActorStatus::Stopped(_));
+        assert_matches!(root_1.await, ActorStatus::Stopped(_));
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -3137,7 +3149,7 @@ mod tests {
 
         assert_eq!(*handle.status().borrow(), ActorStatus::Client);
         drop(instance);
-        assert_eq!(*handle.status().borrow(), ActorStatus::Stopped);
+        assert_matches!(*handle.status().borrow(), ActorStatus::Stopped(_));
         handle.await;
     }
 

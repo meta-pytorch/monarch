@@ -421,7 +421,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
             proc_mesh = proc_mesh_from_alloc(allocator, spec)
             actor_mesh = proc_mesh.spawn("actor", FailInitActor)
-
+            await actor_mesh.initialized
             with self.assertRaisesRegex(
                 Exception,
                 r"(?s)fail on init(?s)",

@@ -15,6 +15,7 @@ from typing import (
     final,
     Generic,
     Iterable,
+    Type,
     TYPE_CHECKING,
     TypeVar,
 )
@@ -25,11 +26,11 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.allocator import LocalAllocator
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
@@ -94,13 +95,16 @@ class Accumulator(Generic[S, U]):
         return self._reducer
 
 
-async def allocate() -> ProcMesh:
-    spec = AllocSpec(AllocConstraints(), replica=1)
-    allocator = LocalAllocator()
-    alloc = await allocator.allocate_nonblocking(spec)
-    return await ProcMesh.allocate_nonblocking(
-        context().actor_instance._as_rust(), alloc, "test"
-    )
+def allocate() -> Shared[ProcMesh]:
+    async def task() -> ProcMesh:
+        spec = AllocSpec(AllocConstraints(), replica=1)
+        allocator = LocalAllocator()
+        alloc = await allocator.allocate_nonblocking(spec)
+        return await ProcMesh.allocate_nonblocking(
+            context().actor_instance._as_rust(), alloc, "test"
+        )
+
+    return PythonTask.from_coroutine(task()).spawn()
 
 
 def _python_task_test(
@@ -163,17 +167,38 @@ class MyActor:
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
     ) -> None:
-        response_port.send(pickle.loads(message))
-        for i in range(100):
-            response_port.send(f"msg{i}")
+        match method:
+            case MethodSpecifier.Init():
+                # Handle init message - response_port may be None
+                if response_port is not None:
+                    response_port.send(None)
+                return None
+            case _:
+                response_port.send(pickle.loads(message))
+                for i in range(100):
+                    response_port.send(f"msg{i}")
 
 
 @_python_task_test
 async def test_reducer() -> None:
-    proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking(
-        context().actor_instance._as_rust(), "test", MyActor
+    proc_mesh_task = allocate()
+
+    # Create an explicit init message
+    init_message = PythonMessage(
+        PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
+        pickle.dumps(None),
     )
+
+    # Use spawn_async with the explicit init message
+    actor_mesh = ProcMesh.spawn_async(
+        proc_mesh_task,
+        context().actor_instance._as_rust(),
+        "test",
+        cast(Type["Actor"], MyActor),
+        init_message,
+        False,  # emulated
+    )
+
     ins = context().actor_instance
 
     def my_accumulate(state: str, update: str) -> str:
@@ -203,6 +228,7 @@ async def test_reducer() -> None:
     assert "[reduced](start+msg0)" in value
 
     #  Note: occasionally test would hang without this stop
+    proc_mesh = await proc_mesh_task
     await proc_mesh.stop_nonblocking(
         context().actor_instance._as_rust(), "test cleanup"
     )
