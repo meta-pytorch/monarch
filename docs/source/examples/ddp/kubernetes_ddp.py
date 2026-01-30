@@ -7,7 +7,7 @@
 # pyre-unsafe
 
 """
-DDP on Kubernetes Using Monarch
+DDP on Kubernetes
 ===============================
 
 This tutorial extends the :doc:`spmd_ddp` tutorial to run PyTorch's Distributed

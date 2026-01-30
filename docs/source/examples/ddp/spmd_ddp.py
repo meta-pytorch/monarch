@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-DDP Examples Using SPMDActor
+DDP using SPMDActor
 ============================
 
 This example demonstrates how to run PyTorch's Distributed Data Parallel (DDP)
