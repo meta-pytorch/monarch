@@ -26,8 +26,8 @@ from typing import (
 
 import monarch.common.messages as messages
 import torch
+from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape
-from monarch._src.actor.actor_mesh import Port
 from monarch._src.actor.endpoint import Selection
 from monarch._src.actor.future import Future
 from monarch.common import _coalescing, device_mesh, stream
@@ -72,13 +72,21 @@ class Remote(Generic[P, R], Endpoint[P, R]):
     def _call_name(self) -> Any:
         return self._remote_impl
 
+    def _get_extent(self) -> Extent:
+        ambient_mesh = device_mesh._active
+        if ambient_mesh is None:
+            raise ValueError(
+                "Calling a 'remote' monarch function requires an active proc_mesh (`with proc_mesh.activate():`)"
+            )
+        return Extent(ambient_mesh._labels, ambient_mesh._ndslice.sizes)
+
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         ambient_mesh = device_mesh._active
         propagator = self._fetch_propagate
         rfunction = self._maybe_resolvable
@@ -128,7 +136,6 @@ class Remote(Generic[P, R], Endpoint[P, R]):
         # enough work to count this future as finished,
         # and all potential errors have been reported
         client._request_status()
-        return Extent(ambient_mesh._labels, ambient_mesh._ndslice.sizes)
 
     @property
     def _resolvable(self):

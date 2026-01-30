@@ -18,8 +18,6 @@ import warnings
 from abc import abstractmethod, abstractproperty
 from dataclasses import dataclass
 from functools import cache
-from pprint import pformat
-from textwrap import indent
 from traceback import TracebackException
 from typing import (
     Any,
@@ -28,7 +26,6 @@ from typing import (
     cast,
     Concatenate,
     Dict,
-    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -79,9 +76,10 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
+    Supervisor,
 )
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
-    ValueMesh as HyValueMesh,
+    ValueMesh,  # noqa (re-export)
 )
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -121,6 +119,7 @@ if TYPE_CHECKING:
     )
     from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
 from monarch._src.actor.telemetry import get_monarch_tracer
+
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -627,7 +626,7 @@ def _create_endpoint_message(
     signature: inspect.Signature,
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[Port[Any]]",
+    port_ref: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
 ) -> PythonMessage:
     """
@@ -663,15 +662,13 @@ def _create_endpoint_message(
 
     if not has_ref:
         message = PythonMessage(
-            PythonMessageKind.CallMethod(
-                method_name, None if port is None else port._port_ref
-            ),
+            PythonMessageKind.CallMethod(method_name, port_ref),
             buffer,
             pending_pickle_state,
         )
     else:
         message = create_actor_message(
-            method_name, proc_mesh, buffer, objects, port, pending_pickle_state
+            method_name, proc_mesh, buffer, objects, port_ref, pending_pickle_state
         )
 
     return message
@@ -699,13 +696,16 @@ class ActorEndpoint(Endpoint[P, R]):
     def _call_name(self) -> MethodSpecifier:
         return self._name
 
+    def _get_extent(self) -> Extent:
+        return Extent(self._shape.labels, self._shape.ndslice.sizes)
+
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
 
@@ -721,21 +721,18 @@ class ActorEndpoint(Endpoint[P, R]):
         )
 
         self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
-        shape = self._shape
-        return Extent(shape.labels, shape.ndslice.sizes)
 
     def _full_name(self) -> str:
         return f"{self._mesh_name}.{self._get_method_name()}()"
 
-    def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
-        p, r = super()._port(once=once)
-        instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
-        )
-
-        r._attach_supervision(monitor, self._full_name())
-        return (p, r)
+    def _get_supervisor(self) -> "Supervisor | None":
+        # Only return a supervisor if the mesh is a PythonActorMesh (Rust class).
+        # For pure Python implementations like _SingletonActorAdapator,
+        # return None to skip supervision (which is correct since those
+        # implementations don't support supervision anyway).
+        if isinstance(self._actor_mesh, PythonActorMesh):
+            return self._actor_mesh.as_supervisor()
+        return None
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
@@ -817,7 +814,7 @@ class Accumulator(Generic[P, R, A]):
         Returns:
             Future that resolves to the accumulated value.
         """
-        gen: Generator[Future[R], None, None] = self._endpoint.stream(*args, **kwargs)
+        gen: Iterator[Future[R]] = self._endpoint.stream(*args, **kwargs)
 
         async def impl() -> A:
             value = self._identity
@@ -826,148 +823,6 @@ class Accumulator(Generic[P, R, A]):
             return value
 
         return Future(coro=impl())
-
-
-class ValueMesh(MeshTrait, Generic[R]):
-    """
-    A mesh that holds the result of an endpoint invocation.
-
-    ValueMesh is returned when calling `.get()` on a Future from an endpoint
-    invocation on an ActorMesh or ProcMesh, or by awaiting the Future directly.
-    It contains the return values from all actors in the mesh, organized by
-    their coordinates.
-
-    Iteration:
-        The most efficient way to iterate over a ValueMesh is using `.items()`,
-        which yields (point, value) tuples:
-
-        >>> for point, result in value_mesh.items():
-        ...     rank = point["hosts"] * gpus_per_host + point["gpus"]
-        ...     print(f"Rank {rank}: {result}")
-
-        You can also iterate over just values:
-
-        >>> for result in value_mesh.values():
-        ...     process(result)
-
-    Accessing specific values:
-        Use `.item()` to extract a single value from a singleton mesh:
-
-        >>> single_value = value_mesh.slice(hosts=0, gpus=0).item()
-
-        Or with keyword arguments for multi-dimensional access:
-
-        >>> value = value_mesh.item(hosts=0, gpus=0)
-
-    Mesh operations:
-        ValueMesh supports the same operations as other MeshTrait types:
-
-        - `.flatten(dimension)`: Flatten to a single dimension
-        - `.slice(**coords)`: Select a subset of the mesh
-
-    Examples:
-        >>> # Sync API - Get results from all actors
-        >>> results = actor_mesh.endpoint.call(arg).get()
-        >>> for point, result in results.items():
-        ...     print(f"Actor at {point}: {result}")
-        >>>
-        >>> # Async API - Await the future directly
-        >>> results = await actor_mesh.endpoint.call(arg)
-        >>> for point, result in results.items():
-        ...     print(f"Actor at {point}: {result}")
-        >>>
-        >>> # Access a specific actor's result
-        >>> result_0 = results.item(hosts=0, gpus=0)
-        >>>
-        >>> # Flatten and iterate
-        >>> for point, result in results.flatten("rank").items():
-        ...     print(f"Rank {point.rank}: {result}")
-    """
-
-    def __init__(self, shape: Shape, values: List[R]) -> None:
-        self._shape = shape
-        self._hy: HyValueMesh = HyValueMesh(shape, values)
-
-    def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
-        # Build a map from current global ranks -> local indices.
-        cur_ranks = list(self._shape.ranks())
-        pos = {g: i for i, g in enumerate(cur_ranks)}
-        # For each global rank of the target shape, pull from our
-        # current local index.
-        remapped = [self._hy.get(pos[g]) for g in shape.ranks()]
-        return ValueMesh(shape, remapped)
-
-    def item(self, **kwargs: int) -> R:
-        """
-        Get the value at the given coordinates.
-
-        Args:
-            kwargs: Coordinates to get the value at.
-
-        Returns:
-            Value at the given coordinate.
-
-        Raises:
-            KeyError: If invalid coordinates are provided.
-        """
-        coordinates = [kwargs.pop(label) for label in self._labels]
-        if kwargs:
-            raise KeyError(f"item has extra dimensions: {list(kwargs.keys())}")
-
-        global_rank = self._ndslice.nditem(coordinates)  # May include offset.
-        # Map global -> local (position in this shape's rank order).
-        ranks = list(self._shape.ranks())
-        try:
-            local_idx = ranks.index(global_rank)
-        except ValueError:
-            # Shouldn't happen if Shape is consistent, but keep a clear
-            # error.
-            raise IndexError(f"rank {global_rank} not in current shape")
-        return self._hy.get(local_idx)
-
-    def items(self) -> Iterable[Tuple[Point, R]]:
-        """
-        Generator that returns values for the provided coordinates.
-
-        Returns:
-            Values at all coordinates.
-        """
-        extent = self._shape.extent
-        for i, _global_rank in enumerate(self._shape.ranks()):
-            yield Point(i, extent), self._hy.get(i)
-
-    def values(self) -> Iterable[R]:
-        """
-        Generator that iterates over just the values in the mesh.
-
-        Returns:
-            Values at all coordinates.
-        """
-        for _, value in self.items():
-            yield value
-
-    def __iter__(self) -> Iterator[Tuple[Point, R]]:
-        return iter(self.items())
-
-    def __repr__(self) -> str:
-        body = indent(pformat(tuple(self.items())), "  ")
-        return f"ValueMesh({self._shape.extent}):\n{body}"
-
-    @property
-    def _ndslice(self) -> NDSlice:
-        return self._shape.ndslice
-
-    @property
-    def _labels(self) -> Iterable[str]:
-        return self._shape.labels
-
-    def __getstate__(self) -> Dict[str, Any]:
-        return {"shape": self._shape, "values": self._hy.values()}
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self._shape = state["shape"]
-        vals = state["values"]
-        self._hy = HyValueMesh(self._shape, vals)
 
 
 def send(
@@ -990,7 +845,9 @@ def send(
         port: Handle to send the response to.
         selection: Selection query representing a subset of the mesh.
     """
-    endpoint._send(args, kwargs, port, selection)
+    endpoint._send(
+        args, kwargs, port._port_ref if port is not None else None, selection
+    )
 
 
 class Port(Generic[R]):
