@@ -82,18 +82,18 @@ use crate::v1::mesh_controller::ActorMeshController;
 declare_attrs! {
     /// The maximum idle time between updates while spawning actor
     /// meshes.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE".to_string()),
-        py_name: Some("actor_spawn_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE".to_string()),
+        Some("actor_spawn_max_idle".to_string()),
+    ))
     pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
     /// The maximum idle time between updates while waiting for a response to GetState
     /// from ProcMeshAgent.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
-        py_name: Some("get_actor_state_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
+        Some("get_actor_state_max_idle".to_string()),
+    ))
     pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(30);
 }
 

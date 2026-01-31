@@ -77,10 +77,10 @@ use crate::runtime::signal_safe_block_on;
 declare_attrs! {
     /// If true, when a pytokio PythonTask fails, the traceback of the original callsite
     /// will be logged.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK".to_string()),
-        py_name: Some("enable_unawaited_python_task_traceback".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK".to_string()),
+        Some("enable_unawaited_python_task_traceback".to_string()),
+    ))
     pub attr ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK: bool = false;
 }
 

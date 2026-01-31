@@ -19,6 +19,7 @@ declare_attrs! {
     @meta(CONFIG = ConfigAttr {
         env_name: Some("HYPERACTOR_DEFAULT_ENCODING".to_string()),
         py_name: Some("default_encoding".to_string()),
+        propagate: true,
     })
     pub attr DEFAULT_ENCODING: Encoding = Encoding::Multipart;
 }

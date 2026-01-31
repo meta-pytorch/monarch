@@ -382,6 +382,44 @@ impl Layers {
         merged
     }
 
+    /// Return a complete, merged snapshot of the effective configuration
+    /// **(only keys marked with `@meta(CONFIG = ...)` and `propagate: true`)**.
+    ///
+    /// This is similar to [`materialize`] but excludes keys with
+    /// `propagate: false`. Use this when sending config to child processes
+    /// via `BootstrapProcManager`.
+    fn materialize_propagatable(&self) -> Attrs {
+        let mut merged = Attrs::new();
+        for info in inventory::iter::<AttrKeyInfo>() {
+            let Some(cfg_meta) = info.meta.get(CONFIG) else {
+                continue;
+            };
+            if !cfg_meta.propagate {
+                continue;
+            }
+            let name = info.name;
+            let mut chosen: Option<Box<dyn crate::attrs::SerializableValue>> = None;
+            for layer in &self.ordered {
+                if let Some(v) = layer_attrs(layer).get_value_by_name(name) {
+                    chosen = Some(v.cloned());
+                    break;
+                }
+            }
+            let boxed = match chosen {
+                Some(b) => b,
+                None => {
+                    if let Some(default) = info.default {
+                        default.cloned()
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            merged.insert_value_by_name_unchecked(name, boxed);
+        }
+        merged
+    }
+
     /// Return a snapshot of the attributes for a specific configuration
     /// source.
     ///
@@ -699,6 +737,27 @@ pub fn attrs() -> Attrs {
     GLOBAL.layers.read().unwrap().materialize()
 }
 
+/// Return a complete, merged snapshot of the effective configuration
+/// **(only keys marked with `@meta(CONFIG = ...)` and `propagate: true`)**.
+///
+/// Resolution per key:
+/// 1) First explicit value found in layers (TestOverride → Env →
+///    Runtime → File → ClientOverride).
+/// 2) Otherwise, the key's default (if any).
+///
+/// Notes:
+/// - This materializes defaults into the returned Attrs for all
+///   CONFIG-marked keys with `propagate: true`.
+/// - Keys without `CONFIG` meta are excluded.
+/// - Keys with `propagate: false` are excluded.
+///
+/// Use this when sending config to child processes via
+/// `BootstrapProcManager`. Process-local configs (like TLS cert paths)
+/// should have `propagate: false` and will not be included.
+pub fn propagatable_attrs() -> Attrs {
+    GLOBAL.layers.read().unwrap().materialize_propagatable()
+}
+
 /// Return a snapshot of the attributes for a specific configuration
 /// source.
 ///
@@ -969,52 +1028,52 @@ mod tests {
 
     declare_attrs! {
         /// Maximum frame length for codec
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH".to_string()),
+            None,
+        ))
         pub attr CODEC_MAX_FRAME_LENGTH: usize = 10 * 1024 * 1024 * 1024; // 10 GiB
 
         /// Message delivery timeout
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT".to_string()),
+            None,
+        ))
         pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
         /// Number of messages after which to send an acknowledgment
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES".to_string()),
+            None,
+        ))
         pub attr MESSAGE_ACK_EVERY_N_MESSAGES: u64 = 1000;
 
         /// Maximum buffer size for split port messages
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE".to_string()),
+            None,
+        ))
         pub attr SPLIT_MAX_BUFFER_SIZE: usize = 5;
 
         /// Whether to use multipart encoding for network channel communications
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("HYPERACTOR_CHANNEL_MULTIPART".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("HYPERACTOR_CHANNEL_MULTIPART".to_string()),
+            None,
+        ))
         pub attr CHANNEL_MULTIPART: bool = true;
 
         /// Default hop Time-To-Live for message envelopes
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("HYPERACTOR_MESSAGE_TTL_DEFAULT".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("HYPERACTOR_MESSAGE_TTL_DEFAULT".to_string()),
+            None,
+        ))
         pub attr MESSAGE_TTL_DEFAULT: u8 = 64;
 
         /// A test key with no environment variable mapping
-        @meta(CONFIG = ConfigAttr {
-            env_name: None,
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            None,
+            None,
+        ))
         pub attr CONFIG_KEY_NO_ENV: u32 = 100;
     }
 
@@ -1298,13 +1357,19 @@ mod tests {
     }
 
     declare_attrs! {
-      @meta(CONFIG = ConfigAttr {
-          env_name: None,
-          py_name: None,
-      })
+      @meta(CONFIG = ConfigAttr::new(
+          None,
+          None,
+      ))
       pub attr CONFIG_KEY: bool = true;
 
       pub attr NON_CONFIG_KEY: bool = true;
+
+      @meta(CONFIG = ConfigAttr::new(
+          None,
+          None,
+      ).process_local())
+      pub attr NON_PROPAGATE_KEY: bool = true;
     }
 
     #[test]
@@ -1324,6 +1389,34 @@ mod tests {
         assert!(
             !json.contains("hyperactor_config::global::tests::non_config_key"),
             "attrs() should exclude keys without @meta(CONFIG = ...)"
+        );
+    }
+
+    #[test]
+    fn test_propagatable_attrs_excludes_non_propagate_keys() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        // attrs() should include NON_PROPAGATE_KEY (it has CONFIG meta)
+        let snap = attrs();
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(
+            json.contains("hyperactor_config::global::tests::non_propagate_key"),
+            "attrs() should include keys with propagate: false"
+        );
+
+        // propagatable_attrs() should exclude NON_PROPAGATE_KEY
+        let propagatable = propagatable_attrs();
+        let json_propagatable = serde_json::to_string(&propagatable).unwrap();
+        assert!(
+            !json_propagatable.contains("hyperactor_config::global::tests::non_propagate_key"),
+            "propagatable_attrs() should exclude keys with propagate: false"
+        );
+
+        // propagatable_attrs() should still include CONFIG_KEY (propagate: true)
+        assert!(
+            json_propagatable.contains("hyperactor_config::global::tests::config_key"),
+            "propagatable_attrs() should include keys with propagate: true"
         );
     }
 
