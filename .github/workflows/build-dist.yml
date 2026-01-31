@@ -10,7 +10,7 @@ on:
       torch-spec:
         description: 'Torch installation specification'
         type: string
-        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu126'
+        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
       gpu-arch-type:
         description: 'GPU architecture type'
         type: string
@@ -18,7 +18,7 @@ on:
       gpu-arch-version:
         description: 'GPU architecture version'
         type: string
-        default: '12.6'
+        default: '12.8'
       runner:
         description: 'Runner to use for the build'
         type: string

@@ -1,5 +1,5 @@
 # Override on build from CI.
-ARG PYTORCH_TAG=2.9.1-cuda12.6-cudnn9-runtime
+ARG PYTORCH_TAG=2.10.0-cuda12.8-cudnn9-runtime
 
 # Build from latest pytorch stable image; should be relatively in sync with torchmonarch and pytorch.
 FROM ghcr.io/pytorch/pytorch:${PYTORCH_TAG}

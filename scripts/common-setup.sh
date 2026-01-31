@@ -69,12 +69,12 @@ setup_tensor_engine() {
 
 # Install PyTorch with C++ development headers (libtorch) for Rust compilation
 setup_pytorch_with_headers() {
-    local gpu_arch_version=${1:-"12.6"}
-    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126"}
+    local gpu_arch_version=${1:-"12.8"}
+    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128"}
 
     echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
 
-    # Extract CUDA version for libtorch URL (remove dots: "12.6" -> "126")
+    # Extract CUDA version for libtorch URL (remove dots: "12.8" -> "128")
     local cuda_version_short=$(echo "${gpu_arch_version}" | tr -d '.')
     local libtorch_url="https://download.pytorch.org/libtorch/nightly/cu${cuda_version_short}/libtorch-cxx11-abi-shared-with-deps-latest.zip"
 
