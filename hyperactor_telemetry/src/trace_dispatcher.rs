@@ -58,9 +58,17 @@ pub enum TraceEvent {
         line: Option<u32>,
     },
     /// A span was entered (on_enter)
-    SpanEnter { id: u64, timestamp: SystemTime },
+    SpanEnter {
+        id: u64,
+        timestamp: SystemTime,
+        thread_name: &'static str,
+    },
     /// A span was exited (on_exit)
-    SpanExit { id: u64, timestamp: SystemTime },
+    SpanExit {
+        id: u64,
+        timestamp: SystemTime,
+        thread_name: &'static str,
+    },
     /// A span was closed (dropped)
     SpanClose { id: u64, timestamp: SystemTime },
     /// A tracing event occurred (e.g., tracing::info!())
@@ -382,18 +390,22 @@ where
     }
 
     fn on_enter(&self, id: &Id, _ctx: Context<'_, S>) {
+        let (thread_name, _) = get_thread_info();
         let event = TraceEvent::SpanEnter {
             id: id.into_u64(),
             timestamp: SystemTime::now(),
+            thread_name,
         };
 
         self.send_event(event);
     }
 
     fn on_exit(&self, id: &Id, _ctx: Context<'_, S>) {
+        let (thread_name, _) = get_thread_info();
         let event = TraceEvent::SpanExit {
             id: id.into_u64(),
             timestamp: SystemTime::now(),
+            thread_name,
         };
 
         self.send_event(event);

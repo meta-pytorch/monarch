@@ -173,7 +173,6 @@ pub fn default_trace_dir() -> PathBuf {
 
 /// Metadata stored for each span, used when Enter/Exit events occur.
 struct SpanInfo {
-    track: u64,
     /// Fully qualified name: {target}::{name}
     fq_name: String,
     fields: TraceFields,
@@ -556,7 +555,6 @@ impl TraceEventSink for PerfettoFileSink {
                 name,
                 target,
                 fields,
-                thread_name,
                 file,
                 line,
                 ..
@@ -564,8 +562,6 @@ impl TraceEventSink for PerfettoFileSink {
                 if !self.trace_mode.should_include(target) {
                     return Ok(());
                 }
-
-                let track = self.get_or_create_thread_track(thread_name);
 
                 // In user mode, prefer the "name" field if present for display
                 // In dev mode, use the fully qualified name
@@ -582,7 +578,6 @@ impl TraceEventSink for PerfettoFileSink {
                 self.span_info.insert(
                     *id,
                     SpanInfo {
-                        track,
                         fq_name: display_name,
                         fields: fields.clone(),
                         file: *file,
@@ -591,20 +586,29 @@ impl TraceEventSink for PerfettoFileSink {
                 );
             }
 
-            TraceEvent::SpanEnter { id, timestamp } => {
+            TraceEvent::SpanEnter {
+                id,
+                timestamp,
+                thread_name,
+            } => {
                 if let Some(info) = self.span_info.get(id) {
-                    let track = info.track;
                     let fq_name = info.fq_name.clone();
                     let fields = info.fields.clone();
                     let file = info.file;
                     let line = info.line;
+                    let track = self.get_or_create_thread_track(thread_name);
                     self.write_slice_begin(track, *timestamp, &fq_name, &fields, file, line);
                 }
             }
 
-            TraceEvent::SpanExit { id, timestamp } => {
-                if let Some(info) = self.span_info.get(id) {
-                    self.write_slice_end(info.track, *timestamp);
+            TraceEvent::SpanExit {
+                id,
+                timestamp,
+                thread_name,
+            } => {
+                if self.span_info.contains_key(id) {
+                    let track = self.get_or_create_thread_track(thread_name);
+                    self.write_slice_end(track, *timestamp);
                 }
             }
 
