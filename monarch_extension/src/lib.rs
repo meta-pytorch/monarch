@@ -225,6 +225,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.namespace",
     )?)?;
 
+    monarch_hyperactor::proc_launcher_probe::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.proc_launcher_probe",
+    )?)?;
+
     crate::trace::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.trace",
