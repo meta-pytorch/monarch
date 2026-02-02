@@ -773,6 +773,9 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use rand::seq::SliceRandom;
+    use timed_test::async_timed_test;
+    use tokio::sync::mpsc;
     use tokio::time::timeout;
 
     use super::*;
@@ -782,6 +785,13 @@ mod tests {
     use crate::PortRef;
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
+    use crate::config;
+    use crate::id;
+    use crate::mailbox::BoxableMailboxSender as _;
+    use crate::mailbox::MailboxSender;
+    use crate::mailbox::monitored_return_handle;
+    use crate::ordering::SEQ_INFO;
+    use crate::ordering::SeqInfo;
     use crate::test_utils::pingpong::PingPongActor;
     use crate::test_utils::pingpong::PingPongMessage;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
@@ -1090,5 +1100,212 @@ mod tests {
         let handle = cell.downcast_handle::<NothingActor>().unwrap();
         handle.drain_and_stop("test").unwrap();
         handle.await;
+    }
+
+    // Returning the sequence number assigned to the message.
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [String])]
+    struct GetSeqActor(PortRef<(String, SeqInfo)>);
+
+    #[async_trait]
+    impl Actor for GetSeqActor {}
+
+    #[async_trait]
+    impl Handler<String> for GetSeqActor {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            message: String,
+        ) -> Result<(), anyhow::Error> {
+            let Self(port) = self;
+            let seq_info = cx.headers().get(SEQ_INFO).unwrap();
+            port.send(cx, (message, seq_info.clone()))?;
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_handle_basic() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        let session_id = client.sequencer().session_id();
+        let mut expected_seq = 0;
+        // Interleave messages sent through the handle and the reference.
+        for _ in 0..10 {
+            actor_handle.send(&client, "".to_string()).unwrap();
+            expected_seq += 1;
+            assert_eq!(
+                rx.recv().await.unwrap().1,
+                SeqInfo {
+                    session_id,
+                    seq: expected_seq,
+                }
+            );
+
+            for _ in 0..2 {
+                actor_ref.port().send(&client, "".to_string()).unwrap();
+                expected_seq += 1;
+                assert_eq!(
+                    rx.recv().await.unwrap().1,
+                    SeqInfo {
+                        session_id,
+                        seq: expected_seq,
+                    }
+                );
+            }
+        }
+    }
+
+    // Adding a delay before sending the destination proc. Useful for tests
+    // requiring latency injection.
+    #[derive(Clone, Debug)]
+    struct DelayedMailboxSender {
+        relay_tx: mpsc::UnboundedSender<MessageEnvelope>,
+    }
+
+    impl DelayedMailboxSender {
+        // Use a random latency between 0 and 1 second if the plan is empty.
+        fn new(
+            // The proc that hosts the dest actor. By posting envelope to this
+            // proc, this proc will route that evenlope to the dest actor.
+            dest_proc: Proc,
+            // Vec index is the message seq - 1, value is the order this message
+            // would be relayed to the dest actor. Dest actor is responsible to
+            // ensure itself processes these messages in order.
+            relay_orders: Vec<usize>,
+        ) -> Self {
+            let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<MessageEnvelope>();
+
+            tokio::spawn(async move {
+                let mut buffer = Vec::new();
+
+                for _ in 0..relay_orders.len() {
+                    let envelope = relay_rx.recv().await.unwrap();
+                    buffer.push(envelope);
+                }
+
+                for m in buffer.clone() {
+                    let seq = m.headers().get(SEQ_INFO).expect("seq should be set").seq as usize;
+                    // seq no is one-based.
+                    let order = relay_orders[seq - 1];
+                    buffer[order] = m;
+                }
+
+                let dest_proc_clone = dest_proc.clone();
+                for msg in buffer {
+                    dest_proc_clone.post(msg, monitored_return_handle());
+                }
+            });
+
+            Self { relay_tx }
+        }
+    }
+
+    impl MailboxSender for DelayedMailboxSender {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.relay_tx.send(envelope).unwrap();
+        }
+    }
+
+    async fn assert_out_of_order_delivery(expected: Vec<(String, u64)>, relay_orders: Vec<usize>) {
+        let local_proc: Proc = Proc::local();
+        let (client, _) = local_proc.instance("local").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let handle = local_proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = handle.bind();
+
+        let remote_proc = Proc::new(
+            id!(remote[0]),
+            DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
+        );
+        let (remote_client, _) = remote_proc.instance("remote").unwrap();
+        // Send the messages out in the order of their expected sequence numbers.
+        let mut messages = expected.clone();
+        messages.sort_by_key(|v| v.1);
+        for (message, _seq) in messages {
+            actor_ref.send(&remote_client, message).unwrap();
+        }
+        let session_id = remote_client.sequencer().session_id();
+        for expect in expected {
+            let expected = (
+                expect.0,
+                SeqInfo {
+                    session_id,
+                    seq: expect.1,
+                },
+            );
+            assert_eq!(rx.recv().await.unwrap(), expected);
+        }
+
+        handle.drain_and_stop("test cleanup").unwrap();
+        handle.await;
+    }
+
+    // Send several messages, use DelayedMailboxSender and the relay orders to
+    // ensure these messages will arrive at handler's workq out-of-order.
+    // Then verify the actor handler will still process these messages based on
+    // their sending order if reordering buffer is enabled.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_ref_known_delivery_order() {
+        let config = hyperactor_config::global::lock();
+
+        // relay order is second, third, first
+        let relay_orders = vec![2, 0, 1];
+
+        // By disabling the actor side re-ordering buffer, the mssages will
+        // be processed in the same order as they sent out.
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, false);
+        assert_out_of_order_delivery(
+            vec![
+                ("second".to_string(), 2),
+                ("third".to_string(), 3),
+                ("first".to_string(), 1),
+            ],
+            relay_orders.clone(),
+        )
+        .await;
+
+        // By enabling the actor side re-ordering buffer, the mssages will
+        // be re-ordered before being processed.
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        assert_out_of_order_delivery(
+            vec![
+                ("first".to_string(), 1),
+                ("second".to_string(), 2),
+                ("third".to_string(), 3),
+            ],
+            relay_orders.clone(),
+        )
+        .await;
+    }
+
+    // Send a large nubmer of messages, use DelayedMailboxSender to ensure these
+    // messages will arrive at handler's workq in a random order. Then verify the
+    // actor handler will still process these messages based on their sending
+    // order with reordering buffer enabled.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_ref_random_delivery_order() {
+        let config = hyperactor_config::global::lock();
+
+        // By enabling the actor side re-ordering buffer, the mssages will
+        // be re-ordered before being processed.
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let expected = (0..10000)
+            .map(|i| (format!("msg{i}"), i + 1))
+            .collect::<Vec<_>>();
+
+        let mut relay_orders: Vec<usize> = (0..10000).collect();
+        relay_orders.shuffle(&mut rand::thread_rng());
+        assert_out_of_order_delivery(expected, relay_orders).await;
     }
 }
