@@ -77,6 +77,7 @@ mod tests {
 
     #[pyclass]
     struct TestClass {
+        #[allow(dead_code)]
         value: i32,
     }
 

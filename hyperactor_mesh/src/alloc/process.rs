@@ -181,6 +181,7 @@ impl Child {
         mut process: tokio::process::Child,
         log_channel: Option<ChannelAddr>,
         tail_size: usize,
+        proc_id: ProcId,
     ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
@@ -224,22 +225,21 @@ impl Child {
         let child_stderr_fwder = child.stderr_fwder.clone();
 
         if let Some(stdout) = stdout_pipe {
-            let pid = process.id().unwrap_or_default();
             let stdout_fwder = child_stdout_fwder.clone();
             let log_channel_clone = log_channel.clone();
+            let proc_id_clone = proc_id.clone();
             *stdout_fwder.lock().expect("stdout_fwder mutex poisoned") = Some(StreamFwder::start(
                 stdout,
                 None, // No file appender in v0.
                 OutputTarget::Stdout,
                 tail_size,
                 log_channel_clone, // Optional channel address
-                pid,
+                &proc_id_clone,
                 local_rank,
             ));
         }
 
         if let Some(stderr) = stderr_pipe {
-            let pid = process.id().unwrap_or_default();
             let stderr_fwder = child_stderr_fwder.clone();
             *stderr_fwder.lock().expect("stderr_fwder mutex poisoned") = Some(StreamFwder::start(
                 stderr,
@@ -247,7 +247,7 @@ impl Child {
                 OutputTarget::Stderr,
                 tail_size,
                 log_channel, // Optional channel address
-                pid,
+                &proc_id,
                 local_rank,
             ));
         }
@@ -535,8 +535,9 @@ impl ProcessAlloc {
                         None
                     }
                     Ok(rank) => {
+                        let proc_id = ProcId::Ranked(self.world_id.clone(), rank);
                         let (handle, monitor) =
-                            Child::monitored(rank, process, log_channel, tail_size);
+                            Child::monitored(rank, process, log_channel, tail_size, proc_id);
 
                         // Insert into active map BEFORE spawning the monitor task
                         // This prevents a race where the monitor completes before insertion

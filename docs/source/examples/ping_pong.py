@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Monarch Actor API: Ping Pong Example
+Monarch Actor API: Ping Pong
 ====================================
 
 This example demonstrates the basics of Monarch's Actor/endpoint API, which provides

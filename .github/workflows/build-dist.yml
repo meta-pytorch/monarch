@@ -46,7 +46,7 @@ jobs:
       gpu-arch-type: ${{ inputs.gpu-arch-type }}
       gpu-arch-version: ${{ inputs.gpu-arch-version }}
       submodules: recursive
-      upload-artifact: monarch-${{ matrix.python-version }}-${{ inputs.gpu-arch-type }}${{ inputs.gpu-arch-version }}
+      upload-artifact: monarch-py${{ matrix.python-version }}-${{ inputs.gpu-arch-type }}${{ inputs.gpu-arch-version }}
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}

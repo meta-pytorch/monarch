@@ -1043,7 +1043,7 @@ async def test_flush_on_disable_aggregation() -> None:
 
         # 10 = 5 log lines * 2 procs
         total_single = len(
-            re.findall(r"\[.* [0-9]+\](?: \[[0-9]+\])? single log line", stdout_content)
+            re.findall(r"\[[^\]]+\] \[[0-9]+\] single log line", stdout_content)
         )
         assert total_single == 10, (
             f"Expected 10 single log lines, got {total_single} from {stdout_content}"

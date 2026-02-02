@@ -20,7 +20,6 @@ use hyperactor_mesh::v1::MeshKind;
 use hyperactor_mesh::v1::Namespace;
 use hyperactor_mesh::v1::NamespaceError;
 use hyperactor_mesh::v1::ProcMeshRef;
-use hyperactor_mesh::v1::Registrable;
 use pyo3::exceptions::PyKeyError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;

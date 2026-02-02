@@ -26,4 +26,15 @@ declare_attrs! {
         py_name: Some("max_cast_dimension_size".to_string()),
     })
     pub attr MAX_CAST_DIMENSION_SIZE: usize = usize::MAX;
+
+    /// Which builtin process launcher backend to use.
+    /// Accepted values: "native" (default), "systemd".
+    /// Trimmed and lowercased before matching.
+    ///
+    /// **Precedence:** Python spawner (via SetProcSpawner) overrides this.
+    @meta(CONFIG = ConfigAttr {
+        env_name: Some("HYPERACTOR_MESH_PROC_LAUNCHER_KIND".to_string()),
+        py_name: Some("proc_launcher_kind".to_string()),
+    })
+    pub attr MESH_PROC_LAUNCHER_KIND: String = String::new();
 }

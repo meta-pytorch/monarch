@@ -36,7 +36,7 @@ use crate::reference::ActorMeshId;
 // v0 casting is deleted.
 pub(crate) trait CastEnvelope {
     fn dest_port(&self) -> &DestinationPort;
-    fn header_props(&self) -> &Attrs;
+    fn headers(&self) -> &Attrs;
     fn sender(&self) -> &ActorId;
     fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point>;
     fn data(&self) -> &ErasedUnbound;
@@ -60,10 +60,8 @@ pub struct Uslice {
 pub struct CastMessageEnvelope {
     /// The destination actor mesh id.
     actor_mesh_id: ActorMeshId,
-    /// Headers that should be added to all messages sent between cast tree
-    /// nodes. Specifically, this includes source->comm, comm->comm, and
-    /// comm->dest.
-    header_props: Attrs,
+    /// The end-to-end message headers.
+    headers: Attrs,
     /// The sender of this message.
     sender: ActorId,
     /// The destination port of the message. It could match multiple actors with
@@ -81,8 +79,8 @@ impl CastEnvelope for CastMessageEnvelope {
         &self.sender
     }
 
-    fn header_props(&self) -> &Attrs {
-        &self.header_props
+    fn headers(&self) -> &Attrs {
+        &self.headers
     }
 
     fn dest_port(&self) -> &DestinationPort {
@@ -115,7 +113,7 @@ impl CastMessageEnvelope {
         actor_mesh_id: ActorMeshId,
         sender: ActorId,
         shape: Shape,
-        header_props: Attrs,
+        headers: Attrs,
         message: M,
     ) -> Result<Self, anyhow::Error>
     where
@@ -129,7 +127,7 @@ impl CastMessageEnvelope {
         };
         Ok(Self {
             actor_mesh_id,
-            header_props,
+            headers,
             sender,
             dest_port: DestinationPort::new::<A, M>(actor_name),
             data,
@@ -145,13 +143,13 @@ impl CastMessageEnvelope {
         sender: ActorId,
         dest_port: DestinationPort,
         shape: Shape,
-        header_props: Attrs,
+        headers: Attrs,
         data: wirevalue::Any,
     ) -> Self {
         Self {
             actor_mesh_id,
             sender,
-            header_props,
+            headers,
             dest_port,
             data: ErasedUnbound::new(data),
             shape,

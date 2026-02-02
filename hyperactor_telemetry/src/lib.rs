@@ -56,6 +56,7 @@ pub mod in_memory_reader;
 mod meta;
 mod otel;
 mod pool;
+mod rate_limit;
 pub mod recorder;
 pub mod sinks;
 mod spool;
@@ -998,7 +999,7 @@ fn create_sqlite_sink() -> anyhow::Result<sinks::sqlite::SqliteSink> {
         .expect("failed to determine trace db path");
     let db_file = format!("{}/hyperactor_trace_{}.db", db_path, std::process::id());
 
-    Ok(sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)?)
+    sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)
 }
 
 /// Create a context span at ERROR level with skip_record enabled.
