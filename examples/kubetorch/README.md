@@ -88,56 +88,73 @@ job = KubernetesJob(compute=compute)
 1. A Kubernetes cluster with [Kubetorch](https://github.com/kubetorch/kubetorch) installed
 2. `kubectl` configured to access the cluster
 3. Python environment with kubetorch installed: `pip install kubetorch`
-4. Add this directory to your Python path (or copy `monarch_kubetorch/` to your project)
+4. Run scripts from this directory (`examples/kubetorch`) so Python can find the `monarch_kubetorch` module
+
+**Note:** `torchmonarch` is only required on the cluster, not locally. Actor classes are imported by name on the cluster, so they must be defined at module level (not inside functions).
 
 ### Basic Example
 
 ```python
 import kubetorch as kt
 from monarch_kubetorch import KubernetesJob
-from monarch.actor import Actor, endpoint
 
-# Define your actor
-class Trainer(Actor):
-    @endpoint
-    def train_step(self, batch_size: int) -> str:
-        import torch
-        device = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
-        return f"Training step on {device} with batch_size={batch_size}"
+# Monarch imports - wrap in try-except since torchmonarch may not be installed locally
+try:
+    from monarch.actor import Actor, endpoint
+except ImportError:
+    class Actor: pass
+    def endpoint(fn): return fn
+
+
+class CounterActor(Actor):
+    """Simple actor with state - must be defined at module level."""
+
+    def __init__(self, initial_value: int = 0):
+        self.value = initial_value
 
     @endpoint
-    def get_rank(self) -> dict:
-        return {"rank": self.rank}
+    def increment(self) -> int:
+        self.value += 1
+        return self.value
+
+    @endpoint
+    def get_value(self) -> int:
+        return self.value
+
 
 # Create job with compute specification
 job = KubernetesJob(
     compute=kt.Compute(
-        gpu=1,
+        cpus="2",
         replicas=2,
-        image=kt.Image(name="monarch-worker").pip_install(["torchmonarch"]),
-    )
+        memory="4Gi",
+    ),
+    name="my-monarch-job",
 )
 
-# Get job state with host mesh
+# Get job state with HostMesh
 state = job.state()
-host_mesh = state.workers
+workers = state.workers  # HostMeshProxy with 2 hosts
 
-# Spawn processes (one per GPU)
-proc_mesh = host_mesh.spawn_procs(per_host={"gpus": 1})
+# Spawn processes (CPU-only uses "procs", GPU uses "gpus")
+proc_mesh = workers.spawn_procs(per_host={"procs": 1})
 
-# Spawn actors on processes
-trainers = proc_mesh.spawn("trainers", Trainer)
+# Spawn actors
+counters = proc_mesh.spawn("counters", CounterActor, initial_value=0)
 
 # Call actor methods
-results = trainers.train_step.call(batch_size=32).get()
-print(results)  # Results from all actors
-
-# Get individual ranks
-ranks = trainers.get_rank.call().get()
-print(ranks)
+result = counters.increment.call().get()
+print(f"Counter values: {result}")
 
 # Clean up
 job.kill()
+```
+
+### Running the Demo
+
+```bash
+cd examples/kubetorch
+python demo.py
 ```
 
 ### Using Pre-allocated Pods
@@ -179,13 +196,46 @@ KubernetesJob(
 Provides attribute access to named HostMeshes:
 - `state.workers`: The default worker HostMesh
 
-### Proxy Classes
+## Key Concepts
 
-The proxy classes mirror Monarch's API:
-- `HostMeshProxy.spawn_procs(per_host, name)` → `ProcMeshProxy`
-- `ProcMeshProxy.spawn(name, actor_class, *args, **kwargs)` → `ActorMeshProxy`
-- `ActorMeshProxy.<endpoint>.call(*args, **kwargs)` → `FutureProxy`
-- `FutureProxy.get(timeout)` → result
+### HostMesh
+Represents the collection of hosts (pods) in your deployment. Each host runs a Monarch worker process.
+
+### ProcMesh
+Created by `host_mesh.spawn_procs(per_host={"procs": 1})` for CPU-only or `per_host={"gpus": 8}` for GPU workloads. Represents processes spawned on hosts.
+
+### ActorMesh
+Created by `proc_mesh.spawn("name", ActorClass)`. Represents actor instances running in each process.
+
+### Actors
+Actors inherit from `monarch.actor.Actor` and use the `@endpoint` decorator on methods that should be callable remotely:
+
+```python
+from monarch.actor import Actor, endpoint
+
+class MyActor(Actor):
+    @endpoint
+    def my_method(self, arg: int) -> int:
+        return arg * 2
+```
+
+### Proxy Classes
+Client-side proxies (`HostMeshProxy`, `ProcMeshProxy`, `ActorMeshProxy`) that mirror Monarch's API:
+- Local operations like `slice()`, `size()` work without network calls
+- Remote operations like `spawn()`, `call()` go through the gateway
+
+### EndpointProxy
+Provides `call()`, `call_one()`, and `broadcast()` for actor endpoints:
+```python
+# Call on all actors, get results
+results = actors.increment.call().get()
+
+# Call on single actor
+single_result = actors.get_value.call_one().get()
+
+# Fire-and-forget broadcast
+actors.reset.broadcast()
+```
 
 ## Comparison with SkyPilotJob
 
