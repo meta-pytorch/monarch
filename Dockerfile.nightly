@@ -1,5 +1,5 @@
 # Override on build from CI, default only to prevent warnings.
-ARG PYTORCH_TAG=2.11.0.dev20260109-cuda12.6-cudnn9-runtime
+ARG PYTORCH_TAG=2.11.0.dev20260109-cuda12.8-cudnn9-runtime
 
 # Build from latest pytorch nightly base image; should be relatively in sync with torchmonarch and pytorch-nightly.
 FROM ghcr.io/pytorch/pytorch-nightly:${PYTORCH_TAG}
