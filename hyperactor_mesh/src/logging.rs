@@ -28,6 +28,7 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortRef;
+use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::channel;
@@ -287,8 +288,8 @@ pub enum LogMessage {
     Log {
         /// The hostname of the process that generated the log
         hostname: String,
-        /// The pid of the process that generated the log
-        pid: u32,
+        /// String representation of the ProcId that generated the log
+        proc_id: String,
         /// The target output stream (stdout or stderr)
         output_target: OutputTarget,
         /// The log payload as bytes
@@ -362,13 +363,13 @@ pub enum Stream {
 /// Write the log to a local unix channel so some actors can listen to it and stream the log back.
 pub struct LocalLogSender {
     hostname: String,
-    pid: u32,
+    proc_id: String,
     tx: ChannelTx<LogMessage>,
     status: Receiver<TxStatus>,
 }
 
 impl LocalLogSender {
-    fn new(log_channel: ChannelAddr, pid: u32) -> Result<Self, anyhow::Error> {
+    fn new(log_channel: ChannelAddr, proc_id: &ProcId) -> Result<Self, anyhow::Error> {
         let tx = channel::dial::<LogMessage>(log_channel)?;
         let status = tx.status().clone();
 
@@ -378,7 +379,7 @@ impl LocalLogSender {
             .unwrap_or("unknown_host".to_string());
         Ok(Self {
             hostname,
-            pid,
+            proc_id: proc_id.to_string(),
             tx,
             status,
         })
@@ -392,7 +393,7 @@ impl LogSender for LocalLogSender {
             // Do not use tx.send, it will block the allocator as the child process state is unknown.
             self.tx.post(LogMessage::Log {
                 hostname: self.hostname.clone(),
-                pid: self.pid,
+                proc_id: self.proc_id.clone(),
                 output_target: target,
                 payload: wirevalue::Any::serialize(&payload)?,
             });
@@ -852,7 +853,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        pid: u32,
+        proc_id: &ProcId,
         local_rank: usize,
     ) -> Self {
         let prefix = match hyperactor_config::global::get(PREFIX_WITH_RANK) {
@@ -868,7 +869,7 @@ impl StreamFwder {
             target,
             max_buffer_size,
             log_channel,
-            pid,
+            proc_id,
             prefix,
         )
     }
@@ -881,7 +882,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        pid: u32,
+        proc_id: &ProcId,
         prefix: Option<String>,
     ) -> Self {
         // Sanity: when there is no file sink, no log forwarding, and
@@ -903,7 +904,7 @@ impl StreamFwder {
         };
 
         let log_sender: Option<Box<dyn LogSender + Send>> = if let Some(addr) = log_channel {
-            match LocalLogSender::new(addr, pid) {
+            match LocalLogSender::new(addr, proc_id) {
                 Ok(s) => Some(Box::new(s) as Box<dyn LogSender + Send>),
                 Err(e) => {
                     tracing::error!("failed to create log sender: {}", e);
@@ -1095,13 +1096,13 @@ impl LogForwardMessageHandler for LogForwardActor {
             }
             Ok(LogMessage::Log {
                 hostname,
-                pid,
+                proc_id,
                 output_target,
                 payload,
             }) => {
                 if self.stream_to_client {
                     self.logging_client_ref
-                        .log(ctx, hostname, pid, output_target, payload)
+                        .log(ctx, hostname, proc_id, output_target, payload)
                         .await?;
                 }
             }
@@ -1221,8 +1222,8 @@ impl LogClientActor {
         }
     }
 
-    fn print_log_line(hostname: &str, pid: u32, output_target: OutputTarget, line: String) {
-        let message = format!("[{} {}] {}", hostname, pid, line);
+    fn print_log_line(hostname: &str, proc_id: &str, output_target: OutputTarget, line: String) {
+        let message = format!("[{} {}] {}", hostname, proc_id, line);
 
         #[cfg(test)]
         crate::logging::test_tap::push(&message);
@@ -1257,7 +1258,7 @@ impl LogMessageHandler for LogClientActor {
         &mut self,
         cx: &Context<Self>,
         hostname: String,
-        pid: u32,
+        proc_id: String,
         output_target: OutputTarget,
         payload: wirevalue::Any,
     ) -> Result<(), anyhow::Error> {
@@ -1269,7 +1270,7 @@ impl LogMessageHandler for LogClientActor {
         match self.aggregate_window_sec {
             None => {
                 for line in message_lines {
-                    Self::print_log_line(hostname, pid, output_target, line);
+                    Self::print_log_line(hostname, &proc_id, output_target, line);
                 }
                 self.last_flush_time = RealClock.system_time_now();
             }
@@ -1279,12 +1280,12 @@ impl LogMessageHandler for LogClientActor {
                         if let Err(e) = aggregator.add_line(&line) {
                             tracing::error!("error adding log line: {}", e);
                             // For the sake of completeness, flush the log lines.
-                            Self::print_log_line(hostname, pid, output_target, line);
+                            Self::print_log_line(hostname, &proc_id, output_target, line);
                         }
                     } else {
                         tracing::error!("unknown output target: {:?}", output_target);
                         // For the sake of completeness, flush the log lines.
-                        Self::print_log_line(hostname, pid, output_target, line);
+                        Self::print_log_line(hostname, &proc_id, output_target, line);
                     }
                 }
 
@@ -1612,7 +1613,7 @@ mod tests {
         let tx: ChannelTx<LogMessage> = channel::dial(log_channel).unwrap();
         tx.post(LogMessage::Log {
             hostname: "my_host".into(),
-            pid: 1,
+            proc_id: "test_proc".into(),
             output_target: OutputTarget::Stderr,
             payload: wirevalue::Any::serialize(&"will not stream".to_string()).unwrap(),
         });
@@ -1621,7 +1622,7 @@ mod tests {
         log_forwarder.set_mode(&client, true).await.unwrap();
         tx.post(LogMessage::Log {
             hostname: "my_host".into(),
-            pid: 1,
+            proc_id: "test_proc".into(),
             output_target: OutputTarget::Stderr,
             payload: wirevalue::Any::serialize(&"will stream".to_string()).unwrap(),
         });
@@ -1825,6 +1826,7 @@ mod tests {
             .as_ref()
             .map(|fm| fm.addr_for(OutputTarget::Stdout));
 
+        let test_proc_id = id!(testproc[0]);
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(file_writer),
@@ -1832,8 +1834,8 @@ mod tests {
             OutputTarget::Stdout,
             3, // max_buffer_size
             Some(log_channel),
-            12345, // pid
-            None,  // no prefix
+            &test_proc_id,
+            None, // no prefix
         );
 
         // Wait a bit for set up to be done
@@ -1938,7 +1940,8 @@ mod tests {
     async fn test_local_log_sender_inactive_status() {
         let (log_channel, _) =
             channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let mut sender = LocalLogSender::new(log_channel, 12345).unwrap();
+        let test_proc_id = id!(testproc[0]);
+        let mut sender = LocalLogSender::new(log_channel, &test_proc_id).unwrap();
 
         // This test verifies that the sender handles inactive status gracefully
         // In a real scenario, the channel would be closed, but for testing we just
@@ -2383,15 +2386,16 @@ mod tests {
         let (mut writer, reader) = tokio::io::duplex(8192);
 
         // Start StreamFwder
+        let test_proc_id = id!(testproc[0]);
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(tokio::io::sink()), // discard output
             None,                        // no file monitor needed
             OutputTarget::Stdout,
-            1,     // tail buffer of 1 (need at least one sink)
-            None,  // no log channel
-            12345, // pid
-            None,  // no prefix
+            1,    // tail buffer of 1 (need at least one sink)
+            None, // no log channel
+            &test_proc_id,
+            None, // no prefix
         );
 
         // Write the problematic line

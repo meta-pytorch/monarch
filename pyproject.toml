@@ -21,6 +21,7 @@ authors = [
 
 dependencies = [
     "pyzmq",
+    "pyarrow",
     "requests",
     "numpy",
     "pyre-extensions",
@@ -31,7 +32,6 @@ dependencies = [
     "tabulate",
     "opentelemetry-api",
     "clusterscope",
-    "torch",
 ]
 
 # PyTorch nightly build indices for different platforms

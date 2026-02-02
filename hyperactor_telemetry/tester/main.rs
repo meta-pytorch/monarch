@@ -18,6 +18,7 @@ declare_static_gauge!(MEMORY_USAGE, "test_memory_usage");
 declare_static_histogram!(REQUEST_DURATION, "test_request_duration");
 
 #[tracing::instrument]
+#[allow(dead_code)]
 fn something_an_actor_would_do() {
     tracing::debug!("debug message");
 }

@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Distributed Web Crawler Example With Actors
+Distributed Web Crawler
 ==============================================================
 This example demonstrates how to make a simplistic distributed web crawler with
 Monarch actors including:

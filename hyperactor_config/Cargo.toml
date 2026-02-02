@@ -11,6 +11,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.98"
+arc-swap = { version = "1.5", features = ["weak"] }
 chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
 erased-serde = "0.4.9"
 humantime = "2.1"

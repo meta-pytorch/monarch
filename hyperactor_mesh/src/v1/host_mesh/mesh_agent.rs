@@ -30,10 +30,12 @@ use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
+use hyperactor::context::Mailbox as _;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
 use hyperactor::host::SingleTerminate;
+use hyperactor::mailbox::PortSender as _;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -64,7 +66,10 @@ type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture + Send + Sy
 /// out-of-process and in-process execution modes.
 #[derive(EnumAsInner)]
 pub enum HostAgentMode {
-    Process(Host<BootstrapProcManager>),
+    Process {
+        host: Host<BootstrapProcManager>,
+        exit_on_shutdown: bool,
+    },
     Local(Host<LocalProcManager<ProcManagerSpawnFn>>),
 }
 
@@ -72,7 +77,7 @@ impl HostAgentMode {
     fn system_proc(&self) -> &Proc {
         #[allow(clippy::match_same_arms)]
         match self {
-            HostAgentMode::Process(host) => host.system_proc(),
+            HostAgentMode::Process { host, .. } => host.system_proc(),
             HostAgentMode::Local(host) => host.system_proc(),
         }
     }
@@ -80,7 +85,7 @@ impl HostAgentMode {
     fn local_proc(&self) -> &Proc {
         #[allow(clippy::match_same_arms)]
         match self {
-            HostAgentMode::Process(host) => host.local_proc(),
+            HostAgentMode::Process { host, .. } => host.local_proc(),
             HostAgentMode::Local(host) => host.local_proc(),
         }
     }
@@ -94,7 +99,9 @@ impl HostAgentMode {
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         #[allow(clippy::match_same_arms)]
         match self {
-            HostAgentMode::Process(host) => host.terminate_proc(cx, proc, timeout, reason).await,
+            HostAgentMode::Process { host, .. } => {
+                host.terminate_proc(cx, proc, timeout, reason).await
+            }
             HostAgentMode::Local(host) => host.terminate_proc(cx, proc, timeout, reason).await,
         }
     }
@@ -144,7 +151,7 @@ impl Actor for HostMeshAgent {
         // bound before serving.
         this.bind::<Self>();
         match self.host.as_mut().unwrap() {
-            HostAgentMode::Process(host) => {
+            HostAgentMode::Process { host, .. } => {
                 host.serve();
                 let (directory, file) = hyperactor_telemetry::log_file_path(
                     hyperactor_telemetry::env::Env::current(),
@@ -190,7 +197,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
 
         let host = self.host.as_mut().expect("host present");
         let created = match host {
-            HostAgentMode::Process(host) => {
+            HostAgentMode::Process { host, .. } => {
                 host.spawn(
                     create_or_update.name.clone().to_string(),
                     BootstrapProcConfig {
@@ -238,7 +245,7 @@ impl Handler<resource::Stop> for HostMeshAgent {
             .host
             .as_mut()
             .ok_or(anyhow::anyhow!("HostMeshAgent has already shut down"))?;
-        let manager = host.as_process().map(Host::manager);
+        let manager = host.as_process().map(|(h, _)| h.manager());
         let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
         // We don't remove the proc from the state map, instead we just store
         // its state as Stopped.
@@ -286,7 +293,7 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
             .host
             .as_mut()
             .and_then(|h| h.as_process())
-            .map(Host::manager);
+            .map(|(h, _)| h.manager());
         let (rank, status) = match self.created.get(&get_rank_status.name) {
             Some(ProcCreationState {
                 rank,
@@ -356,12 +363,18 @@ wirevalue::register_type!(ShutdownHost);
 #[async_trait]
 impl Handler<ShutdownHost> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
-        // Ack immediately so caller can await.
-        msg.ack.send(cx, ())?;
+        // Ack immediately so caller can stop waiting.
+        let (return_handle, mut return_receiver) = cx.mailbox().open_port();
+        cx.mailbox()
+            .serialize_and_send(&msg.ack, (), return_handle)?;
 
+        let mut should_exit = false;
         if let Some(host_mode) = self.host.take() {
             match host_mode {
-                HostAgentMode::Process(host) => {
+                HostAgentMode::Process {
+                    host,
+                    exit_on_shutdown,
+                } => {
                     let summary = host
                         .terminate_children(
                             cx,
@@ -371,6 +384,7 @@ impl Handler<ShutdownHost> for HostMeshAgent {
                         )
                         .await;
                     tracing::info!(?summary, "terminated children on host");
+                    should_exit = exit_on_shutdown;
                 }
                 HostAgentMode::Local(host) => {
                     let summary = host
@@ -380,8 +394,23 @@ impl Handler<ShutdownHost> for HostMeshAgent {
                 }
             }
         }
+
+        // If message is returned, it means it ack was not sent successfully.
+        if return_receiver.recv().await.is_ok() {
+            tracing::warn!("failed to send ack");
+        }
+
         // Drop the host to release any resources that somehow survived.
         let _ = self.host.take();
+
+        if should_exit {
+            tracing::info!(
+                proc_id = %cx.self_id().proc_id(),
+                actor_id = %cx.self_id(),
+                "host is shut down, exiting this process"
+            );
+            std::process::exit(0);
+        }
 
         Ok(())
     }
@@ -408,7 +437,7 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
             .host
             .as_mut()
             .and_then(|h| h.as_process())
-            .map(Host::manager);
+            .map(|(h, _)| h.manager());
         let state = match self.created.get(&get_state.name) {
             Some(ProcCreationState {
                 rank,
@@ -554,7 +583,10 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
             tracing::info!("booting host with proc command {:?}", command);
             let manager = BootstrapProcManager::new(command).unwrap();
             let host = Host::new(manager, transport.any()).await?;
-            HostAgentMode::Process(host)
+            HostAgentMode::Process {
+                host,
+                exit_on_shutdown: false,
+            }
         };
 
         let system_proc = host.system_proc().clone();
@@ -613,7 +645,13 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
+            .spawn(
+                "agent",
+                HostMeshAgent::new(HostAgentMode::Process {
+                    host,
+                    exit_on_shutdown: false,
+                }),
+            )
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
@@ -644,7 +682,7 @@ mod tests {
                     // "agent".
                     mesh_agent,
                     bootstrap_command,
-                    proc_status: Some(ProcStatus::Ready { pid: _, started_at: _, addr: _, agent: proc_status_mesh_agent}),
+                    proc_status: Some(ProcStatus::Ready { started_at: _, addr: _, agent: proc_status_mesh_agent}),
                     ..
                 }),
             } if name == resource_name

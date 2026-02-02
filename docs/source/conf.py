@@ -46,7 +46,7 @@ sphinx_gallery_conf = {
     ],  # path to your example scripts
     "gallery_dirs": "./generated/examples",  # path to where to save gallery generated output
     "filename_pattern": r".*\.py$",  # Include all Python files
-    "ignore_pattern": r"__init__\.py",  # Exclude __init__.py files
+    "ignore_pattern": r"(__init__|ddp/train)\.py",  # Exclude __init__.py and supplementary files
     "plot_gallery": "False",
     "only_warn_on_example_error": "True",
 }

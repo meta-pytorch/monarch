@@ -37,9 +37,32 @@ class SPMDActor(Actor):
     ROLE_NAME, MASTER_ADDR, and MASTER_PORT before launching the training script.
     All rank and mesh information is automatically derived from current_rank().
 
-    Args:
-        master_addr: Address of the master node for rendezvous.
-        master_port: Port on the master node for rendezvous.
+    Example::
+
+        from monarch.spmd import SPMDActor
+
+        # Spawn SPMDActor on the process mesh
+        spmd_actors = proc_mesh.spawn("_SPMDActor", SPMDActor)
+
+        # Get master address/port from first actor
+        first_values = dict.fromkeys(proc_mesh._labels, 0)
+        master_addr, master_port = spmd_actors.slice(**first_values).get_host_port.call_one(None).get()
+
+        # Execute training script across the mesh
+        spmd_actors.main.call(master_addr, master_port, ["-m", "train", "--lr", "0.001"]).get()
+
+    For custom client code that uses torch.distributed directly::
+
+        from monarch.actor import this_host
+        from monarch.spmd import setup_torch_elastic_env
+
+        # Create a process mesh with 2 GPUs per host
+        proc_mesh = this_host().spawn_procs(per_host={"gpus": 2})
+
+        # Set up torch elastic environment (spawns SPMDActor internally)
+        setup_torch_elastic_env(proc_mesh)
+
+        # ... rest of custom client code
     """
 
     def __init__(

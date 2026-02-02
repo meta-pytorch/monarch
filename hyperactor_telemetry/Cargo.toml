@@ -27,7 +27,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_rusqlite = "0.40.1"
 smallvec = { version = "1.15", features = ["impl_bincode", "serde", "specialization", "union"] }
-smol_str = "0.1.22"
+smol_str = "0.1.24"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-appender = "0.2.3"
@@ -40,7 +40,7 @@ whoami = "1.5"
 
 [dev-dependencies]
 quickcheck = "1.0"
-quickcheck_macros = "1.0"
+quickcheck_macros = "1.1.0"
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 
 [lints]

@@ -68,6 +68,7 @@ use crate::resource;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::shortuuid::ShortUuid;
+use crate::supervision::MeshFailure;
 use crate::v1::host_mesh::HostMeshAgent;
 use crate::v1::host_mesh::HostMeshRefParseError;
 use crate::v1::host_mesh::mesh_agent::ProcState;
@@ -158,6 +159,9 @@ pub enum Error {
 
     #[error("proc {0} must be direct-addressable")]
     RankedProc(ProcId),
+
+    #[error("{0}")]
+    Supervision(Box<MeshFailure>),
 
     #[error("error: {0} does not exist")]
     NotExist(Name),

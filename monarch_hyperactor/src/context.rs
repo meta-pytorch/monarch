@@ -111,7 +111,7 @@ impl<I: context::Actor<A = PythonActor>> From<I> for PyInstance {
 }
 
 #[pyclass(name = "Context", module = "monarch._src.actor.actor_mesh")]
-pub(crate) struct PyContext {
+pub struct PyContext {
     instance: Py<PyInstance>,
     rank: Point,
 }

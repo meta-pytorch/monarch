@@ -53,6 +53,8 @@ use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use arc_swap::ArcSwap;
+
 use crate::CONFIG;
 use crate::attrs::AttrKeyInfo;
 use crate::attrs::AttrValue;
@@ -284,18 +286,175 @@ fn layer_attrs_mut(l: &mut Layer) -> &mut Attrs {
     }
 }
 
-/// Return the index of the [`Layer::TestOverride`] within the
-/// [`Layers`] vector.
+impl Layers {
+    // Mutation methods:
+
+    /// Insert or replace a configuration layer for the given source.
+    ///
+    /// If a layer with the same [`Source`] already exists, its contents
+    /// are replaced with the provided `attrs`. Otherwise a new layer is
+    /// added. After insertion, layers are re-sorted so that
+    /// higher-priority sources (e.g. [`Source::TestOverride`],
+    /// [`Source::Env`]) appear before lower-priority ones
+    /// ([`Source::Runtime`], [`Source::File`]).
+    fn set(&mut self, source: Source, attrs: Attrs) {
+        if let Some(l) = self.ordered.iter_mut().find(|l| layer_source(l) == source) {
+            *layer_attrs_mut(l) = attrs;
+        } else {
+            self.ordered.push(make_layer(source, attrs));
+        }
+        self.ordered.sort_by_key(|l| priority(layer_source(l)));
+    }
+
+    /// Insert or update a configuration layer for the given [`Source`].
+    ///
+    /// If a layer with the same [`Source`] already exists, its attributes
+    /// are **updated in place**: all keys present in `attrs` are absorbed
+    /// into the existing layer, overwriting any previous values for those
+    /// keys while leaving all other keys in that layer unchanged.
+    ///
+    /// If no layer for `source` exists yet, this behaves like [`set`]: a
+    /// new layer is created with the provided `attrs`.
+    fn merge(&mut self, source: Source, attrs: Attrs) {
+        if let Some(layer) = self.ordered.iter_mut().find(|l| layer_source(l) == source) {
+            layer_attrs_mut(layer).merge(attrs);
+        } else {
+            self.ordered.push(make_layer(source, attrs));
+        }
+        self.ordered.sort_by_key(|l| priority(layer_source(l)));
+    }
+
+    /// Remove the configuration layer for the given [`Source`], if
+    /// present.
+    ///
+    /// After this call, values from that source will no longer contribute
+    /// to resolution in [`get`], [`get_cloned`], or [`attrs`]. Defaults
+    /// and any remaining layers continue to apply in their normal
+    /// priority order.
+    fn clear(&mut self, source: Source) {
+        self.ordered.retain(|l| layer_source(l) != source);
+    }
+
+    /// Reset the global configuration to only Defaults (for testing).
+    ///
+    /// This clears all explicit layers (`File`, `Env`, `Runtime`,
+    /// `ClientOverride`, and `TestOverride`). Subsequent lookups will
+    /// resolve keys entirely from their declared defaults.
+    fn reset(&mut self) {
+        self.ordered.clear();
+    }
+
+    // Read methods:
+
+    /// Return a complete, merged snapshot of the effective configuration
+    /// **(only keys marked with `@meta(CONFIG = ...)`)**.
+    ///
+    /// Resolution per key:
+    /// 1) First explicit value found in layers (TestOverride → Env →
+    ///    Runtime → File → ClientOverride).
+    /// 2) Otherwise, the key's default (if any).
+    fn materialize(&self) -> Attrs {
+        let mut merged = Attrs::new();
+        for info in inventory::iter::<AttrKeyInfo>() {
+            if info.meta.get(CONFIG).is_none() {
+                continue;
+            }
+            let name = info.name;
+            let mut chosen: Option<Box<dyn crate::attrs::SerializableValue>> = None;
+            for layer in &self.ordered {
+                if let Some(v) = layer_attrs(layer).get_value_by_name(name) {
+                    chosen = Some(v.cloned());
+                    break;
+                }
+            }
+            let boxed = match chosen {
+                Some(b) => b,
+                None => {
+                    if let Some(default) = info.default {
+                        default.cloned()
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            merged.insert_value_by_name_unchecked(name, boxed);
+        }
+        merged
+    }
+
+    /// Return a snapshot of the attributes for a specific configuration
+    /// source.
+    ///
+    /// If a layer with the given [`Source`] exists, this clones and
+    /// returns its [`Attrs`]. Otherwise an empty [`Attrs`] is returned.
+    fn layer_attrs_for(&self, source: Source) -> Attrs {
+        if let Some(layer) = self.ordered.iter().find(|l| layer_source(l) == source) {
+            layer_attrs(layer).clone()
+        } else {
+            Attrs::new()
+        }
+    }
+
+    // Test override support:
+
+    /// Ensure TestOverride layer exists, return mutable access to its
+    /// attrs and stacks.
+    fn ensure_test_override(&mut self) -> (&mut Attrs, &mut HashMap<&'static str, OverrideStack>) {
+        let idx = if let Some(i) = self
+            .ordered
+            .iter()
+            .position(|l| matches!(l, Layer::TestOverride { .. }))
+        {
+            i
+        } else {
+            self.ordered.push(Layer::TestOverride {
+                attrs: Attrs::new(),
+                stacks: HashMap::new(),
+            });
+            self.ordered.sort_by_key(|l| priority(layer_source(l)));
+            self.ordered
+                .iter()
+                .position(|l| matches!(l, Layer::TestOverride { .. }))
+                .expect("just inserted TestOverride layer")
+        };
+        match &mut self.ordered[idx] {
+            Layer::TestOverride { attrs, stacks } => (attrs, stacks),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Get mutable access to TestOverride layer if it exists.
+    fn test_override_mut(
+        &mut self,
+    ) -> Option<(&mut Attrs, &mut HashMap<&'static str, OverrideStack>)> {
+        let idx = self
+            .ordered
+            .iter()
+            .position(|l| matches!(l, Layer::TestOverride { .. }))?;
+        match &mut self.ordered[idx] {
+            Layer::TestOverride { attrs, stacks } => Some((attrs, stacks)),
+            _ => None,
+        }
+    }
+
+    /// Remove the TestOverride layer entirely.
+    fn remove_test_override(&mut self) {
+        self.ordered
+            .retain(|l| !matches!(l, Layer::TestOverride { .. }));
+    }
+}
+
+/// Global configuration state combining layers and materialized
+/// snapshot.
 ///
-/// If a TestOverride layer is present, its position in the ordered
-/// list is returned; otherwise, `None` is returned. This is used to
-/// locate the active test override layer for inserting or restoring
-/// temporary configuration values.
-fn test_override_index(layers: &Layers) -> Option<usize> {
-    layers
-        .ordered
-        .iter()
-        .position(|l| matches!(l, Layer::TestOverride { .. }))
+/// This struct holds both the mutable layer stack (protected by
+/// RwLock) and the pre-materialized snapshot (in ArcSwap) together to
+/// avoid initialization order dependencies.
+struct GlobalConfig {
+    /// The layered configuration store.
+    layers: RwLock<Layers>,
+    /// Pre-materialized snapshot for lock-free reads.
+    materialized: ArcSwap<Attrs>,
 }
 
 /// Global layered configuration store.
@@ -318,13 +477,25 @@ fn test_override_index(layers: &Layers) -> Option<usize> {
 /// [`attrs`] and pass it to a child during bootstrap. The child
 /// installs this snapshot as its [`Source::ClientOverride`] layer,
 /// which has the lowest precedence among explicit layers.
-static LAYERS: LazyLock<Arc<RwLock<Layers>>> = LazyLock::new(|| {
+static GLOBAL: LazyLock<GlobalConfig> = LazyLock::new(|| {
     let env = from_env();
     let layers = Layers {
         ordered: vec![Layer::Env(env)],
     };
-    Arc::new(RwLock::new(layers))
+    let materialized = ArcSwap::new(Arc::new(layers.materialize()));
+    GlobalConfig {
+        layers: RwLock::new(layers),
+        materialized,
+    }
 });
+
+/// Update the materialized snapshot from the current layers.
+///
+/// Must be called while holding `GLOBAL.layers.write()` to ensure the
+/// snapshot is consistent with the layers.
+fn rematerialize(layers: &Layers) {
+    GLOBAL.materialized.store(Arc::new(layers.materialize()));
+}
 
 /// Monotonically increasing sequence used to assign unique tokens to
 /// each test override frame.
@@ -397,22 +568,13 @@ pub fn init_from_yaml<P: AsRef<Path>>(path: P) -> Result<(), anyhow::Error> {
 /// Resolution order: TestOverride -> Env -> Runtime -> File ->
 /// ClientOverride -> Default. Panics if the key has no default and is
 /// not set in any layer.
+///
+/// This function reads from a pre-materialized snapshot for lock-free
+/// performance. The snapshot is updated atomically whenever layers
+/// change.
 pub fn get<T: AttrValue + Copy>(key: Key<T>) -> T {
-    let layers = LAYERS.read().unwrap();
-    for layer in &layers.ordered {
-        let a = layer_attrs(layer);
-        if let Some(value) = a.get_value_by_name(key.name()) {
-            let t = value.as_any().downcast_ref::<T>().unwrap_or_else(|| {
-                panic!(
-                    "cannot cast to type {} for key {}",
-                    std::any::type_name::<T>(),
-                    key.name()
-                )
-            });
-            return *t;
-        }
-    }
-    *key.default().expect("key must have a default")
+    let snapshot = GLOBAL.materialized.load();
+    *snapshot.get(key).expect("key must have a default")
 }
 
 /// Return the override value for `key` if it is explicitly present in
@@ -441,15 +603,12 @@ pub fn get_cloned<T: AttrValue>(key: Key<T>) -> T {
 /// Resolution order: TestOverride -> Env -> Runtime -> File ->
 /// ClientOverride -> Default. Returns None if the key has no default
 /// and is not set in any layer.
+///
+/// This function reads from a pre-materialized snapshot for lock-free
+/// performance.
 pub fn try_get_cloned<T: AttrValue>(key: Key<T>) -> Option<T> {
-    let layers = LAYERS.read().unwrap();
-    for layer in &layers.ordered {
-        let a = layer_attrs(layer);
-        if a.contains_key(key) {
-            return a.get(key).cloned();
-        }
-    }
-    key.default().cloned()
+    let snapshot = GLOBAL.materialized.load();
+    snapshot.get(key).cloned()
 }
 
 /// Construct a [`Layer`] for the given [`Source`] using the provided
@@ -483,13 +642,9 @@ fn make_layer(source: Source, attrs: Attrs) -> Layer {
 /// `init_from_env`, `init_from_yaml`) and by tests when overriding
 /// configuration values.
 pub fn set(source: Source, attrs: Attrs) {
-    let mut g = LAYERS.write().unwrap();
-    if let Some(l) = g.ordered.iter_mut().find(|l| layer_source(l) == source) {
-        *layer_attrs_mut(l) = attrs;
-    } else {
-        g.ordered.push(make_layer(source, attrs));
-    }
-    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Env < Runtime < File < ClientOverride
+    let mut g = GLOBAL.layers.write().unwrap();
+    g.set(source, attrs);
+    rematerialize(&g);
 }
 
 /// Insert or update a configuration layer for the given [`Source`].
@@ -510,13 +665,9 @@ pub fn set(source: Source, attrs: Attrs) {
 /// By contrast, [`set`] replaces the entire layer for `source` with
 /// `attrs`, discarding any existing values in that layer.
 pub fn create_or_merge(source: Source, attrs: Attrs) {
-    let mut g = LAYERS.write().unwrap();
-    if let Some(layer) = g.ordered.iter_mut().find(|l| layer_source(l) == source) {
-        layer_attrs_mut(layer).merge(attrs);
-    } else {
-        g.ordered.push(make_layer(source, attrs));
-    }
-    g.ordered.sort_by_key(|l| priority(layer_source(l))); // TestOverride < Env < Runtime < File < ClientOverride
+    let mut g = GLOBAL.layers.write().unwrap();
+    g.merge(source, attrs);
+    rematerialize(&g);
 }
 
 /// Remove the configuration layer for the given [`Source`], if
@@ -527,8 +678,9 @@ pub fn create_or_merge(source: Source, attrs: Attrs) {
 /// and any remaining layers continue to apply in their normal
 /// priority order.
 pub fn clear(source: Source) {
-    let mut g = LAYERS.write().unwrap();
-    g.ordered.retain(|l| layer_source(l) != source);
+    let mut g = GLOBAL.layers.write().unwrap();
+    g.clear(source);
+    rematerialize(&g);
 }
 
 /// Return a complete, merged snapshot of the effective configuration
@@ -544,47 +696,7 @@ pub fn clear(source: Source) {
 ///   CONFIG-marked keys, so it's self-contained.
 /// - Keys without `CONFIG` meta are excluded.
 pub fn attrs() -> Attrs {
-    let layers = LAYERS.read().unwrap();
-    let mut merged = Attrs::new();
-
-    // Iterate all declared keys (registered via `declare_attrs!` +
-    // inventory).
-    for info in inventory::iter::<AttrKeyInfo>() {
-        // Skip keys not marked as `CONFIG`.
-        if info.meta.get(CONFIG).is_none() {
-            continue;
-        }
-
-        let name = info.name;
-
-        // Try to resolve from highest -> lowest priority layer.
-        let mut chosen: Option<Box<dyn crate::attrs::SerializableValue>> = None;
-        for layer in &layers.ordered {
-            if let Some(v) = layer_attrs(layer).get_value_by_name(name) {
-                chosen = Some(v.cloned());
-                break;
-            }
-        }
-
-        // If no explicit value, materialize the default if there is
-        // one.
-        let boxed = match chosen {
-            Some(b) => b,
-            None => {
-                if let Some(default) = info.default {
-                    default.cloned()
-                } else {
-                    // No explicit value and no default — skip
-                    // this key.
-                    continue;
-                }
-            }
-        };
-
-        merged.insert_value_by_name_unchecked(name, boxed);
-    }
-
-    merged
+    GLOBAL.layers.read().unwrap().materialize()
 }
 
 /// Return a snapshot of the attributes for a specific configuration
@@ -596,12 +708,7 @@ pub fn attrs() -> Attrs {
 /// does **not** affect the underlying layer; use [`set`] or
 /// [`create_or_merge`] to modify layers.
 fn layer_attrs_for(source: Source) -> Attrs {
-    let layers = LAYERS.read().unwrap();
-    if let Some(layer) = layers.ordered.iter().find(|l| layer_source(l) == source) {
-        layer_attrs(layer).clone()
-    } else {
-        Attrs::new()
-    }
+    GLOBAL.layers.read().unwrap().layer_attrs_for(source)
 }
 
 /// Snapshot the current attributes in the **Runtime** configuration
@@ -624,8 +731,9 @@ pub fn runtime_attrs() -> Attrs {
 /// Note: Should be called while holding [`global::lock`] in tests, to
 /// ensure no concurrent modifications happen.
 pub fn reset_to_defaults() {
-    let mut g = LAYERS.write().unwrap();
-    g.ordered.clear();
+    let mut g = GLOBAL.layers.write().unwrap();
+    g.reset();
+    rematerialize(&g);
 }
 
 /// A guard that holds the global configuration lock and provides
@@ -659,61 +767,50 @@ impl ConfigLock {
     ) -> ConfigValueGuard<'a, T> {
         let token = OVERRIDE_TOKEN_SEQ.fetch_add(1, Ordering::Relaxed);
 
-        let mut g = LAYERS.write().unwrap();
+        let mut g = GLOBAL.layers.write().unwrap();
 
-        // Ensure TestOverride layer exists.
-        let idx = if let Some(i) = test_override_index(&g) {
-            i
-        } else {
-            g.ordered.push(Layer::TestOverride {
-                attrs: Attrs::new(),
-                stacks: HashMap::new(),
-            });
-            g.ordered.sort_by_key(|l| priority(layer_source(l)));
-            test_override_index(&g).expect("just inserted TestOverride layer")
-        };
+        {
+            // Ensure TestOverride layer exists and get mutable access.
+            let (attrs, stacks) = g.ensure_test_override();
 
-        // Mutably access TestOverride's attrs + stacks.
-        let (attrs, stacks) = match &mut g.ordered[idx] {
-            Layer::TestOverride { attrs, stacks } => (attrs, stacks),
-            _ => unreachable!(),
-        };
-
-        // Compute env var (if any) for this key once.
-        let (env_var, env_str) = if let Some(cfg) = key.attrs().get(crate::CONFIG) {
-            if let Some(name) = &cfg.env_name {
-                (Some(name.clone()), value.display())
+            // Compute env var (if any) for this key once.
+            let (env_var, env_str) = if let Some(cfg) = key.attrs().get(crate::CONFIG) {
+                if let Some(name) = &cfg.env_name {
+                    (Some(name.clone()), value.display())
+                } else {
+                    (None, String::new())
+                }
             } else {
                 (None, String::new())
+            };
+
+            // Get per-key stack (by declared name).
+            let key_name = key.name();
+            let stack = stacks.entry(key_name).or_insert_with(|| OverrideStack {
+                env_var: env_var.clone(),
+                saved_env: env_var.as_ref().and_then(|n| std::env::var(n).ok()),
+                frames: Vec::new(),
+            });
+
+            // Push the new frame.
+            let boxed: Box<dyn crate::attrs::SerializableValue> = Box::new(value.clone());
+            stack.frames.push(OverrideFrame {
+                token,
+                value: boxed,
+                env_str,
+            });
+
+            // Make this frame the active value in TestOverride attrs.
+            attrs.set(key, value.clone());
+
+            // Update process env to reflect new top-of-stack.
+            if let (Some(var), Some(top)) = (stack.env_var.as_ref(), stack.frames.last()) {
+                // SAFETY: Under global ConfigLock during tests.
+                unsafe { std::env::set_var(var, &top.env_str) }
             }
-        } else {
-            (None, String::new())
-        };
-
-        // Get per-key stack (by declared name).
-        let key_name = key.name();
-        let stack = stacks.entry(key_name).or_insert_with(|| OverrideStack {
-            env_var: env_var.clone(),
-            saved_env: env_var.as_ref().and_then(|n| std::env::var(n).ok()),
-            frames: Vec::new(),
-        });
-
-        // Push the new frame.
-        let boxed: Box<dyn crate::attrs::SerializableValue> = Box::new(value.clone());
-        stack.frames.push(OverrideFrame {
-            token,
-            value: boxed,
-            env_str,
-        });
-
-        // Make this frame the active value in TestOverride attrs.
-        attrs.set(key, value.clone());
-
-        // Update process env to reflect new top-of-stack.
-        if let (Some(var), Some(top)) = (stack.env_var.as_ref(), stack.frames.last()) {
-            // SAFETY: Under global ConfigLock during tests.
-            unsafe { std::env::set_var(var, &top.env_str) }
         }
+
+        rematerialize(&g);
 
         ConfigValueGuard {
             key,
@@ -736,10 +833,9 @@ impl ConfigLock {
 /// itself is released.
 impl Drop for ConfigLock {
     fn drop(&mut self) {
-        let mut guard = LAYERS.write().unwrap();
-        if let Some(pos) = test_override_index(&guard) {
-            guard.ordered.remove(pos);
-        }
+        let mut g = GLOBAL.layers.write().unwrap();
+        g.remove_test_override();
+        rematerialize(&g);
     }
 }
 
@@ -773,83 +869,88 @@ pub struct ConfigValueGuard<'a, T: 'static> {
 /// subsequent tests.
 impl<T: 'static> Drop for ConfigValueGuard<'_, T> {
     fn drop(&mut self) {
-        let mut g = LAYERS.write().unwrap();
-        let i = if let Some(i) = test_override_index(&g) {
-            i
-        } else {
-            return;
-        };
+        let mut g = GLOBAL.layers.write().unwrap();
 
-        // Access TestOverride internals
-        let (attrs, stacks) = match &mut g.ordered[i] {
-            Layer::TestOverride { attrs, stacks } => (attrs, stacks),
-            _ => unreachable!("TestOverride index points to non-TestOverride layer"),
-        };
+        // Track whether the config actually changed (for rematerialization).
+        let mut config_changed = false;
 
-        let key_name = self.key.name();
-
-        // We need a tiny scope for the &mut borrow of the stack so we
-        // can call `stacks.remove(key_name)` afterward if it becomes
-        // empty.
-        let mut remove_empty_stack = false;
+        // Env var restoration info (captured inside the block, applied
+        // outside).
         let mut restore_env_var: Option<String> = None;
         let mut restore_env_to: Option<String> = None;
 
-        if let Some(stack) = stacks.get_mut(key_name) {
-            // Find this guard's frame by token.
-            if let Some(pos) = stack.frames.iter().position(|f| f.token == self.token) {
-                let is_top = pos + 1 == stack.frames.len();
+        if let Some((attrs, stacks)) = g.test_override_mut() {
+            let key_name = self.key.name();
 
-                if is_top {
-                    // Pop the active frame
-                    stack.frames.pop();
+            // We need a tiny scope for the &mut borrow of the stack so
+            // we can call `stacks.remove(key_name)` afterward if it
+            // becomes empty.
+            let mut remove_empty_stack = false;
 
-                    if let Some(new_top) = stack.frames.last() {
-                        // New top becomes active: update attrs and env.
-                        attrs.insert_value(self.key, (*new_top.value).cloned());
-                        if let Some(var) = stack.env_var.as_ref() {
-                            // SAFETY: Under global ConfigLock during tests.
-                            unsafe { std::env::set_var(var, &new_top.env_str) }
+            if let Some(stack) = stacks.get_mut(key_name) {
+                // Find this guard's frame by token.
+                if let Some(pos) = stack.frames.iter().position(|f| f.token == self.token) {
+                    let is_top = pos + 1 == stack.frames.len();
+
+                    if is_top {
+                        // Pop the active frame
+                        stack.frames.pop();
+                        config_changed = true;
+
+                        if let Some(new_top) = stack.frames.last() {
+                            // New top becomes active: update attrs and env.
+                            attrs.insert_value(self.key, (*new_top.value).cloned());
+                            if let Some(var) = stack.env_var.as_ref() {
+                                // SAFETY: Under global ConfigLock during tests.
+                                unsafe { std::env::set_var(var, &new_top.env_str) }
+                            }
+                        } else {
+                            // Stack empty: remove the key now, then after
+                            // releasing the &mut borrow of the stack,
+                            // restore the env var and remove the stack
+                            // entry.
+                            let _ = attrs.remove_value(self.key);
+
+                            // Capture restoration details while we still
+                            // have access to the stack.
+                            if let Some(var) = stack.env_var.as_ref() {
+                                restore_env_var = Some(var.clone());
+                                restore_env_to = stack.saved_env.clone(); // None => unset
+                            }
+                            remove_empty_stack = true
                         }
                     } else {
-                        // Stack empty: remove the key now, then after
-                        // releasing the &mut borrow of the stack,
-                        // restore the env var and remove the stack
-                        // entry.
-                        let _ = attrs.remove_value(self.key);
-
-                        // Capture restoration details while we still
-                        // have access to the stack.
-                        if let Some(var) = stack.env_var.as_ref() {
-                            restore_env_var = Some(var.clone());
-                            restore_env_to = stack.saved_env.clone(); // None => unset
-                        }
-                        remove_empty_stack = true
+                        // Out-of-order drop: remove only that frame:
+                        // active top stays
+                        stack.frames.remove(pos);
+                        // No changes to attrs or env here (and no
+                        // rematerialization needed).
                     }
+                } // else: token already handled; nothing to do
+            } // &mut stack borrow ends here
+
+            // If we emptied the stack for this key, remove the stack
+            // entry.
+            if remove_empty_stack {
+                let _ = stacks.remove(key_name);
+            }
+        }
+
+        // Restore env var outside the borrow scope.
+        if let Some(var) = restore_env_var.as_ref() {
+            // SAFETY: Under global ConfigLock during tests.
+            unsafe {
+                if let Some(val) = restore_env_to.as_ref() {
+                    std::env::set_var(var, val);
                 } else {
-                    // Out-of-order drop: remove only that frame:
-                    // active top stays
-                    stack.frames.remove(pos);
-                    // No changes to attrs or env here.
-                }
-            } // else: token already handled; nothing to do
-        } // &mut stack borrow ends here
-
-        // If we emptied the stack for this key, restore env and drop
-        // the stack entry.
-        if remove_empty_stack {
-            if let Some(var) = restore_env_var.as_ref() {
-                // SAFETY: Under global ConfigLock during tests.
-                unsafe {
-                    if let Some(val) = restore_env_to.as_ref() {
-                        std::env::set_var(var, val);
-                    } else {
-                        std::env::remove_var(var);
-                    }
+                    std::env::remove_var(var);
                 }
             }
-            // Now it's safe to remove the stack from the map.
-            let _ = stacks.remove(key_name);
+        }
+
+        // Rematerialize if the config actually changed.
+        if config_changed {
+            rematerialize(&g);
         }
     }
 }
