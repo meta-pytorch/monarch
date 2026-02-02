@@ -20,7 +20,7 @@ Kubetorch solves the networking complexity of using Monarch primitives (Process 
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Your Laptop (Outside Cluster)                                           │
 │                                                                          │
-│  from kubetorch.monarch import KubernetesJob                            │
+│  from monarch_kubetorch import KubernetesJob                            │
 │                                                                          │
 │  job = KubernetesJob(compute=kt.Compute(gpu=8, replicas=4))             │
 │  state = job.state()                                                     │
@@ -61,7 +61,7 @@ Launch new compute on-the-fly from inside Python with `kt.Compute`:
 
 ```python
 import kubetorch as kt
-from kubetorch.monarch import KubernetesJob
+from monarch_kubetorch import KubernetesJob
 
 # Convenient but fully customizable compute specification
 compute = kt.Compute(
@@ -88,12 +88,13 @@ job = KubernetesJob(compute=compute)
 1. A Kubernetes cluster with [Kubetorch](https://github.com/kubetorch/kubetorch) installed
 2. `kubectl` configured to access the cluster
 3. Python environment with kubetorch installed: `pip install kubetorch`
+4. Add this directory to your Python path (or copy `monarch_kubetorch/` to your project)
 
 ### Basic Example
 
 ```python
 import kubetorch as kt
-from kubetorch.monarch import KubernetesJob
+from monarch_kubetorch import KubernetesJob
 from monarch.actor import Actor, endpoint
 
 # Define your actor

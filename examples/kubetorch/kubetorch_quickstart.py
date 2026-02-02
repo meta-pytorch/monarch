@@ -40,8 +40,8 @@ def main():
 
     # Import after parsing args to fail fast on missing args
     import kubetorch as kt
-    from kubetorch.monarch import KubernetesJob
     from monarch.actor import Actor, endpoint
+    from monarch_kubetorch import KubernetesJob
 
     # Define actor classes
     class Counter(Actor):
