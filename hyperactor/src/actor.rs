@@ -786,9 +786,11 @@ mod tests {
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
     use crate::config;
+    use crate::context::Mailbox as _;
     use crate::id;
     use crate::mailbox::BoxableMailboxSender as _;
     use crate::mailbox::MailboxSender;
+    use crate::mailbox::PortLocation;
     use crate::mailbox::monitored_return_handle;
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
@@ -1159,6 +1161,175 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Test that actor ports share a sequence while non-actor ports get their own.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_mixed_actor_and_non_actor_ports() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Port for receiving seq info from actor handler
+        let (actor_tx, mut actor_rx) = client.open_port();
+
+        // Channel for receiving seq info from non-actor port
+        let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel();
+
+        let actor_handle = proc.spawn("get_seq", GetSeqActor(actor_tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        // Create a non-actor port using open_enqueue_port
+        let non_actor_tx_clone = non_actor_tx.clone();
+        let non_actor_port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO).cloned();
+            non_actor_tx_clone.send(seq_info).unwrap();
+            Ok(())
+        });
+
+        // Bind the port to get a port ID
+        non_actor_port_handle.bind();
+        let non_actor_port_id = match non_actor_port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        assert!(!non_actor_port_id.is_actor_port());
+
+        let session_id = client.sequencer().session_id();
+
+        // Send to actor ports via ActorHandle - seq 1
+        actor_handle.send(&client, "msg1".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 1 }
+        );
+
+        // Send to actor ports via ActorRef - seq 2 (shared with ActorHandle)
+        actor_ref.port().send(&client, "msg2".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 2 }
+        );
+
+        // Send to non-actor port - has its own sequence starting at 1
+        non_actor_port_handle.send(&client, ()).unwrap();
+        assert_eq!(
+            non_actor_rx.recv().await.unwrap(),
+            Some(SeqInfo { session_id, seq: 1 })
+        );
+
+        // Send more to actor ports via ActorHandle - seq continues at 3
+        actor_handle.send(&client, "msg3".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 3 }
+        );
+
+        // Send more to non-actor port - its sequence continues at 2
+        non_actor_port_handle.send(&client, ()).unwrap();
+        assert_eq!(
+            non_actor_rx.recv().await.unwrap(),
+            Some(SeqInfo { session_id, seq: 2 })
+        );
+
+        // Send via ActorRef again - seq 4
+        actor_ref.port().send(&client, "msg4".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 4 }
+        );
+
+        actor_handle.drain_and_stop("test cleanup").unwrap();
+        actor_handle.await;
+    }
+
+    // Test that messages from different clients get independent sequence schemes.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_multiple_clients() {
+        let proc = Proc::local();
+        let (client1, _) = proc.instance("client1").unwrap();
+        let (client2, _) = proc.instance("client2").unwrap();
+
+        // Port for receiving seq info from actor handler
+        let (tx, mut rx) = client1.open_port();
+
+        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        // Each client should have a different session_id
+        let session_id_1 = client1.sequencer().session_id();
+        let session_id_2 = client2.sequencer().session_id();
+        assert_ne!(session_id_1, session_id_2);
+
+        // Send from client1 via ActorHandle - seq 1 for session_id_1
+        actor_handle.send(&client1, "c1_msg1".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_1,
+                seq: 1
+            }
+        );
+
+        // Send from client2 via ActorHandle - seq 1 for session_id_2 (independent)
+        actor_handle.send(&client2, "c2_msg1".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_2,
+                seq: 1
+            }
+        );
+
+        // Send from client1 via ActorRef - seq 2 for session_id_1
+        actor_ref
+            .port()
+            .send(&client1, "c1_msg2".to_string())
+            .unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_1,
+                seq: 2
+            }
+        );
+
+        // Send from client2 via ActorRef - seq 2 for session_id_2
+        actor_ref
+            .port()
+            .send(&client2, "c2_msg2".to_string())
+            .unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_2,
+                seq: 2
+            }
+        );
+
+        // Interleave more messages to further verify independence
+        actor_handle.send(&client1, "c1_msg3".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_1,
+                seq: 3
+            }
+        );
+
+        actor_ref
+            .port()
+            .send(&client2, "c2_msg3".to_string())
+            .unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_2,
+                seq: 3
+            }
+        );
+
+        actor_handle.drain_and_stop("test cleanup").unwrap();
+        actor_handle.await;
     }
 
     // Adding a delay before sending the destination proc. Useful for tests
