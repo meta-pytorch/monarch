@@ -482,6 +482,7 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
             - "ipc": ChannelTransport.Unix
             - "metatls": ChannelTransport.MetaTlsWithIpV6
             - "metatls-hostname": ChannelTransport.MetaTlsWithHostname
+            - "tls": ChannelTransport.Tls (uses configurable TLS certs)
         - ZMQ-style URL format string for explicit address, e.g.:
             - "tcp://127.0.0.1:8080"
 
@@ -494,6 +495,7 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
             "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
+            "tls": ChannelTransport.Tls,
         }.get(transport)
         if resolved is not None:
             transport_config = BindSpec(resolved)
