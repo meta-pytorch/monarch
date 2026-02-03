@@ -1589,6 +1589,9 @@ mod tests {
         //#[tracing_test::traced_test]
         #[async_timed_test(timeout_secs = 30)]
         async fn test_oversized_frames() {
+            use hyperactor::context::Mailbox as _;
+            use hyperactor::mailbox::MailboxSender;
+
             // Reproduced from 'net.rs'.
             #[derive(Debug, Serialize, Deserialize, PartialEq)]
             enum Frame<M> {
@@ -1596,15 +1599,19 @@ mod tests {
                 Message(u64, M),
             }
             // Calculate the frame length for the given message.
-            fn frame_length(src: &ActorId, dst: &PortId, pay: &Payload) -> usize {
+            fn build_message(
+                src: &ActorId,
+                dst: &PortId,
+                pay: &Payload,
+            ) -> (MessageEnvelope, serde_multipart::Message) {
                 let serialized = wirevalue::Any::serialize(pay).unwrap();
                 let mut headers = Attrs::new();
                 hyperactor::mailbox::headers::set_send_timestamp(&mut headers);
                 hyperactor::mailbox::headers::set_rust_message_type::<Payload>(&mut headers);
                 let envelope = MessageEnvelope::new(src.clone(), dst.clone(), serialized, headers);
-                let frame = Frame::Message(0u64, envelope);
+                let frame = Frame::Message(0u64, envelope.clone());
                 let message = serde_multipart::serialize_bincode(&frame).unwrap();
-                message.frame_len()
+                (envelope, message)
             }
 
             // This process: short delivery timeout.
@@ -1643,16 +1650,20 @@ mod tests {
                 part: Part::from(Bytes::from(vec![0u8; 585])),
                 reply_port: reply_handle.bind(),
             };
-            let frame_len = frame_length(
+            let (envelope, message) = build_message(
                 proc_mesh.client().self_id(),
                 dest.port::<Payload>().port_id(),
                 &payload,
             );
-            assert_eq!(frame_len, 1024);
+            assert_eq!(message.frame_len(), 1024);
 
-            // Send direct. A cast message is > 1024 bytes.
-            dest.send(proc_mesh.client(), payload).unwrap();
-            #[allow(clippy::disallowed_methods)]
+            // Send direct with envelope, so no extra header will be added to
+            // increase the frame size.
+            MailboxSender::post(
+                proc_mesh.client().mailbox(),
+                envelope,
+                hyperactor::mailbox::monitored_return_handle(),
+            );
             let result = RealClock
                 .timeout(Duration::from_secs(2), reply_receiver.recv())
                 .await;
@@ -1663,15 +1674,16 @@ mod tests {
                 part: Part::from(Bytes::from(vec![0u8; 586])),
                 reply_port: reply_handle.bind(),
             };
-            let frame_len = frame_length(
+            let (_envelope, message) = build_message(
                 proc_mesh.client().self_id(),
                 dest.port::<Payload>().port_id(),
                 &payload,
             );
-            assert_eq!(frame_len, 1025); // over the max frame len
+            assert_eq!(message.frame_len(), 1025); // over the max frame len
 
-            // Send direct or cast. Either are guaranteed over the
-            // limit and will fail.
+            // Send direct or cast. Either are guaranteed over the limit and
+            // will fail. The actual frame size is bigger than 1025 since extra
+            // headers will be added.
             if rand::rng().random_bool(0.5) {
                 dest.send(proc_mesh.client(), payload).unwrap();
             } else {

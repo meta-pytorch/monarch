@@ -282,7 +282,7 @@ impl TraceEventSink for RecordBatchSink {
                 });
                 inner.flush_spans_if_full()?;
             }
-            TraceEvent::SpanEnter { id, timestamp } => {
+            TraceEvent::SpanEnter { id, timestamp, .. } => {
                 inner.span_events_buffer.insert(SpanEvent {
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
@@ -290,7 +290,7 @@ impl TraceEventSink for RecordBatchSink {
                 });
                 inner.flush_span_events_if_full()?;
             }
-            TraceEvent::SpanExit { id, timestamp } => {
+            TraceEvent::SpanExit { id, timestamp, .. } => {
                 inner.span_events_buffer.insert(SpanEvent {
                     id: *id,
                     timestamp_us: timestamp_to_micros(timestamp),
