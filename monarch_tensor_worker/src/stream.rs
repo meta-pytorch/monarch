@@ -1937,6 +1937,7 @@ mod tests {
     use monarch_types::PickledPyObject;
     use pyo3::IntoPyObjectExt;
     use timed_test::async_timed_test;
+    use tokio::sync::watch;
     use torch_sys_cuda::nccl::UniqueId;
     use torch_sys2::factory_float_tensor;
     use torch_sys2::testing::allclose;
@@ -2052,21 +2053,19 @@ mod tests {
         }
     }
 
-    async fn assert_actor_failed_with_msg(proc: &Proc, actor_id: &ActorId, expected_msg: String) {
-        loop {
-            let status = proc
-                .ledger_snapshot()
-                .roots
-                .get(actor_id)
-                .unwrap()
-                .status
-                .clone();
-            if let ActorStatus::Failed(msg) = status {
-                assert!(msg.to_string().contains(&expected_msg));
-                break;
-            } else {
-                tokio::task::yield_now().await;
-            }
+    async fn assert_actor_failed_with_msg(
+        status_rx: &mut watch::Receiver<ActorStatus>,
+        expected_msg: String,
+    ) {
+        status_rx
+            .wait_for(|s| matches!(s, ActorStatus::Failed(_)))
+            .await
+            .unwrap();
+        let status = status_rx.borrow().clone();
+        if let ActorStatus::Failed(msg) = status {
+            assert!(msg.to_string().contains(&expected_msg));
+        } else {
+            panic!("expected ActorStatus::Failed, got {:?}", status);
         }
     }
 
@@ -2173,8 +2172,7 @@ mod tests {
             .define_recording(&test_setup.client, 1.into())
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "different recording already active".into(),
         )
         .await;
@@ -2197,8 +2195,7 @@ mod tests {
             .define_recording(&test_setup.client, 0.into())
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "already defined".into(),
         )
         .await;
@@ -2217,8 +2214,7 @@ mod tests {
             .finalize_recording(&test_setup.client, 1.into())
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "cannot finalize recording that isn't active".into(),
         )
         .await;
@@ -2233,8 +2229,7 @@ mod tests {
             .recording_formal(&test_setup.client, 0.into(), 0)
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_formal called outside of recording".into(),
         )
         .await;
@@ -2249,8 +2244,7 @@ mod tests {
             .recording_result(&test_setup.client, 0.into(), 0)
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_result called outside of recording".into(),
         )
         .await;
@@ -2269,8 +2263,7 @@ mod tests {
             .call_recording(&test_setup.client, 0.into(), 0.into(), vec![], vec![])
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "cannot call recording while another recording is active".into(),
         )
         .await;
@@ -2284,12 +2277,8 @@ mod tests {
             .stream_actor
             .call_recording(&test_setup.client, 0.into(), 0.into(), vec![], vec![])
             .await?;
-        assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
-            "not found".into(),
-        )
-        .await;
+        assert_actor_failed_with_msg(&mut test_setup.stream_actor.status(), "not found".into())
+            .await;
         Ok(())
     }
 
@@ -2318,8 +2307,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_formal called with too few arguments".into(),
         )
         .await;
@@ -2351,8 +2339,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_result called with too few results".into(),
         )
         .await;
@@ -2452,8 +2439,7 @@ mod tests {
             .await
             .expect_err("request_status should have failed");
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "request_status not allowed in recording".into(),
         )
         .await;
@@ -2485,8 +2471,7 @@ mod tests {
             .init_comm(&test_setup.client, dummy_comm)
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "init_comm not allowed in recording".into(),
         )
         .await;
@@ -2521,8 +2506,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "duplicate borrow create in recording".into(),
         )
         .await;
@@ -2551,8 +2535,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "borrow drop for borrow not defined in recording".into(),
         )
         .await;
@@ -2589,8 +2572,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "all borrows created within recording must be dropped within recording".into(),
         )
         .await;
