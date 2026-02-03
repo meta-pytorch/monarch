@@ -57,6 +57,9 @@ pub use typeuri;
 ///    [`global::init_from_env()`] when loading configuration.
 ///  - `py_name`: the Python keyword argument accepted by
 ///    `monarch.configure(...)` and returned by `get_configuration()`.
+///  - `propagate`: whether this config should be inherited by child
+///    processes spawned via `BootstrapProcManager`. Set to `false`
+///    for process-local configs (e.g., TLS cert paths).
 ///
 /// All configuration keys should carry this meta-attribute via
 /// `@meta(CONFIG = ConfigAttr { ... })`.
@@ -68,6 +71,34 @@ pub struct ConfigAttr {
     /// Python kwarg name used by `monarch.configure(...)` and
     /// `get_configuration()`.
     pub py_name: Option<String>,
+
+    /// Whether this config should be inherited by child processes.
+    /// Set to `false` for process-local configs like TLS cert paths.
+    pub propagate: bool,
+}
+
+impl ConfigAttr {
+    /// Create a new `ConfigAttr` with the given env/py names.
+    ///
+    /// Defaults to `propagate: true` (inherited by child processes).
+    /// Use [`process_local`](Self::process_local) for configs that
+    /// should not propagate.
+    pub fn new(env_name: Option<String>, py_name: Option<String>) -> Self {
+        Self {
+            env_name,
+            py_name,
+            propagate: true,
+        }
+    }
+
+    /// Mark this config as process-local (not propagated to children).
+    ///
+    /// Use for configs like TLS cert paths that are specific to the
+    /// current process.
+    pub fn process_local(mut self) -> Self {
+        self.propagate = false;
+        self
+    }
 }
 
 impl Named for ConfigAttr {
@@ -246,70 +277,70 @@ mod tests {
     }
 
     declare_attrs! {
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_USIZE_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_USIZE_KEY".to_string()),
+            None,
+        ))
         pub attr USIZE_KEY: usize = 10;
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_STRING_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_STRING_KEY".to_string()),
+            None,
+        ))
         pub attr STRING_KEY: String = String::new();
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_BOOL_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_BOOL_KEY".to_string()),
+            None,
+        ))
         pub attr BOOL_KEY: bool = false;
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_I64_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_I64_KEY".to_string()),
+            None,
+        ))
         pub attr I64_KEY: i64 = -42;
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_F64_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_F64_KEY".to_string()),
+            None,
+        ))
         pub attr F64_KEY: f64 = 3.14;
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_U32_KEY".to_string()),
-            py_name: Some("test_u32_key".to_string()),
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_U32_KEY".to_string()),
+            Some("test_u32_key".to_string()),
+        ))
         pub attr U32_KEY: u32 = 100;
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_DURATION_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_DURATION_KEY".to_string()),
+            None,
+        ))
         pub attr DURATION_KEY: std::time::Duration = std::time::Duration::from_mins(1);
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_MODE_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_MODE_KEY".to_string()),
+            None,
+        ))
         pub attr MODE_KEY: TestMode = TestMode::Development;
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_IP_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_IP_KEY".to_string()),
+            None,
+        ))
         pub attr IP_KEY: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: Some("TEST_SYSTEMTIME_KEY".to_string()),
-            py_name: None,
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_SYSTEMTIME_KEY".to_string()),
+            None,
+        ))
         pub attr SYSTEMTIME_KEY: std::time::SystemTime = std::time::UNIX_EPOCH;
 
-        @meta(CONFIG = ConfigAttr {
-            env_name: None,
-            py_name: Some("test_no_env_key".to_string()),
-        })
+        @meta(CONFIG = ConfigAttr::new(
+            None,
+            Some("test_no_env_key".to_string()),
+        ))
         pub attr NO_ENV_KEY: usize = 999;
     }
 
