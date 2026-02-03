@@ -46,7 +46,8 @@ fn get_or_add_new_module<'py>(
         } else {
             let full_name = format!("monarch._rust_bindings.{}", parts.join("."));
             let new_module = PyModule::new(current_module.py(), &full_name)?;
-            current_module.add_submodule(&new_module)?;
+            // Use setattr with short name instead of add_submodule which uses full name
+            current_module.setattr(part, &new_module)?;
             current_module
                 .py()
                 .import("sys")?
