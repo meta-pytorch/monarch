@@ -21,6 +21,7 @@ authors = [
 
 dependencies = [
     "pyzmq",
+    "pyarrow",
     "requests",
     "numpy",
     "pyre-extensions",
