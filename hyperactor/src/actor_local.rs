@@ -74,9 +74,31 @@ mod weak_map {
     }
 
     /// Wrapper around raw pointer for use as HashMap key.
-    /// Implements Hash/Eq based on pointer address for O(1) lookup.
-    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    /// Implements Hash/Eq based on data pointer address only, ignoring vtable.
+    /// This is necessary because vtables can be duplicated across codegen units.
+    #[derive(Clone, Copy)]
     struct MapPtr(*const dyn ErasedWeakMap);
+
+    impl MapPtr {
+        /// Extract just the data pointer, ignoring the vtable.
+        fn data_ptr(&self) -> *const () {
+            self.0 as *const ()
+        }
+    }
+
+    impl PartialEq for MapPtr {
+        fn eq(&self, other: &Self) -> bool {
+            self.data_ptr() == other.data_ptr()
+        }
+    }
+
+    impl Eq for MapPtr {}
+
+    impl std::hash::Hash for MapPtr {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            self.data_ptr().hash(state);
+        }
+    }
 
     // SAFETY: MapPtr is only used as a lookup key; we never dereference
     // without first upgrading the accompanying Weak reference.
