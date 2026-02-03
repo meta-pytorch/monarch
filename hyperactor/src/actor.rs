@@ -773,6 +773,9 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use rand::seq::SliceRandom;
+    use timed_test::async_timed_test;
+    use tokio::sync::mpsc;
     use tokio::time::timeout;
 
     use super::*;
@@ -782,6 +785,15 @@ mod tests {
     use crate::PortRef;
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
+    use crate::config;
+    use crate::context::Mailbox as _;
+    use crate::id;
+    use crate::mailbox::BoxableMailboxSender as _;
+    use crate::mailbox::MailboxSender;
+    use crate::mailbox::PortLocation;
+    use crate::mailbox::monitored_return_handle;
+    use crate::ordering::SEQ_INFO;
+    use crate::ordering::SeqInfo;
     use crate::test_utils::pingpong::PingPongActor;
     use crate::test_utils::pingpong::PingPongMessage;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
@@ -1090,5 +1102,453 @@ mod tests {
         let handle = cell.downcast_handle::<NothingActor>().unwrap();
         handle.drain_and_stop("test").unwrap();
         handle.await;
+    }
+
+    // Returning the sequence number assigned to the message.
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [String, Callback])]
+    struct GetSeqActor(PortRef<(String, SeqInfo)>);
+
+    #[async_trait]
+    impl Actor for GetSeqActor {}
+
+    #[async_trait]
+    impl Handler<String> for GetSeqActor {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            message: String,
+        ) -> Result<(), anyhow::Error> {
+            let Self(port) = self;
+            let seq_info = cx.headers().get(SEQ_INFO).unwrap();
+            port.send(cx, (message, seq_info.clone()))?;
+            Ok(())
+        }
+    }
+
+    // Unlike Handler<String>, where the sender provides the string message
+    // directly, in Handler<Callback>, sender needs to provide a port, and
+    // handler will reply that port with its own callback port. Then sender can
+    // send the string message through this callback port.
+    #[derive(Clone, Debug, Serialize, Deserialize, Named)]
+    struct Callback(PortRef<PortRef<String>>);
+
+    #[async_trait]
+    impl Handler<Callback> for GetSeqActor {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            message: Callback,
+        ) -> Result<(), anyhow::Error> {
+            let (handle, mut receiver) = cx.open_port::<String>();
+            let callback_ref = handle.bind();
+            message.0.send(cx, callback_ref).unwrap();
+            let msg = receiver.recv().await.unwrap();
+            self.handle(cx, msg).await
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_handle_basic() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        let session_id = client.sequencer().session_id();
+        let mut expected_seq = 0;
+        // Interleave messages sent through the handle and the reference.
+        for _ in 0..10 {
+            actor_handle.send(&client, "".to_string()).unwrap();
+            expected_seq += 1;
+            assert_eq!(
+                rx.recv().await.unwrap().1,
+                SeqInfo {
+                    session_id,
+                    seq: expected_seq,
+                }
+            );
+
+            for _ in 0..2 {
+                actor_ref.port().send(&client, "".to_string()).unwrap();
+                expected_seq += 1;
+                assert_eq!(
+                    rx.recv().await.unwrap().1,
+                    SeqInfo {
+                        session_id,
+                        seq: expected_seq,
+                    }
+                );
+            }
+        }
+    }
+
+    // Test that actor ports share a sequence while non-actor ports get their own.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_mixed_actor_and_non_actor_ports() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Port for receiving seq info from actor handler
+        let (actor_tx, mut actor_rx) = client.open_port();
+
+        // Channel for receiving seq info from non-actor port
+        let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel();
+
+        let actor_handle = proc.spawn("get_seq", GetSeqActor(actor_tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        // Create a non-actor port using open_enqueue_port
+        let non_actor_tx_clone = non_actor_tx.clone();
+        let non_actor_port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO).cloned();
+            non_actor_tx_clone.send(seq_info).unwrap();
+            Ok(())
+        });
+
+        // Bind the port to get a port ID
+        non_actor_port_handle.bind();
+        let non_actor_port_id = match non_actor_port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        assert!(!non_actor_port_id.is_actor_port());
+
+        let session_id = client.sequencer().session_id();
+
+        // Send to actor ports via ActorHandle - seq 1
+        actor_handle.send(&client, "msg1".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 1 }
+        );
+
+        // Send to actor ports via ActorRef - seq 2 (shared with ActorHandle)
+        actor_ref.port().send(&client, "msg2".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 2 }
+        );
+
+        // Send to non-actor port - has its own sequence starting at 1
+        non_actor_port_handle.send(&client, ()).unwrap();
+        assert_eq!(
+            non_actor_rx.recv().await.unwrap(),
+            Some(SeqInfo { session_id, seq: 1 })
+        );
+
+        // Send more to actor ports via ActorHandle - seq continues at 3
+        actor_handle.send(&client, "msg3".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 3 }
+        );
+
+        // Send more to non-actor port - its sequence continues at 2
+        non_actor_port_handle.send(&client, ()).unwrap();
+        assert_eq!(
+            non_actor_rx.recv().await.unwrap(),
+            Some(SeqInfo { session_id, seq: 2 })
+        );
+
+        // Send via ActorRef again - seq 4
+        actor_ref.port().send(&client, "msg4".to_string()).unwrap();
+        assert_eq!(
+            actor_rx.recv().await.unwrap().1,
+            SeqInfo { session_id, seq: 4 }
+        );
+
+        actor_handle.drain_and_stop("test cleanup").unwrap();
+        actor_handle.await;
+    }
+
+    // Test that messages from different clients get independent sequence schemes.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_multiple_clients() {
+        let proc = Proc::local();
+        let (client1, _) = proc.instance("client1").unwrap();
+        let (client2, _) = proc.instance("client2").unwrap();
+
+        // Port for receiving seq info from actor handler
+        let (tx, mut rx) = client1.open_port();
+
+        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        // Each client should have a different session_id
+        let session_id_1 = client1.sequencer().session_id();
+        let session_id_2 = client2.sequencer().session_id();
+        assert_ne!(session_id_1, session_id_2);
+
+        // Send from client1 via ActorHandle - seq 1 for session_id_1
+        actor_handle.send(&client1, "c1_msg1".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_1,
+                seq: 1
+            }
+        );
+
+        // Send from client2 via ActorHandle - seq 1 for session_id_2 (independent)
+        actor_handle.send(&client2, "c2_msg1".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_2,
+                seq: 1
+            }
+        );
+
+        // Send from client1 via ActorRef - seq 2 for session_id_1
+        actor_ref
+            .port()
+            .send(&client1, "c1_msg2".to_string())
+            .unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_1,
+                seq: 2
+            }
+        );
+
+        // Send from client2 via ActorRef - seq 2 for session_id_2
+        actor_ref
+            .port()
+            .send(&client2, "c2_msg2".to_string())
+            .unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_2,
+                seq: 2
+            }
+        );
+
+        // Interleave more messages to further verify independence
+        actor_handle.send(&client1, "c1_msg3".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_1,
+                seq: 3
+            }
+        );
+
+        actor_ref
+            .port()
+            .send(&client2, "c2_msg3".to_string())
+            .unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().1,
+            SeqInfo {
+                session_id: session_id_2,
+                seq: 3
+            }
+        );
+
+        actor_handle.drain_and_stop("test cleanup").unwrap();
+        actor_handle.await;
+    }
+
+    // Verify that ordering is guarranteed based on
+    //   * (sender actor , client actor, port stream)
+    // not
+    //   * (sender actor, client actor)
+    //
+    // For "port stream",
+    //   * actor ports of the same actor belongs to the same stream;
+    //   * non-actor port has its independent stream.
+    //
+    // Specifically, in this test,
+    //   * client sends a Callback message to dest actor's handler;
+    //   * while dest actor is still processing that message, client sends
+    //     another non-handler message to dest actor.
+    //
+    // If the ordering is based on (sender actor, client actor), this test would
+    // hang, since dest actor is deadlock on waiting for the 2nd message while
+    // still processing the 2nd message.
+    //
+    // But since port stream is also part of the ordering guarrantee, such
+    // deadlock should not happen.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_handle_callback() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+
+        let (callback_tx, mut callback_rx) = client.open_port();
+        // Client sends the 1st message
+        actor_ref
+            .send(&client, Callback(callback_tx.bind()))
+            .unwrap();
+        let msg_port_ref = callback_rx.recv().await.unwrap();
+        // client sends the 2nd message. At this time, GetSeqActor is still
+        // processing the 1st message, and waiting for the 2nd message.
+        msg_port_ref.send(&client, "finally".to_string()).unwrap();
+
+        let session_id = client.sequencer().session_id();
+        // passing this assert means GetSeqActor processed the 2nd message.
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("finally".to_string(), SeqInfo { session_id, seq: 1 })
+        );
+    }
+
+    // Adding a delay before sending the destination proc. Useful for tests
+    // requiring latency injection.
+    #[derive(Clone, Debug)]
+    struct DelayedMailboxSender {
+        relay_tx: mpsc::UnboundedSender<MessageEnvelope>,
+    }
+
+    impl DelayedMailboxSender {
+        // Use a random latency between 0 and 1 second if the plan is empty.
+        fn new(
+            // The proc that hosts the dest actor. By posting envelope to this
+            // proc, this proc will route that evenlope to the dest actor.
+            dest_proc: Proc,
+            // Vec index is the message seq - 1, value is the order this message
+            // would be relayed to the dest actor. Dest actor is responsible to
+            // ensure itself processes these messages in order.
+            relay_orders: Vec<usize>,
+        ) -> Self {
+            let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<MessageEnvelope>();
+
+            tokio::spawn(async move {
+                let mut buffer = Vec::new();
+
+                for _ in 0..relay_orders.len() {
+                    let envelope = relay_rx.recv().await.unwrap();
+                    buffer.push(envelope);
+                }
+
+                for m in buffer.clone() {
+                    let seq = m.headers().get(SEQ_INFO).expect("seq should be set").seq as usize;
+                    // seq no is one-based.
+                    let order = relay_orders[seq - 1];
+                    buffer[order] = m;
+                }
+
+                let dest_proc_clone = dest_proc.clone();
+                for msg in buffer {
+                    dest_proc_clone.post(msg, monitored_return_handle());
+                }
+            });
+
+            Self { relay_tx }
+        }
+    }
+
+    impl MailboxSender for DelayedMailboxSender {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.relay_tx.send(envelope).unwrap();
+        }
+    }
+
+    async fn assert_out_of_order_delivery(expected: Vec<(String, u64)>, relay_orders: Vec<usize>) {
+        let local_proc: Proc = Proc::local();
+        let (client, _) = local_proc.instance("local").unwrap();
+        let (tx, mut rx) = client.open_port();
+
+        let handle = local_proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_ref: ActorRef<GetSeqActor> = handle.bind();
+
+        let remote_proc = Proc::new(
+            id!(remote[0]),
+            DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
+        );
+        let (remote_client, _) = remote_proc.instance("remote").unwrap();
+        // Send the messages out in the order of their expected sequence numbers.
+        let mut messages = expected.clone();
+        messages.sort_by_key(|v| v.1);
+        for (message, _seq) in messages {
+            actor_ref.send(&remote_client, message).unwrap();
+        }
+        let session_id = remote_client.sequencer().session_id();
+        for expect in expected {
+            let expected = (
+                expect.0,
+                SeqInfo {
+                    session_id,
+                    seq: expect.1,
+                },
+            );
+            assert_eq!(rx.recv().await.unwrap(), expected);
+        }
+
+        handle.drain_and_stop("test cleanup").unwrap();
+        handle.await;
+    }
+
+    // Send several messages, use DelayedMailboxSender and the relay orders to
+    // ensure these messages will arrive at handler's workq out-of-order.
+    // Then verify the actor handler will still process these messages based on
+    // their sending order if reordering buffer is enabled.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_ref_known_delivery_order() {
+        let config = hyperactor_config::global::lock();
+
+        // relay order is second, third, first
+        let relay_orders = vec![2, 0, 1];
+
+        // By disabling the actor side re-ordering buffer, the mssages will
+        // be processed in the same order as they sent out.
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, false);
+        assert_out_of_order_delivery(
+            vec![
+                ("second".to_string(), 2),
+                ("third".to_string(), 3),
+                ("first".to_string(), 1),
+            ],
+            relay_orders.clone(),
+        )
+        .await;
+
+        // By enabling the actor side re-ordering buffer, the mssages will
+        // be re-ordered before being processed.
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        assert_out_of_order_delivery(
+            vec![
+                ("first".to_string(), 1),
+                ("second".to_string(), 2),
+                ("third".to_string(), 3),
+            ],
+            relay_orders.clone(),
+        )
+        .await;
+    }
+
+    // Send a large nubmer of messages, use DelayedMailboxSender to ensure these
+    // messages will arrive at handler's workq in a random order. Then verify the
+    // actor handler will still process these messages based on their sending
+    // order with reordering buffer enabled.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sequencing_actor_ref_random_delivery_order() {
+        let config = hyperactor_config::global::lock();
+
+        // By enabling the actor side re-ordering buffer, the mssages will
+        // be re-ordered before being processed.
+        let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let expected = (0..10000)
+            .map(|i| (format!("msg{i}"), i + 1))
+            .collect::<Vec<_>>();
+
+        let mut relay_orders: Vec<usize> = (0..10000).collect();
+        relay_orders.shuffle(&mut rand::thread_rng());
+        assert_out_of_order_delivery(expected, relay_orders).await;
     }
 }
