@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   test-gpu-python:
-    name: Test GPU Python (cuda12.6-py3.10)
+    name: Test GPU Python (cuda12.8-py3.10)
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: true
@@ -22,9 +22,9 @@ jobs:
         include:
           - name: 4xlargegpu
             runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu126'
+            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.6"
+            gpu-arch-version: "12.8"
     with:
       timeout: 120
       runner: ${{ matrix.runs-on }}
