@@ -39,6 +39,7 @@ class MeshSpec:
     transport: str = "tcp"
     port: int = DEFAULT_REMOTE_ALLOCATOR_PORT
     hostnames: list[str] = field(default_factory=list)
+    task_ips: list[str] = field(default_factory=list)
     state: specs.AppState = specs.AppState.UNSUBMITTED
     image: str = _UNSET_STR
 
@@ -220,6 +221,7 @@ class ServerSpec:
                     "hosts": mesh.num_hosts,
                     "gpus": mesh.gpus,
                     "hostnames": mesh.hostnames,
+                    "task_ips": mesh.task_ips,
                 }
                 for mesh in self.meshes
             },
