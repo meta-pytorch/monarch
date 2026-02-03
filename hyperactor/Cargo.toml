@@ -75,7 +75,7 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 unicode-ident = "1.0.12"
 uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
-valuable = { version = "0.1", features = ["derive"] }
+valuable = { version = "0.1.1", features = ["derive"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
