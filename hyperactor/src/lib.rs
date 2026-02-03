@@ -158,6 +158,7 @@ pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
 pub use proc::Context;
 pub use proc::Instance;
+pub use proc::InstanceCell;
 pub use proc::Proc;
 pub use reference::ActorId;
 pub use reference::ActorRef;

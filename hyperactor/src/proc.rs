@@ -401,6 +401,20 @@ impl Proc {
         Ok((instance, handle, supervision_rx, signal_rx, work_rx))
     }
 
+    /// Traverse all actor trees in this proc, starting from root actors (pid=0).
+    pub fn traverse<F>(&self, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        for entry in self.state().instances.iter() {
+            if entry.key().pid() == 0 {
+                if let Some(cell) = entry.value().upgrade() {
+                    cell.traverse(f);
+                }
+            }
+        }
+    }
+
     /// Create a child instance. Called from `Instance`.
     fn child_instance(
         &self,
@@ -1683,7 +1697,7 @@ impl InstanceCell {
     }
 
     /// The actor's ID.
-    pub(crate) fn actor_id(&self) -> &ActorId {
+    pub fn actor_id(&self) -> &ActorId {
         &self.inner.actor_id
     }
 
@@ -1836,6 +1850,29 @@ impl InstanceCell {
     pub(crate) fn downcast_handle<A: Actor>(&self) -> Option<ActorHandle<A>> {
         let ports = Arc::clone(&self.inner.ports).downcast::<Ports<A>>().ok()?;
         Some(ActorHandle::new(self.clone(), ports))
+    }
+
+    /// Traverse the subtree rooted at this instance in pre-order.
+    /// The callback receives each InstanceCell and its depth (root = 0).
+    /// Children are visited in pid order for deterministic traversal.
+    pub fn traverse<F>(&self, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        self.traverse_inner(0, f);
+    }
+
+    fn traverse_inner<F>(&self, depth: usize, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        f(self, depth);
+        // Collect and sort children by pid for deterministic traversal order
+        let mut children: Vec<_> = self.child_iter().map(|r| r.value().clone()).collect();
+        children.sort_by_key(|c| c.pid());
+        for child in children {
+            child.traverse_inner(depth + 1, f);
+        }
     }
 }
 
@@ -2772,5 +2809,102 @@ mod tests {
             assert_eq!(stacks[0].len(), 1);
             assert_eq!(stacks[0][0].name(), "child_span");
         })
+    }
+
+    #[tokio::test]
+    async fn test_actor_tree_traversal() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Build tree: root -> child1, child2; child2 -> grandchild1
+        let root = proc.spawn("root", TestActor).unwrap();
+        let _child1 = TestActor::spawn_child(&client, &root).await;
+        let child2 = TestActor::spawn_child(&client, &root).await;
+        let _grandchild1 = TestActor::spawn_child(&client, &child2).await;
+
+        // Collect traversal from root only (not entire proc which includes client)
+        let mut nodes: Vec<(String, usize)> = Vec::new();
+        root.cell().traverse(&mut |cell, depth| {
+            nodes.push((cell.actor_id().to_string(), depth));
+        });
+
+        // Extract proc_id prefix for constructing expected values
+        let proc_id = proc.proc_id().to_string();
+
+        // Verify exact structure with actor IDs (deterministic due to sorted traversal)
+        let expected = vec![
+            (format!("{}.root[0]", proc_id), 0), // root
+            (format!("{}.root[1]", proc_id), 1), // child1
+            (format!("{}.root[2]", proc_id), 1), // child2
+            (format!("{}.root[3]", proc_id), 2), // grandchild
+        ];
+        assert_eq!(nodes, expected);
+
+        root.drain_and_stop("test").unwrap();
+        root.await;
+    }
+
+    #[tokio::test]
+    async fn test_actor_tree_ascii_printer() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Build tree:
+        // root
+        // ├── child1
+        // └── child2
+        //     └── grandchild
+        let root = proc.spawn("root", TestActor).unwrap();
+        let _child1 = TestActor::spawn_child(&client, &root).await;
+        let child2 = TestActor::spawn_child(&client, &root).await;
+        let _grandchild1 = TestActor::spawn_child(&client, &child2).await;
+
+        // Collect nodes for tree formatting
+        let mut nodes: Vec<(ActorId, usize)> = Vec::new();
+        root.cell().traverse(&mut |cell, depth| {
+            nodes.push((cell.actor_id().clone(), depth));
+        });
+
+        // Build ASCII tree output using actor IDs
+        fn print_tree(nodes: &[(ActorId, usize)]) -> String {
+            let mut output = String::new();
+            for (i, (actor_id, depth)) in nodes.iter().enumerate() {
+                if *depth == 0 {
+                    output.push_str(&format!("{}\n", actor_id));
+                } else {
+                    // Find if this is the last sibling at this depth
+                    let is_last = nodes[i + 1..]
+                        .iter()
+                        .take_while(|(_, d)| *d >= *depth)
+                        .all(|(_, d)| *d > *depth);
+
+                    let mut prefix = String::new();
+                    for d in 1..*depth {
+                        // Check if there are more siblings at depth d after this node
+                        let has_more_at_d = nodes[i + 1..].iter().any(|(_, dd)| *dd == d);
+                        prefix.push_str(if has_more_at_d { "│   " } else { "    " });
+                    }
+                    prefix.push_str(if is_last { "└── " } else { "├── " });
+                    output.push_str(&format!("{}{}\n", prefix, actor_id));
+                }
+            }
+            output
+        }
+
+        let tree_output = print_tree(&nodes);
+
+        // Construct expected tree using proc_id prefix
+        let proc_id = proc.proc_id().to_string();
+        let expected = format!(
+            r#"{proc_id}.root[0]
+├── {proc_id}.root[1]
+└── {proc_id}.root[2]
+    └── {proc_id}.root[3]
+"#
+        );
+        assert_eq!(tree_output, expected);
+
+        root.drain_and_stop("test").unwrap();
+        root.await;
     }
 }
