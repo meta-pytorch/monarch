@@ -27,6 +27,7 @@ use super::responses::RecordedEvent;
 use super::responses::ReferenceInfo;
 use super::tree::format_proc_tree_with_urls;
 use crate::ActorId;
+use crate::ProcId;
 use crate::proc::InstanceCell;
 use crate::reference::Reference;
 
@@ -36,16 +37,16 @@ pub async fn list_procs() -> Json<Vec<ProcSummary>> {
     let procs: Vec<ProcSummary> = state
         .procs
         .iter()
-        .map(|entry| {
-            let proc = entry.value();
+        .filter_map(|entry| {
+            let proc = entry.value().upgrade()?;
             let mut num_actors = 0;
             proc.traverse(&mut |_, _| {
                 num_actors += 1;
             });
-            ProcSummary {
-                name: entry.key().clone(),
+            Some(ProcSummary {
+                name: entry.key().to_string(),
                 num_actors,
-            }
+            })
         })
         .collect();
     Json(procs)
@@ -71,9 +72,10 @@ pub async fn tree_dump(headers: HeaderMap) -> String {
 
     let mut output = String::new();
     for entry in state.procs.iter() {
-        let proc = entry.value();
-        output.push_str(&format_proc_tree_with_urls(proc, Some(&base_url)));
-        output.push('\n');
+        if let Some(proc) = entry.value().upgrade() {
+            output.push_str(&format_proc_tree_with_urls(&proc, Some(&base_url)));
+            output.push('\n');
+        }
     }
     output
 }
@@ -81,7 +83,9 @@ pub async fn tree_dump(headers: HeaderMap) -> String {
 /// GET /procs/{proc_name} - Get details for a specific proc.
 pub async fn get_proc(Path(proc_name): Path<String>) -> Result<Json<ProcDetails>, StatusCode> {
     let state = global();
-    let proc = state.procs.get(&proc_name).ok_or(StatusCode::NOT_FOUND)?;
+    let proc_id = ProcId::from_str(&proc_name).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let weak = state.procs.get(&proc_id).ok_or(StatusCode::NOT_FOUND)?;
+    let proc = weak.upgrade().ok_or(StatusCode::NOT_FOUND)?;
 
     let root_actors: Vec<String> = proc
         .root_actor_ids()
@@ -100,7 +104,9 @@ pub async fn get_actor(
     Path((proc_name, actor_name)): Path<(String, String)>,
 ) -> Result<Json<ActorDetails>, StatusCode> {
     let state = global();
-    let proc = state.procs.get(&proc_name).ok_or(StatusCode::NOT_FOUND)?;
+    let proc_id = ProcId::from_str(&proc_name).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let weak = state.procs.get(&proc_id).ok_or(StatusCode::NOT_FOUND)?;
+    let proc = weak.upgrade().ok_or(StatusCode::NOT_FOUND)?;
 
     // Find actor by name by traversing all actors
     let mut found_actor_id = None;
@@ -162,10 +168,11 @@ fn build_actor_details(cell: &InstanceCell) -> ActorDetails {
 /// Look up an actor by ActorId and return its details.
 fn lookup_actor_details(actor_id: &ActorId) -> Option<ActorDetails> {
     let state = global();
-    let proc_name = actor_id.proc_id().to_string();
+    let proc_id = actor_id.proc_id();
     state
         .procs
-        .get(&proc_name)
+        .get(proc_id)
+        .and_then(|weak| weak.upgrade())
         .and_then(|proc| proc.get_instance(actor_id))
         .map(|cell| build_actor_details(&cell))
 }
@@ -192,8 +199,7 @@ pub async fn resolve_reference(Path(reference): Path<String>) -> impl IntoRespon
 
     match &parsed {
         Reference::Proc(proc_id) => {
-            let proc_name = proc_id.to_string();
-            match state.procs.get(&proc_name) {
+            match state.procs.get(proc_id).and_then(|w| w.upgrade()) {
                 Some(proc) => {
                     let root_actors: Vec<String> = proc
                         .root_actor_ids()
@@ -203,7 +209,7 @@ pub async fn resolve_reference(Path(reference): Path<String>) -> impl IntoRespon
                     (
                         StatusCode::OK,
                         Json(serde_json::json!(ReferenceInfo::Proc(ProcDetails {
-                            proc_name,
+                            proc_name: proc_id.to_string(),
                             root_actors,
                         }))),
                     )

@@ -44,10 +44,12 @@ pub use tree::format_proc_tree;
 pub use tree::format_proc_tree_with_urls;
 
 use crate::Proc;
+use crate::ProcId;
+use crate::proc::WeakProc;
 
 /// Global admin state holding registered procs.
 struct AdminState {
-    procs: DashMap<String, Proc>,
+    procs: DashMap<ProcId, WeakProc>,
 }
 
 /// Returns the global admin state singleton.
@@ -60,18 +62,26 @@ fn global() -> &'static AdminState {
 
 /// Register a proc with the admin server.
 ///
-/// Once registered, the proc's actors can be queried via the HTTP API.
-pub fn register_proc(proc: &Proc) {
+/// Stores a weak reference so the admin server doesn't prevent the proc from
+/// being dropped.
+pub(crate) fn register_proc(proc: &Proc) {
     global()
         .procs
-        .insert(proc.proc_id().to_string(), proc.clone());
+        .insert(proc.proc_id().clone(), proc.downgrade());
 }
 
 /// Deregister a proc from the admin server.
 ///
 /// After deregistration, the proc will no longer appear in API responses.
-pub fn deregister_proc(proc: &Proc) {
-    global().procs.remove(&proc.proc_id().to_string());
+pub(crate) fn deregister_proc(proc: &Proc) {
+    deregister_proc_by_id(proc.proc_id());
+}
+
+/// Deregister a proc by its ID.
+///
+/// Called from `ProcState::drop` to clean up when the proc is dropped.
+pub(crate) fn deregister_proc_by_id(proc_id: &ProcId) {
+    global().procs.remove(proc_id);
 }
 
 /// Creates the axum router for the admin server.
@@ -97,16 +107,32 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_register_deregister_proc() {
+    async fn test_auto_register_and_deregister_proc() {
         let proc = Proc::local();
-        let proc_id = proc.proc_id().to_string();
+        let proc_id = proc.proc_id().clone();
 
-        // Register
-        register_proc(&proc);
+        // Proc should be auto-registered on creation
         assert!(global().procs.contains_key(&proc_id));
 
         // Deregister
         deregister_proc(&proc);
+        assert!(!global().procs.contains_key(&proc_id));
+    }
+
+    #[tokio::test]
+    async fn test_auto_deregister_on_drop() {
+        let proc_id = {
+            let proc = Proc::local();
+            let proc_id = proc.proc_id().clone();
+
+            // Proc should be auto-registered
+            assert!(global().procs.contains_key(&proc_id));
+
+            proc_id
+            // proc dropped here, should auto-deregister
+        };
+
+        // Entry should be removed automatically on drop
         assert!(!global().procs.contains_key(&proc_id));
     }
 
@@ -116,9 +142,9 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
+        // Proc is auto-registered on creation
         let proc = Proc::local();
-        let proc_id = proc.proc_id().to_string();
-        register_proc(&proc);
+        let _proc_id = proc.proc_id().to_string();
 
         let app = create_router();
         let response = app
@@ -128,8 +154,7 @@ mod tests {
 
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
-        // Cleanup
-        deregister_proc(&proc);
+        // No cleanup needed; weak ref will be cleaned up automatically
     }
 
     #[tokio::test]
@@ -138,8 +163,8 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        let proc = Proc::local();
-        register_proc(&proc);
+        // Proc is auto-registered on creation
+        let _proc = Proc::local();
 
         let app = create_router();
         let response = app
@@ -149,7 +174,6 @@ mod tests {
 
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
-        // Cleanup
-        deregister_proc(&proc);
+        // No cleanup needed; weak ref will be cleaned up automatically
     }
 }

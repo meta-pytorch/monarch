@@ -162,6 +162,7 @@ pub use proc::Context;
 pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
+pub use proc::WeakProc;
 pub use reference::ActorId;
 pub use reference::ActorRef;
 pub use reference::GangId;
