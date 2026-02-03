@@ -62,10 +62,10 @@ declare_attrs! {
     /// The default is chosen to balance these two objectives.
     /// This also controls how frequently the healthy heartbeat is sent out to
     /// subscribers if there are no failures encountered.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY".to_string()),
-        py_name: None,
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY".to_string()),
+        None,
+    ))
     pub attr SUPERVISION_POLL_FREQUENCY: Duration = Duration::from_secs(10);
 }
 
