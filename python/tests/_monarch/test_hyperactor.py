@@ -83,10 +83,10 @@ async def test_proc_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
-    proc_mesh = await ProcMesh.allocate_nonblocking(
-        context().actor_instance._as_rust(), alloc, "test"
-    )
-    assert str(proc_mesh).startswith("<ProcMesh: ")
+    instance = context().actor_instance._as_rust()
+    proc_mesh = await ProcMesh.allocate_nonblocking(instance, alloc, "proc_mesh")
+    # v1 has a different repr format
+    assert "ProcMesh" in str(proc_mesh)
 
 
 @_python_task_test
@@ -94,12 +94,9 @@ async def test_actor_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
-    proc_mesh = await ProcMesh.allocate_nonblocking(
-        context().actor_instance._as_rust(), alloc, "test"
-    )
-    actor_mesh = await proc_mesh.spawn_nonblocking(
-        context().actor_instance._as_rust(), "test", MyActor
-    )
+    instance = context().actor_instance._as_rust()
+    proc_mesh = await ProcMesh.allocate_nonblocking(instance, alloc, "proc_mesh")
+    actor_mesh = await proc_mesh.spawn_nonblocking(instance, "test", MyActor)
 
     await actor_mesh.initialized()
 
