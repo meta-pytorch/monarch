@@ -415,6 +415,24 @@ impl Proc {
         }
     }
 
+    /// Look up an instance by ActorId.
+    pub fn get_instance(&self, actor_id: &ActorId) -> Option<InstanceCell> {
+        self.state()
+            .instances
+            .get(actor_id)
+            .and_then(|weak| weak.upgrade())
+    }
+
+    /// Returns the ActorIds of all root actors (pid=0) in this proc.
+    pub fn root_actor_ids(&self) -> Vec<ActorId> {
+        self.state()
+            .instances
+            .iter()
+            .filter(|entry| entry.key().pid() == 0)
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Create a child instance. Called from `Instance`.
     fn child_instance(
         &self,
@@ -1713,7 +1731,7 @@ impl InstanceCell {
     }
 
     /// The instance's status observer.
-    pub(crate) fn status(&self) -> &watch::Receiver<ActorStatus> {
+    pub fn status(&self) -> &watch::Receiver<ActorStatus> {
         &self.inner.status
     }
 
@@ -1821,7 +1839,7 @@ impl InstanceCell {
     }
 
     /// The number of children this instance has.
-    fn child_count(&self) -> usize {
+    pub fn child_count(&self) -> usize {
         self.inner.children.len()
     }
 
