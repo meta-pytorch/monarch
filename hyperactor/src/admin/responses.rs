@@ -8,11 +8,12 @@
 
 //! Response types for the admin HTTP API.
 
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
 /// Summary of a registered proc.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProcSummary {
     /// The proc's name/ID.
     pub name: String,
@@ -21,7 +22,7 @@ pub struct ProcSummary {
 }
 
 /// Details about a specific proc.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProcDetails {
     /// The proc's name/ID.
     pub proc_name: String,
@@ -30,7 +31,7 @@ pub struct ProcDetails {
 }
 
 /// A recorded event from the flight recorder.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RecordedEvent {
     /// ISO 8601 formatted timestamp.
     pub timestamp: String,
@@ -47,18 +48,30 @@ pub struct RecordedEvent {
 }
 
 /// Details about a specific actor.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ActorDetails {
     /// Current status of the actor.
     pub actor_status: String,
+    /// The actor's type name.
+    pub actor_type: String,
     /// Names of child actors.
     pub children: Vec<String>,
     /// Recent events from the flight recorder.
     pub flight_recorder: Vec<RecordedEvent>,
+    /// Parent actor ID, if any.
+    pub parent: Option<String>,
+    /// Number of messages processed.
+    pub messages_processed: u64,
+    /// ISO 8601 formatted creation timestamp.
+    pub created_at: String,
+    /// Last message handler invoked.
+    pub last_message_handler: Option<String>,
+    /// Total processing time in microseconds.
+    pub total_processing_time_us: u64,
 }
 
 /// Information about a resolved reference.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceInfo {
     /// A proc reference with details.

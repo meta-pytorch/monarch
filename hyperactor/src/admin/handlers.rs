@@ -139,10 +139,23 @@ fn build_actor_details(cell: &InstanceCell) -> ActorDetails {
         })
         .collect();
 
+    let parent = cell.parent().map(|p| p.actor_id().to_string());
+    let messages_processed = cell.num_processed_messages();
+    let created_at = format_timestamp(cell.created_at());
+    let last_message_handler = cell.last_message_handler().map(|info| info.to_string());
+    let total_processing_time_us = cell.total_processing_time_us();
+    let actor_type = cell.actor_type_name().to_string();
+
     ActorDetails {
         actor_status: status.to_string(),
+        actor_type,
         children,
         flight_recorder,
+        parent,
+        messages_processed,
+        created_at,
+        last_message_handler,
+        total_processing_time_us,
     }
 }
 

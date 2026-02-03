@@ -11,6 +11,7 @@
 //! This module contains all the core traits required to define and manage actors.
 
 use std::any::TypeId;
+use std::borrow::Cow;
 use std::fmt;
 use std::fmt::Debug;
 use std::future::Future;
@@ -467,6 +468,45 @@ impl fmt::Display for Signal {
     }
 }
 
+/// Information about a message handler being processed.
+///
+/// Uses `Cow<'static, str>` to avoid string copies on the hot path.
+/// The typename and arm are typically static strings from `TypeInfo`.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub struct HandlerInfo {
+    /// The type name of the message being handled.
+    pub typename: Cow<'static, str>,
+    /// The enum arm being handled, if the message is an enum.
+    pub arm: Option<Cow<'static, str>>,
+}
+
+impl HandlerInfo {
+    /// Create a new `HandlerInfo` from static strings (zero-copy).
+    pub fn from_static(typename: &'static str, arm: Option<&'static str>) -> Self {
+        Self {
+            typename: Cow::Borrowed(typename),
+            arm: arm.map(Cow::Borrowed),
+        }
+    }
+
+    /// Create a new `HandlerInfo` from owned strings.
+    pub fn from_owned(typename: String, arm: Option<String>) -> Self {
+        Self {
+            typename: Cow::Owned(typename),
+            arm: arm.map(Cow::Owned),
+        }
+    }
+}
+
+impl fmt::Display for HandlerInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.arm {
+            Some(arm) => write!(f, "{}.{}", self.typename, arm),
+            None => write!(f, "{}", self.typename),
+        }
+    }
+}
+
 /// The runtime status of an actor.
 #[derive(
     Debug,
@@ -491,10 +531,8 @@ pub enum ActorStatus {
     /// The actor is ready to receive messages, but is currently idle.
     Idle,
     /// The actor has been processing a message, beginning at the specified
-    /// instant. The message handler and arm is included.
-    /// TODO: we shoudl use interned representations here, so we don't copy
-    /// strings willy-nilly.
-    Processing(SystemTime, Option<(String, Option<String>)>),
+    /// instant. The message handler info is included.
+    Processing(SystemTime, Option<HandlerInfo>),
     /// The actor has been saving its state.
     Saving(SystemTime),
     /// The actor has been loading its state.
@@ -542,24 +580,11 @@ impl fmt::Display for ActorStatus {
                         .as_millis()
                 )
             }
-            Self::Processing(instant, Some((handler, None))) => {
+            Self::Processing(instant, Some(handler_info)) => {
                 write!(
                     f,
                     "{}: processing for {}ms",
-                    handler,
-                    RealClock
-                        .system_time_now()
-                        .duration_since(*instant)
-                        .unwrap_or_default()
-                        .as_millis()
-                )
-            }
-            Self::Processing(instant, Some((handler, Some(arm)))) => {
-                write!(
-                    f,
-                    "{},{}: processing for {}ms",
-                    handler,
-                    arm,
+                    handler_info,
                     RealClock
                         .system_time_now()
                         .duration_since(*instant)
