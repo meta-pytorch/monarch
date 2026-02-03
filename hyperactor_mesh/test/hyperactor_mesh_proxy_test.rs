@@ -21,14 +21,15 @@ use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
-use hyperactor_mesh::Mesh;
-use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::RootActorMesh;
+use hyperactor::context::Mailbox;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::proc_mesh::global_root_client;
 use hyperactor_mesh::supervision::MeshFailure;
+use hyperactor_mesh::v1::ActorMesh;
+use hyperactor_mesh::v1::ProcMesh;
+use ndslice::View;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
@@ -98,7 +99,7 @@ impl Handler<Echo> for TestActor {
 )]
 pub struct ProxyActor {
     proc_mesh: &'static Arc<ProcMesh>,
-    actor_mesh: Option<RootActorMesh<'static, TestActor>>,
+    actor_mesh: Option<ActorMesh<TestActor>>,
 }
 
 impl fmt::Debug for ProxyActor {
@@ -112,8 +113,9 @@ impl fmt::Debug for ProxyActor {
 
 #[async_trait]
 impl Actor for ProxyActor {
-    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        self.actor_mesh = Some(self.proc_mesh.spawn(this, "echo", &()).await.unwrap());
+    async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        let instance = global_root_client();
+        self.actor_mesh = Some(self.proc_mesh.spawn(instance, "echo", &()).await.unwrap());
         Ok(())
     }
 }
@@ -138,7 +140,12 @@ impl RemoteSpawn for ProxyActor {
             })
             .await
             .unwrap();
-        let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
+        let instance = global_root_client();
+        let proc_mesh = Arc::new(
+            ProcMesh::allocate(instance, Box::new(alloc), "proxy")
+                .await
+                .unwrap(),
+        );
         let leaked: &'static Arc<ProcMesh> = Box::leak(Box::new(proc_mesh));
         Ok(Self {
             proc_mesh: leaked,
@@ -189,21 +196,21 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
 
     let instance = global_root_client();
 
-    let mut proc_mesh = ProcMesh::allocate(alloc).await?;
-    let actor_mesh: RootActorMesh<'_, ProxyActor> = proc_mesh
-        .spawn(&instance, "proxy", &exe_path.to_str().unwrap().to_string())
+    let mut proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "client").await?;
+    let actor_mesh: ActorMesh<ProxyActor> = proc_mesh
+        .spawn(instance, "proxy", &exe_path.to_str().unwrap().to_string())
         .await?;
     let proxy_actor = actor_mesh.get(0).unwrap();
-    let (tx, mut rx) = actor_mesh.open_port::<String>();
-    proxy_actor.send(proc_mesh.client(), Echo("hello!".to_owned(), tx.bind()))?;
+    let (tx, mut rx) = instance.mailbox().open_port::<String>();
+    proxy_actor.send(instance, Echo("hello!".to_owned(), tx.bind()))?;
 
     let msg = rx.recv().await?;
     println!("{}", msg);
     assert_eq!(msg, "hello!");
 
-    let mut alloc = proc_mesh.events().unwrap().into_alloc();
-    alloc.stop_and_wait().await?;
-    drop(alloc);
+    proc_mesh
+        .stop(instance, "test complete".to_string())
+        .await?;
 
     if keep_alive {
         // Artificially keep the hierarchy alive. Use `ps -aef | grep

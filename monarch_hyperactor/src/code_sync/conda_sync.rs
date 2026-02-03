@@ -17,8 +17,10 @@ use futures::TryStreamExt;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
+use hyperactor::context::Mailbox;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -113,6 +115,7 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
 }
 
 pub async fn conda_sync_mesh<M>(
+    instance: &Instance<()>,
     actor_mesh: &M,
     local_workspace: PathBuf,
     remote_workspace: WorkspaceLocation,
@@ -121,8 +124,7 @@ pub async fn conda_sync_mesh<M>(
 where
     M: ActorMesh<Actor = CondaSyncActor>,
 {
-    let instance = actor_mesh.proc_mesh().client();
-    let (conns_tx, conns_rx) = instance.open_port();
+    let (conns_tx, conns_rx) = instance.mailbox().open_port();
 
     let (res1, res2) = futures::future::join(
         conns_rx
@@ -144,7 +146,9 @@ where
             })
             .boxed(),
         async move {
-            let (result_tx, result_rx) = instance.open_port::<Result<CondaSyncResult, String>>();
+            let (result_tx, result_rx) = instance
+                .mailbox()
+                .open_port::<Result<CondaSyncResult, String>>();
             actor_mesh.cast(
                 instance,
                 sel!(*),

@@ -62,7 +62,6 @@ use monarch_messages::worker::WorkerParams;
 use monarch_tensor_worker::AssignRankMessage;
 use monarch_tensor_worker::WorkerActor;
 use ndslice::Slice;
-use ndslice::View;
 use ndslice::ViewExt;
 use ndslice::selection::ReifySlice;
 use ndslice::view::Ranked;

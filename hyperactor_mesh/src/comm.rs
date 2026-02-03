@@ -594,7 +594,6 @@ mod tests {
     use std::hash::Hash;
     use std::ops::Deref;
     use std::ops::DerefMut;
-    use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::OnceLock;
 
@@ -625,13 +624,9 @@ mod tests {
     use tokio::time::Duration;
 
     use super::*;
-    use crate::ProcMesh;
-    use crate::actor_mesh::ActorMesh;
-    use crate::actor_mesh::RootActorMesh;
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::LocalAllocator;
-    use crate::proc_mesh::SharedSpawnable;
     use crate::v1;
     use crate::v1::testing;
 
@@ -806,13 +801,6 @@ mod tests {
         PathToLeaves(ranks)
     }
 
-    struct MeshSetup {
-        actor_mesh: RootActorMesh<'static, TestActor>,
-        reply1_rx: PortReceiver<u64>,
-        reply2_rx: PortReceiver<MyReply>,
-        reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
-    }
-
     struct NoneAccumulator;
 
     impl Accumulator for NoneAccumulator {
@@ -864,93 +852,6 @@ mod tests {
         // split port paths should be the same as casting paths
         assert_eq!(sel_paths, reply1_paths);
         assert_eq!(sel_paths, reply2_paths);
-    }
-
-    async fn setup_mesh<A>(accum: Option<A>) -> MeshSetup
-    where
-        A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
-    {
-        let extent = extent!(replica = 4, host = 4, gpu = 4);
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent.clone(),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
-        let dest_actor_name = "dest_actor";
-        let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
-        let params = TestActorParams {
-            forward_port: tx.bind(),
-        };
-        let instance = crate::v1::testing::instance();
-        let actor_mesh: RootActorMesh<TestActor> = Arc::clone(&proc_mesh)
-            .spawn(&instance, dest_actor_name, &params)
-            .await
-            .unwrap();
-
-        let (reply_port_handle0, _) = open_port::<String>(proc_mesh.client());
-        let reply_port_ref0 = reply_port_handle0.bind();
-        let (reply_port_handle1, reply1_rx) = match accum {
-            Some(a) => proc_mesh.client().mailbox().open_accum_port(a),
-            None => open_port(proc_mesh.client()),
-        };
-        let reply_port_ref1 = reply_port_handle1.bind();
-        let (reply_port_handle2, reply2_rx) = open_port::<MyReply>(proc_mesh.client());
-        let reply_port_ref2 = reply_port_handle2.bind();
-        let message = TestMessage::CastAndReply {
-            arg: "abc".to_string(),
-            reply_to0: reply_port_ref0.clone(),
-            reply_to1: reply_port_ref1.clone(),
-            reply_to2: reply_port_ref2.clone(),
-        };
-
-        let selection = sel!(*);
-        clear_collected_tree();
-        actor_mesh
-            .cast(proc_mesh.client(), selection.clone(), message)
-            .unwrap();
-
-        let mut reply_tos = vec![];
-        for _ in extent.points() {
-            let msg = rx.recv().await.expect("missing");
-            match msg {
-                TestMessage::CastAndReply {
-                    arg,
-                    reply_to0,
-                    reply_to1,
-                    reply_to2,
-                } => {
-                    assert_eq!(arg, "abc");
-                    // port 0 is still the same as the original one because it
-                    // is not included in MutVisitor.
-                    assert_eq!(reply_to0, reply_port_ref0);
-                    // ports have been replaced by comm actor's split ports.
-                    assert_ne!(reply_to1, reply_port_ref1);
-                    assert_eq!(reply_to1.port_id().actor_id().name(), "comm");
-                    assert_ne!(reply_to2, reply_port_ref2);
-                    assert_eq!(reply_to2.port_id().actor_id().name(), "comm");
-                    reply_tos.push((reply_to1, reply_to2));
-                }
-                _ => {
-                    panic!("unexpected message: {:?}", msg);
-                }
-            }
-        }
-
-        verify_split_port_paths(&selection, &extent, &reply_port_ref1, &reply_port_ref2);
-
-        MeshSetup {
-            actor_mesh,
-            reply1_rx,
-            reply2_rx,
-            reply_tos,
-        }
     }
 
     async fn execute_cast_and_reply(
@@ -1015,21 +916,6 @@ mod tests {
         }
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_reply() {
-        let MeshSetup {
-            actor_mesh,
-            reply1_rx,
-            reply2_rx,
-            reply_tos,
-            ..
-        } = setup_mesh::<NoneAccumulator>(None).await;
-        let proc_mesh_client = actor_mesh.proc_mesh().client();
-
-        let ranks = actor_mesh.ranks().clone();
-        execute_cast_and_reply(ranks, proc_mesh_client, reply1_rx, reply2_rx, reply_tos).await;
-    }
-
     async fn wait_for_with_timeout(
         receiver: &mut PortReceiver<u64>,
         expected: u64,
@@ -1075,23 +961,6 @@ mod tests {
         RealClock.sleep(Duration::from_secs(2)).await;
         let msg = reply1_rx.try_recv().unwrap();
         assert_eq!(msg, None);
-    }
-
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_accum() {
-        let config = hyperactor_config::global::lock();
-        // Use temporary config for this test
-        let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
-
-        let MeshSetup {
-            actor_mesh,
-            reply1_rx,
-            reply_tos,
-            ..
-        } = setup_mesh(Some(accum::sum::<u64>())).await;
-        let proc_mesh_client = actor_mesh.proc_mesh().client();
-        let ranks = actor_mesh.ranks().clone();
-        execute_cast_and_accum(ranks, proc_mesh_client, reply1_rx, reply_tos).await;
     }
 
     struct MeshSetupV1 {
@@ -1230,15 +1099,18 @@ mod tests {
         execute_cast_and_accum(ranks, instance, reply1_rx, reply_tos).await;
     }
 
-    struct OncePortMeshSetup {
-        _proc_mesh: Arc<ProcMesh>,
-        actor_mesh: RootActorMesh<'static, TestActor>,
+    struct OncePortMeshSetupV1 {
+        instance: &'static Instance<testing::TestRootClient>,
         reply_rx: hyperactor::mailbox::OncePortReceiver<u64>,
         reply_tos: Vec<hyperactor::OncePortRef<u64>>,
         _reply_port_ref: hyperactor::OncePortRef<u64>,
     }
 
-    async fn setup_once_port_mesh(reducer_spec: Option<accum::ReducerSpec>) -> OncePortMeshSetup {
+    async fn setup_once_port_mesh_v1(
+        reducer_spec: Option<accum::ReducerSpec>,
+    ) -> OncePortMeshSetupV1 {
+        let instance = v1::testing::instance();
+
         let extent = extent!(replica = 4, host = 4, gpu = 4);
         let alloc = LocalAllocator
             .allocate(AllocSpec {
@@ -1251,20 +1123,23 @@ mod tests {
             .await
             .unwrap();
 
-        let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
-        let dest_actor_name = "dest_actor";
-        let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
-        let params = TestActorParams {
-            forward_port: tx.bind(),
-        };
-        let instance = crate::v1::testing::instance();
-        let actor_mesh: RootActorMesh<TestActor> = Arc::clone(&proc_mesh)
-            .spawn(&instance, dest_actor_name, &params)
+        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
             .await
             .unwrap();
 
-        let (reply_port_handle, reply_rx) =
-            hyperactor::mailbox::open_once_port::<u64>(proc_mesh.client());
+        let (tx, mut rx) = hyperactor::mailbox::open_port(instance);
+        let params = TestActorParams {
+            forward_port: tx.bind(),
+        };
+        let actor_name = v1::Name::new("test").expect("valid test name");
+        // Make this actor a "system" actor to avoid spawning a controller actor.
+        let actor_mesh: v1::ActorMesh<TestActor> = proc_mesh
+            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .await
+            .unwrap();
+        let actor_mesh_ref = actor_mesh.deref().clone();
+
+        let (reply_port_handle, reply_rx) = hyperactor::mailbox::open_once_port::<u64>(instance);
         let has_reducer = reducer_spec.is_some();
         let reply_port_ref = match reducer_spec {
             Some(spec) => hyperactor::OncePortRef::attest_reducible(
@@ -1279,11 +1154,8 @@ mod tests {
             reply_to: reply_port_ref.clone(),
         };
 
-        let selection = sel!(*);
         clear_collected_tree();
-        actor_mesh
-            .cast(proc_mesh.client(), selection.clone(), message)
-            .unwrap();
+        actor_mesh_ref.cast(instance, message).unwrap();
 
         let mut reply_tos = vec![];
         for _ in extent.points() {
@@ -1294,7 +1166,7 @@ mod tests {
                     if has_reducer {
                         // With reducer: port is split by comm actor.
                         assert_ne!(reply_to, reply_port_ref);
-                        assert_eq!(reply_to.port_id().actor_id().name(), "comm");
+                        assert!(reply_to.port_id().actor_id().name().contains("comm"));
                     } else {
                         // Without reducer: port is passed through unchanged.
                         assert_eq!(reply_to, reply_port_ref);
@@ -1307,9 +1179,8 @@ mod tests {
             }
         }
 
-        OncePortMeshSetup {
-            _proc_mesh: proc_mesh,
-            actor_mesh,
+        OncePortMeshSetupV1 {
+            instance,
             reply_rx,
             reply_tos,
             _reply_port_ref: reply_port_ref,
@@ -1317,23 +1188,22 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_reply_once() {
+    async fn test_cast_and_reply_once_v1() {
         // Test OncePort without accumulator - port is NOT split.
         // All destinations receive the same original port.
         // First reply is delivered, others fail at receiver (port closed).
-        let OncePortMeshSetup {
-            actor_mesh,
+        let OncePortMeshSetupV1 {
+            instance,
             reply_rx,
             reply_tos,
             ..
-        } = setup_once_port_mesh(None).await;
-        let proc_mesh_client = actor_mesh.proc_mesh().client();
+        } = setup_once_port_mesh_v1(None).await;
 
         // All reply_tos point to the same port (not split).
         // Only the first message will be delivered successfully.
         let num_replies = reply_tos.len();
         for (i, reply_to) in reply_tos.into_iter().enumerate() {
-            reply_to.send(proc_mesh_client, i as u64).unwrap();
+            reply_to.send(instance, i as u64).unwrap();
         }
 
         // OncePort receives exactly one value (the first to arrive)
@@ -1343,23 +1213,22 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_accum_once() {
+    async fn test_cast_and_accum_once_v1() {
         // Test OncePort splitting with sum accumulator.
         // Each destination actor replies with its rank.
         // The sum of all ranks should be received at the original port.
         let reducer_spec = accum::sum::<u64>().reducer_spec();
-        let OncePortMeshSetup {
-            actor_mesh,
+        let OncePortMeshSetupV1 {
+            instance,
             reply_rx,
             reply_tos,
             ..
-        } = setup_once_port_mesh(reducer_spec).await;
-        let proc_mesh_client = actor_mesh.proc_mesh().client();
+        } = setup_once_port_mesh_v1(reducer_spec).await;
 
         // Each actor replies with its index
         let mut expected_sum = 0u64;
         for (i, reply_to) in reply_tos.into_iter().enumerate() {
-            reply_to.send(proc_mesh_client, i as u64).unwrap();
+            reply_to.send(instance, i as u64).unwrap();
             expected_sum += i as u64;
         }
 

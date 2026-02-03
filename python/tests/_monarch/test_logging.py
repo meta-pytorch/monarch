@@ -137,7 +137,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.logging_manager = LoggingManager()
 
-    @patch("monarch._src.actor.logging.LoggingMeshClient")
+    @patch("monarch._src.actor.logging.LoggingMeshClientV1")
     @patch("monarch._src.actor.logging.context")
     async def test_init_with_hyprocmesh_creates_logging_mesh_client(
         self, mock_context: Mock, mock_logging_client: Mock
