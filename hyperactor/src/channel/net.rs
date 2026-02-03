@@ -1090,7 +1090,8 @@ pub(crate) mod tls {
         -----END CERTIFICATE-----"#;
 
         // Server private key
-        #[allow(clippy::private_key)] // test-only embedded key -- though it might expire at some point
+        // test-only embedded key -- though it might expire at some point:
+        // @lint-ignore PRIVATEKEY insecure-private-key-storage
         const TEST_SERVER_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQCgm6fvqjck5+Sz
 rFdIfYCyiQCwXI4NgNeCN/NODfVMg4T1tkCkNluNuLtj9THyq8P9gvghKxpawA5Z
