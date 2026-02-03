@@ -29,7 +29,7 @@ jobs:
             torch-spec: 'torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.0/'
     with:
       timeout: 60
-      runner: linux.rocm.gpu.gfx942.8.meta-pytorch
+      runner: linux.rocm.gpu.gfx942.1.meta-pytorch
       gpu-arch-type: rocm
       gpu-arch-version: ${{ matrix.name }}
       submodules: recursive
