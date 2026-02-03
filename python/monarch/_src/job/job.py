@@ -45,7 +45,10 @@ class JobState:
         try:
             return self._hosts[attr]
         except KeyError:
-            raise AttributeError(attr)
+            available = ", ".join(sorted(self._hosts.keys()))
+            raise AttributeError(
+                f"'{attr}' is not a valid host mesh name. Available names: {available}"
+            )
 
 
 class CachedRunning(NamedTuple):
