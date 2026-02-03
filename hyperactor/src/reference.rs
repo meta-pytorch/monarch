@@ -41,6 +41,7 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use typeuri::ACTOR_PORT_BIT;
 use typeuri::Named;
 use wirevalue::TypeInfo;
 
@@ -923,6 +924,10 @@ impl PortId {
         self.1
     }
 
+    pub(crate) fn is_actor_port(&self) -> bool {
+        self.1 & ACTOR_PORT_BIT != 0
+    }
+
     /// Send a serialized message to this port, provided a sending capability,
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
@@ -977,8 +982,8 @@ impl FromStr for PortId {
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let PortId(actor_id, port) = self;
-        if port & (1 << 63) != 0 {
-            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !(1 << 63)));
+        if self.is_actor_port() {
+            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !ACTOR_PORT_BIT));
             let typename = type_info.map_or("unknown", TypeInfo::typename);
             write!(f, "{}[{}<{}>]", actor_id, port, typename)
         } else {
@@ -1511,9 +1516,16 @@ impl<'a, A: Referable> From<&'a GangRef<A>> for &'a GangId {
 mod tests {
     use rand::seq::SliceRandom;
     use rand::thread_rng;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
 
     use super::*;
     // for macros
+    use crate::Proc;
+    use crate::context::Mailbox as _;
+    use crate::mailbox::PortLocation;
+    use crate::ordering::SEQ_INFO;
+    use crate::ordering::SeqInfo;
 
     #[test]
     fn test_reference_parse() {
@@ -1669,5 +1681,122 @@ mod tests {
             port_id.to_string(),
             "test[234].testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
         );
+    }
+
+    #[tokio::test]
+    async fn test_sequencing_from_port_handle_ref_and_id() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO);
+            tx.send(seq_info.cloned()).unwrap();
+            Ok(())
+        });
+        port_handle.send(&client, ()).unwrap();
+        // No seq will be assigned for unbound port handle.
+        assert!(rx.try_recv().unwrap().is_none());
+
+        port_handle.bind_actor_port();
+        let port_id = match port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        assert!(port_id.is_actor_port());
+        let port_ref = PortRef::attest(port_id.clone());
+
+        port_handle.send(&client, ()).unwrap();
+        let SeqInfo {
+            session_id,
+            mut seq,
+        } = rx.try_recv().unwrap().unwrap();
+        assert_eq!(session_id, client.sequencer().session_id());
+        assert_eq!(seq, 1);
+
+        fn assert_seq_info(
+            rx: &mut mpsc::UnboundedReceiver<Option<SeqInfo>>,
+            session_id: Uuid,
+            seq: &mut u64,
+        ) {
+            *seq += 1;
+            let SeqInfo {
+                session_id: rcved_session_id,
+                seq: rcved_seq,
+            } = rx.try_recv().unwrap().unwrap();
+            assert_eq!(rcved_session_id, session_id);
+            assert_eq!(rcved_seq, *seq);
+        }
+
+        // Interleave sends from port_handle, port_ref, and port_id
+        for _ in 0..10 {
+            // From port_handle
+            port_handle.send(&client, ()).unwrap();
+            assert_seq_info(&mut rx, session_id, &mut seq);
+
+            // From port_ref
+            for _ in 0..2 {
+                port_ref.send(&client, ()).unwrap();
+                assert_seq_info(&mut rx, session_id, &mut seq);
+            }
+
+            // From port_id
+            for _ in 0..3 {
+                port_id.send(&client, wirevalue::Any::serialize(&()).unwrap());
+                assert_seq_info(&mut rx, session_id, &mut seq);
+            }
+        }
+
+        assert_eq!(rx.try_recv().unwrap_err(), mpsc::error::TryRecvError::Empty);
+    }
+
+    #[tokio::test]
+    async fn test_sequencing_from_port_handle_bound_to_allocated_port() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO);
+            tx.send(seq_info.cloned()).unwrap();
+            Ok(())
+        });
+        port_handle.send(&client, ()).unwrap();
+        // No seq will be assigned for unbound port handle.
+        assert!(rx.try_recv().unwrap().is_none());
+
+        // Bind to the allocated port.
+        port_handle.bind();
+        let port_id = match port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        // This is a non-actor port, but it still gets seq info (per-port sequence).
+        assert!(!port_id.is_actor_port());
+
+        // After binding, non-actor ports get their own sequence.
+        port_handle.send(&client, ()).unwrap();
+        let SeqInfo {
+            session_id,
+            seq: seq1,
+        } = rx
+            .try_recv()
+            .unwrap()
+            .expect("non-actor port should have seq info");
+        assert_eq!(seq1, 1);
+        assert_eq!(session_id, client.sequencer().session_id());
+
+        let port_ref = PortRef::attest(port_id.clone());
+        port_ref.send(&client, ()).unwrap();
+        let SeqInfo { seq: seq2, .. } = rx
+            .try_recv()
+            .unwrap()
+            .expect("non-actor port should have seq info");
+        assert_eq!(seq2, 2);
+
+        port_id.send(&client, wirevalue::Any::serialize(&()).unwrap());
+        let SeqInfo { seq: seq3, .. } = rx
+            .try_recv()
+            .unwrap()
+            .expect("non-actor port should have seq info");
+        assert_eq!(seq3, 3);
     }
 }
