@@ -72,26 +72,26 @@ use crate::v1::proc_mesh::ProcRef;
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
     /// meshes.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE".to_string()),
-        py_name: Some("mesh_proc_spawn_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE".to_string()),
+        Some("mesh_proc_spawn_max_idle".to_string()),
+    ))
     pub attr PROC_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
     /// The maximum idle time between updates while stopping proc
     /// meshes.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_PROC_STOP_MAX_IDLE".to_string()),
-        py_name: Some("proc_stop_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_PROC_STOP_MAX_IDLE".to_string()),
+        Some("proc_stop_max_idle".to_string()),
+    ))
     pub attr PROC_STOP_MAX_IDLE: Duration = Duration::from_secs(30);
 
     /// The maximum idle time between updates while querying host meshes
     /// for their proc states.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
-        py_name: Some("get_proc_state_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
+        Some("get_proc_state_max_idle".to_string()),
+    ))
     pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
 
@@ -882,7 +882,7 @@ impl HostMeshRef {
         // would allow buffering in the host-level muxer to eliminate
         // the need for this synchronization step.
         let mut proc_names = Vec::new();
-        let client_config_override = hyperactor_config::global::attrs();
+        let client_config_override = hyperactor_config::global::propagatable_attrs();
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
