@@ -39,8 +39,6 @@ use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_telemetry::recorder::Recording;
-use serde::Deserialize;
-use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
