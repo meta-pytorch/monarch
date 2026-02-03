@@ -198,28 +198,26 @@ pub async fn resolve_reference(Path(reference): Path<String>) -> impl IntoRespon
     let state = global();
 
     match &parsed {
-        Reference::Proc(proc_id) => {
-            match state.procs.get(proc_id).and_then(|w| w.upgrade()) {
-                Some(proc) => {
-                    let root_actors: Vec<String> = proc
-                        .root_actor_ids()
-                        .into_iter()
-                        .map(|id| id.to_string())
-                        .collect();
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!(ReferenceInfo::Proc(ProcDetails {
-                            proc_name: proc_id.to_string(),
-                            root_actors,
-                        }))),
-                    )
-                }
-                None => (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "proc not found"})),
-                ),
+        Reference::Proc(proc_id) => match state.procs.get(proc_id).and_then(|w| w.upgrade()) {
+            Some(proc) => {
+                let root_actors: Vec<String> = proc
+                    .root_actor_ids()
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect();
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!(ReferenceInfo::Proc(ProcDetails {
+                        proc_name: proc_id.to_string(),
+                        root_actors,
+                    }))),
+                )
             }
-        }
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "proc not found"})),
+            ),
+        },
         Reference::Actor(actor_id) => match lookup_actor_details(actor_id) {
             Some(details) => (
                 StatusCode::OK,
