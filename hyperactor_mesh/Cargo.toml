@@ -80,7 +80,7 @@ wirevalue = { version = "0.0.0", path = "../wirevalue" }
 zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
 
 [dev-dependencies]
-bytes = { version = "1.10", features = ["serde"] }
+bytes = { version = "1.11.1", features = ["serde"] }
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 itertools = "0.14.0"
 maplit = "1.0"
