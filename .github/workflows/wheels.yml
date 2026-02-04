@@ -94,7 +94,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Get tag for publishing
-        run: echo "DOCKER_TAG=0.3.0.dev$(date +'%Y%m%d')-cuda12.8" >> $GITHUB_ENV
+        run: echo "DOCKER_TAG=0.4.0.dev$(date +'%Y%m%d')-cuda12.8" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
