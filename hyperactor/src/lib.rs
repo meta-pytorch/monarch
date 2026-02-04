@@ -80,7 +80,7 @@ mod init;
 pub mod mailbox;
 pub mod message;
 pub mod metrics;
-mod ordering;
+pub mod ordering;
 pub mod panic_handler;
 pub mod proc;
 pub mod reference;
