@@ -310,7 +310,7 @@ impl CommActor {
         replace_with_self_ranks(&cast_point, message.data_mut())?;
 
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
-        cx.post(
+        cx.post_with_external_seq_info(
             cx.self_id()
                 .proc_id()
                 .actor_id(message.dest_port().actor_name(), 0)
