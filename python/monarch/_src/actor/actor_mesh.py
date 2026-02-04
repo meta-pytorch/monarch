@@ -1599,6 +1599,8 @@ def _is_mailbox(x: object) -> bool:
 
 
 def _is_ref_or_mailbox(x: object) -> bool:
+    if isinstance(x, Mailbox):
+        raise NotImplementedError("DO WE ACTUALLY NEED TO SERIALIZE A MAILBOX?")
     return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
 
 
