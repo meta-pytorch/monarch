@@ -10,7 +10,7 @@ repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [dependencies]
-bytes = { version = "1.10", features = ["serde"] }
+bytes = { version = "1.11.1", features = ["serde"] }
 cityhasher = "0.1.0"
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 typeuri_macros = { version = "0.0.0", path = "../typeuri_macros" }
