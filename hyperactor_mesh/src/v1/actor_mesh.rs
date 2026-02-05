@@ -582,7 +582,7 @@ impl<A: Referable> ActorMeshRef<A> {
             // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
             // v0 transition. Should be removed once supervision is migrated
             // and ActorMeshId is deleted.
-            let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+            let actor_mesh_id = ActorMeshId(self.name.clone());
             headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
             let cast_message = CastMessageV1::new::<A, M>(
                 cx.instance().self_id().clone(),
