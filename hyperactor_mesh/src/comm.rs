@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use crate::actor_mesh::CAST_ACTOR_MESH_ID;
+use crate::casting::CAST_ACTOR_MESH_ID;
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastEnvelope;
 use crate::comm::multicast::CastMessageV1;
@@ -708,8 +708,7 @@ mod tests {
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::LocalAllocator;
-    use crate::v1;
-    use crate::v1::testing;
+    use crate::testing;
 
     struct Edge<T> {
         from: T,
@@ -1046,7 +1045,7 @@ mod tests {
 
     struct MeshSetupV1 {
         instance: &'static Instance<testing::TestRootClient>,
-        actor_mesh_ref: v1::ActorMeshRef<TestActor>,
+        actor_mesh_ref: crate::ActorMeshRef<TestActor>,
         reply1_rx: PortReceiver<u64>,
         reply2_rx: PortReceiver<MyReply>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
@@ -1056,7 +1055,7 @@ mod tests {
     where
         A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
     {
-        let instance = v1::testing::instance();
+        let instance = crate::testing::instance();
 
         let extent = extent!(replica = 4, host = 4, gpu = 4);
         let alloc = LocalAllocator
@@ -1070,7 +1069,7 @@ mod tests {
             .await
             .unwrap();
 
-        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
+        let proc_mesh = crate::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
             .await
             .unwrap();
 
@@ -1078,7 +1077,7 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = v1::Name::new("test").expect("valid test name");
+        let actor_name = crate::Name::new("test").expect("valid test name");
         // Make this actor a "system" actor to avoid spawning a controller actor.
         // This test is verifying the whole comm tree, so we want fewer actors
         // involved.
@@ -1231,7 +1230,7 @@ mod tests {
     async fn setup_once_port_mesh_v1(
         reducer_spec: Option<accum::ReducerSpec>,
     ) -> OncePortMeshSetupV1 {
-        let instance = v1::testing::instance();
+        let instance = crate::testing::instance();
 
         let extent = extent!(replica = 4, host = 4, gpu = 4);
         let alloc = LocalAllocator
@@ -1245,7 +1244,7 @@ mod tests {
             .await
             .unwrap();
 
-        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
+        let proc_mesh = crate::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
             .await
             .unwrap();
 
@@ -1253,9 +1252,9 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = v1::Name::new("test").expect("valid test name");
+        let actor_name = crate::Name::new("test").expect("valid test name");
         // Make this actor a "system" actor to avoid spawning a controller actor.
-        let actor_mesh: v1::ActorMesh<TestActor> = proc_mesh
+        let actor_mesh: crate::ActorMesh<TestActor> = proc_mesh
             .spawn_with_name(&instance, actor_name, &params, None, true)
             .await
             .unwrap();

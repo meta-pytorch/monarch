@@ -34,25 +34,24 @@ use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::ViewExt;
 use ndslice::view::CollectMeshExt;
+use ndslice::view::Point;
 use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
 use typeuri::Named;
 
-use crate::actor_mesh::update_undeliverable_envelope_for_casting;
+use crate::Name;
+use crate::ValueMesh;
+use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
-use crate::proc_mesh::mesh_agent::ActorState;
+use crate::casting::update_undeliverable_envelope_for_casting;
+use crate::host_mesh::HostMeshRef;
+use crate::mesh_agent::ActorState;
+use crate::proc_mesh::ProcMeshRef;
 use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
-use crate::v1;
-use crate::v1::Name;
-use crate::v1::ValueMesh;
-use crate::v1::actor_mesh::ActorMeshRef;
-use crate::v1::host_mesh::HostMeshRef;
-use crate::v1::proc_mesh::ProcMeshRef;
-use crate::v1::view::Point;
 
 declare_attrs! {
     /// Time between checks of actor states to create supervision events for
@@ -170,7 +169,7 @@ impl<A: Referable> ActorMeshController<A> {
         &self,
         cx: &impl context::Actor,
         reason: String,
-    ) -> v1::Result<ValueMesh<resource::Status>> {
+    ) -> crate::Result<ValueMesh<resource::Status>> {
         // Cannot use "ActorMesh::stop" as it tries to message the controller, which is this actor.
         self.mesh
             .proc_mesh()
@@ -450,7 +449,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
                 }
             }
             // An ActorStopError means some actors didn't reach the stopped state.
-            Err(v1::Error::ActorStopError { statuses }) => {
+            Err(crate::Error::ActorStopError { statuses }) => {
                 // If there are no states yet, nothing to update.
                 if let Some(max_rank) = max_rank {
                     let extent = extent.expect("no actors in mesh");

@@ -32,7 +32,6 @@ use hyperactor::context;
 use hyperactor::forward;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
-use hyperactor_mesh::v1;
 use lazy_errors::ErrorStash;
 use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::sender;
@@ -132,9 +131,9 @@ impl WorkspaceShape {
 
     fn downstream_mesh(
         &self,
-        mesh: &v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
+        mesh: &hyperactor_mesh::ActorMeshRef<CodeSyncManager>,
         rank: usize,
-    ) -> Result<v1::actor_mesh::ActorMeshRef<CodeSyncManager>> {
+    ) -> Result<hyperactor_mesh::ActorMeshRef<CodeSyncManager>> {
         let shape = self.downstream(rank)?;
         Ok(mesh.sliced(shape.region()))
     }
@@ -166,7 +165,7 @@ wirevalue::register_type!(CodeSyncMessage);
 
 #[derive(Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
 pub struct SetActorMeshMessage {
-    pub actor_mesh: v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
+    pub actor_mesh: hyperactor_mesh::ActorMeshRef<CodeSyncManager>,
 }
 wirevalue::register_type!(SetActorMeshMessage);
 
@@ -186,7 +185,7 @@ pub struct CodeSyncManager {
     rsync: OnceCell<ActorHandle<RsyncActor>>,
     auto_reload: OnceCell<ActorHandle<AutoReloadActor>>,
     conda_sync: OnceCell<ActorHandle<CondaSyncActor>>,
-    self_mesh: once_cell::sync::OnceCell<v1::actor_mesh::ActorMeshRef<CodeSyncManager>>,
+    self_mesh: once_cell::sync::OnceCell<hyperactor_mesh::ActorMeshRef<CodeSyncManager>>,
     rank: once_cell::sync::OnceCell<usize>,
 }
 
@@ -395,7 +394,7 @@ pub enum CodeSyncMethod {
 
 pub async fn code_sync_mesh(
     cx: &impl context::Actor,
-    actor_mesh: &v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
+    actor_mesh: &hyperactor_mesh::ActorMeshRef<CodeSyncManager>,
     local_workspace: PathBuf,
     remote_workspace: WorkspaceConfig,
     method: CodeSyncMethod,
@@ -521,11 +520,11 @@ pub async fn code_sync_mesh(
 mod tests {
     use anyhow::anyhow;
     use hyperactor::channel::ChannelTransport;
+    use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
-    use hyperactor_mesh::proc_mesh::global_root_client;
-    use hyperactor_mesh::v1::ProcMesh;
+    use hyperactor_mesh::global_root_client;
     use ndslice::extent;
     use ndslice::shape;
     use tempfile::TempDir;

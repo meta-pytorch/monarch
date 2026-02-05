@@ -13,13 +13,13 @@
 
 use std::sync::Arc;
 
-use hyperactor_mesh::v1::ActorMeshRef;
-use hyperactor_mesh::v1::HostMeshRef;
-use hyperactor_mesh::v1::InMemoryNamespace;
-use hyperactor_mesh::v1::MeshKind;
-use hyperactor_mesh::v1::Namespace;
-use hyperactor_mesh::v1::NamespaceError;
-use hyperactor_mesh::v1::ProcMeshRef;
+use hyperactor_mesh::ActorMeshRef;
+use hyperactor_mesh::HostMeshRef;
+use hyperactor_mesh::InMemoryNamespace;
+use hyperactor_mesh::MeshKind;
+use hyperactor_mesh::Namespace;
+use hyperactor_mesh::NamespaceError;
+use hyperactor_mesh::ProcMeshRef;
 use pyo3::exceptions::PyKeyError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;

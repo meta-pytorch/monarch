@@ -203,10 +203,10 @@ impl<T> ValueMesh<T> {
     /// region.num_ranks()`.
     /// ```
     #[allow(clippy::result_large_err)]
-    pub(crate) fn new(region: Region, ranks: Vec<T>) -> crate::v1::Result<Self> {
+    pub(crate) fn new(region: Region, ranks: Vec<T>) -> crate::Result<Self> {
         let (actual, expected) = (ranks.len(), region.num_ranks());
         if actual != expected {
-            return Err(crate::v1::Error::InvalidRankCardinality { expected, actual });
+            return Err(crate::Error::InvalidRankCardinality { expected, actual });
         }
         Ok(Self {
             region,
@@ -280,7 +280,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
         region: Region,
         default: T,
         mut ranges: Vec<(Range<usize>, T)>,
-    ) -> crate::v1::Result<Self> {
+    ) -> crate::Result<Self> {
         let n = region.num_ranks();
 
         if n == 0 {
@@ -296,13 +296,13 @@ impl<T: Eq + Hash> ValueMesh<T> {
         // Validate: non-empty, in-bounds; then sort.
         for (r, _) in &ranges {
             if r.is_empty() {
-                return Err(crate::v1::Error::InvalidRankCardinality {
+                return Err(crate::Error::InvalidRankCardinality {
                     expected: n,
                     actual: 0,
                 }); // TODO: this surfaces the error but its not a great fit
             }
             if r.end > n {
-                return Err(crate::v1::Error::InvalidRankCardinality {
+                return Err(crate::Error::InvalidRankCardinality {
                     expected: n,
                     actual: r.end,
                 });
@@ -316,7 +316,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
             let (b, _) = &w[1];
             if a.end > b.start {
                 // Overlap
-                return Err(crate::v1::Error::InvalidRankCardinality {
+                return Err(crate::Error::InvalidRankCardinality {
                     expected: n,
                     actual: b.start, // TODO: this surfaces the error but is a bad fit
                 });
@@ -412,7 +412,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
     /// // Internally compressed to three runs: [1, 1], [2, 2], [3]
     /// ```
     #[allow(clippy::result_large_err)]
-    pub fn from_dense(region: Region, values: Vec<T>) -> crate::v1::Result<Self> {
+    pub fn from_dense(region: Region, values: Vec<T>) -> crate::Result<Self> {
         let mut vm = Self::new(region, values)?;
         vm.compress_adjacent_in_place();
         Ok(vm)
@@ -531,7 +531,7 @@ impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
 }
 
 impl<T> view::BuildFromRegion<T> for ValueMesh<T> {
-    type Error = crate::v1::Error;
+    type Error = crate::Error;
 
     fn build_dense(region: Region, values: Vec<T>) -> Result<Self, Self::Error> {
         Self::new(region, values)
@@ -543,7 +543,7 @@ impl<T> view::BuildFromRegion<T> for ValueMesh<T> {
 }
 
 impl<T> view::BuildFromRegionIndexed<T> for ValueMesh<T> {
-    type Error = crate::v1::Error;
+    type Error = crate::Error;
 
     fn build_indexed(
         region: Region,
@@ -699,7 +699,7 @@ impl<T> view::BuildFromRegionIndexed<T> for ValueMesh<T> {
         for (rank, value) in pairs {
             // Single bounds check up front.
             if rank >= guard.n_elems {
-                return Err(crate::v1::Error::InvalidRankCardinality {
+                return Err(crate::Error::InvalidRankCardinality {
                     expected: guard.n_elems,
                     actual: rank + 1,
                 });
@@ -754,7 +754,7 @@ impl<T> view::BuildFromRegionIndexed<T> for ValueMesh<T> {
 
         if filled != n {
             // Missing ranks: actual = number of distinct ranks seen.
-            return Err(crate::v1::Error::InvalidRankCardinality {
+            return Err(crate::Error::InvalidRankCardinality {
                 expected: n,
                 actual: filled,
             });
@@ -1006,7 +1006,7 @@ where
     // Last-writer-wins merge of two sparse overlays.
     fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
         // 1) Merge runs with right precedence.
-        let merged = crate::v1::value_mesh::rle::merge_value_runs(
+        let merged = crate::value_mesh::rle::merge_value_runs(
             left.runs().cloned().collect(),
             right.runs().cloned().collect(),
         );
@@ -1066,7 +1066,7 @@ mod tests {
         let region: Region = extent!(replica = 2, gpu = 3).into();
         let err = ValueMesh::new(region, vec![0_i32; 5]).unwrap_err();
         match err {
-            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+            crate::Error::InvalidRankCardinality { expected, actual } => {
                 assert_eq!(expected, 6);
                 assert_eq!(actual, 5);
             }
@@ -1126,7 +1126,7 @@ mod tests {
         let err = (0..5).collect_mesh::<ValueMesh<_>>(region).unwrap_err();
 
         match err {
-            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+            crate::Error::InvalidRankCardinality { expected, actual } => {
                 assert_eq!(expected, 6);
                 assert_eq!(actual, 5);
             }
@@ -1139,7 +1139,7 @@ mod tests {
         let region: Region = extent!(x = 2, y = 3).into();
         let err = (0..7).collect_mesh::<ValueMesh<_>>(region).unwrap_err();
         match err {
-            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+            crate::Error::InvalidRankCardinality { expected, actual } => {
                 assert_eq!(expected, 6);
                 assert_eq!(actual, 7);
             }
@@ -1178,7 +1178,7 @@ mod tests {
             .unwrap_err();
 
         match err {
-            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+            crate::Error::InvalidRankCardinality { expected, actual } => {
                 assert_eq!(expected, 6);
                 assert_eq!(actual, 5);
             }
@@ -1194,7 +1194,7 @@ mod tests {
             .unwrap_err();
 
         match err {
-            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+            crate::Error::InvalidRankCardinality { expected, actual } => {
                 assert_eq!(expected, 6);
                 assert_eq!(actual, 7);
             }
@@ -1242,7 +1242,7 @@ mod tests {
             .unwrap_err();
 
         match err {
-            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+            crate::Error::InvalidRankCardinality { expected, actual } => {
                 assert_eq!(expected, 4);
                 assert_eq!(actual, 3); // Distinct ranks seen.
             }
@@ -1260,7 +1260,7 @@ mod tests {
             .unwrap_err();
 
         match err {
-            crate::v1::Error::InvalidRankCardinality { expected, actual } => {
+            crate::Error::InvalidRankCardinality { expected, actual } => {
                 assert_eq!(expected, 4);
                 assert_eq!(actual, 5); // offending index + 1
             }
@@ -1286,7 +1286,7 @@ mod tests {
     fn build_value_mesh_indexed<T>(
         region: Region,
         pairs: impl IntoIterator<Item = (usize, T)>,
-    ) -> crate::v1::Result<ValueMesh<T>> {
+    ) -> crate::Result<ValueMesh<T>> {
         let n = region.num_ranks();
 
         // Buffer for exactly n slots; fill by rank.
@@ -1298,7 +1298,7 @@ mod tests {
                 // Out-of-bounds: report `expected` = n, `actual` =
                 // offending index + 1; i.e. number of ranks implied
                 // so far.
-                return Err(crate::v1::Error::InvalidRankCardinality {
+                return Err(crate::Error::InvalidRankCardinality {
                     expected: n,
                     actual: rank + 1,
                 });
@@ -1311,7 +1311,7 @@ mod tests {
 
         if filled != n {
             // Missing ranks: actual = number of distinct ranks seen.
-            return Err(crate::v1::Error::InvalidRankCardinality {
+            return Err(crate::Error::InvalidRankCardinality {
                 expected: n,
                 actual: filled,
             });

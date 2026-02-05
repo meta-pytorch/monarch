@@ -87,12 +87,12 @@ pub mod test_utils {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor_mesh::ActorMesh;
+    use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
-    use hyperactor_mesh::proc_mesh::global_root_client;
-    use hyperactor_mesh::v1::ActorMesh;
-    use hyperactor_mesh::v1::ProcMesh;
+    use hyperactor_mesh::global_root_client;
     use ndslice::View;
     use ndslice::extent;
 
@@ -516,8 +516,8 @@ pub mod test_utils {
         buffer_1: Buffer,
         buffer_2: Buffer,
         // Note: Both point to the same global instance
-        pub client_1: &'static hyperactor::Instance<hyperactor_mesh::proc_mesh::GlobalClientActor>,
-        pub client_2: &'static hyperactor::Instance<hyperactor_mesh::proc_mesh::GlobalClientActor>,
+        pub client_1: &'static hyperactor::Instance<hyperactor_mesh::GlobalClientActor>,
+        pub client_2: &'static hyperactor::Instance<hyperactor_mesh::GlobalClientActor>,
         pub actor_1: ActorRef<RdmaManagerActor>,
         pub actor_2: ActorRef<RdmaManagerActor>,
         pub rdma_handle_1: RdmaBuffer,
