@@ -56,10 +56,6 @@ pub struct ProbeReport {
     #[pyo3(get)]
     pub rank: Option<usize>,
 
-    /// Whether the message carried a pending pickle state.
-    #[pyo3(get)]
-    pub pending_pickle_state_present: Option<bool>,
-
     /// Length in bytes of the raw message payload.
     #[pyo3(get)]
     pub payload_len: usize,
@@ -128,7 +124,6 @@ pub(crate) fn probe_exit_port_via_mesh(
             response_port: Some(EitherPortRef::Once(PythonOncePortRef::from(bound_port))),
         },
         message: pickled_args.into(),
-        pending_pickle_state: None,
     };
 
     // Cast to all actors in the mesh (should be just 1 for sliced
@@ -156,7 +151,6 @@ pub(crate) fn probe_exit_port_via_mesh(
             received_type: "PythonMessage".to_string(),
             kind: Some(kind),
             rank,
-            pending_pickle_state_present: Some(msg.pending_pickle_state.is_some()),
             payload_len: payload.len(),
             payload_bytes: payload,
             error: None,
