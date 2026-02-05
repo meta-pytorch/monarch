@@ -24,7 +24,7 @@ on:
         type: string
         default: 'linux.g5.4xlarge.nvidia.gpu'
       version:
-        description: 'Version string for the wheel (default: 0.3.0.dev<date>)'
+        description: 'Version string for the wheel (default: $current_version.dev<date>)'
         type: string
         default: ''
       timeout:
@@ -64,7 +64,7 @@ jobs:
         if [ -n "${{ inputs.version }}" ]; then
           export MONARCH_VERSION="${{ inputs.version }}"
         else
-          export MONARCH_VERSION=0.3.0.dev$(date +'%Y%m%d')
+          export MONARCH_VERSION=0.4.0.dev$(date +'%Y%m%d')
         fi
         export MONARCH_BUILD_MESH_ONLY=0
 
