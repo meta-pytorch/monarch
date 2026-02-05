@@ -22,6 +22,7 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocConstraints,
     AllocSpec,
 )
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.proc_mesh import _get_bootstrap_args
@@ -38,6 +39,13 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._src.actor.actor_mesh import Context, context, Instance
+
+
+def _to_frozen_buffer(data: bytes) -> FrozenBuffer:
+    """Helper to convert bytes to FrozenBuffer."""
+    buf = Buffer()
+    buf.write(data)
+    return buf.freeze()
 
 
 def run_on_tokio(
@@ -131,7 +139,7 @@ async def spawn_actor_mesh(proc_mesh: ProcMesh) -> PythonActorMesh:
 
     message = PythonMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), port_ref),
-        pickle.dumps(None),
+        _to_frozen_buffer(pickle.dumps(None)),
     )
     actor_mesh.cast(message, "all", instance._as_rust())
     # wait for init to complete
@@ -161,7 +169,7 @@ async def verify_cast_to_call(
     # Now send the real message
     message = PythonMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
-        pickle.dumps("ping"),
+        _to_frozen_buffer(pickle.dumps("ping")),
     )
     await cast_to_call(actor_mesh, instance, message)
 
