@@ -122,7 +122,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
             reset_record_batch_flush_count,
         )
     except ImportError:
-        pytest.skip(
+        pytest.skip(  # pyre-ignore[29]: pytest.skip is callable
             "RecordBatch tracing not available (requires distributed_sql_telemetry feature)"
         )
         return
