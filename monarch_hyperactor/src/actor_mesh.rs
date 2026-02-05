@@ -36,6 +36,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use pyo3::types::PyTuple;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -43,15 +44,14 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
+use crate::pickle::PendingMessage;
 use crate::mailbox::EitherPortRef;
 use crate::proc::PyActorId;
-use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
-use crate::runtime::signal_safe_block_on;
 use crate::shape::PyRegion;
 use crate::supervision::SupervisionError;
 
@@ -59,6 +59,12 @@ py_global!(
     is_pending_pickle_allowed,
     "monarch._src.actor.pickle",
     "is_pending_pickle_allowed"
+);
+
+py_global!(
+    shared_class,
+    "monarch._rust_bindings.monarch_hyperactor.pytokio",
+    "Shared"
 );
 
 /// Trait defining the common interface for actor mesh, mesh ref and actor mesh implementations.
@@ -71,6 +77,20 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
         selection: Selection,
         instance: &PyInstance,
     ) -> PyResult<()>;
+
+    /// Cast a pending message (which may contain unresolved async values) to actors.
+    ///
+    /// The default implementation blocks on resolving the message and then calls cast.
+    /// AsyncActorMesh overrides this with an optimized async implementation.
+    fn cast_unresolved(
+        &self,
+        message: PendingMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
+        let message = get_tokio_runtime().block_on(message.resolve())?;
+        self.cast(message, selection, instance)
+    }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)>;
 
@@ -158,6 +178,18 @@ impl PythonActorMesh {
     ) -> PyResult<()> {
         let sel = to_hy_sel(selection)?;
         self.inner.cast(message.clone(), sel, instance)
+    }
+
+    #[hyperactor::instrument]
+    pub(crate) fn cast_unresolved(
+        &self,
+        message: &mut PendingMessage,
+        selection: &str,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
+        let sel = to_hy_sel(selection)?;
+        let message = message.take()?;
+        self.inner.cast_unresolved(message, sel, instance)
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
@@ -274,7 +306,7 @@ impl AsyncActorMesh {
 impl ActorMeshProtocol for AsyncActorMesh {
     fn cast(
         &self,
-        mut message: PythonMessage,
+        message: PythonMessage,
         selection: Selection,
         instance: &PyInstance,
     ) -> PyResult<()> {
@@ -285,13 +317,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
                 _ => None,
             };
-            let result = async {
-                if let Some(pickle_state) = message.pending_pickle_state.take() {
-                    message.message = pickle_state.resolve(message.message.into_bytes()).await?;
-                }
-                mesh.await?.cast(message, selection, &instance)
-            }
-            .await;
+            let result = async { mesh.await?.cast(message, selection, &instance) }.await;
             if let (Some(p), Err(pyerr)) = (port, result) {
                 let _ = monarch_with_gil(|py: Python<'_>| {
                     let port_ref = match p {
@@ -308,6 +334,27 @@ impl ActorMeshProtocol for AsyncActorMesh {
                     Ok::<_, PyErr>(())
                 })
                 .await;
+            }
+        });
+        Ok(())
+    }
+
+    fn cast_unresolved(
+        &self,
+        message: PendingMessage,
+        selection: Selection,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
+        let mesh = self.mesh.clone();
+        let instance = instance.clone();
+        self.push(async move {
+            let result = async {
+                let message = message.resolve().await?;
+                mesh.await?.cast(message, selection, &instance)
+            }
+            .await;
+            if let Err(pyerr) = result {
+                tracing::error!("Error casting unresolved message: {:?}", pyerr);
             }
         });
         Ok(())
@@ -330,25 +377,13 @@ impl ActorMeshProtocol for AsyncActorMesh {
         match fut.peek().cloned() {
             Some(mesh) => mesh?.__reduce__(py),
             None => {
-                if !is_pending_pickle_allowed(py).call0()?.is_truthy()? {
-                    return signal_safe_block_on(py, fut)??.__reduce__(py);
-                }
-
-                let ident = py
-                    .import("monarch._rust_bindings.monarch_hyperactor.actor_mesh")?
-                    .getattr("py_identity")?;
-                let fut = self.mesh.clone();
-                Ok((
-                    ident,
-                    (PendingPickle::from_future(
-                        async move {
-                            let mesh = PythonActorMesh::from_impl(fut.await?);
-                            monarch_with_gil(|py| mesh.into_py_any(py)).await
-                        }
-                        .boxed(),
-                    )?,)
-                        .into_bound_py_any(py)?,
-                ))
+                let shared =
+                    PyPythonTask::new(async move { Ok(PythonActorMesh::from_impl(fut.await?)) })?
+                        .spawn_abortable()?;
+                // Get Shared.block_on as an unbound method
+                let block_on = shared_class(py).getattr("block_on")?;
+                let args = PyTuple::new(py, [shared.into_pyobject(py)?])?;
+                Ok((block_on, args.into_any()))
             }
         }
     }
