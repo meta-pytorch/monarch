@@ -565,7 +565,7 @@ impl TraceEventSink for PerfettoFileSink {
 
                 // In user mode, prefer the "name" field if present for display
                 // In dev mode, use the fully qualified name
-                let display_name = if self.trace_mode == PerfettoTraceMode::User {
+                let display_name = if *target == USER_TELEMETRY_PREFIX {
                     if let Some(FieldValue::Str(n)) = get_field(fields, "name") {
                         n.clone()
                     } else {

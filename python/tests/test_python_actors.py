@@ -29,7 +29,6 @@ from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 import cloudpickle
 import monarch.actor
 import pytest
-import torch
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
@@ -73,11 +72,6 @@ from monarch.actor import (
 from monarch.config import configured, parametrize_config
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
-
-needs_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA not available",
-)
 
 
 class Counter(Actor):
