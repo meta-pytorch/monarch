@@ -31,9 +31,9 @@ use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
-use hyperactor_mesh::v1::ActorMesh;
 #[cfg(feature = "packaged_rsync")]
 use lazy_static::lazy_static;
 use nix::sys::signal;
@@ -457,12 +457,12 @@ mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
     use hyperactor::channel::ChannelTransport;
+    use hyperactor_mesh::ActorMesh;
+    use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
-    use hyperactor_mesh::proc_mesh::global_root_client;
-    use hyperactor_mesh::v1::ActorMesh;
-    use hyperactor_mesh::v1::ProcMesh;
+    use hyperactor_mesh::global_root_client;
     use ndslice::extent;
     use tempfile::TempDir;
     use tokio::fs;

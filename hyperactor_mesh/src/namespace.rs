@@ -34,9 +34,9 @@ use hyperactor::actor::Referable;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::v1::ActorMeshRef;
-use crate::v1::HostMeshRef;
-use crate::v1::ProcMeshRef;
+use crate::ActorMeshRef;
+use crate::HostMeshRef;
+use crate::ProcMeshRef;
 
 /// The kind of mesh being registered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -9,11 +9,11 @@
 use futures::future::try_join_all;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::Bootstrap;
+use hyperactor_mesh::HostMeshRef;
+use hyperactor_mesh::Name;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap_or_die;
-use hyperactor_mesh::v1::HostMeshRef;
-use hyperactor_mesh::v1::Name;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
+use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_types::MapPyErr;
 use pyo3::Bound;
 use pyo3::PyAny;

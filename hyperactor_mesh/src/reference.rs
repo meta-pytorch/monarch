@@ -31,10 +31,10 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::CommActor;
-use crate::actor_mesh::CastError;
-use crate::actor_mesh::actor_mesh_cast;
-use crate::actor_mesh::cast_to_sliced_mesh;
-use crate::v1::Name;
+use crate::Name;
+use crate::casting::CastError;
+use crate::casting::actor_mesh_cast;
+use crate::casting::cast_to_sliced_mesh;
 
 #[derive(
     Debug,

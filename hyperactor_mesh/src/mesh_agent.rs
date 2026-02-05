@@ -51,8 +51,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::Name;
 use crate::resource;
-use crate::v1::Name;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
@@ -211,7 +211,7 @@ impl ProcMeshAgent {
 
         // Wire up this proc to the global router so that any meshes managed by
         // this process can reach actors in this proc.
-        super::router::global().bind(proc_id.into(), proc.clone());
+        crate::router::global().bind(proc_id.into(), proc.clone());
 
         let agent = ProcMeshAgent {
             proc: proc.clone(),
@@ -284,7 +284,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         // set as a means of failure injection in the testing of
         // supervision codepaths.
         let router = if std::env::var("HYPERACTOR_MESH_ROUTER_NO_GLOBAL_FALLBACK").is_err() {
-            let default = super::router::global().fallback(client.into_boxed());
+            let default = crate::router::global().fallback(client.into_boxed());
             DialMailboxRouter::new_with_default_direct_addressed_remote_only(default.into_boxed())
         } else {
             DialMailboxRouter::new_with_default_direct_addressed_remote_only(client.into_boxed())
@@ -616,8 +616,8 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
         cx: &Context<Self>,
         get_rank_status: resource::GetRankStatus,
     ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
         use crate::resource::Status;
-        use crate::v1::StatusOverlay;
 
         let (rank, status) = match self.actor_states.get(&get_rank_status.name) {
             Some(ActorInstanceState {
