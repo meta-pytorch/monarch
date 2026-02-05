@@ -29,10 +29,10 @@ use typeuri::Named;
 declare_attrs! {
     /// Threshold below which writes are copied into a contiguous buffer.
     /// Writes >= this size are stored as zero-copy references.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("MONARCH_HYPERACTOR_SMALL_WRITE_THRESHOLD".to_string()),
-        py_name: Some("small_write_threshold".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_HYPERACTOR_SMALL_WRITE_THRESHOLD".to_string()),
+        Some("small_write_threshold".to_string()),
+    ))
     pub attr SMALL_WRITE_THRESHOLD: usize = 256;
 }
 

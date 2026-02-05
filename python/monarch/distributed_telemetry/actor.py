@@ -20,7 +20,7 @@ variable and used by the DistributedTelemetryActor when it initializes.
 """
 
 import functools
-from typing import Any, Callable, List, Optional
+from typing import Any, List, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
@@ -38,6 +38,15 @@ from monarch.distributed_telemetry.engine import QueryEngine
 _scanner: Optional[DatabaseScanner] = None
 _scanner_startup_impl = None
 
+# Module-level list of spawned ProcMeshes, recorded by the spawn callback.
+_spawned_procs: List[ProcMesh] = []
+_spawn_callback_registered: bool = False
+
+
+def _on_proc_mesh_spawned(pm: ProcMesh) -> None:
+    """Callback that records spawned ProcMeshes."""
+    _spawned_procs.append(pm)
+
 
 def _scanner_startup():
     return _scanner_startup_impl
@@ -47,13 +56,19 @@ SetupActor.register_startup_function(_scanner_startup)
 
 
 def _register_scanner(use_fake_data: bool, batch_size: int) -> None:
-    global _scanner, _scanner_startup_impl
+    global _scanner, _scanner_startup_impl, _spawn_callback_registered, _spawned_procs
     _scanner = DatabaseScanner(
         current_rank().rank, use_fake_data=use_fake_data, batch_size=batch_size
     )
     _scanner_startup_impl = functools.partial(
         _register_scanner, use_fake_data=use_fake_data, batch_size=batch_size
     )
+    # Clear the spawned procs list when starting fresh
+    _spawned_procs = []
+    # Register the spawn callback once to record new ProcMeshes
+    if not _spawn_callback_registered:
+        register_proc_mesh_spawn_callback(_on_proc_mesh_spawned)
+        _spawn_callback_registered = True
 
 
 class DistributedTelemetryActor(Actor):
@@ -71,13 +86,12 @@ class DistributedTelemetryActor(Actor):
         _scanner = None  # Transfer ownership
 
         self._children: List[Any] = []
-        self._spawn_callback: Callable[[ProcMesh], None] = self._on_proc_mesh_spawned
-        register_proc_mesh_spawn_callback(self._spawn_callback)
 
-    def _on_proc_mesh_spawned(self, pm: ProcMesh) -> None:
-        """Callback invoked when a new ProcMesh is spawned."""
-        actor_mesh = pm.spawn("telemetry", DistributedTelemetryActor)
-        self._children.append(actor_mesh)
+    def _spawn_missing_children(self) -> None:
+        """Spawn telemetry actors for any new ProcMeshes we haven't processed yet."""
+        for pm in _spawned_procs[len(self._children) :]:
+            actor_mesh = pm.spawn("telemetry", DistributedTelemetryActor)
+            self._children.append(actor_mesh)
 
     @endpoint
     def ready(self) -> None:
@@ -109,6 +123,9 @@ class DistributedTelemetryActor(Actor):
         filter_expr: Optional[str],
     ) -> int:
         """Perform a distributed scan, sending results to dest port."""
+        # Spawn telemetry actors for any new ProcMeshes before scanning
+        self._spawn_missing_children()
+
         local_count: int = self._scanner.scan(
             dest, table_name, projection, limit, filter_expr
         )
@@ -145,7 +162,4 @@ def start_telemetry(use_fake_data: bool = False, batch_size: int = 1000) -> Quer
     # Reset if called again (e.g., in tests)
     _register_scanner(use_fake_data, batch_size)
     coordinator = this_proc().spawn("telemetry_coordinator", DistributedTelemetryActor)
-    # Wait for actor to initialize so spawn callback is registered
-    # pyre-ignore[29]: coordinator is an ActorMesh
-    coordinator.ready.call().get()
     return QueryEngine(coordinator)
