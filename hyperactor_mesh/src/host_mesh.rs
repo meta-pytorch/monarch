@@ -1549,6 +1549,7 @@ mod tests {
         ChannelAddr::Tcp(listener.local_addr().unwrap())
     }
 
+    #[cfg(fbcode_build)]
     async fn execute_extrinsic_allocation(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
