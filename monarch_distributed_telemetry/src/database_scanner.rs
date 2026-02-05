@@ -36,6 +36,7 @@ use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
+use serde_multipart::Part;
 
 use crate::QueryResponse;
 use crate::RecordBatchSink;
@@ -480,7 +481,9 @@ impl DatabaseScanner {
 
                     if let Ok(data) = serialize_batch(&batch) {
                         tracing::info!("Scanner {}: sending batch {}", rank, count);
-                        let msg = QueryResponse { data };
+                        let msg = QueryResponse {
+                            data: Part::from(data),
+                        };
                         if let Err(e) = dest_ref.send(instance, msg) {
                             tracing::debug!(
                                 "Scanner {}: send error for batch {}: {:?}",
