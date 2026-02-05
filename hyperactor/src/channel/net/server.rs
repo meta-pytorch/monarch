@@ -57,13 +57,11 @@ fn process_state_span(
     dest: &ChannelAddr,
     session_id: u64,
     next: &Next,
-    rcv_raw_frame_count: u64,
 ) -> Span {
-    let pending_ack_count = if next.seq > next.ack {
-        next.seq - next.ack - 1
-    } else {
-        0
-    };
+    // No span at INFO
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return Span::none();
+    }
 
     hyperactor_telemetry::context_span!(
         "net i/o loop",
@@ -71,9 +69,6 @@ fn process_state_span(
         session_id = session_id,
         source = %source,
         next_seq = next.seq,
-        last_ack = next.ack,
-        pending_ack_count = pending_ack_count,
-        rcv_raw_frame_count = rcv_raw_frame_count,
     )
 }
 
@@ -403,13 +398,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         let read_bytes_span = tracing::debug_span!("read bytes");
 
         let (mut final_next, final_result, reject_conn) = loop {
-            let span = process_state_span(
-                &self.source,
-                &self.dest,
-                session_id,
-                &next,
-                rcv_raw_frame_count,
-            );
+            let span = process_state_span(&self.source, &self.dest, session_id, &next);
 
             let (new_next, break_info) = self
                 .process_step(

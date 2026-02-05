@@ -703,15 +703,18 @@ where
     L: Link<Stream = S>,
     M: RemoteMessage,
 {
-    let deliveries = state.deliveries();
-
-    // At INFO level and above, skip expensive field computation
+    // No span at INFO
     if !tracing::enabled!(tracing::Level::DEBUG) {
+        return Span::none();
+    }
+
+    let deliveries = state.deliveries();
+    // Less detailed span at DEBUG
+    if !tracing::enabled!(tracing::Level::TRACE) {
         return hyperactor_telemetry::context_span!(
             "net i/o loop",
             dest = %link.dest(),
             session_id = session_id,
-            connected = conn.is_connected(),
             next_seq = deliveries.outbox.next_seq,
         );
     }
