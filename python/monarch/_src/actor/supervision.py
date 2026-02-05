@@ -40,8 +40,14 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
 
     pid = os.getpid()
     hostname = socket.gethostname()
+    # Do not modify this keyword string for now. It is used by the keyword when
+    # searching this log in stderr.
+    # It is technically temporary to pin this string to aid debugging. Ideally,
+    # this message should be the last one in stderr. But unfortrantely that is
+    # not always the case. So until we fix that, we need to rely on it for now.
+    keyword = "monarch error"
     message = (
-        f"Unhandled monarch error on the root actor, hostname={hostname}, "
+        f"Unhandled {keyword} on the root actor, hostname={hostname}, "
         f"PID={pid} at time {datetime.now()}: {failure.report()}\n"
     )
     # use stderr, not a logger because loggers are sometimes set
