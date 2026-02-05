@@ -19,6 +19,7 @@ use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
@@ -258,6 +259,10 @@ impl Alloc for LocalAlloc {
 
     fn spec(&self) -> &AllocSpec {
         &self.spec
+    }
+
+    fn transport(&self) -> ChannelTransport {
+        ChannelTransport::Local
     }
 
     fn extent(&self) -> &Extent {
