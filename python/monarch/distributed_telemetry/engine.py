@@ -12,7 +12,7 @@ QueryEngine - Wrapper for the Rust QueryEngine.
 Provides SQL query execution over distributed telemetry actors.
 """
 
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Optional, Tuple, Type, TYPE_CHECKING
 
 import pyarrow as pa
 from monarch._rust_bindings.monarch_distributed_telemetry.query_engine import (
@@ -47,7 +47,7 @@ class QueryEngine:
 
     def __reduce__(
         self,
-    ) -> Tuple[type, Tuple["DistributedTelemetryActor"]]:
+    ) -> Tuple[Type["QueryEngine"], Tuple["DistributedTelemetryActor"]]:
         """Make QueryEngine serializable by recreating the Rust object on unpickle."""
         return (QueryEngine, (self._actor,))
 

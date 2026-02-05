@@ -1216,7 +1216,36 @@ impl<A: Actor> Instance<A> {
 
     /// Send a message to the actor running on the proc.
     pub fn post(&self, port_id: PortId, headers: Attrs, message: wirevalue::Any) {
-        <Self as context::MailboxExt>::post(self, port_id, headers, message, true)
+        <Self as context::MailboxExt>::post(
+            self,
+            port_id,
+            headers,
+            message,
+            true,
+            context::SeqInfoPolicy::AssignNew,
+        )
+    }
+
+    /// Post a message with pre-set SEQ_INFO. Only for internal use by CommActor.
+    ///
+    /// # Warning
+    /// This method bypasses the SEQ_INFO assertion. Do not use unless you are
+    /// implementing mesh-level message routing (CommActor).
+    #[doc(hidden)]
+    pub fn post_with_external_seq_info(
+        &self,
+        port_id: PortId,
+        headers: Attrs,
+        message: wirevalue::Any,
+    ) {
+        <Self as context::MailboxExt>::post(
+            self,
+            port_id,
+            headers,
+            message,
+            true,
+            context::SeqInfoPolicy::AllowExternal,
+        )
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
