@@ -934,7 +934,13 @@ impl PortId {
     pub fn send(&self, cx: &impl context::Actor, serialized: wirevalue::Any) {
         let mut headers = Attrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized, true);
+        cx.post(
+            self.clone(),
+            headers,
+            serialized,
+            true,
+            context::SeqInfoPolicy::AssignNew,
+        );
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -947,7 +953,13 @@ impl PortId {
         mut headers: Attrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized, true);
+        cx.post(
+            self.clone(),
+            headers,
+            serialized,
+            true,
+            context::SeqInfoPolicy::AssignNew,
+        );
     }
 
     /// Split this port, returning a new port that relays messages to the port
@@ -1116,6 +1128,7 @@ impl<M: RemoteMessage> PortRef<M> {
             headers,
             message,
             self.return_undeliverable,
+            context::SeqInfoPolicy::AssignNew,
         );
     }
 
@@ -1288,6 +1301,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
             headers,
             serialized,
             self.return_undeliverable,
+            context::SeqInfoPolicy::AssignNew,
         );
         Ok(())
     }

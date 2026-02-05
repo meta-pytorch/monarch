@@ -1356,16 +1356,19 @@ mod tests {
     use std::collections::HashSet;
     use std::collections::VecDeque;
 
+    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
     use hyperactor::context::Mailbox as _;
     use hyperactor_config::attrs::Attrs;
     use itertools::Itertools;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::async_timed_test;
     use tokio::process::Command;
 
     use super::*;
     use crate::Bootstrap;
     use crate::bootstrap::MESH_TAIL_LOG_LINES;
+    use crate::comm::ENABLE_NATIVE_V1_CASTING;
     use crate::resource::Status;
     use crate::v1::ActorMesh;
     use crate::v1::testactor;
@@ -1404,11 +1407,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_allocate() {
-        let config = hyperactor_config::global::lock();
-
+    async fn execute_allocate(config: &hyperactor_config::global::ConfigLock) {
         let poll = Duration::from_secs(3);
         let get_actor = Duration::from_mins(1);
         let get_proc = Duration::from_mins(1);
@@ -1484,7 +1483,7 @@ mod tests {
                     .collect();
 
                 while !expected_actor_ids.is_empty() {
-                    let actor_id = rx.recv().await.unwrap();
+                    let (actor_id, _seq) = rx.recv().await.unwrap();
                     assert!(
                         expected_actor_ids.remove(&actor_id),
                         "got {actor_id}, expect {expected_actor_ids:?}"
@@ -1525,6 +1524,22 @@ mod tests {
         }
     }
 
+    #[async_timed_test(timeout_secs = 180)]
+    #[cfg(fbcode_build)]
+    async fn test_allocate() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        execute_allocate(&config).await;
+    }
+
+    #[async_timed_test(timeout_secs = 180)]
+    async fn test_allocate_v1() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_allocate(&config).await;
+    }
+
     /// Allocate a new port on localhost. This drops the listener, releasing the socket,
     /// before returning. Hyperactor's channel::net applies SO_REUSEADDR, so we do not hav
     /// to wait out the socket's TIMED_WAIT state.
@@ -1535,10 +1550,7 @@ mod tests {
         ChannelAddr::Tcp(listener.local_addr().unwrap())
     }
 
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_extrinsic_allocation() {
-        let config = hyperactor_config::global::lock();
+    async fn execute_extrinsic_allocation(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -1578,6 +1590,23 @@ mod tests {
             .shutdown(&instance)
             .await
             .expect("hosts shutdown");
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_extrinsic_allocation_v0() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        execute_extrinsic_allocation(&config).await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_extrinsic_allocation_v1() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_extrinsic_allocation(&config).await;
     }
 
     #[tokio::test]
