@@ -68,7 +68,7 @@ signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 strum = { version = "0.27.1", features = ["derive"] }
 thiserror = "2.0.12"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
-tokio-rustls = "0.26.2"
+tokio-rustls = { version = "0.26.2", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
