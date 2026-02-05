@@ -233,13 +233,13 @@ impl PySpan {
     fn new(name: &str, actor_id: Option<&str>) -> Self {
         let span = if let Some(actor_id) = actor_id {
             tracing::span!(
-                tracing::Level::DEBUG,
+                tracing::Level::INFO,
                 "python.span",
                 name = name,
                 actor_id = actor_id
             )
         } else {
-            tracing::span!(tracing::Level::DEBUG, "python.span", name = name)
+            tracing::span!(tracing::Level::INFO, "python.span", name = name)
         };
         let entered_span = span.entered();
 
