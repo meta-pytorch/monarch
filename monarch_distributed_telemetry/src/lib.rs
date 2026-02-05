@@ -32,6 +32,7 @@ pub use record_batch_sink::get_flush_count;
 pub use record_batch_sink::reset_flush_count;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_multipart::Part;
 use typeuri::Named;
 
 /// Response message for streaming query results.
@@ -40,7 +41,8 @@ use typeuri::Named;
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct QueryResponse {
     /// A batch of data in Arrow IPC format.
-    pub data: Vec<u8>,
+    /// Uses Part for zero-copy transfer across the actor system.
+    pub data: Part,
 }
 
 // ============================================================================
