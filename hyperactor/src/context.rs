@@ -39,6 +39,15 @@ use crate::mailbox::MessageEnvelope;
 use crate::ordering::SEQ_INFO;
 use crate::time::Alarm;
 
+/// Policy for handling SEQ_INFO in message headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeqInfoPolicy {
+    /// Assign a new sequence number. Panics if SEQ_INFO is already set.
+    AssignNew,
+    /// Allow externally-set SEQ_INFO. Used only by CommActor for mesh routing.
+    AllowExternal,
+}
+
 /// A mailbox context provides a mailbox.
 pub trait Mailbox: crate::private::Sealed + Send + Sync {
     /// The mailbox associated with this context
@@ -63,7 +72,14 @@ pub trait Actor: Mailbox {
 pub(crate) trait MailboxExt: Mailbox {
     /// Post a message to the provided destination with the provided headers, and data.
     /// All messages posted from actors should use this implementation.
-    fn post(&self, dest: PortId, headers: Attrs, data: wirevalue::Any, return_undeliverable: bool);
+    fn post(
+        &self,
+        dest: PortId,
+        headers: Attrs,
+        data: wirevalue::Any,
+        return_undeliverable: bool,
+        seq_info_policy: SeqInfoPolicy,
+    );
 
     /// Split a port, using a provided reducer spec, if provided.
     fn split(
@@ -89,6 +105,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         mut headers: Attrs,
         data: wirevalue::Any,
         return_undeliverable: bool,
+        seq_info_policy: SeqInfoPolicy,
     ) {
         let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
             let actor_id = self.mailbox().actor_id();
@@ -106,11 +123,18 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             mailbox::monitored_return_handle()
         });
 
-        // This method is infallible so is okay to assign the sequence number
-        // without worrying about rollback.
-        let sequencer = self.instance().sequencer();
-        let seq_info = sequencer.assign_seq(&dest);
-        headers.set(SEQ_INFO, seq_info);
+        assert!(
+            !headers.contains_key(SEQ_INFO) || seq_info_policy == SeqInfoPolicy::AllowExternal,
+            "SEQ_INFO must not be set on headers outside of fn post unless explicitly allowed"
+        );
+
+        if !headers.contains_key(SEQ_INFO) {
+            // This method is infallible so is okay to assign the sequence number
+            // without worrying about rollback.
+            let sequencer = self.instance().sequencer();
+            let seq_info = sequencer.assign_seq(&dest);
+            headers.set(SEQ_INFO, seq_info);
+        }
 
         let mut envelope =
             MessageEnvelope::new(self.mailbox().actor_id().clone(), dest, data, headers);
