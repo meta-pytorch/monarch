@@ -12,6 +12,9 @@ These macros support a complete message-passing workflow: from defining message 
 - [`#[forward]`](forward.md) — route messages to a user-defined handler trait implementation
 - [`behavior!`](behavior.md) - define a façade actor type that exposes only a curated set of messages, allowing you to hand out stable or restricted APIs without tying clients to the concrete actor
 
+
+<a id="link-hyperactor_macros" href="https://meta-pytorch.org/monarch/rust-api/hyperactor_macros/index.html">**hyperactor_macros**</a><span id="desc-hyperactor_macros"> - See rust API link for all the macros including the ones above. </span>
+
 ## Macro Summary
 
 - **`#[derive(Handler)]`**
