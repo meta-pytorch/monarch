@@ -24,6 +24,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::config;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
@@ -38,6 +39,7 @@ use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::MapIntoExt;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -48,7 +50,11 @@ use tokio::sync::watch;
 
 use crate::CommActor;
 use crate::actor_mesh as v0_actor_mesh;
+use crate::actor_mesh::CAST_ACTOR_MESH_ID;
+use crate::comm::ENABLE_NATIVE_V1_CASTING;
 use crate::comm::multicast;
+use crate::comm::multicast::CastMessageV1;
+use crate::metrics;
 use crate::proc_mesh::mesh_agent::ActorState;
 use crate::reference::ActorMeshId;
 use crate::resource;
@@ -464,7 +470,16 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            self.cast_v0(cx, message, sel, root_comm_actor)
+            if hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING) {
+                assert!(
+                    hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
+                    "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
+                );
+                self.cast_v1(cx, message, root_comm_actor);
+                Ok(())
+            } else {
+                self.cast_v0(cx, message, sel, root_comm_actor)
+            }
         } else {
             for (point, actor) in self.iter() {
                 let create_rank = point.rank();
@@ -534,6 +549,56 @@ impl<A: Referable> ActorMeshRef<A> {
                 message,
             )
             .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
+        }
+    }
+
+    fn cast_v1<M>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        root_comm_actor: &ActorRef<CommActor>,
+    ) where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => M::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+
+        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_id(&self.name));
+        // This block is infallible so is okay to assign the sequence numbers
+        // without worrying about rollback.
+        {
+            let sequencer = cx.instance().sequencer();
+            let seqs = actor_ids
+                .map_into(|actor_id| sequencer.assign_seq(&actor_id.port_id(M::port())).seq);
+
+            let mut headers = Attrs::new();
+            headers.set(
+                multicast::CAST_ORIGINATING_SENDER,
+                cx.instance().self_id().clone(),
+            );
+            // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
+            // v0 transition. Should be removed once supervision is migrated
+            // and ActorMeshId is deleted.
+            let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+            headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
+            let cast_message = CastMessageV1::new::<A, M>(
+                cx.instance().self_id().clone(),
+                &self.name,
+                view::Ranked::region(self).clone(),
+                headers.clone(),
+                message,
+                sequencer.session_id(),
+                seqs,
+            )
+            .expect("infallible because CastMessage should not fail for serialization");
+
+            // TODO: load balancing instead of always using the first comm actor
+            root_comm_actor
+                .send_with_headers(cx, headers, cast_message)
+                .expect("infallible because CastMessage should not fail for serialization");
         }
     }
 
@@ -1015,12 +1080,12 @@ mod tests {
             .expect("rank 3 exists")
             .send(instance, testactor::GetActorId(port.bind()))
             .expect("send to rank 3 should succeed");
-        let id_a = RealClock
+        let (id_a, _) = RealClock
             .timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("timed out waiting for first reply")
             .expect("channel closed before first reply");
-        let id_b = RealClock
+        let (id_b, _) = RealClock
             .timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("timed out waiting for second reply")
