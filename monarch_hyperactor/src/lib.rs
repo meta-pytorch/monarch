@@ -27,6 +27,7 @@ pub mod mailbox;
 pub mod metrics;
 pub mod namespace;
 pub mod ndslice;
+pub mod pickle;
 pub mod proc;
 pub mod proc_launcher_probe;
 pub mod proc_mesh;
