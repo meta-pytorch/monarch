@@ -9,6 +9,8 @@
 use crate::actor_mesh::CAST_ACTOR_MESH_ID;
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastEnvelope;
+use crate::comm::multicast::CastMessageV1;
+use crate::comm::multicast::ForwardMessageV1;
 use crate::reference::ActorMeshId;
 use crate::resource;
 pub mod multicast;
@@ -35,10 +37,18 @@ use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::ErasedUnbound;
+use hyperactor::ordering::SEQ_INFO;
+use hyperactor::ordering::SeqInfo;
 use hyperactor::reference::UnboundPort;
 use hyperactor::reference::UnboundPortKind;
 use hyperactor_config::Attrs;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
+use hyperactor_mesh_macros::sel;
 use ndslice::Point;
+use ndslice::Selection;
+use ndslice::View;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
@@ -48,6 +58,15 @@ use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::ForwardMessage;
 use crate::comm::multicast::set_cast_info_on_headers;
+
+declare_attrs! {
+    /// Whether to use native v1 casting in v1 ActorMesh.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ENABLE_NATIVE_V1_CASTING".to_string()),
+        Some("enable_native_v1_casting".to_string()),
+    ))
+    pub attr ENABLE_NATIVE_V1_CASTING: bool = false;
+}
 
 /// Parameters to initialize the CommActor
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Default)]
@@ -89,6 +108,8 @@ struct ReceiveState {
         CommMeshConfig,
         CastMessage,
         ForwardMessage,
+        CastMessageV1,
+        ForwardMessageV1,
     ],
 )]
 pub struct CommActor {
@@ -289,7 +310,7 @@ impl CommActor {
         replace_with_self_ranks(&cast_point, message.data_mut())?;
 
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
-        cx.post(
+        cx.post_with_external_seq_info(
             cx.self_id()
                 .proc_id()
                 .actor_id(message.dest_port().actor_name(), 0)
@@ -497,6 +518,66 @@ impl Handler<ForwardMessage> for CommActor {
             Ordering::Greater => {
                 tracing::warn!("received duplicate message with seq {}: {:?}", seq, message);
             }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<CastMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessageV1) -> Result<()> {
+        let slice = cast_message.dest_region.slice().clone();
+        let frame = RoutingFrame::root(sel!(*), slice);
+        let forward_message = ForwardMessageV1 {
+            dests: vec![frame],
+            message: cast_message,
+        };
+        self.handle(cx, forward_message).await
+    }
+}
+
+#[async_trait]
+impl Handler<ForwardMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessageV1) -> Result<()> {
+        let ForwardMessageV1 { dests, mut message } = fwd_message;
+        let config = self
+            .mesh_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CommMeshConfig has not been set yet"))?;
+        // Resolve/dedup routing frames.
+        let rank_on_root_mesh = config.self_rank();
+        let (deliver_here, next_steps) =
+            ndslice::selection::routing::resolve_routing(rank_on_root_mesh, dests, &mut |_| {
+                panic!("choice encountered in CommActor routing")
+            })?;
+
+        split_ports(cx, &mut message.data, deliver_here, &next_steps)?;
+
+        // Deliver message here, if necessary.
+        if deliver_here {
+            let mut headers = message.headers().clone();
+            let seq = message
+                .seqs
+                .get(message.cast_point(config)?.rank())
+                .expect("mismatched seqs and dest_region");
+            headers.set(
+                SEQ_INFO,
+                SeqInfo {
+                    session_id: message.session_id,
+                    seq,
+                },
+            );
+            Self::deliver_to_dest(cx, headers, &mut message, config)?;
+        }
+
+        // Forward to peers.
+        for (peer_rank_on_root_mesh, dests) in next_steps {
+            let forward_message = ForwardMessageV1 {
+                dests,
+                message: message.clone(),
+            };
+            Self::forward(cx, config, peer_rank_on_root_mesh, forward_message)?;
         }
 
         Ok(())
@@ -1197,8 +1278,7 @@ mod tests {
         }
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_reply_v1() {
+    async fn execute_cast_and_reply_v1() {
         let MeshSetupV1 {
             instance,
             actor_mesh_ref,
@@ -1213,8 +1293,28 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_accum_v1() {
+    async fn test_cast_and_reply_v1_retrofit() {
         let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            false,
+        );
+        execute_cast_and_reply_v1().await
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_reply_v1_native() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        execute_cast_and_reply_v1().await
+    }
+
+    async fn execute_cast_and_accum_v1(config: &hyperactor_config::global::ConfigLock) {
         // Use temporary config for this test
         let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
@@ -1228,6 +1328,28 @@ mod tests {
 
         let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
         execute_cast_and_accum(ranks, instance, reply1_rx, reply_tos).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_accum_v1_retrofit() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            false,
+        );
+        execute_cast_and_accum_v1(&config).await
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_and_accum_v1_native() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        execute_cast_and_accum_v1(&config).await
     }
 
     struct OncePortMeshSetup {

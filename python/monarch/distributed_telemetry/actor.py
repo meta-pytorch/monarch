@@ -20,7 +20,7 @@ variable and used by the DistributedTelemetryActor when it initializes.
 """
 
 import functools
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
@@ -36,7 +36,7 @@ from monarch.distributed_telemetry.engine import QueryEngine
 
 # Module-level scanner created at process startup to avoid race conditions.
 _scanner: Optional[DatabaseScanner] = None
-_scanner_startup_impl = None
+_scanner_startup_impl: Optional[Callable[[], None]] = None
 
 # Module-level list of spawned ProcMeshes, recorded by the spawn callback.
 _spawned_procs: List[ProcMesh] = []
@@ -48,7 +48,7 @@ def _on_proc_mesh_spawned(pm: ProcMesh) -> None:
     _spawned_procs.append(pm)
 
 
-def _scanner_startup():
+def _scanner_startup() -> Optional[Callable[[], None]]:
     return _scanner_startup_impl
 
 
