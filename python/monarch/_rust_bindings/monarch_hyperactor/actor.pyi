@@ -23,8 +23,8 @@ from typing import (
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
+from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
 
 class PythonMessageKind:
     @classmethod
@@ -117,9 +117,16 @@ class PythonMessage:
     def __init__(
         self,
         kind: PythonMessageKind,
-        message: Union[Buffer, bytes],
-        pending_pickle_state: Optional[PendingPickleState] = None,
-    ) -> None: ...
+        message: FrozenBuffer,
+    ) -> None:
+        """
+        Create a PythonMessage.
+
+        Args:
+            kind: The message kind specifying the method to call.
+            message: The pickled arguments as a FrozenBuffer.
+        """
+        ...
     @property
     def message(self) -> FrozenBuffer:
         """The pickled arguments."""
@@ -178,7 +185,7 @@ class Actor(Protocol):
         method: MethodSpecifier,
         message: FrozenBuffer,
         panic_flag: PanicFlag,
-        local_state: Iterable[Any],
+        local_state: List[Any],
         response_port: PortProtocol[Any],
     ) -> None: ...
 
