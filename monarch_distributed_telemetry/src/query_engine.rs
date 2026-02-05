@@ -150,7 +150,7 @@ where
                 recv_result = receiver.recv() => {
                     match recv_result {
                         Ok(QueryResponse { data }) => {
-                            match deserialize_batch(&data) {
+                            match deserialize_batch(&data.into_bytes()) {
                                 Ok(Some(batch)) => {
                                     batch_count += 1;
                                     if tx.send(Ok(batch)).await.is_err() {

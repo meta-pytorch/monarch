@@ -46,7 +46,8 @@ fn get_or_add_new_module<'py>(
         } else {
             let full_name = format!("monarch._rust_bindings.{}", parts.join("."));
             let new_module = PyModule::new(current_module.py(), &full_name)?;
-            current_module.add_submodule(&new_module)?;
+            // Use setattr with short name instead of add_submodule which uses full name
+            current_module.setattr(part, &new_module)?;
             current_module
                 .py()
                 .import("sys")?
@@ -223,6 +224,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::namespace::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.namespace",
+    )?)?;
+
+    monarch_hyperactor::proc_launcher_probe::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.proc_launcher_probe",
     )?)?;
 
     crate::trace::register_python_bindings(&get_or_add_new_module(
