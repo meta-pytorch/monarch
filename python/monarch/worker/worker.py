@@ -1060,7 +1060,7 @@ class Worker:
     async def worker_loop(self):
         monitor = Monitor()
         monitor.start()
-        self.loop = asyncio.get_event_loop()
+        self.loop = asyncio.get_running_loop()
         debugq = deque()
         while True:
             try:
