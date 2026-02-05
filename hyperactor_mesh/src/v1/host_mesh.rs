@@ -1407,6 +1407,7 @@ mod tests {
         );
     }
 
+    #[cfg(fbcode_build)]
     async fn execute_allocate(config: &hyperactor_config::global::ConfigLock) {
         let poll = Duration::from_secs(3);
         let get_actor = Duration::from_mins(1);
@@ -1550,6 +1551,7 @@ mod tests {
         ChannelAddr::Tcp(listener.local_addr().unwrap())
     }
 
+    #[cfg(fbcode_build)]
     async fn execute_extrinsic_allocation(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
