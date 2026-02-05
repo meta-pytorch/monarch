@@ -31,10 +31,10 @@ async def task(
     ...
 ```
 
-`LoggingManager.init(...)` selects the v1 client and spawns it:
+`LoggingManager.init(...)` spawns the client:
 ```python
 # actor/logging.py
-self._logging_mesh_client = await LoggingMeshClientV1.spawn(instance, proc_mesh=proc_mesh)
+self._logging_mesh_client = await LoggingMeshClient.spawn(instance, proc_mesh=proc_mesh)
 self._logging_mesh_client.set_mode(
   instance,
   stream_to_client=stream_to_client,
@@ -44,12 +44,12 @@ self._logging_mesh_client.set_mode(
 ```
 Two public levers from Python:
 - `await pm.logging_option(stream_to_client=True, aggregate_window_sec=3, level=logging.INFO)`
-    - forward to `LoggingMeshClientV1.set_mode(...)` and (in notebooks), registers a cell-end flusher and enables FD capture so OS-level stdout/stderr show up.
+    - forward to `LoggingMeshClient.set_mode(...)` and (in notebooks), registers a cell-end flusher and enables FD capture so OS-level stdout/stderr show up.
 - `pm.stop()` (or `async with ProcMesh`) calls a blocking flush before tearing down the mesh.
 
 ---
 
-### Crossing the FFI: what `LoggingMeshClientV1.spawn(...)` does
+### Crossing the FFI: what `LoggingMeshClient.spawn(...)` does
 
 Rust sets up the three actor pieces the Python side depends on:
 - `LogClientActor` (in the client proc): orchestrates flushes and aggregates client-side buffering.
@@ -68,7 +68,7 @@ let logger_mesh = proc_mesh.spawn(cx_instance, "logger", &()).await;
 #### Real code (trimmed to essentials)
 
 ```rust
-// monarch_hyperactor v1 logging.rs
+// monarch_hyperactor logging.rs
 
 #[pymethods]
 impl LoggingMeshClient {

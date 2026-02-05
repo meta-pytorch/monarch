@@ -23,13 +23,13 @@ use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use hyperactor_mesh::bootstrap::MESH_ENABLE_LOG_FORWARDING;
 use hyperactor_mesh::logging::LogClientActor;
 use hyperactor_mesh::logging::LogClientMessage;
 use hyperactor_mesh::logging::LogForwardActor;
 use hyperactor_mesh::logging::LogForwardMessage;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::SerializablePyErr;
 use ndslice::View;
 use pyo3::Bound;
@@ -565,8 +565,8 @@ mod tests {
     use hyperactor::Instance;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::proc::Proc;
-    use hyperactor_mesh::v1::ProcMesh;
-    use hyperactor_mesh::v1::host_mesh::HostMesh;
+    use hyperactor_mesh::ProcMesh;
+    use hyperactor_mesh::host_mesh::HostMesh;
     use ndslice::Extent;
     use ndslice::View; // .region(), .num_ranks() etc.
 
