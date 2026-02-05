@@ -46,7 +46,7 @@ chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-fea
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.0"
-erased-serde = "0.4.9"
+erased-serde = "0.3.31"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"
 humantime = "2.1"
