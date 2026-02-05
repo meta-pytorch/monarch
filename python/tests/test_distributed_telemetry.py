@@ -59,6 +59,8 @@ def cleanup_callbacks():
     # Reset module-level state for next test
     telemetry_actor._scanner = None
     telemetry_actor._scanner_startup_impl = None
+    telemetry_actor._spawned_procs = []
+    telemetry_actor._spawn_callback_registered = False
 
 
 @pytest.mark.timeout(120)
