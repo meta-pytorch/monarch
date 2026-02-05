@@ -76,10 +76,10 @@ declare_attrs! {
     /// This value must be > poll frequency + get actor state timeout + get proc state timeout
     /// or else it is possible to declare the controller dead before it could
     /// feasibly have received a healthy reply.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_SUPERVISION_WATCHDOG_TIMEOUT".to_string()),
-        py_name: Some("supervision_watchdog_timeout".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_SUPERVISION_WATCHDOG_TIMEOUT".to_string()),
+        Some("supervision_watchdog_timeout".to_string()),
+    ))
     pub attr SUPERVISION_WATCHDOG_TIMEOUT: Duration = Duration::from_mins(2);
 }
 

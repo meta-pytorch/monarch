@@ -58,10 +58,10 @@ pub mod mesh_agent;
 
 declare_attrs! {
     /// Default transport type to use across the application.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_DEFAULT_TRANSPORT".to_string()),
-        py_name: Some("default_transport".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_DEFAULT_TRANSPORT".to_string()),
+        Some("default_transport".to_string()),
+    ))
     pub attr DEFAULT_TRANSPORT: BindSpec = BindSpec::Any(ChannelTransport::Unix);
 }
 
