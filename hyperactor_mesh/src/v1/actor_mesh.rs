@@ -524,7 +524,7 @@ impl<A: Referable> ActorMeshRef<A> {
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         let cast_mesh_shape = view::Ranked::region(self).into();
-        let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+        let actor_mesh_id = ActorMeshId(self.name.clone());
         match &self.proc_mesh.root_region {
             Some(root_region) => {
                 let root_mesh_shape = root_region.into();

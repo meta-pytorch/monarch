@@ -65,7 +65,6 @@ rand = { version = "0.9", features = ["small_rng"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.27.1", features = ["derive"] }
 systemd = { version = "0.10.1", optional = true }
 tempfile = "3.22"
@@ -88,7 +87,6 @@ itertools = "0.14.0"
 maplit = "1.0"
 proptest = "1.5"
 timed_test = { version = "0.0.0", path = "../timed_test" }
-tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 
 [features]
 default = []

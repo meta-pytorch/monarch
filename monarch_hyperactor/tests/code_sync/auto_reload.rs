@@ -9,18 +9,18 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use hyperactor::channel::ChannelTransport;
-use hyperactor_mesh::actor_mesh::ActorMesh;
-use hyperactor_mesh::actor_mesh::RootActorMesh;
+use hyperactor::context::Mailbox;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::local::LocalAllocator;
-use hyperactor_mesh::mesh::Mesh;
-use hyperactor_mesh::proc_mesh::ProcMesh;
 use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::v1::ActorMesh;
+use hyperactor_mesh::v1::ProcMesh;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadActor;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadMessage;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadParams;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
+use ndslice::View;
 use ndslice::extent;
 use pyo3::ffi::c_str;
 use pyo3::prelude::*;
@@ -61,17 +61,16 @@ CONSTANT = "initial_constant"
 
     let instance = global_root_client();
 
-    let proc_mesh = ProcMesh::allocate(alloc).await?;
+    let proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "auto_reload_test").await?;
     let params = AutoReloadParams {};
-    let actor_mesh: RootActorMesh<AutoReloadActor> = proc_mesh
-        .spawn(&instance, "auto_reload_test", &params)
+    let actor_mesh: ActorMesh<AutoReloadActor> = proc_mesh
+        .spawn(instance, "auto_reload_test", &params)
         .await?;
 
     // Get a reference to the single actor
     let actor_ref = actor_mesh
         .get(0)
         .ok_or_else(|| anyhow!("No actor at index 0"))?;
-    let mailbox = actor_mesh.proc_mesh().client();
 
     // First, we need to import the module to get it tracked by the AutoReloader
     // We'll do this by running Python code that imports our test module
@@ -112,9 +111,9 @@ CONSTANT = "modified_constant"
     println!("Modified Python file");
 
     // Send AutoReloadMessage to trigger reload
-    let (result_tx, mut result_rx) = mailbox.open_port::<Result<(), String>>();
+    let (result_tx, mut result_rx) = instance.mailbox().open_port::<Result<(), String>>();
     actor_ref.send(
-        &mailbox,
+        instance,
         AutoReloadMessage {
             result: result_tx.bind(),
         },
