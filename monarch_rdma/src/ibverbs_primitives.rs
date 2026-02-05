@@ -423,6 +423,18 @@ pub struct RdmaPort {
     gid_tbl_len: i32,
 }
 
+impl RdmaPort {
+    /// Returns the port number.
+    pub fn port_num(&self) -> u8 {
+        self.port_num
+    }
+
+    /// Returns the link layer type of the port (e.g., "InfiniBand", "Ethernet").
+    pub fn link_layer(&self) -> &str {
+        &self.link_layer
+    }
+}
+
 impl fmt::Display for RdmaDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.name)?;
