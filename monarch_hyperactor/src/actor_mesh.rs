@@ -44,8 +44,8 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::pickle::PendingMessage;
 use crate::mailbox::EitherPortRef;
+use crate::pickle::PendingMessage;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
@@ -321,7 +321,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
     ) -> PyResult<()> {
         let mesh = self.mesh.clone();
         let instance = instance.clone();
-        let port = match &message.kind() {
+        let port = match &message.kind {
             PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
             _ => None,
         };

@@ -275,7 +275,7 @@ impl PicklingState {
 /// can be converted into a `PythonMessage`.
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.pickle")]
 pub struct PendingMessage {
-    kind: PythonMessageKind,
+    pub(crate) kind: PythonMessageKind,
     state: PicklingState,
 }
 
@@ -521,7 +521,10 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PicklingState>()?;
     module.add_class::<PendingMessage>()?;
     module.add_function(wrap_pyfunction!(pickle, module)?)?;
-    module.add_function(wrap_pyfunction!(push_tensor_engine_reference_if_active, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        push_tensor_engine_reference_if_active,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(pop_tensor_engine_reference, module)?)?;
     module.add_function(wrap_pyfunction!(pop_pending_pickle, module)?)?;
     Ok(())

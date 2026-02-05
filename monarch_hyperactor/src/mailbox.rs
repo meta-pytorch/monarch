@@ -53,7 +53,6 @@ use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
-use crate::runtime::signal_safe_block_on;
 
 #[derive(Clone, Debug)]
 #[pyclass(
