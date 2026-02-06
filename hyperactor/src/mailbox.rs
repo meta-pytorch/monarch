@@ -107,7 +107,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use typeuri::Named;
 
-use crate as hyperactor; // for macros
+// for macros
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::Proc;
@@ -126,7 +126,6 @@ use crate::context;
 use crate::id;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
-use crate::ordering::SeqInfo;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
@@ -1178,7 +1177,7 @@ impl MailboxClient {
 }
 
 impl MailboxSender for MailboxClient {
-    #[hyperactor::instrument_infallible]
+    #[tracing::instrument(level = "debug", skip_all)]
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
