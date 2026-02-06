@@ -1534,6 +1534,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 180)]
+    #[cfg(fbcode_build)]
     async fn test_allocate_v1() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
