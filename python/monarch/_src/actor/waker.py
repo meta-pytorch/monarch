@@ -30,7 +30,7 @@ class Event(abc.ABC):
             self._event = asyncio.Event()
         assert self._event is not None
 
-        event_loop = asyncio.get_event_loop()
+        event_loop = asyncio.get_running_loop()
         if self._event_loop is None:
             self._event_loop = event_loop
 
