@@ -123,11 +123,16 @@ use typeuri::Named;
 pub struct AttrKeyInfo {
     /// Name of the key
     pub name: &'static str,
+    /// Unique hash for the key (FNV-1a hash of name)
+    pub key_hash: u64,
     /// Function to get the type hash of the associated value type
     pub typehash: fn() -> u64,
     /// Deserializer function that deserializes directly from any deserializer
     pub deserialize_erased:
         fn(&mut dyn ErasedDeserializer) -> Result<Box<dyn SerializableValue>, erased_serde::Error>,
+    /// Deserializer function for bincode bytes (used by Flattrs)
+    pub deserialize_bincode:
+        fn(&[u8]) -> Result<Box<dyn SerializableValue>, Box<bincode::ErrorKind>>,
     /// Meta-attributes.
     pub meta: &'static LazyLock<Attrs>,
     /// Display an attribute value using AttrValue::display.
@@ -142,6 +147,20 @@ pub struct AttrKeyInfo {
 }
 
 inventory::collect!(AttrKeyInfo);
+
+/// Look up a key info by its hash using the global registry.
+///
+/// Returns `None` if no key with this hash is registered.
+/// Uses a lazy-initialized hash map for O(1) lookup after first access.
+pub fn lookup_key_info(key_hash: u64) -> Option<&'static AttrKeyInfo> {
+    static KEYS_BY_HASH: std::sync::LazyLock<std::collections::HashMap<u64, &'static AttrKeyInfo>> =
+        std::sync::LazyLock::new(|| {
+            inventory::iter::<AttrKeyInfo>()
+                .map(|info| (info.key_hash, info))
+                .collect()
+        });
+    KEYS_BY_HASH.get(&key_hash).copied()
+}
 
 /// A typed key for the attribute dictionary.
 ///
@@ -159,6 +178,32 @@ impl<T> Key<T> {
     pub fn name(&self) -> &'static str {
         self.name
     }
+
+    /// Returns a unique ID for this key, computed as FNV-1a hash of the name.
+    ///
+    /// This ID is stable and can be used for efficient wire transmission
+    /// instead of the full key name string.
+    pub const fn key_hash(&self) -> u64 {
+        fnv1a_hash(self.name.as_bytes())
+    }
+}
+
+/// Compute FNV-1a hash of a byte slice (const-compatible).
+///
+/// FNV-1a is a simple, fast hash with good distribution properties.
+/// We use 64-bit version for low collision probability.
+pub const fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        i += 1;
+    }
+    hash
 }
 
 impl<T: Named + 'static> Key<T> {
@@ -210,6 +255,9 @@ pub trait ErasedKey: Any + Send + Sync + 'static {
     /// The name of the key.
     fn name(&self) -> &'static str;
 
+    /// The unique ID of the key (FNV-1a hash of name).
+    fn key_hash(&self) -> u64;
+
     /// The typehash of the key's associated type.
     fn typehash(&self) -> u64;
 
@@ -227,6 +275,10 @@ impl dyn ErasedKey {
 impl<T: AttrValue> ErasedKey for Key<T> {
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn key_hash(&self) -> u64 {
+        self.key_hash()
     }
 
     fn typehash(&self) -> u64 {
@@ -410,6 +462,8 @@ pub trait SerializableValue: Send + Sync {
     fn cloned(&self) -> Box<dyn SerializableValue>;
     /// Display the value
     fn display(&self) -> String;
+    /// Serialize to bincode bytes for wire transmission
+    fn serialize_bincode(&self) -> Vec<u8>;
 }
 
 impl<T: AttrValue> SerializableValue for T {
@@ -431,6 +485,10 @@ impl<T: AttrValue> SerializableValue for T {
 
     fn display(&self) -> String {
         self.display()
+    }
+
+    fn serialize_bincode(&self) -> Vec<u8> {
+        bincode::serialize(self).expect("bincode serialization failed")
     }
 }
 
@@ -513,6 +571,13 @@ impl Attrs {
     /// Returns true if the dictionary is empty.
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
+    }
+
+    /// Iterate over all key-value pairs.
+    ///
+    /// Returns an iterator of (key_name, value) pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &dyn SerializableValue)> {
+        self.values.iter().map(|(k, v)| (*k, v.as_ref()))
     }
 
     /// Clear all key-value pairs from the dictionary.
@@ -874,9 +939,18 @@ macro_rules! declare_attrs {
                     const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
                     $crate::const_ascii_lowercase!(FULL_NAME)
                 },
+                key_hash: {
+                    const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
+                    const LOWER_NAME: &str = $crate::const_ascii_lowercase!(FULL_NAME);
+                    $crate::attrs::fnv1a_hash(LOWER_NAME.as_bytes())
+                },
                 typehash: <$type as $crate::typeuri::Named>::typehash,
                 deserialize_erased: |deserializer| {
                     let value: $type = erased_serde::deserialize(deserializer)?;
+                    Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
+                },
+                deserialize_bincode: |bytes| {
+                    let value: $type = $crate::bincode::deserialize(bytes)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
                 meta: $crate::paste! { &[<$name _META_ATTRS>] },
@@ -927,9 +1001,18 @@ macro_rules! declare_attrs {
                     const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
                     $crate::const_ascii_lowercase!(FULL_NAME)
                 },
+                key_hash: {
+                    const FULL_NAME: &str = concat!(std::module_path!(), "::", stringify!($name));
+                    const LOWER_NAME: &str = $crate::const_ascii_lowercase!(FULL_NAME);
+                    $crate::attrs::fnv1a_hash(LOWER_NAME.as_bytes())
+                },
                 typehash: <$type as $crate::typeuri::Named>::typehash,
                 deserialize_erased: |deserializer| {
                     let value: $type = erased_serde::deserialize(deserializer)?;
+                    Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
+                },
+                deserialize_bincode: |bytes| {
+                    let value: $type = $crate::bincode::deserialize(bytes)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
                 meta: $crate::paste! { &[<$name _META_ATTRS>] },
