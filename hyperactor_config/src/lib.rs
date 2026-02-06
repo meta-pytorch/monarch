@@ -29,6 +29,7 @@ use shell_quote::QuoteRefExt;
 use typeuri::Named;
 
 pub mod attrs;
+pub mod flattrs;
 pub mod global;
 
 // Re-export commonly used items
@@ -37,6 +38,10 @@ pub use attrs::AttrValue;
 pub use attrs::Attrs;
 pub use attrs::Key;
 pub use attrs::SerializableValue;
+// Re-export bincode for macro usage (deserialize_bincode in AttrKeyInfo)
+#[doc(hidden)]
+pub use bincode;
+pub use flattrs::Flattrs;
 // Re-export AttrValue derive macro
 pub use hyperactor_config_macros::AttrValue;
 // Re-export macros needed by declare_attrs!
