@@ -149,7 +149,7 @@ pub(crate) fn to_hy_sel(selection: &str) -> PyResult<Selection> {
 
 #[pymethods]
 impl PythonActorMesh {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) fn cast(
         &self,
         message: &PythonMessage,
