@@ -595,13 +595,21 @@ async fn run<M: RemoteMessage>(
     let dest = link.dest();
     let mut state = State::init(&log_id, &dest, session_id);
     let mut conn = Conn::reconnect_with_default();
-
+    let write_bytes_span = tracing::debug_span!("write bytes");
     let (state, conn) = loop {
         let span = state_span(&state, &conn, session_id, &link);
 
-        (state, conn) = step(state, conn, session_id, &log_id, &link, &mut receiver)
-            .instrument(span)
-            .await;
+        (state, conn) = step(
+            state,
+            conn,
+            session_id,
+            &log_id,
+            &link,
+            &mut receiver,
+            write_bytes_span.clone(),
+        )
+        .instrument(span)
+        .await;
 
         if state.is_closing() {
             break (state, conn);
@@ -695,15 +703,18 @@ where
     L: Link<Stream = S>,
     M: RemoteMessage,
 {
-    let deliveries = state.deliveries();
-
-    // At INFO level and above, skip expensive field computation
+    // No span at INFO
     if !tracing::enabled!(tracing::Level::DEBUG) {
+        return Span::none();
+    }
+
+    let deliveries = state.deliveries();
+    // Less detailed span at DEBUG
+    if !tracing::enabled!(tracing::Level::TRACE) {
         return hyperactor_telemetry::context_span!(
             "net i/o loop",
             dest = %link.dest(),
             session_id = session_id,
-            connected = conn.is_connected(),
             next_seq = deliveries.outbox.next_seq,
         );
     }
@@ -835,6 +846,7 @@ async fn step<'a, L, S, M>(
     log_id: &'a str,
     link: &L,
     receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
+    write_bytes_span: tracing::Span,
 ) -> (State<'a, M>, Conn<S>)
 where
     S: Stream,
@@ -957,7 +969,7 @@ where
             tokio::select! {
                 biased;
 
-                ack_result = reader.next().instrument(hyperactor_telemetry::context_span!("read ack")) => {
+                ack_result = reader.next() => {
                     match ack_result {
                         Ok(Some(buffer)) => {
                             match deserialize_response(buffer) {
@@ -1049,7 +1061,7 @@ where
 
                 // We have to be careful to manage outgoing write states, so that we never write
                 // partial frames in the presence cancellation.
-                send_result = write_state.send().instrument(hyperactor_telemetry::context_span!("write bytes")) => {
+                send_result = write_state.send().instrument(write_bytes_span) => {
                     match send_result {
                         Ok(()) => {
                             let mut message = outbox.pop_front().expect("outbox should not be empty");

@@ -12,7 +12,7 @@ from typing import Any
 
 # Required to make rust_struct extensions work correctly.
 import monarch._src.actor.mpsc  # noqa: F401
-from monarch._rust_bindings.monarch_hyperactor.pympsc import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
+from monarch._rust_bindings.monarch_hyperactor.pympsc import (  # @manual=//monarch/monarch_extension:monarch_extension
     channel_for_test,
     Receiver,
     TestSender,
