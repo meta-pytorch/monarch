@@ -994,9 +994,9 @@ mod tests {
         assert!(val, "send_tensor result was unexpected value: {val}");
 
         handle1.drain_and_stop("test").unwrap();
-        assert_matches!(handle1.await, ActorStatus::Stopped);
+        assert_matches!(handle1.await, ActorStatus::Stopped(_));
         handle2.drain_and_stop("test").unwrap();
-        assert_matches!(handle2.await, ActorStatus::Stopped);
+        assert_matches!(handle2.await, ActorStatus::Stopped(_));
 
         let error_responses = controller_rx.drain();
         assert!(
@@ -1135,7 +1135,7 @@ mod tests {
         assert!(val, "send_tensor_local result was unexpected value: {val}");
 
         handle.drain_and_stop("test").unwrap();
-        assert_matches!(handle.await, ActorStatus::Stopped);
+        assert_matches!(handle.await, ActorStatus::Stopped(_));
 
         let error_responses = controller_rx.drain();
         assert!(

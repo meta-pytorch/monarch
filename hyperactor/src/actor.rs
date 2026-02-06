@@ -501,8 +501,9 @@ pub enum ActorStatus {
     Loading(SystemTime),
     /// The actor is stopping. It is draining messages.
     Stopping,
-    /// The actor is stopped. It is no longer processing messages.
-    Stopped,
+    /// The actor is stopped with a provided reason.
+    /// It is no longer processing messages.
+    Stopped(String),
     /// The actor failed with the provided actor error.
     Failed(ActorErrorKind),
 }
@@ -590,7 +591,7 @@ impl fmt::Display for ActorStatus {
                 )
             }
             Self::Stopping => write!(f, "stopping"),
-            Self::Stopped => write!(f, "stopped"),
+            Self::Stopped(reason) => write!(f, "stopped: {}", reason),
             Self::Failed(err) => write!(f, "failed: {}", err),
         }
     }
