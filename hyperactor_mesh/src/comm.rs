@@ -393,7 +393,7 @@ impl Handler<CommMeshConfig> for CommActor {
 // TODO(T218630526): reliable casting for mutable topology
 #[async_trait]
 impl Handler<CastMessage> for CommActor {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessage) -> Result<()> {
         // Always forward the message to the root rank of the slice, casting starts from there.
         let slice = cast_message.dest.slice.clone();
@@ -433,7 +433,7 @@ impl Handler<CastMessage> for CommActor {
 
 #[async_trait]
 impl Handler<ForwardMessage> for CommActor {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessage) -> Result<()> {
         let ForwardMessage {
             sender,
