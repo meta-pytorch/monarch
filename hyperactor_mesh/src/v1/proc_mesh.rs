@@ -1318,6 +1318,7 @@ mod tests {
         );
     }
 
+    #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
