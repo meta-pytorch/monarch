@@ -55,7 +55,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
 use tokio::sync::oneshot;
-use tracing::Instrument;
 use typeuri::Named;
 
 use crate::buffers::Buffer;
@@ -1008,7 +1007,7 @@ impl PanicFlag {
 
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(
         &mut self,
         cx: &Context<PythonActor>,
@@ -1038,15 +1037,12 @@ impl PythonActor {
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
-        let (future, rank) = monarch_with_gil(|py| -> Result<_, SerializablePyErr> {
+        let future = monarch_with_gil(|py| -> Result<_, SerializablePyErr> {
             let inst = self.instance.get_or_insert_with(|| {
                 let inst: crate::context::PyInstance = cx.into();
                 inst.into_pyobject(py).unwrap().into()
             });
-            let rank = inst
-                .getattr(py, "rank")?
-                .getattr(py, "rank")?
-                .extract::<usize>(py)?;
+
             let awaitable = self.actor.call_method(
                 py,
                 "handle",
@@ -1069,32 +1065,18 @@ impl PythonActor {
                 .unwrap_or_else(|| shared_task_locals(py));
 
             pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))
-                .map(|a| (a, rank))
                 .map_err(|err| err.into())
         })
         .await?;
 
         // Spawn a child actor to await the Python handler method.
-        tokio::spawn(
-            handle_async_endpoint_panic(
-                cx.port(),
-                PythonTask::new(future)?,
-                receiver,
-                cx.self_id().to_string(),
-                endpoint.clone(),
-            )
-            .instrument(
-                tracing::info_span!(
-                    "PythonActor endpoint",
-                    actor_id = %cx.self_id(),
-                    %rank,
-                    %endpoint
-                )
-                .or_current()
-                .follows_from(tracing::Span::current().id())
-                .clone(),
-            ),
-        );
+        tokio::spawn(handle_async_endpoint_panic(
+            cx.port(),
+            PythonTask::new(future)?,
+            receiver,
+            cx.self_id().to_string(),
+            endpoint,
+        ));
         Ok(())
     }
 

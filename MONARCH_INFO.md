@@ -327,7 +327,7 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 - `setup.py` - Build configuration, extension definitions, environment detection
 - `Cargo.toml` - Rust workspace definition
 - `.cargo/config.toml` - Rust build flags (`tracing_unstable`)
-- `rust-toolchain` - Pinned to `nightly-2025-09-14`
+- `rust-toolchain` - Pinned to `nightly-2025-10-25`
 - `.flake8` - Python linting configuration (max-line-length: 256)
 - `docs/source/conf.py` - Sphinx documentation configuration
 

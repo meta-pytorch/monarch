@@ -233,7 +233,7 @@ impl<A: Referable> Deref for ActorMesh<A> {
     fn deref(&self) -> &Self::Target {
         &self.current_ref
     }
-}
+/}
 
 /// Manual implementation of Clone because `A` doesn't need to implement Clone
 /// but we still want to be able to clone the ActorMesh.
