@@ -1463,7 +1463,7 @@ impl<A: Actor> Instance<A> {
         }
     }
 
-    #[hyperactor::instrument(fields(actor_id = self.self_id().to_string(), actor_name = self.self_id().name()))]
+    #[tracing::instrument(level = "debug", skip_all)]
     async unsafe fn handle_message<M: Message>(
         &self,
         actor: &mut A,
