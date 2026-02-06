@@ -178,11 +178,9 @@ impl Buffer {
     ///
     /// # Returns
     /// A new `FrozenBuffer` containing all the bytes that were written to this buffer
-    fn freeze(&mut self) -> FrozenBuffer {
-        let part = self.take_part();
-        FrozenBuffer {
-            inner: part.into_bytes(),
-        }
+    #[pyo3(name = "freeze")]
+    fn py_freeze(&mut self) -> FrozenBuffer {
+        Buffer::freeze(self)
     }
 }
 
@@ -225,6 +223,16 @@ impl Buffer {
                 .collect::<Vec<_>>(),
         )
     }
+
+    /// Freezes the buffer, converting it into an immutable `FrozenBuffer` for reading.
+    ///
+    /// This is the Rust-accessible version of the Python freeze method.
+    pub fn freeze(&mut self) -> FrozenBuffer {
+        let part = self.take_part();
+        FrozenBuffer {
+            inner: part.into_bytes(),
+        }
+    }
 }
 
 /// An immutable buffer for reading bytes data.
@@ -262,6 +270,28 @@ pub struct FrozenBuffer {
     pub inner: bytes::Bytes,
 }
 wirevalue::register_type!(FrozenBuffer);
+
+impl From<Vec<u8>> for FrozenBuffer {
+    fn from(v: Vec<u8>) -> Self {
+        Self {
+            inner: bytes::Bytes::from(v),
+        }
+    }
+}
+
+impl From<&'static [u8]> for FrozenBuffer {
+    fn from(v: &'static [u8]) -> Self {
+        Self {
+            inner: bytes::Bytes::from_static(v),
+        }
+    }
+}
+
+impl From<FrozenBuffer> for Part {
+    fn from(buf: FrozenBuffer) -> Self {
+        Part::from(buf.inner)
+    }
+}
 
 #[pymethods]
 impl FrozenBuffer {

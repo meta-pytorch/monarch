@@ -8,6 +8,10 @@
 from typing import Optional
 
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    pop_tensor_engine_reference,
+    push_tensor_engine_reference_if_active,
+)
 
 
 class Referenceable:
@@ -21,6 +25,8 @@ class Referenceable:
         assert self.ref is not None, (
             f"{self} is being sent but does not have a reference"
         )
+        if push_tensor_engine_reference_if_active(self):
+            return pop_tensor_engine_reference, ()
         return Ref, (self.ref,)
 
     # Used by rust backend to get the ref for this object

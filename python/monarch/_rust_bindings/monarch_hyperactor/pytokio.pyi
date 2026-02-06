@@ -13,7 +13,6 @@ from typing import (
     Coroutine,
     Generator,
     Generic,
-    List,
     Optional,
     Sequence,
     Tuple,
@@ -116,21 +115,3 @@ def is_tokio_thread() -> bool:
     Returns true if the current thread is a tokio worker thread (and block_on will fail).
     """
     ...
-
-class PendingPickle:
-    """
-    Represents an object that we are eventually going to pickle,
-    but we can't yet because it hasn't been fully initialized.
-    """
-    def __init__(self, fut: Shared[T]) -> None: ...
-
-class PendingPickleState:
-    """
-    A special class used to allow deferring the full pickling of an object.
-    It contains a list of objects that were returned by the filter in a call
-    to `flatten`, and the filter itself. Crucially, some of these objects
-    may be futures that need to be awaited in an asynchronous context.
-    """
-    def __init__(
-        self, unflatten_values: List[Any], flatten_filter: Callable[[Any], bool]
-    ) -> None: ...

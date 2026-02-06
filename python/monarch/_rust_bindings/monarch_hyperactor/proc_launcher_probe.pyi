@@ -11,6 +11,7 @@ from typing import final
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
+from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 @final
@@ -33,11 +34,6 @@ class ProbeReport:
         ...
 
     @property
-    def pending_pickle_state_present(self) -> bool | None:
-        """If PythonMessage, whether pending_pickle_state was present."""
-        ...
-
-    @property
     def payload_len(self) -> int:
         """Length of the message payload bytes."""
         ...
@@ -57,7 +53,7 @@ def probe_exit_port_via_mesh(
     instance: Instance,
     mailbox: Mailbox,
     method_name: str,
-    pickled_args: bytes,
+    pickling_state: PicklingState,
 ) -> PythonTask[ProbeReport]:
     """Probe the wire format by calling an endpoint and receiving on a
     port."""
