@@ -19,6 +19,7 @@ use hyperactor::Handler;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
 use hyperactor::mailbox::OncePortHandle;
+use hyperactor_config::Attrs;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use torch_sys_cuda::cuda::Event;
@@ -655,12 +656,15 @@ mod tests {
         let workers = try_join_all((0..world_size).map(async |rank| {
             proc.spawn(
                 &format!("worker{}", rank),
-                WorkerActor::new(WorkerParams {
-                    world_size,
-                    rank,
-                    device_index: Some(rank.try_into()?),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size,
+                        rank,
+                        device_index: Some(rank.try_into()?),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -839,12 +843,15 @@ mod tests {
         let handle1 = proc
             .spawn(
                 "worker1",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -852,12 +859,15 @@ mod tests {
         let handle2 = proc
             .spawn(
                 "worker2",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 1,
-                    device_index: Some(1),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 1,
+                        device_index: Some(1),
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1018,12 +1028,15 @@ mod tests {
         let handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
