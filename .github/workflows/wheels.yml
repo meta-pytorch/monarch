@@ -103,7 +103,9 @@ jobs:
           file: ./Dockerfile.nightly
           push: true # Push the image to the registry
           # Push to monarch-nightly package instead of monarch.
-          tags: ghcr.io/${{ github.repository }}-nightly:${{ env.DOCKER_TAG }}
+          tags: |
+            ghcr.io/${{ github.repository }}-nightly:${{ env.DOCKER_TAG }}
+            ghcr.io/${{ github.repository }}-nightly:latest
           # TODO: find docker tag that gets updated automatically.
           build-args: |
             PYTORCH_TAG=2.11.0.dev20260109-cuda12.8-cudnn9-runtime
