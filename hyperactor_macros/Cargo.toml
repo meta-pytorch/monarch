@@ -22,7 +22,7 @@ path = "tests/basic.rs"
 convert_case = "0.10.0"
 indoc = "2.0.2"
 proc-macro2 = { version = "1.0.70", features = ["span-locations"] }
-quote = "1.0.29"
+quote = "1.0.44"
 syn = { version = "2.0.110", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 
 [dev-dependencies]
