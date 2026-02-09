@@ -27,9 +27,13 @@ fn main() {
     // Detect platform: ROCm or CUDA
     let (is_rocm, compute_home) = detect_platform();
 
+    // Get the directory of the current crate
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
+        // For buck2 run, we know the package is in fbcode/monarch/rdmaxcel-sys
+        // Get the fbsource directory from the current directory path
         let current_dir = std::env::current_dir().expect("Failed to get current directory");
         let current_path = current_dir.to_string_lossy();
+        // Find the fbsource part of the path
         if let Some(fbsource_pos) = current_path.find("fbsource") {
             let fbsource_path = &current_path[..fbsource_pos + "fbsource".len()];
             format!("{}/fbcode/monarch/rdmaxcel-sys", fbsource_path)
@@ -155,7 +159,7 @@ fn main() {
         .allowlist_var("IBV_.*")
         .allowlist_var("CUDA_SUCCESS")
         .allowlist_var("CU_.*")
-        // Block manually defined types
+        // Block specific types that are manually defined in lib.rs
         .blocklist_type("ibv_wc")
         .blocklist_type("mlx5_wqe_ctrl_seg")
         // Enum handling
@@ -322,7 +326,7 @@ fn hipify_sources(src_dir: &Path, hip_dir: &Path, manifest_dir: &str) {
 
     // No custom mapping needed - CUDA Driver API differences handled via #ifdef USE_ROCM
     // in the source files (driver_api.h, driver_api.cpp, rdmaxcel.cpp)
-    build_utils::rocm::run_hipify_torch(&project_root, &source_files, hip_dir, None)
+    build_utils::rocm::run_hipify_torch(&project_root, &source_files, hip_dir)
         .expect("hipify_torch failed");
 
     println!("cargo:warning=Hipification complete");
