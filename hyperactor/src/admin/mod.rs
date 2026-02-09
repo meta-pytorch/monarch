@@ -38,6 +38,7 @@ pub use responses::ActorDetails;
 pub use responses::ProcDetails;
 pub use responses::ProcSummary;
 pub use responses::RecordedEvent;
+pub use responses::ReferenceInfo;
 use tokio::net::TcpListener;
 pub use tree::format_proc_tree;
 pub use tree::format_proc_tree_with_urls;

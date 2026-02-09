@@ -23,11 +23,14 @@ use std::panic::Location;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -56,6 +59,7 @@ use crate::actor::ActorErrorKind;
 use crate::actor::ActorHandle;
 use crate::actor::ActorStatus;
 use crate::actor::Binds;
+use crate::actor::HandlerInfo;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
@@ -1462,34 +1466,47 @@ impl<A: Actor> Instance<A> {
     where
         A: Handler<M>,
     {
-        let handler = type_info.map(|info| {
-            (
-                info.typename().to_string(),
+        // Build HandlerInfo from TypeInfo (zero-copy) or fall back to type_name.
+        let handler_info = match type_info {
+            Some(info) => {
                 // SAFETY: The caller promises to pass the correct type info.
-                unsafe {
-                    info.arm_unchecked(&message as *const M as *const ())
-                        .map(str::to_string)
-                },
-            )
-        });
+                let arm = unsafe { info.arm_unchecked(&message as *const M as *const ()) };
+                Some(HandlerInfo::from_static(info.typename(), arm))
+            }
+            None => {
+                // Fall back to std::any::type_name (also static, zero-copy).
+                Some(HandlerInfo::from_static(std::any::type_name::<M>(), None))
+            }
+        };
 
         self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
-            handler,
+            handler_info.clone(),
         ));
         crate::mailbox::headers::log_message_latency_if_sampling(
             &headers,
             self.self_id().to_string(),
         );
 
+        // Record the message handler being invoked.
+        *self.inner.cell.inner.last_message_handler.write().unwrap() = handler_info;
+
         let context = Context::new(self, headers);
         // Pass a reference to the context to the handler, so that deref
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
-        actor
+        let start = Instant::now();
+        let result = actor
             .handle(&context, message)
             .instrument(self.inner.cell.inner.recording.span())
-            .await
+            .await;
+        let elapsed_us = start.elapsed().as_micros() as u64;
+        self.inner
+            .cell
+            .inner
+            .total_processing_time_us
+            .fetch_add(elapsed_us, Ordering::SeqCst);
+        result
     }
 
     /// Spawn on child on this instance.
@@ -1632,6 +1649,15 @@ enum ActorType {
     Anonymous(&'static str),
 }
 
+impl ActorType {
+    fn type_name(&self) -> &str {
+        match self {
+            ActorType::Named(info) => info.typename(),
+            ActorType::Anonymous(name) => name,
+        }
+    }
+}
+
 /// InstanceCell contains all of the type-erased, shareable state of an instance.
 /// Specifically, InstanceCells form a supervision tree, and is used by ActorHandle
 /// to access the underlying instance.
@@ -1681,6 +1707,15 @@ struct InstanceCellState {
 
     /// The number of messages processed by this actor.
     num_processed_messages: AtomicU64,
+
+    /// When this actor was created.
+    created_at: SystemTime,
+
+    /// Name of the last message handler invoked.
+    last_message_handler: RwLock<Option<HandlerInfo>>,
+
+    /// Total time spent processing messages, in microseconds.
+    total_processing_time_us: AtomicU64,
 
     /// The log recording associated with this actor. It is used to
     /// store a 'flight record' of events while the actor is running.
@@ -1732,6 +1767,9 @@ impl InstanceCell {
                 actor_task_handle: OnceLock::new(),
                 exported_named_ports: DashMap::new(),
                 num_processed_messages: AtomicU64::new(0),
+                created_at: SystemTime::now(),
+                last_message_handler: RwLock::new(None),
+                total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
                 ports,
             }),
@@ -1859,12 +1897,6 @@ impl InstanceCell {
         self.inner.maybe_unlink_parent()
     }
 
-    /// Get parent instance cell, if it exists.
-    #[allow(dead_code)]
-    fn get_parent_cell(&self) -> Option<InstanceCell> {
-        self.inner.parent.upgrade()
-    }
-
     /// Return an iterator over this instance's children. This may deadlock if the
     /// caller already holds a reference to any item in map.
     fn child_iter(&self) -> impl Iterator<Item = RefMulti<'_, Index, InstanceCell>> {
@@ -1884,6 +1916,36 @@ impl InstanceCell {
     /// Access the flight recorder for this actor.
     pub fn recording(&self) -> &Recording {
         &self.inner.recording
+    }
+
+    /// When this actor was created.
+    pub fn created_at(&self) -> SystemTime {
+        self.inner.created_at
+    }
+
+    /// The number of messages processed by this actor.
+    pub fn num_processed_messages(&self) -> u64 {
+        self.inner.num_processed_messages.load(Ordering::SeqCst)
+    }
+
+    /// The last message handler invoked by this actor.
+    pub fn last_message_handler(&self) -> Option<HandlerInfo> {
+        self.inner.last_message_handler.read().unwrap().clone()
+    }
+
+    /// Total time spent processing messages, in microseconds.
+    pub fn total_processing_time_us(&self) -> u64 {
+        self.inner.total_processing_time_us.load(Ordering::SeqCst)
+    }
+
+    /// Get parent instance cell, if it exists.
+    pub fn parent(&self) -> Option<InstanceCell> {
+        self.inner.parent.upgrade()
+    }
+
+    /// The actor's type name.
+    pub fn actor_type_name(&self) -> &str {
+        self.inner.actor_type.type_name()
     }
 
     /// This is temporary so that we can share binding code between handle and instance.
