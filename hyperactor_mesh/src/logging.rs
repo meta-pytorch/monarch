@@ -41,6 +41,7 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -1015,7 +1016,7 @@ impl Actor for LogForwardActor {
 impl hyperactor::RemoteSpawn for LogForwardActor {
     type Params = ActorRef<LogClientActor>;
 
-    async fn new(logging_client_ref: Self::Params) -> Result<Self> {
+    async fn new(logging_client_ref: Self::Params, _environment: Attrs) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
             Err(err) => {
@@ -1600,10 +1601,12 @@ mod tests {
         unsafe {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
-        let log_client_actor = LogClientActor::new(()).await.unwrap();
+        let log_client_actor = LogClientActor::new((), Attrs::default()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Attrs::default())
+            .await
+            .unwrap();
         let log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
