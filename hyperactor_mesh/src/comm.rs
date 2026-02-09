@@ -1360,7 +1360,10 @@ mod tests {
         _reply_port_ref: hyperactor::OncePortRef<u64>,
     }
 
-    async fn setup_once_port_mesh(reducer_spec: Option<accum::ReducerSpec>) -> OncePortMeshSetup {
+    async fn setup_once_port_mesh<A>(reducer: Option<A>) -> OncePortMeshSetup
+    where
+        A: Accumulator<State = u64, Update = u64> + Send + Sync + 'static,
+    {
         let extent = extent!(replica = 4, host = 4, gpu = 4);
         let alloc = LocalAllocator
             .allocate(AllocSpec {
@@ -1385,16 +1388,12 @@ mod tests {
             .await
             .unwrap();
 
-        let (reply_port_handle, reply_rx) =
-            hyperactor::mailbox::open_once_port::<u64>(proc_mesh.client());
-        let has_reducer = reducer_spec.is_some();
-        let reply_port_ref = match reducer_spec {
-            Some(spec) => hyperactor::OncePortRef::attest_reducible(
-                reply_port_handle.bind().port_id().clone(),
-                Some(spec),
-            ),
-            None => reply_port_handle.bind(),
+        let has_reducer = reducer.is_some();
+        let (reply_port_handle, reply_rx) = match reducer {
+            Some(reducer) => proc_mesh.client().mailbox().open_reduce_port(reducer),
+            None => proc_mesh.client().mailbox().open_once_port::<u64>(),
         };
+        let reply_port_ref = reply_port_handle.bind();
 
         let message = TestMessage::CastAndReplyOnce {
             arg: "abc".to_string(),
@@ -1448,7 +1447,7 @@ mod tests {
             reply_rx,
             reply_tos,
             ..
-        } = setup_once_port_mesh(None).await;
+        } = setup_once_port_mesh::<NoneAccumulator>(None).await;
         let proc_mesh_client = actor_mesh.proc_mesh().client();
 
         // All reply_tos point to the same port (not split).
@@ -1469,13 +1468,12 @@ mod tests {
         // Test OncePort splitting with sum accumulator.
         // Each destination actor replies with its rank.
         // The sum of all ranks should be received at the original port.
-        let reducer_spec = accum::sum::<u64>().reducer_spec();
         let OncePortMeshSetup {
             actor_mesh,
             reply_rx,
             reply_tos,
             ..
-        } = setup_once_port_mesh(reducer_spec).await;
+        } = setup_once_port_mesh(Some(accum::sum::<u64>())).await;
         let proc_mesh_client = actor_mesh.proc_mesh().client();
 
         // Each actor replies with its index
