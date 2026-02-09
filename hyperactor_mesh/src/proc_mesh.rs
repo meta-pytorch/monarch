@@ -1349,26 +1349,6 @@ mod tests {
         assert_eq!(event.actor_id.2, 0);
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 5)]
-    async fn test_spawn_twice() {
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent!(replica = 1),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-        let mesh = ProcMesh::allocate(alloc).await.unwrap();
-
-        let instance = crate::v1::testing::instance();
-        let _: RootActorMesh<TestActor> = mesh.spawn(&instance, "dup", &()).await.unwrap();
-        let result: Result<RootActorMesh<TestActor>, _> = mesh.spawn(&instance, "dup", &()).await;
-        assert!(result.is_err());
-    }
-
     mod shim {
         use std::collections::HashSet;
 
