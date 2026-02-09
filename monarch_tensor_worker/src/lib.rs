@@ -60,6 +60,7 @@ use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor::reference::ActorId;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
 use monarch_hyperactor::shape::PyPoint;
@@ -228,6 +229,7 @@ impl RemoteSpawn for WorkerActor {
             device_index,
             controller_actor,
         }: Self::Params,
+        _environment: Attrs,
     ) -> Result<Self> {
         Python::with_gil(|py| {
             py.import("monarch.safe_torch").unwrap();
@@ -1116,12 +1118,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1222,12 +1227,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1282,12 +1290,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1353,12 +1364,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1429,12 +1443,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1728,12 +1745,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1803,12 +1823,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1889,12 +1912,15 @@ mod tests {
         let worker_handle1 = proc
             .spawn(
                 "worker0",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1902,12 +1928,15 @@ mod tests {
         let worker_handle2 = proc
             .spawn(
                 "worker1",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 1,
-                    device_index: Some(1),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 1,
+                        device_index: Some(1),
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )

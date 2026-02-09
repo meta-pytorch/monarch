@@ -33,6 +33,7 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::forward;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::SlicedActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMesh;
@@ -46,6 +47,7 @@ use hyperactor_mesh::v1;
 use lazy_errors::ErrorStash;
 use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::sender;
+use ndslice::Point;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
@@ -219,7 +221,7 @@ impl Actor for CodeSyncManager {}
 impl RemoteSpawn for CodeSyncManager {
     type Params = CodeSyncManagerParams;
 
-    async fn new(CodeSyncManagerParams {}: Self::Params) -> Result<Self> {
+    async fn new(CodeSyncManagerParams {}: Self::Params, _environment: Attrs) -> Result<Self> {
         Ok(Self {
             rsync: OnceCell::new(),
             auto_reload: OnceCell::new(),
