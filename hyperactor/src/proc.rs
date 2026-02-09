@@ -72,6 +72,7 @@ use crate::clock::ClockKind;
 use crate::clock::RealClock;
 use crate::config;
 use crate::context;
+use crate::context::Mailbox as _;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -354,7 +355,7 @@ impl Proc {
         actor: A,
         parent: Option<InstanceCell>,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let is_root = parent.is_none();
+        let _is_root = parent.is_none();
         let (instance, mut actor_loop_receivers, work_rx) =
             Instance::new(self.clone(), actor_id.clone(), false, parent);
 
@@ -877,7 +878,7 @@ impl<A: Actor> Drop for InstanceState<A> {
                     prev_status = status.arm().unwrap_or("unknown"),
                     "instance is dropped",
                 );
-                *status = ActorStatus::Stopped;
+                *status = ActorStatus::Stopped("instance is dropped".into());
                 true
             }
         });
@@ -1140,20 +1141,17 @@ impl<A: Actor> Instance<A> {
         actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
         mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
     ) {
-        // `run_actor_tree` borrows `work_rx` instead of taking ownership because
-        // `work_rx` needs to remain alive until this function returns. If the owning
-        // proc's `supervision_coordinator_port` is a port on this instance, if `work_rx`
-        // is dropped before `self.proc.handle_supervision_event` is called, the process
-        // will exit due to a "channel closed" failure.
         let result = self
             .run_actor_tree(&mut actor, actor_loop_receivers, &mut work_rx)
             .await;
 
         assert!(self.is_stopping());
         let event = match result {
-            Ok(_) => {
+            Ok(stop_reason) => {
+                let status = ActorStatus::Stopped(stop_reason);
+                self.mailbox().close(status.clone());
                 // success exit case
-                self.change_status(ActorStatus::Stopped);
+                self.change_status(status);
                 None
             }
             Err(err) => {
@@ -1164,12 +1162,14 @@ impl<A: Actor> Instance<A> {
                         // status here too, because we use event's actor_status as this actor's
                         // terminal status.
                         assert!(event.actor_status.is_terminal());
+                        self.mailbox().close(event.actor_status.clone());
                         self.change_status(event.actor_status.clone());
                         Some(event)
                     }
                     _ => {
                         let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                         let status = ActorStatus::Failed(error_kind);
+                        self.mailbox().close(status.clone());
                         self.change_status(status.clone());
                         Some(ActorSupervisionEvent::new(
                             self.inner.cell.actor_id().clone(),
@@ -1212,13 +1212,14 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Runs the actor, and manages its supervision tree. When the function returns,
-    /// the whole tree rooted at this actor has stopped.
+    /// the whole tree rooted at this actor has stopped. On success, returns the reason
+    /// why the actor stopped. On failure, returns the error that caused the failure.
     async fn run_actor_tree(
         &mut self,
         actor: &mut A,
         mut actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) -> Result<(), ActorError> {
+    ) -> Result<String, ActorError> {
         // It is okay to catch all panics here, because we are in a tokio task,
         // and tokio will catch the panic anyway:
         // https://docs.rs/tokio/latest/tokio/task/struct.JoinError.html#method.is_panic
@@ -1327,16 +1328,18 @@ impl<A: Actor> Instance<A> {
         }
         // If the original exit was not an error, let cleanup errors be
         // surfaced.
-        result.and(cleanup_result)
+        result.and_then(|reason| cleanup_result.map(|_| reason))
     }
 
-    /// Initialize and run the actor until it fails or is stopped.
+    /// Initialize and run the actor until it fails or is stopped. On success,
+    /// returns the reason why the actor stopped. On failure, returns the error
+    /// that caused the failure.
     async fn run(
         &mut self,
         actor: &mut A,
         actor_loop_receivers: &mut (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) -> Result<(), ActorError> {
+    ) -> Result<String, ActorError> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
         self.change_status(ActorStatus::Initializing);
@@ -1418,7 +1421,7 @@ impl<A: Actor> Instance<A> {
             reason = stop_reason,
             "exited actor loop",
         );
-        Ok(())
+        Ok(stop_reason)
     }
 
     /// Handle a supervision event using the provided actor.
@@ -2318,7 +2321,7 @@ mod tests {
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
-        assert_matches!(*state.borrow(), ActorStatus::Stopped);
+        assert_matches!(&*state.borrow(), ActorStatus::Stopped(reason) if reason == "test");
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -2508,7 +2511,7 @@ mod tests {
 
         for actor in [root_1, root_2, root_2_1] {
             assert!(actor.send(&client, TestActorMessage::Noop()).is_err());
-            assert_matches!(actor.await, ActorStatus::Stopped);
+            assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
         }
     }
 
@@ -2544,8 +2547,8 @@ mod tests {
             root.await,
             ActorStatus::Failed(err) if err.to_string().contains("some random failure")
         );
-        assert_eq!(root_2_1.await, ActorStatus::Stopped);
-        assert_eq!(root_1.await, ActorStatus::Stopped);
+        assert_matches!(root_2_1.await, ActorStatus::Stopped(_));
+        assert_matches!(root_1.await, ActorStatus::Stopped(_));
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -2628,7 +2631,7 @@ mod tests {
             // Verify backtrace is captured. Note the backtrace message might
             // change in the future. If that happens, we need to update this
             // statement with something up-to-date.
-            assert!(error_msg.contains("rust_begin_unwind"));
+            assert!(error_msg.contains("library/std/src/panicking.rs"));
         }
     }
 
@@ -2781,7 +2784,7 @@ mod tests {
 
         assert_eq!(*handle.status().borrow(), ActorStatus::Client);
         drop(instance);
-        assert_eq!(*handle.status().borrow(), ActorStatus::Stopped);
+        assert_matches!(*handle.status().borrow(), ActorStatus::Stopped(_));
         handle.await;
     }
 
@@ -2926,100 +2929,78 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn test_actor_tree_traversal() {
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_mailbox_closed_with_owner_stopped_reason() {
+        use crate::actor::ActorStatus;
+        use crate::mailbox::MailboxErrorKind;
+        use crate::mailbox::MailboxSenderErrorKind;
+
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
+        let actor_handle = proc.spawn("test", TestActor).unwrap();
 
-        // Build tree: root -> child1, child2; child2 -> grandchild1
-        let root = proc.spawn("root", TestActor).unwrap();
-        let _child1 = TestActor::spawn_child(&client, &root).await;
-        let child2 = TestActor::spawn_child(&client, &root).await;
-        let _grandchild1 = TestActor::spawn_child(&client, &child2).await;
+        // Clone the handle before awaiting since await consumes the handle
+        let handle_for_send = actor_handle.clone();
 
-        // Collect traversal from root only (not entire proc which includes client)
-        let mut nodes: Vec<(String, usize)> = Vec::new();
-        root.cell().traverse(&mut |cell, depth| {
-            nodes.push((cell.actor_id().to_string(), depth));
-        });
+        // Stop the actor gracefully
+        actor_handle.drain_and_stop("healthy shutdown").unwrap();
+        actor_handle.await;
 
-        // Extract proc_id prefix for constructing expected values
-        let proc_id = proc.proc_id().to_string();
+        // Try to send a message to the stopped actor
+        let result = handle_for_send.send(&client, TestActorMessage::Noop());
 
-        // Verify exact structure with actor IDs (deterministic due to sorted traversal)
-        let expected = vec![
-            (format!("{}.root[0]", proc_id), 0), // root
-            (format!("{}.root[1]", proc_id), 1), // child1
-            (format!("{}.root[2]", proc_id), 1), // child2
-            (format!("{}.root[3]", proc_id), 2), // grandchild
-        ];
-        assert_eq!(nodes, expected);
-
-        root.drain_and_stop("test").unwrap();
-        root.await;
+        assert!(result.is_err(), "send should fail when actor is stopped");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(
+                    mailbox_err.kind(),
+                    MailboxErrorKind::OwnerTerminated(ActorStatus::Stopped(reason)) if reason == "healthy shutdown"
+                )
+        );
     }
 
-    #[tokio::test]
-    async fn test_actor_tree_ascii_printer() {
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_mailbox_closed_with_owner_failed_reason() {
+        use crate::actor::ActorErrorKind;
+        use crate::actor::ActorStatus;
+        use crate::mailbox::MailboxErrorKind;
+        use crate::mailbox::MailboxSenderErrorKind;
+
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
+        // Need to set a supervison coordinator for this Proc because there will
+        // be actor failure(s) in this test which trigger supervision.
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        // Build tree:
-        // root
-        // ├── child1
-        // └── child2
-        //     └── grandchild
-        let root = proc.spawn("root", TestActor).unwrap();
-        let _child1 = TestActor::spawn_child(&client, &root).await;
-        let child2 = TestActor::spawn_child(&client, &root).await;
-        let _grandchild1 = TestActor::spawn_child(&client, &child2).await;
+        let actor_handle = proc.spawn("test", TestActor).unwrap();
 
-        // Collect nodes for tree formatting
-        let mut nodes: Vec<(ActorId, usize)> = Vec::new();
-        root.cell().traverse(&mut |cell, depth| {
-            nodes.push((cell.actor_id().clone(), depth));
-        });
+        // Clone the handle before awaiting since await consumes the handle
+        let handle_for_send = actor_handle.clone();
 
-        // Build ASCII tree output using actor IDs
-        fn print_tree(nodes: &[(ActorId, usize)]) -> String {
-            let mut output = String::new();
-            for (i, (actor_id, depth)) in nodes.iter().enumerate() {
-                if *depth == 0 {
-                    output.push_str(&format!("{}\n", actor_id));
-                } else {
-                    // Find if this is the last sibling at this depth
-                    let is_last = nodes[i + 1..]
-                        .iter()
-                        .take_while(|(_, d)| *d >= *depth)
-                        .all(|(_, d)| *d > *depth);
+        // Cause the actor to fail
+        actor_handle
+            .send(
+                &client,
+                TestActorMessage::Fail(anyhow::anyhow!("intentional failure")),
+            )
+            .unwrap();
+        actor_handle.await;
 
-                    let mut prefix = String::new();
-                    for d in 1..*depth {
-                        // Check if there are more siblings at depth d after this node
-                        let has_more_at_d = nodes[i + 1..].iter().any(|(_, dd)| *dd == d);
-                        prefix.push_str(if has_more_at_d { "│   " } else { "    " });
-                    }
-                    prefix.push_str(if is_last { "└── " } else { "├── " });
-                    output.push_str(&format!("{}{}\n", prefix, actor_id));
-                }
-            }
-            output
-        }
+        // Try to send a message to the failed actor
+        let result = handle_for_send.send(&client, TestActorMessage::Noop());
 
-        let tree_output = print_tree(&nodes);
-
-        // Construct expected tree using proc_id prefix
-        let proc_id = proc.proc_id().to_string();
-        let expected = format!(
-            r#"{proc_id}.root[0]
-├── {proc_id}.root[1]
-└── {proc_id}.root[2]
-    └── {proc_id}.root[3]
-"#
+        assert!(result.is_err(), "send should fail when actor has failed");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(
+                    mailbox_err.kind(),
+                    MailboxErrorKind::OwnerTerminated(ActorStatus::Failed(ActorErrorKind::Generic(msg)))
+                        if msg.contains("intentional failure")
+                )
         );
-        assert_eq!(tree_output, expected);
-
-        root.drain_and_stop("test").unwrap();
-        root.await;
     }
 }

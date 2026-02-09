@@ -11,7 +11,7 @@ spec:
     containers:
     - name: worker
       # We use a public image and inline the python commands below.
-      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      image: ghcr.io/meta-pytorch/monarch:latest
 
       # Ensure we always try to pull (helpful during development)
       imagePullPolicy: Always
