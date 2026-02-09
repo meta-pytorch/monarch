@@ -2041,7 +2041,6 @@ mod tests {
 
         use hyperactor::context::Mailbox;
         use ndslice::Extent;
-        use ndslice::extent;
 
         use super::*;
         use crate::sel;
@@ -2050,7 +2049,7 @@ mod tests {
         #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance();
-            let host_mesh = v1::testing::host_mesh(extent!(host = 4)).await;
+            let host_mesh = v1::testing::host_mesh(4).await;
             let proc_mesh = host_mesh
                 .spawn(instance, "test", Extent::unity())
                 .await
