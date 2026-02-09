@@ -37,7 +37,7 @@ use dashmap::DashMap;
 pub use responses::ActorDetails;
 pub use responses::ProcDetails;
 pub use responses::ProcSummary;
-pub use responses::ReferenceInfo;
+pub use responses::RecordedEvent;
 use tokio::net::TcpListener;
 pub use tree::format_proc_tree;
 pub use tree::format_proc_tree_with_urls;

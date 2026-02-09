@@ -1486,7 +1486,10 @@ impl<A: Actor> Instance<A> {
         // Pass a reference to the context to the handler, so that deref
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
-        actor.handle(&context, message).await
+        actor
+            .handle(&context, message)
+            .instrument(self.inner.cell.inner.recording.span())
+            .await
     }
 
     /// Spawn on child on this instance.
@@ -1876,6 +1879,11 @@ impl InstanceCell {
     /// Get a child by its PID.
     fn get_child(&self, pid: Index) -> Option<InstanceCell> {
         self.inner.children.get(&pid).map(|child| child.clone())
+    }
+
+    /// Access the flight recorder for this actor.
+    pub fn recording(&self) -> &Recording {
+        &self.inner.recording
     }
 
     /// This is temporary so that we can share binding code between handle and instance.

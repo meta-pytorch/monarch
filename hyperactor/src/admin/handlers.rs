@@ -9,19 +9,25 @@
 //! HTTP route handlers for the admin server.
 
 use std::str::FromStr;
+use std::time::SystemTime;
 
 use axum::Json;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::http::header::HeaderMap;
 use axum::response::IntoResponse;
+use chrono::DateTime;
+use chrono::Utc;
 
 use super::global;
 use super::responses::ActorDetails;
 use super::responses::ProcDetails;
 use super::responses::ProcSummary;
+use super::responses::RecordedEvent;
 use super::responses::ReferenceInfo;
 use super::tree::format_proc_tree_with_urls;
+use crate::ActorId;
+use crate::proc::InstanceCell;
 use crate::reference::Reference;
 
 /// GET / - List all registered procs.
@@ -107,6 +113,11 @@ pub async fn get_actor(
     let actor_id = found_actor_id.ok_or(StatusCode::NOT_FOUND)?;
     let cell = proc.get_instance(&actor_id).ok_or(StatusCode::NOT_FOUND)?;
 
+    Ok(Json(build_actor_details(&cell)))
+}
+
+/// Build ActorDetails from an InstanceCell.
+fn build_actor_details(cell: &InstanceCell) -> ActorDetails {
     let status = cell.status().borrow().clone();
     let mut children = Vec::new();
     cell.traverse(&mut |child, depth| {
@@ -115,13 +126,44 @@ pub async fn get_actor(
         }
     });
 
-    Ok(Json(ActorDetails {
+    let events = cell.recording().tail();
+    let flight_recorder: Vec<RecordedEvent> = events
+        .into_iter()
+        .map(|event| RecordedEvent {
+            timestamp: format_timestamp(event.time),
+            seq: event.seq,
+            level: event.metadata.level().to_string(),
+            target: event.metadata.target().to_string(),
+            name: event.metadata.name().to_string(),
+            fields: event.json_value(),
+        })
+        .collect();
+
+    ActorDetails {
         actor_status: status.to_string(),
         children,
-    }))
+        flight_recorder,
+    }
 }
 
-/// GET /{reference} - Resolve a reference and show status.
+/// Look up an actor by ActorId and return its details.
+fn lookup_actor_details(actor_id: &ActorId) -> Option<ActorDetails> {
+    let state = global();
+    let proc_name = actor_id.proc_id().to_string();
+    state
+        .procs
+        .get(&proc_name)
+        .and_then(|proc| proc.get_instance(actor_id))
+        .map(|cell| build_actor_details(&cell))
+}
+
+/// Format a SystemTime as an ISO 8601 timestamp.
+fn format_timestamp(time: SystemTime) -> String {
+    let datetime: DateTime<Utc> = time.into();
+    datetime.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+/// GET /{reference} - Resolve a reference and return its details.
 pub async fn resolve_reference(Path(reference): Path<String>) -> impl IntoResponse {
     let parsed = match Reference::from_str(&reference) {
         Ok(r) => r,
@@ -159,38 +201,16 @@ pub async fn resolve_reference(Path(reference): Path<String>) -> impl IntoRespon
                 ),
             }
         }
-        Reference::Actor(actor_id) => {
-            let proc_id = actor_id.proc_id();
-            let proc_name = proc_id.to_string();
-            match state.procs.get(&proc_name) {
-                Some(proc) => match proc.get_instance(actor_id) {
-                    Some(cell) => {
-                        let status = cell.status().borrow().clone();
-                        let mut children = Vec::new();
-                        cell.traverse(&mut |child, depth| {
-                            if depth == 1 {
-                                children.push(child.actor_id().to_string());
-                            }
-                        });
-                        (
-                            StatusCode::OK,
-                            Json(serde_json::json!(ReferenceInfo::Actor(ActorDetails {
-                                actor_status: status.to_string(),
-                                children,
-                            }))),
-                        )
-                    }
-                    None => (
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": "actor not found"})),
-                    ),
-                },
-                None => (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "proc not found"})),
-                ),
-            }
-        }
+        Reference::Actor(actor_id) => match lookup_actor_details(actor_id) {
+            Some(details) => (
+                StatusCode::OK,
+                Json(serde_json::json!(ReferenceInfo::Actor(details))),
+            ),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "actor not found"})),
+            ),
+        },
         _ => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "unsupported reference type"})),

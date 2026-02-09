@@ -9,6 +9,7 @@
 //! Response types for the admin HTTP API.
 
 use serde::Serialize;
+use serde_json::Value;
 
 /// Summary of a registered proc.
 #[derive(Debug, Serialize)]
@@ -28,6 +29,23 @@ pub struct ProcDetails {
     pub root_actors: Vec<String>,
 }
 
+/// A recorded event from the flight recorder.
+#[derive(Debug, Serialize)]
+pub struct RecordedEvent {
+    /// ISO 8601 formatted timestamp.
+    pub timestamp: String,
+    /// Sequence number for ordering.
+    pub seq: usize,
+    /// Event level (INFO, DEBUG, etc.).
+    pub level: String,
+    /// Event target (module path).
+    pub target: String,
+    /// Event name.
+    pub name: String,
+    /// Event fields as JSON.
+    pub fields: Value,
+}
+
 /// Details about a specific actor.
 #[derive(Debug, Serialize)]
 pub struct ActorDetails {
@@ -35,6 +53,8 @@ pub struct ActorDetails {
     pub actor_status: String,
     /// Names of child actors.
     pub children: Vec<String>,
+    /// Recent events from the flight recorder.
+    pub flight_recorder: Vec<RecordedEvent>,
 }
 
 /// Information about a resolved reference.
