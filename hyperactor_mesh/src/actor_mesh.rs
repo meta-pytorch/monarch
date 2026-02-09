@@ -831,7 +831,7 @@ pub(crate) mod test_util {
     impl RemoteSpawn for ProxyActor {
         type Params = ();
 
-        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+        async fn new(_params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
             // The actor creates a mesh.
             use std::sync::Arc;
 
@@ -1786,6 +1786,7 @@ mod tests {
         use hyperactor::channel::serve;
         use hyperactor::clock::Clock;
         use hyperactor::clock::RealClock;
+        use hyperactor_config::Attrs;
         use ndslice::Extent;
         use ndslice::Selection;
 
@@ -1812,7 +1813,7 @@ mod tests {
         impl RemoteSpawn for EchoActor {
             type Params = ChannelAddr;
 
-            async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {
+            async fn new(params: ChannelAddr, _environment: Attrs) -> Result<Self, anyhow::Error> {
                 Ok(Self(dial::<usize>(params)?))
             }
         }

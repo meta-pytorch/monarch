@@ -65,7 +65,7 @@ spec:
   podTemplate:
     containers:
     - name: worker
-      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      image: ghcr.io/meta-pytorch/monarch:latest
 
       resources:
         limits:
@@ -117,7 +117,7 @@ metadata:
 spec:
   containers:
     - name: controller
-      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      image: ghcr.io/meta-pytorch/monarch:latest
       command: ["sleep"]
       args: ["infinity"]
   serviceAccountName: ddp-controller
