@@ -151,10 +151,10 @@ impl Handler<PhilosopherMessage> for PhilosopherActor {
         match message {
             PhilosopherMessage::Start(waiter) => {
                 self.waiter.set(waiter)?;
-                self.request_chopsticks(cx).await?;
-                // Start is always broadcasted to all philosophers; so this is
-                // our global rank.
+                // Set rank before requesting chopsticks so we request
+                // the correct pair and identify ourselves properly.
                 self.rank = point.rank();
+                self.request_chopsticks(cx).await?;
             }
             PhilosopherMessage::GrantChopstick(chopstick) => {
                 tracing::debug!("philosopher {} granted chopstick {}", self.rank, chopstick);
