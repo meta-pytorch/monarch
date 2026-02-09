@@ -12,60 +12,84 @@
 #include <iostream>
 #include <stdexcept>
 
-// List of GPU driver functions needed by rdmaxcel
-// hipify_torch does not convert these Driver API function names automatically
+// Symbol name macros - platform-specific function names for dlsym lookup
 #ifdef USE_ROCM
-  #define RDMAXCEL_CUDA_DRIVER_API(_)      \
-    _(hipMemGetHandleForAddressRange)      \
-    _(hipMemGetAllocationGranularity)      \
-    _(hipMemCreate)                        \
-    _(hipMemAddressReserve)                \
-    _(hipMemMap)                           \
-    _(hipMemSetAccess)                     \
-    _(hipMemUnmap)                         \
-    _(hipMemAddressFree)                   \
-    _(hipMemRelease)                       \
-    _(hipMemcpyHtoD)                       \
-    _(hipMemcpyDtoH)                       \
-    _(hipMemsetD8)                         \
-    _(hipPointerGetAttribute)              \
-    _(hipInit)                             \
-    _(hipDeviceGet)                        \
-    _(hipGetDeviceCount)                   \
-    _(hipDeviceGetAttribute)               \
-    _(hipCtxCreate)                        \
-    _(hipCtxSetCurrent)                    \
-    _(hipCtxSynchronize)                   \
-    _(hipDrvGetErrorString)
+#define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE hipMemGetHandleForAddressRange
+#define SYM_MEM_GET_ALLOCATION_GRANULARITY hipMemGetAllocationGranularity
+#define SYM_MEM_CREATE hipMemCreate
+#define SYM_MEM_ADDRESS_RESERVE hipMemAddressReserve
+#define SYM_MEM_MAP hipMemMap
+#define SYM_MEM_SET_ACCESS hipMemSetAccess
+#define SYM_MEM_UNMAP hipMemUnmap
+#define SYM_MEM_ADDRESS_FREE hipMemAddressFree
+#define SYM_MEM_RELEASE hipMemRelease
+#define SYM_MEMCPY_HTOD hipMemcpyHtoD
+#define SYM_MEMCPY_DTOH hipMemcpyDtoH
+#define SYM_MEMSET_D8 hipMemsetD8
+#define SYM_POINTER_GET_ATTRIBUTE hipPointerGetAttribute
+#define SYM_INIT hipInit
+#define SYM_DEVICE_GET hipDeviceGet
+#define SYM_DEVICE_GET_COUNT hipGetDeviceCount
+#define SYM_DEVICE_GET_ATTRIBUTE hipDeviceGetAttribute
+#define SYM_CTX_CREATE hipCtxCreate
+#define SYM_CTX_SET_CURRENT hipCtxSetCurrent
+#define SYM_CTX_SYNCHRONIZE hipCtxSynchronize
+#define SYM_GET_ERROR_STRING hipDrvGetErrorString
 #else
-  #define RDMAXCEL_CUDA_DRIVER_API(_)      \
-    _(cuMemGetHandleForAddressRange)       \
-    _(cuMemGetAllocationGranularity)       \
-    _(cuMemCreate)                         \
-    _(cuMemAddressReserve)                 \
-    _(cuMemMap)                            \
-    _(cuMemSetAccess)                      \
-    _(cuMemUnmap)                          \
-    _(cuMemAddressFree)                    \
-    _(cuMemRelease)                        \
-    _(cuMemcpyHtoD_v2)                     \
-    _(cuMemcpyDtoH_v2)                     \
-    _(cuMemsetD8_v2)                       \
-    _(cuPointerGetAttribute)               \
-    _(cuInit)                              \
-    _(cuDeviceGet)                         \
-    _(cuDeviceGetCount)                    \
-    _(cuDeviceGetAttribute)                \
-    _(cuCtxCreate_v2)                      \
-    _(cuCtxSetCurrent)                     \
-    _(cuCtxSynchronize)                    \
-    _(cuGetErrorString)
+#define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE cuMemGetHandleForAddressRange
+#define SYM_MEM_GET_ALLOCATION_GRANULARITY cuMemGetAllocationGranularity
+#define SYM_MEM_CREATE cuMemCreate
+#define SYM_MEM_ADDRESS_RESERVE cuMemAddressReserve
+#define SYM_MEM_MAP cuMemMap
+#define SYM_MEM_SET_ACCESS cuMemSetAccess
+#define SYM_MEM_UNMAP cuMemUnmap
+#define SYM_MEM_ADDRESS_FREE cuMemAddressFree
+#define SYM_MEM_RELEASE cuMemRelease
+#define SYM_MEMCPY_HTOD cuMemcpyHtoD_v2
+#define SYM_MEMCPY_DTOH cuMemcpyDtoH_v2
+#define SYM_MEMSET_D8 cuMemsetD8_v2
+#define SYM_POINTER_GET_ATTRIBUTE cuPointerGetAttribute
+#define SYM_INIT cuInit
+#define SYM_DEVICE_GET cuDeviceGet
+#define SYM_DEVICE_GET_COUNT cuDeviceGetCount
+#define SYM_DEVICE_GET_ATTRIBUTE cuDeviceGetAttribute
+#define SYM_CTX_CREATE cuCtxCreate_v2
+#define SYM_CTX_SET_CURRENT cuCtxSetCurrent
+#define SYM_CTX_SYNCHRONIZE cuCtxSynchronize
+#define SYM_GET_ERROR_STRING cuGetErrorString
 #endif
+
+// List of GPU driver functions needed by rdmaxcel
+// Format: _(methodName, symbolName)
+// The methodName is used for the DriverAPI struct member
+// The symbolName is the platform-specific function looked up via dlsym
+#define RDMAXCEL_CUDA_DRIVER_API(_)                                    \
+  _(memGetHandleForAddressRange, SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE) \
+  _(memGetAllocationGranularity, SYM_MEM_GET_ALLOCATION_GRANULARITY)   \
+  _(memCreate, SYM_MEM_CREATE)                                         \
+  _(memAddressReserve, SYM_MEM_ADDRESS_RESERVE)                        \
+  _(memMap, SYM_MEM_MAP)                                               \
+  _(memSetAccess, SYM_MEM_SET_ACCESS)                                  \
+  _(memUnmap, SYM_MEM_UNMAP)                                           \
+  _(memAddressFree, SYM_MEM_ADDRESS_FREE)                              \
+  _(memRelease, SYM_MEM_RELEASE)                                       \
+  _(memcpyHtoD, SYM_MEMCPY_HTOD)                                       \
+  _(memcpyDtoH, SYM_MEMCPY_DTOH)                                       \
+  _(memsetD8, SYM_MEMSET_D8)                                           \
+  _(pointerGetAttribute, SYM_POINTER_GET_ATTRIBUTE)                    \
+  _(init, SYM_INIT)                                                    \
+  _(deviceGet, SYM_DEVICE_GET)                                         \
+  _(deviceGetCount, SYM_DEVICE_GET_COUNT)                              \
+  _(deviceGetAttribute, SYM_DEVICE_GET_ATTRIBUTE)                      \
+  _(ctxCreate, SYM_CTX_CREATE)                                         \
+  _(ctxSetCurrent, SYM_CTX_SET_CURRENT)                                \
+  _(ctxSynchronize, SYM_CTX_SYNCHRONIZE)                               \
+  _(getErrorString, SYM_GET_ERROR_STRING)
 
 namespace rdmaxcel {
 
 struct DriverAPI {
-#define CREATE_MEMBER(name) decltype(&name) name##_;
+#define CREATE_MEMBER(name, sym) decltype(&sym) name##_;
   RDMAXCEL_CUDA_DRIVER_API(CREATE_MEMBER)
 #undef CREATE_MEMBER
   static DriverAPI* get();
@@ -106,11 +130,11 @@ DriverAPI create_driver_api() {
 
   DriverAPI r{};
 
-#define LOOKUP_CUDA_ENTRY(name)                                            \
-  r.name##_ = reinterpret_cast<decltype(&name)>(dlsym(handle, #name));     \
+#define LOOKUP_CUDA_ENTRY(name, sym)                                       \
+  r.name##_ = reinterpret_cast<decltype(&sym)>(dlsym(handle, #sym));       \
   if (!r.name##_) {                                                        \
     throw std::runtime_error(                                              \
-        std::string("[RdmaXcel] Can't find ") + #name + ": " + dlerror()); \
+        std::string("[RdmaXcel] Can't find ") + #sym + ": " + dlerror());  \
   }
 
   RDMAXCEL_CUDA_DRIVER_API(LOOKUP_CUDA_ENTRY)
@@ -140,26 +164,16 @@ CUresult rdmaxcel_cuMemGetHandleForAddressRange(
     size_t size,
     CUmemRangeHandleType handleType,
     unsigned long long flags) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemGetHandleForAddressRange_(
+  return rdmaxcel::DriverAPI::get()->memGetHandleForAddressRange_(
       handle, dptr, size, handleType, flags);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemGetHandleForAddressRange_(
-      handle, dptr, size, handleType, flags);
-#endif
 }
 
 CUresult rdmaxcel_cuMemGetAllocationGranularity(
     size_t* granularity,
     const CUmemAllocationProp* prop,
     CUmemAllocationGranularity_flags option) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemGetAllocationGranularity_(
+  return rdmaxcel::DriverAPI::get()->memGetAllocationGranularity_(
       granularity, prop, option);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemGetAllocationGranularity_(
-      granularity, prop, option);
-#endif
 }
 
 CUresult rdmaxcel_cuMemCreate(
@@ -167,11 +181,7 @@ CUresult rdmaxcel_cuMemCreate(
     size_t size,
     const CUmemAllocationProp* prop,
     unsigned long long flags) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemCreate_(handle, size, prop, flags);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemCreate_(handle, size, prop, flags);
-#endif
+  return rdmaxcel::DriverAPI::get()->memCreate_(handle, size, prop, flags);
 }
 
 CUresult rdmaxcel_cuMemAddressReserve(
@@ -180,13 +190,8 @@ CUresult rdmaxcel_cuMemAddressReserve(
     size_t alignment,
     CUdeviceptr addr,
     unsigned long long flags) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemAddressReserve_(
+  return rdmaxcel::DriverAPI::get()->memAddressReserve_(
       ptr, size, alignment, addr, flags);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemAddressReserve_(
-      ptr, size, alignment, addr, flags);
-#endif
 }
 
 CUresult rdmaxcel_cuMemMap(
@@ -195,13 +200,7 @@ CUresult rdmaxcel_cuMemMap(
     size_t offset,
     CUmemGenericAllocationHandle handle,
     unsigned long long flags) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemMap_(
-      ptr, size, offset, handle, flags);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemMap_(
-      ptr, size, offset, handle, flags);
-#endif
+  return rdmaxcel::DriverAPI::get()->memMap_(ptr, size, offset, handle, flags);
 }
 
 CUresult rdmaxcel_cuMemSetAccess(
@@ -209,70 +208,38 @@ CUresult rdmaxcel_cuMemSetAccess(
     size_t size,
     const CUmemAccessDesc* desc,
     size_t count) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemSetAccess_(ptr, size, desc, count);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemSetAccess_(ptr, size, desc, count);
-#endif
+  return rdmaxcel::DriverAPI::get()->memSetAccess_(ptr, size, desc, count);
 }
 
 CUresult rdmaxcel_cuMemUnmap(CUdeviceptr ptr, size_t size) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemUnmap_(ptr, size);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemUnmap_(ptr, size);
-#endif
+  return rdmaxcel::DriverAPI::get()->memUnmap_(ptr, size);
 }
 
 CUresult rdmaxcel_cuMemAddressFree(CUdeviceptr ptr, size_t size) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemAddressFree_(ptr, size);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemAddressFree_(ptr, size);
-#endif
+  return rdmaxcel::DriverAPI::get()->memAddressFree_(ptr, size);
 }
 
 CUresult rdmaxcel_cuMemRelease(CUmemGenericAllocationHandle handle) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemRelease_(handle);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemRelease_(handle);
-#endif
+  return rdmaxcel::DriverAPI::get()->memRelease_(handle);
 }
 
 CUresult rdmaxcel_cuMemcpyHtoD_v2(
     CUdeviceptr dstDevice,
     const void* srcHost,
     size_t ByteCount) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemcpyHtoD_(
-      dstDevice, srcHost, ByteCount);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemcpyHtoD_v2_(
-      dstDevice, srcHost, ByteCount);
-#endif
+  return rdmaxcel::DriverAPI::get()->memcpyHtoD_(dstDevice, srcHost, ByteCount);
 }
 
 CUresult rdmaxcel_cuMemcpyDtoH_v2(
     void* dstHost,
     CUdeviceptr srcDevice,
     size_t ByteCount) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemcpyDtoH_(
-      dstHost, srcDevice, ByteCount);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemcpyDtoH_v2_(
-      dstHost, srcDevice, ByteCount);
-#endif
+  return rdmaxcel::DriverAPI::get()->memcpyDtoH_(dstHost, srcDevice, ByteCount);
 }
 
 CUresult
 rdmaxcel_cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipMemsetD8_(dstDevice, uc, N);
-#else
-  return rdmaxcel::DriverAPI::get()->cuMemsetD8_v2_(dstDevice, uc, N);
-#endif
+  return rdmaxcel::DriverAPI::get()->memsetD8_(dstDevice, uc, N);
 }
 
 // Pointer queries
@@ -280,84 +247,46 @@ CUresult rdmaxcel_cuPointerGetAttribute(
     void* data,
     CUpointer_attribute attribute,
     CUdeviceptr ptr) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipPointerGetAttribute_(
-      data, attribute, ptr);
-#else
-  return rdmaxcel::DriverAPI::get()->cuPointerGetAttribute_(
-      data, attribute, ptr);
-#endif
+  return rdmaxcel::DriverAPI::get()->pointerGetAttribute_(data, attribute, ptr);
 }
 
 // Device management
 CUresult rdmaxcel_cuInit(unsigned int Flags) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipInit_(Flags);
-#else
-  return rdmaxcel::DriverAPI::get()->cuInit_(Flags);
-#endif
+  return rdmaxcel::DriverAPI::get()->init_(Flags);
 }
 
 CUresult rdmaxcel_cuDeviceGet(CUdevice* device, int ordinal) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipDeviceGet_(device, ordinal);
-#else
-  return rdmaxcel::DriverAPI::get()->cuDeviceGet_(device, ordinal);
-#endif
+  return rdmaxcel::DriverAPI::get()->deviceGet_(device, ordinal);
 }
 
 CUresult rdmaxcel_cuDeviceGetCount(int* count) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipGetDeviceCount_(count);
-#else
-  return rdmaxcel::DriverAPI::get()->cuDeviceGetCount_(count);
-#endif
+  return rdmaxcel::DriverAPI::get()->deviceGetCount_(count);
 }
 
 CUresult rdmaxcel_cuDeviceGetAttribute(
     int* pi,
     CUdevice_attribute attrib,
     CUdevice dev) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipDeviceGetAttribute_(pi, attrib, dev);
-#else
-  return rdmaxcel::DriverAPI::get()->cuDeviceGetAttribute_(pi, attrib, dev);
-#endif
+  return rdmaxcel::DriverAPI::get()->deviceGetAttribute_(pi, attrib, dev);
 }
 
 // Context management
 CUresult
 rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipCtxCreate_(pctx, flags, dev);
-#else
-  return rdmaxcel::DriverAPI::get()->cuCtxCreate_v2_(pctx, flags, dev);
-#endif
+  return rdmaxcel::DriverAPI::get()->ctxCreate_(pctx, flags, dev);
 }
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipCtxSetCurrent_(ctx);
-#else
-  return rdmaxcel::DriverAPI::get()->cuCtxSetCurrent_(ctx);
-#endif
+  return rdmaxcel::DriverAPI::get()->ctxSetCurrent_(ctx);
 }
 
 CUresult rdmaxcel_cuCtxSynchronize(void) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipCtxSynchronize_();
-#else
-  return rdmaxcel::DriverAPI::get()->cuCtxSynchronize_();
-#endif
+  return rdmaxcel::DriverAPI::get()->ctxSynchronize_();
 }
 
 // Error handling
 CUresult rdmaxcel_cuGetErrorString(CUresult error, const char** pStr) {
-#ifdef USE_ROCM
-  return rdmaxcel::DriverAPI::get()->hipDrvGetErrorString_(error, pStr);
-#else
-  return rdmaxcel::DriverAPI::get()->cuGetErrorString_(error, pStr);
-#endif
+  return rdmaxcel::DriverAPI::get()->getErrorString_(error, pStr);
 }
 
 } // extern "C"
