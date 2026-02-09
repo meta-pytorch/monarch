@@ -400,6 +400,20 @@ impl Proc {
         Ok((instance, handle, supervision_rx, signal_rx, work_rx))
     }
 
+    /// Traverse all actor trees in this proc, starting from root actors (pid=0).
+    pub fn traverse<F>(&self, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        for entry in self.state().instances.iter() {
+            if entry.key().pid() == 0 {
+                if let Some(cell) = entry.value().upgrade() {
+                    cell.traverse(f);
+                }
+            }
+        }
+    }
+
     /// Create a child instance. Called from `Instance`.
     fn child_instance(
         &self,
@@ -1713,7 +1727,7 @@ impl InstanceCell {
     }
 
     /// The actor's ID.
-    pub(crate) fn actor_id(&self) -> &ActorId {
+    pub fn actor_id(&self) -> &ActorId {
         &self.inner.actor_id
     }
 
@@ -1866,6 +1880,29 @@ impl InstanceCell {
     pub(crate) fn downcast_handle<A: Actor>(&self) -> Option<ActorHandle<A>> {
         let ports = Arc::clone(&self.inner.ports).downcast::<Ports<A>>().ok()?;
         Some(ActorHandle::new(self.clone(), ports))
+    }
+
+    /// Traverse the subtree rooted at this instance in pre-order.
+    /// The callback receives each InstanceCell and its depth (root = 0).
+    /// Children are visited in pid order for deterministic traversal.
+    pub fn traverse<F>(&self, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        self.traverse_inner(0, f);
+    }
+
+    fn traverse_inner<F>(&self, depth: usize, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        f(self, depth);
+        // Collect and sort children by pid for deterministic traversal order
+        let mut children: Vec<_> = self.child_iter().map(|r| r.value().clone()).collect();
+        children.sort_by_key(|c| c.pid());
+        for child in children {
+            child.traverse_inner(depth + 1, f);
+        }
     }
 }
 
