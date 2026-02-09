@@ -70,6 +70,7 @@
 pub mod accum;
 pub mod actor;
 pub mod actor_local;
+pub mod admin;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
