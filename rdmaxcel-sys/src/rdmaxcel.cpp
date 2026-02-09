@@ -18,11 +18,13 @@
 // Platform-specific cast for device pointers
 // In CUDA: CUdeviceptr is unsigned long long, use static_cast from size_t
 // In ROCm: hipDeviceptr_t is void*, use reinterpret_cast from size_t
+CUdeviceptr deviceptr_cast(size_t addr) {
 #ifdef USE_ROCM
-  #define DEVPTR_CAST(addr) reinterpret_cast<CUdeviceptr>(addr)
+  return reinterpret_cast<CUdeviceptr>(addr);
 #else
-  #define DEVPTR_CAST(addr) static_cast<CUdeviceptr>(addr)
+  return static_cast<CUdeviceptr>(addr);
 #endif
+}
 
 // MR size must be a multiple of 2MB
 const size_t MR_ALIGNMENT = 2ULL * 1024 * 1024;
@@ -275,7 +277,7 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
   int fd = -1;
   CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
       &fd,
-      DEVPTR_CAST(start_addr),
+      deviceptr_cast(start_addr),
       total_size,
       CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
       0);
@@ -337,7 +339,7 @@ int register_segments(struct ibv_pd* pd, rdmaxcel_qp_t* qp) {
         int fd = -1;
         CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
             &fd,
-            DEVPTR_CAST(chunk_start),
+            deviceptr_cast(chunk_start),
             chunk_size,
             CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
             0);
