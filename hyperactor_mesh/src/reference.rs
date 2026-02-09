@@ -295,7 +295,10 @@ mod tests {
     impl hyperactor::RemoteSpawn for MeshPingPongActor {
         type Params = MeshPingPongActorParams;
 
-        async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+        async fn new(
+            params: Self::Params,
+            _environment: hyperactor_config::Attrs,
+        ) -> Result<Self, anyhow::Error> {
             Ok(Self {
                 mesh_ref: ActorMeshRef::attest(params.mesh_id, params.shape, params.comm_actor_ref),
             })
