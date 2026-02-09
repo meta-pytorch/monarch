@@ -23,7 +23,7 @@ spec:
       spec:
         containers:
         - name: worker
-          image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+          image: ghcr.io/meta-pytorch/monarch:latest
           # TODO: use worker.py when it's available
           command:
             - python
@@ -64,7 +64,7 @@ spec:
       spec:
         containers:
         - name: worker
-          image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+          image: ghcr.io/meta-pytorch/monarch:latest
           # TODO: use worker.py when it's available
           command:
             - python
