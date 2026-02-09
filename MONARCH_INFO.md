@@ -5,7 +5,7 @@
 - Document all public functions and classes.
 - Communicate succinctly and clearly. No flowery prose. No "you're absolutely right!" No emojis. Minimize tokens. Telegraph. Get to the point. Use noun phrases appropriately.
 - Within meta, use `./check lint` to apply formatting and linting rules. Fix *new* reported issues.
-- Always fix Python type errors reported by `./check typecheck`.
+- Always fix Rust and Python type errors reported by `./check typecheck`.
 - Never commit code that does not pass the type checkers (rustc or pyre).
 - Classes and functions should be named clearly, but succinctly. Prefer shorter names and succinct noun phrases.
 - For large changes, include a "walkthrough" in the commit message, so that the reviewer can approach the change efficiently.
@@ -35,7 +35,7 @@
 
 ## Workflow
 
-- Prefer `arc rust-check fbcode//monarch/...` for quick Rust type checking
+- Prefer `./check typecheck` for quick Rust and Python type checking
 - Run `arc autocargo -p monarch` after BUCK/TARGET edits
 - Tip: `arc sanity` runs all unittests directly affected by changes
 - Run relevant tests after making large changes
@@ -152,7 +152,8 @@ USE_TENSOR_ENGINE=0 pip install -e .
 **Meta Internal:**
 ```bash
 # Use the check script for comprehensive checks
-./check                    # lint, typecheck, test, autocargo
+./check                   # lint, typecheck, test, autocargo
+./check typecheck         # Typechecking only
 ./check lint              # Format and lint only
 ./check test              # Test only
 
