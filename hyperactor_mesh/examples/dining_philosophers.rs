@@ -251,9 +251,6 @@ async fn main() -> Result<ExitCode> {
     let group_size = 5;
     let instance = global_root_client();
 
-    // Register the local proc with the admin server
-    admin::register_proc(instance.proc());
-
     // Start the admin HTTP server in a background task
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let admin_addr = listener.local_addr()?;

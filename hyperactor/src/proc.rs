@@ -156,6 +156,9 @@ struct ProcState {
 
 impl Drop for ProcState {
     fn drop(&mut self) {
+        // Deregister from admin server.
+        crate::admin::deregister_proc_by_id(&self.proc_id);
+
         // We only want log ProcStatus::Dropped when ProcState is dropped,
         // rather than Proc is dropped. This is because we need to wait for
         // Proc::inner's ref count becomes 0.
@@ -209,7 +212,7 @@ impl Proc {
             name = "ProcStatus",
             status = "Created"
         );
-        Self {
+        let proc = Self {
             inner: Arc::new(ProcState {
                 proc_id,
                 proc_muxer: MailboxMuxer::new(),
@@ -219,7 +222,12 @@ impl Proc {
                 supervision_coordinator_port: OnceLock::new(),
                 clock,
             }),
-        }
+        };
+
+        // Auto-register with admin server using a weak reference.
+        crate::admin::register_proc(&proc);
+
+        proc
     }
 
     /// Set the supervision coordinator's port for this proc. Return Err if it is
@@ -705,7 +713,8 @@ impl Proc {
         Ok(parent_id.child_id(pid))
     }
 
-    fn downgrade(&self) -> WeakProc {
+    /// Downgrade to a weak reference that doesn't prevent the proc from being dropped.
+    pub fn downgrade(&self) -> WeakProc {
         WeakProc::new(self)
     }
 }
@@ -725,15 +734,17 @@ impl MailboxSender for Proc {
     }
 }
 
-#[derive(Debug)]
-struct WeakProc(Weak<ProcState>);
+/// A weak reference to a Proc that doesn't prevent it from being dropped.
+#[derive(Clone, Debug)]
+pub struct WeakProc(Weak<ProcState>);
 
 impl WeakProc {
     fn new(proc: &Proc) -> Self {
         Self(Arc::downgrade(&proc.inner))
     }
 
-    fn upgrade(&self) -> Option<Proc> {
+    /// Upgrade to a strong Proc reference, if the proc is still alive.
+    pub fn upgrade(&self) -> Option<Proc> {
         self.0.upgrade().map(|inner| Proc { inner })
     }
 }
