@@ -412,7 +412,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             // Use an actor id from the mesh.
             mesh.get(rank).unwrap().actor_id().clone(),
             None,
-            ActorStatus::Stopped,
+            ActorStatus::Stopped("ActorMeshController received explicit stop request".to_string()),
             None,
         );
         let failure_message = MeshFailure {
@@ -587,7 +587,13 @@ fn actor_state_to_supervision_events(
                 vec![ActorSupervisionEvent::new(
                     actor_id.expect("actor_id is None"),
                     None,
-                    ActorStatus::Stopped,
+                    ActorStatus::Stopped(
+                        format!(
+                            "actor status is {}; actor may have been killed",
+                            state.status
+                        )
+                        .to_string(),
+                    ),
                     None,
                 )]
             }
@@ -653,12 +659,11 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 // make the proc failure the cause. It is a hack to try to determine
                 // the correct status based on process exit status.
                 let actor_status = match state.state.and_then(|s| s.proc_status) {
-                    Some(ProcStatus::Stopped { .. })
-                    // SIGTERM
-                    | Some(ProcStatus::Killed { signal: 15, .. })
+                    Some(ProcStatus::Stopped { exit_code, .. }) => {
+                        ActorStatus::Stopped(format!("process exited with code {}", exit_code))
+                    }
                     // Conservatively treat lack of status as stopped
-                    | None => ActorStatus::Stopped,
-
+                    None => ActorStatus::Stopped("no status received from process".to_string()),
                     Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
                         "process failure: {}",
                         status

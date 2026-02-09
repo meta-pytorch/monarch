@@ -23,6 +23,7 @@ use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::bootstrap::MESH_ENABLE_LOG_FORWARDING;
 use hyperactor_mesh::logging::LogClientActor;
 use hyperactor_mesh::logging::LogClientMessage;
@@ -31,6 +32,7 @@ use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::v1::ActorMesh;
 use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::SerializablePyErr;
+use ndslice::Point;
 use ndslice::View;
 use pyo3::Bound;
 use pyo3::prelude::*;
@@ -90,7 +92,7 @@ impl Actor for LoggerRuntimeActor {}
 impl RemoteSpawn for LoggerRuntimeActor {
     type Params = ();
 
-    async fn new(_: ()) -> Result<Self, anyhow::Error> {
+    async fn new(_: (), _environment: Attrs) -> Result<Self, anyhow::Error> {
         let logger =
             monarch_with_gil(|py| Self::get_logger(py).map_err(SerializablePyErr::from_fn(py)))
                 .await?;

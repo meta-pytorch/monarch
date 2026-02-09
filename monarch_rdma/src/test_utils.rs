@@ -88,6 +88,7 @@ pub mod test_utils {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor_config::Attrs;
     use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::RootActorMesh;
@@ -131,7 +132,7 @@ pub mod test_utils {
     impl RemoteSpawn for CudaActor {
         type Params = i32;
 
-        async fn new(device_id: i32) -> Result<Self, anyhow::Error> {
+        async fn new(device_id: i32, _environment: Attrs) -> Result<Self, anyhow::Error> {
             unsafe {
                 cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
                 let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();
