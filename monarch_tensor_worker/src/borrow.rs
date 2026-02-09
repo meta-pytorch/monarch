@@ -15,6 +15,7 @@ use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor_config::Attrs;
 use tokio::sync::Mutex;
 use torch_sys_cuda::cuda::Event;
 
@@ -201,12 +202,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await?,
             )
             .unwrap();
@@ -353,12 +357,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
