@@ -65,7 +65,7 @@ impl WorkerResponse {
         self.seq.into()
     }
 
-    fn exception(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn exception(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self.result.as_ref() {
             Some(Ok(_)) => PyNone::get(py).into_py_any(py),
             Some(Err(exc)) => Ok(PyException::exception_to_py(py, exc)?),
@@ -92,7 +92,7 @@ pub struct PyException {
 }
 
 impl PyException {
-    pub(crate) fn exception_to_py(py: Python<'_>, exc: &Exception) -> PyResult<PyObject> {
+    pub(crate) fn exception_to_py(py: Python<'_>, exc: &Exception) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException { inner: exc.clone() });
         match exc {
             Exception::Error(_, _, _) => {
@@ -140,7 +140,7 @@ impl PyError {
         caused_by_seq: Seq,
         actor_id: &PyActorId,
         backtrace: String,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException {
             inner: Exception::Error(
                 seq,
@@ -283,7 +283,7 @@ impl PyFailure {
         py: Python<'_>,
         actor_id: &PyActorId,
         backtrace: String,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException {
             inner: Exception::Failure(DeviceFailure {
                 actor_id: actor_id.into(),
@@ -440,7 +440,7 @@ impl ClientActor {
         &mut self,
         py: Python<'py>,
         timeout_msec: Option<u64>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let instance = self.instance.clone();
         let result = signal_safe_block_on(py, async move {
             instance.lock().await.next_message(timeout_msec).await
