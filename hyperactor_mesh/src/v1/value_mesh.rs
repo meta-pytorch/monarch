@@ -1958,4 +1958,110 @@ mod tests {
         let runs = mesh.materialized_runs();
         assert_eq!(runs, vec![(0..3, 1), (3..7, 9), (7..10, 4)]);
     }
+
+    #[test]
+    fn accumulator_initializes_and_merges_overlays() {
+        /// Simple three-variant enum local to tests, avoiding a
+        /// cross-module dependency on `crate::resource::Status`.
+        #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+        enum Val {
+            Init,
+            Running,
+            Stopped,
+        }
+
+        let region: Region = extent!(m = 8).into();
+        let template = ValueMesh::from_single(region.clone(), Val::Init);
+
+        // State starts empty (default).
+        let mut state = ValueMesh::<Val>::default();
+        assert_eq!(state.region().num_ranks(), 0);
+
+        // First accumulate: state should be cloned from template.
+        let overlay1 = ValueOverlay::try_from_runs(vec![(2..5, Val::Running)]).unwrap();
+        template.accumulate(&mut state, overlay1).unwrap();
+
+        // State now has the full region, with ranks 2..5 set to Running.
+        assert_eq!(state.region().num_ranks(), 8);
+        let vals: Vec<_> = state.values().collect();
+        assert_eq!(
+            vals,
+            vec![
+                Val::Init,
+                Val::Init,
+                Val::Running,
+                Val::Running,
+                Val::Running,
+                Val::Init,
+                Val::Init,
+                Val::Init,
+            ]
+        );
+
+        // Second accumulate: overlay a different subrange with Stopped.
+        let overlay2 = ValueOverlay::try_from_runs(vec![(5..7, Val::Stopped)]).unwrap();
+        template.accumulate(&mut state, overlay2).unwrap();
+
+        let vals: Vec<_> = state.values().collect();
+        assert_eq!(
+            vals,
+            vec![
+                Val::Init,
+                Val::Init,
+                Val::Running,
+                Val::Running,
+                Val::Running,
+                Val::Stopped,
+                Val::Stopped,
+                Val::Init,
+            ]
+        );
+
+        // reducer_spec should return Some with the correct typehash.
+        let spec = template
+            .reducer_spec()
+            .expect("reducer_spec should be Some");
+        assert_eq!(
+            spec.typehash,
+            <ValueOverlayReducer<Val> as Named>::typehash()
+        );
+    }
+
+    #[test]
+    fn value_overlay_reducer_merges_with_right_wins() {
+        /// Simple three-variant enum local to tests, avoiding a
+        /// cross-module dependency on `crate::resource::Status`.
+        #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+        enum Val {
+            Init,
+            Running,
+            Stopped,
+        }
+
+        let reducer = ValueOverlayReducer::<Val>(PhantomData);
+
+        // Left overlay: ranks 0..4 = Running, 6..8 = Stopped
+        let left =
+            ValueOverlay::try_from_runs(vec![(0..4, Val::Running), (6..8, Val::Stopped)]).unwrap();
+
+        // Right overlay: ranks 2..6 = Init
+        // Overlaps with left on 2..4 (should overwrite Running).
+        let right = ValueOverlay::try_from_runs(vec![(2..6, Val::Init)]).unwrap();
+
+        let merged = reducer.reduce(left, right).unwrap();
+        let runs: Vec<_> = merged.runs().cloned().collect();
+
+        // Expected (right wins on overlap):
+        // 0..2 Running (from left, no overlap)
+        // 2..6 Init (from right, overwrites left 2..4)
+        // 6..8 Stopped (from left, no overlap)
+        assert_eq!(
+            runs,
+            vec![
+                (0..2, Val::Running),
+                (2..6, Val::Init),
+                (6..8, Val::Stopped),
+            ]
+        );
+    }
 }
