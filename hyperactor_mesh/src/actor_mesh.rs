@@ -1572,7 +1572,10 @@ mod tests {
             next_event.actor_mesh_name,
             Some(mesh_ref.name().to_string())
         );
-        assert!(matches!(next_event.event.actor_status, ActorStatus::Stopped(_)));
+        assert!(matches!(
+            next_event.event.actor_status,
+            ActorStatus::Stopped(_)
+        ));
         // Check that a cloned Ref from earlier gets the same event. Every clone
         // should get the same event, even if it's not a subscriber.
         let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
@@ -1580,6 +1583,9 @@ mod tests {
             next_event.actor_mesh_name,
             Some(mesh_ref.name().to_string())
         );
-        assert!(matches!(next_event.event.actor_status, ActorStatus::Stopped(_)));
+        assert!(matches!(
+            next_event.event.actor_status,
+            ActorStatus::Stopped(_)
+        ));
     }
 }
