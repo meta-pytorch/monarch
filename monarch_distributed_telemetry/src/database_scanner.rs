@@ -136,12 +136,12 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
     let mut mems = Vec::new();
 
     for host_id in host_start..host_end {
-        host_ids.push(host_id as i32);
+        host_ids.push(host_id);
         hostnames.push(format!("server-{:05}", host_id));
         dcs.push(datacenters[rng.gen_range(0..datacenters.len())].to_string());
         oses.push(os_types[rng.gen_range(0..os_types.len())].to_string());
         cpus.push(cpu_options[rng.gen_range(0..cpu_options.len())] as i32);
-        mems.push(memory_options[rng.gen_range(0..memory_options.len())] as i32);
+        mems.push(memory_options[rng.gen_range(0..memory_options.len())]);
     }
 
     let hosts_batch = RecordBatch::try_new(
