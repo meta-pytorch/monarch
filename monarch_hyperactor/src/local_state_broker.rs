@@ -22,8 +22,8 @@ use pyo3::prelude::*;
 
 #[derive(Debug)]
 pub struct LocalState {
-    pub response_port: OncePortHandle<Result<PyObject, PyObject>>,
-    pub state: Vec<PyObject>,
+    pub response_port: OncePortHandle<Result<Py<PyAny>, Py<PyAny>>>,
+    pub state: Vec<Py<PyAny>>,
 }
 
 #[derive(Debug)]

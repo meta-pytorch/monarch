@@ -68,11 +68,11 @@ pub enum LoggerRuntimeMessage {
 #[derive(Debug)]
 #[hyperactor::export(spawn = true, handlers = [LoggerRuntimeMessage {cast = true}])]
 pub struct LoggerRuntimeActor {
-    logger: Arc<PyObject>,
+    logger: Arc<Py<PyAny>>,
 }
 
 impl LoggerRuntimeActor {
-    fn get_logger(py: Python) -> PyResult<PyObject> {
+    fn get_logger(py: Python) -> PyResult<Py<PyAny>> {
         // Import the Python AutoReloader class
         let logging_module = py.import("logging")?;
         let logger = logging_module.call_method0("getLogger")?;
@@ -80,7 +80,7 @@ impl LoggerRuntimeActor {
         Ok(logger.into())
     }
 
-    fn set_logger_level(py: Python, logger: &PyObject, level: u8) -> PyResult<()> {
+    fn set_logger_level(py: Python, logger: &Py<PyAny>, level: u8) -> PyResult<()> {
         let logger = logger.bind(py);
         logger.call_method1("setLevel", (level,))?;
         Ok(())
@@ -530,8 +530,8 @@ fn format_traceback<'py>(py: Python<'py>, err: PyErr) -> String {
 #[pyfunction]
 fn log_endpoint_exception<'py>(
     py: Python<'py>,
-    e: PyObject,
-    endpoint: PyObject,
+    e: Py<PyAny>,
+    endpoint: Py<PyAny>,
     actor_id: PyActorId,
 ) {
     let pyerr = PyErr::from_value(e.into_bound(py));

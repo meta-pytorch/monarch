@@ -16,8 +16,6 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
-use std::hash::Hash;
-use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -25,11 +23,13 @@ use std::panic::Location;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -38,10 +38,7 @@ use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
 use hyperactor_config::attrs::Attrs;
-use hyperactor_telemetry::recorder;
 use hyperactor_telemetry::recorder::Recording;
-use serde::Deserialize;
-use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -62,6 +59,7 @@ use crate::actor::ActorErrorKind;
 use crate::actor::ActorHandle;
 use crate::actor::ActorStatus;
 use crate::actor::Binds;
+use crate::actor::HandlerInfo;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
@@ -146,9 +144,7 @@ struct ProcState {
     /// spawned remotely.
     roots: DashMap<String, AtomicUsize>,
 
-    /// Keep track of all of the active actors in the proc.
-    ledger: ActorLedger,
-
+    /// All actor instances in this proc.
     instances: DashMap<ActorId, WeakInstanceCell>,
 
     /// Used by root actors to send events to the actor coordinating
@@ -160,6 +156,9 @@ struct ProcState {
 
 impl Drop for ProcState {
     fn drop(&mut self) {
+        // Deregister from admin server.
+        crate::admin::deregister_proc_by_id(&self.proc_id);
+
         // We only want log ProcStatus::Dropped when ProcState is dropped,
         // rather than Proc is dropped. This is because we need to wait for
         // Proc::inner's ref count becomes 0.
@@ -168,184 +167,6 @@ impl Drop for ProcState {
             name = "ProcStatus",
             status = "Dropped"
         );
-    }
-}
-
-/// A snapshot view of the proc's actor ledger.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ActorLedgerSnapshot {
-    /// All the actor trees in the proc, mapping the root id to the root
-    /// of each tree.
-    pub roots: HashMap<ActorId, ActorTreeSnapshot>,
-}
-
-/// A event for one row of log.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Event {
-    /// Time when the event happend.
-    pub time: SystemTime,
-    /// The payload of the event.
-    pub fields: Vec<(String, recorder::Value)>,
-    /// The sequence number of the event.
-    pub seq: usize,
-}
-
-impl From<recorder::Event> for Event {
-    fn from(event: recorder::Event) -> Event {
-        Event {
-            time: event.time,
-            fields: event.fields(),
-            seq: event.seq,
-        }
-    }
-}
-
-/// A snapshot of an actor tree (rooted at a pid=0 actor).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ActorTreeSnapshot {
-    /// The PID of this actor.
-    pub pid: Index,
-
-    /// The type name of the actor. If the actor is [`typeuri::Named`], then
-    /// this is the registered name; otherwise it is the actor type's
-    /// [`std::any::type_name`].
-    pub type_name: String,
-
-    /// The actor's current status.
-    pub status: ActorStatus,
-
-    /// Various operational stats for the actor.
-    pub stats: ActorStats,
-
-    /// This actor's handlers, mapping port numbers to the named type handled.
-    pub handlers: HashMap<u64, String>,
-
-    /// This actor's children.
-    pub children: HashMap<Index, ActorTreeSnapshot>,
-
-    /// Recent events emitted by the actor's logging.
-    pub events: Vec<Event>,
-
-    /// The current set of spans entered by the actor. These should be active
-    /// only while the actor is entered in a handler.
-    pub spans: Vec<Vec<String>>,
-}
-
-impl Hash for ActorTreeSnapshot {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.pid.hash(state);
-    }
-}
-
-/// Operational stats for an actor instance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Default)]
-pub struct ActorStats {
-    /// The number of messages processed by the actor.
-    num_processed_messages: u64,
-}
-
-impl fmt::Display for ActorStats {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "num_processed_messages={}", self.num_processed_messages)
-    }
-}
-
-#[derive(Debug)]
-struct ActorLedger {
-    // Root actors. Map's value is its key's InstanceCell.
-    roots: DashMap<ActorId, WeakInstanceCell>,
-}
-
-impl ActorLedger {
-    fn new() -> Self {
-        Self {
-            roots: DashMap::new(),
-        }
-    }
-
-    fn insert(
-        &self,
-        root_actor_id: ActorId,
-        root_actor_cell: WeakInstanceCell,
-    ) -> Result<(), anyhow::Error> {
-        match self.roots.insert(root_actor_id.clone(), root_actor_cell) {
-            None => Ok(()),
-            // This should never happen because we do not recycle root actor's
-            // IDs.
-            Some(current_cell) => {
-                let debugging_msg = match current_cell.upgrade() {
-                    Some(cell) => format!("the stored cell's actor ID is {}", cell.actor_id()),
-                    None => "the stored cell has been dropped".to_string(),
-                };
-
-                Err(anyhow::anyhow!(
-                    "actor '{root_actor_id}' has already been added to ledger: {debugging_msg}"
-                ))
-            }
-        }
-    }
-
-    /// Get a snapshot view of this ledger.
-    fn snapshot(&self) -> ActorLedgerSnapshot {
-        let roots = self
-            .roots
-            .iter()
-            .flat_map(|r| {
-                let (actor_id, weak_cell) = r.pair();
-                // The actor might have been stopped or errored out. Since we do
-                // not remove inactive actors from ledger, the upgrade() call
-                // will return None in that scenario.
-                weak_cell
-                    .upgrade()
-                    .map(|cell| (actor_id.clone(), Self::get_actor_tree_snapshot(&cell)))
-            })
-            .collect();
-
-        ActorLedgerSnapshot { roots }
-    }
-
-    fn get_actor_tree_snapshot(cell: &InstanceCell) -> ActorTreeSnapshot {
-        // Get the edges between this actor and its children.
-        let children = cell
-            .child_iter()
-            .map(|child| (child.pid(), Self::get_actor_tree_snapshot(child.value())))
-            .collect();
-
-        ActorTreeSnapshot {
-            pid: cell.actor_id().pid(),
-            type_name: cell.inner.actor_type.type_name().to_string(),
-            status: cell.status().borrow().clone(),
-            stats: ActorStats {
-                num_processed_messages: cell.inner.num_processed_messages.load(Ordering::SeqCst),
-            },
-            handlers: cell
-                .inner
-                .exported_named_ports
-                .iter()
-                .map(|entry| (*entry.key(), entry.value().to_string()))
-                .collect(),
-            children,
-            events: cell
-                .inner
-                .recording
-                .tail()
-                .into_iter()
-                .map(Event::from)
-                .collect(),
-            spans: cell
-                .inner
-                .recording
-                .stacks()
-                .into_iter()
-                .map(|stack| {
-                    stack
-                        .into_iter()
-                        .map(|meta| meta.name().to_string())
-                        .collect()
-                })
-                .collect(),
-        }
     }
 }
 
@@ -391,18 +212,22 @@ impl Proc {
             name = "ProcStatus",
             status = "Created"
         );
-        Self {
+        let proc = Self {
             inner: Arc::new(ProcState {
                 proc_id,
                 proc_muxer: MailboxMuxer::new(),
                 forwarder,
                 roots: DashMap::new(),
-                ledger: ActorLedger::new(),
                 instances: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 clock,
             }),
-        }
+        };
+
+        // Auto-register with admin server using a weak reference.
+        crate::admin::register_proc(&proc);
+
+        proc
     }
 
     /// Set the supervision coordinator's port for this proc. Return Err if it is
@@ -483,11 +308,6 @@ impl Proc {
         })
     }
 
-    /// Get the snapshot of the ledger.
-    pub fn ledger_snapshot(&self) -> ActorLedgerSnapshot {
-        self.state().ledger.snapshot()
-    }
-
     /// Attach a mailbox to the proc with the provided root name.
     pub fn attach(&self, name: &str) -> Result<Mailbox, anyhow::Error> {
         let actor_id: ActorId = self.allocate_root_id(name)?;
@@ -543,16 +363,9 @@ impl Proc {
         actor: A,
         parent: Option<InstanceCell>,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let is_root = parent.is_none();
+        let _is_root = parent.is_none();
         let (instance, mut actor_loop_receivers, work_rx) =
             Instance::new(self.clone(), actor_id.clone(), false, parent);
-
-        // Root actors are added to the ledger
-        if is_root {
-            self.state()
-                .ledger
-                .insert(actor_id, instance.inner.cell.downgrade())?;
-        }
 
         Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
     }
@@ -599,6 +412,48 @@ impl Proc {
         Ok((instance, handle, supervision_rx, signal_rx, work_rx))
     }
 
+    /// Traverse all actor trees in this proc, starting from root actors (pid=0).
+    pub fn traverse<F>(&self, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        for entry in self.state().instances.iter() {
+            if entry.key().pid() == 0 {
+                if let Some(cell) = entry.value().upgrade() {
+                    cell.traverse(f);
+                }
+            }
+        }
+    }
+
+    /// Look up an instance by ActorId.
+    pub fn get_instance(&self, actor_id: &ActorId) -> Option<InstanceCell> {
+        self.state()
+            .instances
+            .get(actor_id)
+            .and_then(|weak| weak.upgrade())
+    }
+
+    /// Returns the ActorIds of all root actors (pid=0) in this proc.
+    pub fn root_actor_ids(&self) -> Vec<ActorId> {
+        self.state()
+            .instances
+            .iter()
+            .filter(|entry| entry.key().pid() == 0)
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
+    /// Returns the ActorIds of all live actors in this proc, including
+    /// dynamically spawned children.
+    pub fn all_actor_ids(&self) -> Vec<ActorId> {
+        self.state()
+            .instances
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Create a child instance. Called from `Instance`.
     fn child_instance(
         &self,
@@ -641,8 +496,7 @@ impl Proc {
         this_handle: Option<&JoinHandle<()>>,
     ) -> Option<impl Future<Output = ActorId>> {
         self.state()
-            .ledger
-            .roots
+            .instances
             .get(root)
             .into_iter()
             .flat_map(|e| e.upgrade())
@@ -656,9 +510,7 @@ impl Proc {
                         .get()
                         .is_some_and(|other_h| std::ptr::eq(this_h, other_h))
                 });
-                // `start` was called on the actor's instance
-                // immediately following `root`'s insertion into the
-                // ledger. `Instance::start()` is infallible and should
+                // `Instance::start()` is infallible and should
                 // complete quickly, so calling `wait()` on `actor_task_handle`
                 // should be safe (i.e., not hang forever).
                 async move {
@@ -684,9 +536,9 @@ impl Proc {
         actor_id: &ActorId,
         reason: String,
     ) -> Option<watch::Receiver<ActorStatus>> {
-        if let Some(entry) = self.state().ledger.roots.get(actor_id) {
+        if let Some(entry) = self.state().instances.get(actor_id) {
             match entry.value().upgrade() {
-                None => None, // the root's cell has been dropped
+                None => None, // the actor's cell has been dropped
                 Some(cell) => {
                     tracing::info!("sending stop signal to {}", cell.actor_id());
                     if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
@@ -703,7 +555,7 @@ impl Proc {
                 }
             }
         } else {
-            tracing::error!("no actor {} found in {} roots", actor_id, self.proc_id());
+            tracing::error!("no actor {} found in {}", actor_id, self.proc_id());
             None
         }
     }
@@ -754,9 +606,9 @@ impl Proc {
         let mut statuses = HashMap::new();
         for actor_id in self
             .state()
-            .ledger
-            .roots
+            .instances
             .iter()
+            .filter(|entry| entry.key().pid() == 0)
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>()
         {
@@ -797,11 +649,9 @@ impl Proc {
                 let f = self.abort_root_actor(actor_id, this_handle);
                 async move {
                     let _ = if let Some(f) = f { Some(f.await) } else { None };
-                    // If `is_none(&_)` then the proc's `ledger.roots`
-                    // contains an entry that wasn't a root or, the
-                    // associated actor's instance cell was already
-                    // dropped when we went to call `abort()` on the
-                    // cell's task handle.
+                    // If `is_none(&_)` then the associated actor's
+                    // instance cell was already dropped when we went
+                    // to call `abort()` on the cell's task handle.
 
                     actor_id.clone()
                 }
@@ -873,7 +723,8 @@ impl Proc {
         Ok(parent_id.child_id(pid))
     }
 
-    fn downgrade(&self) -> WeakProc {
+    /// Downgrade to a weak reference that doesn't prevent the proc from being dropped.
+    pub fn downgrade(&self) -> WeakProc {
         WeakProc::new(self)
     }
 }
@@ -893,15 +744,17 @@ impl MailboxSender for Proc {
     }
 }
 
-#[derive(Debug)]
-struct WeakProc(Weak<ProcState>);
+/// A weak reference to a Proc that doesn't prevent it from being dropped.
+#[derive(Clone, Debug)]
+pub struct WeakProc(Weak<ProcState>);
 
 impl WeakProc {
     fn new(proc: &Proc) -> Self {
         Self(Arc::downgrade(&proc.inner))
     }
 
-    fn upgrade(&self) -> Option<Proc> {
+    /// Upgrade to a strong Proc reference, if the proc is still alive.
+    pub fn upgrade(&self) -> Option<Proc> {
         self.0.upgrade().map(|inner| Proc { inner })
     }
 }
@@ -1634,31 +1487,47 @@ impl<A: Actor> Instance<A> {
     where
         A: Handler<M>,
     {
-        let handler = type_info.map(|info| {
-            (
-                info.typename().to_string(),
+        // Build HandlerInfo from TypeInfo (zero-copy) or fall back to type_name.
+        let handler_info = match type_info {
+            Some(info) => {
                 // SAFETY: The caller promises to pass the correct type info.
-                unsafe {
-                    info.arm_unchecked(&message as *const M as *const ())
-                        .map(str::to_string)
-                },
-            )
-        });
+                let arm = unsafe { info.arm_unchecked(&message as *const M as *const ()) };
+                Some(HandlerInfo::from_static(info.typename(), arm))
+            }
+            None => {
+                // Fall back to std::any::type_name (also static, zero-copy).
+                Some(HandlerInfo::from_static(std::any::type_name::<M>(), None))
+            }
+        };
 
         self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
-            handler,
+            handler_info.clone(),
         ));
         crate::mailbox::headers::log_message_latency_if_sampling(
             &headers,
             self.self_id().to_string(),
         );
 
+        // Record the message handler being invoked.
+        *self.inner.cell.inner.last_message_handler.write().unwrap() = handler_info;
+
         let context = Context::new(self, headers);
         // Pass a reference to the context to the handler, so that deref
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
-        actor.handle(&context, message).await
+        let start = Instant::now();
+        let result = actor
+            .handle(&context, message)
+            .instrument(self.inner.cell.inner.recording.span())
+            .await;
+        let elapsed_us = start.elapsed().as_micros() as u64;
+        self.inner
+            .cell
+            .inner
+            .total_processing_time_us
+            .fetch_add(elapsed_us, Ordering::SeqCst);
+        result
     }
 
     /// Spawn on child on this instance.
@@ -1802,11 +1671,10 @@ enum ActorType {
 }
 
 impl ActorType {
-    /// The actor's type name.
-    fn type_name(&self) -> &'static str {
+    fn type_name(&self) -> &str {
         match self {
-            Self::Named(info) => info.typename(),
-            Self::Anonymous(name) => name,
+            ActorType::Named(info) => info.typename(),
+            ActorType::Anonymous(name) => name,
         }
     }
 }
@@ -1861,6 +1729,15 @@ struct InstanceCellState {
     /// The number of messages processed by this actor.
     num_processed_messages: AtomicU64,
 
+    /// When this actor was created.
+    created_at: SystemTime,
+
+    /// Name of the last message handler invoked.
+    last_message_handler: RwLock<Option<HandlerInfo>>,
+
+    /// Total time spent processing messages, in microseconds.
+    total_processing_time_us: AtomicU64,
+
     /// The log recording associated with this actor. It is used to
     /// store a 'flight record' of events while the actor is running.
     recording: Recording,
@@ -1911,6 +1788,9 @@ impl InstanceCell {
                 actor_task_handle: OnceLock::new(),
                 exported_named_ports: DashMap::new(),
                 num_processed_messages: AtomicU64::new(0),
+                created_at: SystemTime::now(),
+                last_message_handler: RwLock::new(None),
+                total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
                 ports,
             }),
@@ -1927,7 +1807,7 @@ impl InstanceCell {
     }
 
     /// The actor's ID.
-    pub(crate) fn actor_id(&self) -> &ActorId {
+    pub fn actor_id(&self) -> &ActorId {
         &self.inner.actor_id
     }
 
@@ -1943,7 +1823,7 @@ impl InstanceCell {
     }
 
     /// The instance's status observer.
-    pub(crate) fn status(&self) -> &watch::Receiver<ActorStatus> {
+    pub fn status(&self) -> &watch::Receiver<ActorStatus> {
         &self.inner.status
     }
 
@@ -2038,12 +1918,6 @@ impl InstanceCell {
         self.inner.maybe_unlink_parent()
     }
 
-    /// Get parent instance cell, if it exists.
-    #[allow(dead_code)]
-    fn get_parent_cell(&self) -> Option<InstanceCell> {
-        self.inner.parent.upgrade()
-    }
-
     /// Return an iterator over this instance's children. This may deadlock if the
     /// caller already holds a reference to any item in map.
     fn child_iter(&self) -> impl Iterator<Item = RefMulti<'_, Index, InstanceCell>> {
@@ -2051,13 +1925,57 @@ impl InstanceCell {
     }
 
     /// The number of children this instance has.
-    fn child_count(&self) -> usize {
+    pub fn child_count(&self) -> usize {
         self.inner.children.len()
+    }
+
+    /// Returns the ActorIds of this instance's direct children.
+    pub fn child_actor_ids(&self) -> Vec<ActorId> {
+        self.inner
+            .children
+            .iter()
+            .map(|entry| entry.value().actor_id().clone())
+            .collect()
     }
 
     /// Get a child by its PID.
     fn get_child(&self, pid: Index) -> Option<InstanceCell> {
         self.inner.children.get(&pid).map(|child| child.clone())
+    }
+
+    /// Access the flight recorder for this actor.
+    pub fn recording(&self) -> &Recording {
+        &self.inner.recording
+    }
+
+    /// When this actor was created.
+    pub fn created_at(&self) -> SystemTime {
+        self.inner.created_at
+    }
+
+    /// The number of messages processed by this actor.
+    pub fn num_processed_messages(&self) -> u64 {
+        self.inner.num_processed_messages.load(Ordering::SeqCst)
+    }
+
+    /// The last message handler invoked by this actor.
+    pub fn last_message_handler(&self) -> Option<HandlerInfo> {
+        self.inner.last_message_handler.read().unwrap().clone()
+    }
+
+    /// Total time spent processing messages, in microseconds.
+    pub fn total_processing_time_us(&self) -> u64 {
+        self.inner.total_processing_time_us.load(Ordering::SeqCst)
+    }
+
+    /// Get parent instance cell, if it exists.
+    pub fn parent(&self) -> Option<InstanceCell> {
+        self.inner.parent.upgrade()
+    }
+
+    /// The actor's type name.
+    pub fn actor_type_name(&self) -> &str {
+        self.inner.actor_type.type_name()
     }
 
     /// This is temporary so that we can share binding code between handle and instance.
@@ -2080,6 +1998,29 @@ impl InstanceCell {
     pub(crate) fn downcast_handle<A: Actor>(&self) -> Option<ActorHandle<A>> {
         let ports = Arc::clone(&self.inner.ports).downcast::<Ports<A>>().ok()?;
         Some(ActorHandle::new(self.clone(), ports))
+    }
+
+    /// Traverse the subtree rooted at this instance in pre-order.
+    /// The callback receives each InstanceCell and its depth (root = 0).
+    /// Children are visited in pid order for deterministic traversal.
+    pub fn traverse<F>(&self, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        self.traverse_inner(0, f);
+    }
+
+    fn traverse_inner<F>(&self, depth: usize, f: &mut F)
+    where
+        F: FnMut(&InstanceCell, usize),
+    {
+        f(self, depth);
+        // Collect and sort children by pid for deterministic traversal order
+        let mut children: Vec<_> = self.child_iter().map(|r| r.value().clone()).collect();
+        children.sort_by_key(|c| c.pid());
+        for child in children {
+            child.traverse_inner(depth + 1, f);
+        }
     }
 }
 
@@ -2250,7 +2191,6 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use hyperactor_macros::export;
-    use maplit::hashmap;
     use serde_json::json;
     use timed_test::async_timed_test;
     use tokio::sync::Barrier;
@@ -2269,35 +2209,6 @@ mod tests {
     use crate::clock::RealClock;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator;
     use crate::test_utils::process_assertion::assert_termination;
-
-    impl ActorTreeSnapshot {
-        #[allow(dead_code)]
-        fn empty(pid: Index) -> Self {
-            Self {
-                pid,
-                type_name: String::new(),
-                status: ActorStatus::Idle,
-                stats: ActorStats::default(),
-                handlers: HashMap::new(),
-                children: HashMap::new(),
-                events: Vec::new(),
-                spans: Vec::new(),
-            }
-        }
-
-        fn empty_typed(pid: Index, type_name: String) -> Self {
-            Self {
-                pid,
-                type_name,
-                status: ActorStatus::Idle,
-                stats: ActorStats::default(),
-                handlers: HashMap::new(),
-                children: HashMap::new(),
-                events: Vec::new(),
-                spans: Vec::new(),
-            }
-        }
-    }
 
     #[derive(Debug, Default)]
     #[export]
@@ -2668,236 +2579,6 @@ mod tests {
         );
         assert_matches!(root_2_1.await, ActorStatus::Stopped(_));
         assert_matches!(root_1.await, ActorStatus::Stopped(_));
-    }
-
-    #[async_timed_test(timeout_secs = 30)]
-    // TODO: The snapshot has a flaky num_messages_processed count after stopping
-    // root_1, but only on Github. The test expects 3, sometimes the result is 2.
-    #[cfg_attr(not(fbcode_build), ignore)]
-    async fn test_actor_ledger() {
-        async fn wait_until_idle(actor_handle: &ActorHandle<TestActor>) {
-            actor_handle
-                .status()
-                .wait_for(|state: &ActorStatus| matches!(*state, ActorStatus::Idle))
-                .await
-                .unwrap();
-        }
-
-        let proc = Proc::local();
-        let (client, _) = proc.instance("client").unwrap();
-
-        // Add the 1st root. This root will remain active until the end of the test.
-        let root: ActorHandle<TestActor> = proc.spawn("root", TestActor).unwrap();
-        wait_until_idle(&root).await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(
-                snapshot.roots,
-                hashmap! {
-                    root.actor_id().clone() =>
-                        ActorTreeSnapshot::empty_typed(0, "hyperactor::proc::tests::TestActor".to_string())
-                },
-            );
-        }
-
-        // Add the 2nd root.
-        let another_root: ActorHandle<TestActor> = proc.spawn("another_root", TestActor).unwrap();
-        wait_until_idle(&another_root).await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(
-                snapshot.roots,
-                hashmap! {
-                    root.actor_id().clone() =>
-                        ActorTreeSnapshot::empty_typed(0, "hyperactor::proc::tests::TestActor".to_string()),
-                    another_root.actor_id().clone() =>
-                        ActorTreeSnapshot::empty_typed(0, "hyperactor::proc::tests::TestActor".to_string()),
-                },
-            );
-        }
-
-        // Stop the 2nd root. It should be excluded from the snapshot after it
-        // is stopped.
-        another_root.drain_and_stop("test").unwrap();
-        another_root.await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(
-                snapshot.roots,
-                hashmap! { root.actor_id().clone() =>
-                    ActorTreeSnapshot::empty_typed(0, "hyperactor::proc::tests::TestActor".to_string())
-                },
-            );
-        }
-
-        // Incrementally add the following children tree to root. This tree
-        // should be captured by snapshot.
-        //     root -> root_1 -> root_1_1
-        //         |-> root_2
-
-        let root_1 = TestActor::spawn_child(&client, &root).await;
-        wait_until_idle(&root_1).await;
-        // Wait until the root actor processes the message and is then idle again.
-        wait_until_idle(&root).await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(
-                snapshot.roots,
-                hashmap! {
-                    root.actor_id().clone() =>  ActorTreeSnapshot {
-                        pid: 0,
-                        type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                        status: ActorStatus::Idle,
-                        stats: ActorStats { num_processed_messages: 1 },
-                        handlers: HashMap::new(),
-                        children: hashmap! {
-                            root_1.actor_id().pid() =>
-                                ActorTreeSnapshot::empty_typed(
-                                    root_1.actor_id().pid(),
-                                    "hyperactor::proc::tests::TestActor".to_string()
-                                )
-                        },
-                        events: Vec::new(),
-                        spans: Vec::new(),
-                    }
-                },
-            );
-        }
-
-        let root_1_1 = TestActor::spawn_child(&client, &root_1).await;
-        wait_until_idle(&root_1_1).await;
-        wait_until_idle(&root_1).await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(
-                snapshot.roots,
-                hashmap! {
-                    root.actor_id().clone() =>  ActorTreeSnapshot {
-                        pid: 0,
-                        type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                        status: ActorStatus::Idle,
-                        stats: ActorStats { num_processed_messages: 1 },
-                        handlers: HashMap::new(),
-                        children: hashmap!{
-                            root_1.actor_id().pid() =>
-                                ActorTreeSnapshot {
-                                    pid: root_1.actor_id().pid(),
-                                    type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                                    status: ActorStatus::Idle,
-                                    stats: ActorStats { num_processed_messages: 1 },
-                                    handlers: HashMap::new(),
-                                    children: hashmap!{
-                                        root_1_1.actor_id().pid() =>
-                                            ActorTreeSnapshot::empty_typed(
-                                                root_1_1.actor_id().pid(),
-                                                "hyperactor::proc::tests::TestActor".to_string()
-                                            )
-                                    },
-                                    events: Vec::new(),
-                                    spans: Vec::new(),
-                                }
-                        },
-                        events: Vec::new(),
-                        spans: Vec::new(),
-                    },
-                }
-            );
-        }
-
-        let root_2 = TestActor::spawn_child(&client, &root).await;
-        wait_until_idle(&root_2).await;
-        wait_until_idle(&root).await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(
-                snapshot.roots,
-                hashmap! {
-                    root.actor_id().clone() =>  ActorTreeSnapshot {
-                        pid: 0,
-                        type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                        status: ActorStatus::Idle,
-                        stats: ActorStats { num_processed_messages: 2 },
-                        handlers: HashMap::new(),
-                        children: hashmap!{
-                            root_2.actor_id().pid() =>
-                                ActorTreeSnapshot{
-                                    pid: root_2.actor_id().pid(),
-                                    type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                                    status: ActorStatus::Idle,
-                                    stats: ActorStats::default(),
-                                    handlers: HashMap::new(),
-                                    children: HashMap::new(),
-                                    events: Vec::new(),
-                                    spans: Vec::new(),
-                                },
-                            root_1.actor_id().pid() =>
-                                ActorTreeSnapshot{
-                                    pid: root_1.actor_id().pid(),
-                                    type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                                    status: ActorStatus::Idle,
-                                    stats: ActorStats { num_processed_messages: 1 },
-                                    handlers: HashMap::new(),
-                                    children: hashmap!{
-                                        root_1_1.actor_id().pid() =>
-                                            ActorTreeSnapshot::empty_typed(
-                                                root_1_1.actor_id().pid(),
-                                                "hyperactor::proc::tests::TestActor".to_string()
-                                            )
-                                    },
-                                    events: Vec::new(),
-                                    spans: Vec::new(),
-                                },
-                        },
-                        events: Vec::new(),
-                        spans: Vec::new(),
-                    },
-                }
-            );
-        }
-
-        // Stop root_1. This should remove it, and its child, from snapshot.
-        root_1.drain_and_stop("test").unwrap();
-        root_1.await;
-        // root also needs to stop processing messages to get a reliable number.
-        wait_until_idle(&root).await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(
-                snapshot.roots,
-                hashmap! {
-                    root.actor_id().clone() =>  ActorTreeSnapshot {
-                        pid: 0,
-                        type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                        status: ActorStatus::Idle,
-                        stats: ActorStats { num_processed_messages: 3 },
-                        handlers: HashMap::new(),
-                        children: hashmap!{
-                            root_2.actor_id().pid() =>
-                                ActorTreeSnapshot {
-                                    pid: root_2.actor_id().pid(),
-                                    type_name: "hyperactor::proc::tests::TestActor".to_string(),
-                                    status: ActorStatus::Idle,
-                                    stats: ActorStats::default(),
-                                    handlers: HashMap::new(),
-                                    children: HashMap::new(),
-                                    events: Vec::new(),
-                                    spans: Vec::new(),
-                                }
-                        },
-                        events: Vec::new(),
-                        spans: Vec::new(),
-                    },
-                }
-            );
-        }
-
-        // Finally stop root. No roots should be left in snapshot.
-        root.drain_and_stop("test").unwrap();
-        root.await;
-        {
-            let snapshot = proc.state().ledger.snapshot();
-            assert_eq!(snapshot.roots, hashmap! {});
-        }
     }
 
     #[async_timed_test(timeout_secs = 30)]
