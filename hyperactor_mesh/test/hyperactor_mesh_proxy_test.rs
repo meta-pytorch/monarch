@@ -22,13 +22,15 @@ use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox;
+use hyperactor_config::Attrs;
+use hyperactor_mesh::Mesh;
+use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::proc_mesh::global_root_client;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::ProcMesh;
 use ndslice::View;
 use ndslice::extent;
 use serde::Deserialize;
@@ -72,7 +74,7 @@ impl Actor for TestActor {}
 impl RemoteSpawn for TestActor {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(_params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
         Ok(Self)
     }
 }
@@ -124,7 +126,10 @@ impl Actor for ProxyActor {
 impl RemoteSpawn for ProxyActor {
     type Params = String;
 
-    async fn new(exe_path: Self::Params) -> anyhow::Result<Self, anyhow::Error> {
+    async fn new(
+        exe_path: Self::Params,
+        _environment: Attrs,
+    ) -> anyhow::Result<Self, anyhow::Error> {
         let mut cmd = Command::new(PathBuf::from(&exe_path));
         cmd.arg("--bootstrap");
 

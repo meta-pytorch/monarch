@@ -15,5 +15,5 @@ doctest = false
 proc-macro = true
 
 [dependencies]
-quote = "1.0.29"
+quote = "1.0.44"
 syn = { version = "2.0.110", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }

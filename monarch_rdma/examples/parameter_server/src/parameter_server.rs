@@ -69,13 +69,15 @@ use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Attrs;
+use hyperactor_mesh::Mesh;
+use hyperactor_mesh::ProcMesh;
+use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::ProcMesh;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
@@ -127,7 +129,7 @@ impl Actor for ParameterServerActor {
 impl RemoteSpawn for ParameterServerActor {
     type Params = (ActorRef<RdmaManagerActor>, usize);
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(_params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
         let (owner_ref, worker_world_size) = _params;
         tracing::info!("creating parameter server actor");
         let weights_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
@@ -263,7 +265,7 @@ impl Actor for WorkerActor {
 impl RemoteSpawn for WorkerActor {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(_params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
         let weights_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         let local_gradients = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         Ok(Self {
