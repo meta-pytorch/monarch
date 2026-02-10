@@ -20,7 +20,7 @@ torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
-pyo3-build-config = "0.24.2"
+pyo3-build-config = "0.26"
 
 [features]
 cuda = []
