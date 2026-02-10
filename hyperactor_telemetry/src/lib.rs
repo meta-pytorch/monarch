@@ -287,18 +287,14 @@ lazy_static! {
         let (sender, receiver) = mpsc::channel();
         (sender, Mutex::new(Some(receiver)))
     };
-    /// Global actor event sink.
-    /// Receives actor creation events directly (not via tracing).
-    /// Only one sink is supported; registering a new sink replaces the previous one.
-    static ref ACTOR_EVENT_SINK: Mutex<Option<Box<dyn ActorEventSink>>> = Mutex::new(None);
-    /// Global mesh event sink.
-    /// Receives mesh creation events directly (not via tracing).
-    /// Only one sink is supported; registering a new sink replaces the previous one.
-    static ref MESH_EVENT_SINK: Mutex<Option<Box<dyn MeshEventSink>>> = Mutex::new(None);
+    /// Global unified entity event dispatcher.
+    /// Receives all entity lifecycle events (actors, meshes, etc.) directly (not via tracing).
+    /// Only one dispatcher is supported; setting a new dispatcher replaces the previous one.
+    static ref ENTITY_EVENT_DISPATCHER: Mutex<Option<Box<dyn EntityEventDispatcher>>> = Mutex::new(None);
 }
 
 /// Event data for actor creation.
-/// This is passed to `ActorEventSink` implementations when an actor is spawned.
+/// This is passed to EntityEventDispatcher implementations when an actor is spawned.
 #[derive(Debug, Clone)]
 pub struct ActorEvent {
     /// Unique identifier for this actor (hashed from ActorId)
@@ -313,52 +309,20 @@ pub struct ActorEvent {
     pub full_name: String,
 }
 
-/// Trait for sinks that receive actor creation events.
-/// Implement this trait and register with `register_actor_sink` to receive
-/// notifications when actors are created.
-pub trait ActorEventSink: Send + Sync {
-    /// Called when an actor is spawned.
-    fn on_actor_created(&self, event: &ActorEvent) -> Result<(), anyhow::Error>;
-}
-
-/// Register a sink to receive actor creation events.
-/// This can be called at any time. The sink will receive all subsequent actor creation events.
-///
-/// Note: Only one sink is supported. Registering a new sink replaces any previously registered sink.
-///
-/// # Example
-/// ```ignore
-/// use hyperactor_telemetry::{register_actor_sink, ActorEventSink, ActorEvent};
-///
-/// struct MyActorSink;
-/// impl ActorEventSink for MyActorSink {
-///     fn on_actor_created(&self, event: &ActorEvent) {
-///         println!("Actor created: {}", event.full_name);
-///     }
-/// }
-///
-/// register_actor_sink(Box::new(MyActorSink));
-/// ```
-pub fn register_actor_sink(sink: Box<dyn ActorEventSink>) {
-    if let Ok(mut slot) = ACTOR_EVENT_SINK.lock() {
-        *slot = Some(sink);
-    }
-}
-
-/// Notify the registered sink that an actor was created.
+/// Notify the registered dispatcher that an actor was created.
 /// This is called from hyperactor when an actor is spawned.
 pub fn notify_actor_created(event: ActorEvent) {
-    if let Ok(sink) = ACTOR_EVENT_SINK.lock() {
-        if let Some(ref s) = *sink {
-            if let Err(e) = s.on_actor_created(&event) {
-                tracing::error!("Failed to notify actor sink: {:?}", e);
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(&EntityEvent::Actor(event)) {
+                tracing::error!("Failed to dispatch actor event: {:?}", e);
             }
         }
     }
 }
 
 /// Event data for mesh creation.
-/// This is passed to `MeshEventSink` implementations when a mesh is spawned.
+/// This is passed to EntityEventDispatcher implementations when a mesh is spawned.
 #[derive(Debug, Clone)]
 pub struct MeshEvent {
     /// Unique identifier for this mesh (hashed)
@@ -379,33 +343,79 @@ pub struct MeshEvent {
     pub parent_view_json: Option<String>,
 }
 
-/// Trait for sinks that receive mesh creation events.
-/// Implement this trait and register with `register_mesh_sink` to receive
-/// notifications when meshes are created.
-pub trait MeshEventSink: Send + Sync {
-    /// Called when a mesh is spawned.
-    fn on_mesh_created(&self, event: &MeshEvent) -> Result<(), anyhow::Error>;
-}
-
-/// Register a sink to receive mesh creation events.
-/// This can be called at any time. The sink will receive all subsequent mesh creation events.
-///
-/// Note: Only one sink is supported. Registering a new sink replaces any previously registered sink.
-pub fn register_mesh_sink(sink: Box<dyn MeshEventSink>) {
-    if let Ok(mut slot) = MESH_EVENT_SINK.lock() {
-        *slot = Some(sink);
+/// Notify the registered dispatcher that a mesh was created.
+/// This is called from hyperactor_mesh when a mesh is spawned.
+pub fn notify_mesh_created(event: MeshEvent) {
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(&EntityEvent::Mesh(event)) {
+                tracing::error!("Failed to dispatch mesh event: {}", e);
+            }
+        }
     }
 }
 
-/// Notify the registered sink that a mesh was created.
-/// This is called from hyperactor_mesh when a mesh is spawned.
-pub fn notify_mesh_created(event: MeshEvent) {
-    if let Ok(sink) = MESH_EVENT_SINK.lock() {
-        if let Some(ref s) = *sink {
-            if let Err(e) = s.on_mesh_created(&event) {
-                tracing::error!("Failed to notify mesh sink: {}", e);
-            }
-        }
+/// Unified event enum for all entity lifecycle events.
+///
+/// This enum wraps all entity events (actors, meshes, and future event types)
+/// into a single type. This enables a single sink to handle all entity events,
+/// simplifying the registration and notification infrastructure.
+///
+/// # Future Extensions
+/// Additional variants can be added for:
+/// - `ActorStatus(ActorStatusEvent)` - actor status changes
+/// - `Message(MessageEvent)` - message sends/receives
+/// - `SentMessage(SentMessageEvent)` - outgoing message tracking
+#[derive(Debug, Clone)]
+pub enum EntityEvent {
+    /// An actor was created.
+    Actor(ActorEvent),
+    /// A mesh was created.
+    Mesh(MeshEvent),
+}
+
+/// Trait for dispatchers that receive unified entity events.
+///
+/// This is the preferred way to receive entity lifecycle events. Implement this
+/// trait and register with `set_entity_dispatcher` to receive notifications for
+/// all entity types (actors, meshes, etc.) through a single callback.
+///
+/// The dispatcher pattern routes events to appropriate handlers based on the
+/// event type (Actor, Mesh, etc.), distinguishing this from TraceEventSink
+/// which handles tracing spans and events.
+///
+/// # Example
+/// ```ignore
+/// use hyperactor_telemetry::{set_entity_dispatcher, EntityEventDispatcher, EntityEvent};
+///
+/// struct MyEntityDispatcher;
+/// impl EntityEventDispatcher for MyEntityDispatcher {
+///     fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error> {
+///         match event {
+///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
+///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// set_entity_dispatcher(Box::new(MyEntityDispatcher));
+/// ```
+pub trait EntityEventDispatcher: Send + Sync {
+    /// Dispatch an entity event to the appropriate handler.
+    fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error>;
+}
+
+/// Set the dispatcher to receive all entity events.
+///
+/// This can be called at any time. The dispatcher will receive all subsequent entity
+/// events (actors, meshes, etc.) through a single callback.
+///
+/// Note: Only one dispatcher is supported. Setting a new dispatcher replaces any
+/// previously set dispatcher.
+pub fn set_entity_dispatcher(dispatcher: Box<dyn EntityEventDispatcher>) {
+    if let Ok(mut slot) = ENTITY_EVENT_DISPATCHER.lock() {
+        *slot = Some(dispatcher);
     }
 }
 

@@ -38,6 +38,7 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
 use serde_multipart::Part;
 
+use crate::EntityDispatcher;
 use crate::QueryResponse;
 use crate::RecordBatchSink;
 use crate::serialize_batch;
@@ -100,8 +101,10 @@ pub struct DatabaseScanner {
     table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
     rank: usize,
     max_batches: usize,
-    /// Handle to flush the RecordBatchSink (when not using fake data)
+    /// Handle to flush the RecordBatchSink for trace events (spans, events)
     sink: Option<RecordBatchSink>,
+    /// Handle to flush the EntityDispatcher for entity events (actors, meshes)
+    dispatcher: Option<EntityDispatcher>,
 }
 
 fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
@@ -241,32 +244,37 @@ impl DatabaseScanner {
             rank,
             max_batches,
             sink: None,
+            dispatcher: None,
         };
 
         if use_fake_data {
             fill_fake_batches(&scanner)
                 .map_err(|e| PyException::new_err(format!("failed to create fake data: {}", e)))?;
         } else {
-            // Register a RecordBatchSink to receive telemetry events
-            // Clone the sink before registering so we can call flush() later
+            // Create and register a RecordBatchSink for trace events (spans, events)
             let sink = scanner.create_record_batch_sink(batch_size);
             scanner.sink = Some(sink.clone());
-            // Register for trace events (spans, events)
-            hyperactor_telemetry::register_sink(Box::new(sink.clone()));
-            // Register for actor creation events
-            hyperactor_telemetry::register_actor_sink(Box::new(sink.clone()));
-            // Register for mesh creation events
-            hyperactor_telemetry::register_mesh_sink(Box::new(sink));
+            hyperactor_telemetry::register_sink(Box::new(sink));
+
+            // Create and register an EntityDispatcher for entity events (actors, meshes)
+            let dispatcher = scanner.create_entity_dispatcher(batch_size);
+            scanner.dispatcher = Some(dispatcher.clone());
+            hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
         }
 
         Ok(scanner)
     }
 
-    /// Flush any pending trace events to the tables.
+    /// Flush any pending trace events and entity events to the tables.
     fn flush(&self) -> PyResult<()> {
         if let Some(ref sink) = self.sink {
             sink.flush()
                 .map_err(|e| PyException::new_err(format!("failed to flush sink: {}", e)))?;
+        }
+        if let Some(ref dispatcher) = self.dispatcher {
+            dispatcher
+                .flush()
+                .map_err(|e| PyException::new_err(format!("failed to flush dispatcher: {}", e)))?;
         }
         Ok(())
     }
@@ -397,6 +405,26 @@ impl DatabaseScanner {
         let max_batches = self.max_batches;
 
         RecordBatchSink::new(
+            batch_size,
+            Box::new(move |table_name, batch| {
+                if let Err(e) =
+                    Self::push_batch_to_tables(&table_data, max_batches, table_name, batch)
+                {
+                    tracing::error!("Failed to push batch to table {}: {}", table_name, e);
+                }
+            }),
+        )
+    }
+
+    /// Create an EntityDispatcher that pushes batches to this scanner's tables.
+    ///
+    /// The dispatcher can be registered with hyperactor_telemetry::set_entity_dispatcher()
+    /// to receive entity events (actors, meshes) and store them as queryable tables.
+    pub fn create_entity_dispatcher(&self, batch_size: usize) -> EntityDispatcher {
+        let table_data = self.table_data.clone();
+        let max_batches = self.max_batches;
+
+        EntityDispatcher::new(
             batch_size,
             Box::new(move |table_name, batch| {
                 if let Err(e) =
