@@ -254,7 +254,9 @@ impl DatabaseScanner {
             // Register for trace events (spans, events)
             hyperactor_telemetry::register_sink(Box::new(sink.clone()));
             // Register for actor creation events
-            hyperactor_telemetry::register_actor_sink(Box::new(sink));
+            hyperactor_telemetry::register_actor_sink(Box::new(sink.clone()));
+            // Register for mesh creation events
+            hyperactor_telemetry::register_mesh_sink(Box::new(sink));
         }
 
         Ok(scanner)
