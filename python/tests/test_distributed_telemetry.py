@@ -176,3 +176,50 @@ def test_actors_table(cleanup_callbacks) -> None:
     assert has_test_worker, (
         f"Expected to find 'test_worker' in actor names, got: {full_names}"
     )
+
+
+@pytest.mark.timeout(120)
+def test_meshes_table(cleanup_callbacks) -> None:
+    """Test that the meshes table is populated when meshes are spawned."""
+    # Start telemetry with real data (not fake) so RecordBatchSink receives events
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn some worker actors - this should trigger notify_mesh_created
+    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
+
+    # Force the spawn to complete by calling an endpoint on the workers.
+    # The spawn is async, so we need to wait for it to finish before querying.
+    # pyre-ignore[29]: workers is an ActorMesh
+    workers.spawn_child.call("dummy_child").get()
+
+    # Query the meshes table to verify meshes were recorded
+    result = engine.query("SELECT * FROM meshes")
+    result_dict = result.to_pydict()
+
+    # We should have at least some meshes recorded
+    mesh_count = len(result_dict.get("id", []))
+    assert mesh_count > 0, f"Expected at least one mesh, got {mesh_count}"
+
+    # Verify the schema has the expected columns
+    expected_columns = {
+        "id",
+        "timestamp_us",
+        "class",
+        "given_name",
+        "full_name",
+        "shape_json",
+        "parent_mesh_id",
+        "parent_view_json",
+    }
+    actual_columns = set(result_dict.keys())
+    assert expected_columns == actual_columns, (
+        f"Expected columns {expected_columns}, got {actual_columns}"
+    )
+
+    # Verify given_name contains our mesh name
+    given_names = result_dict.get("given_name", [])
+    has_test_mesh = any("test_mesh_worker" in name for name in given_names)
+    assert has_test_mesh, (
+        f"Expected to find 'test_mesh_worker' in mesh names, got: {given_names}"
+    )
