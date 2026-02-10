@@ -36,15 +36,15 @@ use tokio::sync::OnceCell;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::ProcMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
 use crate::alloc::ProcessAllocator;
-use crate::proc_mesh::default_transport;
+use crate::host_mesh::HostMesh;
 use crate::supervision::MeshFailure;
-use crate::v1::ProcMesh;
-use crate::v1::host_mesh::HostMesh;
+use crate::transport::default_transport;
 
 #[derive(Debug)]
 pub struct TestRootClient {

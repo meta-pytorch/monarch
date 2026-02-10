@@ -10,10 +10,9 @@ use std::fmt::Debug;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use hyperactor_mesh::ProcMesh;
+use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::shared_cell::SharedCell;
-use hyperactor_mesh::v1;
-use hyperactor_mesh::v1::ProcMesh;
-use hyperactor_mesh::v1::ProcMeshRef;
 use monarch_types::PickledPyObject;
 use monarch_types::py_module_add_function;
 use ndslice::View;
@@ -108,7 +107,7 @@ impl PyProcMesh {
         let proc_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         let mesh_impl = async move {
-            let full_name = v1::Name::new(name).unwrap();
+            let full_name = hyperactor_mesh::Name::new(name).unwrap();
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
@@ -148,7 +147,7 @@ impl PyProcMesh {
             })
             .await?;
 
-            let full_name = v1::Name::new(name).unwrap();
+            let full_name = hyperactor_mesh::Name::new(name).unwrap();
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
