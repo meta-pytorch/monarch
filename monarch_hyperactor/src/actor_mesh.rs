@@ -684,7 +684,7 @@ fn py_identity(obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 /// Holds the GIL for the specified number of seconds without releasing it.
 ///
 /// This is a test utility function that spawns a background thread which
-/// acquires the GIL using Rust's Python::with_gil and holds it for the
+/// acquires the GIL using Rust's Python::attach and holds it for the
 /// specified duration using thread::sleep. Unlike Python code which
 /// periodically releases the GIL, this function holds it continuously.
 ///
@@ -705,7 +705,7 @@ pub fn hold_gil_for_test(delay_secs: f64, hold_secs: f64) {
         #[allow(clippy::disallowed_methods)]
         thread::sleep(Duration::from_secs_f64(delay_secs));
         // Acquire and hold the GIL - MUST use blocking sleep to keep GIL held
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             tracing::info!("start holding the gil...");
             #[allow(clippy::disallowed_methods)]
             thread::sleep(Duration::from_secs_f64(hold_secs));

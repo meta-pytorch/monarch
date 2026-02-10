@@ -8,10 +8,10 @@
 
 //! The mesh agent actor that manages a host.
 
-use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
@@ -47,13 +47,14 @@ use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
+use crate::host_mesh::host_admin::HostAdminQueryMessage;
 use crate::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::resource::ProcSpec;
 
-type ProcManagerSpawnFuture =
+pub(crate) type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcMeshAgent>>> + Send>>;
-type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture + Send + Sync>;
+pub(crate) type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture + Send + Sync>;
 
 /// Represents the different ways a [`Host`] can be managed by an agent.
 ///
@@ -75,7 +76,15 @@ pub enum HostAgentMode {
 }
 
 impl HostAgentMode {
-    fn system_proc(&self) -> &Proc {
+    pub(crate) fn addr(&self) -> &hyperactor::channel::ChannelAddr {
+        #[allow(clippy::match_same_arms)]
+        match self {
+            HostAgentMode::Process { host, .. } => host.addr(),
+            HostAgentMode::Local(host) => host.addr(),
+        }
+    }
+
+    pub(crate) fn system_proc(&self) -> &Proc {
         #[allow(clippy::match_same_arms)]
         match self {
             HostAgentMode::Process { host, .. } => host.system_proc(),
@@ -83,7 +92,7 @@ impl HostAgentMode {
         }
     }
 
-    fn local_proc(&self) -> &Proc {
+    pub(crate) fn local_proc(&self) -> &Proc {
         #[allow(clippy::match_same_arms)]
         match self {
             HostAgentMode::Process { host, .. } => host.local_proc(),
@@ -109,10 +118,10 @@ impl HostAgentMode {
 }
 
 #[derive(Debug)]
-struct ProcCreationState {
-    rank: usize,
-    created: Result<(ProcId, ActorRef<ProcMeshAgent>), HostError>,
-    stopped: bool,
+pub(crate) struct ProcCreationState {
+    pub(crate) rank: usize,
+    pub(crate) created: Result<(ProcId, ActorRef<ProcMeshAgent>), HostError>,
+    pub(crate) stopped: bool,
 }
 
 /// A mesh agent is responsible for managing a host iny a [`HostMesh`],
@@ -124,14 +133,15 @@ struct ProcCreationState {
         resource::GetState<ProcState>,
         resource::GetRankStatus { cast = true },
         resource::List,
-        ShutdownHost
+        ShutdownHost,
+        HostAdminQueryMessage
     ]
 )]
 pub struct HostMeshAgent {
-    host: Option<HostAgentMode>,
-    created: HashMap<Name, ProcCreationState>,
+    pub(crate) host: Option<HostAgentMode>,
+    pub(crate) created: HashMap<Name, ProcCreationState>,
     /// Stores the lazily initialized proc mesh agent for the local proc.
-    local_mesh_agent: OnceCell<anyhow::Result<ActorHandle<ProcMeshAgent>>>,
+    local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcMeshAgent>>>,
 }
 
 impl HostMeshAgent {
@@ -140,7 +150,7 @@ impl HostMeshAgent {
         Self {
             host: Some(host),
             created: HashMap::new(),
-            local_mesh_agent: OnceCell::new(),
+            local_mesh_agent: OnceLock::new(),
         }
     }
 }

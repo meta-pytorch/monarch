@@ -46,9 +46,9 @@ unsafe extern "C" fn pytorch_segment_scanner(
     max_segments: usize,
 ) -> usize {
     // Acquire the GIL to call Python code
-    // Note: We use Python::with_gil here instead of monarch_with_gil_blocking because
+    // Note: We use Python::attach here instead of monarch_with_gil_blocking because
     // the raw pointer segments_out is not Sync and monarch_with_gil_blocking requires Send.
-    let result = Python::with_gil(|py| -> PyResult<usize> {
+    let result = Python::attach(|py| -> PyResult<usize> {
         // Check if torch is already imported - don't import it ourselves
         let sys = py.import("sys")?;
         let modules = sys.getattr("modules")?;
@@ -285,7 +285,7 @@ impl PyRdmaBuffer {
         self.buffer.size
     }
 
-    fn __reduce__(&self) -> PyResult<(PyObject, PyObject)> {
+    fn __reduce__(&self) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         monarch_with_gil_blocking(|py| {
             let ctor = py.get_type::<PyRdmaBuffer>().into_py_any(py)?;
             let json = serde_json::to_string(self).map_err(|e| {

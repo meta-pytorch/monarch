@@ -14,14 +14,17 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use clap::Parser;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
+use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
+use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
 use hyperactor_config::Attrs;
 use hyperactor_mesh::ActorMesh;
@@ -35,6 +38,19 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
 use typeuri::Named;
+
+/// Command-line arguments for the dining philosophers example.
+#[derive(Parser)]
+#[command(name = "dining_philosophers")]
+struct Args {
+    /// Run all procs in-process (makes actors visible in admin tree).
+    ///
+    /// By default, procs are spawned as separate OS processes. With this
+    /// flag, all procs run in the current process, which allows the admin
+    /// tree endpoint to show all actors (useful for debugging with the TUI).
+    #[arg(long)]
+    in_process: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum ChopstickStatus {
@@ -239,15 +255,30 @@ impl Waiter {
 async fn main() -> Result<ExitCode> {
     hyperactor::initialize_with_current_runtime();
 
-    // Option: run as a local process mesh
-    // let host_mesh = HostMesh::process(extent!(hosts = 1), BootstrapCommand::current().unwrap())
-    //     .await
-    //     .unwrap();
+    let args = Args::parse();
 
-    let host_mesh = HostMesh::local().await?;
+    // Use in-process mode for debugging (actors visible in admin tree),
+    // or child-process mode (default) for production-like behavior.
+    let host_mesh = if args.in_process {
+        HostMesh::local_in_process().await?
+    } else {
+        HostMesh::local().await?
+    };
 
     let group_size = 5;
     let instance = global_root_client();
+
+    // Start the mesh admin agent, which aggregates admin state
+    // across all hosts and serves an HTTP API.
+    let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin".to_string())?;
+    let mesh_admin_addr = host_mesh.spawn_admin(instance, &admin_proc).await?;
+    println!("Mesh admin server listening on http://{}", mesh_admin_addr);
+    println!(
+        "  - List hosts:    curl http://{}/v1/hosts",
+        mesh_admin_addr
+    );
+    println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
+
     let proc_mesh = host_mesh
         .spawn(instance, "philosophers", extent!(replica = group_size))
         .await?;

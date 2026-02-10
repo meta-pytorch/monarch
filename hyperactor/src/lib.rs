@@ -70,6 +70,7 @@
 pub mod accum;
 pub mod actor;
 pub mod actor_local;
+pub mod admin;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
@@ -110,6 +111,7 @@ pub mod internal_macro_support {
 pub use actor::Actor;
 pub use actor::ActorHandle;
 pub use actor::Handler;
+pub use actor::HandlerInfo;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;
@@ -155,7 +157,9 @@ pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
 pub use proc::Context;
 pub use proc::Instance;
+pub use proc::InstanceCell;
 pub use proc::Proc;
+pub use proc::WeakProc;
 pub use reference::ActorId;
 pub use reference::ActorRef;
 pub use reference::GangId;

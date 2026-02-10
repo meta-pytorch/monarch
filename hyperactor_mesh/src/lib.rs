@@ -16,6 +16,7 @@
 #![feature(async_fn_track_caller)]
 
 pub mod actor_mesh;
+pub mod admin_proxy;
 pub mod alloc;
 mod assign;
 pub mod bootstrap;
@@ -27,12 +28,13 @@ pub mod global_client;
 pub mod host_mesh;
 pub mod logging;
 pub mod mesh;
+pub mod mesh_admin;
 pub mod mesh_agent;
 pub mod mesh_controller;
 pub mod mesh_selection;
 mod metrics;
 pub mod namespace;
-mod proc_launcher;
+pub mod proc_launcher;
 pub mod proc_mesh;
 pub mod reference;
 pub mod resource;
