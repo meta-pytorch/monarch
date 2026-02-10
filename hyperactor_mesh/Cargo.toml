@@ -69,19 +69,21 @@ serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.27.1", features = ["derive"] }
 systemd = { version = "0.10.1", optional = true }
 tempfile = "3.22"
-thiserror = "2.0.12"
+thiserror = "2.0.18"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
+uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
 
 [dev-dependencies]
-bytes = { version = "1.10", features = ["serde"] }
+bytes = { version = "1.11.1", features = ["serde"] }
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
+fastrand = "2.1.1"
 itertools = "0.14.0"
 maplit = "1.0"
 proptest = "1.5"

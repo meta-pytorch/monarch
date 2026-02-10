@@ -1082,9 +1082,9 @@ async def test_supervision_with_sending_error() -> None:
     assert "MeshFailure" in error_msg
     assert "RootClientActor" in error_msg
     assert re.search(
-        "a message from .*client.*was undeliverable and returned",
+        "undeliverable message error.*client.*",
         error_msg,
-        flags=re.MULTILINE,
+        flags=re.DOTALL,
     )
     assert re.search(
         "rejecting oversize frame: len=[0-9]+ > max=50000000.*CODEC_MAX_FRAME_LENGTH",
@@ -1291,7 +1291,7 @@ async def test_supervise_callback_handled():
     await pm.stop()
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_without_await_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})

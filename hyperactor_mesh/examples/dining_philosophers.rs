@@ -22,7 +22,9 @@ use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
+use hyperactor::admin;
 use hyperactor::context;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
@@ -32,6 +34,7 @@ use hyperactor_mesh::v1::host_mesh::HostMesh;
 use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
 use typeuri::Named;
 
@@ -91,7 +94,7 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start
@@ -150,10 +153,10 @@ impl Handler<PhilosopherMessage> for PhilosopherActor {
         match message {
             PhilosopherMessage::Start(waiter) => {
                 self.waiter.set(waiter)?;
-                self.request_chopsticks(cx).await?;
-                // Start is always broadcasted to all philosophers; so this is
-                // our global rank.
+                // Set rank before requesting chopsticks so we request
+                // the correct pair and identify ourselves properly.
                 self.rank = point.rank();
+                self.request_chopsticks(cx).await?;
             }
             PhilosopherMessage::GrantChopstick(chopstick) => {
                 tracing::debug!("philosopher {} granted chopstick {}", self.rank, chopstick);
@@ -247,6 +250,19 @@ async fn main() -> Result<ExitCode> {
 
     let group_size = 5;
     let instance = global_root_client();
+
+    // Start the admin HTTP server in a background task
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let admin_addr = listener.local_addr()?;
+    println!("Admin server listening on http://{}", admin_addr);
+    println!("  - List procs:    curl http://{}/", admin_addr);
+    println!("  - Actor tree:    curl http://{}/tree", admin_addr);
+    tokio::spawn(async move {
+        if let Err(e) = admin::serve(listener).await {
+            tracing::error!("admin server error: {}", e);
+        }
+    });
+
     let proc_mesh = host_mesh
         .spawn(instance, "philosophers", extent!(replica = group_size))
         .await?;

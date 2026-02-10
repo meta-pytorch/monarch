@@ -103,144 +103,144 @@ pub struct PemBundle {
 // Declare hyperactor-specific configuration keys
 declare_attrs! {
     /// Maximum frame length for codec
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH".to_string()),
-        py_name: Some("codec_max_frame_length".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH".to_string()),
+        Some("codec_max_frame_length".to_string()),
+    ))
     pub attr CODEC_MAX_FRAME_LENGTH: usize = 10 * 1024 * 1024 * 1024; // 10 GiB
 
     /// Message delivery timeout
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT".to_string()),
-        py_name: Some("message_delivery_timeout".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT".to_string()),
+        Some("message_delivery_timeout".to_string()),
+    ))
     pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Timeout used by allocator for stopping a proc.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_PROCESS_EXIT_TIMEOUT".to_string()),
-        py_name: Some("process_exit_timeout".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_PROCESS_EXIT_TIMEOUT".to_string()),
+        Some("process_exit_timeout".to_string()),
+    ))
     pub attr PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Message acknowledgment interval
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESSAGE_ACK_TIME_INTERVAL".to_string()),
-        py_name: Some("message_ack_time_interval".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESSAGE_ACK_TIME_INTERVAL".to_string()),
+        Some("message_ack_time_interval".to_string()),
+    ))
     pub attr MESSAGE_ACK_TIME_INTERVAL: Duration = Duration::from_millis(500);
 
     /// Number of messages after which to send an acknowledgment
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES".to_string()),
-        py_name: Some("message_ack_every_n_messages".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESSAGE_ACK_EVERY_N_MESSAGES".to_string()),
+        Some("message_ack_every_n_messages".to_string()),
+    ))
     pub attr MESSAGE_ACK_EVERY_N_MESSAGES: u64 = 1000;
 
     /// Default hop Time-To-Live for message envelopes.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESSAGE_TTL_DEFAULT".to_string()),
-        py_name: Some("message_ttl_default".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESSAGE_TTL_DEFAULT".to_string()),
+        Some("message_ttl_default".to_string()),
+    ))
     pub attr MESSAGE_TTL_DEFAULT : u8 = 64;
 
     /// Maximum buffer size for split port messages
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE".to_string()),
-        py_name: Some("split_max_buffer_size".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_SPLIT_MAX_BUFFER_SIZE".to_string()),
+        Some("split_max_buffer_size".to_string()),
+    ))
     pub attr SPLIT_MAX_BUFFER_SIZE: usize = 5;
 
     /// The maximum time an update can be buffered before being reduced.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_SPLIT_MAX_BUFFER_AGE".to_string()),
-        py_name: Some("split_max_buffer_age".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_SPLIT_MAX_BUFFER_AGE".to_string()),
+        Some("split_max_buffer_age".to_string()),
+    ))
     pub attr SPLIT_MAX_BUFFER_AGE: Duration = Duration::from_millis(50);
 
     /// Timeout used by proc mesh for stopping an actor.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_STOP_ACTOR_TIMEOUT".to_string()),
-        py_name: Some("stop_actor_timeout".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_STOP_ACTOR_TIMEOUT".to_string()),
+        Some("stop_actor_timeout".to_string()),
+    ))
     pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Timeout used by proc for running the cleanup callback on an actor.
     /// Should be less than the timeout for STOP_ACTOR_TIMEOUT.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_CLEANUP_TIMEOUT".to_string()),
-        py_name: Some("cleanup_timeout".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_CLEANUP_TIMEOUT".to_string()),
+        Some("cleanup_timeout".to_string()),
+    ))
     pub attr CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 
     /// Heartbeat interval for remote allocator. We do not rely on this heartbeat
     /// anymore in v1, and it should be removed after we finishing the v0
     /// deprecation.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
-        py_name: Some("remote_allocator_heartbeat_interval".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
+        Some("remote_allocator_heartbeat_interval".to_string()),
+    ))
     pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_mins(5);
 
     /// How often to check for full MPSC channel on NetRx.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL".to_string()),
-        py_name: Some("channel_net_rx_buffer_full_check_interval".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL".to_string()),
+        Some("channel_net_rx_buffer_full_check_interval".to_string()),
+    ))
     pub attr CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
     /// Sampling rate for logging message latency
     /// Set to 0.01 for 1% sampling, 0.1 for 10% sampling, 0.90 for 90% sampling, etc.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE".to_string()),
-        py_name: Some("message_latency_sampling_rate".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE".to_string()),
+        Some("message_latency_sampling_rate".to_string()),
+    ))
     pub attr MESSAGE_LATENCY_SAMPLING_RATE: f32 = 0.01;
 
     /// Whether to enable dest actor reordering buffer.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER".to_string()),
-        py_name: Some("enable_dest_actor_reordering_buffer".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER".to_string()),
+        Some("enable_dest_actor_reordering_buffer".to_string()),
+    ))
     pub attr ENABLE_DEST_ACTOR_REORDERING_BUFFER: bool = false;
 
     /// Timeout for [`Host::spawn`] to await proc readiness.
     ///
     /// Default: 30 seconds. If set to zero, disables the timeout and
     /// waits indefinitely.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT".to_string()),
-        py_name: Some("host_spawn_ready_timeout".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT".to_string()),
+        Some("host_spawn_ready_timeout".to_string()),
+    ))
     pub attr HOST_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Heartbeat interval for server health metrics. The server emits a
     /// heartbeat metric at this interval to indicate it is alive.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_SERVER_HEARTBEAT_INTERVAL".to_string()),
-        py_name: Some("server_heartbeat_interval".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_SERVER_HEARTBEAT_INTERVAL".to_string()),
+        Some("server_heartbeat_interval".to_string()),
+    ))
     pub attr SERVER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
     /// Path to TLS certificate file for the 'tls' transport.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_TLS_CERT".to_string()),
-        py_name: Some("hyperactor_tls_cert".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_TLS_CERT".to_string()),
+        Some("hyperactor_tls_cert".to_string()),
+    ).process_local())
     pub attr TLS_CERT: Pem = Pem::StaticPath("/etc/hyperactor/tls/tls.crt");
 
     /// Path to TLS private key file for the 'tls' transport.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_TLS_KEY".to_string()),
-        py_name: Some("hyperactor_tls_key".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_TLS_KEY".to_string()),
+        Some("hyperactor_tls_key".to_string()),
+    ).process_local())
     pub attr TLS_KEY: Pem = Pem::StaticPath("/etc/hyperactor/tls/tls.key");
 
     /// Path to TLS CA certificate file for the 'tls' transport.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_TLS_CA".to_string()),
-        py_name: Some("hyperactor_tls_ca".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_TLS_CA".to_string()),
+        Some("hyperactor_tls_ca".to_string()),
+    ).process_local())
     pub attr TLS_CA: Pem = Pem::StaticPath("/etc/hyperactor/tls/ca.crt");
 }
 

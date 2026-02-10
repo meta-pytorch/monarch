@@ -33,9 +33,11 @@ path = "benches/main.rs"
 algebra = { version = "0.0.0", path = "../algebra" }
 anyhow = "1.0.98"
 async-trait = "0.1.86"
+axum = { version = "0.8", features = ["macros", "ws"] }
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bincode = "1.3.3"
-bytes = { version = "1.10", features = ["serde"] }
+bytes = { version = "1.11.1", features = ["serde"] }
+chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 derivative = "2.2"
@@ -66,16 +68,16 @@ serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 strum = { version = "0.27.1", features = ["derive"] }
-thiserror = "2.0.12"
+thiserror = "2.0.18"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
-tokio-rustls = "0.26.2"
+tokio-rustls = { version = "0.26.2", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 unicode-ident = "1.0.12"
 uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
-valuable = { version = "0.1", features = ["derive"] }
+valuable = { version = "0.1.1", features = ["derive"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
@@ -87,7 +89,8 @@ proptest = "1.5"
 serde_bytes = "0.11"
 tempfile = "3.22"
 timed_test = { version = "0.0.0", path = "../timed_test" }
-tokio-test = "0.4.4"
+tokio-test = "0.4.5"
+tower = { version = "0.4", features = ["util"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
 

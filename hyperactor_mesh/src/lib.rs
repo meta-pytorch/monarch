@@ -26,7 +26,7 @@ pub mod logging;
 pub mod mesh;
 pub mod mesh_selection;
 mod metrics;
-mod proc_launcher;
+pub mod proc_launcher;
 pub mod proc_mesh;
 pub mod reference;
 pub mod resource;

@@ -11,6 +11,7 @@ use hyperactor::context;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use ndslice::Extent;
 use ndslice::Point;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
@@ -24,23 +25,23 @@ use crate::shape::PyPoint;
 pub struct PyInstance {
     inner: Instance<PythonActor>,
     #[pyo3(get, set)]
-    proc_mesh: Option<PyObject>,
+    proc_mesh: Option<Py<PyAny>>,
     #[pyo3(get, set, name = "_controller_controller")]
-    controller_controller: Option<PyObject>,
+    controller_controller: Option<Py<PyAny>>,
     #[pyo3(get, set)]
     pub(crate) rank: PyPoint,
     #[pyo3(get, set, name = "_children")]
-    children: Option<PyObject>,
+    children: Option<Py<PyAny>>,
 
     #[pyo3(get, set, name = "name")]
     name: String,
     #[pyo3(get, set, name = "class_name")]
     class_name: Option<String>,
     #[pyo3(get, set, name = "creator")]
-    creator: Option<PyObject>,
+    creator: Option<Py<PyAny>>,
 
     #[pyo3(get, set, name = "_mock_tensor_engine_factory")]
-    mock_tensor_engine_factory: Option<PyObject>,
+    mock_tensor_engine_factory: Option<Py<PyAny>>,
 }
 
 impl Clone for PyInstance {
@@ -85,6 +86,15 @@ impl PyInstance {
     fn abort(&self, reason: Option<&str>) -> PyResult<()> {
         let reason = reason.unwrap_or("(no reason provided)");
         Ok(self.inner.abort(reason).map_err(anyhow::Error::from)?)
+    }
+
+    #[pyo3(signature = (reason = None))]
+    fn _stop_instance(&self, reason: Option<&str>) -> PyResult<()> {
+        tracing::info!(actor_id = %self.inner.self_id(), "stopping PyInstance");
+        let reason = reason.unwrap_or("(no reason provided)");
+        self.inner
+            .stop(reason)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 

@@ -14,5 +14,5 @@ proc-macro = true
 
 [dependencies]
 ndslice = { version = "0.0.0", path = "../ndslice" }
-proc-macro2 = { version = "1.0.70", features = ["span-locations"] }
-quote = "1.0.29"
+proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+quote = "1.0.44"

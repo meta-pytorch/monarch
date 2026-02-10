@@ -9,7 +9,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![feature(exit_status_error)]
 #![feature(mapped_lock_guards)]
-#![feature(rwlock_downgrade)]
 
 pub mod actor;
 pub mod actor_mesh;
@@ -28,6 +27,8 @@ pub mod metrics;
 pub mod namespace;
 pub mod ndslice;
 pub mod proc;
+pub mod proc_launcher;
+pub mod proc_launcher_probe;
 pub mod proc_mesh;
 pub mod py_cell;
 pub mod pympsc;

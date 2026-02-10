@@ -29,10 +29,10 @@ use typeuri::Named;
 declare_attrs! {
     /// Threshold below which writes are copied into a contiguous buffer.
     /// Writes >= this size are stored as zero-copy references.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("MONARCH_HYPERACTOR_SMALL_WRITE_THRESHOLD".to_string()),
-        py_name: Some("small_write_threshold".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_HYPERACTOR_SMALL_WRITE_THRESHOLD".to_string()),
+        Some("small_write_threshold".to_string()),
+    ))
     pub attr SMALL_WRITE_THRESHOLD: usize = 256;
 }
 
@@ -45,7 +45,7 @@ struct KeepPyBytesAlive {
 
 impl KeepPyBytesAlive {
     fn new(py_bytes: Py<PyBytes>) -> Self {
-        let (ptr, len) = Python::with_gil(|py| {
+        let (ptr, len) = Python::attach(|py| {
             let bytes_ref = py_bytes.as_bytes(py);
             (bytes_ref.as_ptr(), bytes_ref.len())
         });
@@ -156,7 +156,7 @@ impl Buffer {
     /// # Returns
     /// The total number of bytes stored in the buffer
     fn __len__(&self) -> usize {
-        let fragments_len: usize = Python::with_gil(|py| {
+        let fragments_len: usize = Python::attach(|py| {
             self.fragments
                 .iter()
                 .map(|frag| match frag {

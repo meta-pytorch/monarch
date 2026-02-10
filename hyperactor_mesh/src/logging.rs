@@ -41,6 +41,7 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -72,24 +73,24 @@ declare_attrs! {
     /// Maximum number of lines to batch before flushing to client
     /// This means that stdout/err reader will be paused after reading `HYPERACTOR_READ_LOG_BUFFER` lines.
     /// After pause lines will be flushed and reading will resume.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_READ_LOG_BUFFER".to_string()),
-        py_name: Some("read_log_buffer".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_READ_LOG_BUFFER".to_string()),
+        Some("read_log_buffer".to_string()),
+    ))
     pub attr READ_LOG_BUFFER: usize = 100;
 
     /// If enabled, local logs are also written to a file and aggregated
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_FORCE_FILE_LOG".to_string()),
-        py_name: Some("force_file_log".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_FORCE_FILE_LOG".to_string()),
+        Some("force_file_log".to_string()),
+    ))
     pub attr FORCE_FILE_LOG: bool = false;
 
     /// Prefixes logs with rank
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_PREFIX_WITH_RANK".to_string()),
-        py_name: Some("prefix_with_rank".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_PREFIX_WITH_RANK".to_string()),
+        Some("prefix_with_rank".to_string()),
+    ))
     pub attr PREFIX_WITH_RANK: bool = true;
 }
 
@@ -1015,7 +1016,7 @@ impl Actor for LogForwardActor {
 impl hyperactor::RemoteSpawn for LogForwardActor {
     type Params = ActorRef<LogClientActor>;
 
-    async fn new(logging_client_ref: Self::Params) -> Result<Self> {
+    async fn new(logging_client_ref: Self::Params, _environment: Attrs) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
             Err(err) => {
@@ -1600,10 +1601,12 @@ mod tests {
         unsafe {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
-        let log_client_actor = LogClientActor::new(()).await.unwrap();
+        let log_client_actor = LogClientActor::new((), Attrs::default()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Attrs::default())
+            .await
+            .unwrap();
         let log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()

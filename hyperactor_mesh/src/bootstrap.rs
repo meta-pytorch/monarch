@@ -103,10 +103,10 @@ declare_attrs! {
     /// This flag does not affect console mirroring: child output
     /// always reaches the parent console—either via inheritance (no
     /// piping) or via [`StreamFwder`] when piping is active.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_ENABLE_LOG_FORWARDING".to_string()),
-        py_name: Some("enable_log_forwarding".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ENABLE_LOG_FORWARDING".to_string()),
+        Some("enable_log_forwarding".to_string()),
+    ))
     pub attr MESH_ENABLE_LOG_FORWARDING: bool = false;
 
     /// When `true`: if stdio is piped, each child's `StreamFwder`
@@ -128,19 +128,19 @@ declare_attrs! {
     ///   written.
     /// - `MESH_TAIL_LOG_LINES` only controls the in-memory rotating
     ///   buffer used for peeking—independent of file capture.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_ENABLE_FILE_CAPTURE".to_string()),
-        py_name: Some("enable_file_capture".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ENABLE_FILE_CAPTURE".to_string()),
+        Some("enable_file_capture".to_string()),
+    ))
     pub attr MESH_ENABLE_FILE_CAPTURE: bool = false;
 
     /// Maximum number of log lines retained in a proc's stderr/stdout
     /// tail buffer. Used by [`StreamFwder`] when wiring child
     /// pipes. Default: 100
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_TAIL_LOG_LINES".to_string()),
-        py_name: Some("tail_log_lines".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_TAIL_LOG_LINES".to_string()),
+        Some("tail_log_lines".to_string()),
+    ))
     pub attr MESH_TAIL_LOG_LINES: usize = 0;
 
     /// If enabled (default), bootstrap child processes install
@@ -149,29 +149,29 @@ declare_attrs! {
     /// against leaked children; tests usually disable it via
     /// `std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG",
     /// "false")`.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG".to_string()),
-        py_name: Some("mesh_bootstrap_enable_pdeathsig".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG".to_string()),
+        Some("mesh_bootstrap_enable_pdeathsig".to_string()),
+    ))
     pub attr MESH_BOOTSTRAP_ENABLE_PDEATHSIG: bool = true;
 
     /// Maximum number of child terminations to run concurrently
     /// during bulk shutdown. Prevents unbounded spawning of
     /// termination tasks (which could otherwise spike CPU, I/O, or
     /// file descriptor load).
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_TERMINATE_CONCURRENCY".to_string()),
-        py_name: Some("mesh_terminate_concurrency".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_TERMINATE_CONCURRENCY".to_string()),
+        Some("mesh_terminate_concurrency".to_string()),
+    ))
     pub attr MESH_TERMINATE_CONCURRENCY: usize = 16;
 
     /// Per-child grace window for termination. When a shutdown is
     /// requested, the manager sends SIGTERM and waits this long for
     /// the child to exit before escalating to SIGKILL.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_TERMINATE_TIMEOUT".to_string()),
-        py_name: Some("mesh_terminate_timeout".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_TERMINATE_TIMEOUT".to_string()),
+        Some("mesh_terminate_timeout".to_string()),
+    ))
     pub attr MESH_TERMINATE_TIMEOUT: Duration = Duration::from_secs(10);
 }
 
@@ -2514,14 +2514,16 @@ mod tests {
 
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
-        let log_client_actor = LogClientActor::new(()).await.unwrap();
+        let log_client_actor = LogClientActor::new((), Attrs::default()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
         // BOOTSTRAP_LOG_CHANNEL).
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Attrs::default())
+            .await
+            .unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
@@ -3255,7 +3257,7 @@ mod tests {
         actor_mesh
             .cast(&instance, testactor::GetActorId(port.bind()))
             .unwrap();
-        let got_id = rx.recv().await.unwrap();
+        let (got_id, _seq) = rx.recv().await.unwrap();
         assert_eq!(
             got_id,
             actor_mesh.values().next().unwrap().actor_id().clone()
@@ -3319,7 +3321,7 @@ mod tests {
         actor_mesh
             .cast(&instance, testactor::GetActorId(port.bind()))
             .unwrap();
-        let got_id = rx.recv().await.unwrap();
+        let (got_id, _) = rx.recv().await.unwrap();
         assert_eq!(
             got_id,
             actor_mesh.values().next().unwrap().actor_id().clone()

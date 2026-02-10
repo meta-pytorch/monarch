@@ -59,13 +59,11 @@ fn process_state_span(
     dest: &ChannelAddr,
     session_id: u64,
     next: &Next,
-    rcv_raw_frame_count: u64,
 ) -> Span {
-    let pending_ack_count = if next.seq > next.ack {
-        next.seq - next.ack - 1
-    } else {
-        0
-    };
+    // No span at INFO
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return Span::none();
+    }
 
     hyperactor_telemetry::context_span!(
         "net i/o loop",
@@ -73,9 +71,6 @@ fn process_state_span(
         session_id = session_id,
         source = %source,
         next_seq = next.seq,
-        last_ack = next.ack,
-        pending_ack_count = pending_ack_count,
-        rcv_raw_frame_count = rcv_raw_frame_count,
     )
 }
 
@@ -140,6 +135,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         ack_time_interval: Duration,
         ack_msg_interval: u64,
         log_id: &str,
+        read_bytes_span: Span,
     ) -> (Next, Option<(Result<(), anyhow::Error>, RejectConn)>) {
         let mut next = next.clone();
         if self.write_state.is_idle()
@@ -191,7 +187,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
             // We have to be careful to manage the ack write state here, so that we do not
             // write partial acks in the presence of cancellation.
-            ack_result = self.write_state.send().instrument(hyperactor_telemetry::context_span!("write ack")) => {
+            ack_result = self.write_state.send() => {
                 match ack_result {
                     Ok(acked_seq) => {
                         *last_ack_time = RealClock.now();
@@ -216,7 +212,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
             _ = cancel_token.cancelled() => return (next, Some((Ok(()), RejectConn::ServerClosing))),
 
-            bytes_result = self.reader.next().instrument(hyperactor_telemetry::context_span!("read bytes")) => {
+            bytes_result = self.reader.next().instrument(read_bytes_span) => {
                 *rcv_raw_frame_count += 1;
                 // First handle transport-level I/O errors, and EOFs.
                 let bytes = match bytes_result {
@@ -314,12 +310,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 ))
                             )
                         }
-                        match self.send_with_buffer_metric(session_id, tx, message)
-                            .instrument(hyperactor_telemetry::context_span!(
-                                "send_with_buffer_metric",
-                                seq = seq,
-                            ))
-                            .await
+                        match self.send_with_buffer_metric(session_id, tx, message).await
                         {
                             Ok(()) => {
                                 // Track throughput for this channel pair
@@ -406,15 +397,10 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
         let ack_time_interval = hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
         let ack_msg_interval = hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
+        let read_bytes_span = tracing::debug_span!("read bytes");
 
         let (mut final_next, final_result, reject_conn) = loop {
-            let span = process_state_span(
-                &self.source,
-                &self.dest,
-                session_id,
-                &next,
-                rcv_raw_frame_count,
-            );
+            let span = process_state_span(&self.source, &self.dest, session_id, &next);
 
             let (new_next, break_info) = self
                 .process_step(
@@ -427,6 +413,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     ack_time_interval,
                     ack_msg_interval,
                     &log_id,
+                    read_bytes_span.clone(),
                 )
                 .instrument(span)
                 .await;

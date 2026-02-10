@@ -273,8 +273,8 @@ mod tests {
 
     #[test]
     fn flatten_unflatten() -> Result<()> {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             assert_eq!(tree.leaves, vec![1u64, 2u64]);
@@ -287,8 +287,8 @@ mod tests {
 
     #[test]
     fn try_map() -> Result<()> {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             let tree = tree.try_map(|v| anyhow::Ok(v + 1))?;

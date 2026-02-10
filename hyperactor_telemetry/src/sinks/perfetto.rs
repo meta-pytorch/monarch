@@ -150,10 +150,10 @@ declare_attrs! {
     /// - "off": Tracing is disabled
     /// - "user": Only user-facing telemetry events (monarch_hyperactor::telemetry::*)
     /// - "dev": All events (for debugging)
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("PERFETTO_TRACE_MODE".to_string()),
-        py_name: Some("perfetto_trace_mode".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("PERFETTO_TRACE_MODE".to_string()),
+        Some("perfetto_trace_mode".to_string()),
+    ))
     pub attr PERFETTO_TRACE_MODE: PerfettoTraceMode = PerfettoTraceMode::User;
 }
 
@@ -565,7 +565,7 @@ impl TraceEventSink for PerfettoFileSink {
 
                 // In user mode, prefer the "name" field if present for display
                 // In dev mode, use the fully qualified name
-                let display_name = if self.trace_mode == PerfettoTraceMode::User {
+                let display_name = if *target == USER_TELEMETRY_PREFIX {
                     if let Some(FieldValue::Str(n)) = get_field(fields, "name") {
                         n.clone()
                     } else {

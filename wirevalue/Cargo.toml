@@ -12,7 +12,7 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.98"
 bincode = "1.3.3"
-bytes = { version = "1.10", features = ["serde"] }
+bytes = { version = "1.11.1", features = ["serde"] }
 crc32fast = "1.4"
 enum-as-inner = "0.6.0"
 erased-serde = "0.4.9"
@@ -22,5 +22,5 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.27.1", features = ["derive"] }
-thiserror = "2.0.12"
+thiserror = "2.0.18"
 typeuri = { version = "0.0.0", path = "../typeuri" }

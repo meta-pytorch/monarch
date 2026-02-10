@@ -126,7 +126,7 @@ pub trait Tx<M: RemoteMessage> {
     /// message is either delivered, or we eventually discover that
     /// the channel has failed and it will be sent back on `return_channel`.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
-    #[hyperactor::instrument_infallible]
+    #[tracing::instrument(level = "debug", skip_all)]
     fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
         self.do_post(message, Some(return_channel));
     }
@@ -430,14 +430,14 @@ impl FromStr for ChannelTransport {
 
 impl ChannelTransport {
     /// All known channel transports.
-    pub fn all() -> [ChannelTransport; 4] {
+    pub fn all() -> [ChannelTransport; 3] {
         [
             // TODO: @rusch add back once figuring out unspecified override for OSS CI
             // ChannelTransport::Tcp(TcpMode::Localhost),
             ChannelTransport::Tcp(TcpMode::Hostname),
             ChannelTransport::Local,
             ChannelTransport::Unix,
-            ChannelTransport::Tls,
+            // Tls requires certificate configuration, tested separately in tls::tests
             // TODO add MetaTls (T208303369)
             // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Tcp)),
             // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Local)),
@@ -1020,7 +1020,7 @@ enum ChannelRxKind<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn recv(&mut self) -> Result<M, ChannelError> {
         match &mut self.inner {
             ChannelRxKind::Local(rx) => rx.recv().await,
