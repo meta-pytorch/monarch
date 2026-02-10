@@ -15,13 +15,13 @@ use criterion::criterion_group;
 use criterion::criterion_main;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::extent;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::ProcMesh;
+use hyperactor_mesh::global_root_client;
 use ndslice::View;
 use tokio::time::Duration;
 
