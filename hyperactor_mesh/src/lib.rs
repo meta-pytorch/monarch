@@ -72,20 +72,13 @@ use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::reference as hyperactor_reference;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
-pub use namespace::InMemoryNamespace;
-pub use namespace::MeshKind;
-pub use namespace::Namespace;
-pub use namespace::NamespaceError;
-pub use namespace::Registrable;
+// Re-exported for internal test binaries that don't have ndslice as a direct dependency
 pub use ndslice::extent;
-pub use ndslice::selection;
 use ndslice::view;
 pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
 use serde::Deserialize;
 use serde::Serialize;
-pub use transport::default_bind_spec;
-pub use transport::default_transport;
 use typeuri::Named;
 pub use value_mesh::ValueMesh;
 
