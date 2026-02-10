@@ -61,9 +61,9 @@ class Event(abc.ABC):
             self._event_loop.remove_reader(self._read_fd)
 
 
-@rust_struct("monarch_hyperactor::pywaker::TestWaker")
-class TestWaker:
+@rust_struct("monarch_hyperactor::pywaker::PyTestWaker")
+class PyTestWaker:
     def wake(self) -> bool: ...
 
     @staticmethod
-    def create() -> tuple["TestWaker", Event]: ...
+    def create() -> tuple["PyTestWaker", Event]: ...

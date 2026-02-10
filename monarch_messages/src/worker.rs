@@ -348,7 +348,7 @@ impl ArgsKwargs {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
     ) -> PyResult<Self> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Convert WireValue args to Python objects
             let py_args: Vec<Bound<'_, PyAny>> = args
                 .into_iter()
@@ -495,9 +495,9 @@ impl Factory {
     pub fn new(
         py: Python<'_>,
         size: Vec<i64>,
-        dtype: PyObject,
-        layout: PyObject,
-        device: PyObject,
+        dtype: Py<PyAny>,
+        layout: Py<PyAny>,
+        device: Py<PyAny>,
     ) -> PyResult<Self> {
         // TODO: Add some validation around dtype / layout. We should have pyre types on
         // the python side to help in the short term.

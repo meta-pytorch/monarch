@@ -4,15 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from monarch._src.actor.waker import TestWaker
+from monarch._src.actor.waker import PyTestWaker
 
 
 async def test_ping_pong():
     import asyncio
     import threading
 
-    waker1, event1 = TestWaker.create()
-    waker2, event2 = TestWaker.create()
+    waker1, event1 = PyTestWaker.create()
+    waker2, event2 = PyTestWaker.create()
     counter = [0]
 
     N = 100
