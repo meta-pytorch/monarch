@@ -209,7 +209,7 @@ impl<A: Referable> ActorMesh<A> {
                         .actor_id()
                         .clone(),
                     None,
-                    ActorStatus::Stopped,
+                    ActorStatus::Stopped("mesh stopped".to_string()),
                     None,
                 ),
             }));
@@ -233,7 +233,7 @@ impl<A: Referable> Deref for ActorMesh<A> {
     fn deref(&self) -> &Self::Target {
         &self.current_ref
     }
-/}
+}
 
 /// Manual implementation of Clone because `A` doesn't need to implement Clone
 /// but we still want to be able to clone the ActorMesh.
@@ -768,7 +768,7 @@ impl<A: Referable> ActorMeshRef<A> {
         }
         health_state.unhealthy_event = match &event.actor_status {
             ActorStatus::Failed(_) => Some(Unhealthy::Crashed(message.clone())),
-            ActorStatus::Stopped => Some(Unhealthy::StreamClosed(message.clone())),
+            ActorStatus::Stopped(_) => Some(Unhealthy::StreamClosed(message.clone())),
             _ => None,
         };
         Ok(message)
@@ -1572,7 +1572,7 @@ mod tests {
             next_event.actor_mesh_name,
             Some(mesh_ref.name().to_string())
         );
-        assert_eq!(next_event.event.actor_status, ActorStatus::Stopped);
+        assert!(matches!(next_event.event.actor_status, ActorStatus::Stopped(_)));
         // Check that a cloned Ref from earlier gets the same event. Every clone
         // should get the same event, even if it's not a subscriber.
         let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
@@ -1580,6 +1580,6 @@ mod tests {
             next_event.actor_mesh_name,
             Some(mesh_ref.name().to_string())
         );
-        assert_eq!(next_event.event.actor_status, ActorStatus::Stopped);
+        assert!(matches!(next_event.event.actor_status, ActorStatus::Stopped(_)));
     }
 }

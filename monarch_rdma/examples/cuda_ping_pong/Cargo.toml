@@ -28,6 +28,7 @@ async-trait = "0.1.86"
 buck-resources = "1"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 hyperactor = { version = "0.0.0", path = "../../../hyperactor" }
+hyperactor_config = { version = "0.0.0", path = "../../../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../../../hyperactor_mesh" }
 monarch_rdma = { version = "0.0.0", path = "../.." }
 ndslice = { version = "0.0.0", path = "../../../ndslice" }
