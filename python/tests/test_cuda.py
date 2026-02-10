@@ -15,7 +15,7 @@ import cloudpickle
 import torch
 import torch.distributed as dist
 from monarch._src.actor.actor_mesh import ActorMesh
-from monarch._src.actor.host_mesh import create_local_host_mesh, fake_in_process_host
+from monarch._src.actor.host_mesh import create_local_host_mesh
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 
 
@@ -108,7 +108,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             for name, value in cuda_env_vars.items():
                 os.environ[name] = value
 
-        proc_mesh = fake_in_process_host().spawn_procs(bootstrap=setup_cuda_env)
+        proc_mesh = this_host().spawn_procs(bootstrap=setup_cuda_env)
 
         try:
             actor = proc_mesh.spawn("cuda_init", CudaInitTestActor)

@@ -48,7 +48,6 @@ from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
     _bootstrap_cmd,
     create_local_host_mesh,
-    fake_in_process_host,
     HostMesh,
     this_host,
     this_proc,
@@ -105,7 +104,7 @@ class Indirect(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_choose():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     v = proc.spawn("counter", Counter, 3)
     i = proc.spawn("indirect", Indirect)
     v.incr.broadcast()
@@ -126,7 +125,7 @@ async def test_choose():
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_stream():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     v = proc.spawn("counter2", Counter, 3)
     v.incr.broadcast()
 
@@ -148,7 +147,7 @@ class From(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_mesh_passed_to_mesh():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     f = proc.spawn("from", From)
     t = proc.spawn("to", To)
     # Make sure t is initialized before sending to f. Otherwise
@@ -162,8 +161,8 @@ async def test_mesh_passed_to_mesh():
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_mesh_passed_to_mesh_on_different_proc_mesh():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
-    proc2 = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
+    proc2 = this_host().spawn_procs(per_host={"gpus": 2})
     f = proc.spawn("from", From)
     t = proc2.spawn("to", To)
     # Make sure t is initialized before sending to f. Otherwise
@@ -177,8 +176,8 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh():
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_actor_slicing():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
-    proc2 = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
+    proc2 = this_host().spawn_procs(per_host={"gpus": 2})
 
     f = proc.spawn("from", From)
     t = proc2.spawn("to", To)
@@ -194,7 +193,7 @@ def test_actor_slicing():
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_aggregate():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     counter = proc.spawn("counter", Counter, 1)
     counter.incr.broadcast()
     acc = Accumulator(counter.value, 0, operator.add)
@@ -215,7 +214,7 @@ class RunIt(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_rank_size():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     r = proc.spawn("runit", RunIt)
 
     acc = Accumulator(r.run, 0, operator.add)
@@ -228,7 +227,7 @@ async def test_rank_size():
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_rank_string():
     per_host = {"hosts": 1, "gpus": 2}
-    proc = fake_in_process_host().spawn_procs(per_host=per_host)
+    proc = this_host().spawn_procs(per_host=per_host)
     r = proc.spawn("runit", RunIt)
     vm = r.return_current_rank_str.call().get()
     r0 = vm.flatten("r").slice(r=0).item()
@@ -246,7 +245,7 @@ class SyncActor(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_sync_actor():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     a = proc.spawn("actor", SyncActor)
     c = proc.spawn("counter", Counter, 5)
     r = await a.sync_endpoint.choose(c)
@@ -256,7 +255,7 @@ async def test_sync_actor():
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_sync_actor_sync_client() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     a = proc.spawn("actor", SyncActor)
     c = proc.spawn("counter", Counter, 5)
     r = a.sync_endpoint.choose(c).get()
@@ -266,14 +265,14 @@ def test_sync_actor_sync_client() -> None:
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_proc_mesh_size() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     assert 2 == proc.size("gpus")
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_rank_size_sync() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     r = proc.spawn("runit", RunIt)
 
     acc = Accumulator(r.run, 0, operator.add)
@@ -284,7 +283,7 @@ def test_rank_size_sync() -> None:
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_accumulate_sync() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     counter = proc.spawn("counter", Counter, 1)
     counter.incr.broadcast()
     acc = Accumulator(counter.value, 0, operator.add)
@@ -302,7 +301,7 @@ class CastToCounter(Actor):
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_value_mesh() -> None:
     per_host = {"hosts": 1, "gpus": 2}
-    proc = fake_in_process_host().spawn_procs(per_host=per_host)
+    proc = this_host().spawn_procs(per_host=per_host)
     counter = proc.spawn("counter", Counter, 0)
     counter.slice(hosts=0, gpus=1).incr.broadcast()
     x = counter.value.call().get()
@@ -1142,7 +1141,7 @@ class SendAlot(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_port_as_argument() -> None:
-    proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
+    proc_mesh = this_host().spawn_procs(per_host={"gpus": 1})
     s = proc_mesh.spawn("send_alot", SendAlot)
     send, recv = Channel[int].open()
 
@@ -1223,7 +1222,7 @@ class PortedActor(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_ported_actor():
-    proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
+    proc_mesh = this_host().spawn_procs(per_host={"gpus": 1})
     a = proc_mesh.spawn("port_actor", PortedActor)
     assert 5 == a.add.call_one(2).get()
 
@@ -1266,7 +1265,7 @@ class SleepActor(Actor):
 
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_mesh_len():
-    proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 12})
+    proc_mesh = this_host().spawn_procs(per_host={"gpus": 12})
     s = proc_mesh.spawn("sleep_actor", SleepActor)
     assert 12 == len(s)
 

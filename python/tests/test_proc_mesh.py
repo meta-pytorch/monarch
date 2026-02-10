@@ -13,7 +13,6 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import cloudpickle
-import monarch._src.actor.host_mesh
 import monarch.actor
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
@@ -303,9 +302,6 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
     orig_get_client_context = _client_context.get
     with (
         patch.object(_client_context, "get") as mock_get_client_context,
-        patch.object(
-            monarch._src.actor.host_mesh, "fake_in_process_host"
-        ) as mock_fake_in_process_host,
     ):
         mock_get_client_context.side_effect = orig_get_client_context
 
@@ -323,11 +319,6 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
             t.join()
 
         assert mock_get_client_context.call_count == 100
-        # If this test is run in isolation, the local host mesh will
-        # be created once. But if it runs with other tests, the host mesh
-        # will have already been initialized and the function never gets
-        # called.
-        assert mock_fake_in_process_host.call_count in (0, 1)
 
 
 @pytest.mark.timeout(60)

@@ -954,13 +954,13 @@ def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
         ProcMesh: A locally allocated process mesh.
 
     Warning:
-        This function is deprecated. Use `fake_in_process_host().spawn_procs()`
+        This function is deprecated. Use `this_host().spawn_procs()`
         for testing or `this_proc().spawn_procs()` for current process actors.
     """
     warnings.warn(
         (
             "DEPRECATION WARNING: this function will soon be unsupported. "
-            "Use monarch._src.actor.host_mesh.fake_in_process_host().spawn_procs "
+            "Use this_host().spawn_procs(per_host = {'hosts': ..., 'gpus': ...}) "
             "for testing. For launching an actor in the current process use "
             "this_proc().spawn_procs()."
         ),
@@ -968,9 +968,9 @@ def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
         stacklevel=2,
     )
 
-    from monarch._src.actor.host_mesh import fake_in_process_host
+    from monarch._src.actor.host_mesh import this_host
 
-    return fake_in_process_host().spawn_procs(
+    return this_host().spawn_procs(
         per_host={"hosts": hosts, "gpus": gpus if gpus else _local_device_count()},
     )
 

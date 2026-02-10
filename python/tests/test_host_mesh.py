@@ -17,25 +17,9 @@ import pytest
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.host_mesh import (
-    create_local_host_mesh,
-    fake_in_process_host,
-    HostMesh,
-    this_host,
-)
+from monarch._src.actor.host_mesh import create_local_host_mesh, HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
-
-
-@pytest.mark.timeout(60)
-def test_fake_in_process_host() -> None:
-    host = fake_in_process_host()
-    assert host.extent.labels == []
-    assert host.extent.sizes == []
-    assert not host.stream_logs
-    hy_host = host._hy_host_mesh.block_on()
-    assert hy_host.region.labels == host.region.labels
-    assert hy_host.region.slice() == host.region.slice()
 
 
 @pytest.mark.timeout(60)
@@ -166,7 +150,6 @@ class PidActor(Actor):
 @pytest.mark.timeout(60)
 def test_this_host_on_client_can_spawn_actual_os_processes() -> None:
     hm = this_host()
-    assert not hm.is_fake_in_process
     am = hm.spawn_procs(per_host={"gpus": 4}).spawn("actor", PidActor)
     pids = am.get_pid.call().get()
     for pid in pids.values():
