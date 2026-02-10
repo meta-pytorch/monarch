@@ -25,23 +25,23 @@ use crate::shape::PyPoint;
 pub struct PyInstance {
     inner: Instance<PythonActor>,
     #[pyo3(get, set)]
-    proc_mesh: Option<PyObject>,
+    proc_mesh: Option<Py<PyAny>>,
     #[pyo3(get, set, name = "_controller_controller")]
-    controller_controller: Option<PyObject>,
+    controller_controller: Option<Py<PyAny>>,
     #[pyo3(get, set)]
     pub(crate) rank: PyPoint,
     #[pyo3(get, set, name = "_children")]
-    children: Option<PyObject>,
+    children: Option<Py<PyAny>>,
 
     #[pyo3(get, set, name = "name")]
     name: String,
     #[pyo3(get, set, name = "class_name")]
     class_name: Option<String>,
     #[pyo3(get, set, name = "creator")]
-    creator: Option<PyObject>,
+    creator: Option<Py<PyAny>>,
 
     #[pyo3(get, set, name = "_mock_tensor_engine_factory")]
-    mock_tensor_engine_factory: Option<PyObject>,
+    mock_tensor_engine_factory: Option<Py<PyAny>>,
 }
 
 impl Clone for PyInstance {

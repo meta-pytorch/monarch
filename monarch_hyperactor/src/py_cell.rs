@@ -83,8 +83,8 @@ mod tests {
 
     #[test]
     fn test_clone_ref() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let cell = PyCell::new(TestClass { value: 42 });
 
             let py_obj1 = cell.clone_ref(py).unwrap();

@@ -759,6 +759,7 @@ impl Communicator {
 
 #[cfg(test)]
 mod tests {
+    use pyo3::Python;
     use torch_sys2::CudaDevice;
     use torch_sys2::DeviceIndex;
     use torch_sys2::factory_float_tensor;
@@ -772,9 +773,9 @@ mod tests {
     /// Initialize Python and import torch in a separate thread.
     /// This is a workaround for a pybind11 bug in PyTorch.
     fn test_setup() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let handle = std::thread::spawn(|| {
-            pyo3::Python::with_gil(|py| {
+            pyo3::Python::attach(|py| {
                 py.import("torch").expect("failed to import torch");
             });
         });
