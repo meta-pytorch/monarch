@@ -9,7 +9,10 @@
 use std::any::type_name;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -40,6 +43,8 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
+use hyperactor_telemetry::MeshEvent;
+use hyperactor_telemetry::notify_mesh_created;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -1121,6 +1126,36 @@ impl ProcMeshRef {
             // the cycle by setting the controller after the fact.
             mesh.set_controller(Some(controller.bind()));
         }
+
+        // Notify telemetry sink about mesh creation
+        {
+            // Hash the string form of mesh.name() for mesh_id. We use
+            // to_string() so that this produces the same hash as
+            // actor_id.name().hash() in proc.rs (which hashes a &str).
+            let mut mesh_hasher = DefaultHasher::new();
+            mesh.name().to_string().hash(&mut mesh_hasher);
+            let mesh_id = mesh_hasher.finish();
+
+            let mut parent_hasher = DefaultHasher::new();
+            self.name.to_string().hash(&mut parent_hasher);
+            let parent_mesh_id = parent_hasher.finish();
+
+            let full_name = format!("{}/{}", self.name, mesh.name());
+            let shape_json =
+                serde_json::to_string(&self.region().extent()).unwrap_or_else(|_| "{}".to_string());
+
+            notify_mesh_created(MeshEvent {
+                id: mesh_id,
+                timestamp: RealClock.system_time_now(),
+                class: type_name::<A>().to_string(),
+                given_name: mesh.name().to_string(),
+                full_name,
+                shape_json,
+                parent_mesh_id: Some(parent_mesh_id),
+                parent_view_json: None,
+            });
+        }
+
         Ok(mesh)
     }
 

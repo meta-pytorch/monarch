@@ -291,6 +291,10 @@ lazy_static! {
     /// Receives actor creation events directly (not via tracing).
     /// Only one sink is supported; registering a new sink replaces the previous one.
     static ref ACTOR_EVENT_SINK: Mutex<Option<Box<dyn ActorEventSink>>> = Mutex::new(None);
+    /// Global mesh event sink.
+    /// Receives mesh creation events directly (not via tracing).
+    /// Only one sink is supported; registering a new sink replaces the previous one.
+    static ref MESH_EVENT_SINK: Mutex<Option<Box<dyn MeshEventSink>>> = Mutex::new(None);
 }
 
 /// Event data for actor creation.
@@ -348,6 +352,58 @@ pub fn notify_actor_created(event: ActorEvent) {
         if let Some(ref s) = *sink {
             if let Err(e) = s.on_actor_created(&event) {
                 tracing::error!("Failed to notify actor sink: {:?}", e);
+            }
+        }
+    }
+}
+
+/// Event data for mesh creation.
+/// This is passed to `MeshEventSink` implementations when a mesh is spawned.
+#[derive(Debug, Clone)]
+pub struct MeshEvent {
+    /// Unique identifier for this mesh (hashed)
+    pub id: u64,
+    /// Timestamp when the mesh was created
+    pub timestamp: SystemTime,
+    /// Mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
+    pub class: String,
+    /// User-provided name for this mesh
+    pub given_name: String,
+    /// Full hierarchical name as it appears in supervision events
+    pub full_name: String,
+    /// Shape of the mesh, serialized from ndslice::Shape (labels + slice topology)
+    pub shape_json: String,
+    /// Parent mesh ID (None for root meshes)
+    pub parent_mesh_id: Option<u64>,
+    /// Region over which the parent spawned this mesh, serialized from ndslice::Region
+    pub parent_view_json: Option<String>,
+}
+
+/// Trait for sinks that receive mesh creation events.
+/// Implement this trait and register with `register_mesh_sink` to receive
+/// notifications when meshes are created.
+pub trait MeshEventSink: Send + Sync {
+    /// Called when a mesh is spawned.
+    fn on_mesh_created(&self, event: &MeshEvent) -> Result<(), anyhow::Error>;
+}
+
+/// Register a sink to receive mesh creation events.
+/// This can be called at any time. The sink will receive all subsequent mesh creation events.
+///
+/// Note: Only one sink is supported. Registering a new sink replaces any previously registered sink.
+pub fn register_mesh_sink(sink: Box<dyn MeshEventSink>) {
+    if let Ok(mut slot) = MESH_EVENT_SINK.lock() {
+        *slot = Some(sink);
+    }
+}
+
+/// Notify the registered sink that a mesh was created.
+/// This is called from hyperactor_mesh when a mesh is spawned.
+pub fn notify_mesh_created(event: MeshEvent) {
+    if let Ok(sink) = MESH_EVENT_SINK.lock() {
+        if let Some(ref s) = *sink {
+            if let Err(e) = s.on_mesh_created(&event) {
+                tracing::error!("Failed to notify mesh sink: {}", e);
             }
         }
     }
