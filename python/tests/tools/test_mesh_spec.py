@@ -106,6 +106,7 @@ class TestMeshSpec(unittest.TestCase):
     "n2",
     "n3"
   ],
+  "task_ips": [],
   "state": 0,
   "image": "test_pkg:123"
 }
