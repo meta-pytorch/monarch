@@ -41,7 +41,6 @@ use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::MeshFailure;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
-use ndslice::Point;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
@@ -502,7 +501,7 @@ impl PythonActor {
         let client_proc = Proc::direct_with_default(
             default_bind_spec().binding_addr(),
             "mesh_root_client_proc".into(),
-            router::global().clone().boxed(),
+            (*router::global()).clone().boxed(),
         )
         .unwrap();
 

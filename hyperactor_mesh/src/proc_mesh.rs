@@ -253,7 +253,7 @@ fn fresh_instance() -> (
     let client_proc = Proc::direct_with_default(
         default_bind_spec().binding_addr(),
         "mesh_root_client_proc".into(),
-        router::global().clone().boxed(),
+        (*router::global()).clone().boxed(),
     )
     .unwrap();
 
@@ -1349,6 +1349,7 @@ mod tests {
         assert_eq!(event.actor_id.2, 0);
     }
 
+    #[cfg(fbcode_build)]
     mod shim {
         use std::collections::HashSet;
 
@@ -1360,7 +1361,6 @@ mod tests {
         use crate::sel;
 
         #[tokio::test]
-        #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance();
             let host_mesh = v1::testing::host_mesh(4).await;

@@ -961,32 +961,7 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
 #[cfg(test)]
 mod tests {
 
-    use std::collections::HashSet;
-    use std::ops::Deref;
-
-    use hyperactor::actor::ActorErrorKind;
-    use hyperactor::actor::ActorStatus;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
-    use hyperactor::context::Mailbox as _;
-    use hyperactor::mailbox;
-    use ndslice::Extent;
-    use ndslice::ViewExt;
-    use ndslice::extent;
-    use ndslice::view::Ranked;
-    use timed_test::async_timed_test;
-    use tokio::time::Duration;
-
-    use super::ActorMesh;
-    use crate::supervision::MeshFailure;
     use crate::v1::ActorMeshRef;
-    use crate::v1::Name;
-    use crate::v1::ProcMesh;
-    use crate::v1::host_mesh::HostMesh;
-    use crate::v1::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
-    use crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
-    use crate::v1::testactor;
-    use crate::v1::testing;
 
     #[test]
     fn test_actor_mesh_ref_is_send_and_sync() {
@@ -994,657 +969,687 @@ mod tests {
         assert_send_sync::<ActorMeshRef<()>>();
     }
 
-    #[tokio::test]
     #[cfg(fbcode_build)]
-    async fn test_actor_mesh_ref_lazy_materialization() {
-        // 1) Bring up procs and spawn actors.
-        let instance = testing::instance();
-        // Small mesh so the test runs fast, but > page_size so we
-        // cross a boundary
-        let extent = extent!(replicas = 3, hosts = 2); // 6 ranks
-        let pm: ProcMesh = testing::proc_meshes(instance, extent.clone())
-            .await
-            .into_iter()
-            .next()
-            .expect("at least one proc mesh");
-        let am: ActorMesh<testactor::TestActor> = pm.spawn(instance, "test", &()).await.unwrap();
+    mod fbcode_tests {
+        use std::collections::HashSet;
+        use std::ops::Deref;
 
-        // 2) Build our ActorMeshRef with a tiny page size (2) to
-        // force multiple pages:
-        // page 0: ranks [0,1], page 1: [2,3], page 2: [4,5]
-        let page_size = 2;
-        let amr: ActorMeshRef<testactor::TestActor> =
-            ActorMeshRef::with_page_size(am.name.clone(), pm.clone(), page_size, None);
-        assert_eq!(amr.extent(), extent);
-        assert_eq!(amr.region().num_ranks(), 6);
+        use hyperactor::actor::ActorErrorKind;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::clock::Clock;
+        use hyperactor::clock::RealClock;
+        use hyperactor::context::Mailbox as _;
+        use hyperactor::mailbox;
+        use ndslice::Extent;
+        use ndslice::ViewExt;
+        use ndslice::extent;
+        use ndslice::view::Ranked;
+        use timed_test::async_timed_test;
+        use tokio::time::Duration;
 
-        // 3) Within-rank pointer stability (OnceLock caches &ActorRef)
-        let p0_a = amr.get(0).expect("rank 0 exists") as *const _;
-        let p0_b = amr.get(0).expect("rank 0 exists") as *const _;
-        assert_eq!(p0_a, p0_b, "same rank should return same cached pointer");
+        use super::super::ActorMesh;
+        use crate::supervision::MeshFailure;
+        use crate::v1::ActorMeshRef;
+        use crate::v1::Name;
+        use crate::v1::ProcMesh;
+        use crate::v1::host_mesh::HostMesh;
+        use crate::v1::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
+        use crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
+        use crate::v1::testactor;
+        use crate::v1::testing;
 
-        // 4) Same page, different rank (both materialize fine)
-        let p1_a = amr.get(1).expect("rank 1 exists") as *const _;
-        let p1_b = amr.get(1).expect("rank 1 exists") as *const _;
-        assert_eq!(p1_a, p1_b, "same rank should return same cached pointer");
-        // They're different ranks, so the pointers are different
-        // (distinct OnceLocks in the page)
-        assert_ne!(p0_a, p1_a, "different ranks have different cache slots");
-
-        // 5) Cross a page boundary (rank 2 is in a different page than rank 0/1)
-        let p2_a = amr.get(2).expect("rank 2 exists") as *const _;
-        let p2_b = amr.get(2).expect("rank 2 exists") as *const _;
-        assert_eq!(p2_a, p2_b, "same rank should return same cached pointer");
-        assert_ne!(p0_a, p2_a, "different pages have different cache slots");
-
-        // 6) Clone should drop the cache but keep identity (actor_id)
-        let amr_clone = amr.clone();
-        let orig_id_0 = amr.get(0).unwrap().actor_id().clone();
-        let clone_id_0 = amr_clone.get(0).unwrap().actor_id().clone();
-        assert_eq!(orig_id_0, clone_id_0, "clone preserves identity");
-        let p0_clone = amr_clone.get(0).unwrap() as *const _;
-        assert_ne!(
-            p0_a, p0_clone,
-            "cloned ActorMeshRef has a fresh cache (different pointer)"
-        );
-
-        // 7) Slicing preserves page_size and clears cache
-        // (RankedSliceable::sliced)
-        let sliced = amr.range("replicas", 1..).expect("slice should be valid"); // leaves 4 ranks
-        assert_eq!(sliced.region().num_ranks(), 4);
-        // First access materializes a new cache for the sliced view.
-        let sp0_a = sliced.get(0).unwrap() as *const _;
-        let sp0_b = sliced.get(0).unwrap() as *const _;
-        assert_eq!(sp0_a, sp0_b, "sliced view has its own cache slot per rank");
-        // Cross-page inside the slice too (page_size = 2 => pages are
-        // [0..2), [2..4)).
-        let sp2 = sliced.get(2).unwrap() as *const _;
-        assert_ne!(sp0_a, sp2, "sliced view crosses its own page boundary");
-
-        // 8) Hash/Eq ignore cache state; identical identity collapses
-        // to one set entry.
-        let mut set = HashSet::new();
-        set.insert(amr.clone());
-        set.insert(amr.clone());
-        assert_eq!(set.len(), 1, "cache state must not affect Hash/Eq");
-
-        // 9) As a sanity check, cast to ensure the refs are indeed
-        // usable/live.
-        let (port, mut rx) = mailbox::open_port(instance);
-        // Send to rank 0 and rank 3 (extent 3x2 => at least 4 ranks
-        // exist).
-        amr.get(0)
-            .expect("rank 0 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
-            .expect("send to rank 0 should succeed");
-        amr.get(3)
-            .expect("rank 3 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
-            .expect("send to rank 3 should succeed");
-        let (id_a, _) = RealClock
-            .timeout(Duration::from_secs(3), rx.recv())
-            .await
-            .expect("timed out waiting for first reply")
-            .expect("channel closed before first reply");
-        let (id_b, _) = RealClock
-            .timeout(Duration::from_secs(3), rx.recv())
-            .await
-            .expect("timed out waiting for second reply")
-            .expect("channel closed before second reply");
-        assert_ne!(id_a, id_b, "two different ranks responded");
-    }
-
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_actor_states_with_panic() {
-        hyperactor_telemetry::initialize_logging_for_test();
-
-        let instance = testing::instance();
-        // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
-        let supervisor = supervision_port.bind();
-        let num_replicas = 4;
-        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let proc_mesh = &meshes[1];
-        let child_name = Name::new("child").unwrap();
-
-        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
-        // on the client instance. The client would just panic with the message.
-        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
-            .spawn(
-                instance,
-                "wrapper",
-                &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
-            )
-            .await
-            .unwrap();
-
-        // Trigger the supervision error.
-        actor_mesh
-            .cast(
-                instance,
-                testactor::CauseSupervisionEvent {
-                    kind: testactor::SupervisionEventType::Panic,
-                    send_to_children: true,
-                },
-            )
-            .unwrap();
-
-        // The error will come back on two different pathways:
-        // * on the ActorMeshRef stored in WrapperActor
-        //   as an observable supervision event as a subscriber.
-        // * on the owning actor (WrapperActor here) to be handled.
-        // We test to ensure both have occurred.
-
-        // First test the ActorMeshRef got the event.
-        // Use a NextSupervisionFailure message to get the event from the wrapper
-        // actor.
-        let (failure_port, mut failure_receiver) = instance.open_port::<Option<MeshFailure>>();
-        actor_mesh
-            .cast(
-                instance,
-                testactor::NextSupervisionFailure(failure_port.bind()),
-            )
-            .unwrap();
-        let failure = failure_receiver
-            .recv()
-            .await
-            .unwrap()
-            .expect("no supervision event found on ref from wrapper actor");
-        let check_failure = move |failure: MeshFailure| {
-            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
-            assert_eq!(
-                failure.event.actor_id.name(),
-                child_name.clone().to_string()
-            );
-            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
-                assert!(msg.contains("panic"), "{}", msg);
-                assert!(msg.contains("for testing"), "{}", msg);
-            } else {
-                panic!("actor status is not failed: {}", failure.event.actor_status);
-            }
-        };
-        check_failure(failure);
-
-        // The wrapper actor should *not* have an event.
-
-        // Wait for a supervision event to reach the wrapper actor.
-        for _ in 0..num_replicas {
-            let failure = RealClock
-                .timeout(Duration::from_secs(20), supervision_receiver.recv())
+        #[tokio::test]
+        async fn test_actor_mesh_ref_lazy_materialization() {
+            // 1) Bring up procs and spawn actors.
+            let instance = testing::instance();
+            // Small mesh so the test runs fast, but > page_size so we
+            // cross a boundary
+            let extent = extent!(replicas = 3, hosts = 2); // 6 ranks
+            let pm: ProcMesh = testing::proc_meshes(instance, extent.clone())
                 .await
-                .expect("timeout")
-                .unwrap();
-            check_failure(failure);
+                .into_iter()
+                .next()
+                .expect("at least one proc mesh");
+            let am: ActorMesh<testactor::TestActor> =
+                pm.spawn(instance, "test", &()).await.unwrap();
+
+            // 2) Build our ActorMeshRef with a tiny page size (2) to
+            // force multiple pages:
+            // page 0: ranks [0,1], page 1: [2,3], page 2: [4,5]
+            let page_size = 2;
+            let amr: ActorMeshRef<testactor::TestActor> =
+                ActorMeshRef::with_page_size(am.name.clone(), pm.clone(), page_size, None);
+            assert_eq!(amr.extent(), extent);
+            assert_eq!(amr.region().num_ranks(), 6);
+
+            // 3) Within-rank pointer stability (OnceLock caches &ActorRef)
+            let p0_a = amr.get(0).expect("rank 0 exists") as *const _;
+            let p0_b = amr.get(0).expect("rank 0 exists") as *const _;
+            assert_eq!(p0_a, p0_b, "same rank should return same cached pointer");
+
+            // 4) Same page, different rank (both materialize fine)
+            let p1_a = amr.get(1).expect("rank 1 exists") as *const _;
+            let p1_b = amr.get(1).expect("rank 1 exists") as *const _;
+            assert_eq!(p1_a, p1_b, "same rank should return same cached pointer");
+            // They're different ranks, so the pointers are different
+            // (distinct OnceLocks in the page)
+            assert_ne!(p0_a, p1_a, "different ranks have different cache slots");
+
+            // 5) Cross a page boundary (rank 2 is in a different page than rank 0/1)
+            let p2_a = amr.get(2).expect("rank 2 exists") as *const _;
+            let p2_b = amr.get(2).expect("rank 2 exists") as *const _;
+            assert_eq!(p2_a, p2_b, "same rank should return same cached pointer");
+            assert_ne!(p0_a, p2_a, "different pages have different cache slots");
+
+            // 6) Clone should drop the cache but keep identity (actor_id)
+            let amr_clone = amr.clone();
+            let orig_id_0 = amr.get(0).unwrap().actor_id().clone();
+            let clone_id_0 = amr_clone.get(0).unwrap().actor_id().clone();
+            assert_eq!(orig_id_0, clone_id_0, "clone preserves identity");
+            let p0_clone = amr_clone.get(0).unwrap() as *const _;
+            assert_ne!(
+                p0_a, p0_clone,
+                "cloned ActorMeshRef has a fresh cache (different pointer)"
+            );
+
+            // 7) Slicing preserves page_size and clears cache
+            // (RankedSliceable::sliced)
+            let sliced = amr.range("replicas", 1..).expect("slice should be valid"); // leaves 4 ranks
+            assert_eq!(sliced.region().num_ranks(), 4);
+            // First access materializes a new cache for the sliced view.
+            let sp0_a = sliced.get(0).unwrap() as *const _;
+            let sp0_b = sliced.get(0).unwrap() as *const _;
+            assert_eq!(sp0_a, sp0_b, "sliced view has its own cache slot per rank");
+            // Cross-page inside the slice too (page_size = 2 => pages are
+            // [0..2), [2..4)).
+            let sp2 = sliced.get(2).unwrap() as *const _;
+            assert_ne!(sp0_a, sp2, "sliced view crosses its own page boundary");
+
+            // 8) Hash/Eq ignore cache state; identical identity collapses
+            // to one set entry.
+            let mut set = HashSet::new();
+            set.insert(amr.clone());
+            set.insert(amr.clone());
+            assert_eq!(set.len(), 1, "cache state must not affect Hash/Eq");
+
+            // 9) As a sanity check, cast to ensure the refs are indeed
+            // usable/live.
+            let (port, mut rx) = mailbox::open_port(instance);
+            // Send to rank 0 and rank 3 (extent 3x2 => at least 4 ranks
+            // exist).
+            amr.get(0)
+                .expect("rank 0 exists")
+                .send(instance, testactor::GetActorId(port.bind()))
+                .expect("send to rank 0 should succeed");
+            amr.get(3)
+                .expect("rank 3 exists")
+                .send(instance, testactor::GetActorId(port.bind()))
+                .expect("send to rank 3 should succeed");
+            let (id_a, _) = RealClock
+                .timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .expect("timed out waiting for first reply")
+                .expect("channel closed before first reply");
+            let (id_b, _) = RealClock
+                .timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .expect("timed out waiting for second reply")
+                .expect("channel closed before second reply");
+            assert_ne!(id_a, id_b, "two different ranks responded");
         }
-    }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_actor_states_with_process_exit() {
-        hyperactor_telemetry::initialize_logging_for_test();
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_actor_states_with_panic() {
+            hyperactor_telemetry::initialize_logging_for_test();
 
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
+            let instance = testing::instance();
+            // Listen for supervision events sent to the parent instance.
+            let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
+            let supervisor = supervision_port.bind();
+            let num_replicas = 4;
+            let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
+            let proc_mesh = &meshes[1];
+            let child_name = Name::new("child").unwrap();
 
-        let instance = testing::instance();
-        // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
-        let supervisor = supervision_port.bind();
-        let num_replicas = 4;
-        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let second_meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let proc_mesh = &meshes[1];
-        let second_proc_mesh = &second_meshes[1];
-        let child_name = Name::new("child").unwrap();
+            // Need to use a wrapper as there's no way to customize the handler for MeshFailure
+            // on the client instance. The client would just panic with the message.
+            let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+                .spawn(
+                    instance,
+                    "wrapper",
+                    &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
+                )
+                .await
+                .unwrap();
 
-        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
-        // on the client instance. The client would just panic with the message.
-        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
-            .spawn(
-                instance,
-                "wrapper",
-                &(
-                    // Need a second set of proc meshes for the inner test actor, so the
-                    // WrapperActor is still alive and gets the message.
-                    second_proc_mesh.deref().clone(),
-                    supervisor,
-                    child_name.clone(),
-                ),
-            )
-            .await
-            .unwrap();
+            // Trigger the supervision error.
+            actor_mesh
+                .cast(
+                    instance,
+                    testactor::CauseSupervisionEvent {
+                        kind: testactor::SupervisionEventType::Panic,
+                        send_to_children: true,
+                    },
+                )
+                .unwrap();
 
-        actor_mesh
-            .cast(
-                instance,
-                testactor::CauseSupervisionEvent {
-                    kind: testactor::SupervisionEventType::ProcessExit(1),
-                    send_to_children: true,
-                },
-            )
-            .unwrap();
+            // The error will come back on two different pathways:
+            // * on the ActorMeshRef stored in WrapperActor
+            //   as an observable supervision event as a subscriber.
+            // * on the owning actor (WrapperActor here) to be handled.
+            // We test to ensure both have occurred.
 
-        // Same drill as for panic, except this one is for process exit.
-        let (failure_port, mut failure_receiver) = instance.open_port::<Option<MeshFailure>>();
-        actor_mesh
-            .cast(
-                instance,
-                testactor::NextSupervisionFailure(failure_port.bind()),
-            )
-            .unwrap();
-        let failure = failure_receiver
-            .recv()
-            .await
-            .unwrap()
-            .expect("no supervision event found on ref from wrapper actor");
-
-        let check_failure = move |failure: MeshFailure| {
-            // TODO: It can't find the real actor id, so it says the agent failed.
-            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
-            assert_eq!(failure.event.actor_id.name(), "mesh");
-            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
-                assert!(
-                    msg.contains("timeout waiting for message from proc mesh agent"),
-                    "{}",
-                    msg
+            // First test the ActorMeshRef got the event.
+            // Use a NextSupervisionFailure message to get the event from the wrapper
+            // actor.
+            let (failure_port, mut failure_receiver) = instance.open_port::<Option<MeshFailure>>();
+            actor_mesh
+                .cast(
+                    instance,
+                    testactor::NextSupervisionFailure(failure_port.bind()),
+                )
+                .unwrap();
+            let failure = failure_receiver
+                .recv()
+                .await
+                .unwrap()
+                .expect("no supervision event found on ref from wrapper actor");
+            let check_failure = move |failure: MeshFailure| {
+                assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+                assert_eq!(
+                    failure.event.actor_id.name(),
+                    child_name.clone().to_string()
                 );
-            } else {
-                panic!("actor status is not failed: {}", failure.event.actor_status);
-            }
-        };
-        check_failure(failure);
-
-        // Wait for a supervision event to occur on these actors.
-        for _ in 0..num_replicas {
-            let failure = RealClock
-                .timeout(Duration::from_secs(20), supervision_receiver.recv())
-                .await
-                .expect("timeout")
-                .unwrap();
+                if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) =
+                    &failure.event.actor_status
+                {
+                    assert!(msg.contains("panic"), "{}", msg);
+                    assert!(msg.contains("for testing"), "{}", msg);
+                } else {
+                    panic!("actor status is not failed: {}", failure.event.actor_status);
+                }
+            };
             check_failure(failure);
-        }
-    }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_actor_states_on_sliced_mesh() {
-        hyperactor_telemetry::initialize_logging_for_test();
+            // The wrapper actor should *not* have an event.
 
-        let instance = testing::instance();
-        // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
-        let supervisor = supervision_port.bind();
-        let num_replicas = 4;
-        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let proc_mesh = &meshes[1];
-        let child_name = Name::new("child").unwrap();
-
-        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
-        // on the client instance. The client would just panic with the message.
-        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
-            .spawn(
-                instance,
-                "wrapper",
-                &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
-            )
-            .await
-            .unwrap();
-        let sliced = actor_mesh
-            .range("replicas", 1..3)
-            .expect("slice should be valid");
-        let sliced_replicas = sliced.len();
-
-        // TODO: check that independent slice refs don't get the supervision event.
-        sliced
-            .cast(
-                instance,
-                testactor::CauseSupervisionEvent {
-                    kind: testactor::SupervisionEventType::Panic,
-                    send_to_children: true,
-                },
-            )
-            .unwrap();
-
-        for _ in 0..sliced_replicas {
-            let supervision_message = RealClock
-                .timeout(Duration::from_secs(20), supervision_receiver.recv())
-                .await
-                .expect("timeout")
-                .unwrap();
-            let event = supervision_message.event;
-            assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
-            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &event.actor_status {
-                assert!(msg.contains("panic"));
-                assert!(msg.contains("for testing"));
-            } else {
-                panic!("actor status is not failed: {}", event.actor_status);
+            // Wait for a supervision event to reach the wrapper actor.
+            for _ in 0..num_replicas {
+                let failure = RealClock
+                    .timeout(Duration::from_secs(20), supervision_receiver.recv())
+                    .await
+                    .expect("timeout")
+                    .unwrap();
+                check_failure(failure);
             }
         }
-    }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_cast() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_actor_states_with_process_exit() {
+            hyperactor_telemetry::initialize_logging_for_test();
 
-        let instance = testing::instance();
-        let host_mesh = testing::host_mesh(4).await;
-        let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity())
-            .await
-            .unwrap();
-        let actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(instance, "test", &()).await.unwrap();
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
 
-        let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
-        actor_mesh
-            .cast(
-                instance,
-                testactor::GetCastInfo {
-                    cast_info: cast_info.bind(),
-                },
-            )
-            .unwrap();
+            let instance = testing::instance();
+            // Listen for supervision events sent to the parent instance.
+            let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
+            let supervisor = supervision_port.bind();
+            let num_replicas = 4;
+            let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
+            let second_meshes =
+                testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
+            let proc_mesh = &meshes[1];
+            let second_proc_mesh = &second_meshes[1];
+            let child_name = Name::new("child").unwrap();
 
-        let mut point_to_actor: HashSet<_> = actor_mesh.iter().collect();
-        while !point_to_actor.is_empty() {
-            let (point, origin_actor_ref, sender_actor_id) = cast_info_rx.recv().await.unwrap();
-            let key = (point, origin_actor_ref);
-            assert!(
-                point_to_actor.remove(&key),
-                "key {:?} not present or removed twice",
-                key
-            );
-            assert_eq!(&sender_actor_id, instance.self_id());
+            // Need to use a wrapper as there's no way to customize the handler for MeshFailure
+            // on the client instance. The client would just panic with the message.
+            let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+                .spawn(
+                    instance,
+                    "wrapper",
+                    &(
+                        // Need a second set of proc meshes for the inner test actor, so the
+                        // WrapperActor is still alive and gets the message.
+                        second_proc_mesh.deref().clone(),
+                        supervisor,
+                        child_name.clone(),
+                    ),
+                )
+                .await
+                .unwrap();
+
+            actor_mesh
+                .cast(
+                    instance,
+                    testactor::CauseSupervisionEvent {
+                        kind: testactor::SupervisionEventType::ProcessExit(1),
+                        send_to_children: true,
+                    },
+                )
+                .unwrap();
+
+            // Same drill as for panic, except this one is for process exit.
+            let (failure_port, mut failure_receiver) = instance.open_port::<Option<MeshFailure>>();
+            actor_mesh
+                .cast(
+                    instance,
+                    testactor::NextSupervisionFailure(failure_port.bind()),
+                )
+                .unwrap();
+            let failure = failure_receiver
+                .recv()
+                .await
+                .unwrap()
+                .expect("no supervision event found on ref from wrapper actor");
+
+            let check_failure = move |failure: MeshFailure| {
+                // TODO: It can't find the real actor id, so it says the agent failed.
+                assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+                assert_eq!(failure.event.actor_id.name(), "mesh");
+                if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) =
+                    &failure.event.actor_status
+                {
+                    assert!(
+                        msg.contains("timeout waiting for message from proc mesh agent"),
+                        "{}",
+                        msg
+                    );
+                } else {
+                    panic!("actor status is not failed: {}", failure.event.actor_status);
+                }
+            };
+            check_failure(failure);
+
+            // Wait for a supervision event to occur on these actors.
+            for _ in 0..num_replicas {
+                let failure = RealClock
+                    .timeout(Duration::from_secs(20), supervision_receiver.recv())
+                    .await
+                    .expect("timeout")
+                    .unwrap();
+                check_failure(failure);
+            }
         }
 
-        let _ = HostMesh::take(host_mesh).shutdown(&instance).await;
-    }
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_actor_states_on_sliced_mesh() {
+            hyperactor_telemetry::initialize_logging_for_test();
 
-    /// Test that undeliverable messages are properly returned to the
-    /// sender when communication to a proc is broken.
-    ///
-    /// This is the V1 version of the test from
-    /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_undeliverable_message_return() {
-        use hyperactor::mailbox::MessageEnvelope;
-        use hyperactor::mailbox::Undeliverable;
-        use hyperactor::test_utils::pingpong::PingPongActor;
-        use hyperactor::test_utils::pingpong::PingPongMessage;
+            let instance = testing::instance();
+            // Listen for supervision events sent to the parent instance.
+            let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
+            let supervisor = supervision_port.bind();
+            let num_replicas = 4;
+            let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
+            let proc_mesh = &meshes[1];
+            let child_name = Name::new("child").unwrap();
 
-        hyperactor_telemetry::initialize_logging_for_test();
+            // Need to use a wrapper as there's no way to customize the handler for MeshFailure
+            // on the client instance. The client would just panic with the message.
+            let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+                .spawn(
+                    instance,
+                    "wrapper",
+                    &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
+                )
+                .await
+                .unwrap();
+            let sliced = actor_mesh
+                .range("replicas", 1..3)
+                .expect("slice should be valid");
+            let sliced_replicas = sliced.len();
 
-        // Set message delivery timeout for faster test
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(
-            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
-            std::time::Duration::from_secs(1),
-        );
+            // TODO: check that independent slice refs don't get the supervision event.
+            sliced
+                .cast(
+                    instance,
+                    testactor::CauseSupervisionEvent {
+                        kind: testactor::SupervisionEventType::Panic,
+                        send_to_children: true,
+                    },
+                )
+                .unwrap();
 
-        let instance = testing::instance();
+            for _ in 0..sliced_replicas {
+                let supervision_message = RealClock
+                    .timeout(Duration::from_secs(20), supervision_receiver.recv())
+                    .await
+                    .expect("timeout")
+                    .unwrap();
+                let event = supervision_message.event;
+                assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
+                if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &event.actor_status {
+                    assert!(msg.contains("panic"));
+                    assert!(msg.contains("for testing"));
+                } else {
+                    panic!("actor status is not failed: {}", event.actor_status);
+                }
+            }
+        }
 
-        // Create a proc mesh with 2 replicas.
-        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = &meshes[1]; // Use the ProcessAllocator version
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_cast() {
+            let config = hyperactor_config::global::lock();
+            let _guard =
+                config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
-        // Set up undeliverable message port for collecting undeliverables
-        let (undeliverable_port, mut undeliverable_rx) =
-            instance.open_port::<Undeliverable<MessageEnvelope>>();
+            let instance = testing::instance();
+            let host_mesh = testing::host_mesh(4).await;
+            let proc_mesh = host_mesh
+                .spawn(instance, "test", Extent::unity())
+                .await
+                .unwrap();
+            let actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(instance, "test", &()).await.unwrap();
 
-        // Spawn actors individually on each replica by spawning separate actor meshes
-        // with specific proc selections.
-        let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
-        let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
+            let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
+            actor_mesh
+                .cast(
+                    instance,
+                    testactor::GetCastInfo {
+                        cast_info: cast_info.bind(),
+                    },
+                )
+                .unwrap();
 
-        let ping_mesh: ActorMesh<PingPongActor> = ping_proc_mesh
-            .spawn(
-                instance,
-                "ping",
-                &(Some(undeliverable_port.bind()), None, None),
-            )
-            .await
-            .unwrap();
+            let mut point_to_actor: HashSet<_> = actor_mesh.iter().collect();
+            while !point_to_actor.is_empty() {
+                let (point, origin_actor_ref, sender_actor_id) = cast_info_rx.recv().await.unwrap();
+                let key = (point, origin_actor_ref);
+                assert!(
+                    point_to_actor.remove(&key),
+                    "key {:?} not present or removed twice",
+                    key
+                );
+                assert_eq!(&sender_actor_id, instance.self_id());
+            }
 
-        let mut pong_mesh: ActorMesh<PingPongActor> = pong_proc_mesh
-            .spawn(instance, "pong", &(None, None, None))
-            .await
-            .unwrap();
+            let _ = HostMesh::take(host_mesh).shutdown(&instance).await;
+        }
 
-        // Get individual actor refs
-        let ping_handle = ping_mesh.values().next().unwrap();
-        let pong_handle = pong_mesh.values().next().unwrap();
+        /// Test that undeliverable messages are properly returned to the
+        /// sender when communication to a proc is broken.
+        ///
+        /// This is the V1 version of the test from
+        /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_undeliverable_message_return() {
+            use hyperactor::mailbox::MessageEnvelope;
+            use hyperactor::mailbox::Undeliverable;
+            use hyperactor::test_utils::pingpong::PingPongActor;
+            use hyperactor::test_utils::pingpong::PingPongMessage;
 
-        // Verify ping-pong works initially
-        let (done_tx, done_rx) = instance.open_once_port();
-        ping_handle
-            .send(
-                instance,
-                PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
-            )
-            .unwrap();
-        assert!(
-            done_rx.recv().await.unwrap(),
-            "Initial ping-pong should work"
-        );
+            hyperactor_telemetry::initialize_logging_for_test();
 
-        // Now stop the pong actor mesh to break communication
-        pong_mesh
-            .stop(instance, "test stop".to_string())
-            .await
-            .unwrap();
+            // Set message delivery timeout for faster test
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(
+                hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+                std::time::Duration::from_secs(1),
+            );
 
-        // Give it a moment to fully stop
-        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+            let instance = testing::instance();
 
-        // Send multiple messages that will all fail to be delivered
-        let n = 100usize;
-        for i in 1..=n {
-            let ttl = 66 + i as u64; // Avoid ttl = 66 (which would cause other test behavior)
-            let (once_tx, _once_rx) = instance.open_once_port();
+            // Create a proc mesh with 2 replicas.
+            let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+            let proc_mesh = &meshes[1]; // Use the ProcessAllocator version
+
+            // Set up undeliverable message port for collecting undeliverables
+            let (undeliverable_port, mut undeliverable_rx) =
+                instance.open_port::<Undeliverable<MessageEnvelope>>();
+
+            // Spawn actors individually on each replica by spawning separate actor meshes
+            // with specific proc selections.
+            let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
+            let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
+
+            let ping_mesh: ActorMesh<PingPongActor> = ping_proc_mesh
+                .spawn(
+                    instance,
+                    "ping",
+                    &(Some(undeliverable_port.bind()), None, None),
+                )
+                .await
+                .unwrap();
+
+            let mut pong_mesh: ActorMesh<PingPongActor> = pong_proc_mesh
+                .spawn(instance, "pong", &(None, None, None))
+                .await
+                .unwrap();
+
+            // Get individual actor refs
+            let ping_handle = ping_mesh.values().next().unwrap();
+            let pong_handle = pong_mesh.values().next().unwrap();
+
+            // Verify ping-pong works initially
+            let (done_tx, done_rx) = instance.open_once_port();
             ping_handle
                 .send(
                     instance,
-                    PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
+                    PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
                 )
                 .unwrap();
-        }
+            assert!(
+                done_rx.recv().await.unwrap(),
+                "Initial ping-pong should work"
+            );
 
-        // Collect all undeliverable messages.
-        // The fact that we successfully collect them proves the ping actor
-        // is still running and handling undeliverables correctly (not crashing).
-        let mut count = 0;
-        let deadline = RealClock.now() + std::time::Duration::from_secs(10);
-        while count < n && RealClock.now() < deadline {
-            match RealClock
-                .timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
+            // Now stop the pong actor mesh to break communication
+            pong_mesh
+                .stop(instance, "test stop".to_string())
                 .await
-            {
-                Ok(Ok(Undeliverable(envelope))) => {
-                    let _: PingPongMessage = envelope.deserialized().unwrap();
-                    count += 1;
-                }
-                Ok(Err(_)) => break, // Channel closed
-                Err(_) => break,     // Timeout
-            }
-        }
-
-        assert_eq!(
-            count, n,
-            "Expected {} undeliverable messages, got {}",
-            n, count
-        );
-    }
-
-    /// Test that actors not responding within stop timeout are
-    /// forcibly aborted. This is the V1 equivalent of
-    /// hyperactor_multiprocess/src/proc_actor.rs::test_stop_timeout.
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_actor_mesh_stop_timeout() {
-        hyperactor_telemetry::initialize_logging_for_test();
-
-        // Override ACTOR_SPAWN_MAX_IDLE to make test fast and
-        // deterministic. ACTOR_SPAWN_MAX_IDLE is the maximum idle
-        // time between status updates during mesh operations
-        // (spawn/stop). When stop() is called, it waits for actors to
-        // report they've stopped. If actors don't respond within this
-        // timeout, they're forcibly aborted via JoinHandle::abort().
-        // We set this to 1 second (instead of default 30s) so hung
-        // actors (sleeping 5s in this test) get aborted quickly,
-        // making the test fast.
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
-
-        let instance = testing::instance();
-
-        // Create proc mesh with 2 replicas
-        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = &meshes[1]; // Use ProcessAllocator version
-
-        // Spawn SleepActors across the mesh that will block longer
-        // than timeout
-        let mut sleep_mesh: ActorMesh<testactor::SleepActor> =
-            proc_mesh.spawn(instance, "sleepers", &()).await.unwrap();
-
-        // Send each actor a message to sleep for 5 seconds (longer
-        // than 1-second timeout)
-        for actor_ref in sleep_mesh.values() {
-            actor_ref
-                .send(instance, std::time::Duration::from_secs(5))
                 .unwrap();
+
+            // Give it a moment to fully stop
+            RealClock.sleep(std::time::Duration::from_millis(200)).await;
+
+            // Send multiple messages that will all fail to be delivered
+            let n = 100usize;
+            for i in 1..=n {
+                let ttl = 66 + i as u64; // Avoid ttl = 66 (which would cause other test behavior)
+                let (once_tx, _once_rx) = instance.open_once_port();
+                ping_handle
+                    .send(
+                        instance,
+                        PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
+                    )
+                    .unwrap();
+            }
+
+            // Collect all undeliverable messages.
+            // The fact that we successfully collect them proves the ping actor
+            // is still running and handling undeliverables correctly (not crashing).
+            let mut count = 0;
+            let deadline = RealClock.now() + std::time::Duration::from_secs(10);
+            while count < n && RealClock.now() < deadline {
+                match RealClock
+                    .timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
+                    .await
+                {
+                    Ok(Ok(Undeliverable(envelope))) => {
+                        let _: PingPongMessage = envelope.deserialized().unwrap();
+                        count += 1;
+                    }
+                    Ok(Err(_)) => break, // Channel closed
+                    Err(_) => break,     // Timeout
+                }
+            }
+
+            assert_eq!(
+                count, n,
+                "Expected {} undeliverable messages, got {}",
+                n, count
+            );
         }
 
-        // Give actors time to start sleeping
-        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+        /// Test that actors not responding within stop timeout are
+        /// forcibly aborted. This is the V1 equivalent of
+        /// hyperactor_multiprocess/src/proc_actor.rs::test_stop_timeout.
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_actor_mesh_stop_timeout() {
+            hyperactor_telemetry::initialize_logging_for_test();
 
-        // Count how many actors we spawned (for verification later)
-        let expected_actors = sleep_mesh.values().count();
+            // Override ACTOR_SPAWN_MAX_IDLE to make test fast and
+            // deterministic. ACTOR_SPAWN_MAX_IDLE is the maximum idle
+            // time between status updates during mesh operations
+            // (spawn/stop). When stop() is called, it waits for actors to
+            // report they've stopped. If actors don't respond within this
+            // timeout, they're forcibly aborted via JoinHandle::abort().
+            // We set this to 1 second (instead of default 30s) so hung
+            // actors (sleeping 5s in this test) get aborted quickly,
+            // making the test fast.
+            let config = hyperactor_config::global::lock();
+            let _guard =
+                config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
 
-        // Now stop the mesh - actors won't respond in time, should be
-        // aborted. Time this operation to verify abort behavior.
-        let stop_start = RealClock.now();
-        let result = sleep_mesh.stop(instance, "test stop".to_string()).await;
-        let stop_duration = RealClock.now().duration_since(stop_start);
+            let instance = testing::instance();
 
-        // Stop will return an error because actors didn't stop within
-        // the timeout. This is expected - the actors were forcibly
-        // aborted, and V1 reports this as an error.
-        match result {
-            Ok(_) => {
-                // It's possible actors stopped in time, but unlikely
-                // given 5-second sleep vs 1-second timeout
-                tracing::warn!("Actors stopped gracefully (unexpected but ok)");
+            // Create proc mesh with 2 replicas
+            let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+            let proc_mesh = &meshes[1]; // Use ProcessAllocator version
+
+            // Spawn SleepActors across the mesh that will block longer
+            // than timeout
+            let mut sleep_mesh: ActorMesh<testactor::SleepActor> =
+                proc_mesh.spawn(instance, "sleepers", &()).await.unwrap();
+
+            // Send each actor a message to sleep for 5 seconds (longer
+            // than 1-second timeout)
+            for actor_ref in sleep_mesh.values() {
+                actor_ref
+                    .send(instance, std::time::Duration::from_secs(5))
+                    .unwrap();
             }
-            Err(ref e) => {
-                // Expected: timeout error indicating actors were aborted
-                let err_str = format!("{:?}", e);
-                assert!(
-                    err_str.contains("Timeout"),
-                    "Expected Timeout error, got: {:?}",
-                    e
-                );
-                tracing::info!(
-                    "Stop timed out as expected for {} actors, they were aborted",
-                    expected_actors
-                );
+
+            // Give actors time to start sleeping
+            RealClock.sleep(std::time::Duration::from_millis(200)).await;
+
+            // Count how many actors we spawned (for verification later)
+            let expected_actors = sleep_mesh.values().count();
+
+            // Now stop the mesh - actors won't respond in time, should be
+            // aborted. Time this operation to verify abort behavior.
+            let stop_start = RealClock.now();
+            let result = sleep_mesh.stop(instance, "test stop".to_string()).await;
+            let stop_duration = RealClock.now().duration_since(stop_start);
+
+            // Stop will return an error because actors didn't stop within
+            // the timeout. This is expected - the actors were forcibly
+            // aborted, and V1 reports this as an error.
+            match result {
+                Ok(_) => {
+                    // It's possible actors stopped in time, but unlikely
+                    // given 5-second sleep vs 1-second timeout
+                    tracing::warn!("Actors stopped gracefully (unexpected but ok)");
+                }
+                Err(ref e) => {
+                    // Expected: timeout error indicating actors were aborted
+                    let err_str = format!("{:?}", e);
+                    assert!(
+                        err_str.contains("Timeout"),
+                        "Expected Timeout error, got: {:?}",
+                        e
+                    );
+                    tracing::info!(
+                        "Stop timed out as expected for {} actors, they were aborted",
+                        expected_actors
+                    );
+                }
             }
+
+            // Verify that stop completed quickly (~1-2 seconds for
+            // timeout + abort) rather than waiting the full 5 seconds for
+            // actors to finish sleeping. This proves actors were aborted,
+            // not waited for.
+            assert!(
+                stop_duration < std::time::Duration::from_secs(3),
+                "Stop took {:?}, expected < 3s (actors should have been aborted, not waited for)",
+                stop_duration
+            );
+            assert!(
+                stop_duration >= std::time::Duration::from_millis(900),
+                "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
+                stop_duration
+            );
         }
 
-        // Verify that stop completed quickly (~1-2 seconds for
-        // timeout + abort) rather than waiting the full 5 seconds for
-        // actors to finish sleeping. This proves actors were aborted,
-        // not waited for.
-        assert!(
-            stop_duration < std::time::Duration::from_secs(3),
-            "Stop took {:?}, expected < 3s (actors should have been aborted, not waited for)",
-            stop_duration
-        );
-        assert!(
-            stop_duration >= std::time::Duration::from_millis(900),
-            "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
-            stop_duration
-        );
-    }
+        /// Test that actors stop gracefully when they respond to stop
+        /// signals within the timeout. Complementary to
+        /// test_actor_mesh_stop_timeout which tests abort behavior. V1
+        /// equivalent of
+        /// hyperactor_multiprocess/src/proc_actor.rs::test_stop
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_actor_mesh_stop_graceful() {
+            use std::assert_matches::assert_matches;
 
-    /// Test that actors stop gracefully when they respond to stop
-    /// signals within the timeout. Complementary to
-    /// test_actor_mesh_stop_timeout which tests abort behavior. V1
-    /// equivalent of
-    /// hyperactor_multiprocess/src/proc_actor.rs::test_stop
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_actor_mesh_stop_graceful() {
-        use std::assert_matches::assert_matches;
+            hyperactor_telemetry::initialize_logging_for_test();
 
-        hyperactor_telemetry::initialize_logging_for_test();
+            let instance = testing::instance();
 
-        let instance = testing::instance();
+            // Create proc mesh with 2 replicas
+            let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+            let proc_mesh = &meshes[1];
 
-        // Create proc mesh with 2 replicas
-        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = &meshes[1];
+            // Spawn TestActors - these stop cleanly (no blocking
+            // operations)
+            let mut actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(instance, "test_actors", &()).await.unwrap();
 
-        // Spawn TestActors - these stop cleanly (no blocking
-        // operations)
-        let mut actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(instance, "test_actors", &()).await.unwrap();
+            // Cloned mesh will still have its controller, even if the owned mesh
+            // causes a stop.
+            let mesh_ref = actor_mesh.deref().clone();
 
-        // Cloned mesh will still have its controller, even if the owned mesh
-        // causes a stop.
-        let mesh_ref = actor_mesh.deref().clone();
+            let expected_actors = actor_mesh.values().count();
+            assert!(expected_actors > 0, "Should have spawned some actors");
 
-        let expected_actors = actor_mesh.values().count();
-        assert!(expected_actors > 0, "Should have spawned some actors");
+            // Time the stop operation
+            let stop_start = RealClock.now();
+            let result = actor_mesh.stop(instance, "test stop".to_string()).await;
+            let stop_duration = RealClock.now().duration_since(stop_start);
 
-        // Time the stop operation
-        let stop_start = RealClock.now();
-        let result = actor_mesh.stop(instance, "test stop".to_string()).await;
-        let stop_duration = RealClock.now().duration_since(stop_start);
+            // Graceful stop should succeed (return Ok)
+            assert!(
+                result.is_ok(),
+                "Stop should succeed for responsive actors, got: {:?}",
+                result.err()
+            );
 
-        // Graceful stop should succeed (return Ok)
-        assert!(
-            result.is_ok(),
-            "Stop should succeed for responsive actors, got: {:?}",
-            result.err()
-        );
+            // Verify stop completed quickly (< 2 seconds). Responsive
+            // actors should stop almost immediately, not wait for
+            // timeout.
+            assert!(
+                stop_duration < std::time::Duration::from_secs(2),
+                "Graceful stop took {:?}, expected < 2s (actors should stop quickly)",
+                stop_duration
+            );
 
-        // Verify stop completed quickly (< 2 seconds). Responsive
-        // actors should stop almost immediately, not wait for
-        // timeout.
-        assert!(
-            stop_duration < std::time::Duration::from_secs(2),
-            "Graceful stop took {:?}, expected < 2s (actors should stop quickly)",
-            stop_duration
-        );
+            tracing::info!(
+                "Successfully stopped {} actors in {:?}",
+                expected_actors,
+                stop_duration
+            );
 
-        tracing::info!(
-            "Successfully stopped {} actors in {:?}",
-            expected_actors,
-            stop_duration
-        );
-
-        // Check that the next returned supervision event is a Stopped event.
-        // Note that Ref meshes get Stopped events, and Owned meshes do not,
-        // because only the owner can stop them anyway.
-        // Each owned mesh has an implicit ref mesh though, so that is what we
-        // test here.
-        let next_event = actor_mesh.next_supervision_event(instance).await.unwrap();
-        assert_eq!(
-            next_event.actor_mesh_name,
-            Some(mesh_ref.name().to_string())
-        );
-        assert_matches!(next_event.event.actor_status, ActorStatus::Stopped(_));
-        // Check that a cloned Ref from earlier gets the same event. Every clone
-        // should get the same event, even if it's not a subscriber.
-        let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
-        assert_eq!(
-            next_event.actor_mesh_name,
-            Some(mesh_ref.name().to_string())
-        );
-        assert_matches!(next_event.event.actor_status, ActorStatus::Stopped(_));
+            // Check that the next returned supervision event is a Stopped event.
+            // Note that Ref meshes get Stopped events, and Owned meshes do not,
+            // because only the owner can stop them anyway.
+            // Each owned mesh has an implicit ref mesh though, so that is what we
+            // test here.
+            let next_event = actor_mesh.next_supervision_event(instance).await.unwrap();
+            assert_eq!(
+                next_event.actor_mesh_name,
+                Some(mesh_ref.name().to_string())
+            );
+            assert_matches!(next_event.event.actor_status, ActorStatus::Stopped(_));
+            // Check that a cloned Ref from earlier gets the same event. Every clone
+            // should get the same event, even if it's not a subscriber.
+            let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
+            assert_eq!(
+                next_event.actor_mesh_name,
+                Some(mesh_ref.name().to_string())
+            );
+            assert_matches!(next_event.event.actor_status, ActorStatus::Stopped(_));
+        }
     }
 }

@@ -115,7 +115,6 @@ use crate::ProcId;
 use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
-use crate::actor::ActorErrorKind;
 use crate::actor::ActorStatus;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;

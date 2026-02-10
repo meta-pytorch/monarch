@@ -519,6 +519,7 @@ impl ProcMesh {
 
     /// Detach the proc mesh from the lifetime of `self`, and return its reference.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn detach(self) -> ProcMeshRef {
         // This also keeps the ProcMeshAllocation::Allocated alloc task alive.
         self.current_ref.clone()
@@ -1279,20 +1280,10 @@ impl view::RankedSliceable for ProcMeshRef {
 #[cfg(test)]
 mod tests {
     use hyperactor::Instance;
-    use hyperactor::Proc;
-    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-    use hyperactor::id;
-    use hyperactor::mailbox::BoxableMailboxSender;
-    use hyperactor::mailbox::DialMailboxRouter;
     use ndslice::ViewExt;
     use ndslice::extent;
-    use timed_test::async_timed_test;
-    use uuid::Uuid;
 
     use super::*;
-    use crate::comm::ENABLE_NATIVE_V1_CASTING;
-    use crate::resource::RankedValues;
-    use crate::resource::Status;
     use crate::v1::testactor;
     use crate::v1::testing;
 
@@ -1319,210 +1310,225 @@ mod tests {
     }
 
     #[cfg(fbcode_build)]
-    async fn execute_spawn_actor() {
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+    mod fbcode_tests {
+        use hyperactor::Proc;
+        use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+        use hyperactor::id;
+        use hyperactor::mailbox::BoxableMailboxSender;
+        use hyperactor::mailbox::DialMailboxRouter;
+        use timed_test::async_timed_test;
+        use uuid::Uuid;
 
-        let instance = testing::instance();
+        use super::*;
+        use crate::comm::ENABLE_NATIVE_V1_CASTING;
+        use crate::resource::RankedValues;
+        use crate::resource::Status;
 
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
-            testactor::assert_mesh_shape(proc_mesh.spawn(instance, "test", &()).await.unwrap())
-                .await;
+        async fn execute_spawn_actor() {
+            hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+
+            let instance = testing::instance();
+
+            for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await
+            {
+                testactor::assert_mesh_shape(proc_mesh.spawn(instance, "test", &()).await.unwrap())
+                    .await;
+            }
         }
-    }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_spawn_actor_v1_casting() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        execute_spawn_actor().await;
-    }
-
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_spawn_actor_v0_casting() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
-        execute_spawn_actor().await;
-    }
-
-    // * Spawn an actor mesh, and then
-    // * do a random numbers of cast to it to bump the seq numbers for all
-    //   actors participating in the cast.
-    //     * This is to avoid the test mistakenly passing.
-    async fn spawn_for_seq_test(
-        cx: &Instance<testing::TestRootClient>,
-        proc_mesh: &ProcMeshRef,
-    ) -> ActorMesh<testactor::TestActor> {
-        let actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(cx, "test", &()).await.unwrap();
-
-        let (instance, _) = cx
-            .proc()
-            .instance(&format!("random_casts_{}", Uuid::now_v7()))
-            .unwrap();
-        let n = fastrand::u64(3..10);
-        for _ in 0..n {
-            actor_mesh.cast(&instance, ()).unwrap();
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_spawn_actor_v1_casting() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+            let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+            execute_spawn_actor().await;
         }
-        println!(
-            "did {} casts with sequencer session id {}",
-            n,
-            instance.sequencer().session_id()
-        );
-        actor_mesh
-    }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_seq_from_same_sender_to_different_meshes() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_spawn_actor_v0_casting() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+            execute_spawn_actor().await;
+        }
 
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
-        let instance = testing::instance();
-        let session_id = instance.sequencer().session_id();
+        // * Spawn an actor mesh, and then
+        // * do a random numbers of cast to it to bump the seq numbers for all
+        //   actors participating in the cast.
+        //     * This is to avoid the test mistakenly passing.
+        async fn spawn_for_seq_test(
+            cx: &Instance<testing::TestRootClient>,
+            proc_mesh: &ProcMeshRef,
+        ) -> ActorMesh<testactor::TestActor> {
+            let actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(cx, "test", &()).await.unwrap();
 
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
-            let proc_mesh_ref = proc_mesh.deref();
+            let (instance, _) = cx
+                .proc()
+                .instance(&format!("random_casts_{}", Uuid::now_v7()))
+                .unwrap();
+            let n = fastrand::u64(3..10);
+            for _ in 0..n {
+                actor_mesh.cast(&instance, ()).unwrap();
+            }
+            println!(
+                "did {} casts with sequencer session id {}",
+                n,
+                instance.sequencer().session_id()
+            );
+            actor_mesh
+        }
 
-            // Sequence numbers are scoped based on the (client, dest) pair.
-            // So casts to different meshes from the same client instance would
-            // result in seq 1 for all casts.
-            let handles = (0..3)
-                .map(|_| {
-                    let proc_mesh_ref_clone = proc_mesh_ref.clone();
-                    tokio::spawn(async move {
-                        let actor_mesh = spawn_for_seq_test(instance, &proc_mesh_ref_clone).await;
-                        let expected_seqs = vec![1; 8];
-                        testactor::assert_casting_correctness(
-                            &actor_mesh,
-                            instance,
-                            Some((session_id, expected_seqs)),
-                        )
-                        .await;
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_seq_from_same_sender_to_different_meshes() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+            let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+            hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+            let instance = testing::instance();
+            let session_id = instance.sequencer().session_id();
+
+            for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await
+            {
+                let proc_mesh_ref = proc_mesh.deref();
+
+                // Sequence numbers are scoped based on the (client, dest) pair.
+                // So casts to different meshes from the same client instance would
+                // result in seq 1 for all casts.
+                let handles = (0..3)
+                    .map(|_| {
+                        let proc_mesh_ref_clone = proc_mesh_ref.clone();
+                        tokio::spawn(async move {
+                            let actor_mesh =
+                                spawn_for_seq_test(instance, &proc_mesh_ref_clone).await;
+                            let expected_seqs = vec![1; 8];
+                            testactor::assert_casting_correctness(
+                                &actor_mesh,
+                                instance,
+                                Some((session_id, expected_seqs)),
+                            )
+                            .await;
+                        })
                     })
-                })
-                .collect::<Vec<_>>();
-            futures::future::join_all(handles).await;
+                    .collect::<Vec<_>>();
+                futures::future::join_all(handles).await;
+            }
         }
-    }
 
-    // Verify that the seq numbers are assigned correctly when we cast to
-    // different views of the same root mesh.
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_seq_from_same_sender_to_different_views() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        // Verify that the seq numbers are assigned correctly when we cast to
+        // different views of the same root mesh.
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_seq_from_same_sender_to_different_views() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+            let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
 
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+            hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
-        let instance = testing::instance();
-        let session_id = instance.sequencer().session_id();
+            let instance = testing::instance();
+            let session_id = instance.sequencer().session_id();
 
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
-            let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
+            for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await
+            {
+                let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
 
-            // First cast. The seq should be 1 for all actors.
-            let expected_seqs = vec![1; 8];
-            testactor::assert_casting_correctness(
-                &actor_mesh,
-                instance,
-                Some((session_id, expected_seqs)),
-            )
-            .await;
-
-            // Verify casting to the sliced actor mesh
-            let sliced_actor_mesh = actor_mesh.range("replicas", 1..3).unwrap();
-            // Second cast. The seq should be 2 for actors in the sliced mesh.
-            let expected_seqs = vec![2; 4];
-            testactor::assert_casting_correctness(
-                &sliced_actor_mesh,
-                instance,
-                Some((session_id, expected_seqs)),
-            )
-            .await;
-
-            // Verify casting to a different sliced actor mesh
-            let sliced_actor_mesh = actor_mesh.range("replicas", 0..2).unwrap();
-            // For actors in the previous sliced mesh, the seq should be 3 since
-            // this is the third cast for them. For other actors, the seq should
-            // be 2.
-            let expected_seqs = vec![2, 2, 3, 3];
-            testactor::assert_casting_correctness(
-                &sliced_actor_mesh,
-                instance,
-                Some((session_id, expected_seqs)),
-            )
-            .await;
-        }
-    }
-
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_seq_from_different_senders() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
-        let proc = Proc::new(id!(test[0]), DialMailboxRouter::new().boxed());
-        let (instance, ..) = proc
-            .actor_instance::<testing::TestRootClient>("test_client")
-            .unwrap();
-        let (first_instance, ..) = proc
-            .actor_instance::<testing::TestRootClient>("first_client")
-            .unwrap();
-        let (second_instance, ..) = proc
-            .actor_instance::<testing::TestRootClient>("second_client")
-            .unwrap();
-        let (third_instance, ..) = proc
-            .actor_instance::<testing::TestRootClient>("third_client")
-            .unwrap();
-
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
-            let actor_mesh = spawn_for_seq_test(&instance, &proc_mesh).await;
-
-            // Sequence numbers are calculated based on the sequencer, i.e. the
-            // client name. So three casts would result in seq 1 for all actors.
-            for inst in [&first_instance, &second_instance, &third_instance] {
+                // First cast. The seq should be 1 for all actors.
                 let expected_seqs = vec![1; 8];
-                let session_id = inst.sequencer().session_id();
                 testactor::assert_casting_correctness(
                     &actor_mesh,
-                    inst,
+                    instance,
+                    Some((session_id, expected_seqs)),
+                )
+                .await;
+
+                // Verify casting to the sliced actor mesh
+                let sliced_actor_mesh = actor_mesh.range("replicas", 1..3).unwrap();
+                // Second cast. The seq should be 2 for actors in the sliced mesh.
+                let expected_seqs = vec![2; 4];
+                testactor::assert_casting_correctness(
+                    &sliced_actor_mesh,
+                    instance,
+                    Some((session_id, expected_seqs)),
+                )
+                .await;
+
+                // Verify casting to a different sliced actor mesh
+                let sliced_actor_mesh = actor_mesh.range("replicas", 0..2).unwrap();
+                // For actors in the previous sliced mesh, the seq should be 3 since
+                // this is the third cast for them. For other actors, the seq should
+                // be 2.
+                let expected_seqs = vec![2, 2, 3, 3];
+                testactor::assert_casting_correctness(
+                    &sliced_actor_mesh,
+                    instance,
                     Some((session_id, expected_seqs)),
                 )
                 .await;
             }
         }
-    }
 
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_failing_spawn_actor() {
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_seq_from_different_senders() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+            let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
 
-        let instance = testing::instance();
+            hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+            let proc = Proc::new(id!(test[0]), DialMailboxRouter::new().boxed());
+            let (instance, ..) = proc
+                .actor_instance::<testing::TestRootClient>("test_client")
+                .unwrap();
+            let (first_instance, ..) = proc
+                .actor_instance::<testing::TestRootClient>("first_client")
+                .unwrap();
+            let (second_instance, ..) = proc
+                .actor_instance::<testing::TestRootClient>("second_client")
+                .unwrap();
+            let (third_instance, ..) = proc
+                .actor_instance::<testing::TestRootClient>("third_client")
+                .unwrap();
 
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
-            let err = proc_mesh
-                .spawn::<testactor::FailingCreateTestActor, Instance<testing::TestRootClient>>(
-                    instance,
-                    "testfail",
-                    &(),
-                )
-                .await
-                .unwrap_err();
-            let statuses = err.into_actor_spawn_error().unwrap();
-            assert_eq!(
-                statuses,
-                RankedValues::from((0..8, Status::Failed("test failure".to_string()))),
-            );
+            for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await
+            {
+                let actor_mesh = spawn_for_seq_test(&instance, &proc_mesh).await;
+
+                // Sequence numbers are calculated based on the sequencer, i.e. the
+                // client name. So three casts would result in seq 1 for all actors.
+                for inst in [&first_instance, &second_instance, &third_instance] {
+                    let expected_seqs = vec![1; 8];
+                    let session_id = inst.sequencer().session_id();
+                    testactor::assert_casting_correctness(
+                        &actor_mesh,
+                        inst,
+                        Some((session_id, expected_seqs)),
+                    )
+                    .await;
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn test_failing_spawn_actor() {
+            hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+
+            let instance = testing::instance();
+
+            for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await
+            {
+                let err = proc_mesh
+                    .spawn::<testactor::FailingCreateTestActor, Instance<testing::TestRootClient>>(
+                        instance,
+                        "testfail",
+                        &(),
+                    )
+                    .await
+                    .unwrap_err();
+                let statuses = err.into_actor_spawn_error().unwrap();
+                assert_eq!(
+                    statuses,
+                    RankedValues::from((0..8, Status::Failed("test failure".to_string()))),
+                );
+            }
         }
     }
 }

@@ -2177,7 +2177,7 @@ mod test {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod test_alloc {
     use std::os::unix::process::ExitStatusExt;
 
@@ -2191,7 +2191,6 @@ mod test_alloc {
     use super::*;
 
     #[async_timed_test(timeout_secs = 60)]
-    #[cfg(fbcode_build)]
     async fn test_alloc_simple() {
         // Use temporary config for this test
         let config = hyperactor_config::global::lock();
@@ -2322,7 +2321,6 @@ mod test_alloc {
     }
 
     #[async_timed_test(timeout_secs = 60)]
-    #[cfg(fbcode_build)]
     async fn test_alloc_host_failure() {
         // Use temporary config for this test
         let config = hyperactor_config::global::lock();
@@ -2463,7 +2461,6 @@ mod test_alloc {
     }
 
     #[async_timed_test(timeout_secs = 15)]
-    #[cfg(fbcode_build)]
     async fn test_alloc_inner_alloc_failure() {
         // SAFETY: Test happens in single-threaded code.
         unsafe {
@@ -2599,7 +2596,6 @@ mod test_alloc {
     }
 
     #[async_timed_test(timeout_secs = 180)]
-    #[cfg(fbcode_build)]
     async fn test_remote_process_alloc_signal_handler() {
         hyperactor_telemetry::initialize_logging_for_test();
         let num_proc_meshes = 5;

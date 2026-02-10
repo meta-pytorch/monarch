@@ -634,7 +634,7 @@ impl Handler<GetHostMeshAgent> for HostMeshAgentProcMeshTrampoline {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use std::assert_matches::assert_matches;
 
@@ -647,7 +647,6 @@ mod tests {
     use crate::resource::GetStateClient;
 
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_basic() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),

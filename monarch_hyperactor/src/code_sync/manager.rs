@@ -47,7 +47,6 @@ use hyperactor_mesh::v1;
 use lazy_errors::ErrorStash;
 use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::sender;
-use ndslice::Point;
 use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
