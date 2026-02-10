@@ -715,10 +715,6 @@ impl MeshControllerActor {
         self.workers.as_mut().unwrap()
     }
 
-    fn brokers(&self) -> &ActorMesh<LocalStateBrokerActor> {
-        self.brokers.as_ref().unwrap()
-    }
-
     fn brokers_mut(&mut self) -> &mut ActorMesh<LocalStateBrokerActor> {
         self.brokers.as_mut().unwrap()
     }
