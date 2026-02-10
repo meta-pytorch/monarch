@@ -135,7 +135,7 @@ impl PyProcMesh {
         actor: Py<PyType>,
         emulated: bool,
         supervision_display_name: Option<String>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let task = proc_mesh.task()?.take_task()?;
         let instance = instance.clone();
         let mesh_impl = async move {

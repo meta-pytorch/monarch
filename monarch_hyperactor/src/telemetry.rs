@@ -26,7 +26,7 @@ pub fn get_current_span_id() -> PyResult<u64> {
 
 /// Log a message with the given metaata
 #[pyfunction]
-pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
+pub fn forward_to_tracing(py: Python, record: Py<PyAny>) -> PyResult<()> {
     let message = record.call_method0(py, "getMessage")?;
     let message: &str = message.extract(py)?;
     let lineno: i64 = record.getattr(py, "lineno")?.extract(py)?;
@@ -49,7 +49,7 @@ pub fn forward_to_tracing(py: Python, record: PyObject) -> PyResult<()> {
                     if exc.is_none(py) {
                         return None;
                     }
-                    exc.extract::<(PyObject, PyObject, Bound<'_, PyTraceback>)>(py)
+                    exc.extract::<(Py<PyAny>, Py<PyAny>, Bound<'_, PyTraceback>)>(py)
                         .ok()
                 })
                 .map(|(_, _, tb)| tb.format().unwrap_or_default());
@@ -294,9 +294,9 @@ impl PySqliteTracing {
 
     fn __exit__(
         &mut self,
-        _exc_type: Option<PyObject>,
-        _exc_value: Option<PyObject>,
-        _traceback: Option<PyObject>,
+        _exc_type: Option<Py<PyAny>>,
+        _exc_value: Option<Py<PyAny>>,
+        _traceback: Option<Py<PyAny>>,
     ) -> PyResult<bool> {
         self.guard = None;
         Ok(false) // Don't suppress exceptions

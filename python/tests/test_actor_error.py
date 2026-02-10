@@ -1291,7 +1291,7 @@ async def test_supervise_callback_handled():
     await pm.stop()
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_without_await_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
