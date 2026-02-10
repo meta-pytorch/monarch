@@ -23,6 +23,7 @@ use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
@@ -91,7 +92,7 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start
@@ -150,10 +151,10 @@ impl Handler<PhilosopherMessage> for PhilosopherActor {
         match message {
             PhilosopherMessage::Start(waiter) => {
                 self.waiter.set(waiter)?;
-                self.request_chopsticks(cx).await?;
-                // Start is always broadcasted to all philosophers; so this is
-                // our global rank.
+                // Set rank before requesting chopsticks so we request
+                // the correct pair and identify ourselves properly.
                 self.rank = point.rank();
+                self.request_chopsticks(cx).await?;
             }
             PhilosopherMessage::GrantChopstick(chopstick) => {
                 tracing::debug!("philosopher {} granted chopstick {}", self.rank, chopstick);
