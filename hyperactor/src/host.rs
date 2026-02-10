@@ -130,6 +130,7 @@ pub struct Host<M> {
     service_proc: Proc,
     local_proc: Proc,
     frontend_rx: Option<ChannelRx<MessageEnvelope>>,
+    admin_handle: crate::admin::HostAdminHandle,
 }
 
 impl<M: ProcManager> Host<M> {
@@ -177,6 +178,10 @@ impl<M: ProcManager> Host<M> {
             "serving host"
         );
 
+        // Create and register the admin handle for introspection.
+        let admin_handle = crate::admin::HostAdminHandle::new(frontend_addr.clone());
+        crate::admin::register_host(std::sync::Arc::new(admin_handle.clone()));
+
         let host = Host {
             procs: HashSet::new(),
             frontend_addr,
@@ -186,6 +191,7 @@ impl<M: ProcManager> Host<M> {
             service_proc,
             local_proc,
             frontend_rx: Some(frontend_rx),
+            admin_handle,
         };
 
         // We the same router on both frontend and backend addresses.
@@ -257,7 +263,8 @@ impl<M: ProcManager> Host<M> {
 
         self.router
             .bind(proc_id.clone().into(), ready.addr().clone());
-        self.procs.insert(name);
+        self.procs.insert(name.clone());
+        self.admin_handle.add_proc(&proc_id.to_string());
 
         Ok((proc_id, ready.agent_ref().clone()))
     }
@@ -268,6 +275,12 @@ impl<M: ProcManager> Host<M> {
             local_proc: self.local_proc.clone(),
             dialer: self.router.clone(),
         }
+    }
+}
+
+impl<M> Drop for Host<M> {
+    fn drop(&mut self) {
+        crate::admin::deregister_host(&self.frontend_addr);
     }
 }
 

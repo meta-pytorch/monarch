@@ -1363,8 +1363,7 @@ mod tests {
         #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance();
-            let ext = extent!(host = 4);
-            let host_mesh = v1::testing::host_mesh(ext.clone()).await;
+            let host_mesh = v1::testing::host_mesh(4).await;
             let proc_mesh = host_mesh
                 .spawn(instance, "test", Extent::unity())
                 .await
@@ -1388,7 +1387,9 @@ mod tests {
             let mut point_to_actor: HashSet<_> = actor_mesh
                 .iter_actor_refs()
                 .enumerate()
-                .map(|(rank, actor_ref)| (ext.point_of_rank(rank).unwrap(), actor_ref))
+                .map(|(rank, actor_ref)| {
+                    (host_mesh.extent().point_of_rank(rank).unwrap(), actor_ref)
+                })
                 .collect();
             while !point_to_actor.is_empty() {
                 let (point, origin_actor_ref, sender_actor_id) = cast_info_rx.recv().await.unwrap();
