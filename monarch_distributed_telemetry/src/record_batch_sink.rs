@@ -6,18 +6,23 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! RecordBatchSink - TraceEventSink that produces Arrow RecordBatches
+//! RecordBatchSink - Collects telemetry data as Arrow RecordBatches
 //!
-//! Produces three tables:
+//! Implements both TraceEventSink (for tracing events) and ActorEventSink (for actor lifecycle events).
+//!
+//! Produces four tables:
 //! - `spans`: Information about span creation (NewSpan events)
 //! - `span_events`: Enter/exit/close events for spans
 //! - `events`: Tracing events (e.g., tracing::info!())
+//! - `actors`: Actor creation events
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use datafusion::arrow::record_batch::RecordBatch;
+use hyperactor_telemetry::ActorEvent;
+use hyperactor_telemetry::ActorEventSink;
 use hyperactor_telemetry::FieldValue;
 use hyperactor_telemetry::TraceEvent;
 use hyperactor_telemetry::TraceEventSink;
@@ -103,6 +108,22 @@ pub struct Event {
     pub line: Option<u32>,
 }
 
+/// Row data for the actors table.
+/// Logged when actors are created.
+#[derive(RecordBatchRow)]
+pub struct Actor {
+    /// Unique identifier for this actor
+    pub id: u64,
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp_us: i64,
+    /// ID of the mesh this actor belongs to
+    pub mesh_id: u64,
+    /// Rank index into the mesh shape
+    pub rank: u64,
+    /// Full hierarchical name of this actor
+    pub full_name: String,
+}
+
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -123,6 +144,7 @@ struct RecordBatchSinkInner {
     spans_buffer: SpanBuffer,
     span_events_buffer: SpanEventBuffer,
     events_buffer: EventBuffer,
+    actors_buffer: ActorBuffer,
     batch_size: usize,
     flush_callback: FlushCallback,
 }
@@ -148,6 +170,7 @@ impl RecordBatchSinkInner {
             &self.flush_callback,
         )?;
         Self::flush_buffer(&mut self.events_buffer, "events", &self.flush_callback)?;
+        Self::flush_buffer(&mut self.actors_buffer, "actors", &self.flush_callback)?;
         Ok(())
     }
 
@@ -175,18 +198,29 @@ impl RecordBatchSinkInner {
         }
         Ok(())
     }
+
+    fn flush_actors_if_full(&mut self) -> anyhow::Result<()> {
+        if self.actors_buffer.len() >= self.batch_size {
+            Self::flush_buffer(&mut self.actors_buffer, "actors", &self.flush_callback)?;
+        }
+        Ok(())
+    }
 }
 
-/// A TraceEventSink that buffers trace events and produces Arrow RecordBatches.
+/// Buffers telemetry events and produces Arrow RecordBatches.
+///
+/// Implements both TraceEventSink (for tracing events) and ActorEventSink
+/// (for actor lifecycle events).
 ///
 /// This type can be cloned to get a handle for flushing from outside the
 /// telemetry system. Clone it before registering with telemetry if you need
 /// to call flush() later.
 ///
-/// Produces three tables:
+/// Produces four tables:
 /// - `spans`: Information about span creation (NewSpan events)
 /// - `span_events`: Enter/exit/close events for spans
 /// - `events`: Tracing events (e.g., tracing::info!())
+/// - `actors`: Actor creation events
 #[derive(Clone)]
 pub struct RecordBatchSink {
     inner: Arc<Mutex<RecordBatchSinkInner>>,
@@ -207,6 +241,7 @@ impl RecordBatchSink {
             spans_buffer: SpanBuffer::default(),
             span_events_buffer: SpanEventBuffer::default(),
             events_buffer: EventBuffer::default(),
+            actors_buffer: ActorBuffer::default(),
             batch_size,
             flush_callback,
         }));
@@ -215,7 +250,7 @@ impl RecordBatchSink {
 
     /// Flush all buffers, emitting batches for all tables.
     ///
-    /// This always emits batches for all three tables (spans, span_events, events),
+    /// This always emits batches for all four tables (spans, span_events, events, actors),
     /// even if they are empty. The callback is expected to handle empty batches
     /// by creating the table with the correct schema but not appending empty data.
     pub fn flush(&self) -> anyhow::Result<()> {
@@ -348,5 +383,23 @@ impl TraceEventSink for RecordBatchSink {
 
     fn name(&self) -> &str {
         "RecordBatchSink"
+    }
+}
+
+impl ActorEventSink for RecordBatchSink {
+    fn on_actor_created(&self, event: &ActorEvent) -> Result<(), anyhow::Error> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        inner.actors_buffer.insert(Actor {
+            id: event.id,
+            timestamp_us: timestamp_to_micros(&event.timestamp),
+            mesh_id: event.mesh_id,
+            rank: event.rank,
+            full_name: event.full_name.clone(),
+        });
+        inner.flush_actors_if_full()?;
+        Ok(())
     }
 }
