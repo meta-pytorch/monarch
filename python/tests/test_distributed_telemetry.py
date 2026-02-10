@@ -142,3 +142,37 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     # Note: The exact count depends on the number of trace events generated
     final_count = get_record_batch_flush_count()
     assert final_count >= 0, "Flush count should be non-negative"
+
+
+@pytest.mark.timeout(120)
+def test_actors_table(cleanup_callbacks) -> None:
+    """Test that the actors table is populated when actors are spawned."""
+    # Start telemetry with real data (not fake) so RecordBatchSink receives events
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn some worker actors - this should trigger notify_actor_created
+    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    _ = worker_procs.spawn("test_worker", WorkerActor)
+
+    # Query the actors table to verify actors were recorded
+    result = engine.query("SELECT * FROM actors")
+    result_dict = result.to_pydict()
+
+    # We should have at least some actors recorded
+    # (the exact count depends on internal actors created)
+    actor_count = len(result_dict.get("id", []))
+    assert actor_count > 0, f"Expected at least one actor, got {actor_count}"
+
+    # Verify the schema has the expected columns
+    expected_columns = {"id", "timestamp_us", "mesh_id", "rank", "full_name"}
+    actual_columns = set(result_dict.keys())
+    assert expected_columns == actual_columns, (
+        f"Expected columns {expected_columns}, got {actual_columns}"
+    )
+
+    # Verify full_name contains our worker actor name
+    full_names = result_dict.get("full_name", [])
+    has_test_worker = any("test_worker" in name for name in full_names)
+    assert has_test_worker, (
+        f"Expected to find 'test_worker' in actor names, got: {full_names}"
+    )

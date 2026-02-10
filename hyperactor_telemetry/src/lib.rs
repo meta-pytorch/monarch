@@ -72,6 +72,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use lazy_static::lazy_static;
 pub use opentelemetry;
@@ -286,6 +287,70 @@ lazy_static! {
         let (sender, receiver) = mpsc::channel();
         (sender, Mutex::new(Some(receiver)))
     };
+    /// Global actor event sink.
+    /// Receives actor creation events directly (not via tracing).
+    /// Only one sink is supported; registering a new sink replaces the previous one.
+    static ref ACTOR_EVENT_SINK: Mutex<Option<Box<dyn ActorEventSink>>> = Mutex::new(None);
+}
+
+/// Event data for actor creation.
+/// This is passed to `ActorEventSink` implementations when an actor is spawned.
+#[derive(Debug, Clone)]
+pub struct ActorEvent {
+    /// Unique identifier for this actor (hashed from ActorId)
+    pub id: u64,
+    /// Timestamp when the actor was created
+    pub timestamp: SystemTime,
+    /// ID of the mesh this actor belongs to (hashed from actor_name)
+    pub mesh_id: u64,
+    /// Rank index into the mesh shape
+    pub rank: u64,
+    /// Full hierarchical name of this actor
+    pub full_name: String,
+}
+
+/// Trait for sinks that receive actor creation events.
+/// Implement this trait and register with `register_actor_sink` to receive
+/// notifications when actors are created.
+pub trait ActorEventSink: Send + Sync {
+    /// Called when an actor is spawned.
+    fn on_actor_created(&self, event: &ActorEvent) -> Result<(), anyhow::Error>;
+}
+
+/// Register a sink to receive actor creation events.
+/// This can be called at any time. The sink will receive all subsequent actor creation events.
+///
+/// Note: Only one sink is supported. Registering a new sink replaces any previously registered sink.
+///
+/// # Example
+/// ```ignore
+/// use hyperactor_telemetry::{register_actor_sink, ActorEventSink, ActorEvent};
+///
+/// struct MyActorSink;
+/// impl ActorEventSink for MyActorSink {
+///     fn on_actor_created(&self, event: &ActorEvent) {
+///         println!("Actor created: {}", event.full_name);
+///     }
+/// }
+///
+/// register_actor_sink(Box::new(MyActorSink));
+/// ```
+pub fn register_actor_sink(sink: Box<dyn ActorEventSink>) {
+    if let Ok(mut slot) = ACTOR_EVENT_SINK.lock() {
+        *slot = Some(sink);
+    }
+}
+
+/// Notify the registered sink that an actor was created.
+/// This is called from hyperactor when an actor is spawned.
+pub fn notify_actor_created(event: ActorEvent) {
+    if let Ok(sink) = ACTOR_EVENT_SINK.lock() {
+        if let Some(ref s) = *sink {
+            if let Err(e) = s.on_actor_created(&event) {
+                tracing::error!("Failed to notify actor sink: {:?}", e);
+            }
+        }
+    }
 }
 
 /// Register a sink to receive trace events.

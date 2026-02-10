@@ -251,7 +251,10 @@ impl DatabaseScanner {
             // Clone the sink before registering so we can call flush() later
             let sink = scanner.create_record_batch_sink(batch_size);
             scanner.sink = Some(sink.clone());
-            hyperactor_telemetry::register_sink(Box::new(sink));
+            // Register for trace events (spans, events)
+            hyperactor_telemetry::register_sink(Box::new(sink.clone()));
+            // Register for actor creation events
+            hyperactor_telemetry::register_actor_sink(Box::new(sink));
         }
 
         Ok(scanner)
@@ -371,8 +374,15 @@ impl DatabaseScanner {
                 .clone()
         };
 
-        // Push the batch (push ignores empty batches)
-        get_tokio_runtime().block_on(table.push(batch));
+        // Push the batch (push ignores empty batches).
+        // Use block_in_place + Handle::current() when called from within a tokio
+        // runtime (e.g., from notify_sent_message on a worker thread), otherwise
+        // fall back to creating/reusing a runtime via get_tokio_runtime().
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| handle.block_on(table.push(batch)));
+        } else {
+            get_tokio_runtime().block_on(table.push(batch));
+        }
         Ok(())
     }
 
