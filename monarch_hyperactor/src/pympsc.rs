@@ -140,10 +140,11 @@ mod testing {
 
     use super::*;
 
-    #[pyclass(
-        name = "TestSender",
-        module = "monarch._rust_bindings.monarch_hyperactor.pympsc"
-    )]
+    // NOTE: We can't use a Python calss name that starts with "Test" since
+    // during Python testing, Pytest will inspect anything that starts with
+    // "Test" and check if its callable which in pyo3 >= 0.26 will raise
+    // a TypeError.
+    #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.pympsc")]
     struct PyTestSender {
         sender: Arc<Mutex<Sender>>,
     }
