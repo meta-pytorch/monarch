@@ -104,4 +104,4 @@ default = []
 systemd = ["dep:systemd"]
 
 [lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)", "cfg(FALSE)"], level = "warn" } }

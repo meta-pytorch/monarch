@@ -17,10 +17,12 @@ console = "0.15.7"
 hyperactor = { path = "../hyperactor" }
 hyperactor_mesh = { path = "../hyperactor_mesh" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
+reqwest = { version = "0.12", features = ["json"] }
 serde_json = { version = "1.0.132", features = ["float_roundtrip", "unbounded_depth"] }
 tabwriter = { version = "1.2.1", features = ["ansi_formatting"] }
 tokio = { version = "1.41.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+urlencoding = "2"
 
 [lints]
 rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

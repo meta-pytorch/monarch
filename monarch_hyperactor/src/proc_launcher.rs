@@ -311,7 +311,7 @@ mod decode {
 
         super::protocol::reject_pending_pickle(&msg)?;
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let cloudpickle = super::py::import_cloudpickle(py)?;
 
             match msg.kind {
@@ -445,8 +445,8 @@ mod decode {
         // shape validation.
         #[test]
         fn test_validate_shape_valid_dataclass() {
-            pyo3::prepare_freethreaded_python();
-            Python::with_gil(|py| {
+            pyo3::Python::initialize();
+            Python::attach(|py| {
                 // Create a simple class with all required attributes
                 let locals = run_py_code(
                     py,
@@ -470,8 +470,8 @@ obj = FakeExit()
         // debugging.
         #[test]
         fn test_validate_shape_missing_attribute() {
-            pyo3::prepare_freethreaded_python();
-            Python::with_gil(|py| {
+            pyo3::Python::initialize();
+            Python::attach(|py| {
                 // Missing stderr_tail
                 let locals = run_py_code(
                     py,
@@ -497,8 +497,8 @@ obj = IncompleteExit()
         // `DecodedExit` with the expected field values.
         #[test]
         fn test_decode_exit_obj_valid() {
-            pyo3::prepare_freethreaded_python();
-            Python::with_gil(|py| {
+            pyo3::Python::initialize();
+            Python::attach(|py| {
                 let locals = run_py_code(
                     py,
                     c"
@@ -526,8 +526,8 @@ obj = FakeExit()
         // could not be extracted.
         #[test]
         fn test_decode_exit_obj_wrong_type() {
-            pyo3::prepare_freethreaded_python();
-            Python::with_gil(|py| {
+            pyo3::Python::initialize();
+            Python::attach(|py| {
                 // exit_code is a string instead of int
                 let locals = run_py_code(
                     py,
@@ -666,7 +666,7 @@ impl ProcLauncher for ActorProcLauncher {
     ) -> Result<LaunchResult, ProcLauncherError> {
         let (exit_port, exit_port_rx) = self.mailbox.open_once_port::<PythonMessage>();
 
-        let pickled_args = Python::with_gil(|py| -> Result<Vec<u8>, ProcLauncherError> {
+        let pickled_args = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
             let cloudpickle = import_cloudpickle(py)?;
 
             let mod_ = py
@@ -781,7 +781,7 @@ impl ProcLauncher for ActorProcLauncher {
         proc_id: &ProcId,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
-        let pickled = Python::with_gil(|py| -> Result<Vec<u8>, ProcLauncherError> {
+        let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
             let cloudpickle =
                 import_cloudpickle(py).map_err(|e| ProcLauncherError::Terminate(format!("{e}")))?;
             let args = (proc_id.to_string(), timeout.as_secs_f64());
@@ -823,7 +823,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// - import/serialize the request via `cloudpickle`, or
     /// - send the message to the spawner actor.
     async fn kill(&self, proc_id: &ProcId) -> Result<(), ProcLauncherError> {
-        let pickled = Python::with_gil(|py| -> Result<Vec<u8>, ProcLauncherError> {
+        let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
             let cloudpickle =
                 import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(format!("{e}")))?;
             let args = (proc_id.to_string(),);
@@ -894,8 +894,8 @@ mod tests {
     // using `str()` (falling back to `repr()`).
     #[test]
     fn test_pyany_to_error_string() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
             // A Python string should round-trip through `str()`
             // unchanged.
             let s = pyo3::types::PyString::new(py, "hello");

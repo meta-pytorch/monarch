@@ -100,7 +100,9 @@ use tracing_subscriber::fmt::FormatFields;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::registry::LookupSpan;
 
+#[cfg(fbcode_build)]
 use crate::config::ENABLE_OTEL_METRICS;
+#[cfg(fbcode_build)]
 use crate::config::ENABLE_OTEL_TRACING;
 use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
@@ -108,6 +110,7 @@ use crate::config::MONARCH_FILE_LOG_LEVEL;
 use crate::config::MONARCH_LOG_SUFFIX;
 use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
+#[cfg(fbcode_build)]
 use crate::sqlite::get_reloadable_sqlite_layer;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

@@ -31,3 +31,6 @@ typeuri = { version = "0.0.0", path = "../typeuri" }
 [dev-dependencies]
 indoc = "2.0.2"
 tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

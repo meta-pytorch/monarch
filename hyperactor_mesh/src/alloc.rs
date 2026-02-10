@@ -616,6 +616,7 @@ pub(crate) mod testing {
     use core::panic;
     use std::collections::HashMap;
     use std::collections::HashSet;
+    #[cfg(fbcode_build)]
     use std::time::Duration;
 
     use hyperactor::Instance;
@@ -629,12 +630,15 @@ pub(crate) mod testing {
     use hyperactor::mailbox::MailboxServer;
     use hyperactor::mailbox::UndeliverableMailboxSender;
     use hyperactor::proc::Proc;
+    #[cfg(fbcode_build)]
     use hyperactor::reference::Reference;
     use ndslice::extent;
+    #[cfg(fbcode_build)]
     use tokio::process::Command;
 
     use super::*;
     use crate::alloc::test_utils::TestActor;
+    #[cfg(fbcode_build)]
     use crate::alloc::test_utils::Wait;
     use crate::proc_mesh::default_transport;
     use crate::proc_mesh::mesh_agent::GspawnResult;
@@ -712,6 +716,7 @@ pub(crate) mod testing {
         assert_eq!(stopped, running);
     }
 
+    #[allow(dead_code)]
     async fn spawn_proc(
         transport: ChannelTransport,
     ) -> (DialMailboxRouter, Instance<()>, Proc, ChannelAddr) {
@@ -737,6 +742,7 @@ pub(crate) mod testing {
         )
     }
 
+    #[allow(dead_code)]
     async fn spawn_test_actor(
         rank: usize,
         client_proc: &Proc,

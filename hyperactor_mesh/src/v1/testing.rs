@@ -23,6 +23,7 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
+#[cfg(fbcode_build)]
 use hyperactor::context;
 use hyperactor::id;
 use hyperactor::mailbox::BoxableMailboxSender;
@@ -31,19 +32,25 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
 use ndslice::Extent;
+#[cfg(fbcode_build)]
 use tokio::process::Command;
 use tokio::sync::OnceCell;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+#[cfg(fbcode_build)]
 use crate::Bootstrap;
+#[cfg(fbcode_build)]
 use crate::alloc::Alloc;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
+#[cfg(fbcode_build)]
 use crate::alloc::ProcessAllocator;
+#[cfg(fbcode_build)]
 use crate::proc_mesh::default_transport;
 use crate::supervision::MeshFailure;
+#[cfg(fbcode_build)]
 use crate::v1::HostMeshRef;
 use crate::v1::ProcMesh;
 

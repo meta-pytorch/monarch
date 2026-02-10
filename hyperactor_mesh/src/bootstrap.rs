@@ -310,8 +310,12 @@ pub async fn host(
     let manager = BootstrapProcManager::new(command)?;
 
     // REMOVE(V0): forward unknown destinations to the default sender.
-    let host = Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
-        .await?;
+    let host = Host::new_with_default(
+        manager,
+        addr,
+        Some((*crate::router::global()).clone().boxed()),
+    )
+    .await?;
     let addr = host.addr().clone();
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc.spawn::<HostMeshAgent>(
@@ -2334,22 +2338,9 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
     use hyperactor::clock::RealClock;
-    use hyperactor::context::Mailbox as _;
-    use hyperactor::host::ProcHandle;
     use hyperactor::id;
-    use ndslice::Extent;
-    use ndslice::ViewExt;
-    use ndslice::extent;
-    use tokio::process::Command;
 
     use super::*;
-    use crate::alloc::AllocSpec;
-    use crate::alloc::Allocator;
-    use crate::alloc::ProcessAllocator;
-    use crate::v1::ActorMesh;
-    use crate::v1::host_mesh::HostMesh;
-    use crate::v1::testactor;
-    use crate::v1::testing;
 
     // Helper: Avoid repeating
     // `ChannelAddr::any(ChannelTransport::Unix)`.
@@ -3020,408 +3011,423 @@ mod tests {
         }
     }
 
-    /// Create a ProcId and a host **backend_addr** channel that the
-    /// bootstrap child proc will dial to attach its mailbox to the
-    /// host.
-    ///
-    /// - `proc_id`: logical identity for the child proc (pure name;
-    ///   not an OS pid).
-    /// - `backend_addr`: a mailbox address served by the **parent
-    ///   (host) proc** here; the spawned bootstrap process dials this
-    ///   so its messages route via the host.
-    async fn make_proc_id_and_backend_addr(
-        instance: &hyperactor::Instance<()>,
-        _tag: &str,
-    ) -> (ProcId, ChannelAddr) {
-        // Serve a Unix channel as the "backend_addr" and hook it into
-        // this test proc.
-        let (backend_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-
-        // Route messages arriving on backend_addr into this test
-        // proc's mailbox so the bootstrap child can reach the host
-        // router.
-        instance.proc().clone().serve(rx);
-
-        // We return an arbitrary (but unbound!) unix direct proc id here;
-        // it is okay, as we're not testing connectivity.
-        let proc_id = ProcId::Direct(ChannelTransport::Unix.any(), "test".to_string());
-        (proc_id, backend_addr)
-    }
-
-    #[tokio::test]
     #[cfg(fbcode_build)]
-    async fn bootstrap_handle_terminate_graceful() {
-        // Create a root direct-addressed proc + client instance.
-        let root =
-            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.instance("client").unwrap();
+    mod fbcode_tests {
+        use hyperactor::context::Mailbox as _;
+        use hyperactor::host::ProcHandle;
+        use ndslice::Extent;
+        use ndslice::ViewExt;
+        use ndslice::extent;
+        use tokio::process::Command;
 
-        let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
-        let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
-        let handle = mgr
-            .spawn(
-                proc_id.clone(),
-                backend_addr.clone(),
-                BootstrapProcConfig {
-                    create_rank: 0,
-                    client_config_override: Attrs::new(),
-                },
-            )
-            .await
-            .expect("spawn bootstrap child");
+        use super::*;
+        use crate::alloc::AllocSpec;
+        use crate::alloc::Allocator;
+        use crate::alloc::ProcessAllocator;
+        use crate::v1::ActorMesh;
+        use crate::v1::host_mesh::HostMesh;
+        use crate::v1::testactor;
+        use crate::v1::testing;
 
-        handle.ready().await.expect("ready");
+        /// Create a ProcId and a host **backend_addr** channel that the
+        /// bootstrap child proc will dial to attach its mailbox to the
+        /// host.
+        ///
+        /// - `proc_id`: logical identity for the child proc (pure name;
+        ///   not an OS pid).
+        /// - `backend_addr`: a mailbox address served by the **parent
+        ///   (host) proc** here; the spawned bootstrap process dials this
+        ///   so its messages route via the host.
+        async fn make_proc_id_and_backend_addr(
+            instance: &hyperactor::Instance<()>,
+            _tag: &str,
+        ) -> (ProcId, ChannelAddr) {
+            // Serve a Unix channel as the "backend_addr" and hook it into
+            // this test proc.
+            let (backend_addr, rx) =
+                channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
 
-        let deadline = Duration::from_secs(2);
-        match RealClock
-            .timeout(
-                deadline * 2,
-                handle.terminate(&instance, deadline, "test terminate"),
-            )
-            .await
-        {
-            Err(_) => panic!("terminate() future hung"),
-            Ok(Ok(st)) => {
-                match st {
-                    ProcStatus::Stopped { exit_code, .. } => {
-                        // child called exit(0) on SIGTERM
-                        assert_eq!(exit_code, 0, "expected clean exit; got {exit_code}");
+            // Route messages arriving on backend_addr into this test
+            // proc's mailbox so the bootstrap child can reach the host
+            // router.
+            instance.proc().clone().serve(rx);
+
+            // We return an arbitrary (but unbound!) unix direct proc id here;
+            // it is okay, as we're not testing connectivity.
+            let proc_id = ProcId::Direct(ChannelTransport::Unix.any(), "test".to_string());
+            (proc_id, backend_addr)
+        }
+
+        #[tokio::test]
+        async fn bootstrap_handle_terminate_graceful() {
+            // Create a root direct-addressed proc + client instance.
+            let root =
+                hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
+            let (instance, _handle) = root.instance("client").unwrap();
+
+            let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+            let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
+            let handle = mgr
+                .spawn(
+                    proc_id.clone(),
+                    backend_addr.clone(),
+                    BootstrapProcConfig {
+                        create_rank: 0,
+                        client_config_override: Attrs::new(),
+                    },
+                )
+                .await
+                .expect("spawn bootstrap child");
+
+            handle.ready().await.expect("ready");
+
+            let deadline = Duration::from_secs(2);
+            match RealClock
+                .timeout(
+                    deadline * 2,
+                    handle.terminate(&instance, deadline, "test terminate"),
+                )
+                .await
+            {
+                Err(_) => panic!("terminate() future hung"),
+                Ok(Ok(st)) => {
+                    match st {
+                        ProcStatus::Stopped { exit_code, .. } => {
+                            // child called exit(0) on SIGTERM
+                            assert_eq!(exit_code, 0, "expected clean exit; got {exit_code}");
+                        }
+                        ProcStatus::Killed { signal, .. } => {
+                            // If the child didn't trap SIGTERM, we'd see
+                            // SIGTERM (15) here and indeed, this is what
+                            // we see. Since we call
+                            // `hyperactor::initialize_with_current_runtime();`
+                            // we seem unable to trap `SIGTERM` and
+                            // instead folly intercepts:
+                            // [0] *** Aborted at 1758850539 (Unix time, try 'date -d @1758850539') ***
+                            // [0] *** Signal 15 (SIGTERM) (0x3951c00173692) received by PID 1527420 (pthread TID 0x7f803de66cc0) (linux TID 1527420) (maybe from PID 1521298, UID 234780) (code: 0), stack trace: ***
+                            // [0]     @ 000000000000e713 folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
+                            // [0]                        ./fbcode/folly/debugging/symbolizer/SignalHandler.cpp:485
+                            // It gets worse. When run with
+                            // '@fbcode//mode/dev-nosan' it terminates
+                            // with a SEGFAULT (metamate says this is a
+                            // well known issue at Meta). So, TL;DR I
+                            // restore default `SIGTERM` handling after
+                            // the test exe has called
+                            // `initialize_with_runtime`.
+                            assert_eq!(signal, libc::SIGTERM, "expected SIGTERM; got {signal}");
+                        }
+                        other => panic!("expected Stopped or Killed(SIGTERM); got {other:?}"),
                     }
-                    ProcStatus::Killed { signal, .. } => {
-                        // If the child didn't trap SIGTERM, we'd see
-                        // SIGTERM (15) here and indeed, this is what
-                        // we see. Since we call
-                        // `hyperactor::initialize_with_current_runtime();`
-                        // we seem unable to trap `SIGTERM` and
-                        // instead folly intercepts:
-                        // [0] *** Aborted at 1758850539 (Unix time, try 'date -d @1758850539') ***
-                        // [0] *** Signal 15 (SIGTERM) (0x3951c00173692) received by PID 1527420 (pthread TID 0x7f803de66cc0) (linux TID 1527420) (maybe from PID 1521298, UID 234780) (code: 0), stack trace: ***
-                        // [0]     @ 000000000000e713 folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
-                        // [0]                        ./fbcode/folly/debugging/symbolizer/SignalHandler.cpp:485
-                        // It gets worse. When run with
-                        // '@fbcode//mode/dev-nosan' it terminates
-                        // with a SEGFAULT (metamate says this is a
-                        // well known issue at Meta). So, TL;DR I
-                        // restore default `SIGTERM` handling after
-                        // the test exe has called
-                        // `initialize_with_runtime`.
-                        assert_eq!(signal, libc::SIGTERM, "expected SIGTERM; got {signal}");
-                    }
-                    other => panic!("expected Stopped or Killed(SIGTERM); got {other:?}"),
                 }
+                Ok(Err(e)) => panic!("terminate() failed: {e:?}"),
             }
-            Ok(Err(e)) => panic!("terminate() failed: {e:?}"),
         }
-    }
 
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn bootstrap_handle_kill_forced() {
-        // Root proc + client instance (so the child can dial back).
-        let root =
-            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.instance("client").unwrap();
+        #[tokio::test]
+        async fn bootstrap_handle_kill_forced() {
+            // Root proc + client instance (so the child can dial back).
+            let root =
+                hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
+            let (instance, _handle) = root.instance("client").unwrap();
 
-        let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+            let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
 
-        // Proc identity + host backend channel the child will dial.
-        let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_kill").await;
+            // Proc identity + host backend channel the child will dial.
+            let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_kill").await;
 
-        // Launch the child bootstrap process.
-        let handle = mgr
-            .spawn(
-                proc_id.clone(),
-                backend_addr.clone(),
-                BootstrapProcConfig {
-                    create_rank: 0,
-                    client_config_override: Attrs::new(),
-                },
-            )
-            .await
-            .expect("spawn bootstrap child");
+            // Launch the child bootstrap process.
+            let handle = mgr
+                .spawn(
+                    proc_id.clone(),
+                    backend_addr.clone(),
+                    BootstrapProcConfig {
+                        create_rank: 0,
+                        client_config_override: Attrs::new(),
+                    },
+                )
+                .await
+                .expect("spawn bootstrap child");
 
-        // Wait until the child reports Ready (addr+agent returned via
-        // callback).
-        handle.ready().await.expect("ready");
+            // Wait until the child reports Ready (addr+agent returned via
+            // callback).
+            handle.ready().await.expect("ready");
 
-        // Force-kill the child and assert we observe a Killed
-        // terminal status.
-        let deadline = Duration::from_secs(5);
-        match RealClock.timeout(deadline, handle.kill()).await {
-            Err(_) => panic!("kill() future hung"),
-            Ok(Ok(st)) => {
-                // We expect a KILLED terminal state.
-                match st {
-                    ProcStatus::Killed { signal, .. } => {
-                        // On Linux this should be SIGKILL (9).
-                        assert_eq!(signal, libc::SIGKILL, "expected SIGKILL; got {}", signal);
+            // Force-kill the child and assert we observe a Killed
+            // terminal status.
+            let deadline = Duration::from_secs(5);
+            match RealClock.timeout(deadline, handle.kill()).await {
+                Err(_) => panic!("kill() future hung"),
+                Ok(Ok(st)) => {
+                    // We expect a KILLED terminal state.
+                    match st {
+                        ProcStatus::Killed { signal, .. } => {
+                            // On Linux this should be SIGKILL (9).
+                            assert_eq!(signal, libc::SIGKILL, "expected SIGKILL; got {}", signal);
+                        }
+                        other => panic!("expected Killed status after kill(); got: {other:?}"),
                     }
-                    other => panic!("expected Killed status after kill(); got: {other:?}"),
                 }
+                Ok(Err(e)) => panic!("kill() failed: {e:?}"),
             }
-            Ok(Err(e)) => panic!("kill() failed: {e:?}"),
         }
-    }
 
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn bootstrap_canonical_simple() {
-        // SAFETY: unit-test scoped
-        unsafe {
-            std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
+        #[tokio::test]
+        async fn bootstrap_canonical_simple() {
+            // SAFETY: unit-test scoped
+            unsafe {
+                std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
+            }
+            // Create an actor instance we'll use to send and receive
+            // messages.
+            let instance = testing::instance();
+
+            // Configure a ProcessAllocator with the bootstrap binary.
+            let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
+                "monarch/hyperactor_mesh/bootstrap",
+            )));
+            // Request a new allocation of procs from the ProcessAllocator.
+            let alloc = allocator
+                .allocate(AllocSpec {
+                    extent: extent!(replicas = 1),
+                    constraints: Default::default(),
+                    proc_name: None,
+                    transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
+                })
+                .await
+                .unwrap();
+
+            // Build a HostMesh with explicit OS-process boundaries (per
+            // rank):
+            //
+            // (1) Allocator → bootstrap proc [OS process #1]
+            //     `ProcMesh::allocate(..)` starts one OS process per
+            //     rank; each runs our runtime and the trampoline actor.
+            //
+            // (2) Host::serve(..) sets up a Host in the same OS process
+            //     (no new process). It binds front/back channels, creates
+            //     an in-process service proc (`Proc::new(..)`), and
+            //     stores the `BootstrapProcManager` for later spawns.
+            //
+            // (3) Install HostMeshAgent (still no new OS process).
+            //     `host.system_proc().spawn::<HostMeshAgent>("agent",
+            //     host).await?` creates the HostMeshAgent actor in that
+            //     service proc.
+            //
+            // (4) Collect & assemble. The trampoline returns a
+            //     direct-addressed `ActorRef<HostMeshAgent>`; we collect
+            //     one per rank and assemble a `HostMesh`.
+            //
+            // Note: When the Host is later asked to start a proc
+            // (`host.spawn(name)`), it calls `ProcManager::spawn` on the
+            // stored `BootstrapProcManager`, which does a
+            // `Command::spawn()` to launch a new OS child process for
+            // that proc.
+            let mut host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
+                .await
+                .unwrap();
+
+            // Spawn a ProcMesh named "p0" on the host mesh:
+            //
+            // (1) Each HostMeshAgent (running inside its host's service
+            // proc) receives the request.
+            //
+            // (2) The Host calls into its `BootstrapProcManager::spawn`,
+            // which does `Command::spawn()` to launch a brand-new OS
+            // process for the proc.
+            //
+            // (3) Inside that new process, bootstrap runs and a
+            // `ProcMeshAgent` is started to manage it.
+            //
+            // (4) We collect the per-host procs into a `ProcMesh` and
+            // return it.
+            let proc_mesh = host_mesh
+                .spawn(&instance, "p0", Extent::unity())
+                .await
+                .unwrap();
+
+            // Note: There is no support for status() in v1.
+            // assert!(proc_mesh.status(&instance).await.is_err());
+            // let proc_ref = proc_mesh.values().next().expect("one proc");
+            // assert!(proc_ref.status(&instance).await.unwrap(), "proc should be alive");
+
+            // Spawn an `ActorMesh<TestActor>` named "a0" on the proc mesh:
+            //
+            // (1) For each proc (already running in its own OS process),
+            // the `ProcMeshAgent` receives the request.
+            //
+            // (2) It spawns a `TestActor` inside that existing proc (no
+            // new OS process).
+            //
+            // (3) The per-proc actors are collected into an
+            // `ActorMesh<TestActor>` and returned.
+            let actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(&instance, "a0", &()).await.unwrap();
+
+            // Open a fresh port on the client instance and send a
+            // GetActorId message to the actor mesh. Each TestActor will
+            // reply with its actor ID to the bound port. Receive one
+            // reply and assert it matches the ID of the (single) actor in
+            // the mesh.
+            let (port, mut rx) = instance.mailbox().open_port();
+            actor_mesh
+                .cast(&instance, testactor::GetActorId(port.bind()))
+                .unwrap();
+            let (got_id, _seq) = rx.recv().await.unwrap();
+            assert_eq!(
+                got_id,
+                actor_mesh.values().next().unwrap().actor_id().clone()
+            );
+
+            // **Important**: If we don't shutdown the hosts, the
+            // BootstrapProcManager's won't send SIGKILLs to their spawned
+            // children and there will be orphans left behind.
+            host_mesh.shutdown(&instance).await.expect("host shutdown");
         }
-        // Create an actor instance we'll use to send and receive
-        // messages.
-        let instance = testing::instance();
 
-        // Configure a ProcessAllocator with the bootstrap binary.
-        let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
-            "monarch/hyperactor_mesh/bootstrap",
-        )));
-        // Request a new allocation of procs from the ProcessAllocator.
-        let alloc = allocator
-            .allocate(AllocSpec {
-                extent: extent!(replicas = 1),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
+        /// Same as `bootstrap_canonical_simple` but using the systemd
+        /// launcher backend.
+        #[tokio::test]
+        async fn bootstrap_canonical_simple_systemd_launcher() {
+            // Acquire exclusive config lock and select systemd launcher.
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(MESH_PROC_LAUNCHER_KIND, "systemd".to_string());
 
-        // Build a HostMesh with explicit OS-process boundaries (per
-        // rank):
-        //
-        // (1) Allocator → bootstrap proc [OS process #1]
-        //     `ProcMesh::allocate(..)` starts one OS process per
-        //     rank; each runs our runtime and the trampoline actor.
-        //
-        // (2) Host::serve(..) sets up a Host in the same OS process
-        //     (no new process). It binds front/back channels, creates
-        //     an in-process service proc (`Proc::new(..)`), and
-        //     stores the `BootstrapProcManager` for later spawns.
-        //
-        // (3) Install HostMeshAgent (still no new OS process).
-        //     `host.system_proc().spawn::<HostMeshAgent>("agent",
-        //     host).await?` creates the HostMeshAgent actor in that
-        //     service proc.
-        //
-        // (4) Collect & assemble. The trampoline returns a
-        //     direct-addressed `ActorRef<HostMeshAgent>`; we collect
-        //     one per rank and assemble a `HostMesh`.
-        //
-        // Note: When the Host is later asked to start a proc
-        // (`host.spawn(name)`), it calls `ProcManager::spawn` on the
-        // stored `BootstrapProcManager`, which does a
-        // `Command::spawn()` to launch a new OS child process for
-        // that proc.
-        let mut host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
-            .await
-            .unwrap();
+            // Create an actor instance we'll use to send and receive
+            // messages.
+            let instance = testing::instance();
 
-        // Spawn a ProcMesh named "p0" on the host mesh:
-        //
-        // (1) Each HostMeshAgent (running inside its host's service
-        // proc) receives the request.
-        //
-        // (2) The Host calls into its `BootstrapProcManager::spawn`,
-        // which does `Command::spawn()` to launch a brand-new OS
-        // process for the proc.
-        //
-        // (3) Inside that new process, bootstrap runs and a
-        // `ProcMeshAgent` is started to manage it.
-        //
-        // (4) We collect the per-host procs into a `ProcMesh` and
-        // return it.
-        let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity())
-            .await
-            .unwrap();
+            // Configure a ProcessAllocator with the bootstrap binary.
+            let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
+                "monarch/hyperactor_mesh/bootstrap",
+            )));
+            // Request a new allocation of procs from the
+            // ProcessAllocator.
+            let alloc = allocator
+                .allocate(AllocSpec {
+                    extent: extent!(replicas = 1),
+                    constraints: Default::default(),
+                    proc_name: None,
+                    transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
+                })
+                .await
+                .unwrap();
 
-        // Note: There is no support for status() in v1.
-        // assert!(proc_mesh.status(&instance).await.is_err());
-        // let proc_ref = proc_mesh.values().next().expect("one proc");
-        // assert!(proc_ref.status(&instance).await.unwrap(), "proc should be alive");
+            // Build a HostMesh (see bootstrap_canonical_simple for
+            // detailed comments).
+            let mut host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
+                .await
+                .unwrap();
 
-        // Spawn an `ActorMesh<TestActor>` named "a0" on the proc mesh:
-        //
-        // (1) For each proc (already running in its own OS process),
-        // the `ProcMeshAgent` receives the request.
-        //
-        // (2) It spawns a `TestActor` inside that existing proc (no
-        // new OS process).
-        //
-        // (3) The per-proc actors are collected into an
-        // `ActorMesh<TestActor>` and returned.
-        let actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(&instance, "a0", &()).await.unwrap();
+            // Spawn a ProcMesh named "p0" on the host mesh.
+            let proc_mesh = host_mesh
+                .spawn(&instance, "p0", Extent::unity())
+                .await
+                .unwrap();
 
-        // Open a fresh port on the client instance and send a
-        // GetActorId message to the actor mesh. Each TestActor will
-        // reply with its actor ID to the bound port. Receive one
-        // reply and assert it matches the ID of the (single) actor in
-        // the mesh.
-        let (port, mut rx) = instance.mailbox().open_port();
-        actor_mesh
-            .cast(&instance, testactor::GetActorId(port.bind()))
-            .unwrap();
-        let (got_id, _seq) = rx.recv().await.unwrap();
-        assert_eq!(
-            got_id,
-            actor_mesh.values().next().unwrap().actor_id().clone()
-        );
+            // Spawn an `ActorMesh<TestActor>` named "a0" on the proc
+            // mesh.
+            let actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(&instance, "a0", &()).await.unwrap();
 
-        // **Important**: If we don't shutdown the hosts, the
-        // BootstrapProcManager's won't send SIGKILLs to their spawned
-        // children and there will be orphans left behind.
-        host_mesh.shutdown(&instance).await.expect("host shutdown");
-    }
+            // Send a GetActorId message and verify we get a response.
+            let (port, mut rx) = instance.mailbox().open_port();
+            actor_mesh
+                .cast(&instance, testactor::GetActorId(port.bind()))
+                .unwrap();
+            let (got_id, _) = rx.recv().await.unwrap();
+            assert_eq!(
+                got_id,
+                actor_mesh.values().next().unwrap().actor_id().clone()
+            );
 
-    /// Same as `bootstrap_canonical_simple` but using the systemd
-    /// launcher backend.
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn bootstrap_canonical_simple_systemd_launcher() {
-        // Acquire exclusive config lock and select systemd launcher.
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(MESH_PROC_LAUNCHER_KIND, "systemd".to_string());
+            // Capture the proc_id and expected unit name before shutdown.
+            use crate::proc_launcher::SystemdProcLauncher;
+            use crate::systemd::SystemdManagerProxy;
+            use crate::systemd::SystemdUnitProxy;
 
-        // Create an actor instance we'll use to send and receive
-        // messages.
-        let instance = testing::instance();
+            let proc_id = proc_mesh.proc_ids().next().expect("one proc");
+            let expected_unit = SystemdProcLauncher::unit_name(&proc_id);
 
-        // Configure a ProcessAllocator with the bootstrap binary.
-        let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
-            "monarch/hyperactor_mesh/bootstrap",
-        )));
-        // Request a new allocation of procs from the
-        // ProcessAllocator.
-        let alloc = allocator
-            .allocate(AllocSpec {
-                extent: extent!(replicas = 1),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
+            // Shutdown cleanly.
+            //
+            // Contract: after shutdown, procs are no longer running and
+            // the mesh is quiescent. We intentionally do NOT assert that
+            // the systemd transient unit disappears. With
+            // RemainAfterExit=true, systemd may keep the unit around for
+            // observation and GC it later according to its own policy;
+            // that persistence is not considered a leak.
+            host_mesh.shutdown(&instance).await.expect("host shutdown");
 
-        // Build a HostMesh (see bootstrap_canonical_simple for
-        // detailed comments).
-        let mut host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
-            .await
-            .unwrap();
+            // Liveness check (best-effort): unit may persist, but should
+            // not remain running. With RemainAfterExit=true, systemd may
+            // keep the unit around in active/exited after the process has
+            // terminated. That is not a leak. We only require that the
+            // unit is not running after shutdown.
+            let conn = zbus::Connection::session().await.expect("D-Bus session");
+            let manager = SystemdManagerProxy::new(&conn)
+                .await
+                .expect("manager proxy");
 
-        // Spawn a ProcMesh named "p0" on the host mesh.
-        let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity())
-            .await
-            .unwrap();
-
-        // Spawn an `ActorMesh<TestActor>` named "a0" on the proc
-        // mesh.
-        let actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(&instance, "a0", &()).await.unwrap();
-
-        // Send a GetActorId message and verify we get a response.
-        let (port, mut rx) = instance.mailbox().open_port();
-        actor_mesh
-            .cast(&instance, testactor::GetActorId(port.bind()))
-            .unwrap();
-        let (got_id, _) = rx.recv().await.unwrap();
-        assert_eq!(
-            got_id,
-            actor_mesh.values().next().unwrap().actor_id().clone()
-        );
-
-        // Capture the proc_id and expected unit name before shutdown.
-        use crate::proc_launcher::SystemdProcLauncher;
-        use crate::systemd::SystemdManagerProxy;
-        use crate::systemd::SystemdUnitProxy;
-
-        let proc_id = proc_mesh.proc_ids().next().expect("one proc");
-        let expected_unit = SystemdProcLauncher::unit_name(&proc_id);
-
-        // Shutdown cleanly.
-        //
-        // Contract: after shutdown, procs are no longer running and
-        // the mesh is quiescent. We intentionally do NOT assert that
-        // the systemd transient unit disappears. With
-        // RemainAfterExit=true, systemd may keep the unit around for
-        // observation and GC it later according to its own policy;
-        // that persistence is not considered a leak.
-        host_mesh.shutdown(&instance).await.expect("host shutdown");
-
-        // Liveness check (best-effort): unit may persist, but should
-        // not remain running. With RemainAfterExit=true, systemd may
-        // keep the unit around in active/exited after the process has
-        // terminated. That is not a leak. We only require that the
-        // unit is not running after shutdown.
-        let conn = zbus::Connection::session().await.expect("D-Bus session");
-        let manager = SystemdManagerProxy::new(&conn)
-            .await
-            .expect("manager proxy");
-
-        let mut ok = false;
-        for _ in 0..100 {
-            match manager.get_unit(&expected_unit).await {
-                Err(_) => {
-                    // Unit already gone: fine.
-                    ok = true;
-                    break;
-                }
-                Ok(path) => {
-                    if let Ok(unit) = SystemdUnitProxy::builder(&conn)
-                        .path(path)
-                        .unwrap()
-                        .build()
-                        .await
-                    {
-                        let active = unit.active_state().await.unwrap_or_default();
-                        let sub = unit.sub_state().await.unwrap_or_default();
-                        // Fail only if still running; any other state
-                        // is acceptable.
-                        if !(active == "active" && sub == "running") && active != "activating" {
-                            ok = true;
-                            break;
+            let mut ok = false;
+            for _ in 0..100 {
+                match manager.get_unit(&expected_unit).await {
+                    Err(_) => {
+                        // Unit already gone: fine.
+                        ok = true;
+                        break;
+                    }
+                    Ok(path) => {
+                        if let Ok(unit) = SystemdUnitProxy::builder(&conn)
+                            .path(path)
+                            .unwrap()
+                            .build()
+                            .await
+                        {
+                            let active = unit.active_state().await.unwrap_or_default();
+                            let sub = unit.sub_state().await.unwrap_or_default();
+                            // Fail only if still running; any other state
+                            // is acceptable.
+                            if !(active == "active" && sub == "running") && active != "activating" {
+                                ok = true;
+                                break;
+                            }
                         }
                     }
                 }
+                RealClock.sleep(std::time::Duration::from_millis(100)).await;
             }
-            RealClock.sleep(std::time::Duration::from_millis(100)).await;
+            assert!(
+                ok,
+                "unit should be gone or quiescent (not running) after shutdown"
+            );
         }
-        assert!(
-            ok,
-            "unit should be gone or quiescent (not running) after shutdown"
-        );
-    }
 
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_host_bootstrap() {
-        use crate::proc_mesh::mesh_agent::NewClientInstanceClient;
-        use crate::v1::host_mesh::mesh_agent::GetLocalProcClient;
+        #[tokio::test]
+        async fn test_host_bootstrap() {
+            use crate::proc_mesh::mesh_agent::NewClientInstanceClient;
+            use crate::v1::host_mesh::mesh_agent::GetLocalProcClient;
 
-        // Create a local instance just to call the local bootstrap actor.
-        // We should find a way to avoid this for local handles.
-        let temp_proc = Proc::local();
-        let (temp_instance, _) = temp_proc.instance("temp").unwrap();
+            // Create a local instance just to call the local bootstrap actor.
+            // We should find a way to avoid this for local handles.
+            let temp_proc = Proc::local();
+            let (temp_instance, _) = temp_proc.instance("temp").unwrap();
 
-        let handle = host(
-            any_addr_for_test(),
-            Some(BootstrapCommand::test()),
-            None,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let local_proc = handle.get_local_proc(&temp_instance).await.unwrap();
-        let _local_instance = local_proc
-            .new_client_instance(&temp_instance)
+            let handle = host(
+                any_addr_for_test(),
+                Some(BootstrapCommand::test()),
+                None,
+                false,
+            )
             .await
             .unwrap();
+
+            let local_proc = handle.get_local_proc(&temp_instance).await.unwrap();
+            let _local_instance = local_proc
+                .new_client_instance(&temp_instance)
+                .await
+                .unwrap();
+        }
     }
 }

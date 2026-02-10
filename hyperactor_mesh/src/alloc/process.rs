@@ -717,16 +717,14 @@ impl Drop for ProcessAlloc {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use super::*;
 
-    #[cfg(fbcode_build)] // we use an external binary, produced by buck
     crate::alloc_test_suite!(ProcessAllocator::new(Command::new(
         crate::testresource::get("monarch/hyperactor_mesh/bootstrap")
     )));
 
-    #[cfg(fbcode_build)]
     #[tokio::test]
     async fn test_sigterm_on_group_fail() {
         let bootstrap_binary = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");

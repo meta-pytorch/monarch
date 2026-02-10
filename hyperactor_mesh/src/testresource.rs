@@ -8,6 +8,7 @@
 
 #![cfg(test)]
 
+#[cfg(fbcode_build)]
 use std::path::PathBuf;
 
 /// Fetch the named (BUCK) named resource, heuristically falling back on

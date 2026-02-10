@@ -920,6 +920,7 @@ mod tests {
     use hyperactor::WorldId;
     use hyperactor_config::attrs::Attrs;
     use timed_test::async_timed_test;
+    #[cfg(fbcode_build)]
     use wirevalue::Encoding;
 
     use super::*;
@@ -1560,8 +1561,8 @@ mod tests {
         }
     } // mod local
 
+    #[cfg(fbcode_build)]
     mod process {
-
         use bytes::Bytes;
         use hyperactor::PortId;
         use hyperactor::channel::ChannelTransport;
@@ -1573,19 +1574,16 @@ mod tests {
 
         use crate::alloc::process::ProcessAllocator;
 
-        #[cfg(fbcode_build)]
         fn process_allocator() -> ProcessAllocator {
             ProcessAllocator::new(Command::new(crate::testresource::get(
                 "monarch/hyperactor_mesh/bootstrap",
             )))
         }
 
-        #[cfg(fbcode_build)] // we use an external binary, produced by buck
-        actor_mesh_test_suite!(process_allocator());
+        actor_mesh_test_suite!(process_allocator()); // we use an external binary, produced by buck
 
         // This test is concerned with correctly reporting failures
         // when message sizes exceed configured limits.
-        #[cfg(fbcode_build)]
         //#[tracing_test::traced_test]
         #[async_timed_test(timeout_secs = 30)]
         async fn test_oversized_frames() {
@@ -1707,7 +1705,6 @@ mod tests {
         // Set this test only for `mod process` because it relies on a
         // trick to emulate router failure that only works when using
         // non-local allocators.
-        #[cfg(fbcode_build)]
         #[tokio::test]
         async fn test_router_undeliverable_return() {
             // Test that an undeliverable message received by a
@@ -2036,6 +2033,7 @@ mod tests {
         }
     }
 
+    #[cfg(fbcode_build)]
     mod shim {
         use std::collections::HashSet;
 
@@ -2046,7 +2044,6 @@ mod tests {
         use crate::sel;
 
         #[tokio::test]
-        #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance();
             let host_mesh = v1::testing::host_mesh(4).await;

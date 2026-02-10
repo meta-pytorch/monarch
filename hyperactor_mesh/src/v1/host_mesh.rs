@@ -1415,29 +1415,10 @@ impl FromStr for HostMeshRef {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
-    use std::collections::HashSet;
-    use std::collections::VecDeque;
-
-    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-    use hyperactor::context::Mailbox as _;
-    use hyperactor_config::attrs::Attrs;
-    use itertools::Itertools;
     use ndslice::ViewExt;
     use ndslice::extent;
-    use timed_test::async_timed_test;
-    use tokio::process::Command;
 
     use super::*;
-    use crate::Bootstrap;
-    use crate::bootstrap::MESH_TAIL_LOG_LINES;
-    use crate::comm::ENABLE_NATIVE_V1_CASTING;
-    use crate::resource::Status;
-    use crate::v1::ActorMesh;
-    use crate::v1::testactor;
-    use crate::v1::testactor::GetConfigAttrs;
-    use crate::v1::testactor::SetConfigAttrs;
-    use crate::v1::testing;
 
     #[test]
     fn test_host_mesh_subset() {
@@ -1471,356 +1452,375 @@ mod tests {
     }
 
     #[cfg(fbcode_build)]
-    async fn execute_allocate(config: &hyperactor_config::global::ConfigLock) {
-        let poll = Duration::from_secs(3);
-        let get_actor = Duration::from_mins(1);
-        let get_proc = Duration::from_mins(1);
-        // 3m watchdog total: 3m - (poll + get_actor + get_proc) = 180s - 123s = 57s
-        let slack = Duration::from_secs(57);
+    mod fbcode_tests {
+        use std::assert_matches::assert_matches;
+        use std::collections::HashSet;
+        use std::collections::VecDeque;
 
-        let _pdeath_sig =
-            config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
-        let _poll =
-            config.override_key(crate::v1::mesh_controller::SUPERVISION_POLL_FREQUENCY, poll);
-        let _get_actor =
-            config.override_key(crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE, get_actor);
-        let _get_proc =
-            config.override_key(crate::v1::host_mesh::GET_PROC_STATE_MAX_IDLE, get_proc);
+        use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+        use hyperactor::context::Mailbox as _;
+        use hyperactor_config::attrs::Attrs;
+        use itertools::Itertools;
+        use timed_test::async_timed_test;
+        use tokio::process::Command;
 
-        // Must be >= poll + get_actor + get_proc (+ slack).
-        let _watchdog = config.override_key(
-            crate::v1::actor_mesh::SUPERVISION_WATCHDOG_TIMEOUT,
-            poll + get_actor + get_proc + slack,
-        );
+        use super::*;
+        use crate::Bootstrap;
+        use crate::bootstrap::MESH_TAIL_LOG_LINES;
+        use crate::comm::ENABLE_NATIVE_V1_CASTING;
+        use crate::resource::Status;
+        use crate::v1::ActorMesh;
+        use crate::v1::testactor;
+        use crate::v1::testactor::GetConfigAttrs;
+        use crate::v1::testactor::SetConfigAttrs;
+        use crate::v1::testing;
 
-        let instance = testing::instance();
+        async fn execute_allocate(config: &hyperactor_config::global::ConfigLock) {
+            let poll = Duration::from_secs(3);
+            let get_actor = Duration::from_mins(1);
+            let get_proc = Duration::from_mins(1);
+            // 3m watchdog total: 3m - (poll + get_actor + get_proc) = 180s - 123s = 57s
+            let slack = Duration::from_secs(57);
 
-        for alloc in testing::allocs(extent!(replicas = 4)).await {
-            let mut host_mesh = HostMesh::allocate(instance, alloc, "test", None)
-                .await
-                .unwrap();
+            let _pdeath_sig =
+                config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+            let _poll =
+                config.override_key(crate::v1::mesh_controller::SUPERVISION_POLL_FREQUENCY, poll);
+            let _get_actor =
+                config.override_key(crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE, get_actor);
+            let _get_proc =
+                config.override_key(crate::v1::host_mesh::GET_PROC_STATE_MAX_IDLE, get_proc);
 
-            let proc_mesh1 = host_mesh
-                .spawn(instance, "test_1", Extent::unity())
-                .await
-                .unwrap();
-
-            let actor_mesh1: ActorMesh<testactor::TestActor> =
-                proc_mesh1.spawn(instance, "test", &()).await.unwrap();
-
-            let proc_mesh2 = host_mesh
-                .spawn(instance, "test_2", extent!(gpus = 3, extra = 2))
-                .await
-                .unwrap();
-            assert_eq!(
-                proc_mesh2.extent(),
-                extent!(replicas = 4, gpus = 3, extra = 2)
-            );
-            assert_eq!(proc_mesh2.values().count(), 24);
-
-            let actor_mesh2: ActorMesh<testactor::TestActor> =
-                proc_mesh2.spawn(instance, "test", &()).await.unwrap();
-            assert_eq!(
-                actor_mesh2.extent(),
-                extent!(replicas = 4, gpus = 3, extra = 2)
-            );
-            assert_eq!(actor_mesh2.values().count(), 24);
-
-            // Host meshes can be dereferenced to produce a concrete ref.
-            let host_mesh_ref: HostMeshRef = host_mesh.clone();
-            // Here, the underlying host mesh does not change:
-            assert_eq!(
-                host_mesh_ref.iter().collect::<Vec<_>>(),
-                host_mesh.iter().collect::<Vec<_>>(),
+            // Must be >= poll + get_actor + get_proc (+ slack).
+            let _watchdog = config.override_key(
+                crate::v1::actor_mesh::SUPERVISION_WATCHDOG_TIMEOUT,
+                poll + get_actor + get_proc + slack,
             );
 
-            // Validate we can cast:
-            for actor_mesh in [&actor_mesh1, &actor_mesh2] {
-                let (port, mut rx) = instance.mailbox().open_port();
-                actor_mesh
-                    .cast(instance, testactor::GetActorId(port.bind()))
+            let instance = testing::instance();
+
+            for alloc in testing::allocs(extent!(replicas = 4)).await {
+                let mut host_mesh = HostMesh::allocate(instance, alloc, "test", None)
+                    .await
                     .unwrap();
 
-                let mut expected_actor_ids: HashSet<_> = actor_mesh
+                let proc_mesh1 = host_mesh
+                    .spawn(instance, "test_1", Extent::unity())
+                    .await
+                    .unwrap();
+
+                let actor_mesh1: ActorMesh<testactor::TestActor> =
+                    proc_mesh1.spawn(instance, "test", &()).await.unwrap();
+
+                let proc_mesh2 = host_mesh
+                    .spawn(instance, "test_2", extent!(gpus = 3, extra = 2))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    proc_mesh2.extent(),
+                    extent!(replicas = 4, gpus = 3, extra = 2)
+                );
+                assert_eq!(proc_mesh2.values().count(), 24);
+
+                let actor_mesh2: ActorMesh<testactor::TestActor> =
+                    proc_mesh2.spawn(instance, "test", &()).await.unwrap();
+                assert_eq!(
+                    actor_mesh2.extent(),
+                    extent!(replicas = 4, gpus = 3, extra = 2)
+                );
+                assert_eq!(actor_mesh2.values().count(), 24);
+
+                // Host meshes can be dereferenced to produce a concrete ref.
+                let host_mesh_ref: HostMeshRef = host_mesh.clone();
+                // Here, the underlying host mesh does not change:
+                assert_eq!(
+                    host_mesh_ref.iter().collect::<Vec<_>>(),
+                    host_mesh.iter().collect::<Vec<_>>(),
+                );
+
+                // Validate we can cast:
+                for actor_mesh in [&actor_mesh1, &actor_mesh2] {
+                    let (port, mut rx) = instance.mailbox().open_port();
+                    actor_mesh
+                        .cast(instance, testactor::GetActorId(port.bind()))
+                        .unwrap();
+
+                    let mut expected_actor_ids: HashSet<_> = actor_mesh
+                        .values()
+                        .map(|actor_ref| actor_ref.actor_id().clone())
+                        .collect();
+
+                    while !expected_actor_ids.is_empty() {
+                        let (actor_id, _seq) = rx.recv().await.unwrap();
+                        assert!(
+                            expected_actor_ids.remove(&actor_id),
+                            "got {actor_id}, expect {expected_actor_ids:?}"
+                        );
+                    }
+                }
+
+                // Now forward a message through all directed edges across the two meshes.
+                // This tests the full connectivity of all the hosts, procs, and actors
+                // involved in these two meshes.
+                let mut to_visit: VecDeque<_> = actor_mesh1
                     .values()
-                    .map(|actor_ref| actor_ref.actor_id().clone())
+                    .chain(actor_mesh2.values())
+                    .map(|actor_ref| actor_ref.port())
+                    // Each ordered pair of ports
+                    .permutations(2)
+                    // Flatten them to create a path:
+                    .flatten()
                     .collect();
 
-                while !expected_actor_ids.is_empty() {
-                    let (actor_id, _seq) = rx.recv().await.unwrap();
-                    assert!(
-                        expected_actor_ids.remove(&actor_id),
-                        "got {actor_id}, expect {expected_actor_ids:?}"
-                    );
-                }
+                let expect_visited: Vec<_> = to_visit.clone().into();
+
+                // We are going to send to the first, and then set up a port to receive the last.
+                let (last, mut last_rx) = instance.mailbox().open_port();
+                to_visit.push_back(last.bind());
+
+                let forward = testactor::Forward {
+                    to_visit,
+                    visited: Vec::new(),
+                };
+                let first = forward.to_visit.front().unwrap().clone();
+                first.send(instance, forward).unwrap();
+
+                let forward = last_rx.recv().await.unwrap();
+                assert_eq!(forward.visited, expect_visited);
+
+                let _ = host_mesh.shutdown(&instance).await;
+            }
+        }
+
+        #[async_timed_test(timeout_secs = 180)]
+        async fn test_allocate() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+            execute_allocate(&config).await;
+        }
+
+        #[async_timed_test(timeout_secs = 180)]
+        async fn test_allocate_v1() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+            let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+            execute_allocate(&config).await;
+        }
+
+        /// Allocate a new port on localhost. This drops the listener, releasing the socket,
+        /// before returning. Hyperactor's channel::net applies SO_REUSEADDR, so we do not hav
+        /// to wait out the socket's TIMED_WAIT state.
+        ///
+        /// Even so, this is racy.
+        #[allow(dead_code)]
+        fn free_localhost_addr() -> ChannelAddr {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            ChannelAddr::Tcp(listener.local_addr().unwrap())
+        }
+
+        async fn execute_extrinsic_allocation(config: &hyperactor_config::global::ConfigLock) {
+            let _guard =
+                config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+
+            let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
+
+            let hosts = vec![free_localhost_addr(), free_localhost_addr()];
+
+            let mut children = Vec::new();
+            for host in hosts.iter() {
+                let mut cmd = Command::new(program.clone());
+                let boot = Bootstrap::Host {
+                    addr: host.clone(),
+                    command: None, // use current binary
+                    config: None,
+                    exit_on_shutdown: false,
+                };
+                boot.to_env(&mut cmd);
+                cmd.kill_on_drop(true);
+                children.push(cmd.spawn().unwrap());
             }
 
-            // Now forward a message through all directed edges across the two meshes.
-            // This tests the full connectivity of all the hosts, procs, and actors
-            // involved in these two meshes.
-            let mut to_visit: VecDeque<_> = actor_mesh1
-                .values()
-                .chain(actor_mesh2.values())
-                .map(|actor_ref| actor_ref.port())
-                // Each ordered pair of ports
-                .permutations(2)
-                // Flatten them to create a path:
-                .flatten()
-                .collect();
+            let instance = testing::instance();
+            let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
-            let expect_visited: Vec<_> = to_visit.clone().into();
+            let proc_mesh = host_mesh
+                .spawn(&testing::instance(), "test", Extent::unity())
+                .await
+                .unwrap();
 
-            // We are going to send to the first, and then set up a port to receive the last.
-            let (last, mut last_rx) = instance.mailbox().open_port();
-            to_visit.push_back(last.bind());
+            let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+                .spawn(&testing::instance(), "test", &())
+                .await
+                .unwrap();
 
-            let forward = testactor::Forward {
-                to_visit,
-                visited: Vec::new(),
-            };
-            let first = forward.to_visit.front().unwrap().clone();
-            first.send(instance, forward).unwrap();
+            testactor::assert_mesh_shape(actor_mesh).await;
 
-            let forward = last_rx.recv().await.unwrap();
-            assert_eq!(forward.visited, expect_visited);
-
-            let _ = host_mesh.shutdown(&instance).await;
-        }
-    }
-
-    #[async_timed_test(timeout_secs = 180)]
-    #[cfg(fbcode_build)]
-    async fn test_allocate() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
-        execute_allocate(&config).await;
-    }
-
-    #[async_timed_test(timeout_secs = 180)]
-    #[cfg(fbcode_build)]
-    async fn test_allocate_v1() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        execute_allocate(&config).await;
-    }
-
-    /// Allocate a new port on localhost. This drops the listener, releasing the socket,
-    /// before returning. Hyperactor's channel::net applies SO_REUSEADDR, so we do not hav
-    /// to wait out the socket's TIMED_WAIT state.
-    ///
-    /// Even so, this is racy.
-    fn free_localhost_addr() -> ChannelAddr {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        ChannelAddr::Tcp(listener.local_addr().unwrap())
-    }
-
-    #[cfg(fbcode_build)]
-    async fn execute_extrinsic_allocation(config: &hyperactor_config::global::ConfigLock) {
-        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
-
-        let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
-
-        let hosts = vec![free_localhost_addr(), free_localhost_addr()];
-
-        let mut children = Vec::new();
-        for host in hosts.iter() {
-            let mut cmd = Command::new(program.clone());
-            let boot = Bootstrap::Host {
-                addr: host.clone(),
-                command: None, // use current binary
-                config: None,
-                exit_on_shutdown: false,
-            };
-            boot.to_env(&mut cmd);
-            cmd.kill_on_drop(true);
-            children.push(cmd.spawn().unwrap());
+            HostMesh::take(host_mesh)
+                .shutdown(&instance)
+                .await
+                .expect("hosts shutdown");
         }
 
-        let instance = testing::instance();
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
-
-        let proc_mesh = host_mesh
-            .spawn(&testing::instance(), "test", Extent::unity())
-            .await
-            .unwrap();
-
-        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn(&testing::instance(), "test", &())
-            .await
-            .unwrap();
-
-        testactor::assert_mesh_shape(actor_mesh).await;
-
-        HostMesh::take(host_mesh)
-            .shutdown(&instance)
-            .await
-            .expect("hosts shutdown");
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_extrinsic_allocation_v0() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
-        execute_extrinsic_allocation(&config).await;
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_extrinsic_allocation_v1() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        execute_extrinsic_allocation(&config).await;
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_failing_proc_allocation() {
-        let lock = hyperactor_config::global::lock();
-        let _guard = lock.override_key(MESH_TAIL_LOG_LINES, 100);
-
-        let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
-
-        let hosts = vec![free_localhost_addr(), free_localhost_addr()];
-
-        let mut children = Vec::new();
-        for host in hosts.iter() {
-            let mut cmd = Command::new(program.clone());
-            let boot = Bootstrap::Host {
-                addr: host.clone(),
-                config: None,
-                // The entire purpose of this is to fail:
-                command: Some(BootstrapCommand::from("false")),
-                exit_on_shutdown: false,
-            };
-            boot.to_env(&mut cmd);
-            cmd.kill_on_drop(true);
-            children.push(cmd.spawn().unwrap());
-        }
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
-
-        let instance = testing::instance();
-
-        let err = host_mesh
-            .spawn(&instance, "test", Extent::unity())
-            .await
-            .unwrap_err();
-        assert_matches!(
-            err,
-            v1::Error::ProcCreationError { state, .. }
-            if matches!(state.status, resource::Status::Failed(ref msg) if msg.contains("failed to configure process: Ready(Terminal(Stopped { exit_code: 1"))
-        );
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_halting_proc_allocation() {
-        let config = hyperactor_config::global::lock();
-        let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(20));
-
-        let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
-
-        let hosts = vec![free_localhost_addr(), free_localhost_addr()];
-
-        let mut children = Vec::new();
-
-        for (index, host) in hosts.iter().enumerate() {
-            let mut cmd = Command::new(program.clone());
-            let command = if index == 0 {
-                let mut command = BootstrapCommand::from("sleep");
-                command.args.push("60".to_string());
-                Some(command)
-            } else {
-                None
-            };
-            let boot = Bootstrap::Host {
-                addr: host.clone(),
-                config: None,
-                command,
-                exit_on_shutdown: false,
-            };
-            boot.to_env(&mut cmd);
-            cmd.kill_on_drop(true);
-            children.push(cmd.spawn().unwrap());
-        }
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
-
-        let instance = testing::instance();
-
-        let err = host_mesh
-            .spawn(&instance, "test", Extent::unity())
-            .await
-            .unwrap_err();
-        let statuses = err.into_proc_spawn_error().unwrap();
-        assert_matches!(
-            &statuses.materialized_iter(2).cloned().collect::<Vec<_>>()[..],
-            &[Status::Timeout(_), Status::Running]
-        );
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_client_config_override() {
-        let config = hyperactor_config::global::lock();
-        let _guard1 = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
-        let _guard2 = config.override_key(
-            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_mins(2),
-        );
-        let _guard3 = config.override_key(
-            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
-            Duration::from_mins(1),
-        );
-
-        // Unset env vars that were mirrored by TestOverride, so child
-        // processes don't inherit them. This allows Runtime layer to
-        // override ClientOverride. SAFETY: Single-threaded test under
-        // global config lock.
-        unsafe {
-            std::env::remove_var("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT");
-            std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT");
+        #[tokio::test]
+        async fn test_extrinsic_allocation_v0() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+            execute_extrinsic_allocation(&config).await;
         }
 
-        let instance = testing::instance();
+        #[tokio::test]
+        async fn test_extrinsic_allocation_v1() {
+            let config = hyperactor_config::global::lock();
+            let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+            let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+            execute_extrinsic_allocation(&config).await;
+        }
 
-        let proc_meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = proc_meshes.get(1).unwrap();
+        #[tokio::test]
+        async fn test_failing_proc_allocation() {
+            let lock = hyperactor_config::global::lock();
+            let _guard = lock.override_key(MESH_TAIL_LOG_LINES, 100);
 
-        let actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(instance, "test", &()).await.unwrap();
+            let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
-        let mut attrs_override = Attrs::new();
-        attrs_override.set(
-            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_mins(3),
-        );
-        actor_mesh
-            .cast(
-                instance,
-                SetConfigAttrs(bincode::serialize(&attrs_override).unwrap()),
-            )
-            .unwrap();
+            let hosts = vec![free_localhost_addr(), free_localhost_addr()];
 
-        let (tx, mut rx) = instance.open_port();
-        actor_mesh
-            .cast(instance, GetConfigAttrs(tx.bind()))
-            .unwrap();
-        let actual_attrs = rx.recv().await.unwrap();
-        let actual_attrs = bincode::deserialize::<Attrs>(&actual_attrs).unwrap();
+            let mut children = Vec::new();
+            for host in hosts.iter() {
+                let mut cmd = Command::new(program.clone());
+                let boot = Bootstrap::Host {
+                    addr: host.clone(),
+                    config: None,
+                    // The entire purpose of this is to fail:
+                    command: Some(BootstrapCommand::from("false")),
+                    exit_on_shutdown: false,
+                };
+                boot.to_env(&mut cmd);
+                cmd.kill_on_drop(true);
+                children.push(cmd.spawn().unwrap());
+            }
+            let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
-        assert_eq!(
-            *actual_attrs
-                .get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT)
-                .unwrap(),
-            Duration::from_mins(3)
-        );
-        assert_eq!(
-            *actual_attrs
-                .get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT)
-                .unwrap(),
-            Duration::from_mins(1)
-        );
+            let instance = testing::instance();
+
+            let err = host_mesh
+                .spawn(&instance, "test", Extent::unity())
+                .await
+                .unwrap_err();
+            assert_matches!(
+                err,
+                v1::Error::ProcCreationError { state, .. }
+                if matches!(state.status, resource::Status::Failed(ref msg) if msg.contains("failed to configure process: Ready(Terminal(Stopped { exit_code: 1"))
+            );
+        }
+
+        #[tokio::test]
+        async fn test_halting_proc_allocation() {
+            let config = hyperactor_config::global::lock();
+            let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(20));
+
+            let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
+
+            let hosts = vec![free_localhost_addr(), free_localhost_addr()];
+
+            let mut children = Vec::new();
+
+            for (index, host) in hosts.iter().enumerate() {
+                let mut cmd = Command::new(program.clone());
+                let command = if index == 0 {
+                    let mut command = BootstrapCommand::from("sleep");
+                    command.args.push("60".to_string());
+                    Some(command)
+                } else {
+                    None
+                };
+                let boot = Bootstrap::Host {
+                    addr: host.clone(),
+                    config: None,
+                    command,
+                    exit_on_shutdown: false,
+                };
+                boot.to_env(&mut cmd);
+                cmd.kill_on_drop(true);
+                children.push(cmd.spawn().unwrap());
+            }
+            let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
+
+            let instance = testing::instance();
+
+            let err = host_mesh
+                .spawn(&instance, "test", Extent::unity())
+                .await
+                .unwrap_err();
+            let statuses = err.into_proc_spawn_error().unwrap();
+            assert_matches!(
+                &statuses.materialized_iter(2).cloned().collect::<Vec<_>>()[..],
+                &[Status::Timeout(_), Status::Running]
+            );
+        }
+
+        #[tokio::test]
+        async fn test_client_config_override() {
+            let config = hyperactor_config::global::lock();
+            let _guard1 =
+                config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+            let _guard2 = config.override_key(
+                hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+                Duration::from_mins(2),
+            );
+            let _guard3 = config.override_key(
+                hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+                Duration::from_mins(1),
+            );
+
+            // Unset env vars that were mirrored by TestOverride, so child
+            // processes don't inherit them. This allows Runtime layer to
+            // override ClientOverride. SAFETY: Single-threaded test under
+            // global config lock.
+            unsafe {
+                std::env::remove_var("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT");
+                std::env::remove_var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT");
+            }
+
+            let instance = testing::instance();
+
+            let proc_meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+            let proc_mesh = proc_meshes.get(1).unwrap();
+
+            let actor_mesh: ActorMesh<testactor::TestActor> =
+                proc_mesh.spawn(instance, "test", &()).await.unwrap();
+
+            let mut attrs_override = Attrs::new();
+            attrs_override.set(
+                hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+                Duration::from_mins(3),
+            );
+            actor_mesh
+                .cast(
+                    instance,
+                    SetConfigAttrs(bincode::serialize(&attrs_override).unwrap()),
+                )
+                .unwrap();
+
+            let (tx, mut rx) = instance.open_port();
+            actor_mesh
+                .cast(instance, GetConfigAttrs(tx.bind()))
+                .unwrap();
+            let actual_attrs = rx.recv().await.unwrap();
+            let actual_attrs = bincode::deserialize::<Attrs>(&actual_attrs).unwrap();
+
+            assert_eq!(
+                *actual_attrs
+                    .get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT)
+                    .unwrap(),
+                Duration::from_mins(3)
+            );
+            assert_eq!(
+                *actual_attrs
+                    .get(hyperactor::config::MESSAGE_DELIVERY_TIMEOUT)
+                    .unwrap(),
+                Duration::from_mins(1)
+            );
+        }
     }
 }
