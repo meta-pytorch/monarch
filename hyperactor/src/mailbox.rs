@@ -1378,6 +1378,53 @@ impl Mailbox {
                 port_index,
                 port_id: port_id.clone(),
                 sender,
+                reducer_spec: None,
+            },
+            OncePortReceiver {
+                receiver: Some(receiver),
+                port_id,
+                mailbox: self.clone(),
+            },
+        )
+    }
+
+    /// Open a new one-shot port with a reducer. This port is designed
+    /// to be used with casting, where the port is split across multiple
+    /// destinations and responses are accumulated using the reducer.
+    /// The accumulator type must have a ReducerSpec.
+    ///
+    /// The returned handle can be bound and embedded in cast messages.
+    /// When the message is split by CommActor, each destination receives a
+    /// split port. Responses to split ports are accumulated using the
+    /// accumulator's reducer, and the final accumulated result is delivered
+    /// to the returned receiver.
+    ///
+    /// Note: For accumulators used with casting, `Update` and `State` types
+    /// must be the same (e.g., `sum<u64>` where both are `u64`).
+    pub fn open_reduce_port<A, T>(
+        &self,
+        accum: A,
+    ) -> (OncePortHandle<A::State>, OncePortReceiver<A::State>)
+    where
+        A: Accumulator<State = T, Update = T> + Send + Sync + 'static,
+        T: Message + Default + Clone,
+    {
+        let port_index = self.inner.allocate_port();
+        let (sender, receiver) = oneshot::channel::<T>();
+        let port_id = PortId(self.inner.actor_id.clone(), port_index);
+        let reducer_spec = accum.reducer_spec();
+        assert!(
+            reducer_spec.is_some(),
+            "cannot use a reduce port without a ReducerSpec"
+        );
+
+        (
+            OncePortHandle {
+                mailbox: self.clone(),
+                port_index,
+                port_id: port_id.clone(),
+                sender,
+                reducer_spec,
             },
             OncePortReceiver {
                 receiver: Some(receiver),
@@ -1811,6 +1858,7 @@ pub struct OncePortHandle<M: Message> {
     port_index: u64,
     port_id: PortId,
     sender: oneshot::Sender<M>,
+    reducer_spec: Option<ReducerSpec>,
 }
 
 impl<M: Message> OncePortHandle<M> {
@@ -1851,8 +1899,9 @@ impl<M: RemoteMessage> OncePortHandle<M> {
     /// binds the port, so that it is remotely writable.
     pub fn bind(self) -> OncePortRef<M> {
         let port_id = self.port_id().clone();
+        let reducer_spec = self.reducer_spec.clone();
         self.mailbox.clone().bind_once(self);
-        OncePortRef::attest(port_id)
+        OncePortRef::attest_reducible(port_id, reducer_spec)
     }
 }
 
@@ -4200,5 +4249,45 @@ mod tests {
             MailboxSenderErrorKind::Mailbox(mailbox_err)
                 if matches!(mailbox_err.kind(), MailboxErrorKind::OwnerTerminated(ActorStatus::Failed(ActorErrorKind::Generic(msg))) if msg == "test failure")
         );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_open_reduce_port() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Open an accumulator port with sum reducer
+        let (port_handle, receiver) = client.mailbox().open_reduce_port(accum::sum::<u64>());
+
+        // Verify the reducer_spec is set
+        let port_ref = port_handle.bind();
+        assert!(port_ref.reducer_spec().is_some());
+
+        // Send a single value via the bound port
+        port_ref.send(&client, 42).unwrap();
+
+        // Should receive the value
+        let result = receiver.recv().await.unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_open_reduce_port_reducer_spec_preserved() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Test that different accumulators produce different reducer_specs
+        let (sum_handle, _) = client.mailbox().open_reduce_port(accum::sum::<u64>());
+        let sum_ref = sum_handle.bind();
+        let sum_typehash = sum_ref.reducer_spec().as_ref().unwrap().typehash;
+
+        let (max_handle, _) = client
+            .mailbox()
+            .open_reduce_port(accum::join_semilattice::<accum::Max<u64>>());
+        let max_ref = max_handle.bind();
+        let max_typehash = max_ref.reducer_spec().as_ref().unwrap().typehash;
+
+        // Different accumulators should have different reducer typehashes
+        assert_ne!(sum_typehash, max_typehash);
     }
 }

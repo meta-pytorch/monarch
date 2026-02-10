@@ -36,13 +36,14 @@ use tokio::sync::OnceCell;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::Bootstrap;
+use crate::HostMeshRef;
 use crate::ProcMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
 use crate::alloc::ProcessAllocator;
-use crate::host_mesh::HostMesh;
 use crate::supervision::MeshFailure;
 use crate::transport::default_transport;
 
@@ -271,23 +272,51 @@ pub async fn local_proc_mesh(
 }
 
 /// Create a host mesh using multiple processes running on the test machine.
+/// The transport used by the hosts is Unix channel.
+///
+/// # Examples
+///
+/// ```
+/// let host_mesh = testing::host_mesh(4).await;
+/// // spawn a process mesh on this host mesh with the name "test", abd per_host
+/// // extent gpu = 8.
+/// let proc_mesh = host_mesh
+///     .spawn(instance, "test", extent!(gpu = 8))
+///     .await
+///     .unwrap();
+/// // ... do something with the proc mesh ...
+/// // shutdown the host mesh.
+/// let _ = HostMesh::take(host_mesh).shutdown(&instance).await;
+/// ```
 #[cfg(fbcode_build)]
-pub async fn host_mesh(extent: Extent) -> HostMesh {
-    let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
-        "monarch/hyperactor_mesh/bootstrap",
-    )));
-    let alloc = allocator
-        .allocate(AllocSpec {
-            extent,
-            constraints: Default::default(),
-            proc_name: None,
-            transport: ChannelTransport::Unix,
-            proc_allocation_mode: Default::default(),
-        })
-        .await
-        .unwrap();
+pub async fn host_mesh(n: usize) -> HostMeshRef {
+    use crate::Name;
 
-    HostMesh::allocate(instance(), Box::new(alloc), "test", None)
-        .await
-        .unwrap()
+    let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
+
+    let mut host_addrs = vec![];
+    for _ in 0..n {
+        host_addrs.push(ChannelTransport::Unix.any());
+    }
+
+    for host in host_addrs.iter() {
+        let mut cmd = Command::new(program.clone());
+        let boot = Bootstrap::Host {
+            addr: host.clone(),
+            command: None, // use current binary
+            config: None,
+            exit_on_shutdown: false,
+        };
+        boot.to_env(&mut cmd);
+        cmd.kill_on_drop(false);
+        // SAFETY: Ensure the child process is killed by the kernel if the
+        // parent process dies, even if the parent is SIGKILL'd. This is to
+        // avoid resource leak after the test exited or crashed.
+        unsafe {
+            cmd.pre_exec(crate::bootstrap::install_pdeathsig_kill);
+        }
+        cmd.spawn().unwrap();
+    }
+
+    HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs)
 }

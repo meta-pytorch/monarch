@@ -60,7 +60,7 @@ impl PyValueMesh {
     }
 
     /// Return the values in region/iteration order as a Python list.
-    fn values(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn values(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         // Clone the inner Py objects into a Python list (just bumps
         // refcounts).
         let vec: Vec<Py<PyAny>> = self.inner.values().collect();
@@ -68,7 +68,7 @@ impl PyValueMesh {
     }
 
     /// Get value by linear rank (0..num_ranks-1).
-    fn get(&self, py: Python<'_>, rank: usize) -> PyResult<PyObject> {
+    fn get(&self, py: Python<'_>, rank: usize) -> PyResult<Py<PyAny>> {
         let n = self.inner.region().num_ranks();
         if rank >= n {
             return Err(PyValueError::new_err(format!(

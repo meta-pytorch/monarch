@@ -1227,9 +1227,10 @@ mod tests {
         _reply_port_ref: hyperactor::OncePortRef<u64>,
     }
 
-    async fn setup_once_port_mesh_v1(
-        reducer_spec: Option<accum::ReducerSpec>,
-    ) -> OncePortMeshSetupV1 {
+    async fn setup_once_port_mesh<A>(reducer: Option<A>) -> OncePortMeshSetupV1
+    where
+        A: Accumulator<State = u64, Update = u64> + Send + Sync + 'static,
+    {
         let instance = crate::testing::instance();
 
         let extent = extent!(replica = 4, host = 4, gpu = 4);
@@ -1260,15 +1261,12 @@ mod tests {
             .unwrap();
         let actor_mesh_ref = actor_mesh.deref().clone();
 
-        let (reply_port_handle, reply_rx) = hyperactor::mailbox::open_once_port::<u64>(instance);
-        let has_reducer = reducer_spec.is_some();
-        let reply_port_ref = match reducer_spec {
-            Some(spec) => hyperactor::OncePortRef::attest_reducible(
-                reply_port_handle.bind().port_id().clone(),
-                Some(spec),
-            ),
-            None => reply_port_handle.bind(),
+        let has_reducer = reducer.is_some();
+        let (reply_port_handle, reply_rx) = match reducer {
+            Some(reducer) => instance.mailbox().open_reduce_port(reducer),
+            None => instance.mailbox().open_once_port::<u64>(),
         };
+        let reply_port_ref = reply_port_handle.bind();
 
         let message = TestMessage::CastAndReplyOnce {
             arg: "abc".to_string(),
@@ -1318,7 +1316,7 @@ mod tests {
             reply_rx,
             reply_tos,
             ..
-        } = setup_once_port_mesh_v1(None).await;
+        } = setup_once_port_mesh::<NoneAccumulator>(None).await;
 
         // All reply_tos point to the same port (not split).
         // Only the first message will be delivered successfully.
@@ -1338,13 +1336,12 @@ mod tests {
         // Test OncePort splitting with sum accumulator.
         // Each destination actor replies with its rank.
         // The sum of all ranks should be received at the original port.
-        let reducer_spec = accum::sum::<u64>().reducer_spec();
         let OncePortMeshSetupV1 {
             instance,
             reply_rx,
             reply_tos,
             ..
-        } = setup_once_port_mesh_v1(reducer_spec).await;
+        } = setup_once_port_mesh(Some(accum::sum::<u64>())).await;
 
         // Each actor replies with its index
         let mut expected_sum = 0u64;

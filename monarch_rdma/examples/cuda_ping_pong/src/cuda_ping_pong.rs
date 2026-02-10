@@ -67,10 +67,16 @@ use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::context::Mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
+use hyperactor_mesh::Bootstrap;
+use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::v1::ActorMesh;
+use hyperactor_mesh::v1::Name;
+use hyperactor_mesh::v1::host_mesh::HostMesh;
+use hyperactor_mesh::v1::host_mesh::HostMeshRef;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
@@ -84,6 +90,8 @@ use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::cu_check;
+use ndslice::Extent;
+use ndslice::ViewExt;
 use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
@@ -144,6 +152,11 @@ const DEFAULT_BUFFER_SIZE_MB: usize = 32; // `must be multiple of 2MB
 const DEFAULT_ITERATIONS: i32 = 48;
 const DEFAULT_INITIAL_LENGTH_KB: usize = 1;
 const DATA_VALUE: u8 = 42;
+
+fn free_localhost_addr() -> ChannelAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind");
+    ChannelAddr::Tcp(listener.local_addr().expect("failed to get local address"))
+}
 
 // CLI Configuration
 #[derive(Debug, Clone)]
@@ -702,45 +715,42 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     let instance = global_root_client();
 
-    // Create process allocator for spawning actors
-    let mut alloc = ProcessAllocator::new(Command::new(
-        buck_resources::get("monarch/monarch_rdma/examples/cuda_ping_pong/bootstrap").unwrap(),
-    ));
+    // Setup host meshes and proc meshes
+    let program =
+        buck_resources::get("monarch/monarch_rdma/examples/cuda_ping_pong/bootstrap").unwrap();
 
-    let device_1_proc_mesh = ProcMesh::allocate(
-        instance,
-        Box::new(
-            alloc
-                .allocate(AllocSpec {
-                    extent: extent! {replica=1, host=1, gpu=1},
-                    constraints: Default::default(),
-                    proc_name: None,
-                    transport: ChannelTransport::Unix,
-                    proc_allocation_mode: Default::default(),
-                })
-                .await?,
-        ),
-        "device_1",
-    )
-    .await?;
+    let host_addrs = [free_localhost_addr(), free_localhost_addr()];
+    let mut children = Vec::new();
+    for host in host_addrs.iter() {
+        let mut cmd = Command::new(program.clone());
+        let boot = Bootstrap::Host {
+            addr: host.clone(),
+            command: None,
+            config: None,
+            exit_on_shutdown: false,
+        };
+        boot.to_env(&mut cmd);
+        cmd.kill_on_drop(true);
+        children.push(cmd.spawn().unwrap());
+    }
 
-    // Create process mesh for the second CUDA device
-    let device_2_proc_mesh = ProcMesh::allocate(
-        instance,
-        Box::new(
-            alloc
-                .allocate(AllocSpec {
-                    extent: extent! {replica=1, host=1, gpu=1},
-                    constraints: Default::default(),
-                    proc_name: None,
-                    transport: ChannelTransport::Unix,
-                    proc_allocation_mode: Default::default(),
-                })
-                .await?,
-        ),
-        "device_2",
-    )
-    .await?;
+    // Create separate host meshes for each device to maintain different configs
+    let host_mesh_1 = HostMeshRef::from_hosts(
+        Name::new("cuda_ping_pong_host1").unwrap(),
+        vec![host_addrs[0].clone()],
+    );
+    let host_mesh_2 = HostMeshRef::from_hosts(
+        Name::new("cuda_ping_pong_host2").unwrap(),
+        vec![host_addrs[1].clone()],
+    );
+
+    // Create proc meshes (one proc per host mesh)
+    let device_1_proc_mesh = host_mesh_1
+        .spawn(&instance, "procs", Extent::unity())
+        .await?;
+    let device_2_proc_mesh = host_mesh_2
+        .spawn(&instance, "procs", Extent::unity())
+        .await?;
 
     // Create RDMA manager for the first device
     let device_1_rdma_manager: ActorMesh<RdmaManagerActor> = device_1_proc_mesh
@@ -761,15 +771,19 @@ pub async fn run() -> Result<(), anyhow::Error> {
         .await?;
 
     // Get the RDMA manager actor references
-    let device_1_rdma_manager_ref = device_1_rdma_manager.get(0).unwrap();
-    let device_2_rdma_manager_ref = device_2_rdma_manager.get(0).unwrap();
+    let device_1_rdma_manager_ref = device_1_rdma_manager.values().next().unwrap();
+    let device_2_rdma_manager_ref = device_2_rdma_manager.values().next().unwrap();
 
     // Create the CUDA RDMA actors
     let device_1_actor_mesh: ActorMesh<CudaRdmaActor> = device_1_proc_mesh
         .spawn(
             instance,
             "device_1_actor",
-            &(device_1_rdma_manager_ref.clone(), 0, config.buffer_size),
+            &(
+                device_1_rdma_manager_ref.clone(),
+                0usize,
+                config.buffer_size,
+            ),
         )
         .await?;
 
@@ -777,41 +791,38 @@ pub async fn run() -> Result<(), anyhow::Error> {
         .spawn(
             instance,
             "device_2_actor",
-            &(device_2_rdma_manager_ref.clone(), 1, config.buffer_size),
+            &(
+                device_2_rdma_manager_ref.clone(),
+                1usize,
+                config.buffer_size,
+            ),
         )
         .await?;
 
     // Get the actor references
-    let device_1_actor = device_1_actor_mesh.get(0).unwrap();
-    let device_2_actor = device_2_actor_mesh.get(0).unwrap();
-
-    // Initialize the buffers
-
-    // Initialize device 1 buffer with DATA_VALUE
-    let (handle_1, receiver_1) = instance.mailbox().open_once_port::<bool>();
-    device_1_actor.send(instance, InitializeBuffer(DATA_VALUE, handle_1.bind()))?;
+    let device_1_actor = device_1_actor_mesh.values().next().unwrap();
+    let device_2_actor = device_2_actor_mesh.values().next().unwrap();
+    let (handle_1, receiver_1) = instance.open_once_port::<bool>();
+    device_1_actor.send(&instance, InitializeBuffer(DATA_VALUE, handle_1.bind()))?;
     receiver_1.recv().await?;
 
     // Initialize device 2 buffer with 0
-    let (handle_2, receiver_2) = instance.mailbox().open_once_port::<bool>();
-    device_2_actor.send(instance, InitializeBuffer(0, handle_2.bind()))?;
+    let (handle_2, receiver_2) = instance.open_once_port::<bool>();
+    device_2_actor.send(&instance, InitializeBuffer(0, handle_2.bind()))?;
     receiver_2.recv().await?;
 
     // Get the remote buffer handle from device 1
-    let (handle_remote, receiver_remote) = instance.mailbox().open_once_port::<RdmaBuffer>();
-    device_1_actor.send(instance, GetBufferHandle(handle_remote.bind()))?;
+    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaBuffer>();
+    device_1_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_1 = receiver_remote.recv().await?;
 
-    let (handle_remote, receiver_remote) = instance.mailbox().open_once_port::<RdmaBuffer>();
-    device_2_actor.send(instance, GetBufferHandle(handle_remote.bind()))?;
+    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaBuffer>();
+    device_2_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_2 = receiver_remote.recv().await?;
-
-    // Perform RDMA write from device 2 to device 1 using the remote buffer
-    let (handle_2, receiver_2) = instance.mailbox().open_once_port::<bool>();
-    let (handle_1, receiver_1) = instance.mailbox().open_once_port::<bool>();
+    let (handle_1, receiver_1) = instance.open_once_port::<bool>();
 
     device_2_actor.send(
-        instance,
+        &instance,
         PerformPingPong(
             device_1_actor.clone(),
             buffer_1,
@@ -822,27 +833,24 @@ pub async fn run() -> Result<(), anyhow::Error> {
     )?;
     receiver_2.recv().await?;
     device_1_actor.send(
+        &instance,
         instance,
         PerformPingPong(
             device_2_actor.clone(),
             buffer_2,
-            config.iterations,
             config.initial_length,
-            handle_1.bind(),
-        ),
-    )?;
     receiver_1.recv().await?;
 
-    let (handle, receiver) = instance.mailbox().open_once_port::<bool>();
+    let (handle, receiver) = instance.open_once_port::<bool>();
     device_2_actor.send(
-        instance,
+        &instance,
         VerifyBuffer(expected_data_values.clone(), handle.bind()),
     )?;
     let verification_result2 = receiver.recv().await?;
 
-    let (handle, receiver) = instance.mailbox().open_once_port::<bool>();
+    let (handle, receiver) = instance.open_once_port::<bool>();
     device_1_actor.send(
-        instance,
+        &instance,
         VerifyBuffer(expected_data_values.clone(), handle.bind()),
     )?;
     let verification_result1 = receiver.recv().await?;
@@ -857,6 +865,17 @@ pub async fn run() -> Result<(), anyhow::Error> {
             "RDMA Ping-Pong verification failed actor 2"
         ));
     }
+
+    // Shutdown host meshes
+    HostMesh::take(host_mesh_1)
+        .shutdown(&instance)
+        .await
+        .expect("host1 shutdown");
+    HostMesh::take(host_mesh_2)
+        .shutdown(&instance)
+        .await
+        .expect("host2 shutdown");
+
     tracing::info!("CUDA RDMA example completed successfully");
     Ok(())
 }

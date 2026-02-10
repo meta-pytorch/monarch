@@ -1267,7 +1267,7 @@ mod tests {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance();
-        let mut host_mesh = testing::host_mesh(extent!(host = 4)).await;
+        let host_mesh = testing::host_mesh(4).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", Extent::unity())
             .await
@@ -1297,7 +1297,7 @@ mod tests {
             assert_eq!(&sender_actor_id, instance.self_id());
         }
 
-        let _ = host_mesh.shutdown(&instance).await;
+        drop(host_mesh);
     }
 
     /// Test that undeliverable messages are properly returned to the
