@@ -21,9 +21,20 @@ declare_attrs! {
     /// when reshaping during casting to limit fanout.
     /// usize::MAX means no reshaping as any shape will always be below
     /// the limit so no dimension needs to be folded.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE".to_string()),
-        py_name: Some("max_cast_dimension_size".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE".to_string()),
+        Some("max_cast_dimension_size".to_string()),
+    ))
     pub attr MAX_CAST_DIMENSION_SIZE: usize = usize::MAX;
+
+    /// Which builtin process launcher backend to use.
+    /// Accepted values: "native" (default), "systemd".
+    /// Trimmed and lowercased before matching.
+    ///
+    /// **Precedence:** Python spawner (via SetProcSpawner) overrides this.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_PROC_LAUNCHER_KIND".to_string()),
+        Some("proc_launcher_kind".to_string()),
+    ))
+    pub attr MESH_PROC_LAUNCHER_KIND: String = String::new();
 }

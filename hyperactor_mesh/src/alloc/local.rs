@@ -235,7 +235,11 @@ impl Alloc for LocalAlloc {
 
                     if let Err(err) = proc_to_stop
                         .proc
-                        .destroy_and_wait::<()>(Duration::from_millis(10), None)
+                        .destroy_and_wait::<()>(
+                            Duration::from_millis(10),
+                            None,
+                            &reason.to_string(),
+                        )
                         .await
                     {
                         tracing::error!("error while stopping proc {}: {}", rank, err);

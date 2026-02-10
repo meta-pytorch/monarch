@@ -25,7 +25,7 @@ use hyperactor_mesh::v1::host_mesh::HostMesh;
 use hyperactor_mesh::v1::host_mesh::HostMeshRef;
 use hyperactor_mesh::v1::host_mesh::mesh_agent::GetLocalProcClient;
 use hyperactor_mesh::v1::host_mesh::mesh_agent::HostMeshAgent;
-use hyperactor_mesh::v1::host_mesh::mesh_agent::ShutdownHostClient;
+use hyperactor_mesh::v1::host_mesh::mesh_agent::ShutdownHost;
 use hyperactor_mesh::v1::proc_mesh::ProcRef;
 use ndslice::View;
 use ndslice::view::RankedSliceable;
@@ -122,7 +122,7 @@ impl PyHostMesh {
         Self::Owned(PyHostMeshImpl(SharedCell::from(inner)))
     }
 
-    fn new_ref(inner: HostMeshRef) -> Self {
+    pub(crate) fn new_ref(inner: HostMeshRef) -> Self {
         Self::Ref(PyHostMeshRefImpl(inner))
     }
 
@@ -286,6 +286,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
+            false,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
@@ -359,12 +360,28 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             .instance("shutdown_requester")
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
+        tracing::info!(
+            "sending shutdown_host request to agent {}",
+            agent.actor_id()
+        );
         // Use same defaults as HostMesh::shutdown():
         // - MESH_TERMINATE_TIMEOUT = 10 seconds
         // - MESH_TERMINATE_CONCURRENCY = 16
+
+        let (port, _) = instance.open_port();
+        let mut port = port.bind();
+        // We don't need the ack, and this temporary proc doesn't have a mailbox
+        // receiver set up anyways. Just ignore the message.
+        port.return_undeliverable(false);
         agent
-            .shutdown_host(&instance, Duration::from_secs(10), 16)
-            .await
+            .send(
+                &instance,
+                ShutdownHost {
+                    timeout: Duration::from_secs(10),
+                    max_in_flight: 16,
+                    ack: port,
+                },
+            )
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
         Ok(())

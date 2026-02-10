@@ -224,6 +224,37 @@ except ImportError:
 
 _proc_mesh_registry: WeakSet["ProcMesh"] = WeakSet()
 
+# Callbacks invoked when a new ProcMesh is spawned via from_host_mesh.
+# Each callback receives the newly created ProcMesh.
+_proc_mesh_spawn_callbacks: List[Callable[["ProcMesh"], None]] = []
+
+
+def register_proc_mesh_spawn_callback(callback: Callable[["ProcMesh"], None]) -> None:
+    """
+    Register a callback to be invoked whenever a new ProcMesh is spawned.
+
+    The callback receives the newly created ProcMesh before it is returned
+    from from_host_mesh. This allows code to hook into process spawning
+    for monitoring, telemetry, or other cross-cutting concerns.
+
+    Args:
+        callback: A callable that takes a ProcMesh and returns None.
+    """
+    _proc_mesh_spawn_callbacks.append(callback)
+
+
+def unregister_proc_mesh_spawn_callback(callback: Callable[["ProcMesh"], None]) -> None:
+    """
+    Unregister a previously registered spawn callback.
+
+    Args:
+        callback: The callback to remove.
+
+    Raises:
+        ValueError: If the callback was not registered.
+    """
+    _proc_mesh_spawn_callbacks.remove(callback)
+
 
 def get_active_proc_meshes() -> List["ProcMesh"]:
     """Get a list of all active ProcMesh instances."""
@@ -412,6 +443,10 @@ class ProcMesh(MeshTrait):
             task(pm, hy_proc_mesh, setup_actor, host_mesh.stream_logs)
         ).spawn()
 
+        # Invoke registered spawn callbacks
+        for callback in _proc_mesh_spawn_callbacks:
+            callback(pm)
+
         return pm
 
     def _spawn_nonblocking(
@@ -552,7 +587,7 @@ class ProcMesh(MeshTrait):
             raise RuntimeError("`ProcMesh` has already been stopped")
         return self
 
-    def stop(self) -> Future[None]:
+    def stop(self, reason: str = "stopped by client") -> Future[None]:
         """
         This will stop all processes (and actors) in the mesh and
         release any resources associated with the mesh.
@@ -563,7 +598,7 @@ class ProcMesh(MeshTrait):
         async def _stop_nonblocking(instance: HyInstance) -> None:
             pm = await self._proc_mesh
             await self._logging_manager.flush_async()
-            await pm.stop_nonblocking(instance)
+            await pm.stop_nonblocking(instance, reason)
             self._stopped = True
 
         return Future(coro=_stop_nonblocking(instance))

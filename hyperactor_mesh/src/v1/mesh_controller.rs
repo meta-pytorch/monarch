@@ -62,10 +62,10 @@ declare_attrs! {
     /// The default is chosen to balance these two objectives.
     /// This also controls how frequently the healthy heartbeat is sent out to
     /// subscribers if there are no failures encountered.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY".to_string()),
-        py_name: None,
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY".to_string()),
+        None,
+    ))
     pub attr SUPERVISION_POLL_FREQUENCY: Duration = Duration::from_secs(10);
 }
 
@@ -166,11 +166,15 @@ impl<A: Referable> ActorMeshController<A> {
         }
     }
 
-    async fn stop(&self, cx: &impl context::Actor) -> v1::Result<ValueMesh<resource::Status>> {
+    async fn stop(
+        &self,
+        cx: &impl context::Actor,
+        reason: String,
+    ) -> v1::Result<ValueMesh<resource::Status>> {
         // Cannot use "ActorMesh::stop" as it tries to message the controller, which is this actor.
         self.mesh
             .proc_mesh()
-            .stop_actor_by_name(cx, self.mesh.name().clone())
+            .stop_actor_by_name(cx, self.mesh.name().clone(), reason)
             .await
     }
 
@@ -249,7 +253,8 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         // proc mesh.
         if self.monitor.take().is_some() {
             tracing::info!(actor_id = %this.self_id(), actor_mesh = %self.mesh.name(), "starting cleanup for ActorMeshController, stopping actor mesh");
-            self.stop(this).await?;
+            self.stop(this, "actor mesh controller cleanup".to_string())
+                .await?;
         }
         Ok(())
     }
@@ -377,9 +382,15 @@ impl<A: Referable> Handler<resource::GetState<resource::mesh::State<()>>>
 
 #[async_trait]
 impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
-    async fn handle(&mut self, cx: &Context<Self>, _message: resource::Stop) -> anyhow::Result<()> {
+    async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         let mesh = &self.mesh;
         let mesh_name = mesh.name();
+        tracing::info!(
+            name = "ActorMeshControllerStatus",
+            %mesh_name,
+            reason = %message.reason,
+            "stopping actor mesh"
+        );
         // Run the drop on the monitor loop. The actors will not change state
         // after this point, because they will be stopped.
         // This message is idempotent because multiple stops only send out one
@@ -401,21 +412,21 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             // Use an actor id from the mesh.
             mesh.get(rank).unwrap().actor_id().clone(),
             None,
-            ActorStatus::Stopped,
+            ActorStatus::Stopped("ActorMeshController received explicit stop request".to_string()),
             None,
         );
-        let message = MeshFailure {
+        let failure_message = MeshFailure {
             actor_mesh_name: Some(mesh_name.to_string()),
             // Rank = none means it affects the whole mesh.
             rank: None,
             event,
         };
-        self.health_state.unhealthy_event = Some(Unhealthy::StreamClosed(message.clone()));
+        self.health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
         // We don't send a message to the owner on stops, because only the owner
         // can request a stop. We just send to subscribers instead, as they did
         // not request the stop themselves.
         for subscriber in self.health_state.subscribers.iter() {
-            send_subscriber_message(cx, subscriber, message.clone());
+            send_subscriber_message(cx, subscriber, failure_message.clone());
         }
 
         // max_rank and extent are only needed for the deprecated RankedValues.
@@ -428,7 +439,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             .next()
             .map(|p| p.extent().clone());
         // Send a stop message to the ProcMeshAgent for these actors.
-        match self.stop(cx).await {
+        match self.stop(cx, message.reason.clone()).await {
             Ok(statuses) => {
                 // All stops successful, set actor status on health state.
                 for (rank, status) in statuses.iter() {
@@ -576,7 +587,13 @@ fn actor_state_to_supervision_events(
                 vec![ActorSupervisionEvent::new(
                     actor_id.expect("actor_id is None"),
                     None,
-                    ActorStatus::Stopped,
+                    ActorStatus::Stopped(
+                        format!(
+                            "actor status is {}; actor may have been killed",
+                            state.status
+                        )
+                        .to_string(),
+                    ),
                     None,
                 )]
             }
@@ -642,12 +659,11 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 // make the proc failure the cause. It is a hack to try to determine
                 // the correct status based on process exit status.
                 let actor_status = match state.state.and_then(|s| s.proc_status) {
-                    Some(ProcStatus::Stopped { .. })
-                    // SIGTERM
-                    | Some(ProcStatus::Killed { signal: 15, .. })
+                    Some(ProcStatus::Stopped { exit_code, .. }) => {
+                        ActorStatus::Stopped(format!("process exited with code {}", exit_code))
+                    }
                     // Conservatively treat lack of status as stopped
-                    | None => ActorStatus::Stopped,
-
+                    None => ActorStatus::Stopped("no status received from process".to_string()),
                     Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
                         "process failure: {}",
                         status
@@ -775,8 +791,22 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
             send_heartbeat(cx, &self.health_state);
         }
 
-        // Reschedule a self send after a waiting period.
-        self.self_check_state_message(cx)?;
+        // If all ranks are in a terminal state, we don't need to continue checking,
+        // as statuses cannot change.
+        // Any new subscribers will get an immediate message saying the mesh is stopped.
+        let all_ranks_terminal = self
+            .health_state
+            .statuses
+            .values()
+            .all(|s| s.is_terminating());
+        if !all_ranks_terminal {
+            // Schedule a self send after a waiting period.
+            self.self_check_state_message(cx)?;
+        } else {
+            // There's no need to send a stop message during cleanup if all the
+            // ranks are already terminal.
+            self.monitor.take();
+        }
         return Ok(());
     }
 }
@@ -806,7 +836,13 @@ impl Actor for ProcMeshController {
         let region = self.mesh.region().clone();
         if let Some(hosts) = self.mesh.hosts() {
             hosts
-                .stop_proc_mesh(this, self.mesh.name(), names, region)
+                .stop_proc_mesh(
+                    this,
+                    self.mesh.name(),
+                    names,
+                    region,
+                    "proc mesh controller cleanup".to_string(),
+                )
                 .await
         } else {
             Ok(())

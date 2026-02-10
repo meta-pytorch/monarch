@@ -97,6 +97,9 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
         addr,
         config: None,
         command,
+        // This function is the entry point of the program, and no one else
+        // will terminate this process. So it needs to exit on its own.
+        exit_on_shutdown: true,
     };
 
     PyPythonTask::new(async {

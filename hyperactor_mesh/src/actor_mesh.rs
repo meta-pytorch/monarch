@@ -28,6 +28,7 @@ use hyperactor::Unbind;
 use hyperactor::WorldId;
 use hyperactor::actor::Referable;
 use hyperactor::context;
+use hyperactor::mailbox;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -120,7 +121,7 @@ pub fn update_undeliverable_envelope_for_casting(
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
 /// an `M`-typed message
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-#[hyperactor::instrument]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn actor_mesh_cast<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
@@ -139,13 +140,15 @@ where
         "message_variant" => message.arm().unwrap_or_default(),
     ));
 
-    let mut header_props = Attrs::new();
-    header_props.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
+    let mut headers = Attrs::new();
+    mailbox::headers::set_send_timestamp(&mut headers);
+    mailbox::headers::set_rust_message_type::<M>(&mut headers);
+    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
     let message = CastMessageEnvelope::new::<A, M>(
-        actor_mesh_id,
+        actor_mesh_id.clone(),
         cx.mailbox().actor_id().clone(),
         cast_mesh_shape.clone(),
-        header_props.clone(),
+        headers,
         message,
     )?;
 
@@ -183,10 +186,13 @@ where
         message,
     };
 
-    // header_props needs to be set for source->comm message too.
+    // TEMPORARY: remove with v0 support
+    let mut headers = Attrs::new();
+    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
+
     comm_actor_ref
         .port()
-        .send_with_headers(cx, header_props, cast_message)?;
+        .send_with_headers(cx, headers, cast_message)?;
 
     Ok(())
 }
@@ -296,8 +302,10 @@ pub trait ActorMesh: Mesh<Id = ActorMeshId> {
         Box::new(self.shape().slice().iter().map(move |rank| gang.rank(rank)))
     }
 
-    async fn stop(&self, cx: &impl context::Actor) -> Result<(), anyhow::Error> {
-        self.proc_mesh().stop_actor_by_name(cx, self.name()).await
+    async fn stop(&self, cx: &impl context::Actor, reason: &str) -> Result<(), anyhow::Error> {
+        self.proc_mesh()
+            .stop_actor_by_name(cx, self.name(), reason)
+            .await
     }
 
     /// Get a serializeable reference to this mesh similar to ActorHandle::bind
@@ -823,7 +831,7 @@ pub(crate) mod test_util {
     impl RemoteSpawn for ProxyActor {
         type Params = ();
 
-        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+        async fn new(_params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
             // The actor creates a mesh.
             use std::sync::Arc;
 
@@ -1524,7 +1532,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            mesh_two.stop(&instance).await.unwrap();
+            mesh_two.stop(&instance, "test stop").await.unwrap();
 
             let ping_two: ActorRef<PingPongActor> = mesh_two.get(0).unwrap();
             let pong_two: ActorRef<PingPongActor> = mesh_two.get(1).unwrap();
@@ -1581,6 +1589,9 @@ mod tests {
         //#[tracing_test::traced_test]
         #[async_timed_test(timeout_secs = 30)]
         async fn test_oversized_frames() {
+            use hyperactor::context::Mailbox as _;
+            use hyperactor::mailbox::MailboxSender;
+
             // Reproduced from 'net.rs'.
             #[derive(Debug, Serialize, Deserialize, PartialEq)]
             enum Frame<M> {
@@ -1588,15 +1599,19 @@ mod tests {
                 Message(u64, M),
             }
             // Calculate the frame length for the given message.
-            fn frame_length(src: &ActorId, dst: &PortId, pay: &Payload) -> usize {
+            fn build_message(
+                src: &ActorId,
+                dst: &PortId,
+                pay: &Payload,
+            ) -> (MessageEnvelope, serde_multipart::Message) {
                 let serialized = wirevalue::Any::serialize(pay).unwrap();
                 let mut headers = Attrs::new();
                 hyperactor::mailbox::headers::set_send_timestamp(&mut headers);
                 hyperactor::mailbox::headers::set_rust_message_type::<Payload>(&mut headers);
                 let envelope = MessageEnvelope::new(src.clone(), dst.clone(), serialized, headers);
-                let frame = Frame::Message(0u64, envelope);
+                let frame = Frame::Message(0u64, envelope.clone());
                 let message = serde_multipart::serialize_bincode(&frame).unwrap();
-                message.frame_len()
+                (envelope, message)
             }
 
             // This process: short delivery timeout.
@@ -1635,16 +1650,20 @@ mod tests {
                 part: Part::from(Bytes::from(vec![0u8; 585])),
                 reply_port: reply_handle.bind(),
             };
-            let frame_len = frame_length(
+            let (envelope, message) = build_message(
                 proc_mesh.client().self_id(),
                 dest.port::<Payload>().port_id(),
                 &payload,
             );
-            assert_eq!(frame_len, 1024);
+            assert_eq!(message.frame_len(), 1024);
 
-            // Send direct. A cast message is > 1024 bytes.
-            dest.send(proc_mesh.client(), payload).unwrap();
-            #[allow(clippy::disallowed_methods)]
+            // Send direct with envelope, so no extra header will be added to
+            // increase the frame size.
+            MailboxSender::post(
+                proc_mesh.client().mailbox(),
+                envelope,
+                hyperactor::mailbox::monitored_return_handle(),
+            );
             let result = RealClock
                 .timeout(Duration::from_secs(2), reply_receiver.recv())
                 .await;
@@ -1655,15 +1674,16 @@ mod tests {
                 part: Part::from(Bytes::from(vec![0u8; 586])),
                 reply_port: reply_handle.bind(),
             };
-            let frame_len = frame_length(
+            let (_envelope, message) = build_message(
                 proc_mesh.client().self_id(),
                 dest.port::<Payload>().port_id(),
                 &payload,
             );
-            assert_eq!(frame_len, 1025); // over the max frame len
+            assert_eq!(message.frame_len(), 1025); // over the max frame len
 
-            // Send direct or cast. Either are guaranteed over the
-            // limit and will fail.
+            // Send direct or cast. Either are guaranteed over the limit and
+            // will fail. The actual frame size is bigger than 1025 since extra
+            // headers will be added.
             if rand::rng().random_bool(0.5) {
                 dest.send(proc_mesh.client(), payload).unwrap();
             } else {
@@ -1766,6 +1786,7 @@ mod tests {
         use hyperactor::channel::serve;
         use hyperactor::clock::Clock;
         use hyperactor::clock::RealClock;
+        use hyperactor_config::Attrs;
         use ndslice::Extent;
         use ndslice::Selection;
 
@@ -1792,7 +1813,7 @@ mod tests {
         impl RemoteSpawn for EchoActor {
             type Params = ChannelAddr;
 
-            async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {
+            async fn new(params: ChannelAddr, _environment: Attrs) -> Result<Self, anyhow::Error> {
                 Ok(Self(dial::<usize>(params)?))
             }
         }
@@ -2020,7 +2041,6 @@ mod tests {
 
         use hyperactor::context::Mailbox;
         use ndslice::Extent;
-        use ndslice::extent;
 
         use super::*;
         use crate::sel;
@@ -2029,7 +2049,7 @@ mod tests {
         #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance();
-            let host_mesh = v1::testing::host_mesh(extent!(host = 4)).await;
+            let host_mesh = v1::testing::host_mesh(4).await;
             let proc_mesh = host_mesh
                 .spawn(instance, "test", Extent::unity())
                 .await

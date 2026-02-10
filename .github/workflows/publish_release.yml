@@ -12,53 +12,14 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    name: cuda12.6-py${{ matrix.python-version }}-${{ matrix.name }}
-    strategy:
-      fail-fast: false  # Changed to false to see results from all Python versions
-      matrix:
-        # TODO add 3.14 once we figure out py03 issue
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-        include:
-          - name: 4xlarge
-            runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/cu128'
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: ./.github/workflows/build-dist.yml
     with:
-      timeout: 60
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      submodules: recursive
-      upload-artifact: monarch-${{ matrix.python-version }}-${{ matrix.gpu-arch-type }}${{ matrix.gpu-arch-version }}
-      script: |
-        source scripts/common-setup.sh
-        setup_build_environment ${{ matrix.python-version }}
-
-        # Install torch nightly before installing the wheel,
-        # so that we can test the wheel against the latest nightly
-        pip install ${{ matrix.torch-spec }}
-        pip install -r build-requirements.txt
-
-        # Setup Tensor Engine dependencies
-        setup_tensor_engine
-
-        cargo install --path monarch_hyperactor
-
-        # Build wheel
-        export MONARCH_VERSION="${{ github.event.inputs.version }}"
-        export MONARCH_BUILD_MESH_ONLY=0
-        python setup.py bdist_wheel
-
-        # hacky until the right distribution wheel can be made...
-        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
-        ls -la dist/
-
-        # Run tests
-        install_python_test_dependencies
-        pip install dist/*.whl
-        python -c "import monarch"
+      # TODO add 3.14 once we figure out py03 issue
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      torch-spec: 'torch==2.10.0 --extra-index-url https://download.pytorch.org/whl/cu128'
+      gpu-arch-type: cuda
+      gpu-arch-version: '12.8'
+      version: ${{ github.event.inputs.version }}
   publish:
     name: Publish to PyPI
     needs: build
@@ -82,3 +43,41 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
+
+  build-and-push-stable:
+    name: Build and push stable docker image
+    # Only make a new docker image if the publish is successful
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: stable
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: read
+      packages: write # Grant write permission for packages (GHCR)
+
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: . # Build context is the root directory
+          file: ./Dockerfile
+          push: true # Push the image to the registry
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }}-cuda12.8
+            ghcr.io/${{ github.repository }}:latest
+          build-args: PYTORCH_TAG=2.10.0-cuda12.8-cudnn9-runtime

@@ -10,7 +10,12 @@
 # Prerequisites:
 # - Kubernetes cluster with Monarch operator installed
 # - GPU nodes with nvidia.com/gpu resources available
-# - monarch-tests namespace created
+---
+# Namespace for the DDP example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monarch-tests
 ---
 # ServiceAccount for the controller pod
 apiVersion: v1
@@ -60,7 +65,7 @@ spec:
   podTemplate:
     containers:
     - name: worker
-      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      image: ghcr.io/meta-pytorch/monarch:latest
 
       resources:
         limits:
@@ -112,7 +117,7 @@ metadata:
 spec:
   containers:
     - name: controller
-      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      image: ghcr.io/meta-pytorch/monarch:latest
       command: ["sleep"]
       args: ["infinity"]
   serviceAccountName: ddp-controller

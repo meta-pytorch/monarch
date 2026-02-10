@@ -12,10 +12,10 @@ from typing import Any
 
 # Required to make rust_struct extensions work correctly.
 import monarch._src.actor.mpsc  # noqa: F401
-from monarch._rust_bindings.monarch_hyperactor.pympsc import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
+from monarch._rust_bindings.monarch_hyperactor.pympsc import (  # @manual=//monarch/monarch_extension:monarch_extension
     channel_for_test,
+    PyTestSender,
     Receiver,
-    TestSender,
 )
 
 
@@ -41,7 +41,7 @@ async def test_ping_pong() -> None:
     tx_to_task, rx_in_task = channel_for_test()
     tx_from_task, rx_from_task = channel_for_test()
 
-    async def ping_pong_task(rx: Receiver[Any], tx: TestSender[Any]) -> None:
+    async def ping_pong_task(rx: Receiver[Any], tx: PyTestSender[Any]) -> None:
         tx.send(10)
 
         for i in range(9, 0, -2):

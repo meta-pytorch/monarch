@@ -56,6 +56,7 @@ pub mod in_memory_reader;
 mod meta;
 mod otel;
 mod pool;
+mod rate_limit;
 pub mod recorder;
 pub mod sinks;
 mod spool;
@@ -63,10 +64,13 @@ pub mod sqlite;
 pub mod task;
 pub mod trace;
 pub mod trace_dispatcher;
+
+// Re-export key types for external sink implementations
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use lazy_static::lazy_static;
@@ -75,6 +79,10 @@ pub use opentelemetry::Key;
 pub use opentelemetry::KeyValue;
 pub use opentelemetry::Value;
 pub use opentelemetry::global::meter;
+pub use trace_dispatcher::DispatcherControl;
+pub use trace_dispatcher::FieldValue;
+pub use trace_dispatcher::TraceEvent;
+pub use trace_dispatcher::TraceEventSink;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::non_blocking::NonBlocking;
@@ -268,6 +276,45 @@ fn writer() -> Box<dyn Write + Send> {
 lazy_static! {
     static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
         Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {})));
+    /// Global control channel for sink registration.
+    /// Created upfront so sinks can be registered at any time (before or after telemetry init).
+    /// The receiver is taken once when the TraceEventDispatcher is created.
+    static ref SINK_CONTROL_CHANNEL: (
+        mpsc::Sender<DispatcherControl>,
+        Mutex<Option<mpsc::Receiver<DispatcherControl>>>
+    ) = {
+        let (sender, receiver) = mpsc::channel();
+        (sender, Mutex::new(Some(receiver)))
+    };
+}
+
+/// Register a sink to receive trace events.
+/// This can be called at any time - before or after telemetry initialization.
+/// The sink will receive all trace events on the background worker thread.
+///
+/// # Example
+/// ```ignore
+/// use hyperactor_telemetry::{register_sink, TraceEventSink, TraceEvent};
+///
+/// struct MySink;
+/// impl TraceEventSink for MySink {
+///     fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> { Ok(()) }
+///     fn flush(&mut self) -> Result<(), anyhow::Error> { Ok(()) }
+/// }
+///
+/// register_sink(Box::new(MySink));
+/// ```
+pub fn register_sink(sink: Box<dyn TraceEventSink>) {
+    let sender = &SINK_CONTROL_CHANNEL.0;
+    if let Err(e) = sender.send(DispatcherControl::AddSink(sink)) {
+        eprintln!("[telemetry] failed to register sink: {}", e);
+    }
+}
+
+/// Take the control receiver for use by the TraceEventDispatcher.
+/// This can only be called once; subsequent calls return None.
+pub(crate) fn take_sink_control_receiver() -> Option<mpsc::Receiver<DispatcherControl>> {
+    SINK_CONTROL_CHANNEL.1.lock().unwrap().take()
 }
 
 /// The recorder singleton that is configured as a layer in the the default tracing
@@ -751,13 +798,15 @@ fn initialize_logging_with_log_prefix_impl(
                 }
             }
 
+            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+
             if let Err(err) = Registry::default()
                 .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                     Some(recorder().layer())
                 } else {
                     None
                 })
-                .with(trace_dispatcher::TraceEventDispatcher::new(sinks))
+                .with(dispatcher)
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
@@ -904,10 +953,9 @@ fn initialize_logging_with_log_prefix_impl(
                 file_log_level,
             )));
 
-            if let Err(err) = registry
-                .with(trace_dispatcher::TraceEventDispatcher::new(sinks))
-                .try_init()
-            {
+            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+
+            if let Err(err) = registry.with(dispatcher).try_init() {
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
         } else {
@@ -951,7 +999,7 @@ fn create_sqlite_sink() -> anyhow::Result<sinks::sqlite::SqliteSink> {
         .expect("failed to determine trace db path");
     let db_file = format!("{}/hyperactor_trace_{}.db", db_path, std::process::id());
 
-    Ok(sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)?)
+    sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)
 }
 
 /// Create a context span at ERROR level with skip_record enabled.

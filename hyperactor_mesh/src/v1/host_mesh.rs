@@ -13,6 +13,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::host::Host;
+use hyperactor::host::LocalProcManager;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -20,6 +21,7 @@ use ndslice::view::CollectMeshExt;
 
 use crate::supervision::MeshFailure;
 
+pub mod host_admin;
 pub mod mesh_agent;
 
 use std::collections::HashSet;
@@ -47,7 +49,10 @@ use crate::Bootstrap;
 use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
+use crate::mesh_admin::MeshAdminAgent;
+use crate::mesh_admin::MeshAdminMessageClient;
 use crate::proc_mesh::DEFAULT_TRANSPORT;
+use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
@@ -63,6 +68,7 @@ use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 pub use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
+use crate::v1::host_mesh::mesh_agent::ProcManagerSpawnFn;
 use crate::v1::host_mesh::mesh_agent::ProcState;
 use crate::v1::host_mesh::mesh_agent::ShutdownHostClient;
 use crate::v1::mesh_controller::HostMeshController;
@@ -72,26 +78,26 @@ use crate::v1::proc_mesh::ProcRef;
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
     /// meshes.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE".to_string()),
-        py_name: Some("mesh_proc_spawn_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE".to_string()),
+        Some("mesh_proc_spawn_max_idle".to_string()),
+    ))
     pub attr PROC_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
     /// The maximum idle time between updates while stopping proc
     /// meshes.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_PROC_STOP_MAX_IDLE".to_string()),
-        py_name: Some("proc_stop_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_PROC_STOP_MAX_IDLE".to_string()),
+        Some("proc_stop_max_idle".to_string()),
+    ))
     pub attr PROC_STOP_MAX_IDLE: Duration = Duration::from_secs(30);
 
     /// The maximum idle time between updates while querying host meshes
     /// for their proc states.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
-        py_name: Some("get_proc_state_max_idle".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE".to_string()),
+        Some("get_proc_state_max_idle".to_string()),
+    ))
     pub attr GET_PROC_STATE_MAX_IDLE: Duration = Duration::from_mins(1);
 }
 
@@ -284,7 +290,45 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Process(host)))
+            .spawn(
+                "agent",
+                HostMeshAgent::new(HostAgentMode::Process {
+                    host,
+                    exit_on_shutdown: false,
+                }),
+            )
+            .map_err(v1::Error::SingletonActorSpawnError)?;
+        host_mesh_agent.bind::<HostMeshAgent>();
+
+        let host = HostRef(addr);
+        let host_mesh_ref = HostMeshRef::new(
+            Name::new("local").unwrap(),
+            extent!(hosts = 1).into(),
+            vec![host],
+        )?;
+        Ok(HostMesh::take(host_mesh_ref))
+    }
+
+    /// Create a local in-process host mesh where all procs run in the
+    /// current OS process.
+    ///
+    /// Unlike [`local`] which spawns child processes for each proc,
+    /// this method uses [`LocalProcManager`] to run everything
+    /// in-process. This makes all actors visible in the admin tree
+    /// (useful for debugging with the TUI).
+    ///
+    /// This API is intended for tests, examples, and debugging.
+    pub async fn local_in_process() -> v1::Result<HostMesh> {
+        let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
+
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+        let manager = LocalProcManager::new(spawn);
+        let host = Host::new(manager, addr).await?;
+        let addr = host.addr().clone();
+        let system_proc = host.system_proc().clone();
+        let host_mesh_agent = system_proc
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
             .map_err(v1::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 
@@ -323,6 +367,7 @@ impl HostMesh {
                 addr: addr.clone(),
                 command: Some(command.clone()),
                 config: Some(hyperactor_config::global::attrs()),
+                exit_on_shutdown: false,
             };
 
             let mut cmd = command.new();
@@ -531,7 +576,7 @@ impl HostMesh {
 
         match &mut self.allocation {
             HostMeshAllocation::ProcMesh { proc_mesh, .. } => {
-                proc_mesh.stop(cx).await?;
+                proc_mesh.stop(cx, "host mesh shutdown".to_string()).await?;
             }
             HostMeshAllocation::Owned { .. } => {}
         }
@@ -875,7 +920,7 @@ impl HostMeshRef {
         // would allow buffering in the host-level muxer to eliminate
         // the need for this synchronization step.
         let mut proc_names = Vec::new();
-        let client_config_override = hyperactor_config::global::attrs();
+        let client_config_override = hyperactor_config::global::propagatable_attrs();
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
@@ -1031,6 +1076,31 @@ impl HostMeshRef {
         &self.name
     }
 
+    /// Spawn a [`MeshAdminAgent`] on `proc` and return its HTTP address.
+    ///
+    /// The agent aggregates admin state across all hosts in this mesh,
+    /// serving an HTTP API on an ephemeral port.
+    pub async fn spawn_admin(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        proc: &hyperactor::Proc,
+    ) -> anyhow::Result<std::net::SocketAddr> {
+        let hosts: Vec<(String, ActorRef<HostMeshAgent>)> = self
+            .ranks
+            .iter()
+            .map(|h| (h.0.to_string(), h.mesh_agent()))
+            .collect();
+        let agent_handle = proc.spawn("mesh_admin", MeshAdminAgent::new(hosts))?;
+        let agent_ref = agent_handle.bind::<MeshAdminAgent>();
+
+        let response = agent_ref.get_admin_addr(cx).await?;
+        let addr_str = response
+            .addr
+            .ok_or_else(|| anyhow::anyhow!("mesh admin agent did not report an address"))?;
+        let addr: std::net::SocketAddr = addr_str.parse()?;
+        Ok(addr)
+    }
+
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
     pub(crate) async fn stop_proc_mesh(
         &self,
@@ -1038,6 +1108,7 @@ impl HostMeshRef {
         proc_mesh_name: &Name,
         procs: impl IntoIterator<Item = ProcId>,
         region: Region,
+        reason: String,
     ) -> anyhow::Result<()> {
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
@@ -1072,6 +1143,7 @@ impl HostMeshRef {
                 cx,
                 resource::Stop {
                     name: proc_name.clone(),
+                    reason: reason.clone(),
                 },
             )?;
             host.mesh_agent()
@@ -1347,16 +1419,19 @@ mod tests {
     use std::collections::HashSet;
     use std::collections::VecDeque;
 
+    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
     use hyperactor::context::Mailbox as _;
     use hyperactor_config::attrs::Attrs;
     use itertools::Itertools;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::async_timed_test;
     use tokio::process::Command;
 
     use super::*;
     use crate::Bootstrap;
     use crate::bootstrap::MESH_TAIL_LOG_LINES;
+    use crate::comm::ENABLE_NATIVE_V1_CASTING;
     use crate::resource::Status;
     use crate::v1::ActorMesh;
     use crate::v1::testactor;
@@ -1395,11 +1470,28 @@ mod tests {
         );
     }
 
-    #[tokio::test]
     #[cfg(fbcode_build)]
-    async fn test_allocate() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+    async fn execute_allocate(config: &hyperactor_config::global::ConfigLock) {
+        let poll = Duration::from_secs(3);
+        let get_actor = Duration::from_mins(1);
+        let get_proc = Duration::from_mins(1);
+        // 3m watchdog total: 3m - (poll + get_actor + get_proc) = 180s - 123s = 57s
+        let slack = Duration::from_secs(57);
+
+        let _pdeath_sig =
+            config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _poll =
+            config.override_key(crate::v1::mesh_controller::SUPERVISION_POLL_FREQUENCY, poll);
+        let _get_actor =
+            config.override_key(crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE, get_actor);
+        let _get_proc =
+            config.override_key(crate::v1::host_mesh::GET_PROC_STATE_MAX_IDLE, get_proc);
+
+        // Must be >= poll + get_actor + get_proc (+ slack).
+        let _watchdog = config.override_key(
+            crate::v1::actor_mesh::SUPERVISION_WATCHDOG_TIMEOUT,
+            poll + get_actor + get_proc + slack,
+        );
 
         let instance = testing::instance();
 
@@ -1455,7 +1547,7 @@ mod tests {
                     .collect();
 
                 while !expected_actor_ids.is_empty() {
-                    let actor_id = rx.recv().await.unwrap();
+                    let (actor_id, _seq) = rx.recv().await.unwrap();
                     assert!(
                         expected_actor_ids.remove(&actor_id),
                         "got {actor_id}, expect {expected_actor_ids:?}"
@@ -1496,6 +1588,23 @@ mod tests {
         }
     }
 
+    #[async_timed_test(timeout_secs = 180)]
+    #[cfg(fbcode_build)]
+    async fn test_allocate() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        execute_allocate(&config).await;
+    }
+
+    #[async_timed_test(timeout_secs = 180)]
+    #[cfg(fbcode_build)]
+    async fn test_allocate_v1() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_allocate(&config).await;
+    }
+
     /// Allocate a new port on localhost. This drops the listener, releasing the socket,
     /// before returning. Hyperactor's channel::net applies SO_REUSEADDR, so we do not hav
     /// to wait out the socket's TIMED_WAIT state.
@@ -1506,10 +1615,8 @@ mod tests {
         ChannelAddr::Tcp(listener.local_addr().unwrap())
     }
 
-    #[tokio::test]
     #[cfg(fbcode_build)]
-    async fn test_extrinsic_allocation() {
-        let config = hyperactor_config::global::lock();
+    async fn execute_extrinsic_allocation(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -1523,6 +1630,7 @@ mod tests {
                 addr: host.clone(),
                 command: None, // use current binary
                 config: None,
+                exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
             cmd.kill_on_drop(true);
@@ -1552,6 +1660,23 @@ mod tests {
 
     #[tokio::test]
     #[cfg(fbcode_build)]
+    async fn test_extrinsic_allocation_v0() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        execute_extrinsic_allocation(&config).await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_extrinsic_allocation_v1() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_extrinsic_allocation(&config).await;
+    }
+
+    #[tokio::test]
+    #[cfg(fbcode_build)]
     async fn test_failing_proc_allocation() {
         let lock = hyperactor_config::global::lock();
         let _guard = lock.override_key(MESH_TAIL_LOG_LINES, 100);
@@ -1568,6 +1693,7 @@ mod tests {
                 config: None,
                 // The entire purpose of this is to fail:
                 command: Some(BootstrapCommand::from("false")),
+                exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
             cmd.kill_on_drop(true);
@@ -1613,6 +1739,7 @@ mod tests {
                 addr: host.clone(),
                 config: None,
                 command,
+                exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
             cmd.kill_on_drop(true);

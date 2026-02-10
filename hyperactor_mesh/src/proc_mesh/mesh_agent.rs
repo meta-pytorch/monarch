@@ -73,6 +73,45 @@ pub enum StopActorResult {
 }
 wirevalue::register_type!(StopActorResult);
 
+/// Response to admin introspection queries.
+///
+/// The admin response types (`ProcDetails`, `ActorDetails`) contain
+/// `serde_json::Value` which doesn't implement `Named`, so we serialize
+/// them to JSON strings for transport over actor messaging.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct AdminQueryResponse {
+    /// JSON-serialized response, or None if the queried entity was not found.
+    pub json: Option<String>,
+}
+wirevalue::register_type!(AdminQueryResponse);
+
+/// Messages for querying admin introspection data from a child proc's
+/// `ProcMeshAgent` via actor messaging.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Handler,
+    HandleClient,
+    RefClient,
+    Named
+)]
+pub(crate) enum AdminQueryMessage {
+    /// Query details about the proc managed by this agent.
+    GetProcDetails {
+        #[reply]
+        reply: OncePortRef<AdminQueryResponse>,
+    },
+    /// Query details about a specific actor by name.
+    GetActorDetails {
+        actor_name: String,
+        #[reply]
+        reply: OncePortRef<AdminQueryResponse>,
+    },
+}
+
 #[derive(
     Debug,
     Clone,
@@ -127,6 +166,8 @@ pub(crate) enum MeshAgentMessage {
         actor_id: ActorId,
         /// The timeout for waiting for the actor to stop
         timeout_ms: u64,
+        /// The reason for stopping the actor
+        reason: String,
         /// The result when trying to stop the actor
         #[reply]
         stopped: OncePortRef<StopActorResult>,
@@ -217,6 +258,7 @@ pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSu
 #[hyperactor::export(
     handlers=[
         MeshAgentMessage,
+        AdminQueryMessage,
         resource::CreateOrUpdate<ActorSpec> { cast = true },
         resource::Stop { cast = true },
         resource::StopAll { cast = true },
@@ -278,9 +320,10 @@ impl ProcMeshAgent {
         &mut self,
         cx: &Context<'a, Self>,
         timeout: tokio::time::Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         self.proc
-            .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true)
+            .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
             .await
     }
 }
@@ -360,7 +403,13 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         );
         let actor_id = match self
             .remote
-            .gspawn(&self.proc, &actor_type, &actor_name, params_data)
+            .gspawn(
+                &self.proc,
+                &actor_type,
+                &actor_name,
+                params_data,
+                cx.headers().clone(),
+            )
             .await
         {
             Ok(id) => id,
@@ -384,6 +433,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         _cx: &Context<Self>,
         actor_id: ActorId,
         timeout_ms: u64,
+        reason: String,
     ) -> Result<StopActorResult, anyhow::Error> {
         tracing::info!(
             name = "StopActor",
@@ -391,7 +441,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
             actor_name = actor_id.name(),
         );
 
-        if let Some(mut status) = self.proc.stop_actor(&actor_id) {
+        if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
             match RealClock
                 .timeout(
                     tokio::time::Duration::from_millis(timeout_ms),
@@ -434,6 +484,29 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
                 "status unavailable: agent in invalid state"
             )),
         }
+    }
+}
+
+#[async_trait]
+#[hyperactor::forward(AdminQueryMessage)]
+impl AdminQueryMessageHandler for ProcMeshAgent {
+    async fn get_proc_details(
+        &mut self,
+        _cx: &Context<Self>,
+    ) -> Result<AdminQueryResponse, anyhow::Error> {
+        let details = hyperactor::admin::query_proc_details(&self.proc);
+        let json = serde_json::to_string(&details)?;
+        Ok(AdminQueryResponse { json: Some(json) })
+    }
+
+    async fn get_actor_details(
+        &mut self,
+        _cx: &Context<Self>,
+        actor_name: String,
+    ) -> Result<AdminQueryResponse, anyhow::Error> {
+        let details = hyperactor::admin::query_actor_details(&self.proc, &actor_name);
+        let json = details.map(|d| serde_json::to_string(&d)).transpose()?;
+        Ok(AdminQueryResponse { json })
     }
 }
 
@@ -514,7 +587,7 @@ wirevalue::register_type!(ActorState);
 impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         create_or_update: resource::CreateOrUpdate<ActorSpec>,
     ) -> anyhow::Result<()> {
         if self.actor_states.contains_key(&create_or_update.name) {
@@ -554,6 +627,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
                         &actor_type,
                         &create_or_update.name.to_string(),
                         params_data,
+                        cx.headers().clone(),
                     )
                     .await,
                 stopped: false,
@@ -595,7 +669,7 @@ impl Handler<resource::Stop> for ProcMeshAgent {
         if let Some(actor_id) = actor_id {
             // While this function returns a Result, it never returns an Err
             // value so we can simply expect without any failure handling.
-            self.stop_actor(cx, actor_id, timeout.as_millis() as u64)
+            self.stop_actor(cx, actor_id, timeout.as_millis() as u64, message.reason)
                 .await
                 .expect("stop_actor cannot fail");
         }
@@ -613,12 +687,14 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
-        _message: resource::StopAll,
+        message: resource::StopAll,
     ) -> anyhow::Result<()> {
         let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         // By passing in the self context, destroy_and_wait will stop this agent
         // last, after all others are stopped.
-        let stop_result = self.destroy_and_wait_except_current(cx, timeout).await;
+        let stop_result = self
+            .destroy_and_wait_except_current(cx, timeout, &message.reason)
+            .await;
         // Exit here to cleanup all remaining resources held by the process.
         // This means ProcMeshAgent will never run cleanup or any other code
         // from exiting its root actor. Senders of this message should never

@@ -126,7 +126,7 @@ pub trait Tx<M: RemoteMessage> {
     /// message is either delivered, or we eventually discover that
     /// the channel has failed and it will be sent back on `return_channel`.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
-    #[hyperactor::instrument_infallible]
+    #[tracing::instrument(level = "debug", skip_all)]
     fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
         self.do_post(message, Some(return_channel));
     }
@@ -974,7 +974,7 @@ enum ChannelRxKind<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn recv(&mut self) -> Result<M, ChannelError> {
         match &mut self.inner {
             ChannelRxKind::Local(rx) => rx.recv().await,
@@ -1016,7 +1016,6 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 
 /// Serve on the provided channel address. The server is turned down
 /// when the returned Rx is dropped.
-#[crate::instrument]
 #[track_caller]
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,

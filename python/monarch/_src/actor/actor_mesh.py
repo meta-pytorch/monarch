@@ -247,6 +247,18 @@ class Instance(abc.ABC):
         """
         ...
 
+    @abstractmethod
+    def _stop_instance(self, reason: Optional[str] = None) -> None:
+        """
+        Stop this actor and all of its children.
+        This is a private API meant for use with Actors that are not part of a
+        mesh, such as the global client.
+        Do not use this directly on any normal actor, as it will not properly
+        notify the ProcMeshAgent of the stop.
+        Prefer ActorMesh.stop instead.
+        """
+        ...
+
 
 @dataclass
 class CreatorInstance:
@@ -305,8 +317,9 @@ class Context:
     def _from_instance(instance: Instance) -> "Context": ...
 
 
-_context: contextvars.ContextVar[Context] = contextvars.ContextVar(
-    "monarch.actor_mesh._context"
+# pyre-fixme[9]: Initialization to None confuses the type bound.
+_context: contextvars.ContextVar[Optional[Context]] = contextvars.ContextVar(
+    "monarch.actor_mesh._context", default=None
 )
 
 
@@ -330,7 +343,7 @@ class _ActorFilter(logging.Filter):
         try:
             if not config.prefix_python_logs_with_actor:
                 return True
-            ctx = _context.get(None)
+            ctx = _context.get()
             if ctx is not None:
                 actor_prefix = f"[actor={ctx.actor_instance}] "
                 record.actor_prefix = actor_prefix  # type: ignore[attr-defined]
@@ -363,12 +376,12 @@ def _init_context_log_handler() -> None:
     logging.Logger.addHandler = _patched_addHandler
 
 
-def _set_context(c: Context) -> contextvars.Token[Context]:
+def _set_context(c: Context) -> contextvars.Token[Optional[Context]]:
     _init_context_log_handler()
     return _context.set(c)
 
 
-def _reset_context(c: contextvars.Token[Context]) -> None:
+def _reset_context(c: contextvars.Token[Optional[Context]]) -> None:
     _context.reset(c)
 
 
@@ -433,25 +446,30 @@ def shutdown_context() -> "Future[None]":
     """
     from monarch._src.actor.future import Future
 
-    try:
-        from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
-            shutdown_local_host_mesh,
-        )
+    c: Context | None = _context.get()
 
-        return Future(coro=shutdown_local_host_mesh())
-    except RuntimeError:
-        # No local host mesh to shutdown
-        pass
+    async def _shutdown_sequence() -> None:
+        try:
+            from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+                shutdown_local_host_mesh,
+            )
 
-    # Nothing to shutdown - return a completed future
-    async def noop() -> None:
-        pass
+            # Shutdown the host mesh first, while the client actor is still alive
+            # to route messages.
+            await shutdown_local_host_mesh()
+        except RuntimeError:
+            # No local host mesh to shutdown
+            pass
+        # Stop the client actor after the host mesh shutdown completes.
+        if c is not None:
+            c.actor_instance._stop_instance()
+            _context.set(None)
 
-    return Future(coro=noop())
+    return Future(coro=_shutdown_sequence())
 
 
 def context() -> Context:
-    c = _context.get(None)
+    c = _context.get()
     if c is None:
         from monarch._src.actor.proc_mesh import _get_controller_controller
 
@@ -503,7 +521,7 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
         # ChannelTransport enum
         transport_config = BindSpec(transport)
 
-    if _context.get(None) is not None:
+    if _context.get() is not None:
         raise RuntimeError(
             "`enable_transport()` must be called before any other calls in the monarch API. "
             "If it isn't called, we will implicitly call `monarch.enable_transport(ChannelTransport.Unix)` "
@@ -552,7 +570,16 @@ class _SingletonActorAdapator:
         self._inner: ActorId = inner
         if region is None:
             region = singleton_shape.region
-        self._region = region
+        self._region: Region = region
+
+    @property
+    def region(self) -> Region:
+        return self._region
+
+    def get(self, rank: int) -> Optional[ActorId]:
+        if rank == 0:
+            return self._inner
+        return None
 
     def cast(
         self,
@@ -562,7 +589,7 @@ class _SingletonActorAdapator:
     ) -> None:
         Instance._as_py(instance)._mailbox.post(self._inner, message)
 
-    def new_with_region(self, region: Region) -> "ActorMeshProtocol":
+    def new_with_region(self, region: Region) -> "_SingletonActorAdapator":
         return _SingletonActorAdapator(self._inner, self._region)
 
     def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
@@ -573,7 +600,7 @@ class _SingletonActorAdapator:
     ) -> None:
         return None
 
-    def stop(self, instance: HyInstance) -> "PythonTask[None]":
+    def stop(self, instance: HyInstance, reason: str) -> "PythonTask[None]":
         raise NotImplementedError("stop()")
 
     def initialized(self) -> "PythonTask[None]":
@@ -1814,9 +1841,9 @@ class ActorMesh(MeshTrait, Generic[T]):
     def __repr__(self) -> str:
         return f"ActorMesh(class={self._class}, shape={self._shape}), inner={type(self._inner)})"
 
-    def stop(self) -> "Future[None]":
+    def stop(self, reason: str = "stopped by client") -> "Future[None]":
         instance = context().actor_instance._as_rust()
-        return Future(coro=self._inner.stop(instance))
+        return Future(coro=self._inner.stop(instance, reason))
 
     @property
     def initialized(self) -> Future[None]:

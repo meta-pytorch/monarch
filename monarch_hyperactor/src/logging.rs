@@ -23,6 +23,7 @@ use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::bootstrap::MESH_ENABLE_LOG_FORWARDING;
 use hyperactor_mesh::logging::LogClientActor;
 use hyperactor_mesh::logging::LogClientMessage;
@@ -31,6 +32,7 @@ use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::v1::ActorMesh;
 use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::SerializablePyErr;
+use ndslice::Point;
 use ndslice::View;
 use pyo3::Bound;
 use pyo3::prelude::*;
@@ -66,11 +68,11 @@ pub enum LoggerRuntimeMessage {
 #[derive(Debug)]
 #[hyperactor::export(spawn = true, handlers = [LoggerRuntimeMessage {cast = true}])]
 pub struct LoggerRuntimeActor {
-    logger: Arc<PyObject>,
+    logger: Arc<Py<PyAny>>,
 }
 
 impl LoggerRuntimeActor {
-    fn get_logger(py: Python) -> PyResult<PyObject> {
+    fn get_logger(py: Python) -> PyResult<Py<PyAny>> {
         // Import the Python AutoReloader class
         let logging_module = py.import("logging")?;
         let logger = logging_module.call_method0("getLogger")?;
@@ -78,7 +80,7 @@ impl LoggerRuntimeActor {
         Ok(logger.into())
     }
 
-    fn set_logger_level(py: Python, logger: &PyObject, level: u8) -> PyResult<()> {
+    fn set_logger_level(py: Python, logger: &Py<PyAny>, level: u8) -> PyResult<()> {
         let logger = logger.bind(py);
         logger.call_method1("setLevel", (level,))?;
         Ok(())
@@ -90,7 +92,7 @@ impl Actor for LoggerRuntimeActor {}
 impl RemoteSpawn for LoggerRuntimeActor {
     type Params = ();
 
-    async fn new(_: ()) -> Result<Self, anyhow::Error> {
+    async fn new(_: (), _environment: Attrs) -> Result<Self, anyhow::Error> {
         let logger =
             monarch_with_gil(|py| Self::get_logger(py).map_err(SerializablePyErr::from_fn(py)))
                 .await?;
@@ -492,7 +494,7 @@ impl Drop for LoggingMeshClient {
         // During Python teardown, the tokio runtime or channels may already be
         // deallocated, and attempting to drain could cause a segfault.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match self.client_actor.drain_and_stop() {
+            match self.client_actor.drain_and_stop("logging client shutdown") {
                 Ok(_) => {}
                 Err(e) => {
                     // it is ok as during shutdown, the channel might already be closed
@@ -528,8 +530,8 @@ fn format_traceback<'py>(py: Python<'py>, err: PyErr) -> String {
 #[pyfunction]
 fn log_endpoint_exception<'py>(
     py: Python<'py>,
-    e: PyObject,
-    endpoint: PyObject,
+    e: Py<PyAny>,
+    endpoint: Py<PyAny>,
     actor_id: PyActorId,
 ) {
     let pyerr = PyErr::from_value(e.into_bound(py));

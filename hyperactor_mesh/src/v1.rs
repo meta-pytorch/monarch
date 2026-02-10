@@ -13,6 +13,7 @@
 pub mod actor_mesh;
 pub mod host_mesh;
 pub mod mesh_controller;
+pub mod namespace;
 pub mod proc_mesh;
 pub mod testactor;
 pub mod testing;
@@ -31,6 +32,11 @@ use hyperactor::ProcId;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::reference;
+pub use namespace::InMemoryNamespace;
+pub use namespace::MeshKind;
+pub use namespace::Namespace;
+pub use namespace::NamespaceError;
+pub use namespace::Registrable;
 use ndslice::view;
 pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
@@ -62,6 +68,7 @@ use crate::resource;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::shortuuid::ShortUuid;
+use crate::supervision::MeshFailure;
 use crate::v1::host_mesh::HostMeshAgent;
 use crate::v1::host_mesh::HostMeshRefParseError;
 use crate::v1::host_mesh::mesh_agent::ProcState;
@@ -152,6 +159,9 @@ pub enum Error {
 
     #[error("proc {0} must be direct-addressable")]
     RankedProc(ProcId),
+
+    #[error("{0}")]
+    Supervision(Box<MeshFailure>),
 
     #[error("error: {0} does not exist")]
     NotExist(Name),

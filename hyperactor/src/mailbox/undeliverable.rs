@@ -117,12 +117,6 @@ pub(crate) fn return_undeliverable(
 /// Errors that occur during message delivery and return.
 pub enum UndeliverableMessageError {
     /// Delivery of a message to its destination failed.
-    #[error(
-        "a message from {} to {} was undeliverable and returned: {:?}: {envelope}",
-        .envelope.sender(),
-        .envelope.dest(),
-        .envelope.error_msg()
-    )]
     DeliveryFailure {
         /// The undelivered message.
         envelope: MessageEnvelope,
@@ -130,15 +124,49 @@ pub enum UndeliverableMessageError {
 
     /// Delivery of an undeliverable message back to its sender
     /// failed.
-    #[error(
-        "returning an undeliverable message to sender {} failed: {:?}: {envelope}",
-        .envelope.sender(),
-        .envelope.error_msg()
-    )]
     ReturnFailure {
         /// The undelivered message.
         envelope: MessageEnvelope,
     },
+}
+
+impl std::fmt::Display for UndeliverableMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UndeliverableMessageError::DeliveryFailure { envelope } => {
+                writeln!(f, "undeliverable message error:")?;
+                writeln!(
+                    f,
+                    "\tdescription: delivery of message from sender to dest failed"
+                )?;
+                writeln!(f, "\tsender: {}", envelope.sender())?;
+                writeln!(f, "\tdest: {}", envelope.dest())?;
+                writeln!(f, "\theaders: {}", envelope.headers())?;
+                writeln!(f, "\tdata: {}", envelope.data())?;
+                writeln!(
+                    f,
+                    "\terror: {}",
+                    envelope.error_msg().unwrap_or("<none>".to_string())
+                )
+            }
+            UndeliverableMessageError::ReturnFailure { envelope } => {
+                writeln!(f, "undeliverable message error:")?;
+                writeln!(
+                    f,
+                    "\tdescription: returning undeliverable message to original sender failed"
+                )?;
+                writeln!(f, "\toriginal sender: {}", envelope.sender())?;
+                writeln!(f, "\toriginal dest: {}", envelope.dest())?;
+                writeln!(f, "\theaders: {}", envelope.headers())?;
+                writeln!(f, "\tdata: {}", envelope.data())?;
+                writeln!(
+                    f,
+                    "\terror: {}",
+                    envelope.error_msg().unwrap_or("<none>".to_string())
+                )
+            }
+        }
+    }
 }
 
 /// Drain undeliverables and convert them into
@@ -154,7 +182,9 @@ pub fn supervise_undeliverable_messages_with<R, F>(
     F: Fn(&MessageEnvelope) + Send + Sync + 'static,
 {
     crate::init::get_runtime().spawn(async move {
-        // Create a local client for this task.
+        // Create a local client for this task. Since we only use this client
+        // to send message with PortHandle, it is okay this proc does not have
+        // a forwarder.
         let proc = Proc::local();
         let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
         while let Ok(Undeliverable(mut env)) = rx.recv().await {

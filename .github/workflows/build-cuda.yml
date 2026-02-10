@@ -9,30 +9,31 @@ concurrency:
 
 jobs:
   build-cuda:
-    name: Build CUDA (cuda12.6-py3.10)
+    name: Build CUDA (cuda12.8)
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: true
       matrix:
+        python-version: ['3.10', '3.12']
         include:
           - name: 4xlargegpu
             runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu126'
+            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
             gpu-arch-type: "cuda"
-            gpu-arch-version: "12.6"
+            gpu-arch-version: "12.8"
     with:
       timeout: 60
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
-      upload-artifact: monarch-cuda-${{ github.sha }}
+      upload-artifact: monarch-cuda-${{ github.sha }}-py${{ matrix.python-version }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
 
         # Setup build environment (conda + system deps + rust + build deps)
-        setup_build_environment
+        setup_build_environment ${{ matrix.python-version }}
 
         # Install torch nightly
         pip install ${{ matrix.torch-spec }}

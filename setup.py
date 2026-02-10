@@ -261,7 +261,7 @@ if not skip_legacy_builds:
     )
 
 # Main Python extension (always built)
-rust_features = ["extension-module"]
+rust_features = ["extension-module", "distributed_sql_telemetry"]
 if build_tensor_engine:
     rust_features.append("tensor_engine")
 
@@ -312,7 +312,7 @@ class Clean(Command):
 
 # Actual Setup
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
-package_version = os.environ.get("MONARCH_VERSION", "0.3.0.dev0")
+package_version = os.environ.get("MONARCH_VERSION", "0.4.0.dev0")
 
 setup(
     name=package_name,

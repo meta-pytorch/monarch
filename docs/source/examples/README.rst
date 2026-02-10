@@ -1,21 +1,26 @@
 Examples
 ================
 
-- :doc:`ping_pong.py <ping_pong>`: Demonstrates the basics of Monarch's Actor/endpoint API with a ping-pong communication example
-- :doc:`crawler.py <crawler>`: Demonstrates Monarch's actor API and many-to-one communications with a web crawler example
-- :doc:`spmd_ddp.py <spmd_ddp>`: Shows how to run PyTorch's Distributed Data Parallel (DDP) within Monarch actors
-- :doc:`grpo_actor.py <grpo_actor>`: Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework
-- :doc:`distributed_tensors.py <distributed_tensors>`: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
-- :doc:`debugging.py <debugging>`: Shows how to use the Monarch debugger to debug a distributed program
+- :doc:`ping_pong.py </generated/examples/ping_pong>`: Demonstrates the basics of Monarch's Actor/endpoint API with a ping-pong communication example
+- :doc:`crawler.py </generated/examples/crawler>`: Demonstrates Monarch's actor API and many-to-one communications with a web crawler example
+- :doc:`spmd_ddp.py </generated/examples/ddp/spmd_ddp>`: Shows how to run PyTorch's Distributed Data Parallel (DDP) using SPMDActor
+- :doc:`Interactive SPMD Job </generated/examples/ddp/spmd_job>`: Shows how to use ``serve()`` and ``run_spmd()`` for interactive SPMD training with job caching and debugging
+- :doc:`kubernetes_ddp.py </generated/examples/ddp/kubernetes_ddp>`: Extends the DDP example to run on Kubernetes using MonarchMesh CRD and operator
+- :doc:`grpo_actor.py </generated/examples/grpo_actor>`: Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework
+- :doc:`distributed_tensors.py </generated/examples/distributed_tensors>`: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
+- :doc:`debugging.py </generated/examples/debugging>`: Shows how to use the Monarch debugger to debug a distributed program
 - `Multinode Slurm Tutorial <https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html>`_: Multinode distributed training tutorial using Monarch and Slurm to run an SPMD training job.
 - `Running on Kubernetes using Skypilot <https://github.com/pytorch-labs/monarch/tree/main/examples/skypilot>`_: Run Monarch on Kubernetes and cloud VMs via SkyPilot.
 
 .. toctree::
    :hidden:
 
-   ping_pong
-   crawler
-   spmd_ddp
-   grpo_actor
-   distributed_tensors
+   /generated/examples/ping_pong
+   /generated/examples/crawler
+   /generated/examples/ddp/spmd_ddp
+   /generated/examples/ddp/spmd_job
+   /generated/examples/ddp/kubernetes_ddp
+   /generated/examples/grpo_actor
+   /generated/examples/distributed_tensors
+   /generated/examples/debugging
    Multinode Slurm Tutorial <https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html>

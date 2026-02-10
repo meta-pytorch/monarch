@@ -57,6 +57,18 @@ impl SupervisionError {
     }
 }
 
+impl SupervisionError {
+    // Not From<MeshFailure> because the return type needs to be PyErr.
+    #[allow(dead_code)]
+    pub(crate) fn new_err_from(failure: MeshFailure) -> PyErr {
+        let event = failure.event;
+        Self::new_err(format!(
+            "Actor {} exited because of the following reason: {}",
+            event.actor_id, event,
+        ))
+    }
+}
+
 // TODO: find out how to extend a Python exception and have internal data.
 #[derive(Clone, Debug)]
 #[pyclass(
@@ -116,24 +128,4 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("SupervisionError", py.get_type::<SupervisionError>())?;
     module.add("MeshFailure", py.get_type::<PyMeshFailure>())?;
     Ok(())
-}
-
-// Shared between mesh types.
-#[derive(Debug, Clone)]
-pub(crate) enum Unhealthy<Event> {
-    SoFarSoGood,    // Still healthy
-    StreamClosed,   // Event stream closed
-    Crashed(Event), // Bad health event received
-}
-
-impl<Event> Unhealthy<Event> {
-    #[allow(dead_code)] // No uses yet.
-    pub(crate) fn is_healthy(&self) -> bool {
-        matches!(self, Unhealthy::SoFarSoGood)
-    }
-
-    #[allow(dead_code)] // No uses yet.
-    pub(crate) fn is_crashed(&self) -> bool {
-        matches!(self, Unhealthy::Crashed(_))
-    }
 }

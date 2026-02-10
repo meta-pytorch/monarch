@@ -5,7 +5,7 @@
 - Document all public functions and classes.
 - Communicate succinctly and clearly. No flowery prose. No "you're absolutely right!" No emojis. Minimize tokens. Telegraph. Get to the point. Use noun phrases appropriately.
 - Within meta, use `./check lint` to apply formatting and linting rules. Fix *new* reported issues.
-- Always fix Python type errors reported by `./check typecheck`.
+- Always fix Rust and Python type errors reported by `./check typecheck`.
 - Never commit code that does not pass the type checkers (rustc or pyre).
 - Classes and functions should be named clearly, but succinctly. Prefer shorter names and succinct noun phrases.
 - For large changes, include a "walkthrough" in the commit message, so that the reviewer can approach the change efficiently.
@@ -16,6 +16,14 @@
 - In Rust, make illegal state *unrepresentable*. For example, if you find structs with Option<> that are always Some in certain contexts but not in others, consider using an enum instead to explicitly enumerate the legal states of the data structure.
 - Do NOT engage in defensive coding. If the program is in an illegal state (e.g., violated some invariant), *panic* instead of returning errors. In Rust use panic! and .unwrap() for these cases.
 - Where appropriate, embrace the actor model: use actors for concurrency, fault tolerance, and messaging.  Use the supervision tree model for fault tolerance. Actors can be organized into a tree, where failures propagate up the tree. The root actor is the supervisor of all other actors.
+- In Rust, use `hyperactor::clock::RealClock` for time operations instead of `tokio::time` directly:
+  ```rust
+  use hyperactor::clock::Clock;
+  use hyperactor::clock::RealClock;
+
+  RealClock.sleep(duration).await;    // not tokio::time::sleep
+  RealClock.timeout(duration, fut).await;  // not tokio::time::timeout
+  ```
 
 ## Style
 
@@ -27,7 +35,7 @@
 
 ## Workflow
 
-- Prefer `arc rust-check fbcode//monarch/...` for quick Rust type checking
+- Prefer `./check typecheck` for quick Rust and Python type checking
 - Run `arc autocargo -p monarch` after BUCK/TARGET edits
 - Tip: `arc sanity` runs all unittests directly affected by changes
 - Run relevant tests after making large changes
@@ -35,6 +43,8 @@
 ## Overview
 
 Monarch is a distributed programming framework for PyTorch based on scalable actor messaging. It provides remote actors with scalable messaging, fault tolerance through supervision trees, point-to-point RDMA transfers, and distributed tensors.
+
+**If you are writing code that uses the Monarch Python API, read `docs/DOCS_INDEX.md` first for an index of tutorials, API docs, and examples.**
 
 **Key Components:**
 - **Rust Core**: The core actor system, messaging, RDMA, and tensor operations are implemented in Rust
@@ -142,7 +152,8 @@ USE_TENSOR_ENGINE=0 pip install -e .
 **Meta Internal:**
 ```bash
 # Use the check script for comprehensive checks
-./check                    # lint, typecheck, test, autocargo
+./check                   # lint, typecheck, test, autocargo
+./check typecheck         # Typechecking only
 ./check lint              # Format and lint only
 ./check test              # Test only
 
@@ -317,7 +328,7 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 - `setup.py` - Build configuration, extension definitions, environment detection
 - `Cargo.toml` - Rust workspace definition
 - `.cargo/config.toml` - Rust build flags (`tracing_unstable`)
-- `rust-toolchain` - Pinned to `nightly-2025-09-14`
+- `rust-toolchain` - Pinned to `nightly-2025-12-05`
 - `.flake8` - Python linting configuration (max-line-length: 256)
 - `docs/source/conf.py` - Sphinx documentation configuration
 
@@ -325,4 +336,5 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 
 - Full documentation: https://meta-pytorch.org/monarch/
 - README.md - Installation instructions and overview
+- docs/DOCS_INDEX.md - Index of tutorials, API docs, and examples for using Monarch from Python
 - docs/DOCUMENTATION_GUIDE.md - How to contribute to documentation

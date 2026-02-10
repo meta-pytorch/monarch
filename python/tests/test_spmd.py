@@ -204,6 +204,26 @@ def test_parse_torchrun() -> None:
     assert nproc_per_node == 8
 
 
+def test_parse_torchrun_entrypoint() -> None:
+    """Test _parse_torchrun when entrypoint is torchrun (not in args)."""
+    original_roles = [
+        {
+            "entrypoint": "torchrun",
+            "args": [
+                "--nnodes=2",
+                "--nproc-per-node=8",
+                "-m",
+                "train",
+                "--lr",
+                "0.001",
+            ],
+        }
+    ]
+    script_args, nproc_per_node = _parse_torchrun(original_roles)
+    assert script_args == ["-m", "train", "--lr", "0.001"]
+    assert nproc_per_node == 8
+
+
 def test_run_spmd() -> None:
     """Test run_spmd parses args and spawns actors correctly."""
     job = SPMDJob(

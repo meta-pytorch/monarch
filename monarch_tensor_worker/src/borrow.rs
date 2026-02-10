@@ -15,6 +15,7 @@ use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor_config::Attrs;
 use tokio::sync::Mutex;
 use torch_sys_cuda::cuda::Event;
 
@@ -201,12 +202,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await?,
             )
             .unwrap();
@@ -321,7 +325,7 @@ mod tests {
             .unwrap();
         assert!(result);
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
         let error_responses = controller_rx.drain();
         assert!(
@@ -353,12 +357,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Attrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -436,7 +443,7 @@ mod tests {
             .await?;
 
         // Stop/drain worker before asserts to avoid hangs.
-        worker_handle.drain_and_stop()?;
+        worker_handle.drain_and_stop("test")?;
         worker_handle.await;
         let error_responses = controller_rx.drain();
 

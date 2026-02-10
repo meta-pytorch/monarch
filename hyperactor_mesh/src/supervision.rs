@@ -52,10 +52,20 @@ impl MeshFailure {
 
 impl std::fmt::Display for MeshFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let actor_mesh_name = self
+            .actor_mesh_name
+            .as_ref()
+            .map(|m| format!(" on mesh \"{}\"", m))
+            .unwrap_or("".to_string());
+        let rank = self
+            .rank
+            .as_ref()
+            .map(|r| format!(" at rank {}", r))
+            .unwrap_or("".to_string());
         write!(
             f,
-            "Supervision failure on mesh {:?} at rank {:?} with event: {}",
-            self.actor_mesh_name, self.rank, self.event
+            "failure{}{} with event: {}",
+            actor_mesh_name, rank, self.event
         )
     }
 }

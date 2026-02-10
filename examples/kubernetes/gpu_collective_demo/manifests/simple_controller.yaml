@@ -5,8 +5,9 @@ metadata:
   name: monarch-client-demo
   namespace: monarch-tests
 spec:
+  serviceAccountName: monarch-client
   containers:
     - name: monarch
-      image: ghcr.io/meta-pytorch/monarch:2026-01-11-alpha
+      image: ghcr.io/meta-pytorch/monarch:latest
       command: ["sleep"]
       args: ["infinity"]

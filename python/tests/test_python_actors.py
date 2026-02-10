@@ -29,7 +29,6 @@ from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 import cloudpickle
 import monarch.actor
 import pytest
-import torch
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
@@ -73,11 +72,6 @@ from monarch.actor import (
 from monarch.config import configured, parametrize_config
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
-
-needs_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA not available",
-)
 
 
 class Counter(Actor):
@@ -1043,7 +1037,7 @@ async def test_flush_on_disable_aggregation() -> None:
 
         # 10 = 5 log lines * 2 procs
         total_single = len(
-            re.findall(r"\[.* [0-9]+\](?: \[[0-9]+\])? single log line", stdout_content)
+            re.findall(r"\[[^\]]+\] \[[0-9]+\] single log line", stdout_content)
         )
         assert total_single == 10, (
             f"Expected 10 single log lines, got {total_single} from {stdout_content}"

@@ -96,3 +96,21 @@ Jobs can be serialized and deserialized for persistence and caching.
 .. autofunction:: job_load
 
 .. autofunction:: job_loads
+
+
+SPMD Jobs
+=========
+
+The ``monarch.job.spmd`` submodule provides job primitives for launching
+torchrun-style SPMD training over Monarch. It parses torchrun arguments from
+an AppDef and executes the training script across the mesh.
+
+.. currentmodule:: monarch.job.spmd
+
+.. autofunction:: serve
+
+.. autoclass:: SPMDJob
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :exclude-members: __init__
