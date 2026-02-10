@@ -564,13 +564,9 @@ pub(crate) mod meta {
     use std::fs::File;
     use std::io;
     use std::io::BufReader;
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use anyhow::Result;
-    use hyperactor_config::CONFIG;
-    use hyperactor_config::ConfigAttr;
-    use hyperactor_config::attrs::declare_attrs;
     use tokio::net::TcpListener;
     use tokio::net::TcpStream;
     use tokio_rustls::TlsAcceptor;
@@ -584,34 +580,11 @@ pub(crate) mod meta {
     use super::*;
     use crate::RemoteMessage;
 
+    const THRIFT_TLS_SRV_CA_PATH_ENV: &str = "THRIFT_TLS_SRV_CA_PATH";
     const DEFAULT_SRV_CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
+    const THRIFT_TLS_CL_CERT_PATH_ENV: &str = "THRIFT_TLS_CL_CERT_PATH";
+    const THRIFT_TLS_CL_KEY_PATH_ENV: &str = "THRIFT_TLS_CL_KEY_PATH";
     const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
-
-    declare_attrs! {
-        /// Path to the server CA certificate for TLS connections.
-        /// This is process-local and should NOT be propagated to child processes.
-        @meta(CONFIG = ConfigAttr::new(
-            Some("THRIFT_TLS_SRV_CA_PATH".to_string()),
-            None,
-        ).process_local())
-        pub attr TLS_CA: String = String::new();
-
-        /// Path to the client certificate for TLS connections.
-        /// This is process-local and should NOT be propagated to child processes.
-        @meta(CONFIG = ConfigAttr::new(
-            Some("THRIFT_TLS_CL_CERT_PATH".to_string()),
-            None,
-        ).process_local())
-        pub attr TLS_CERT: String = String::new();
-
-        /// Path to the client key for TLS connections.
-        /// This is process-local and should NOT be propagated to child processes.
-        @meta(CONFIG = ConfigAttr::new(
-            Some("THRIFT_TLS_CL_KEY_PATH".to_string()),
-            None,
-        ).process_local())
-        pub attr TLS_KEY: String = String::new();
-    }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
@@ -640,14 +613,10 @@ pub(crate) mod meta {
     /// Returns the root cert store
     fn root_cert_store() -> Result<RootCertStore> {
         let mut root_cert_store = tokio_rustls::rustls::RootCertStore::empty();
-        let tls_ca: String = hyperactor_config::global::get_cloned(TLS_CA);
-        let ca_cert_path: PathBuf = if tls_ca.is_empty() {
-            DEFAULT_SRV_CA_PATH.into()
-        } else {
-            PathBuf::from(tls_ca)
-        };
+        let ca_cert_path =
+            std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV).unwrap_or(DEFAULT_SRV_CA_PATH.into());
         let ca_certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(&ca_cert_path).context("open {ca_cert_path:?}")?,
+            File::open(ca_cert_path).context("open {ca_cert_path:?}")?,
         ))?;
         for cert in ca_certs {
             root_cert_store
@@ -704,21 +673,19 @@ pub(crate) mod meta {
     }
 
     fn load_client_pem() -> Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>> {
-        let cert_path: String = hyperactor_config::global::get_cloned(TLS_CERT);
-        if cert_path.is_empty() {
+        let Some(cert_path) = std::env::var_os(THRIFT_TLS_CL_CERT_PATH_ENV) else {
             return Ok(None);
-        }
-        let key_path: String = hyperactor_config::global::get_cloned(TLS_KEY);
-        if key_path.is_empty() {
+        };
+        let Some(key_path) = std::env::var_os(THRIFT_TLS_CL_KEY_PATH_ENV) else {
             return Ok(None);
-        }
+        };
         let certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(&cert_path).context("open {cert_path}")?,
+            File::open(cert_path).context("open {cert_path}")?,
         ))?
         .into_iter()
         .map(CertificateDer::from)
         .collect();
-        let mut key_reader = BufReader::new(File::open(&key_path).context("open {key_path}")?);
+        let mut key_reader = BufReader::new(File::open(key_path).context("open {key_path}")?);
         let key = loop {
             break match rustls_pemfile::read_one(&mut key_reader)? {
                 Some(rustls_pemfile::Item::RSAKey(key)) => key,
