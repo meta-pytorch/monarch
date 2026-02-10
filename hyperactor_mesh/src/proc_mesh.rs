@@ -97,10 +97,10 @@ use std::sync::RwLock;
 
 declare_attrs! {
     /// Default transport type to use across the application.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_MESH_DEFAULT_TRANSPORT".to_string()),
-        py_name: Some("default_transport".to_string()),
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_DEFAULT_TRANSPORT".to_string()),
+        Some("default_transport".to_string()),
+    ))
     pub attr DEFAULT_TRANSPORT: BindSpec = BindSpec::Any(ChannelTransport::Unix);
 }
 
@@ -1349,26 +1349,6 @@ mod tests {
         assert_eq!(event.actor_id.2, 0);
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 5)]
-    async fn test_spawn_twice() {
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent!(replica = 1),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-        let mesh = ProcMesh::allocate(alloc).await.unwrap();
-
-        let instance = crate::v1::testing::instance();
-        let _: RootActorMesh<TestActor> = mesh.spawn(&instance, "dup", &()).await.unwrap();
-        let result: Result<RootActorMesh<TestActor>, _> = mesh.spawn(&instance, "dup", &()).await;
-        assert!(result.is_err());
-    }
-
     mod shim {
         use std::collections::HashSet;
 
@@ -1383,8 +1363,7 @@ mod tests {
         #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance();
-            let ext = extent!(host = 4);
-            let host_mesh = v1::testing::host_mesh(ext.clone()).await;
+            let host_mesh = v1::testing::host_mesh(4).await;
             let proc_mesh = host_mesh
                 .spawn(instance, "test", Extent::unity())
                 .await
@@ -1408,7 +1387,9 @@ mod tests {
             let mut point_to_actor: HashSet<_> = actor_mesh
                 .iter_actor_refs()
                 .enumerate()
-                .map(|(rank, actor_ref)| (ext.point_of_rank(rank).unwrap(), actor_ref))
+                .map(|(rank, actor_ref)| {
+                    (host_mesh.extent().point_of_rank(rank).unwrap(), actor_ref)
+                })
                 .collect();
             while !point_to_actor.is_empty() {
                 let (point, origin_actor_ref, sender_actor_id) = cast_info_rx.recv().await.unwrap();

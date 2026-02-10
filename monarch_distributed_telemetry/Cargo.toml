@@ -7,25 +7,20 @@ authors = ["Meta"]
 edition = "2024"
 license = "BSD-3-Clause"
 
-[lib]
-edition = "2021"
-
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.86"
-datafusion = "52"
-futures = { version = "0.3.31", features = ["async-await"] }
+datafusion = "52.1"
+futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
-rand = "0.8"
+pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+rand = { version = "0.9", features = ["small_rng"] }
 record_batch_derive = { version = "0.0.0", path = "../record_batch_derive" }
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tokio = { version = "1.47.1", features = ["sync"] }
-tracing = "0.1.41"
+serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
+tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
-
-[lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

@@ -13,6 +13,7 @@ async-trait = "0.1.86"
 derive_more = { version = "1.0.0", features = ["full"] }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 itertools = "0.14.0"
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
@@ -20,9 +21,9 @@ monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
-sorted-vec = "0.8.3"
+sorted-vec = "0.8.10"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }

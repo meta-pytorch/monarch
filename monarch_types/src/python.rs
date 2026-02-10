@@ -128,7 +128,7 @@ where
     T: Into<PyErr>,
 {
     fn from(value: T) -> Self {
-        Python::with_gil(|py| SerializablePyErr::from(py, &value.into()))
+        Python::attach(|py| SerializablePyErr::from(py, &value.into()))
     }
 }
 
@@ -144,8 +144,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_serializable_py_err() {
-        pyo3::prepare_freethreaded_python();
-        let _unused = Python::with_gil(|py| {
+        Python::initialize();
+        let _unused = Python::attach(|py| {
             let module = PyModule::from_code(
                 py,
                 c_str!(indoc! {r#"

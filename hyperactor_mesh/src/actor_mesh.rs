@@ -121,7 +121,7 @@ pub fn update_undeliverable_envelope_for_casting(
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
 /// an `M`-typed message
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-#[hyperactor::instrument]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn actor_mesh_cast<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
@@ -831,7 +831,7 @@ pub(crate) mod test_util {
     impl RemoteSpawn for ProxyActor {
         type Params = ();
 
-        async fn new(_params: Self::Params) -> Result<Self, anyhow::Error> {
+        async fn new(_params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
             // The actor creates a mesh.
             use std::sync::Arc;
 
@@ -1786,6 +1786,7 @@ mod tests {
         use hyperactor::channel::serve;
         use hyperactor::clock::Clock;
         use hyperactor::clock::RealClock;
+        use hyperactor_config::Attrs;
         use ndslice::Extent;
         use ndslice::Selection;
 
@@ -1812,7 +1813,7 @@ mod tests {
         impl RemoteSpawn for EchoActor {
             type Params = ChannelAddr;
 
-            async fn new(params: ChannelAddr) -> Result<Self, anyhow::Error> {
+            async fn new(params: ChannelAddr, _environment: Attrs) -> Result<Self, anyhow::Error> {
                 Ok(Self(dial::<usize>(params)?))
             }
         }
@@ -2040,7 +2041,6 @@ mod tests {
 
         use hyperactor::context::Mailbox;
         use ndslice::Extent;
-        use ndslice::extent;
 
         use super::*;
         use crate::sel;
@@ -2049,7 +2049,7 @@ mod tests {
         #[cfg(fbcode_build)]
         async fn test_basic() {
             let instance = v1::testing::instance();
-            let host_mesh = v1::testing::host_mesh(extent!(host = 4)).await;
+            let host_mesh = v1::testing::host_mesh(4).await;
             let proc_mesh = host_mesh
                 .spawn(instance, "test", Extent::unity())
                 .await

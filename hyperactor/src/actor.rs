@@ -11,6 +11,7 @@
 //! This module contains all the core traits required to define and manage actors.
 
 use std::any::TypeId;
+use std::borrow::Cow;
 use std::fmt;
 use std::fmt::Debug;
 use std::future::Future;
@@ -23,6 +24,7 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use hyperactor_config::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -244,7 +246,9 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     type Params: RemoteMessage;
 
     /// Creates a new actor instance given its instantiation parameters.
-    async fn new(params: Self::Params) -> anyhow::Result<Self>;
+    /// The `environment` allows whoever is responsible for spawning this actor
+    /// to pass in additional context that may be useful.
+    async fn new(params: Self::Params, environment: Attrs) -> anyhow::Result<Self>;
 
     /// A type-erased entry point to spawn this actor. This is
     /// primarily used by hyperactor's remote actor registration
@@ -254,12 +258,13 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         proc: &Proc,
         name: &str,
         serialized_params: Data,
+        environment: Attrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
             let params = bincode::deserialize(&serialized_params)?;
-            let actor = Self::new(params).await?;
+            let actor = Self::new(params, environment).await?;
             let handle = proc.spawn(&name, actor)?;
             // We return only the ActorId, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
@@ -288,7 +293,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
 impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     type Params = ();
 
-    async fn new(_params: Self::Params) -> anyhow::Result<Self> {
+    async fn new(_params: Self::Params, _environment: Attrs) -> anyhow::Result<Self> {
         Ok(Default::default())
     }
 }
@@ -467,6 +472,45 @@ impl fmt::Display for Signal {
     }
 }
 
+/// Information about a message handler being processed.
+///
+/// Uses `Cow<'static, str>` to avoid string copies on the hot path.
+/// The typename and arm are typically static strings from `TypeInfo`.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub struct HandlerInfo {
+    /// The type name of the message being handled.
+    pub typename: Cow<'static, str>,
+    /// The enum arm being handled, if the message is an enum.
+    pub arm: Option<Cow<'static, str>>,
+}
+
+impl HandlerInfo {
+    /// Create a new `HandlerInfo` from static strings (zero-copy).
+    pub fn from_static(typename: &'static str, arm: Option<&'static str>) -> Self {
+        Self {
+            typename: Cow::Borrowed(typename),
+            arm: arm.map(Cow::Borrowed),
+        }
+    }
+
+    /// Create a new `HandlerInfo` from owned strings.
+    pub fn from_owned(typename: String, arm: Option<String>) -> Self {
+        Self {
+            typename: Cow::Owned(typename),
+            arm: arm.map(Cow::Owned),
+        }
+    }
+}
+
+impl fmt::Display for HandlerInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.arm {
+            Some(arm) => write!(f, "{}.{}", self.typename, arm),
+            None => write!(f, "{}", self.typename),
+        }
+    }
+}
+
 /// The runtime status of an actor.
 #[derive(
     Debug,
@@ -491,18 +535,17 @@ pub enum ActorStatus {
     /// The actor is ready to receive messages, but is currently idle.
     Idle,
     /// The actor has been processing a message, beginning at the specified
-    /// instant. The message handler and arm is included.
-    /// TODO: we shoudl use interned representations here, so we don't copy
-    /// strings willy-nilly.
-    Processing(SystemTime, Option<(String, Option<String>)>),
+    /// instant. The message handler info is included.
+    Processing(SystemTime, Option<HandlerInfo>),
     /// The actor has been saving its state.
     Saving(SystemTime),
     /// The actor has been loading its state.
     Loading(SystemTime),
     /// The actor is stopping. It is draining messages.
     Stopping,
-    /// The actor is stopped. It is no longer processing messages.
-    Stopped,
+    /// The actor is stopped with a provided reason.
+    /// It is no longer processing messages.
+    Stopped(String),
     /// The actor failed with the provided actor error.
     Failed(ActorErrorKind),
 }
@@ -542,24 +585,11 @@ impl fmt::Display for ActorStatus {
                         .as_millis()
                 )
             }
-            Self::Processing(instant, Some((handler, None))) => {
+            Self::Processing(instant, Some(handler_info)) => {
                 write!(
                     f,
                     "{}: processing for {}ms",
-                    handler,
-                    RealClock
-                        .system_time_now()
-                        .duration_since(*instant)
-                        .unwrap_or_default()
-                        .as_millis()
-                )
-            }
-            Self::Processing(instant, Some((handler, Some(arm)))) => {
-                write!(
-                    f,
-                    "{},{}: processing for {}ms",
-                    handler,
-                    arm,
+                    handler_info,
                     RealClock
                         .system_time_now()
                         .duration_since(*instant)
@@ -590,7 +620,7 @@ impl fmt::Display for ActorStatus {
                 )
             }
             Self::Stopping => write!(f, "stopping"),
-            Self::Stopped => write!(f, "stopped"),
+            Self::Stopped(reason) => write!(f, "stopped: {}", reason),
             Self::Failed(err) => write!(f, "failed: {}", err),
         }
     }

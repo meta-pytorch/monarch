@@ -30,7 +30,7 @@ class Event(abc.ABC):
             self._event = asyncio.Event()
         assert self._event is not None
 
-        event_loop = asyncio.get_event_loop()
+        event_loop = asyncio.get_running_loop()
         if self._event_loop is None:
             self._event_loop = event_loop
 
@@ -61,9 +61,9 @@ class Event(abc.ABC):
             self._event_loop.remove_reader(self._read_fd)
 
 
-@rust_struct("monarch_hyperactor::pywaker::TestWaker")
-class TestWaker:
+@rust_struct("monarch_hyperactor::pywaker::PyTestWaker")
+class PyTestWaker:
     def wake(self) -> bool: ...
 
     @staticmethod
-    def create() -> tuple["TestWaker", Event]: ...
+    def create() -> tuple["PyTestWaker", Event]: ...

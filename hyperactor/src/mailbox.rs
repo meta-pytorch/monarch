@@ -107,7 +107,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use typeuri::Named;
 
-use crate as hyperactor; // for macros
+// for macros
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::Proc;
@@ -115,6 +115,8 @@ use crate::ProcId;
 use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
+use crate::actor::ActorErrorKind;
+use crate::actor::ActorStatus;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
 use crate::channel;
@@ -126,7 +128,6 @@ use crate::context;
 use crate::id;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
-use crate::ordering::SeqInfo;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
@@ -545,6 +546,10 @@ pub enum MailboxErrorKind {
     /// There was an error during a channel operation.
     #[error(transparent)]
     Channel(#[from] ChannelError),
+
+    /// The owning actor terminated (either stopped or failed).
+    #[error("owner terminated: {0}")]
+    OwnerTerminated(ActorStatus),
 }
 
 impl MailboxError {
@@ -1178,7 +1183,7 @@ impl MailboxClient {
 }
 
 impl MailboxSender for MailboxClient {
-    #[hyperactor::instrument_infallible]
+    #[tracing::instrument(level = "debug", skip_all)]
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
@@ -1373,6 +1378,53 @@ impl Mailbox {
                 port_index,
                 port_id: port_id.clone(),
                 sender,
+                reducer_spec: None,
+            },
+            OncePortReceiver {
+                receiver: Some(receiver),
+                port_id,
+                mailbox: self.clone(),
+            },
+        )
+    }
+
+    /// Open a new one-shot port with a reducer. This port is designed
+    /// to be used with casting, where the port is split across multiple
+    /// destinations and responses are accumulated using the reducer.
+    /// The accumulator type must have a ReducerSpec.
+    ///
+    /// The returned handle can be bound and embedded in cast messages.
+    /// When the message is split by CommActor, each destination receives a
+    /// split port. Responses to split ports are accumulated using the
+    /// accumulator's reducer, and the final accumulated result is delivered
+    /// to the returned receiver.
+    ///
+    /// Note: For accumulators used with casting, `Update` and `State` types
+    /// must be the same (e.g., `sum<u64>` where both are `u64`).
+    pub fn open_reduce_port<A, T>(
+        &self,
+        accum: A,
+    ) -> (OncePortHandle<A::State>, OncePortReceiver<A::State>)
+    where
+        A: Accumulator<State = T, Update = T> + Send + Sync + 'static,
+        T: Message + Default + Clone,
+    {
+        let port_index = self.inner.allocate_port();
+        let (sender, receiver) = oneshot::channel::<T>();
+        let port_id = PortId(self.inner.actor_id.clone(), port_index);
+        let reducer_spec = accum.reducer_spec();
+        assert!(
+            reducer_spec.is_some(),
+            "cannot use a reduce port without a ReducerSpec"
+        );
+
+        (
+            OncePortHandle {
+                mailbox: self.clone(),
+                port_index,
+                port_id: port_id.clone(),
+                sender,
+                reducer_spec,
             },
             OncePortReceiver {
                 receiver: Some(receiver),
@@ -1480,6 +1532,14 @@ impl Mailbox {
             Entry::Occupied(_entry) => {}
         }
     }
+
+    pub(crate) fn close(&self, status: ActorStatus) {
+        let mut closed = self.inner.closed.write().unwrap();
+        if closed.is_some() {
+            panic!("mailbox with owner {} already closed", self.actor_id());
+        }
+        let _ = closed.insert(status);
+    }
 }
 
 impl context::Mailbox for Mailbox {
@@ -1545,6 +1605,36 @@ impl MailboxSender for Mailbox {
                 envelope.undeliverable(err, return_handle);
             }
             Entry::Occupied(entry) => {
+                let closed = self.inner.closed.read().unwrap();
+                if let Some(status) = &*closed {
+                    match status {
+                        ActorStatus::Stopped(reason) => {
+                            let err = format!(
+                                "mailbox owner {} is stopped: {}",
+                                self.inner.actor_id, reason
+                            );
+                            return envelope
+                                .undeliverable(DeliveryError::Mailbox(err), return_handle);
+                        }
+                        ActorStatus::Failed(actor_error) => {
+                            let err = format!(
+                                "mailbox owner {} failed: {}",
+                                self.inner.actor_id, actor_error
+                            );
+                            return envelope
+                                .undeliverable(DeliveryError::Mailbox(err), return_handle);
+                        }
+                        _ => {
+                            let err = format!(
+                                "mailbox owner {} closed unexpectedly: {:?}",
+                                self.inner.actor_id, status
+                            );
+                            return envelope
+                                .undeliverable(DeliveryError::Mailbox(err), return_handle);
+                        }
+                    }
+                }
+
                 let (metadata, data) = envelope.open();
                 let MessageMetadata {
                     headers,
@@ -1641,6 +1731,19 @@ impl<M: Message> PortHandle<M> {
 
     /// Send a message to this port.
     pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+        let closed = self.mailbox.inner.closed.read().unwrap();
+
+        if let Some(status) = &*closed {
+            let err = MailboxError {
+                actor_id: self.mailbox.actor_id().clone(),
+                kind: MailboxErrorKind::OwnerTerminated(status.clone()),
+            };
+            return Err(MailboxSenderError::new_unbound::<M>(
+                self.mailbox.actor_id().clone(),
+                MailboxSenderErrorKind::Mailbox(err),
+            ));
+        }
+
         let mut headers = Attrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
@@ -1755,6 +1858,7 @@ pub struct OncePortHandle<M: Message> {
     port_index: u64,
     port_id: PortId,
     sender: oneshot::Sender<M>,
+    reducer_spec: Option<ReducerSpec>,
 }
 
 impl<M: Message> OncePortHandle<M> {
@@ -1795,8 +1899,9 @@ impl<M: RemoteMessage> OncePortHandle<M> {
     /// binds the port, so that it is remotely writable.
     pub fn bind(self) -> OncePortRef<M> {
         let port_id = self.port_id().clone();
+        let reducer_spec = self.reducer_spec.clone();
         self.mailbox.clone().bind_once(self);
-        OncePortRef::attest(port_id)
+        OncePortRef::attest_reducible(port_id, reducer_spec)
     }
 }
 
@@ -2231,6 +2336,10 @@ struct State {
 
     /// The forwarder for this mailbox.
     forwarder: BoxedMailboxSender,
+
+    /// If a value is present, the mailbox has been closed with the provided
+    /// status, and any subsequent `Mailbox::post_unchecked` calls will fail.
+    closed: RwLock<Option<ActorStatus>>,
 }
 
 impl State {
@@ -2243,6 +2352,7 @@ impl State {
             // Other port IDs are ephemeral.
             next_port: AtomicU64::new(USER_PORT_OFFSET),
             forwarder,
+            closed: RwLock::new(None),
         }
     }
 
@@ -2326,7 +2436,7 @@ impl MailboxSender for MailboxMuxer {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_actor_id = envelope.dest().actor_id();
-        match self.mailboxes.get(envelope.dest().actor_id()) {
+        match self.mailboxes.get(dest_actor_id) {
             None => {
                 let err = format!("no mailbox for actor {} registered in muxer", dest_actor_id);
                 envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
@@ -3181,10 +3291,10 @@ mod tests {
         let ActorStatus::Failed(ref msg) = *foo_status.borrow() else {
             unreachable!()
         };
-        assert!(msg.to_string().contains(
-            "a message from \
-                quux[0].foo[0] to corge[0].bar[0][9999] was undeliverable and returned"
-        ));
+        let msg_str = msg.to_string();
+        assert!(msg_str.contains("undeliverable message error"));
+        assert!(msg_str.contains("sender: quux[0].foo[0]"));
+        assert!(msg_str.contains("dest: corge[0].bar[0][9999]"));
 
         proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None, "test cleanup")
             .await
@@ -3997,5 +4107,187 @@ mod tests {
         assert_matches!(handle.location(), PortLocation::Bound(port) if port.index() == handle.port_index);
         // Since handle is already bound, call bind_to() on it will cause panic.
         handle.bind_actor_port();
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_post_fails_when_actor_stopped() {
+        let actor_id = id!(test[0].stopped_actor);
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+
+        mailbox.close(ActorStatus::Stopped("test stop".to_string()));
+
+        let (user_port, _user_rx) = mailbox.open_port::<u64>();
+
+        // Use a separate detached mailbox for the return handle since
+        // the main mailbox is stopped and won't accept messages.
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        let envelope = MessageEnvelope::serialize(
+            actor_id.clone(),
+            user_port.bind().port_id().clone(),
+            &42u64,
+            Attrs::new(),
+        )
+        .expect("serialize");
+
+        mailbox.post(envelope, return_handle);
+
+        let undeliverable = RealClock
+            .timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed");
+
+        let err = undeliverable.0.error_msg().expect("expected error");
+        assert!(
+            err.contains(&format!("owner {} is stopped", actor_id)),
+            "error should indicate actor stopped: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_post_fails_when_actor_failed() {
+        use crate::actor::ActorErrorKind;
+
+        let actor_id = id!(test[0].failed_actor);
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+
+        let (user_port, _user_rx) = mailbox.open_port::<u64>();
+
+        mailbox.close(ActorStatus::Failed(ActorErrorKind::Generic(
+            "test failure".to_string(),
+        )));
+
+        // Use a separate detached mailbox for the return handle since
+        // the main mailbox is failed and won't accept messages.
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        let envelope = MessageEnvelope::serialize(
+            actor_id.clone(),
+            user_port.bind().port_id().clone(),
+            &42u64,
+            Attrs::new(),
+        )
+        .expect("serialize");
+
+        mailbox.post(envelope, return_handle);
+
+        let undeliverable = RealClock
+            .timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed");
+
+        let err = undeliverable.0.error_msg().expect("expected error");
+        assert!(
+            err.contains(&format!("owner {} failed", actor_id)),
+            "error should indicate actor failed: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_port_handle_send_fails_when_actor_stopped() {
+        let actor_id = id!(test[0].stopped_actor);
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+
+        let (port_handle, _rx) = mailbox.open_port::<u64>();
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        mailbox.close(ActorStatus::Stopped("test stop".to_string()));
+
+        let result = port_handle.send(&client, 42u64);
+
+        assert!(result.is_err(), "send should fail when actor is stopped");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(mailbox_err.kind(), MailboxErrorKind::OwnerTerminated(ActorStatus::Stopped(reason)) if reason == "test stop")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_port_handle_send_fails_when_actor_failed() {
+        use crate::actor::ActorErrorKind;
+
+        let actor_id = id!(test[0].failed_actor);
+
+        let mailbox = Mailbox::new(
+            actor_id.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+
+        let (port_handle, _rx) = mailbox.open_port::<u64>();
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        mailbox.close(ActorStatus::Failed(ActorErrorKind::Generic(
+            "test failure".to_string(),
+        )));
+
+        let result = port_handle.send(&client, 42u64);
+
+        assert!(result.is_err(), "send should fail when actor is failed");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(mailbox_err.kind(), MailboxErrorKind::OwnerTerminated(ActorStatus::Failed(ActorErrorKind::Generic(msg))) if msg == "test failure")
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_open_reduce_port() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Open an accumulator port with sum reducer
+        let (port_handle, receiver) = client.mailbox().open_reduce_port(accum::sum::<u64>());
+
+        // Verify the reducer_spec is set
+        let port_ref = port_handle.bind();
+        assert!(port_ref.reducer_spec().is_some());
+
+        // Send a single value via the bound port
+        port_ref.send(&client, 42).unwrap();
+
+        // Should receive the value
+        let result = receiver.recv().await.unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_open_reduce_port_reducer_spec_preserved() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Test that different accumulators produce different reducer_specs
+        let (sum_handle, _) = client.mailbox().open_reduce_port(accum::sum::<u64>());
+        let sum_ref = sum_handle.bind();
+        let sum_typehash = sum_ref.reducer_spec().as_ref().unwrap().typehash;
+
+        let (max_handle, _) = client
+            .mailbox()
+            .open_reduce_port(accum::join_semilattice::<accum::Max<u64>>());
+        let max_ref = max_handle.bind();
+        let max_typehash = max_ref.reducer_spec().as_ref().unwrap().typehash;
+
+        // Different accumulators should have different reducer typehashes
+        assert_ne!(sum_typehash, max_typehash);
     }
 }

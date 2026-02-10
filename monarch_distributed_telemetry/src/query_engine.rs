@@ -78,7 +78,7 @@ fn create_draining_stream<F>(
     completion_future: F,
 ) -> SendableRecordBatchStream
 where
-    F: std::future::Future<Output = PyResult<PyObject>> + Send + 'static,
+    F: std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
 {
     let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(32);
 
@@ -111,11 +111,11 @@ where
                         Ok(py_result) => {
                             // Extract the batch count from the Python result
                             // Result is a ValueMesh which is iterable, yielding (rank_dict, count) tuples
-                            let count = Python::with_gil(|py| {
+                            let count = Python::attach(|py| {
                                 let bound = py_result.bind(py);
                                 let mut total: usize = 0;
                                 // Iterate the ValueMesh
-                                if let Ok(iter) = bound.iter() {
+                                if let Ok(iter) = bound.try_iter() {
                                     for item in iter {
                                         if let Ok(tuple) = item {
                                             // Each item is (rank_dict, count) - get second element
@@ -150,7 +150,7 @@ where
                 recv_result = receiver.recv() => {
                     match recv_result {
                         Ok(QueryResponse { data }) => {
-                            match deserialize_batch(&data) {
+                            match deserialize_batch(&data.into_bytes()) {
                                 Ok(Some(batch)) => {
                                     batch_count += 1;
                                     if tx.send(Ok(batch)).await.is_err() {
@@ -194,7 +194,7 @@ where
 struct DistributedTableProvider {
     table_name: String,
     schema: SchemaRef,
-    actor: PyObject,
+    actor: Py<PyAny>,
     /// Actor instance for creating ports
     instance: Instance<PythonActor>,
 }
@@ -264,7 +264,7 @@ impl TableProvider for DistributedTableProvider {
 
         // Clone actor and instance for the execution plan
         let (actor, instance) =
-            Python::with_gil(|py| (self.actor.clone_ref(py), self.instance.clone_for_py()));
+            Python::attach(|py| (self.actor.clone_ref(py), self.instance.clone_for_py()));
 
         Ok(Arc::new(DistributedExec {
             table_name: self.table_name.clone(),
@@ -290,7 +290,7 @@ struct DistributedExec {
     projection: Option<Vec<usize>>,
     where_clause: Option<String>,
     limit: Option<usize>,
-    actor: PyObject,
+    actor: Py<PyAny>,
     instance: Instance<PythonActor>,
     properties: PlanProperties,
 }
@@ -341,10 +341,10 @@ impl ExecutionPlan for DistributedExec {
         let dest_port_ref = handle.bind();
 
         // Start the distributed scan
-        let completion_future = Python::with_gil(
+        let completion_future = Python::attach(
             |py| -> anyhow::Result<
                 std::pin::Pin<
-                    Box<dyn std::future::Future<Output = PyResult<PyObject>> + Send + 'static>,
+                    Box<dyn std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static>,
                 >,
             > {
                 let dest_port_id: PyPortId = dest_port_ref.port_id().clone().into();
@@ -395,7 +395,7 @@ impl QueryEngine {
     /// Args:
     ///     actor: A singleton DistributedTelemetryActor (ActorMesh) to query
     #[new]
-    fn new(py: Python<'_>, actor: PyObject) -> PyResult<Self> {
+    fn new(py: Python<'_>, actor: Py<PyAny>) -> PyResult<Self> {
         // Get actor instance from current Python context
         let actor_module = py.import("monarch.actor")?;
         let ctx = actor_module.call_method0("context")?;
@@ -417,7 +417,7 @@ impl QueryEngine {
 
         // Release the GIL and run the async query on the shared monarch runtime.
         let results: Vec<RecordBatch> = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_tokio_runtime().block_on(async {
                     let df = session_ctx.sql(&sql).await?;
                     df.collect().await
@@ -449,7 +449,7 @@ impl QueryEngine {
 impl QueryEngine {
     fn setup_tables(
         py: Python<'_>,
-        actor: &PyObject,
+        actor: &Py<PyAny>,
         instance: Instance<PythonActor>,
     ) -> PyResult<SessionContext> {
         // Get table names from the actor mesh via endpoint call
