@@ -20,8 +20,8 @@ use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
-use hyperactor_mesh::extent;
 use hyperactor_mesh::global_root_client;
+use ndslice::extent;
 use ndslice::View;
 use tokio::time::Duration;
 
