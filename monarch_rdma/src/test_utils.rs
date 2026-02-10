@@ -82,7 +82,6 @@ pub mod test_utils {
     use hyperactor::Context;
     use hyperactor::HandleClient;
     use hyperactor::Handler;
-    use hyperactor::Instance;
     use hyperactor::RefClient;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelTransport;
@@ -91,16 +90,16 @@ pub mod test_utils {
     use hyperactor_config::Attrs;
     use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
-    use hyperactor_mesh::RootActorMesh;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
     use hyperactor_mesh::proc_mesh::global_root_client;
+    use hyperactor_mesh::v1::ActorMesh;
+    use ndslice::View;
     use ndslice::extent;
 
     use crate::IbverbsConfig;
     use crate::RdmaBuffer;
-    use crate::cu_check;
     use crate::rdma_components::PollTarget;
     use crate::rdma_components::RdmaQueuePair;
     use crate::rdma_manager_actor::RdmaManagerActor;
@@ -514,11 +513,12 @@ pub mod test_utils {
         }
     }
 
-    pub struct RdmaManagerTestEnv<'a> {
+    pub struct RdmaManagerTestEnv {
         buffer_1: Buffer,
         buffer_2: Buffer,
-        pub client_1: &'a Instance<()>,
-        pub client_2: &'a Instance<()>,
+        // Note: Both point to the same global instance
+        pub client_1: &'static hyperactor::Instance<hyperactor_mesh::proc_mesh::GlobalClientActor>,
+        pub client_2: &'static hyperactor::Instance<hyperactor_mesh::proc_mesh::GlobalClientActor>,
         pub actor_1: ActorRef<RdmaManagerActor>,
         pub actor_2: ActorRef<RdmaManagerActor>,
         pub rdma_handle_1: RdmaBuffer,
@@ -549,7 +549,7 @@ pub mod test_utils {
         (backend.to_string(), parsed_idx)
     }
 
-    impl RdmaManagerTestEnv<'_> {
+    impl RdmaManagerTestEnv {
         /// Sets up the RDMA test environment with a specified QP type.
         ///
         /// This function initializes the RDMA test environment by setting up two actor meshes
@@ -592,9 +592,13 @@ pub mod test_utils {
 
             let instance = global_root_client();
 
-            let proc_mesh_1 = Box::leak(Box::new(ProcMesh::allocate(alloc_1).await.unwrap()));
-            let actor_mesh_1: RootActorMesh<'_, RdmaManagerActor> = proc_mesh_1
-                .spawn(&instance, "rdma_manager", &Some(config1))
+            let proc_mesh_1 = Box::leak(Box::new(
+                ProcMesh::allocate(instance, Box::new(alloc_1), "mesh1")
+                    .await
+                    .unwrap(),
+            ));
+            let actor_mesh_1: ActorMesh<RdmaManagerActor> = proc_mesh_1
+                .spawn(instance, "rdma_manager", &Some(config1))
                 .await
                 .unwrap();
 
@@ -609,9 +613,13 @@ pub mod test_utils {
                 .await
                 .unwrap();
 
-            let proc_mesh_2 = Box::leak(Box::new(ProcMesh::allocate(alloc_2).await.unwrap()));
-            let actor_mesh_2: RootActorMesh<'_, RdmaManagerActor> = proc_mesh_2
-                .spawn(&instance, "rdma_manager", &Some(config2))
+            let proc_mesh_2 = Box::leak(Box::new(
+                ProcMesh::allocate(instance, Box::new(alloc_2), "mesh2")
+                    .await
+                    .unwrap(),
+            ));
+            let actor_mesh_2: ActorMesh<RdmaManagerActor> = proc_mesh_2
+                .spawn(instance, "rdma_manager", &Some(config2))
                 .await
                 .unwrap();
 
@@ -636,17 +644,17 @@ pub mod test_utils {
                     cpu_ref: Some(buffer),
                 });
                 rdma_handle_1 = actor_1
-                    .request_buffer(proc_mesh_1.client(), buf_vec[0].ptr as usize, buffer_size)
+                    .request_buffer(instance, buf_vec[0].ptr as usize, buffer_size)
                     .await?;
             } else {
                 // CUDA case - spawn CudaActor in the same process mesh
-                let cuda_actor_mesh_1: RootActorMesh<'_, CudaActor> = proc_mesh_1
-                    .spawn(&instance, "cuda_init", &(parsed_accel1.1 as i32))
+                let cuda_actor_mesh_1: ActorMesh<CudaActor> = proc_mesh_1
+                    .spawn(instance, "cuda_init", &(parsed_accel1.1 as i32))
                     .await?;
                 let cuda_actor_ref_1 = cuda_actor_mesh_1.get(0).unwrap();
 
                 let (rdma_buf, dev_ptr) = cuda_actor_ref_1
-                    .create_buffer(proc_mesh_1.client(), buffer_size, actor_1.clone())
+                    .create_buffer(instance, buffer_size, actor_1.clone())
                     .await?;
                 rdma_handle_1 = rdma_buf;
                 device_ptr_1 = Some(dev_ptr);
@@ -668,17 +676,17 @@ pub mod test_utils {
                     cpu_ref: Some(buffer),
                 });
                 rdma_handle_2 = actor_2
-                    .request_buffer(proc_mesh_2.client(), buf_vec[1].ptr as usize, buffer_size)
+                    .request_buffer(instance, buf_vec[1].ptr as usize, buffer_size)
                     .await?;
             } else {
                 // CUDA case - spawn CudaActor in the same process mesh
-                let cuda_actor_mesh_2: RootActorMesh<'_, CudaActor> = proc_mesh_2
-                    .spawn(&instance, "cuda_init", &(parsed_accel2.1 as i32))
+                let cuda_actor_mesh_2: ActorMesh<CudaActor> = proc_mesh_2
+                    .spawn(instance, "cuda_init", &(parsed_accel2.1 as i32))
                     .await?;
                 let cuda_actor_ref_2 = cuda_actor_mesh_2.get(0).unwrap();
 
                 let (rdma_buf, dev_ptr) = cuda_actor_ref_2
-                    .create_buffer(proc_mesh_2.client(), buffer_size, actor_2.clone())
+                    .create_buffer(instance, buffer_size, actor_2.clone())
                     .await?;
                 rdma_handle_2 = rdma_buf;
                 device_ptr_2 = Some(dev_ptr);
@@ -696,7 +704,7 @@ pub mod test_utils {
                 cuda_actor_1
                     .clone()
                     .unwrap()
-                    .fill_buffer(proc_mesh_1.client(), device_ptr_1.unwrap(), buffer_size, 42)
+                    .fill_buffer(instance, device_ptr_1.unwrap(), buffer_size, 42)
                     .await?;
             } else {
                 unsafe {
@@ -713,8 +721,8 @@ pub mod test_utils {
             Ok(Self {
                 buffer_1,
                 buffer_2,
-                client_1: proc_mesh_1.client(),
-                client_2: proc_mesh_2.client(),
+                client_1: instance,
+                client_2: instance,
                 actor_1,
                 actor_2,
                 rdma_handle_1,

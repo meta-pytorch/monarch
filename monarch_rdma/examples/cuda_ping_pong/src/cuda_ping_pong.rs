@@ -68,21 +68,23 @@ use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::context::Mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::v1::ActorMesh;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::cu_check;
+use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
@@ -706,116 +708,110 @@ pub async fn run() -> Result<(), anyhow::Error> {
     ));
 
     let device_1_proc_mesh = ProcMesh::allocate(
-        alloc
-            .allocate(AllocSpec {
-                extent: extent! {replica=1, host=1, gpu=1},
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await?,
+        instance,
+        Box::new(
+            alloc
+                .allocate(AllocSpec {
+                    extent: extent! {replica=1, host=1, gpu=1},
+                    constraints: Default::default(),
+                    proc_name: None,
+                    transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
+                })
+                .await?,
+        ),
+        "device_1",
     )
     .await?;
 
     // Create process mesh for the second CUDA device
     let device_2_proc_mesh = ProcMesh::allocate(
-        alloc
-            .allocate(AllocSpec {
-                extent: extent! {replica=1, host=1, gpu=1},
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await?,
+        instance,
+        Box::new(
+            alloc
+                .allocate(AllocSpec {
+                    extent: extent! {replica=1, host=1, gpu=1},
+                    constraints: Default::default(),
+                    proc_name: None,
+                    transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
+                })
+                .await?,
+        ),
+        "device_2",
     )
     .await?;
 
     // Create RDMA manager for the first device
-    let device_1_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = device_1_proc_mesh
+    let device_1_rdma_manager: ActorMesh<RdmaManagerActor> = device_1_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_1_rdma_manager",
             &Some(device_1_ibv_config),
         )
         .await?;
 
     // Create RDMA manager for the second device
-    let device_2_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = device_2_proc_mesh
+    let device_2_rdma_manager: ActorMesh<RdmaManagerActor> = device_2_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_2_rdma_manager",
             &Some(device_2_ibv_config),
         )
         .await?;
 
     // Get the RDMA manager actor references
-    let device_1_rdma_manager_ref = device_1_rdma_manager.iter().next().unwrap();
-    let device_2_rdma_manager_ref = device_2_rdma_manager.iter().next().unwrap();
+    let device_1_rdma_manager_ref = device_1_rdma_manager.get(0).unwrap();
+    let device_2_rdma_manager_ref = device_2_rdma_manager.get(0).unwrap();
 
     // Create the CUDA RDMA actors
-    let device_1_actor_mesh: RootActorMesh<'_, CudaRdmaActor> = device_1_proc_mesh
+    let device_1_actor_mesh: ActorMesh<CudaRdmaActor> = device_1_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_1_actor",
             &(device_1_rdma_manager_ref.clone(), 0, config.buffer_size),
         )
         .await?;
 
-    let device_2_actor_mesh: RootActorMesh<'_, CudaRdmaActor> = device_2_proc_mesh
+    let device_2_actor_mesh: ActorMesh<CudaRdmaActor> = device_2_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_2_actor",
             &(device_2_rdma_manager_ref.clone(), 1, config.buffer_size),
         )
         .await?;
 
     // Get the actor references
-    let device_1_actor = device_1_actor_mesh.iter().next().unwrap();
-    let device_2_actor = device_2_actor_mesh.iter().next().unwrap();
+    let device_1_actor = device_1_actor_mesh.get(0).unwrap();
+    let device_2_actor = device_2_actor_mesh.get(0).unwrap();
 
     // Initialize the buffers
 
     // Initialize device 1 buffer with DATA_VALUE
-    let (handle_1, receiver_1) = device_1_proc_mesh.client().open_once_port::<bool>();
-    device_1_actor.send(
-        device_1_proc_mesh.client(),
-        InitializeBuffer(DATA_VALUE, handle_1.bind()),
-    )?;
+    let (handle_1, receiver_1) = instance.mailbox().open_once_port::<bool>();
+    device_1_actor.send(instance, InitializeBuffer(DATA_VALUE, handle_1.bind()))?;
     receiver_1.recv().await?;
 
     // Initialize device 2 buffer with 0
-    let (handle_2, receiver_2) = device_2_proc_mesh.client().open_once_port::<bool>();
-    device_2_actor.send(
-        device_2_proc_mesh.client(),
-        InitializeBuffer(0, handle_2.bind()),
-    )?;
+    let (handle_2, receiver_2) = instance.mailbox().open_once_port::<bool>();
+    device_2_actor.send(instance, InitializeBuffer(0, handle_2.bind()))?;
     receiver_2.recv().await?;
 
     // Get the remote buffer handle from device 1
-    let (handle_remote, receiver_remote) =
-        device_1_proc_mesh.client().open_once_port::<RdmaBuffer>();
-    device_1_actor.send(
-        device_1_proc_mesh.client(),
-        GetBufferHandle(handle_remote.bind()),
-    )?;
+    let (handle_remote, receiver_remote) = instance.mailbox().open_once_port::<RdmaBuffer>();
+    device_1_actor.send(instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_1 = receiver_remote.recv().await?;
 
-    let (handle_remote, receiver_remote) =
-        device_2_proc_mesh.client().open_once_port::<RdmaBuffer>();
-    device_2_actor.send(
-        device_2_proc_mesh.client(),
-        GetBufferHandle(handle_remote.bind()),
-    )?;
+    let (handle_remote, receiver_remote) = instance.mailbox().open_once_port::<RdmaBuffer>();
+    device_2_actor.send(instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_2 = receiver_remote.recv().await?;
 
     // Perform RDMA write from device 2 to device 1 using the remote buffer
-    let (handle_2, receiver_2) = device_2_proc_mesh.client().open_once_port::<bool>();
-    let (handle_1, receiver_1) = device_1_proc_mesh.client().open_once_port::<bool>();
+    let (handle_2, receiver_2) = instance.mailbox().open_once_port::<bool>();
+    let (handle_1, receiver_1) = instance.mailbox().open_once_port::<bool>();
 
     device_2_actor.send(
-        device_2_proc_mesh.client(),
+        instance,
         PerformPingPong(
             device_1_actor.clone(),
             buffer_1,
@@ -826,7 +822,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     )?;
     receiver_2.recv().await?;
     device_1_actor.send(
-        device_1_proc_mesh.client(),
+        instance,
         PerformPingPong(
             device_2_actor.clone(),
             buffer_2,
@@ -837,16 +833,16 @@ pub async fn run() -> Result<(), anyhow::Error> {
     )?;
     receiver_1.recv().await?;
 
-    let (handle, receiver) = device_2_proc_mesh.client().open_once_port::<bool>();
+    let (handle, receiver) = instance.mailbox().open_once_port::<bool>();
     device_2_actor.send(
-        device_2_proc_mesh.client(),
+        instance,
         VerifyBuffer(expected_data_values.clone(), handle.bind()),
     )?;
     let verification_result2 = receiver.recv().await?;
 
-    let (handle, receiver) = device_1_proc_mesh.client().open_once_port::<bool>();
+    let (handle, receiver) = instance.mailbox().open_once_port::<bool>();
     device_1_actor.send(
-        device_1_proc_mesh.client(),
+        instance,
         VerifyBuffer(expected_data_values.clone(), handle.bind()),
     )?;
     let verification_result1 = receiver.recv().await?;

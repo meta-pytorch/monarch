@@ -40,8 +40,6 @@ pub mod test_utils;
 mod testresource;
 pub mod v1;
 
-pub use actor_mesh::RootActorMesh;
-pub use actor_mesh::SlicedActorMesh;
 pub use bootstrap::Bootstrap;
 pub use bootstrap::bootstrap;
 pub use bootstrap::bootstrap_or_die;

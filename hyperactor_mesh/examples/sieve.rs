@@ -23,15 +23,17 @@ use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::context::Mailbox;
 use hyperactor_config::Attrs;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::extent;
 use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::v1::ActorMesh;
+use ndslice::View;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -125,24 +127,23 @@ async fn main() -> Result<ExitCode> {
         })
         .await?;
 
-    let mesh = ProcMesh::allocate(alloc).await?;
-
     let instance = global_root_client();
 
+    let mesh = ProcMesh::allocate(instance, Box::new(alloc), "sieve").await?;
+
     let sieve_params = SieveParams { prime: 2 };
-    let sieve_mesh: RootActorMesh<SieveActor> =
-        mesh.spawn(&instance, "sieve", &sieve_params).await?;
+    let sieve_mesh: ActorMesh<SieveActor> = mesh.spawn(instance, "sieve", &sieve_params).await?;
     let sieve_head = sieve_mesh.get(0).unwrap();
 
     let mut primes = vec![2];
     let mut candidate = 3;
 
-    let (prime_collector_tx, mut prime_collector_rx) = mesh.client().open_port();
+    let (prime_collector_tx, mut prime_collector_rx) = instance.mailbox().open_port();
     let prime_collector_ref = prime_collector_tx.bind();
 
     while primes.len() < 100 {
         sieve_head.send(
-            mesh.client(),
+            instance,
             NextNumber {
                 number: candidate,
                 prime_collector: prime_collector_ref.clone(),
