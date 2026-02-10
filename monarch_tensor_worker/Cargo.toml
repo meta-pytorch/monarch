@@ -21,7 +21,7 @@ monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 sorted-vec = "0.8.10"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
