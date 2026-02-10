@@ -7,7 +7,6 @@
  */
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -23,8 +22,6 @@ use futures::TryStreamExt;
 use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
@@ -34,24 +31,15 @@ use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::forward;
 use hyperactor_config::Attrs;
-use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::SlicedActorMesh;
-use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
-use hyperactor_mesh::reference::ActorMeshId;
-use hyperactor_mesh::reference::ActorMeshRef;
-use hyperactor_mesh::reference::ProcMeshId;
-use hyperactor_mesh::sel;
 use hyperactor_mesh::v1;
 use lazy_errors::ErrorStash;
 use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::sender;
-use ndslice::Point;
-use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
-use ndslice::View;
+use ndslice::view::Ranked;
 use ndslice::view::RankedSliceable;
 use ndslice::view::ViewExt;
 use serde::Deserialize;
@@ -141,18 +129,6 @@ impl WorkspaceShape {
                 .take_while(|(l, _)| Some(l) != self.dimension.as_ref())
                 .collect::<Vec<_>>(),
         )?)
-    }
-
-    fn downstream_mesh_v0(&self, actor_id: &ActorId) -> Result<ActorMeshRef<CodeSyncManager>> {
-        let shape = self.downstream(actor_id.rank())?;
-        Ok(ActorMeshRef::attest(
-            ActorMeshId::V0(
-                ProcMeshId(actor_id.world_name().to_owned()),
-                actor_id.name().to_string(),
-            ),
-            shape,
-            ActorRef::attest(actor_id.proc_id().actor_id("comm", 0)),
-        ))
     }
 
     fn downstream_mesh(
@@ -314,38 +290,24 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             if let Some(workspace_shape) = reload {
                 let (tx, rx) = cx.open_port::<Result<(), String>>();
                 let tx = tx.bind();
-                let len;
-                if let Some(rank) = self.rank.get() {
-                    let mesh = self
-                        .self_mesh
-                        .get()
-                        .ok_or_else(|| anyhow::anyhow!("missing self mesh"))?;
-                    let mesh = workspace_shape.downstream_mesh(mesh, *rank)?;
-                    mesh.cast(
-                        cx,
-                        CodeSyncMessage::Reload {
-                            sender_rank: Some(*rank),
-                            result: tx.clone(),
-                        },
-                    )?;
-                    // Exclude self from the sync.
-                    len = mesh.region().slice().len() - 1;
-                } else {
-                    let mesh = workspace_shape.downstream_mesh_v0(cx.self_id())?;
-                    mesh.cast(
-                        cx,
-                        // We make sure to exclude the current rank from the sync, as this actor will
-                        // be blocked here waiting for results.  We just manually call `reload` to run
-                        // concurrently below.
-                        sel!(*)
-                            .without(mesh.shape().slice(), &HashSet::from([cx.self_id().rank()]))?,
-                        CodeSyncMessage::Reload {
-                            sender_rank: None,
-                            result: tx.clone(),
-                        },
-                    )?;
-                    len = mesh.shape().slice().len();
-                }
+                let rank = self
+                    .rank
+                    .get()
+                    .ok_or_else(|| anyhow::anyhow!("missing rank"))?;
+                let mesh = self
+                    .self_mesh
+                    .get()
+                    .ok_or_else(|| anyhow::anyhow!("missing self mesh"))?;
+                let mesh = workspace_shape.downstream_mesh(mesh, *rank)?;
+                mesh.cast(
+                    cx,
+                    CodeSyncMessage::Reload {
+                        sender_rank: Some(*rank),
+                        result: tx.clone(),
+                    },
+                )?;
+                // Exclude self from the sync.
+                let len = Ranked::region(&mesh).num_ranks() - 1;
                 let _: ((), Vec<()>) = try_join!(
                     // Run reload for this rank.
                     self.reload(cx, self.rank.get().cloned(), tx),
@@ -434,7 +396,7 @@ pub enum CodeSyncMethod {
 
 pub async fn code_sync_mesh(
     cx: &impl context::Actor,
-    actor_mesh: &RootActorMesh<'_, CodeSyncManager>,
+    actor_mesh: &v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
     local_workspace: PathBuf,
     remote_workspace: WorkspaceConfig,
     method: CodeSyncMethod,
@@ -444,8 +406,9 @@ pub async fn code_sync_mesh(
 
     // Create a slice of the actor mesh that only includes workspace "owners" (e.g. on multi-GPU hosts,
     // only one of the ranks on that host will participate in the code sync).
-    let actor_mesh = SlicedActorMesh::new(actor_mesh, remote_workspace.shape.owners()?);
-    let shape = actor_mesh.shape().clone();
+    let owner_shape = remote_workspace.shape.owners()?;
+    let actor_mesh = actor_mesh.sliced(owner_shape.region());
+    let num_ranks = Ranked::region(&actor_mesh).num_ranks();
 
     let (method, method_fut) = match method {
         CodeSyncMethod::Rsync => {
@@ -467,7 +430,7 @@ pub async fn code_sync_mesh(
                 // them to the rsync daemon above.
                 async move {
                     let res = rsync_conns_rx
-                        .take(shape.slice().len())
+                        .take(num_ranks)
                         .err_into::<anyhow::Error>()
                         .try_for_each_concurrent(None, |connect| async move {
                             let (mut local, mut stream) = try_join!(
@@ -496,7 +459,7 @@ pub async fn code_sync_mesh(
                 },
                 async move {
                     conns_rx
-                        .take(shape.slice().len())
+                        .take(num_ranks)
                         .err_into::<anyhow::Error>()
                         .try_for_each_concurrent(None, |connect| async {
                             let (mut read, mut write) =
@@ -527,7 +490,6 @@ pub async fn code_sync_mesh(
             let (result_tx, result_rx) = instance.open_port::<Result<(), String>>();
             actor_mesh.cast(
                 instance,
-                sel!(*),
                 CodeSyncMessage::Sync {
                     method,
                     workspace: remote_workspace.location.clone(),
@@ -541,10 +503,7 @@ pub async fn code_sync_mesh(
             )?;
 
             // Wait for all actors to report result.
-            let results = result_rx
-                .take(actor_mesh.shape().slice().len())
-                .try_collect::<Vec<_>>()
-                .await?;
+            let results = result_rx.take(num_ranks).try_collect::<Vec<_>>().await?;
 
             // Combine all errors into one.
             let mut errs = ErrorStash::<_, _, anyhow::Error>::new(|| "remote failures");
@@ -566,8 +525,8 @@ mod tests {
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::local::LocalAllocator;
-    use hyperactor_mesh::proc_mesh::ProcMesh;
     use hyperactor_mesh::proc_mesh::global_root_client;
+    use hyperactor_mesh::v1::ProcMesh;
     use ndslice::extent;
     use ndslice::shape;
     use tempfile::TempDir;
@@ -665,19 +624,27 @@ mod tests {
             })
             .await?;
 
-        let proc_mesh = ProcMesh::allocate(alloc).await?;
-
-        // Create CodeSyncManagerParams
-        let params = CodeSyncManagerParams {};
-
         // TODO: thread through context, or access the actual python context;
         // for now this is basically equivalent (arguably better) to using the proc mesh client.
         let instance = global_root_client();
 
+        let proc_mesh = ProcMesh::allocate(&instance, Box::new(alloc), "code_sync_test").await?;
+
+        // Create CodeSyncManagerParams
+        let params = CodeSyncManagerParams {};
+
         // Spawn actor mesh with CodeSyncManager actors
-        let actor_mesh: RootActorMesh<CodeSyncManager> = proc_mesh
-            .spawn(&instance, "code_sync_test", &params)
+        let actor_mesh = proc_mesh
+            .spawn_service(&instance, "code_sync_test", &params)
             .await?;
+
+        // Set up the mesh reference on each actor
+        actor_mesh.cast(
+            &instance,
+            SetActorMeshMessage {
+                actor_mesh: (*actor_mesh).clone(),
+            },
+        )?;
 
         // Create workspace configuration
         let remote_workspace_config = WorkspaceConfig {
