@@ -115,7 +115,7 @@ where
                                 let bound = py_result.bind(py);
                                 let mut total: usize = 0;
                                 // Iterate the ValueMesh
-                                if let Ok(iter) = bound.iter() {
+                                if let Ok(iter) = bound.try_iter() {
                                     for item in iter {
                                         if let Ok(tuple) = item {
                                             // Each item is (rank_dict, count) - get second element
