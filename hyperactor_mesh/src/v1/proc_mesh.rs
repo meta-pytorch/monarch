@@ -43,8 +43,8 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
-use hyperactor_telemetry::MeshEvent;
-use hyperactor_telemetry::notify_mesh_created;
+use hyperactor_telemetry::ActorMeshEvent;
+use hyperactor_telemetry::notify_actor_mesh_created;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -1144,7 +1144,7 @@ impl ProcMeshRef {
             let shape_json =
                 serde_json::to_string(&self.region().extent()).unwrap_or_else(|_| "{}".to_string());
 
-            notify_mesh_created(MeshEvent {
+            notify_actor_mesh_created(ActorMeshEvent {
                 id: mesh_id,
                 timestamp: RealClock.system_time_now(),
                 class: type_name::<A>().to_string(),

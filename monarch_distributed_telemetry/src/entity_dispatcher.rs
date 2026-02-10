@@ -8,12 +8,12 @@
 
 //! EntityDispatcher - Dispatches entity lifecycle events to Arrow RecordBatches
 //!
-//! Handles actor and mesh creation events, buffering them and flushing
+//! Handles actor and actor mesh creation events, buffering them and flushing
 //! to tables when the buffer reaches the configured batch size.
 //!
 //! Produces two tables:
 //! - `actors`: Actor creation events
-//! - `meshes`: Mesh creation events
+//! - `actor_meshes`: Actor mesh creation events
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -43,32 +43,32 @@ pub struct Actor {
     pub full_name: String,
 }
 
-/// Row data for the meshes table.
-/// Logged when meshes are created.
+/// Row data for the actor_meshes table.
+/// Logged when actor meshes are created.
 #[derive(RecordBatchRow)]
-pub struct Mesh {
-    /// Unique identifier for this mesh
+pub struct ActorMesh {
+    /// Unique identifier for this actor mesh
     pub id: u64,
     /// Timestamp in microseconds since Unix epoch
     pub timestamp_us: i64,
-    /// Mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
+    /// Actor mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
     pub class: String,
-    /// User-provided name for this mesh
+    /// User-provided name for this actor mesh
     pub given_name: String,
     /// Full hierarchical name as it appears in supervision events
     pub full_name: String,
-    /// Shape of the mesh, serialized from ndslice::Shape (labels + slice topology)
+    /// Shape of the actor mesh, serialized from ndslice::Shape (labels + slice topology)
     pub shape_json: String,
-    /// Parent mesh ID (None for root meshes)
+    /// Parent actor mesh ID (None for root meshes)
     pub parent_mesh_id: Option<u64>,
-    /// Region over which the parent spawned this mesh, serialized from ndslice::Region
+    /// Region over which the parent spawned this actor mesh, serialized from ndslice::Region
     pub parent_view_json: Option<String>,
 }
 
 /// Inner state of EntityDispatcher.
 struct EntityDispatcherInner {
     actors_buffer: ActorBuffer,
-    meshes_buffer: MeshBuffer,
+    actor_meshes_buffer: ActorMeshBuffer,
     batch_size: usize,
     flush_callback: FlushCallback,
 }
@@ -86,7 +86,11 @@ impl EntityDispatcherInner {
 
     fn flush(&mut self) -> anyhow::Result<()> {
         Self::flush_buffer(&mut self.actors_buffer, "actors", &self.flush_callback)?;
-        Self::flush_buffer(&mut self.meshes_buffer, "meshes", &self.flush_callback)?;
+        Self::flush_buffer(
+            &mut self.actor_meshes_buffer,
+            "actor_meshes",
+            &self.flush_callback,
+        )?;
         Ok(())
     }
 
@@ -97,15 +101,19 @@ impl EntityDispatcherInner {
         Ok(())
     }
 
-    fn flush_meshes_if_full(&mut self) -> anyhow::Result<()> {
-        if self.meshes_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.meshes_buffer, "meshes", &self.flush_callback)?;
+    fn flush_actor_meshes_if_full(&mut self) -> anyhow::Result<()> {
+        if self.actor_meshes_buffer.len() >= self.batch_size {
+            Self::flush_buffer(
+                &mut self.actor_meshes_buffer,
+                "actor_meshes",
+                &self.flush_callback,
+            )?;
         }
         Ok(())
     }
 }
 
-/// Dispatches entity lifecycle events (actors, meshes) to Arrow RecordBatches.
+/// Dispatches entity lifecycle events (actors, actor meshes) to Arrow RecordBatches.
 ///
 /// This is separate from RecordBatchSink which handles tracing events (spans, events).
 /// Both use the same FlushCallback pattern to push batches to the database scanner's tables.
@@ -127,14 +135,14 @@ impl EntityDispatcher {
     pub fn new(batch_size: usize, flush_callback: FlushCallback) -> Self {
         let inner = Arc::new(Mutex::new(EntityDispatcherInner {
             actors_buffer: ActorBuffer::default(),
-            meshes_buffer: MeshBuffer::default(),
+            actor_meshes_buffer: ActorMeshBuffer::default(),
             batch_size,
             flush_callback,
         }));
         Self { inner }
     }
 
-    /// Flush all buffers, emitting batches for actors and meshes tables.
+    /// Flush all buffers, emitting batches for actors and actor_meshes tables.
     ///
     /// This always emits batches for both tables, even if they are empty.
     /// The callback is expected to handle empty batches by creating the table
@@ -165,12 +173,12 @@ impl EntityEventDispatcher for EntityDispatcher {
                 });
                 inner.flush_actors_if_full()?;
             }
-            EntityEvent::Mesh(mesh_event) => {
+            EntityEvent::ActorMesh(mesh_event) => {
                 let mut inner = self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-                inner.meshes_buffer.insert(Mesh {
+                inner.actor_meshes_buffer.insert(ActorMesh {
                     id: mesh_event.id,
                     timestamp_us: timestamp_to_micros(&mesh_event.timestamp),
                     class: mesh_event.class.clone(),
@@ -180,7 +188,7 @@ impl EntityEventDispatcher for EntityDispatcher {
                     parent_mesh_id: mesh_event.parent_mesh_id,
                     parent_view_json: mesh_event.parent_view_json.clone(),
                 });
-                inner.flush_meshes_if_full()?;
+                inner.flush_actor_meshes_if_full()?;
             }
         }
         Ok(())

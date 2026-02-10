@@ -60,8 +60,8 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global;
-use hyperactor_telemetry::MeshEvent;
-use hyperactor_telemetry::notify_mesh_created;
+use hyperactor_telemetry::ActorMeshEvent;
+use hyperactor_telemetry::notify_actor_mesh_created;
 use ndslice::Range;
 use ndslice::Shape;
 use ndslice::ShapeError;
@@ -777,7 +777,7 @@ impl ProcMesh {
                     let shape_json = serde_json::to_string(self.shape()).unwrap_or_default();
                     let full_name = format!("{}/{}", self.world_id(), actor_name);
 
-                    notify_mesh_created(MeshEvent {
+                    notify_actor_mesh_created(ActorMeshEvent {
                         id: mesh_id,
                         timestamp: RealClock.system_time_now(),
                         class: std::any::type_name::<A>().to_string(),
