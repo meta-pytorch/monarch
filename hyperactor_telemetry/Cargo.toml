@@ -30,7 +30,7 @@ smallvec = { version = "1.15", features = ["impl_bincode", "serde", "specializat
 smol_str = "0.1.24"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
-tracing-appender = "0.2.3"
+tracing-appender = "0.2.4"
 tracing-core = { version = "0.1.33", features = ["valuable"] }
 tracing-glog = { version = "0.4.1", features = ["ansi", "tracing-log"] }
 tracing-perfetto-sdk-schema = "0.12.0"

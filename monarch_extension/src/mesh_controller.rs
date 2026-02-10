@@ -62,7 +62,6 @@ use monarch_messages::worker::WorkerParams;
 use monarch_tensor_worker::AssignRankMessage;
 use monarch_tensor_worker::WorkerActor;
 use ndslice::Slice;
-use ndslice::View;
 use ndslice::ViewExt;
 use ndslice::selection::ReifySlice;
 use ndslice::view::Ranked;
@@ -714,10 +713,6 @@ impl MeshControllerActor {
 
     fn workers_mut(&mut self) -> &mut ActorMesh<WorkerActor> {
         self.workers.as_mut().unwrap()
-    }
-
-    fn brokers(&self) -> &ActorMesh<LocalStateBrokerActor> {
-        self.brokers.as_ref().unwrap()
     }
 
     fn brokers_mut(&mut self) -> &mut ActorMesh<LocalStateBrokerActor> {
