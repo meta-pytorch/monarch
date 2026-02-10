@@ -17,7 +17,8 @@ use monarch_types::MapPyErr;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
 use pyo3::IntoPyObjectExt;
-use pyo3::PyObject;
+use pyo3::Py;
+use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
 use pyo3::pyclass;
@@ -51,14 +52,14 @@ pub fn channel() -> Result<(Sender, PyReceiver), nix::Error> {
 
 /// A blanket trait used to convert boxed objects into python objects.
 pub trait IntoPyObjectBox: Send {
-    fn into_py_object(self: Box<Self>, py: Python<'_>) -> PyResult<PyObject>;
+    fn into_py_object(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>>;
 }
 
 impl<T> IntoPyObjectBox for T
 where
     T: for<'py> IntoPyObject<'py> + Send,
 {
-    fn into_py_object(self: Box<Self>, py: Python<'_>) -> PyResult<PyObject> {
+    fn into_py_object(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         (*self).into_py_any(py)
     }
 }
@@ -118,7 +119,7 @@ impl std::fmt::Debug for PyReceiver {
 
 #[pymethods]
 impl PyReceiver {
-    fn try_recv(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn try_recv(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match self.rx.lock().unwrap().try_recv() {
             Ok(boxed_msg) => Ok(Some(boxed_msg.into_py_object(py)?)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
@@ -151,7 +152,7 @@ mod testing {
 
     #[pymethods]
     impl PyTestSender {
-        fn send(&self, _py: Python<'_>, obj: PyObject) -> PyResult<()> {
+        fn send(&self, _py: Python<'_>, obj: Py<PyAny>) -> PyResult<()> {
             self.sender.lock().unwrap().send(obj).map_pyerr()?;
             Ok(())
         }

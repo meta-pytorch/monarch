@@ -28,8 +28,8 @@ pub use pytree::PyTree;
 macro_rules! py_global {
     ($fn_name:ident, $python_module:literal, $python_class:literal) => {
         fn $fn_name<'py>(py: ::pyo3::Python<'py>) -> ::pyo3::Bound<'py, ::pyo3::PyAny> {
-            static CACHE: ::pyo3::sync::GILOnceCell<::pyo3::PyObject> =
-                ::pyo3::sync::GILOnceCell::new();
+            static CACHE: ::pyo3::sync::PyOnceLock<::pyo3::Py<::pyo3::PyAny>> =
+                ::pyo3::sync::PyOnceLock::new();
             CACHE
                 .import(py, $python_module, $python_class)
                 .unwrap()
