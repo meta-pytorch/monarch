@@ -38,6 +38,7 @@ use tracing::Span;
 use super::serialize_response;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
+use crate::channel::ChannelTransport;
 use crate::channel::net::Frame;
 use crate::channel::net::NetRx;
 use crate::channel::net::NetRxResponse;
@@ -46,6 +47,7 @@ use crate::channel::net::framed::FrameReader;
 use crate::channel::net::framed::FrameWrite;
 use crate::channel::net::framed::WriteState;
 use crate::channel::net::meta;
+use crate::channel::net::tls;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
@@ -704,7 +706,12 @@ where
                         let manager = manager.clone();
                         connections.spawn(async move {
                             let res = if is_tls {
-                                let conn = ServerConn::new(meta::tls_acceptor(true)?
+                                // Choose TLS acceptor based on transport type
+                                let tls_acceptor = match dest.transport() {
+                                    ChannelTransport::Tls => tls::tls_acceptor()?,
+                                    _ => meta::tls_acceptor(true)?,
+                                };
+                                let conn = ServerConn::new(tls_acceptor
                                     .accept(stream)
                                     .await?, source.clone(), dest.clone());
                                 manager.serve(conn, tx, child_cancel_token).await

@@ -18,6 +18,7 @@ class ChannelTransport(Enum):
     TcpWithHostname = "tcp(hostname)"
     MetaTlsWithHostname = "metatls(hostname)"
     MetaTlsWithIpV6 = "metatls(ipv6)"
+    Tls = "tls"
     Local = "local"
     Unix = "unix"
     # Sim  # TODO add support
