@@ -27,6 +27,7 @@ pub mod metrics;
 pub mod namespace;
 pub mod ndslice;
 pub mod proc;
+pub mod proc_launcher;
 pub mod proc_launcher_probe;
 pub mod proc_mesh;
 pub mod py_cell;

@@ -49,7 +49,8 @@ use nix::fcntl::fcntl;
 use nix::unistd::pipe;
 use nix::unistd::write;
 use pyo3::Bound;
-use pyo3::PyObject;
+use pyo3::Py;
+use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::prelude::*;
 use pyo3::pyclass;
@@ -81,7 +82,11 @@ impl Waker {
 
 /// Wakers are not intended to be used from Python; TestWaker
 /// is provided to faciliate pure-Python unit testing.
-#[pyclass(name = "TestWaker", module = "monarch._src.actor.waker")]
+// NOTE: We can't use a Python calss name that starts with "Test" since
+// during Python testing, Pytest will inspect anything that starts with
+// "Test" and check if its callable which in pyo3 >= 0.26 will raise
+// a TypeError.
+#[pyclass(name = "PyTestWaker", module = "monarch._src.actor.waker")]
 struct TestPyWaker(Waker);
 
 #[pymethods]
@@ -104,10 +109,10 @@ pub struct PyEvent {
     read_fd: RawFd,
 
     #[pyo3(get, set, name = "_event_loop")]
-    event_loop: Option<PyObject>,
+    event_loop: Option<Py<PyAny>>,
 
     #[pyo3(get, set, name = "_event")]
-    event: Option<PyObject>,
+    event: Option<Py<PyAny>>,
 }
 
 impl Drop for PyEvent {

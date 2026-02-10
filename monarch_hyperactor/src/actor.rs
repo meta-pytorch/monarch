@@ -177,10 +177,10 @@ wirevalue::register_type!(PythonMessage);
 struct ResolvedCallMethod {
     method: MethodSpecifier,
     bytes: FrozenBuffer,
-    local_state: PyObject,
+    local_state: Py<PyAny>,
     /// Implements PortProtocol
     /// Concretely either a Port, DroppingPort, or LocalPort
-    response_port: PyObject,
+    response_port: Py<PyAny>,
 }
 
 /// Message sent through the queue in queue-dispatch mode.
@@ -194,9 +194,9 @@ pub struct QueuedMessage {
     #[pyo3(get)]
     pub bytes: FrozenBuffer,
     #[pyo3(get)]
-    pub local_state: PyObject,
+    pub local_state: Py<PyAny>,
     #[pyo3(get)]
-    pub response_port: PyObject,
+    pub response_port: Py<PyAny>,
 }
 
 impl PythonMessage {
@@ -438,7 +438,7 @@ pub enum PythonActorDispatchMode {
 )]
 pub struct PythonActor {
     /// The Python object that we delegate message handling to.
-    actor: PyObject,
+    actor: Py<PyAny>,
     /// Stores a reference to the Python event loop to run Python coroutines on.
     /// This is None when using single runtime mode, Some when using per-actor mode.
     task_locals: Option<pyo3_async_runtimes::TaskLocals>,
@@ -457,11 +457,11 @@ impl PythonActor {
             |py| -> Result<Self, SerializablePyErr> {
                 let unpickled = actor_type.unpickle(py)?;
                 let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
-                let actor: PyObject = class_type.call0()?.into_py_any(py)?;
+                let actor: Py<PyAny> = class_type.call0()?.into_py_any(py)?;
 
                 // Only create per-actor TaskLocals if not using shared runtime
                 let task_locals = (!hyperactor_config::global::get(SHARED_ASYNCIO_RUNTIME))
-                    .then(|| Python::allow_threads(py, create_task_locals));
+                    .then(|| Python::detach(py, create_task_locals));
 
                 let dispatch_mode = if use_queue_dispatch {
                     let (sender, receiver) = pympsc::channel().map_err(|e| {
@@ -692,7 +692,7 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
     // may release/reacquire the GIL; if thread 0 holds the GIL blocking on ROOT_CLIENT_ACTOR.get_or_init
     // while thread 1 blocks on acquiring the GIL inside PythonActor::bootstrap_client, we get
     // a deadlock.
-    py.allow_threads(|| {
+    py.detach(|| {
         ROOT_CLIENT_ACTOR.get_or_init(|| {
             monarch_with_gil_blocking(|py| {
                 let (client, _handle) = PythonActor::bootstrap_client(py);
@@ -959,7 +959,7 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
 /// Get the shared TaskLocals, creating it if necessary.
 fn shared_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
     static SHARED_TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
-    Python::allow_threads(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
+    Python::detach(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
 }
 
 // [Panics in async endpoints]
@@ -999,12 +999,12 @@ fn shared_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
 // `PyTaskCompleter` callback explodes.
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 struct PanicFlag {
-    sender: Option<tokio::sync::oneshot::Sender<PyObject>>,
+    sender: Option<tokio::sync::oneshot::Sender<Py<PyAny>>>,
 }
 
 #[pymethods]
 impl PanicFlag {
-    fn signal_panic(&mut self, ex: PyObject) {
+    fn signal_panic(&mut self, ex: Py<PyAny>) {
         self.sender.take().unwrap().send(ex).unwrap();
     }
 }
@@ -1266,7 +1266,7 @@ impl Handler<MeshFailure> for PythonActor {
 async fn handle_async_endpoint_panic(
     panic_sender: PortHandle<Signal>,
     task: PythonTask,
-    side_channel: oneshot::Receiver<PyObject>,
+    side_channel: oneshot::Receiver<Py<PyAny>>,
     actor_id: String,
     endpoint: String,
 ) {
@@ -1338,7 +1338,7 @@ async fn handle_async_endpoint_panic(
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 struct LocalPort {
     instance: PyInstance,
-    inner: Option<OncePortHandle<Result<PyObject, PyObject>>>,
+    inner: Option<OncePortHandle<Result<Py<PyAny>, Py<PyAny>>>>,
 }
 
 impl Debug for LocalPort {
@@ -1358,12 +1358,12 @@ where
 
 #[pymethods]
 impl LocalPort {
-    fn send(&mut self, obj: PyObject) -> PyResult<()> {
+    fn send(&mut self, obj: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
         port.send(self.instance.deref(), Ok(obj))
             .map_err(to_py_error)
     }
-    fn exception(&mut self, e: PyObject) -> PyResult<()> {
+    fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
         port.send(self.instance.deref(), Err(e))
             .map_err(to_py_error)
@@ -1478,7 +1478,7 @@ mod tests {
         let rust_msg = err.to_string();
         let pyerr = to_py_error(err);
 
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         monarch_with_gil_blocking(|py| {
             assert!(pyerr.get_type(py).is(&PyValueError::type_object(py)));
             let py_msg = pyerr.value(py).to_string();

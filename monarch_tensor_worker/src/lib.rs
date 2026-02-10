@@ -231,7 +231,7 @@ impl RemoteSpawn for WorkerActor {
         }: Self::Params,
         _environment: Attrs,
     ) -> Result<Self> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             py.import("monarch.safe_torch").unwrap();
         });
         Ok(Self {
@@ -264,7 +264,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
         let point = cx.cast_point();
         self.rank = point.rank();
         self.respond_with_python_message = true;
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
             let p: PyPoint = point.into();
             mesh_controller
@@ -1457,7 +1457,7 @@ mod tests {
             )
             .unwrap();
         let (split_arg, sort_list, dim, layout, none, scalar, device, memory_format) =
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let split_arg: PickledPyObject = PyString::new(py, "/fbs/fbc/foo/bar")
                     .into_any()
                     .try_into()?;

@@ -268,12 +268,12 @@ static TYPEHASH_TO_INFO: std::sync::LazyLock<HashMap<u64, &'static PythonConfigT
 ///
 /// Looks up `key` in the full configuration
 /// (Defaults/File/Env/Runtime/ TestOverride), clones the `T`-typed
-/// value if present, converts it to `P`, then into a `PyObject`. If
+/// value if present, converts it to `P`, then into a `Py<PyAny>`. If
 /// the key is unset in all layers, returns `Ok(None)`.
 fn get_global_config_py<'py, P, T>(
     py: Python<'py>,
     key: &'static dyn ErasedKey,
-) -> PyResult<Option<PyObject>>
+) -> PyResult<Option<Py<PyAny>>>
 where
     T: AttrValue + TryInto<P>,
     P: IntoPyObjectExt<'py>,
@@ -301,11 +301,11 @@ where
 /// the `Source::Runtime` layer (ignoring
 /// TestOverride/Env/File/ClientOverride/defaults). If the key has a
 /// runtime override, it is cloned as `T`, converted to `P`, then to a
-/// `PyObject`; otherwise `Ok(None)` is returned.
+/// `Py<PyAny>`; otherwise `Ok(None)` is returned.
 fn get_runtime_config_py<'py, P, T>(
     py: Python<'py>,
     key: &'static dyn ErasedKey,
-) -> PyResult<Option<PyObject>>
+) -> PyResult<Option<Py<PyAny>>>
 where
     T: AttrValue + TryInto<P>,
     P: IntoPyObjectExt<'py>,
@@ -352,7 +352,7 @@ fn set_runtime_config_py<T: AttrValue + Debug>(
 ///
 /// Unknown keys or keys without a Python conversion registered result
 /// in a `ValueError` / `TypeError` back to Python.
-fn configure_kwarg(py: Python<'_>, name: &str, val: PyObject) -> PyResult<()> {
+fn configure_kwarg(py: Python<'_>, name: &str, val: Py<PyAny>) -> PyResult<()> {
     // Get the `ErasedKey` from the kwarg `name` passed to
     // `monarch.configure(...)`.
     let key = match KEY_BY_NAME.get(name) {
@@ -405,15 +405,15 @@ fn configure_kwarg(py: Python<'_>, name: &str, val: PyObject) -> PyResult<()> {
 struct PythonConfigTypeInfo {
     /// Identifies the underlying `T` (matches `T::typehash()`).
     typehash: fn() -> u64,
-    /// Read this key from the merged layered config into a PyObject.
+    /// Read this key from the merged layered config into a Py<PyAny>.
     get_global_config:
-        fn(py: Python<'_>, key: &'static dyn ErasedKey) -> PyResult<Option<PyObject>>,
+        fn(py: Python<'_>, key: &'static dyn ErasedKey) -> PyResult<Option<Py<PyAny>>>,
     /// Write a Python value into the Runtime layer for this key.
     set_runtime_config:
-        fn(py: Python<'_>, key: &'static dyn ErasedKey, val: PyObject) -> PyResult<()>,
-    /// Read this key from the Runtime layer into a PyObject.
+        fn(py: Python<'_>, key: &'static dyn ErasedKey, val: Py<PyAny>) -> PyResult<()>,
+    /// Read this key from the Runtime layer into a Py<PyAny>.
     get_runtime_config:
-        fn(py: Python<'_>, key: &'static dyn ErasedKey) -> PyResult<Option<PyObject>>,
+        fn(py: Python<'_>, key: &'static dyn ErasedKey) -> PyResult<Option<Py<PyAny>>>,
 }
 
 // Collect all `PythonConfigTypeInfo` instances registered by
@@ -502,7 +502,7 @@ declare_py_config_type!(
 /// we keep the shorter name for API stability.
 #[pyfunction]
 #[pyo3(signature = (**kwargs))]
-fn configure(py: Python<'_>, kwargs: Option<HashMap<String, PyObject>>) -> PyResult<()> {
+fn configure(py: Python<'_>, kwargs: Option<HashMap<String, Py<PyAny>>>) -> PyResult<()> {
     kwargs
         .map(|kwargs| {
             kwargs.into_iter().try_for_each(|(key, val)| {
@@ -536,7 +536,7 @@ fn configure(py: Python<'_>, kwargs: Option<HashMap<String, PyObject>>) -> PyRes
 /// such keys that currently have a value in the global config; keys
 /// with no value in any layer are omitted.
 #[pyfunction]
-fn get_global_config(py: Python<'_>) -> PyResult<HashMap<String, PyObject>> {
+fn get_global_config(py: Python<'_>) -> PyResult<HashMap<String, Py<PyAny>>> {
     KEY_BY_NAME
         .iter()
         .filter_map(|(name, key)| match TYPEHASH_TO_INFO.get(&key.typehash()) {
@@ -575,7 +575,7 @@ fn get_global_config(py: Python<'_>) -> PyResult<HashMap<String, PyObject>> {
 /// all layers (File, Env, Runtime, TestOverride, defaults), this
 /// returns only what's explicitly set in the Runtime layer.
 #[pyfunction]
-fn get_runtime_config(py: Python<'_>) -> PyResult<HashMap<String, PyObject>> {
+fn get_runtime_config(py: Python<'_>) -> PyResult<HashMap<String, Py<PyAny>>> {
     KEY_BY_NAME
         .iter()
         .filter_map(|(name, key)| match TYPEHASH_TO_INFO.get(&key.typehash()) {
@@ -666,8 +666,8 @@ mod tests {
 
     #[test]
     fn test_pyduration_parse_valid_formats() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // Test various valid duration formats
             let s = PyString::new(py, "30s");
             let d: PyDuration = s.extract().unwrap();
@@ -693,8 +693,8 @@ mod tests {
 
     #[test]
     fn test_pyduration_parse_invalid_format() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let s = PyString::new(py, "invalid");
             let result: PyResult<PyDuration> = s.extract();
             assert!(result.is_err());
@@ -705,8 +705,8 @@ mod tests {
 
     #[test]
     fn test_pyduration_roundtrip() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let original = Duration::from_secs(42);
             let py_duration = PyDuration(original);
             let py_obj = py_duration.into_pyobject(py).unwrap();
@@ -717,8 +717,8 @@ mod tests {
 
     #[test]
     fn test_pyencoding_enum_variants() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // Test all enum variants roundtrip
             for variant in [PyEncoding::Bincode, PyEncoding::Json, PyEncoding::Multipart] {
                 let py_obj = Bound::new(py, variant).unwrap().into_any();
@@ -730,8 +730,8 @@ mod tests {
 
     #[test]
     fn test_pyencoding_rejects_strings() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|_py| {
+        Python::initialize();
+        Python::attach(|_py| {
             // Strings ought not to work
             let s = PyString::new(_py, "bincode");
             let result: PyResult<PyEncoding> = s.extract();
@@ -741,8 +741,8 @@ mod tests {
 
     #[test]
     fn test_pyencoding_conversions() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|_py| {
+        Python::initialize();
+        Python::attach(|_py| {
             // Test Rust enum -> PyEncoding -> Rust enum
             let rust_enc = wirevalue::Encoding::Bincode;
             let py_enc: PyEncoding = rust_enc.into();
@@ -765,8 +765,8 @@ mod tests {
 
     #[test]
     fn test_pyencoding_roundtrip() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let original = wirevalue::Encoding::Multipart;
             let py_encoding: PyEncoding = original.into();
             let py_obj = Bound::new(py, py_encoding).unwrap().into_any();
@@ -778,8 +778,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_parse_slice_format() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let slice = pyo3::types::PySlice::new(py, 8000, 9000, 1);
             let r: PyPortRange = slice.extract().unwrap();
             assert_eq!(r.0.start, 8000);
@@ -789,8 +789,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_reject_tuples_and_strings() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // Tuples should not work
             let tuple = PyTuple::new(py, [8000u16, 9000u16]).unwrap();
             let result: PyResult<PyPortRange> = tuple.extract();
@@ -805,8 +805,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_reject_backwards_range() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // start > stop should be rejected
             let slice = pyo3::types::PySlice::new(py, 9000, 8000, 1);
             let result: PyResult<PyPortRange> = slice.extract();
@@ -818,8 +818,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_reject_invalid_step() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // step != 1 and step != None should be rejected
             let slice = pyo3::types::PySlice::new(py, 8000, 9000, 2);
             let result: PyResult<PyPortRange> = slice.extract();
@@ -831,8 +831,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_reject_none_start() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // slice(None, 9000) should be rejected
             // Create via Python eval since PySlice::new doesn't support None
             let slice = py.eval(c"slice(None, 9000)", None, None).unwrap();
@@ -845,8 +845,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_reject_none_stop() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // slice(8000, None) should be rejected
             // Create via Python eval since PySlice::new doesn't support None
             let slice = py.eval(c"slice(8000, None)", None, None).unwrap();
@@ -859,8 +859,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_allow_empty_range() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             // start == stop should be allowed (empty range)
             let slice = pyo3::types::PySlice::new(py, 8000, 8000, 1);
             let r: PyPortRange = slice.extract().unwrap();
@@ -872,8 +872,8 @@ mod tests {
 
     #[test]
     fn test_pyportrange_roundtrip() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let original = 8000..9000;
             let py_range = PyPortRange(original.clone());
             let py_obj = py_range.into_pyobject(py).unwrap();
