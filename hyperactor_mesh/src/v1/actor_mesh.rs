@@ -212,7 +212,7 @@ impl<A: Referable> ActorMesh<A> {
                         .actor_id()
                         .clone(),
                     None,
-                    ActorStatus::Stopped,
+                    ActorStatus::Stopped("actor mesh explicitly stopped".to_string()),
                     None,
                 ),
             }));
@@ -830,7 +830,7 @@ impl<A: Referable> ActorMeshRef<A> {
         }
         health_state.unhealthy_event = match &event.actor_status {
             ActorStatus::Failed(_) => Some(Unhealthy::Crashed(message.clone())),
-            ActorStatus::Stopped => Some(Unhealthy::StreamClosed(message.clone())),
+            ActorStatus::Stopped(_) => Some(Unhealthy::StreamClosed(message.clone())),
             _ => None,
         };
         Ok(message)
@@ -1577,6 +1577,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
     async fn test_actor_mesh_stop_graceful() {
+        use std::assert_matches::assert_matches;
+
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
@@ -1634,7 +1636,7 @@ mod tests {
             next_event.actor_mesh_name,
             Some(mesh_ref.name().to_string())
         );
-        assert_eq!(next_event.event.actor_status, ActorStatus::Stopped);
+        assert_matches!(next_event.event.actor_status, ActorStatus::Stopped(_));
         // Check that a cloned Ref from earlier gets the same event. Every clone
         // should get the same event, even if it's not a subscriber.
         let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
@@ -1642,6 +1644,6 @@ mod tests {
             next_event.actor_mesh_name,
             Some(mesh_ref.name().to_string())
         );
-        assert_eq!(next_event.event.actor_status, ActorStatus::Stopped);
+        assert_matches!(next_event.event.actor_status, ActorStatus::Stopped(_));
     }
 }

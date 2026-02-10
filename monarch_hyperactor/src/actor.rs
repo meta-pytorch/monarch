@@ -41,6 +41,7 @@ use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::MeshFailure;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
+use ndslice::Point;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
@@ -923,7 +924,10 @@ impl Actor for PythonActor {
 impl RemoteSpawn for PythonActor {
     type Params = PickledPyObject;
 
-    async fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
+    async fn new(
+        actor_type: PickledPyObject,
+        _environment: hyperactor_config::Attrs,
+    ) -> Result<Self, anyhow::Error> {
         Self::new(actor_type)
     }
 }

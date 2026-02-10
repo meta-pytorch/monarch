@@ -30,6 +30,7 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::forward;
+use hyperactor_config::Attrs;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
 use lazy_errors::ErrorStash;
@@ -195,7 +196,7 @@ impl Actor for CodeSyncManager {}
 impl RemoteSpawn for CodeSyncManager {
     type Params = CodeSyncManagerParams;
 
-    async fn new(CodeSyncManagerParams {}: Self::Params) -> Result<Self> {
+    async fn new(CodeSyncManagerParams {}: Self::Params, _environment: Attrs) -> Result<Self> {
         Ok(Self {
             rsync: OnceCell::new(),
             auto_reload: OnceCell::new(),
