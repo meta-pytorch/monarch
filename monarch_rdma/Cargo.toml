@@ -12,6 +12,7 @@ anyhow = "1.0.98"
 async-trait = "0.1.86"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 rand = { version = "0.9", features = ["small_rng"] }
 rdmaxcel-sys = { path = "../rdmaxcel-sys" }
 regex = "1.12.2"
