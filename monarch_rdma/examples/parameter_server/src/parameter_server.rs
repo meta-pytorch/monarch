@@ -70,21 +70,20 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
+use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::global_root_client;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use ndslice::extent;
-use ndslice::selection;
+use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
@@ -483,15 +482,19 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     ));
 
     let ps_proc_mesh = ProcMesh::allocate(
-        alloc
-            .allocate(AllocSpec {
-                extent: extent! {replica=1, host=1, gpu=1},
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await?,
+        instance,
+        Box::new(
+            alloc
+                .allocate(AllocSpec {
+                    extent: extent! {replica=1, host=1, gpu=1},
+                    constraints: Default::default(),
+                    proc_name: None,
+                    transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
+                })
+                .await?,
+        ),
+        "ps",
     )
     .await?;
 
@@ -504,23 +507,27 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // host for any actors using RdmaBuffer.
     // We spin this up manually here, but in Python-land we assume this will
     // be spun up with the PyProcMesh.
-    let ps_rdma_manager: RootActorMesh<'_, RdmaManagerActor> = ps_proc_mesh
-        .spawn(&instance, "ps_rdma_manager", &Some(ps_ibv_config))
+    let ps_rdma_manager: ActorMesh<RdmaManagerActor> = ps_proc_mesh
+        .spawn(instance, "ps_rdma_manager", &Some(ps_ibv_config))
         .await
         .unwrap();
 
     // Create a proc mesh for workers, where each worker is assigned to its own GPU.
     tracing::info!("creating worker proc mesh ({} workers)...", num_workers);
     let worker_proc_mesh = ProcMesh::allocate(
-        alloc
-            .allocate(AllocSpec {
-                extent: extent! {replica=1, host=1, gpu=num_workers},
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await?,
+        instance,
+        Box::new(
+            alloc
+                .allocate(AllocSpec {
+                    extent: extent! {replica=1, host=1, gpu=num_workers},
+                    constraints: Default::default(),
+                    proc_name: None,
+                    transport: ChannelTransport::Unix,
+                    proc_allocation_mode: Default::default(),
+                })
+                .await?,
+        ),
+        "workers",
     )
     .await?;
 
@@ -529,66 +536,51 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         worker_ibv_config
     );
     // Similarly, create an RdmaManagerActor corresponding to each worker.
-    let worker_rdma_manager_mesh: RootActorMesh<'_, RdmaManagerActor> = worker_proc_mesh
-        .spawn(&instance, "ps_rdma_manager", &Some(worker_ibv_config))
+    let worker_rdma_manager_mesh: ActorMesh<RdmaManagerActor> = worker_proc_mesh
+        .spawn(instance, "ps_rdma_manager", &Some(worker_ibv_config))
         .await
         .unwrap();
 
     tracing::info!("spawning parameter server");
-    let ps_actor_mesh: RootActorMesh<'_, ParameterServerActor> = ps_proc_mesh
+    let ps_actor_mesh: ActorMesh<ParameterServerActor> = ps_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "parameter_server",
-            &(ps_rdma_manager.iter().next().unwrap(), num_workers),
+            &(ps_rdma_manager.get(0).unwrap().clone(), num_workers),
         )
         .await
         .unwrap();
 
     // The parameter server is a single actor, we can just grab it and call it directly.
-    let ps_actor = ps_actor_mesh.iter().next().unwrap();
+    let ps_actor = ps_actor_mesh.get(0).unwrap();
 
     tracing::info!("spawning worker actors");
-    let worker_actor_mesh: RootActorMesh<'_, WorkerActor> = worker_proc_mesh
-        .spawn(&instance, "worker_actors", &())
+    let worker_actor_mesh: ActorMesh<WorkerActor> = worker_proc_mesh
+        .spawn(instance, "worker_actors", &())
         .await
         .unwrap();
 
     let worker_rdma_managers: Vec<ActorRef<RdmaManagerActor>> =
-        worker_rdma_manager_mesh.iter().collect();
+        (0..Ranked::region(&*worker_rdma_manager_mesh).num_ranks())
+            .map(|i| worker_rdma_manager_mesh.get(i).unwrap().clone())
+            .collect();
 
     // We intentionally decouple spawning with initialization, which is fairly common in Ray workloads
     // In this case, we use it for dual purpose - be able to use the cast APIs to assign rank (Monarch specific) and
     // to get access to return values for error messaging (applies to both Monarch and Ray)
     tracing::info!("initializing worker actor mesh");
     worker_actor_mesh
-        .cast(
-            worker_proc_mesh.client(),
-            selection::selection_from(worker_actor_mesh.shape(), &[("gpu", 0..num_workers)])
-                .unwrap(),
-            WorkerInit(ps_actor.clone(), worker_rdma_managers),
-        )
+        .cast(instance, WorkerInit(ps_actor.clone(), worker_rdma_managers))
         .unwrap();
 
     tracing::info!("starting training loop");
     for step in 0..num_steps {
         tracing::info!("===== starting step {} =====", step);
-        worker_actor_mesh
-            .cast(
-                worker_proc_mesh.client(),
-                selection::selection_from(worker_actor_mesh.shape(), &[("gpu", 0..num_workers)])
-                    .unwrap(),
-                Log {},
-            )
-            .unwrap();
+        worker_actor_mesh.cast(instance, Log {}).unwrap();
 
-        let (handle, mut recv) = worker_proc_mesh.client().open_port::<bool>();
+        let (handle, mut recv) = instance.mailbox().open_port::<bool>();
         worker_actor_mesh
-            .cast(
-                worker_proc_mesh.client(),
-                selection::selection_from(worker_actor_mesh.shape(), &[("gpu", 0..num_workers)])
-                    .unwrap(),
-                WorkerStep(handle.bind()),
-            )
+            .cast(instance, WorkerStep(handle.bind()))
             .unwrap();
 
         let mut results = Vec::new();
@@ -600,24 +592,17 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
             panic!("worker update step did not complete properly.");
         }
 
-        let (handle, recv) = worker_proc_mesh.client().open_once_port::<bool>();
-        ps_actor
-            .send(ps_proc_mesh.client(), PsUpdate(handle.bind()))
-            .unwrap();
+        let (handle, recv) = instance.mailbox().open_once_port::<bool>();
+        ps_actor.send(instance, PsUpdate(handle.bind())).unwrap();
 
         let finished = recv.recv().await.unwrap();
         if !finished {
             panic!("ps actor step did not complete properly");
         }
 
-        let (handle, mut recv) = worker_proc_mesh.client().open_port::<bool>();
+        let (handle, mut recv) = instance.mailbox().open_port::<bool>();
         worker_actor_mesh
-            .cast(
-                worker_proc_mesh.client(),
-                selection::selection_from(worker_actor_mesh.shape(), &[("gpu", 0..num_workers)])
-                    .unwrap(),
-                WorkerUpdate(handle.bind()),
-            )
+            .cast(instance, WorkerUpdate(handle.bind()))
             .unwrap();
 
         let mut results = Vec::new();
@@ -628,7 +613,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         if !results.iter().any(|&result| result) {
             panic!("worker update step did not complete properly.");
         }
-        ps_actor.send(ps_proc_mesh.client(), Log {}).unwrap();
+        ps_actor.send(instance, Log {}).unwrap();
     }
     Ok(())
 }

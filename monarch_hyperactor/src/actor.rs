@@ -34,14 +34,13 @@ use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
-use hyperactor_mesh::actor_mesh::update_undeliverable_envelope_for_casting;
+use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::proc_mesh::default_bind_spec;
 use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::MeshFailure;
+use hyperactor_mesh::transport::default_bind_spec;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
-use ndslice::Point;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
@@ -1390,11 +1389,11 @@ mod tests {
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
     use hyperactor::reference::UnboundPort;
+    use hyperactor_mesh::Error as MeshError;
+    use hyperactor_mesh::Name;
+    use hyperactor_mesh::host_mesh::mesh_agent::ProcState;
     use hyperactor_mesh::resource::Status;
     use hyperactor_mesh::resource::{self};
-    use hyperactor_mesh::v1::Error as MeshError;
-    use hyperactor_mesh::v1::Name;
-    use hyperactor_mesh::v1::host_mesh::mesh_agent::ProcState;
     use pyo3::PyTypeInfo;
 
     use super::*;
@@ -1480,7 +1479,7 @@ mod tests {
 
         pyo3::Python::initialize();
         monarch_with_gil_blocking(|py| {
-            assert!(pyerr.get_type(py).is(&PyValueError::type_object(py)));
+            assert!(pyerr.get_type(py).is(PyValueError::type_object(py)));
             let py_msg = pyerr.value(py).to_string();
 
             // 1) Bridge preserves the exact message
@@ -1489,7 +1488,7 @@ mod tests {
             assert!(py_msg.contains(", state: "));
             assert!(py_msg.contains("\"status\":{\"Failed\":\"boom\"}"));
             // 3) Starts with the expected prefix
-            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::v1::host_mesh::mesh_agent::HostMeshAgent>";
+            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent>";
             assert!(py_msg.starts_with(expected_prefix));
         });
     }

@@ -46,13 +46,25 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::Bootstrap;
+use crate::Name;
+use crate::ProcMesh;
+use crate::ProcMeshRef;
+use crate::ValueMesh;
 use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
+use crate::host_mesh::mesh_agent::HostAgentMode;
+pub use crate::host_mesh::mesh_agent::HostMeshAgent;
+use crate::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
+use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::mesh_agent::ShutdownHostClient;
 use crate::mesh_admin::MeshAdminAgent;
 use crate::mesh_admin::MeshAdminMessageClient;
-use crate::proc_mesh::DEFAULT_TRANSPORT;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::mesh_agent::ProcMeshAgent;
+use crate::mesh_controller::HostMeshController;
+use crate::mesh_controller::ProcMeshController;
+use crate::proc_mesh::ProcRef;
 use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
@@ -60,20 +72,7 @@ use crate::resource::GetRankStatusClient;
 use crate::resource::ProcSpec;
 use crate::resource::RankedValues;
 use crate::resource::Status;
-use crate::v1;
-use crate::v1::Name;
-use crate::v1::ProcMesh;
-use crate::v1::ProcMeshRef;
-use crate::v1::ValueMesh;
-use crate::v1::host_mesh::mesh_agent::HostAgentMode;
-pub use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
-use crate::v1::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
-use crate::v1::host_mesh::mesh_agent::ProcManagerSpawnFn;
-use crate::v1::host_mesh::mesh_agent::ProcState;
-use crate::v1::host_mesh::mesh_agent::ShutdownHostClient;
-use crate::v1::mesh_controller::HostMeshController;
-use crate::v1::mesh_controller::ProcMeshController;
-use crate::v1::proc_mesh::ProcRef;
+use crate::transport::DEFAULT_TRANSPORT;
 
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
@@ -157,13 +156,13 @@ impl HostRef {
 }
 
 impl TryFrom<ActorRef<HostMeshAgent>> for HostRef {
-    type Error = v1::Error;
+    type Error = crate::Error;
 
-    fn try_from(value: ActorRef<HostMeshAgent>) -> Result<Self, v1::Error> {
+    fn try_from(value: ActorRef<HostMeshAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_id().proc_id();
         match proc_id.as_direct() {
             Some((addr, _)) => Ok(HostRef(addr.clone())),
-            None => Err(v1::Error::RankedProc(proc_id.clone())),
+            None => Err(crate::Error::RankedProc(proc_id.clone())),
         }
     }
 }
@@ -265,7 +264,7 @@ impl HostMesh {
     /// not production.
     ///
     /// TODO: fix up ownership
-    pub async fn local() -> v1::Result<HostMesh> {
+    pub async fn local() -> crate::Result<HostMesh> {
         Self::local_with_bootstrap(BootstrapCommand::current()?).await
     }
 
@@ -276,7 +275,7 @@ impl HostMesh {
     /// The provided `bootstrap_cmd` is used when spawning bootstrap
     /// children and determines the behavior of
     /// `boot.bootstrap().await` in those children.
-    pub async fn local_with_bootstrap(bootstrap_cmd: BootstrapCommand) -> v1::Result<HostMesh> {
+    pub async fn local_with_bootstrap(bootstrap_cmd: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
             let err = boot.bootstrap().await;
             tracing::error!("failed to bootstrap local host mesh process: {}", err);
@@ -297,7 +296,7 @@ impl HostMesh {
                     exit_on_shutdown: false,
                 }),
             )
-            .map_err(v1::Error::SingletonActorSpawnError)?;
+            .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 
         let host = HostRef(addr);
@@ -318,7 +317,7 @@ impl HostMesh {
     /// (useful for debugging with the TUI).
     ///
     /// This API is intended for tests, examples, and debugging.
-    pub async fn local_in_process() -> v1::Result<HostMesh> {
+    pub async fn local_in_process() -> crate::Result<HostMesh> {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
         let spawn: ProcManagerSpawnFn =
@@ -329,7 +328,7 @@ impl HostMesh {
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
             .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
-            .map_err(v1::Error::SingletonActorSpawnError)?;
+            .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
 
         let host = HostRef(addr);
@@ -351,7 +350,7 @@ impl HostMesh {
     /// is called early in the lifecycle of the process and reached unconditionally.
     ///
     /// TODO: thread through ownership
-    pub async fn process(extent: Extent, command: BootstrapCommand) -> v1::Result<HostMesh> {
+    pub async fn process(extent: Extent, command: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
             let err = boot.bootstrap().await;
             tracing::error!("failed to bootstrap process host mesh process: {}", err);
@@ -388,7 +387,7 @@ impl HostMesh {
     ///
     /// Because HostMeshes use direct-addressed procs, and must fully control the procs they are
     /// managing, `HostMesh::allocate` uses a trampoline actor to launch the host, which in turn
-    /// runs a [`crate::v1::host_mesh::mesh_agent::HostMeshAgent`] actor to manage the host itself.
+    /// runs a [`crate::host_mesh::mesh_agent::HostMeshAgent`] actor to manage the host itself.
     /// The host (and thus all of its procs) are exposed directly through a separate listening
     /// channel, established by the host.
     ///
@@ -428,7 +427,7 @@ impl HostMesh {
         alloc: Box<dyn Alloc + Send + Sync>,
         name: &str,
         bootstrap_params: Option<BootstrapCommand>,
-    ) -> v1::Result<Self>
+    ) -> crate::Result<Self>
     where
         C::A: Handler<MeshFailure>,
     {
@@ -442,7 +441,7 @@ impl HostMesh {
         alloc: Box<dyn Alloc + Send + Sync>,
         name: Name,
         bootstrap_params: Option<BootstrapCommand>,
-    ) -> v1::Result<Self>
+    ) -> crate::Result<Self>
     where
         C::A: Handler<MeshFailure>,
     {
@@ -475,7 +474,7 @@ impl HostMesh {
             let mesh_agent = mesh_agents_rx.recv().await?;
 
             let Some((addr, _)) = mesh_agent.actor_id().proc_id().as_direct() else {
-                return Err(v1::Error::HostMeshAgentConfigurationError(
+                return Err(crate::Error::HostMeshAgentConfigurationError(
                     mesh_agent.actor_id().clone(),
                     "host mesh agent must be a direct actor".to_string(),
                 ));
@@ -483,7 +482,7 @@ impl HostMesh {
 
             let host_ref = HostRef(addr.clone());
             if host_ref.mesh_agent() != mesh_agent {
-                return Err(v1::Error::HostMeshAgentConfigurationError(
+                return Err(crate::Error::HostMeshAgentConfigurationError(
                     mesh_agent.actor_id().clone(),
                     format!(
                         "expected mesh agent actor id to be {}",
@@ -511,7 +510,7 @@ impl HostMesh {
         let controller = HostMeshController::new(mesh.deref().clone());
         controller
             .spawn(cx)
-            .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
@@ -774,9 +773,9 @@ impl HostMeshRef {
     /// Create a new (raw) HostMeshRef from the provided region and associated
     /// ranks, which must match in cardinality.
     #[allow(clippy::result_large_err)]
-    fn new(name: Name, region: Region, ranks: Vec<HostRef>) -> v1::Result<Self> {
+    fn new(name: Name, region: Region, ranks: Vec<HostRef>) -> crate::Result<Self> {
         if region.num_ranks() != ranks.len() {
-            return Err(v1::Error::InvalidRankCardinality {
+            return Err(crate::Error::InvalidRankCardinality {
                 expected: region.num_ranks(),
                 actual: ranks.len(),
             });
@@ -799,7 +798,10 @@ impl HostMeshRef {
     }
 
     /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
-    pub fn from_host_agents(name: Name, agents: Vec<ActorRef<HostMeshAgent>>) -> v1::Result<Self> {
+    pub fn from_host_agents(
+        name: Name,
+        agents: Vec<ActorRef<HostMeshAgent>>,
+    ) -> crate::Result<Self> {
         Ok(Self {
             name,
             region: extent!(hosts = agents.len()).into(),
@@ -807,13 +809,13 @@ impl HostMeshRef {
                 agents
                     .into_iter()
                     .map(HostRef::try_from)
-                    .collect::<v1::Result<_>>()?,
+                    .collect::<crate::Result<_>>()?,
             ),
         })
     }
 
     /// Create a unit HostMeshRef from a host mesh agent.
-    pub fn from_host_agent(name: Name, agent: ActorRef<HostMeshAgent>) -> v1::Result<Self> {
+    pub fn from_host_agent(name: Name, agent: ActorRef<HostMeshAgent>) -> crate::Result<Self> {
         Ok(Self {
             name,
             region: Extent::unity().into(),
@@ -832,7 +834,7 @@ impl HostMeshRef {
         cx: &C,
         name: &str,
         per_host: Extent,
-    ) -> v1::Result<ProcMesh>
+    ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
     {
@@ -845,7 +847,7 @@ impl HostMeshRef {
         cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
-    ) -> v1::Result<ProcMesh>
+    ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
     {
@@ -870,7 +872,7 @@ impl HostMeshRef {
         cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
-    ) -> v1::Result<ProcMesh>
+    ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
     {
@@ -881,7 +883,7 @@ impl HostMeshRef {
             .collect::<Vec<_>>()
             .is_empty()
         {
-            return Err(v1::Error::ConfigurationError(anyhow::anyhow!(
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
                 "per_host dims overlap with existing dims when spawning proc mesh"
             )));
         }
@@ -890,7 +892,7 @@ impl HostMeshRef {
             .region
             .extent()
             .concat(&per_host)
-            .map_err(|err| v1::Error::ConfigurationError(err.into()))?;
+            .map_err(|err| crate::Error::ConfigurationError(err.into()))?;
 
         let region: Region = extent.clone().into();
 
@@ -906,7 +908,7 @@ impl HostMeshRef {
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
         let (port, rx) = cx.mailbox().open_accum_port_opts(
-            crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
             StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
@@ -935,7 +937,7 @@ impl HostMeshRef {
                     )
                     .await
                     .map_err(|e| {
-                        v1::Error::HostMeshAgentConfigurationError(
+                        crate::Error::HostMeshAgentConfigurationError(
                             host.mesh_agent().actor_id().clone(),
                             format!("failed while creating proc: {}", e),
                         )
@@ -948,7 +950,7 @@ impl HostMeshRef {
                     .get_rank_status(cx, proc_name.clone(), reply_port)
                     .await
                     .map_err(|e| {
-                        v1::Error::HostMeshAgentConfigurationError(
+                        crate::Error::HostMeshAgentConfigurationError(
                             host.mesh_agent().actor_id().clone(),
                             format!("failed while querying proc status: {}", e),
                         )
@@ -1006,7 +1008,7 @@ impl HostMeshRef {
                             },
                         )
                         .map_err(|e| {
-                            v1::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
+                            crate::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
                         })?;
                     let state = match RealClock
                         .timeout(
@@ -1032,7 +1034,7 @@ impl HostMeshRef {
                         state
                     );
 
-                    return Err(v1::Error::ProcCreationError {
+                    return Err(crate::Error::ProcCreationError {
                         state: Box::new(state),
                         host_rank,
                         mesh_agent,
@@ -1054,7 +1056,7 @@ impl HostMeshRef {
                     Status::is_not_exist,
                     num_ranks,
                 );
-                return Err(v1::Error::ProcSpawnError { statuses: legacy });
+                return Err(crate::Error::ProcSpawnError { statuses: legacy });
             }
         }
 
@@ -1066,7 +1068,7 @@ impl HostMeshRef {
             let controller = ProcMeshController::new(mesh.deref().clone());
             controller
                 .spawn(cx)
-                .map_err(|e| v1::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+                .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         }
         mesh
     }
@@ -1117,7 +1119,7 @@ impl HostMeshRef {
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
         let (port, rx) = cx.mailbox().open_accum_port_opts(
-            crate::v1::StatusMesh::from_single(region.clone(), Status::NotExist),
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
             StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
@@ -1229,7 +1231,7 @@ impl HostMeshRef {
         cx: &impl context::Actor,
         procs: impl IntoIterator<Item = ProcId>,
         region: Region,
-    ) -> v1::Result<ValueMesh<resource::State<ProcState>>> {
+    ) -> crate::Result<ValueMesh<resource::State<ProcState>>> {
         let (tx, mut rx) = cx.mailbox().open_port();
 
         let mut num_ranks = 0;
@@ -1238,7 +1240,7 @@ impl HostMeshRef {
         for proc_id in procs.iter() {
             num_ranks += 1;
             let Some((addr, proc_name)) = proc_id.as_direct() else {
-                return Err(v1::Error::ConfigurationError(anyhow::anyhow!(
+                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
                     "host mesh proc {} must be direct addressed",
                     proc_id,
                 )));
@@ -1262,7 +1264,7 @@ impl HostMeshRef {
                     },
                 )
                 .map_err(|e| {
-                    v1::Error::CallError(host.mesh_agent().actor_id().clone(), e.into())
+                    crate::Error::CallError(host.mesh_agent().actor_id().clone(), e.into())
                 })?;
         }
 
@@ -1283,7 +1285,7 @@ impl HostMeshRef {
                         states.push((inner.create_rank, state));
                     }
                     None => {
-                        return Err(v1::Error::NotExist(state.name));
+                        return Err(crate::Error::NotExist(state.name));
                     }
                 }
             } else {
@@ -1375,17 +1377,17 @@ pub enum HostMeshRefParseError {
     MissingName,
 
     #[error(transparent)]
-    InvalidName(#[from] v1::NameParseError),
+    InvalidName(#[from] crate::NameParseError),
 
     #[error(transparent)]
-    InvalidHostMeshRef(#[from] Box<v1::Error>),
+    InvalidHostMeshRef(#[from] Box<crate::Error>),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
-impl From<v1::Error> for HostMeshRefParseError {
-    fn from(err: v1::Error) -> Self {
+impl From<crate::Error> for HostMeshRefParseError {
+    fn from(err: crate::Error) -> Self {
         Self::InvalidHostMeshRef(Box::new(err))
     }
 }
@@ -1429,15 +1431,15 @@ mod tests {
     use tokio::process::Command;
 
     use super::*;
+    use crate::ActorMesh;
     use crate::Bootstrap;
     use crate::bootstrap::MESH_TAIL_LOG_LINES;
     use crate::comm::ENABLE_NATIVE_V1_CASTING;
     use crate::resource::Status;
-    use crate::v1::ActorMesh;
-    use crate::v1::testactor;
-    use crate::v1::testactor::GetConfigAttrs;
-    use crate::v1::testactor::SetConfigAttrs;
-    use crate::v1::testing;
+    use crate::testactor;
+    use crate::testactor::GetConfigAttrs;
+    use crate::testactor::SetConfigAttrs;
+    use crate::testing;
 
     #[test]
     fn test_host_mesh_subset() {
@@ -1480,16 +1482,13 @@ mod tests {
 
         let _pdeath_sig =
             config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
-        let _poll =
-            config.override_key(crate::v1::mesh_controller::SUPERVISION_POLL_FREQUENCY, poll);
-        let _get_actor =
-            config.override_key(crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE, get_actor);
-        let _get_proc =
-            config.override_key(crate::v1::host_mesh::GET_PROC_STATE_MAX_IDLE, get_proc);
+        let _poll = config.override_key(crate::mesh_controller::SUPERVISION_POLL_FREQUENCY, poll);
+        let _get_actor = config.override_key(crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE, get_actor);
+        let _get_proc = config.override_key(crate::host_mesh::GET_PROC_STATE_MAX_IDLE, get_proc);
 
         // Must be >= poll + get_actor + get_proc (+ slack).
         let _watchdog = config.override_key(
-            crate::v1::actor_mesh::SUPERVISION_WATCHDOG_TIMEOUT,
+            crate::actor_mesh::SUPERVISION_WATCHDOG_TIMEOUT,
             poll + get_actor + get_proc + slack,
         );
 
@@ -1709,7 +1708,7 @@ mod tests {
             .unwrap_err();
         assert_matches!(
             err,
-            v1::Error::ProcCreationError { state, .. }
+            crate::Error::ProcCreationError { state, .. }
             if matches!(state.status, resource::Status::Failed(ref msg) if msg.contains("failed to configure process: Ready(Terminal(Stopped { exit_code: 1"))
         );
     }

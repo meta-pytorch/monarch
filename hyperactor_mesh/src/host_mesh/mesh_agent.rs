@@ -42,15 +42,15 @@ use serde::Serialize;
 use tokio::time::Duration;
 use typeuri::Named;
 
+use crate::Name;
 use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::host_mesh::host_admin::HostAdminQueryMessage;
+use crate::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::resource::ProcSpec;
-use crate::v1::Name;
-use crate::v1::host_mesh::host_admin::HostAdminQueryMessage;
 
 pub(crate) type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcMeshAgent>>> + Send>>;
@@ -297,8 +297,8 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
         cx: &Context<Self>,
         get_rank_status: resource::GetRankStatus,
     ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
         use crate::resource::Status;
-        use crate::v1::StatusOverlay;
 
         let manager = self
             .host
