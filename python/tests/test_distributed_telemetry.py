@@ -8,6 +8,7 @@
 
 """Tests for distributed telemetry with automatic callback registration."""
 
+import json
 import os
 
 # Enable the unified telemetry layer BEFORE importing monarch
@@ -223,6 +224,44 @@ def test_actor_meshes_table(cleanup_callbacks) -> None:
     assert has_test_mesh, (
         f"Expected to find 'test_mesh_worker' in mesh names, got: {given_names}"
     )
+
+    # Verify parent_view_json is populated (serialized Region from ndslice)
+    parent_views = result_dict.get("parent_view_json", [])
+    for name, view in zip(given_names, parent_views):
+        if "test_mesh_worker" in name:
+            assert view is not None, (
+                f"Expected parent_view_json to be populated for '{name}', got None"
+            )
+            parsed_view = json.loads(view)
+            # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}
+            assert "slice" in parsed_view, (
+                f"Expected parent_view_json to contain 'slice' key (ndslice Region), got: {parsed_view}"
+            )
+            assert "labels" in parsed_view, (
+                f"Expected parent_view_json to contain 'labels' key, got: {parsed_view}"
+            )
+
+    # Verify shape_json describes the actor mesh's shape (serialized Extent from ndslice)
+    shape_jsons = result_dict.get("shape_json", [])
+    for name, shape in zip(given_names, shape_jsons):
+        if "test_mesh_worker" in name:
+            assert shape is not None and shape != "", (
+                f"Expected shape_json to be populated for '{name}', got '{shape}'"
+            )
+            parsed_shape = json.loads(shape)
+            # Extent serializes as {"inner": {"labels": [...], "sizes": [...]}}
+            assert "inner" in parsed_shape, (
+                f"Expected shape_json to contain 'inner' key (ndslice Extent), got: {parsed_shape}"
+            )
+            labels = parsed_shape["inner"]["labels"]
+            sizes = parsed_shape["inner"]["sizes"]
+            assert "workers" in labels, (
+                f"Expected shape_json labels to contain 'workers', got: {labels}"
+            )
+            workers_idx = labels.index("workers")
+            assert sizes[workers_idx] == 2, (
+                f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
+            )
 
 
 @pytest.mark.timeout(120)
