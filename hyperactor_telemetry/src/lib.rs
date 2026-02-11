@@ -335,7 +335,7 @@ pub struct ActorMeshEvent {
     pub given_name: String,
     /// Full hierarchical name as it appears in supervision events
     pub full_name: String,
-    /// Shape of the mesh, serialized from ndslice::Shape (labels + slice topology)
+    /// Shape of the mesh, serialized from ndslice::Extent
     pub shape_json: String,
     /// Parent mesh ID (None for root meshes)
     pub parent_mesh_id: Option<u64>,

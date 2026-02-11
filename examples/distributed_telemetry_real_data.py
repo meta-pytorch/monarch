@@ -241,7 +241,7 @@ def main() -> None:
         # Sample of actor meshes
         (
             "Sample actor meshes",
-            """SELECT id, class, given_name, full_name, timestamp_us
+            """SELECT id, class, given_name, full_name, shape_json, parent_view_json, timestamp_us
                FROM actor_meshes
                ORDER BY timestamp_us DESC
                LIMIT 10""",
@@ -249,7 +249,7 @@ def main() -> None:
         # Actor meshes by name pattern
         (
             "Actor meshes by name",
-            """SELECT given_name, class, shape_json
+            """SELECT given_name, class, shape_json, parent_view_json
                FROM actor_meshes
                ORDER BY given_name""",
         ),
