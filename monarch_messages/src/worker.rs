@@ -9,6 +9,11 @@
 // NOTE: Until https://github.com/PyO3/pyo3/pull/4674, `pyo3::pymethods` trigger
 // and unsafe-op-in-unsafe-fn warnings.
 #![allow(unsafe_op_in_unsafe_fn)]
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
 
 use std::collections::HashMap;
 use std::fmt;
