@@ -37,9 +37,9 @@ use hyperactor::ActorRef;
 use hyperactor::admin;
 use tokio::net::TcpListener;
 
-use crate::proc_mesh::global_root_client;
-use crate::proc_mesh::mesh_agent::AdminQueryMessageClient;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::global_root_client;
+use crate::mesh_agent::AdminQueryMessageClient;
+use crate::mesh_agent::ProcMeshAgent;
 
 /// Shared state for the admin proxy, holding references to remote proc agents.
 #[derive(Clone, Default)]
