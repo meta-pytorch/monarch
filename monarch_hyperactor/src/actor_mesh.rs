@@ -18,15 +18,14 @@ use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::ActorRef;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use hyperactor_mesh::sel;
-use hyperactor_mesh::selection::Selection;
-use hyperactor_mesh::v1;
-use hyperactor_mesh::v1::actor_mesh::ActorMesh;
-use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::py_global;
 use monarch_types::py_module_add_function;
 use ndslice::Region;
 use ndslice::Slice;
+use ndslice::selection::Selection;
 use ndslice::selection::structurally_equal;
 use ndslice::view::Ranked;
 use ndslice::view::RankedSliceable;
@@ -539,10 +538,10 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 }
 
-// Convert a v1::Error to a Python exception. v1::Error::Supervision becomes a SupervisionError,
+// Convert a hyperactor_mesh::Error to a Python exception. hyperactor_mesh::Error::Supervision becomes a SupervisionError,
 // all others become a RuntimeError.
-fn cast_error_to_py_error(err: v1::Error) -> PyErr {
-    if let v1::Error::Supervision(failure) = err {
+fn cast_error_to_py_error(err: hyperactor_mesh::Error) -> PyErr {
+    if let hyperactor_mesh::Error::Supervision(failure) = err {
         SupervisionError::new_err_from(*failure)
     } else {
         PyRuntimeError::new_err(err.to_string())

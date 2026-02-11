@@ -12,7 +12,7 @@ use std::ops::Deref;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::ProcId;
-use hyperactor_mesh::v1::ActorMesh;
+use hyperactor_mesh::ActorMesh;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;

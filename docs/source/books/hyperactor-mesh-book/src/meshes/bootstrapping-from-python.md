@@ -38,7 +38,7 @@ there's a bootstrap under it. Here's what actually happens.
 
 ### 1. `this_host()` reads the host mesh off the current proc.
 
-From monarch/\_src/actor/v1/host_mesh.py:
+From monarch/\_src/actor/host_mesh.py:
 ```python
 def this_host() -> "HostMesh":
     """
@@ -46,9 +46,7 @@ def this_host() -> "HostMesh":
 
     This is just shorthand for looking it up via the context
     """
-    hm = this_proc().host_mesh
-    assert isinstance(hm, HostMesh), f"expected v1 HostMesh, got v0 {hm}"
-    return hm
+    return this_proc().host_mesh
 ```
 So: `this_host()` doesn't build a host. That means we have to look at `this_proc()`.
 
@@ -61,9 +59,7 @@ def this_proc() -> "ProcMesh":
     The current singleton process that this specific actor is
     running on
     """
-    pm = context().actor_instance.proc
-    assert isinstance(pm, ProcMesh), f"expected v1 ProcMesh, got {pm}"
-    return pm
+    return context().actor_instance.proc
 ```
 So now we're down to the real root: `context()`. Everything hangs off of that.
 

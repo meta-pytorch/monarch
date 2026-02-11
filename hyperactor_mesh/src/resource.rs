@@ -42,12 +42,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::Name;
+use crate::StatusOverlay;
 use crate::bootstrap;
-use crate::proc_mesh::mesh_agent::ActorSpec;
-use crate::proc_mesh::mesh_agent::ActorState;
-use crate::v1::Name;
-use crate::v1::StatusOverlay;
-use crate::v1::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::mesh_agent::ProcState;
+use crate::mesh_agent::ActorSpec;
+use crate::mesh_agent::ActorState;
 
 /// The current lifecycle status of a resource.
 #[derive(
@@ -179,11 +179,11 @@ pub struct GetRankStatus {
 
 impl GetRankStatus {
     pub async fn wait(
-        mut rx: PortReceiver<crate::v1::StatusMesh>,
+        mut rx: PortReceiver<crate::StatusMesh>,
         num_ranks: usize,
         max_idle_time: Duration,
         region: Region, // used only for fallback
-    ) -> Result<crate::v1::StatusMesh, crate::v1::StatusMesh> {
+    ) -> Result<crate::StatusMesh, crate::StatusMesh> {
         debug_assert_eq!(region.num_ranks(), num_ranks, "region/num_ranks mismatch");
 
         let mut alarm = hyperactor::time::Alarm::new();
@@ -191,7 +191,7 @@ impl GetRankStatus {
 
         // Fallback snapshot if we time out before receiving anything.
         let mut snapshot =
-            crate::v1::StatusMesh::from_single(region, crate::resource::Status::NotExist);
+            crate::StatusMesh::from_single(region, crate::resource::Status::NotExist);
 
         loop {
             let mut sleeper = alarm.sleeper();
