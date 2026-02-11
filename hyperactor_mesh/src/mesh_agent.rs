@@ -38,7 +38,6 @@ use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::WorldId;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
@@ -58,11 +57,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::actor_mesh::CAST_ACTOR_MESH_ID;
-use crate::proc_mesh::SupervisionEventState;
-use crate::reference::ActorMeshId;
+use crate::Name;
 use crate::resource;
-use crate::v1::Name;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
@@ -225,41 +221,6 @@ struct ActorInstanceState {
     stopped: bool,
 }
 
-/// Normalize events that came via the comm tree. Updates their actor id based on
-/// the message headers for the event.
-pub(crate) fn update_event_actor_id(mut event: ActorSupervisionEvent) -> ActorSupervisionEvent {
-    if let Some(headers) = &event.message_headers {
-        if let Some(actor_mesh_id) = headers.get(CAST_ACTOR_MESH_ID) {
-            match actor_mesh_id {
-                ActorMeshId::V0(proc_mesh_id, actor_name) => {
-                    let old_actor = event.actor_id.clone();
-                    event.actor_id = ActorId(
-                        ProcId::Ranked(WorldId(proc_mesh_id.0.clone()), 0),
-                        actor_name.clone(),
-                        0,
-                    );
-                    tracing::debug!(
-                        actor_id = %old_actor,
-                        "proc supervision: remapped comm-actor id to mesh id from CAST_ACTOR_MESH_ID {}", event.actor_id
-                    );
-                }
-                ActorMeshId::V1(_) => {
-                    tracing::debug!(
-                        "proc supervision: headers present but V1 ActorMeshId; leaving actor_id unchanged"
-                    );
-                }
-            }
-        } else {
-            tracing::debug!(
-                "proc supervision: headers present but no CAST_ACTOR_MESH_ID; leaving actor_id unchanged"
-            );
-        }
-    } else {
-        tracing::debug!("proc supervision: no headers attached; leaving actor_id unchanged");
-    }
-    event
-}
-
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
 #[hyperactor::export(
     handlers=[
@@ -296,7 +257,7 @@ impl ProcMeshAgent {
 
         // Wire up this proc to the global router so that any meshes managed by
         // this process can reach actors in this proc.
-        super::router::global().bind(proc_id.into(), proc.clone());
+        crate::router::global().bind(proc_id.into(), proc.clone());
 
         let agent = ProcMeshAgent {
             proc: proc.clone(),
@@ -369,7 +330,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
         // set as a means of failure injection in the testing of
         // supervision codepaths.
         let router = if std::env::var("HYPERACTOR_MESH_ROUTER_NO_GLOBAL_FALLBACK").is_err() {
-            let default = super::router::global().fallback(client.into_boxed());
+            let default = crate::router::global().fallback(client.into_boxed());
             DialMailboxRouter::new_with_default_direct_addressed_remote_only(default.into_boxed())
         } else {
             DialMailboxRouter::new_with_default_direct_addressed_remote_only(client.into_boxed())
@@ -523,7 +484,6 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
         cx: &Context<Self>,
         event: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
-        let event = update_event_actor_id(event);
         if self.record_supervision_events {
             if event.is_error() {
                 tracing::warn!(
@@ -551,7 +511,7 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
             // If there is no supervisor, and nothing is recording these, crash
             // the whole process.
             tracing::error!(
-                name = SupervisionEventState::SupervisionEventTransmitFailed.as_ref(),
+                name = "supervision_event_transmit_failed",
                 proc_id = %cx.self_id().proc_id(),
                 %event,
                 "could not propagate supervision event, crashing",
@@ -732,8 +692,8 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
         cx: &Context<Self>,
         get_rank_status: resource::GetRankStatus,
     ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
         use crate::resource::Status;
-        use crate::v1::StatusOverlay;
 
         let (rank, status) = match self.actor_states.get(&get_rank_status.name) {
             Some(ActorInstanceState {

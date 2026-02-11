@@ -17,12 +17,13 @@ use futures::TryStreamExt;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor::context::Mailbox;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
-use hyperactor_mesh::sel;
 use lazy_errors::ErrorStash;
 use lazy_errors::OrStash;
 use lazy_errors::StashedResult;
@@ -30,7 +31,7 @@ use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::Action;
 use monarch_conda::sync::receiver;
 use monarch_conda::sync::sender;
-use ndslice::Selection;
+use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
@@ -112,21 +113,18 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
     }
 }
 
-pub async fn conda_sync_mesh<M>(
-    actor_mesh: &M,
+pub async fn conda_sync_mesh(
+    instance: &Instance<()>,
+    actor_mesh: &ActorMeshRef<CondaSyncActor>,
     local_workspace: PathBuf,
     remote_workspace: WorkspaceLocation,
     path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
-) -> Result<Vec<CondaSyncResult>>
-where
-    M: ActorMesh<Actor = CondaSyncActor>,
-{
-    let instance = actor_mesh.proc_mesh().client();
-    let (conns_tx, conns_rx) = instance.open_port();
+) -> Result<Vec<CondaSyncResult>> {
+    let (conns_tx, conns_rx) = instance.mailbox().open_port();
 
     let (res1, res2) = futures::future::join(
         conns_rx
-            .take(actor_mesh.shape().slice().len())
+            .take(actor_mesh.region().slice().len())
             .err_into::<anyhow::Error>()
             .try_for_each_concurrent(None, |connect| async {
                 let (mut read, mut write) = accept(instance, instance.self_id().clone(), connect)
@@ -144,10 +142,11 @@ where
             })
             .boxed(),
         async move {
-            let (result_tx, result_rx) = instance.open_port::<Result<CondaSyncResult, String>>();
+            let (result_tx, result_rx) = instance
+                .mailbox()
+                .open_port::<Result<CondaSyncResult, String>>();
             actor_mesh.cast(
                 instance,
-                sel!(*),
                 CondaSyncMessage {
                     connect: conns_tx.bind(),
                     result: result_tx.bind(),
@@ -158,7 +157,7 @@ where
 
             // Wait for all actors to report result.
             let results = result_rx
-                .take(actor_mesh.shape().slice().len())
+                .take(actor_mesh.region().slice().len())
                 .try_collect::<Vec<_>>()
                 .await?;
 
