@@ -70,12 +70,13 @@ use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
+use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Bootstrap;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::Name;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
-use hyperactor_mesh::v1::host_mesh::HostMeshRef;
+use hyperactor_mesh::HostMeshRef;
+use hyperactor_mesh::Name;
+use hyperactor_mesh::ProcMesh;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
@@ -735,17 +736,17 @@ pub async fn run() -> Result<(), anyhow::Error> {
     );
 
     // Create proc meshes (one proc per host mesh)
-    let device_1_proc_mesh = host_mesh_1
+    let device_1_proc_mesh: ProcMesh = host_mesh_1
         .spawn(&instance, "procs", Extent::unity())
         .await?;
-    let device_2_proc_mesh = host_mesh_2
+    let device_2_proc_mesh: ProcMesh = host_mesh_2
         .spawn(&instance, "procs", Extent::unity())
         .await?;
 
     // Create RDMA manager for the first device
     let device_1_rdma_manager: ActorMesh<RdmaManagerActor> = device_1_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_1_rdma_manager",
             &Some(device_1_ibv_config),
         )
@@ -754,7 +755,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     // Create RDMA manager for the second device
     let device_2_rdma_manager: ActorMesh<RdmaManagerActor> = device_2_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_2_rdma_manager",
             &Some(device_2_ibv_config),
         )
@@ -767,7 +768,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     // Create the CUDA RDMA actors
     let device_1_actor_mesh: ActorMesh<CudaRdmaActor> = device_1_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_1_actor",
             &(
                 device_1_rdma_manager_ref.clone(),
@@ -779,7 +780,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     let device_2_actor_mesh: ActorMesh<CudaRdmaActor> = device_2_proc_mesh
         .spawn(
-            &instance,
+            instance,
             "device_2_actor",
             &(
                 device_2_rdma_manager_ref.clone(),
@@ -792,10 +793,6 @@ pub async fn run() -> Result<(), anyhow::Error> {
     // Get the actor references
     let device_1_actor = device_1_actor_mesh.values().next().unwrap();
     let device_2_actor = device_2_actor_mesh.values().next().unwrap();
-
-    // Initialize the buffers
-
-    // Initialize device 1 buffer with DATA_VALUE
     let (handle_1, receiver_1) = instance.open_once_port::<bool>();
     device_1_actor.send(&instance, InitializeBuffer(DATA_VALUE, handle_1.bind()))?;
     receiver_1.recv().await?;
@@ -813,11 +810,9 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaBuffer>();
     device_2_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_2 = receiver_remote.recv().await?;
-
-    // Perform RDMA write from device 2 to device 1 using the remote buffer
-    let (handle_2, receiver_2) = instance.open_once_port::<bool>();
     let (handle_1, receiver_1) = instance.open_once_port::<bool>();
 
+    let (handle_2, receiver_2) = instance.open_once_port::<bool>();
     device_2_actor.send(
         &instance,
         PerformPingPong(

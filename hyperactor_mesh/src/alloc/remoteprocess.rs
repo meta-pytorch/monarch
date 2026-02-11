@@ -1371,7 +1371,7 @@ mod test {
     use crate::alloc::MockAllocator;
     use crate::alloc::ProcStopReason;
     use crate::alloc::with_unspecified_port_or_any;
-    use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+    use crate::mesh_agent::ProcMeshAgent;
 
     async fn read_all_created(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
         let mut i: usize = 0;

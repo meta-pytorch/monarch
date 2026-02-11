@@ -42,9 +42,9 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 use typeuri::Named;
 
-use crate::proc_mesh::global_root_client;
-use crate::v1::host_mesh::host_admin::HostAdminQueryMessageClient;
-use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
+use crate::global_root_client;
+use crate::host_mesh::host_admin::HostAdminQueryMessageClient;
+use crate::host_mesh::mesh_agent::HostMeshAgent;
 
 /// Timeout for fan-out queries that hit every host in the mesh.
 /// Kept short so that a few slow or dead hosts don't block the entire

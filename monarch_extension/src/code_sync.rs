@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use anyhow::Result;
 use futures::TryFutureExt;
 use hyperactor::context;
-use hyperactor_mesh::v1;
 use monarch_hyperactor;
 use monarch_hyperactor::code_sync::WorkspaceLocation;
 use monarch_hyperactor::code_sync::manager::CodeSyncManager;
@@ -235,13 +234,13 @@ impl PyWorkspaceConfig {
     module = "monarch._rust_bindings.monarch_extension.code_sync"
 )]
 pub struct CodeSyncMeshClient {
-    actor_mesh: v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
+    actor_mesh: hyperactor_mesh::ActorMeshRef<CodeSyncManager>,
 }
 
 impl CodeSyncMeshClient {
     async fn sync_workspace_(
         instance: &impl context::Actor,
-        actor_mesh: &v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
+        actor_mesh: &hyperactor_mesh::ActorMeshRef<CodeSyncManager>,
         local: PathBuf,
         remote: RemoteWorkspace,
         method: CodeSyncMethod,
