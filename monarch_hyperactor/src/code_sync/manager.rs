@@ -37,6 +37,7 @@ use hyperactor_mesh::v1;
 use lazy_errors::ErrorStash;
 use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::sender;
+use ndslice::Selection;
 use ndslice::Shape;
 use ndslice::ShapeError;
 use ndslice::view::Ranked;

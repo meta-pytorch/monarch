@@ -44,6 +44,8 @@ use hyperactor::admin::HostDetails;
 use hyperactor::admin::HostProcEntry;
 use hyperactor::admin::HostSummary;
 use hyperactor::admin::ProcDetails;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use ratatui::Terminal;
@@ -718,12 +720,12 @@ async fn main() -> io::Result<()> {
     ));
     spinner.enable_steady_tick(Duration::from_millis(80));
 
-    let splash_start = tokio::time::Instant::now();
+    let splash_start = RealClock.now();
     app.refresh().await;
     let elapsed = splash_start.elapsed();
     let min_splash = Duration::from_secs(2);
     if elapsed < min_splash {
-        tokio::time::sleep(min_splash - elapsed).await;
+        RealClock.sleep(min_splash - elapsed).await;
     }
 
     spinner.finish_and_clear();
