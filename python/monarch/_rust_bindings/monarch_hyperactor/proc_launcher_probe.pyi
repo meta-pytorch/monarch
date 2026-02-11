@@ -10,7 +10,6 @@ from typing import final
 
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 @final
@@ -55,7 +54,6 @@ class ProbeReport:
 def probe_exit_port_via_mesh(
     actor_mesh_inner: PythonActorMesh,
     instance: Instance,
-    mailbox: Mailbox,
     method_name: str,
     pickled_args: bytes,
 ) -> PythonTask[ProbeReport]:
