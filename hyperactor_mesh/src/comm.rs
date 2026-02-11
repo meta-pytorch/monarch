@@ -710,6 +710,17 @@ mod tests {
     use crate::alloc::LocalAllocator;
     use crate::testing;
 
+    // Helper to extract rank from actor IDs. Since procs now use direct addressing
+    // with names like "alloc_name_rank" (e.g., "dest_0", "dest_1"), we parse the
+    // rank from the proc name.
+    fn extract_rank_from_actor_id(actor_id: &hyperactor::ActorId) -> usize {
+        let proc_name = actor_id.proc_id().name();
+        proc_name
+            .rsplit_once('_')
+            .and_then(|(_, rank_str)| rank_str.parse::<usize>().ok())
+            .unwrap_or_else(|| panic!("Failed to parse rank from proc name: {}", proc_name))
+    }
+
     struct Edge<T> {
         from: T,
         to: T,
@@ -872,10 +883,10 @@ mod tests {
                     .into_iter()
                     .map(|p| {
                         assert!(p.actor_id().name().contains("comm"));
-                        p.actor_id().rank()
+                        extract_rank_from_actor_id(p.actor_id())
                     })
                     .collect();
-                (dst.into_actor_id().rank(), actor_path)
+                (extract_rank_from_actor_id(dst.actor_id()), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
@@ -943,16 +954,18 @@ mod tests {
     ) {
         // Reply from each dest actor. The replies should be received by client.
         {
-            for (dest_actor, (reply_to1, reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-                let rank = dest_actor.actor_id().rank() as u64;
-                reply_to1.send(instance, rank).unwrap();
+            for (rank, (dest_actor, (reply_to1, reply_to2))) in
+                ranks.iter().zip(reply_tos.iter()).enumerate()
+            {
+                let rank_u64 = rank as u64;
+                reply_to1.send(instance, rank_u64).unwrap();
                 let my_reply = MyReply {
                     sender: dest_actor.actor_id().clone(),
-                    value: rank,
+                    value: rank_u64,
                 };
                 reply_to2.send(instance, my_reply.clone()).unwrap();
 
-                assert_eq!(reply1_rx.recv().await.unwrap(), rank);
+                assert_eq!(reply1_rx.recv().await.unwrap(), rank_u64);
                 assert_eq!(reply2_rx.recv().await.unwrap(), my_reply);
             }
         }
@@ -966,7 +979,7 @@ mod tests {
             let n = 100;
             let mut expected2: HashMap<usize, Vec<MyReply>> = hashmap! {};
             for (dest_actor, (_reply_to1, reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-                let rank = dest_actor.actor_id().rank();
+                let rank = extract_rank_from_actor_id(dest_actor.actor_id());
                 let mut sent2 = vec![];
                 for i in 0..n {
                     let value = (rank * 100 + i) as u64;
@@ -988,7 +1001,7 @@ mod tests {
             for _ in 0..(n * ranks.len()) {
                 let my_reply = reply2_rx.recv().await.unwrap();
                 received2
-                    .entry(my_reply.sender.rank())
+                    .entry(extract_rank_from_actor_id(&my_reply.sender))
                     .or_default()
                     .push(my_reply);
             }
@@ -1027,7 +1040,7 @@ mod tests {
         let mut sum = 0;
         let n = 100;
         for (dest_actor, (reply_to1, _reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-            let rank = dest_actor.actor_id().rank();
+            let rank = extract_rank_from_actor_id(dest_actor.actor_id());
             for i in 0..n {
                 let value = (rank + i) as u64;
                 reply_to1.send(instance, value).unwrap();

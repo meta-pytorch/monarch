@@ -18,7 +18,7 @@
 //! ## Channel muxing
 //!
 //! A [`Host`] maintains a single frontend address, through which all procs are accessible
-//! through direct addressing: the id of each proc is the `ProcId::Direct(frontend_addr, proc_name)`.
+//! through direct addressing: the id of each proc is the `ProcId(frontend_addr, proc_name)`.
 //! In the following, the frontend address is denoted by `*`. The host listens on `*` and
 //! multiplexes messages based on the proc name. When spawning procs, the host maintains
 //! backend channels with separate addresses. In the diagram `#` is the backend address of
@@ -164,10 +164,10 @@ impl<M: ProcManager> Host<M> {
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
 
         // Set up a system proc. This is often used to manage the host itself.
-        let service_proc_id = ProcId::Direct(frontend_addr.clone(), "service".to_string());
+        let service_proc_id = ProcId(frontend_addr.clone(), "service".to_string());
         let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = ProcId::Direct(frontend_addr.clone(), "local".to_string());
+        let local_proc_id = ProcId(frontend_addr.clone(), "local".to_string());
         let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
 
         tracing::info!(
@@ -231,7 +231,7 @@ impl<M: ProcManager> Host<M> {
     /// Spawn a new process with the given `name`. On success, the
     /// proc has been spawned, and is reachable through the returned,
     /// direct-addressed ProcId, which will be
-    /// `ProcId::Direct(self.addr(), name)`.
+    /// `ProcId(self.addr(), name)`.
     pub async fn spawn(
         &mut self,
         name: String,
@@ -241,7 +241,7 @@ impl<M: ProcManager> Host<M> {
             return Err(HostError::ProcExists(name));
         }
 
-        let proc_id = ProcId::Direct(self.frontend_addr.clone(), name.clone());
+        let proc_id = ProcId(self.frontend_addr.clone(), name.clone());
         let handle = self
             .manager
             .spawn(proc_id.clone(), self.backend_addr.clone(), config)
@@ -1357,10 +1357,7 @@ mod tests {
             .unwrap();
 
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
-        assert_eq!(
-            proc_id1,
-            ProcId::Direct(host.addr().clone(), "proc1".to_string())
-        );
+        assert_eq!(proc_id1, ProcId(host.addr().clone(), "proc1".to_string()));
         assert!(procs.lock().await.contains_key(&proc_id1));
 
         let (proc_id2, _ref) = host.spawn("proc2".to_string(), ()).await.unwrap();
@@ -1501,7 +1498,7 @@ mod tests {
     async fn local_ready_and_wait_are_immediate() {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = ProcId::Direct(addr.clone(), "p".into());
+        let proc_id = ProcId(addr.clone(), "p".into());
         let agent_ref = ActorRef::<()>::attest(proc_id.actor_id("agent", 0));
         let h = LocalHandle::<()> {
             proc_id,

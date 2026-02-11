@@ -1464,7 +1464,6 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTx;
     use hyperactor::channel::Tx;
-    use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::DialMailboxRouter;
     use hyperactor::mailbox::MailboxServer;
@@ -1584,15 +1583,22 @@ mod tests {
         })
     }
 
+    fn test_proc_id(name: &str) -> hyperactor::ProcId {
+        hyperactor::ProcId(ChannelAddr::any(ChannelTransport::Local), name.to_string())
+    }
+
     #[tokio::test]
     async fn test_forwarding_log_to_client() {
         // Setup the basics
         let router = DialMailboxRouter::new();
         let (proc_addr, client_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
+        let proc = Proc::new(
+            test_proc_id("client_0"),
+            BoxedMailboxSender::new(router.clone()),
+        );
         proc.clone().serve(client_rx);
-        router.bind(id!(client[0]).into(), proc_addr.clone());
+        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         // Spin up both the forwarder and the client
@@ -1829,7 +1835,7 @@ mod tests {
             .as_ref()
             .map(|fm| fm.addr_for(OutputTarget::Stdout));
 
-        let test_proc_id = id!(testproc[0]);
+        let the_test_proc_id = test_proc_id("testproc_0");
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(file_writer),
@@ -1837,7 +1843,7 @@ mod tests {
             OutputTarget::Stdout,
             3, // max_buffer_size
             Some(log_channel),
-            &test_proc_id,
+            &the_test_proc_id,
             None, // no prefix
         );
 
@@ -1943,7 +1949,7 @@ mod tests {
     async fn test_local_log_sender_inactive_status() {
         let (log_channel, _) =
             channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let test_proc_id = id!(testproc[0]);
+        let test_proc_id = test_proc_id("testproc_0");
         let mut sender = LocalLogSender::new(log_channel, &test_proc_id).unwrap();
 
         // This test verifies that the sender handles inactive status gracefully
@@ -2389,7 +2395,7 @@ mod tests {
         let (mut writer, reader) = tokio::io::duplex(8192);
 
         // Start StreamFwder
-        let test_proc_id = id!(testproc[0]);
+        let test_proc_id = test_proc_id("testproc_0");
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(tokio::io::sink()), // discard output

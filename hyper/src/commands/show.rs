@@ -23,23 +23,17 @@ pub struct ShowCommand {
 impl ShowCommand {
     pub async fn run(self) -> anyhow::Result<()> {
         match self.reference {
-            Reference::Proc(ProcId::Direct(host, proc)) => {
+            Reference::Proc(proc_id) => {
+                let host = proc_id.addr().clone();
+                let proc = proc_id.name().to_string();
                 let client = global_root_client();
 
                 // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
-                let agent: ActorRef<HostMeshAgent> = ActorRef::attest(
-                    ProcId::Direct(host, "service".to_string()).actor_id("agent", 0),
-                );
+                let agent: ActorRef<HostMeshAgent> =
+                    ActorRef::attest(ProcId(host, "service".to_string()).actor_id("agent", 0));
 
                 let state = agent.get_state(&client, proc.parse().unwrap()).await?;
                 println!("{}", serde_json::to_string_pretty(&state)?);
-            }
-
-            ref_ @ Reference::Proc(_) => {
-                anyhow::bail!(
-                    "cannot show reference {}: only direct proc ids are supported",
-                    ref_
-                );
             }
 
             ref_ => {

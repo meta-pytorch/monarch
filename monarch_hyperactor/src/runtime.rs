@@ -17,10 +17,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use hyperactor::Proc;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::PanickingMailboxSender;
 use hyperactor::reference::ProcId;
-use hyperactor::reference::id;
 use once_cell::sync::Lazy;
 use once_cell::unsync::OnceCell as UnsyncOnceCell;
 use pyo3::PyResult;
@@ -87,7 +88,8 @@ pub fn shutdown_tokio_runtime(py: Python<'_>) {
 pub(crate) fn get_proc_runtime() -> &'static Proc {
     static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
     RUNTIME_PROC.get_or_init(|| {
-        let proc_id = ProcId::Ranked(id!(monarch_hyperactor_runtime), 0);
+        let addr = ChannelAddr::any(ChannelTransport::Local);
+        let proc_id = ProcId(addr, "monarch_hyperactor_runtime".to_string());
         Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     })
 }

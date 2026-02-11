@@ -513,9 +513,7 @@ impl Bootstrap {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
 
-                let (local_addr, name) = ok!(proc_id
-                    .as_direct()
-                    .ok_or_else(|| anyhow::anyhow!("invalid proc id type: {}", proc_id)));
+                let (local_addr, name) = (proc_id.addr().clone(), proc_id.name());
                 // TODO provide a direct way to construct these
                 let serve_addr = format!("unix:{}", socket_dir_path.join(name).display());
                 let serve_addr = serve_addr.parse().unwrap();
@@ -2352,14 +2350,12 @@ mod tests {
     use hyperactor::ActorRef;
     use hyperactor::ProcId;
     use hyperactor::RemoteSpawn;
-    use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
-    use hyperactor::id;
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
@@ -2380,12 +2376,16 @@ mod tests {
         ChannelAddr::any(ChannelTransport::Unix)
     }
 
+    fn test_proc_id(name: &str) -> ProcId {
+        ProcId(ChannelAddr::any(ChannelTransport::Local), name.to_string())
+    }
+
     #[test]
     fn test_bootstrap_mode_env_string_none_config_proc() {
         let values = [
             Bootstrap::default(),
             Bootstrap::Proc {
-                proc_id: id!(foo[0]),
+                proc_id: test_proc_id("foo_0"),
                 backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 socket_dir_path: PathBuf::from("notexist"),
@@ -2455,7 +2455,7 @@ mod tests {
         // Proc case
         {
             let original = Bootstrap::Proc {
-                proc_id: id!(foo[42]),
+                proc_id: test_proc_id("foo_42"),
                 backend_addr: ChannelAddr::any(ChannelTransport::Unix),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 config: Some(attrs.clone()),
@@ -2530,9 +2530,12 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
+        let proc = Proc::new(
+            test_proc_id("client_0"),
+            BoxedMailboxSender::new(router.clone()),
+        );
         proc.clone().serve(proc_rx);
-        router.bind(id!(client[0]).into(), proc_addr.clone());
+        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -2595,7 +2598,6 @@ mod tests {
         use hyperactor::ActorId;
         use hyperactor::ActorRef;
         use hyperactor::ProcId;
-        use hyperactor::WorldId;
         use hyperactor::host::ProcHandle;
 
         use super::super::*;
@@ -2644,7 +2646,10 @@ mod tests {
         // ensuring tests only exercise status transitions and not
         // actual process lifecycle.
         fn handle_for_test() -> BootstrapProcHandle {
-            let proc_id = ProcId::Ranked(WorldId("test".into()), 0);
+            let proc_id = ProcId(
+                ChannelAddr::any(ChannelTransport::Local),
+                "test_0".to_string(),
+            );
             let launcher: Arc<dyn ProcLauncher> = Arc::new(TestProcLauncher);
             BootstrapProcHandle::new(proc_id, Arc::downgrade(&launcher))
         }
@@ -2824,7 +2829,10 @@ mod tests {
 
     #[tokio::test]
     async fn watch_notifies_on_status_changes() {
-        let proc_id = ProcId::Ranked(WorldId("test".into()), 1);
+        let proc_id = ProcId(
+            ChannelAddr::any(ChannelTransport::Local),
+            "test_1".to_string(),
+        );
         let handle = test_handle(proc_id);
         let mut rx = handle.watch();
 
@@ -2850,7 +2858,7 @@ mod tests {
 
     #[tokio::test]
     async fn ready_errs_if_process_exits_before_running() {
-        let proc_id = ProcId::Direct(
+        let proc_id = ProcId(
             ChannelAddr::any(ChannelTransport::Unix),
             "early-exit".into(),
         );
@@ -2877,13 +2885,16 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let unknown = ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "nope".into());
+        let unknown = ProcId(ChannelAddr::any(ChannelTransport::Unix), "nope".into());
         assert!(manager.status(&unknown).await.is_none());
     }
 
     #[tokio::test]
     async fn handle_ready_allows_waiters() {
-        let proc_id = ProcId::Ranked(WorldId("test".into()), 42);
+        let proc_id = ProcId(
+            ChannelAddr::any(ChannelTransport::Local),
+            "test_42".to_string(),
+        );
         let handle = test_handle(proc_id.clone());
 
         let started_at = RealClock.system_time_now();
@@ -2932,8 +2943,7 @@ mod tests {
     fn display_ready_includes_addr() {
         let started_at = RealClock.system_time_now() - Duration::from_secs(5);
         let addr = ChannelAddr::any(ChannelTransport::Unix);
-        let agent =
-            ActorRef::attest(ProcId::Direct(addr.clone(), "proc".into()).actor_id("agent", 0));
+        let agent = ActorRef::attest(ProcId(addr.clone(), "proc".into()).actor_id("agent", 0));
 
         let st = ProcStatus::Ready {
             started_at,
@@ -2968,7 +2978,7 @@ mod tests {
                 started_at: RealClock.system_time_now(),
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: ActorRef::attest(
-                    ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "x".into())
+                    ProcId(ChannelAddr::any(ChannelTransport::Unix), "x".into())
                         .actor_id("agent", 0),
                 ),
             },
@@ -2988,7 +2998,7 @@ mod tests {
 
     #[tokio::test]
     async fn proc_handle_ready_ok_through_trait() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "ph-ready-ok".into());
+        let proc_id = ProcId(any_addr_for_test(), "ph-ready-ok".into());
         let handle = test_handle(proc_id.clone());
 
         // Starting -> Running
@@ -3008,7 +3018,7 @@ mod tests {
 
     #[tokio::test]
     async fn proc_handle_wait_returns_terminal_status() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "ph-wait".into());
+        let proc_id = ProcId(any_addr_for_test(), "ph-wait".into());
         let handle = test_handle(proc_id);
 
         // Drive directly to a terminal state before calling wait()
@@ -3027,7 +3037,7 @@ mod tests {
 
     #[tokio::test]
     async fn ready_wrapper_maps_terminal_to_trait_error() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "wrap".into());
+        let proc_id = ProcId(any_addr_for_test(), "wrap".into());
         let handle = test_handle(proc_id);
 
         assert!(handle.mark_stopped(7, Vec::new()));
@@ -3067,7 +3077,7 @@ mod tests {
 
         // We return an arbitrary (but unbound!) unix direct proc id here;
         // it is okay, as we're not testing connectivity.
-        let proc_id = ProcId::Direct(ChannelTransport::Unix.any(), "test".to_string());
+        let proc_id = ProcId(ChannelTransport::Unix.any(), "test".to_string());
         (proc_id, backend_addr)
     }
 

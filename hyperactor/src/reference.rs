@@ -36,7 +36,6 @@ use std::str::FromStr;
 use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
 use hyperactor_config::attrs::Attrs;
-use rand::Rng;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -84,8 +83,6 @@ pub enum ReferenceKind {
     Actor,
     /// Port references.
     Port,
-    /// Gang references.
-    Gang,
 }
 
 /// A universal reference to hierarchical identifiers in Hyperactor.
@@ -94,10 +91,9 @@ pub enum ReferenceKind {
 /// [`FromStr`]. They are of the form:
 ///
 /// - `world`,
-/// - `world[rank]`,
-/// - `world[rank].actor[pid]`,
-/// - `world[rank].port[pid][port]`, or
-/// - `world.actor`
+/// - `addr,proc_name`,
+/// - `addr,proc_name,actor_name[pid]`,
+/// - `addr,proc_name,actor_name[pid][port]`
 ///
 /// Reference also implements a total ordering, so that references are
 /// ordered lexicographically with the hierarchy implied by world, proc,
@@ -123,8 +119,6 @@ pub enum Reference {
     Actor(ActorId), // todo: should we only allow name references here?
     /// A reference to a port.
     Port(PortId),
-    /// A reference to a gang.
-    Gang(GangId),
 }
 
 impl Reference {
@@ -135,18 +129,16 @@ impl Reference {
             Self::Proc(_) => self.proc_id() == other.proc_id(),
             Self::Actor(_) => self == other,
             Self::Port(_) => self == other,
-            Self::Gang(_) => self == other,
         }
     }
 
-    /// The world id of the reference.
+    /// The world id of the reference (only for World variants).
     pub fn world_id(&self) -> Option<&WorldId> {
         match self {
             Self::World(world_id) => Some(world_id),
-            Self::Proc(proc_id) => proc_id.world_id(),
-            Self::Actor(ActorId(proc_id, _, _)) => proc_id.world_id(),
-            Self::Port(PortId(ActorId(proc_id, _, _), _)) => proc_id.world_id(),
-            Self::Gang(GangId(world_id, _)) => Some(world_id),
+            Self::Proc(_) => None,
+            Self::Actor(_) => None,
+            Self::Port(_) => None,
         }
     }
 
@@ -157,13 +149,7 @@ impl Reference {
             Self::Proc(proc_id) => Some(proc_id),
             Self::Actor(ActorId(proc_id, _, _)) => Some(proc_id),
             Self::Port(PortId(ActorId(proc_id, _, _), _)) => Some(proc_id),
-            Self::Gang(_) => None,
         }
-    }
-
-    /// The rank of the reference, if any.
-    fn rank(&self) -> Option<Index> {
-        self.proc_id().and_then(|proc_id| proc_id.rank())
     }
 
     /// The actor id of the reference, if any.
@@ -173,7 +159,6 @@ impl Reference {
             Self::Proc(_) => None,
             Self::Actor(actor_id) => Some(actor_id),
             Self::Port(PortId(actor_id, _)) => Some(actor_id),
-            Self::Gang(_) => None,
         }
     }
 
@@ -184,7 +169,6 @@ impl Reference {
             Self::Proc(_) => None,
             Self::Actor(actor_id) => Some(actor_id.name()),
             Self::Port(PortId(actor_id, _)) => Some(actor_id.name()),
-            Self::Gang(gang_id) => Some(&gang_id.1),
         }
     }
 
@@ -195,7 +179,6 @@ impl Reference {
             Self::Proc(_) => None,
             Self::Actor(actor_id) => Some(actor_id.pid()),
             Self::Port(PortId(actor_id, _)) => Some(actor_id.pid()),
-            Self::Gang(_) => None,
         }
     }
 
@@ -206,7 +189,6 @@ impl Reference {
             Self::Proc(_) => None,
             Self::Actor(_) => None,
             Self::Port(port_id) => Some(port_id.index()),
-            Self::Gang(_) => None,
         }
     }
 
@@ -217,7 +199,6 @@ impl Reference {
             Self::Proc(_) => ReferenceKind::Proc,
             Self::Actor(_) => ReferenceKind::Actor,
             Self::Port(_) => ReferenceKind::Port,
-            Self::Gang(_) => ReferenceKind::Gang,
         }
     }
 }
@@ -230,19 +211,17 @@ impl PartialOrd for Reference {
 
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
+        // Order by: world_id (if World), then proc address/name, then actor_name, then pid, then port
         (
-            // Ranked procs precede direct procs:
             self.world_id(),
-            self.rank(),
-            self.proc_id().and_then(ProcId::as_direct),
+            self.proc_id().map(|p| (p.addr(), p.name())),
             self.actor_name(),
             self.pid(),
             self.port(),
         )
             .cmp(&(
                 other.world_id(),
-                other.rank(),
-                other.proc_id().and_then(ProcId::as_direct),
+                other.proc_id().map(|p| (p.addr(), p.name())),
                 other.actor_name(),
                 other.pid(),
                 other.port(),
@@ -257,99 +236,9 @@ impl fmt::Display for Reference {
             Self::Proc(proc_id) => fmt::Display::fmt(proc_id, f),
             Self::Actor(actor_id) => fmt::Display::fmt(actor_id, f),
             Self::Port(port_id) => fmt::Display::fmt(port_id, f),
-            Self::Gang(gang_id) => fmt::Display::fmt(gang_id, f),
         }
     }
 }
-
-/// Statically create a [`WorldId`], [`ProcId`], [`ActorId`] or [`GangId`],
-/// given the concrete syntax documented in [`Reference`]:
-///
-/// ```
-/// # use hyperactor::id;
-/// # use hyperactor::reference::WorldId;
-/// # use hyperactor::reference::ProcId;
-/// # use hyperactor::reference::ActorId;
-/// # use hyperactor::reference::GangId;
-/// assert_eq!(id!(hello), WorldId("hello".into()));
-/// assert_eq!(id!(hello[0]), ProcId::Ranked(WorldId("hello".into()), 0));
-/// assert_eq!(
-///     id!(hello[0].actor),
-///     ActorId(
-///         ProcId::Ranked(WorldId("hello".into()), 0),
-///         "actor".into(),
-///         0
-///     )
-/// );
-/// assert_eq!(
-///     id!(hello[0].actor[1]),
-///     ActorId(
-///         ProcId::Ranked(WorldId("hello".into()), 0),
-///         "actor".into(),
-///         1
-///     )
-/// );
-/// assert_eq!(
-///     id!(hello.actor),
-///     GangId(WorldId("hello".into()), "actor".into())
-/// );
-/// ```
-///
-/// Prefer to use the id macro to construct identifiers in code, as it
-/// guarantees static validity, and preserves and reinforces the uniform
-/// concrete syntax of identifiers throughout.
-#[macro_export]
-macro_rules! id {
-    ($world:ident) => {
-        $crate::reference::WorldId(stringify!($world).to_string())
-    };
-    ($world:ident [$rank:expr]) => {
-        $crate::reference::ProcId::Ranked(
-            $crate::reference::WorldId(stringify!($world).to_string()),
-            $rank,
-        )
-    };
-    ($world:ident [$rank:expr] . $actor:ident) => {
-        $crate::reference::ActorId(
-            $crate::reference::ProcId::Ranked(
-                $crate::reference::WorldId(stringify!($world).to_string()),
-                $rank,
-            ),
-            stringify!($actor).to_string(),
-            0,
-        )
-    };
-    ($world:ident [$rank:expr] . $actor:ident [$pid:expr]) => {
-        $crate::reference::ActorId(
-            $crate::reference::ProcId::Ranked(
-                $crate::reference::WorldId(stringify!($world).to_string()),
-                $rank,
-            ),
-            stringify!($actor).to_string(),
-            $pid,
-        )
-    };
-    ($world:ident . $actor:ident) => {
-        $crate::reference::GangId(
-            $crate::reference::WorldId(stringify!($world).to_string()),
-            stringify!($actor).to_string(),
-        )
-    };
-    ($world:ident [$rank:expr] . $actor:ident [$pid:expr] [$port:expr]) => {
-        $crate::reference::PortId(
-            $crate::reference::ActorId(
-                $crate::reference::ProcId::Ranked(
-                    $crate::reference::WorldId(stringify!($world).to_string()),
-                    $rank,
-                ),
-                stringify!($actor).to_string(),
-                $pid,
-            ),
-            $port,
-        )
-    };
-}
-pub use id;
 
 /// The type of error encountered while parsing references.
 #[derive(thiserror::Error, Debug)]
@@ -383,11 +272,9 @@ impl FromStr for Reference {
     type Err = ReferenceParsingError;
 
     fn from_str(addr: &str) -> Result<Self, Self::Err> {
-        // First, try to parse a "new style" reference:
-        // 1) If the reference contains a comma (anywhere), it is a new style reference;
-        //    commas were not a valid lexeme in the previous reference format.
-        // 2) This is a bit ugly, but we bypass the tokenizer prior to this comma,
-        //    try to parse a channel address, and then parse the remainder.
+        // References are parsed in the "direct" format:
+        // 1) If the reference contains a comma (anywhere), it is a proc/actor/port reference
+        // 2) Otherwise, it's a world reference (just a simple name)
 
         match addr.split_once(",") {
             Some((channel_addr, rest)) => {
@@ -400,75 +287,40 @@ impl FromStr for Reference {
 
                     // channeladdr,proc_name
                     Token::Elem(proc_name) =>
-                    Self::Proc(ProcId::Direct(channel_addr, proc_name.to_string())),
+                    Self::Proc(ProcId(channel_addr, proc_name.to_string())),
 
                     // channeladdr,proc_name,actor_name
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name) =>
-                    Self::Actor(ActorId(ProcId::Direct(channel_addr, proc_name.to_string()), actor_name.to_string(), 0)),
+                    Self::Actor(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), 0)),
 
-                    // channeladdr,proc_name,actor_name[rank]
+                    // channeladdr,proc_name,actor_name[pid]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(rank) Token::RightBracket =>
-                        Self::Actor(ActorId(ProcId::Direct(channel_addr, proc_name.to_string()), actor_name.to_string(), rank)),
+                        Token::LeftBracket Token::Uint(pid) Token::RightBracket =>
+                        Self::Actor(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), pid)),
 
-                    // channeladdr,proc_name,actor_name[rank][port]
+                    // channeladdr,proc_name,actor_name[pid][port]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                        Token::LeftBracket Token::Uint(pid) Token::RightBracket
                         Token::LeftBracket Token::Uint(index) Token::RightBracket  =>
-                        Self::Port(PortId(ActorId(ProcId::Direct(channel_addr, proc_name.to_string()), actor_name.to_string(), rank), index as u64)),
+                        Self::Port(PortId(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), pid), index as u64)),
 
-                    // channeladdr,proc_name,actor_name[rank][port<type>]
+                    // channeladdr,proc_name,actor_name[pid][port<type>]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(rank) Token::RightBracket
+                        Token::LeftBracket Token::Uint(pid) Token::RightBracket
                         Token::LeftBracket Token::Uint(index)
                             Token::LessThan Token::Elem(_type) Token::GreaterThan
                         Token::RightBracket =>
-                        Self::Port(PortId(ActorId(ProcId::Direct(channel_addr, proc_name.to_string()), actor_name.to_string(), rank), index as u64)),
+                        Self::Port(PortId(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), pid), index as u64)),
                 }?)
             }
 
-            // "old style" / "ranked" reference
+            // World reference (just a simple name)
             None => {
                 Ok(parse! {
                     Lexer::new(addr);
 
                     // world
                     Token::Elem(world) => Self::World(WorldId(world.into())),
-
-                    // world[rank]
-                    Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket =>
-                        Self::Proc(ProcId::Ranked(WorldId(world.into()), rank)),
-
-                    // world[rank].actor  (implied pid=0)
-                    Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
-                        Token::Dot Token::Elem(actor) =>
-                        Self::Actor(ActorId(ProcId::Ranked(WorldId(world.into()), rank), actor.into(), 0)),
-
-                    // world[rank].actor[pid]
-                    Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
-                        Token::Dot Token::Elem(actor)
-                        Token::LeftBracket Token::Uint(pid) Token::RightBracket =>
-                        Self::Actor(ActorId(ProcId::Ranked(WorldId(world.into()), rank), actor.into(), pid)),
-
-                    // world[rank].actor[pid][port]
-                    Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
-                        Token::Dot Token::Elem(actor)
-                        Token::LeftBracket Token::Uint(pid) Token::RightBracket
-                        Token::LeftBracket Token::Uint(index) Token::RightBracket =>
-                        Self::Port(PortId(ActorId(ProcId::Ranked(WorldId(world.into()), rank), actor.into(), pid), index as u64)),
-
-                    // world[rank].actor[pid][port<type>]
-                    Token::Elem(world) Token::LeftBracket Token::Uint(rank) Token::RightBracket
-                        Token::Dot Token::Elem(actor)
-                        Token::LeftBracket Token::Uint(pid) Token::RightBracket
-                        Token::LeftBracket Token::Uint(index)
-                            Token::LessThan Token::Elem(_type) Token::GreaterThan
-                        Token::RightBracket =>
-                        Self::Port(PortId(ActorId(ProcId::Ranked(WorldId(world.into()), rank), actor.into(), pid), index as u64)),
-
-                    // world.actor
-                    Token::Elem(world) Token::Dot Token::Elem(actor) =>
-                        Self::Gang(GangId(WorldId(world.into()), actor.into())),
                 }?)
             }
         }
@@ -499,12 +351,6 @@ impl From<PortId> for Reference {
     }
 }
 
-impl From<GangId> for Reference {
-    fn from(gang_id: GangId) -> Self {
-        Self::Gang(gang_id)
-    }
-}
-
 /// Index is a type alias representing a value that can be used as an index
 /// into a sequence.
 pub type Index = usize;
@@ -526,20 +372,9 @@ pub type Index = usize;
 pub struct WorldId(pub String);
 
 impl WorldId {
-    /// Create a proc ID with the provided index in this world.
-    pub fn proc_id(&self, index: Index) -> ProcId {
-        ProcId::Ranked(self.clone(), index)
-    }
-
-    /// The world index.
+    /// The world name.
     pub fn name(&self) -> &str {
         &self.0
-    }
-
-    /// Return a randomly selected user proc in this world.
-    pub fn random_user_proc(&self) -> ProcId {
-        let mask = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
-        ProcId::Ranked(self.clone(), rand::thread_rng().r#gen::<usize>() | mask)
     }
 }
 
@@ -561,13 +396,9 @@ impl FromStr for WorldId {
     }
 }
 
-/// Procs are identified by their _rank_ within a world or by a direct channel address.
+/// Procs are identified by a direct channel address and local name.
 /// Each proc represents an actor runtime that can locally route to all of its
 /// constituent actors.
-///
-/// Ranks >= 1usize << (no. bits in usize - 1) (i.e., with the high bit set) are "user"
-/// ranks. These are reserved for randomly generated identifiers not
-/// assigned by the system.
 #[derive(
     Debug,
     Serialize,
@@ -578,15 +409,9 @@ impl FromStr for WorldId {
     PartialOrd,
     Hash,
     Ord,
-    typeuri::Named,
-    EnumAsInner
+    typeuri::Named
 )]
-pub enum ProcId {
-    /// A ranked proc within a world
-    Ranked(WorldId, Index),
-    /// A proc reachable via a direct channel address, and local name.
-    Direct(ChannelAddr, String),
-}
+pub struct ProcId(pub ChannelAddr, pub String);
 
 impl ProcId {
     /// Create an actor ID with the provided name, pid within this proc.
@@ -594,42 +419,20 @@ impl ProcId {
         ActorId(self.clone(), name.into(), pid)
     }
 
-    /// The proc's world id, if this is a ranked proc.
-    pub fn world_id(&self) -> Option<&WorldId> {
-        match self {
-            ProcId::Ranked(world_id, _) => Some(world_id),
-            ProcId::Direct(_, _) => None,
-        }
+    /// The proc's channel address.
+    pub fn addr(&self) -> &ChannelAddr {
+        &self.0
     }
 
-    /// The world name, if this is a ranked proc.
-    pub fn world_name(&self) -> Option<&str> {
-        self.world_id().map(|world_id| world_id.name())
-    }
-
-    /// The proc's rank, if this is a ranked proc.
-    pub fn rank(&self) -> Option<Index> {
-        match self {
-            ProcId::Ranked(_, rank) => Some(*rank),
-            ProcId::Direct(_, _) => None,
-        }
-    }
-
-    /// The proc's name, if this is a direct proc.
-    pub fn name(&self) -> Option<&String> {
-        match self {
-            ProcId::Ranked(_, _) => None,
-            ProcId::Direct(_, name) => Some(name),
-        }
+    /// The proc's name.
+    pub fn name(&self) -> &str {
+        &self.1
     }
 }
 
 impl fmt::Display for ProcId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcId::Ranked(world_id, rank) => write!(f, "{}[{}]", world_id, rank),
-            ProcId::Direct(addr, name) => write!(f, "{},{}", addr, name),
-        }
+        write!(f, "{},{}", self.0, self.1)
     }
 }
 
@@ -682,18 +485,6 @@ impl ActorId {
         &self.0
     }
 
-    /// The world name. Panics if this is a direct proc.
-    pub fn world_name(&self) -> &str {
-        self.0
-            .world_name()
-            .expect("world_name() called on direct proc")
-    }
-
-    /// The actor's proc's rank. Panics if this is a direct proc.
-    pub fn rank(&self) -> Index {
-        self.0.rank().expect("rank() called on direct proc")
-    }
-
     /// The actor's name.
     pub fn name(&self) -> &str {
         &self.1
@@ -708,10 +499,7 @@ impl ActorId {
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ActorId(proc_id, name, pid) = self;
-        match proc_id {
-            ProcId::Ranked(..) => write!(f, "{}.{}[{}]", proc_id, name, pid),
-            ProcId::Direct(..) => write!(f, "{},{}[{}]", proc_id, name, pid),
-        }
+        write!(f, "{},{}[{}]", proc_id, name, pid)
     }
 }
 impl<A: Referable> From<ActorRef<A>> for ActorId {
@@ -1376,156 +1164,6 @@ impl<M: RemoteMessage> Bind for OncePortRef<M> {
     }
 }
 
-/// Gangs identify a gang of actors across the world.
-#[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Hash,
-    Ord,
-    typeuri::Named
-)]
-pub struct GangId(pub WorldId, pub String);
-
-impl GangId {
-    pub(crate) fn expand(&self, world_size: usize) -> impl Iterator<Item = ActorId> + '_ {
-        (0..world_size).map(|rank| ActorId(ProcId::Ranked(self.0.clone(), rank), self.1.clone(), 0))
-    }
-
-    /// The world id of the gang.
-    pub fn world_id(&self) -> &WorldId {
-        &self.0
-    }
-
-    /// The name of the gang.
-    pub fn name(&self) -> &str {
-        &self.1
-    }
-
-    /// The gang's actor ID for the provided rank. It always returns the root
-    /// actor because the root actor is the public interface of a gang.
-    pub fn actor_id(&self, rank: Index) -> ActorId {
-        ActorId(
-            ProcId::Ranked(self.world_id().clone(), rank),
-            self.name().to_string(),
-            0,
-        )
-    }
-}
-
-impl fmt::Display for GangId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let GangId(world_id, name) = self;
-        write!(f, "{}.{}", world_id, name)
-    }
-}
-
-impl FromStr for GangId {
-    type Err = ReferenceParsingError;
-
-    fn from_str(addr: &str) -> Result<Self, Self::Err> {
-        match addr.parse()? {
-            Reference::Gang(gang_id) => Ok(gang_id),
-            _ => Err(ReferenceParsingError::WrongType("gang".into())),
-        }
-    }
-}
-
-/// Chop implements a simple lexer on a fixed set of delimiters.
-fn chop<'a>(mut s: &'a str, delims: &'a [&'a str]) -> impl Iterator<Item = &'a str> + 'a {
-    std::iter::from_fn(move || {
-        if s.is_empty() {
-            return None;
-        }
-
-        match delims
-            .iter()
-            .enumerate()
-            .flat_map(|(index, d)| s.find(d).map(|pos| (index, pos)))
-            .min_by_key(|&(_, v)| v)
-        {
-            Some((index, 0)) => {
-                let delim = delims[index];
-                s = &s[delim.len()..];
-                Some(delim)
-            }
-            Some((_, pos)) => {
-                let token = &s[..pos];
-                s = &s[pos..];
-                Some(token.trim())
-            }
-            None => {
-                let token = s;
-                s = "";
-                Some(token.trim())
-            }
-        }
-    })
-}
-
-/// GangRefs are typed references to gangs.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
-pub struct GangRef<A: Referable> {
-    gang_id: GangId,
-    phantom: PhantomData<A>,
-}
-
-impl<A: Referable> GangRef<A> {
-    /// Return an ActorRef corresponding with the provided rank in
-    /// this gang.  Does not check the validity of the rank, so the
-    /// returned identifier is not guaranteed to refer to a valid rank.
-    pub fn rank(&self, rank: Index) -> ActorRef<A> {
-        let GangRef {
-            gang_id: GangId(world_id, name),
-            ..
-        } = self;
-        ActorRef::attest(ActorId(
-            ProcId::Ranked(world_id.clone(), rank),
-            name.clone(),
-            0,
-        ))
-    }
-
-    /// Return the gang ID.
-    pub fn gang_id(&self) -> &GangId {
-        &self.gang_id
-    }
-
-    /// The caller attests that the provided GandId can be
-    /// converted to a reachable, typed gang reference.
-    pub fn attest(gang_id: GangId) -> Self {
-        Self {
-            gang_id,
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<A: Referable> Clone for GangRef<A> {
-    fn clone(&self) -> Self {
-        Self {
-            gang_id: self.gang_id.clone(),
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<A: Referable> From<GangRef<A>> for GangId {
-    fn from(gang_ref: GangRef<A>) -> Self {
-        gang_ref.gang_id
-    }
-}
-
-impl<'a, A: Referable> From<&'a GangRef<A>> for &'a GangId {
-    fn from(gang_ref: &'a GangRef<A>) -> Self {
-        &gang_ref.gang_id
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rand::seq::SliceRandom;
@@ -1546,38 +1184,13 @@ mod tests {
         let cases: Vec<(&str, Reference)> = vec![
             ("test", WorldId("test".into()).into()),
             (
-                "test[234]",
-                ProcId::Ranked(WorldId("test".into()), 234).into(),
-            ),
-            (
-                "test[234].testactor[6]",
-                ActorId(
-                    ProcId::Ranked(WorldId("test".into()), 234),
-                    "testactor".into(),
-                    6,
-                )
-                .into(),
-            ),
-            (
-                "test[234].testactor[6][1]",
-                PortId(
-                    ActorId(
-                        ProcId::Ranked(WorldId("test".into()), 234),
-                        "testactor".into(),
-                        6,
-                    ),
-                    1,
-                )
-                .into(),
-            ),
-            (
-                "test.testactor",
-                GangId(WorldId("test".into()), "testactor".into()).into(),
+                "tcp:[::1]:1234,test",
+                ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()).into(),
             ),
             (
                 "tcp:[::1]:1234,test,testactor[123]",
                 ActorId(
-                    ProcId::Direct("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
+                    ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
                     "testactor".to_string(),
                     123,
                 )
@@ -1588,21 +1201,11 @@ mod tests {
                 "tcp:[::1]:1234,test,testactor[0][123<my::type>]",
                 PortId(
                     ActorId(
-                        ProcId::Direct("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
+                        ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
                         "testactor".to_string(),
                         0,
                     ),
                     123,
-                )
-                .into(),
-            ),
-            (
-                // References with v1::Name::Suffixed for actor names are parseable
-                "test[234].testactor_12345[6]",
-                ActorId(
-                    ProcId::Ranked(WorldId("test".into()), 234),
-                    "testactor_12345".into(),
-                    6,
                 )
                 .into(),
             ),
@@ -1624,52 +1227,11 @@ mod tests {
     }
 
     #[test]
-    fn test_id_macro() {
-        assert_eq!(id!(hello), WorldId("hello".into()));
-        assert_eq!(id!(hello[0]), ProcId::Ranked(WorldId("hello".into()), 0));
-        assert_eq!(
-            id!(hello[0].actor),
-            ActorId(
-                ProcId::Ranked(WorldId("hello".into()), 0),
-                "actor".into(),
-                0
-            )
-        );
-        assert_eq!(
-            id!(hello[0].actor[1]),
-            ActorId(
-                ProcId::Ranked(WorldId("hello".into()), 0),
-                "actor".into(),
-                1
-            )
-        );
-        assert_eq!(
-            id!(hello.actor),
-            GangId(WorldId("hello".into()), "actor".into())
-        );
-    }
-
-    #[test]
     fn test_reference_ord() {
-        let expected: Vec<Reference> = [
-            "first",
-            "second",
-            "second.actor1",
-            "second.actor2",
-            "second[1]",
-            "second[1].actor1",
-            "second[1].actor2",
-            "second[2]",
-            "second[2].actor100",
-            "third",
-            "third.actor",
-            "third[2]",
-            "third[2].actor",
-            "third[2].actor[1]",
-        ]
-        .into_iter()
-        .map(|s| s.parse().unwrap())
-        .collect();
+        let expected: Vec<Reference> = ["first", "second", "third"]
+            .into_iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
 
         let mut sorted = expected.to_vec();
         sorted.shuffle(&mut thread_rng());
@@ -1685,7 +1247,7 @@ mod tests {
         wirevalue::register_type!(MyType);
         let port_id = PortId(
             ActorId(
-                ProcId::Ranked(WorldId("test".into()), 234),
+                ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
                 "testactor".into(),
                 1,
             ),
@@ -1693,7 +1255,7 @@ mod tests {
         );
         assert_eq!(
             port_id.to_string(),
-            "test[234].testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
+            "tcp:[::1]:1234,test,testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
         );
     }
 

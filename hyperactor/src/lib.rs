@@ -162,8 +162,6 @@ pub use proc::Proc;
 pub use proc::WeakProc;
 pub use reference::ActorId;
 pub use reference::ActorRef;
-pub use reference::GangId;
-pub use reference::GangRef;
 pub use reference::OncePortRef;
 pub use reference::PortId;
 pub use reference::PortRef;
