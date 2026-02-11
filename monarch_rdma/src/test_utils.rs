@@ -89,7 +89,6 @@ pub mod test_utils {
     use hyperactor::clock::RealClock;
     use hyperactor_config::Attrs;
     use hyperactor_mesh::ActorMesh;
-    use hyperactor_mesh::Mesh;
     use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
@@ -111,8 +110,8 @@ pub mod test_utils {
     unsafe impl Send for SendSyncCudaContext {}
     unsafe impl Sync for SendSyncCudaContext {}
 
-    /// Actor responsible for CUDA initialization and buffer management within its own process context.  
-    /// This is important because you preform CUDA operations within the same process as the RDMA operations.  
+    /// Actor responsible for CUDA initialization and buffer management within its own process context.
+    /// This is important because you preform CUDA operations within the same process as the RDMA operations.
     #[hyperactor::export(
         spawn = true,
         handlers = [

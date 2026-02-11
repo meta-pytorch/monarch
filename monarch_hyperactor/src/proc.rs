@@ -32,7 +32,6 @@ use pyo3::types::PyType;
 
 use crate::actor::PythonActor;
 use crate::actor::PythonActorHandle;
-use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 
 /// Wrapper around a proc that provides utilities to implement a python actor.
@@ -75,11 +74,6 @@ impl PyProc {
     #[getter]
     fn id(&self) -> String {
         self.inner.proc_id().to_string()
-    }
-
-    fn attach(&self, name: String) -> PyResult<PyMailbox> {
-        let mailbox = self.inner.attach(&name)?;
-        Ok(PyMailbox { inner: mailbox })
     }
 
     fn destroy<'py>(

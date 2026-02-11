@@ -21,8 +21,8 @@ use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::global_root_client;
-use ndslice::View;
 use ndslice::extent;
+use ndslice::view::Ranked as _;
 use tokio::time::Duration;
 
 mod bench_actor;

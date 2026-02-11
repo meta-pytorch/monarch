@@ -43,11 +43,7 @@ use typeuri::Named;
 #[derive(Parser)]
 #[command(name = "dining_philosophers")]
 struct Args {
-    /// Run all procs in-process (makes actors visible in admin tree).
-    ///
-    /// By default, procs are spawned as separate OS processes. With this
-    /// flag, all procs run in the current process, which allows the admin
-    /// tree endpoint to show all actors (useful for debugging with the TUI).
+    /// Run all procs in-process rather than as separate OS processes.
     #[arg(long)]
     in_process: bool,
 }
@@ -257,8 +253,6 @@ async fn main() -> Result<ExitCode> {
 
     let args = Args::parse();
 
-    // Use in-process mode for debugging (actors visible in admin tree),
-    // or child-process mode (default) for production-like behavior.
     let host_mesh = if args.in_process {
         HostMesh::local_in_process().await?
     } else {
