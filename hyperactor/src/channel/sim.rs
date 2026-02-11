@@ -227,9 +227,11 @@ impl<M: RemoteMessage> Drop for SimRx<M> {
 /// Primarily used for dispatching messages to the correct sender.
 pub struct SimDispatcher {
     dispatchers: DashMap<ChannelAddr, mpsc::Sender<wirevalue::Any>>,
+    #[allow(dead_code)]
     sender_cache: DashMap<ChannelAddr, Arc<dyn Tx<MessageEnvelope> + Send + Sync>>,
 }
 
+#[allow(dead_code)] // Not used outside tests.
 fn create_egress_sender(
     addr: ChannelAddr,
 ) -> anyhow::Result<Arc<dyn Tx<MessageEnvelope> + Send + Sync>> {

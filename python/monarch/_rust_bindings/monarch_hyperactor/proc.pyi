@@ -9,7 +9,6 @@
 from typing import final, Optional, Type
 
 from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PythonActorHandle
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 
 def init_proc(
     *,
@@ -127,14 +126,5 @@ class Proc:
         Arguments:
         - `actor_name`: Name of the actor.
         - `actor`: The type of the actor, which
-        """
-        ...
-
-    def attach(self, name: str) -> Mailbox:
-        """
-        Attach to this proc.
-
-        Arguments:
-        - `name`: Name of the actor.
         """
         ...

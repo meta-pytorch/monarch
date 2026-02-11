@@ -1814,7 +1814,7 @@ impl InstanceCell {
                 actor_task_handle: OnceLock::new(),
                 exported_named_ports: DashMap::new(),
                 num_processed_messages: AtomicU64::new(0),
-                created_at: SystemTime::now(),
+                created_at: RealClock.system_time_now(),
                 last_message_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
