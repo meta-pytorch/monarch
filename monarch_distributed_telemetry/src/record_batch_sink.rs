@@ -19,7 +19,6 @@
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 
 use datafusion::arrow::record_batch::RecordBatch;
 use hyperactor_telemetry::FieldValue;

@@ -41,7 +41,6 @@ use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::MeshFailure;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
-use ndslice::Point;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
@@ -1480,7 +1479,7 @@ mod tests {
 
         pyo3::Python::initialize();
         monarch_with_gil_blocking(|py| {
-            assert!(pyerr.get_type(py).is(&PyValueError::type_object(py)));
+            assert!(pyerr.get_type(py).is(PyValueError::type_object(py)));
             let py_msg = pyerr.value(py).to_string();
 
             // 1) Bridge preserves the exact message
