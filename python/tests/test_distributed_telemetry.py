@@ -180,12 +180,12 @@ def test_actors_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_actor_meshes_table(cleanup_callbacks) -> None:
-    """Test that the actor_meshes table is populated when actor meshes are spawned."""
+def test_meshes_table(cleanup_callbacks) -> None:
+    """Test that the meshes table is populated when actor meshes are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
-    # Spawn some worker actors - this should trigger notify_actor_mesh_created
+    # Spawn some worker actors - this should trigger notify_mesh_created
     worker_procs = this_host().spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
 
@@ -194,13 +194,13 @@ def test_actor_meshes_table(cleanup_callbacks) -> None:
     # pyre-ignore[29]: workers is an ActorMesh
     workers.spawn_child.call("dummy_child").get()
 
-    # Query the actor_meshes table to verify actor meshes were recorded
-    result = engine.query("SELECT * FROM actor_meshes")
+    # Query the meshes table to verify meshes were recorded
+    result = engine.query("SELECT * FROM meshes")
     result_dict = result.to_pydict()
 
-    # We should have at least some actor meshes recorded
+    # We should have at least some meshes recorded
     mesh_count = len(result_dict.get("id", []))
-    assert mesh_count > 0, f"Expected at least one actor mesh, got {mesh_count}"
+    assert mesh_count > 0, f"Expected at least one mesh, got {mesh_count}"
 
     # Verify the schema has the expected columns
     expected_columns = {
@@ -265,11 +265,11 @@ def test_actor_meshes_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
-    """Test that actors.mesh_id matches actor_meshes.id, enabling joins."""
+def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
+    """Test that actors.mesh_id matches meshes.id, enabling joins."""
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
-    # Spawn actors — this populates both the actors and actor_meshes tables
+    # Spawn actors — this populates both the actors and meshes tables
     worker_procs = this_host().spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("join_test_worker", WorkerActor)
 
@@ -277,7 +277,7 @@ def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
     # pyre-ignore[29]: workers is an ActorMesh
     workers.spawn_child.call("dummy").get()
 
-    # Join actors with actor_meshes on mesh_id = id
+    # Join actors with meshes on mesh_id = id
     result = engine.query(
         """SELECT a.full_name AS actor_name,
                   a.mesh_id,
@@ -285,7 +285,7 @@ def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
                   m.given_name AS mesh_name,
                   m.class AS mesh_class
            FROM actors a
-           INNER JOIN actor_meshes m ON a.mesh_id = m.id
+           INNER JOIN meshes m ON a.mesh_id = m.id
            WHERE a.full_name LIKE '%join_test_worker%'
            ORDER BY a.rank"""
     )
@@ -294,8 +294,8 @@ def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
     # The join should produce results — if mesh_id doesn't match, this is empty
     joined_count = len(result_dict.get("actor_name", []))
     assert joined_count > 0, (
-        "Expected actors to join with actor_meshes on mesh_id, but got 0 rows. "
-        "This means actors.mesh_id does not match any actor_meshes.id."
+        "Expected actors to join with meshes on mesh_id, but got 0 rows. "
+        "This means actors.mesh_id does not match any meshes.id."
     )
 
     # Every joined row should reference our mesh name
