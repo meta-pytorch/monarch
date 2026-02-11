@@ -30,6 +30,7 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
+use hyperactor::ordering::SeqInfo;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -571,8 +572,12 @@ impl<A: Referable> ActorMeshRef<A> {
         // without worrying about rollback.
         {
             let sequencer = cx.instance().sequencer();
-            let seqs = actor_ids
-                .map_into(|actor_id| sequencer.assign_seq(&actor_id.port_id(M::port())).seq);
+            let seqs = actor_ids.map_into(|actor_id| {
+                match sequencer.assign_seq(&actor_id.port_id(M::port())) {
+                    SeqInfo::Session { seq, session_id: _ } => seq,
+                    _ => panic!("infallible because assign_seq always returns session"),
+                }
+            });
 
             let mut headers = Attrs::new();
             headers.set(

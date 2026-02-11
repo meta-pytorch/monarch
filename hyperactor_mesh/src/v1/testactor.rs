@@ -476,7 +476,7 @@ pub async fn assert_casting_correctness(
             .iter()
             .zip(
                 seqs.into_iter()
-                    .map(|seq| Some(SeqInfo { session_id, seq })),
+                    .map(|seq| Some(SeqInfo::Session { session_id, seq })),
             )
             .collect(),
     };

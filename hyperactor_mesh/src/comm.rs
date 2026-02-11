@@ -563,7 +563,7 @@ impl Handler<ForwardMessageV1> for CommActor {
                 .expect("mismatched seqs and dest_region");
             headers.set(
                 SEQ_INFO,
-                SeqInfo {
+                SeqInfo::Session {
                     session_id: message.session_id,
                     seq,
                 },

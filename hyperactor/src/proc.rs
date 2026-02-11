@@ -46,7 +46,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing::Span;
-use typeuri::Named as _;
+use typeuri::Named;
 use uuid::Uuid;
 use wirevalue::TypeInfo;
 
@@ -2147,18 +2147,37 @@ impl<A: Actor> Ports<A> {
                         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
                     );
                     if workq.enable_buffering {
-                        let SeqInfo { session_id, seq } =
-                            seq_info.expect("SEQ_INFO must be set when buffering is enabled");
-
-                        // TODO: return the message contained in the error instead of dropping them when converting
-                        // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                        workq.send(session_id, seq, work).map_err(|e| match e {
-                            OrderedSenderError::InvalidZeroSeq(_) => {
-                                anyhow::anyhow!("seq must be greater than 0")
+                        match seq_info {
+                            Some(SeqInfo::Session { session_id, seq }) => {
+                                // TODO: return the message contained in the error instead of dropping them when converting
+                                // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
+                                workq.send(session_id, seq, work).map_err(|e| match e {
+                                    OrderedSenderError::InvalidZeroSeq(_) => {
+                                        let error_msg = format!(
+                                             "in enqueue func for {}, got seq 0 for message type {}",
+                                            actor_id,
+                                            std::any::type_name::<M>(),
+                                        );
+                                        tracing::error!(error_msg);
+                                        anyhow::anyhow!(error_msg)
+                                    }
+                                    OrderedSenderError::SendError(e) => anyhow::Error::from(e),
+                                    OrderedSenderError::FlushError(e) => e,
+                                })
                             }
-                            OrderedSenderError::SendError(e) => anyhow::Error::from(e),
-                            OrderedSenderError::FlushError(e) => e,
-                        })
+                            Some(SeqInfo::Direct) => {
+                                workq.direct_send(work).map_err(anyhow::Error::from)
+                            }
+                            None => {
+                                let error_msg = format!(
+                                    "in enqueue func for {}, buffering is enabled, but SEQ_INFO is not set for message type {}",
+                                    actor_id,
+                                    std::any::type_name::<M>(),
+                                    );
+                                tracing::error!(error_msg);
+                                anyhow::bail!(error_msg);
+                            }
+                        }
                     } else {
                         workq.direct_send(work).map_err(anyhow::Error::from)
                     }
