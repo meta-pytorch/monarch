@@ -28,7 +28,6 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor_config::Attrs;
-use hyperactor_mesh::Mesh;
 use hyperactor_mesh::global_root_client;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::View;
@@ -142,9 +141,10 @@ async fn main() -> Result<ExitCode> {
     );
     println!();
 
-    println!("Computation starts in 5 seconds.");
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("Starting computation...");
+    // TODO: put an indicatif spinner here
+    println!("Starts in 5 seconds.");
+    RealClock.sleep(Duration::from_secs(5)).await;
+    println!("Starting...");
 
     let proc_mesh = host_mesh
         .spawn(instance, "sieve", extent!(replica = 1))

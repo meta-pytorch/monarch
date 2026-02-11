@@ -110,7 +110,7 @@ pub struct DatabaseScanner {
 fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
     use rand::Rng;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Create hosts table schema
     let hosts_schema = Arc::new(Schema::new(vec![
@@ -123,7 +123,7 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
     ]));
 
     // Use random base to avoid duplicate host_ids across actors
-    let host_start = rng.gen_range(0..10000) * 10;
+    let host_start = rng.random_range(0..10000) * 10;
     let host_end = host_start + 10;
     let datacenters = ["us-east-1", "us-west-2", "eu-west-1", "ap-south-1"];
     let os_types = ["ubuntu-22.04", "debian-12", "rhel-9", "amazon-linux-2"];
@@ -141,10 +141,10 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
     for host_id in host_start..host_end {
         host_ids.push(host_id);
         hostnames.push(format!("server-{:05}", host_id));
-        dcs.push(datacenters[rng.gen_range(0..datacenters.len())].to_string());
-        oses.push(os_types[rng.gen_range(0..os_types.len())].to_string());
-        cpus.push(cpu_options[rng.gen_range(0..cpu_options.len())] as i32);
-        mems.push(memory_options[rng.gen_range(0..memory_options.len())]);
+        dcs.push(datacenters[rng.random_range(0..datacenters.len())].to_string());
+        oses.push(os_types[rng.random_range(0..os_types.len())].to_string());
+        cpus.push(cpu_options[rng.random_range(0..cpu_options.len())] as i32);
+        mems.push(memory_options[rng.random_range(0..memory_options.len())]);
     }
 
     let hosts_batch = RecordBatch::try_new(
@@ -195,16 +195,16 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
         let timestamp_micros = now - (i * 90 * 1_000_000);
         timestamps.push(timestamp_micros);
 
-        let host_id = rng.gen_range(host_start..host_end);
+        let host_id = rng.random_range(host_start..host_end);
         metric_host_ids.push(host_id as i32);
 
-        let metric_name = metric_names[rng.gen_range(0..metric_names.len())];
+        let metric_name = metric_names[rng.random_range(0..metric_names.len())];
         metric_names_col.push(metric_name.to_string());
 
         let value = match metric_name {
-            "cpu_usage" | "memory_usage" => rng.gen_range(0.0..100.0),
-            "disk_io" => rng.gen_range(0.0..1000.0),
-            _ => rng.gen_range(0.0..10000.0),
+            "cpu_usage" | "memory_usage" => rng.random_range(0.0..100.0),
+            "disk_io" => rng.random_range(0.0..1000.0),
+            _ => rng.random_range(0.0..10000.0),
         };
         values.push(value);
     }

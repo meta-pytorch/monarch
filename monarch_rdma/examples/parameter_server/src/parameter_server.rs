@@ -71,7 +71,6 @@ use hyperactor::context::Mailbox as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
 use hyperactor_mesh::ActorMesh;
-use hyperactor_mesh::Mesh;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
