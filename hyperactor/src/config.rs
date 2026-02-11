@@ -118,7 +118,7 @@ declare_attrs! {
         Some("HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER".to_string()),
         Some("enable_dest_actor_reordering_buffer".to_string()),
     ))
-    pub attr ENABLE_DEST_ACTOR_REORDERING_BUFFER: bool = false;
+    pub attr ENABLE_DEST_ACTOR_REORDERING_BUFFER: bool = true;
 
     /// Timeout for [`Host::spawn`] to await proc readiness.
     ///
