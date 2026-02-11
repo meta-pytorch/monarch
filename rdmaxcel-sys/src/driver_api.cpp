@@ -99,7 +99,8 @@ namespace {
 
 DriverAPI create_driver_api() {
 #ifdef USE_ROCM
-  // Try to open libamdhip64.so - RTLD_NOLOAD means only succeed if already loaded
+  // Try to open libamdhip64.so - RTLD_NOLOAD means only succeed if already
+  // loaded
   void* handle = dlopen("libamdhip64.so", RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
     std::cerr
@@ -130,11 +131,11 @@ DriverAPI create_driver_api() {
 
   DriverAPI r{};
 
-#define LOOKUP_CUDA_ENTRY(name, sym)                                       \
-  r.name##_ = reinterpret_cast<decltype(&sym)>(dlsym(handle, #sym));       \
-  if (!r.name##_) {                                                        \
-    throw std::runtime_error(                                              \
-        std::string("[RdmaXcel] Can't find ") + #sym + ": " + dlerror());  \
+#define LOOKUP_CUDA_ENTRY(name, sym)                                      \
+  r.name##_ = reinterpret_cast<decltype(&sym)>(dlsym(handle, #sym));      \
+  if (!r.name##_) {                                                       \
+    throw std::runtime_error(                                             \
+        std::string("[RdmaXcel] Can't find ") + #sym + ": " + dlerror()); \
   }
 
   RDMAXCEL_CUDA_DRIVER_API(LOOKUP_CUDA_ENTRY)
