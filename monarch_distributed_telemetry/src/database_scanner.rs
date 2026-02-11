@@ -143,7 +143,7 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
         hostnames.push(format!("server-{:05}", host_id));
         dcs.push(datacenters[rng.gen_range(0..datacenters.len())].to_string());
         oses.push(os_types[rng.gen_range(0..os_types.len())].to_string());
-        cpus.push(cpu_options[rng.gen_range(0..cpu_options.len())] as i32);
+        cpus.push(cpu_options[rng.gen_range(0..cpu_options.len())]);
         mems.push(memory_options[rng.gen_range(0..memory_options.len())]);
     }
 
@@ -196,7 +196,7 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
         timestamps.push(timestamp_micros);
 
         let host_id = rng.gen_range(host_start..host_end);
-        metric_host_ids.push(host_id as i32);
+        metric_host_ids.push(host_id);
 
         let metric_name = metric_names[rng.gen_range(0..metric_names.len())];
         metric_names_col.push(metric_name.to_string());
