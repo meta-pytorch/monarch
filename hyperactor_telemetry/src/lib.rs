@@ -321,21 +321,21 @@ pub fn notify_actor_created(event: ActorEvent) {
     }
 }
 
-/// Event data for actor mesh creation.
-/// This is passed to EntityEventDispatcher implementations when an actor mesh is spawned.
+/// Event data for mesh creation.
+/// This is passed to EntityEventDispatcher implementations when a mesh is spawned.
 #[derive(Debug, Clone)]
-pub struct ActorMeshEvent {
+pub struct MeshEvent {
     /// Unique identifier for this mesh (hashed)
     pub id: u64,
     /// Timestamp when the mesh was created
     pub timestamp: SystemTime,
-    /// Mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
+    /// Mesh class (e.g., "ProcMesh", "ActorMesh<PythonActor>")
     pub class: String,
     /// User-provided name for this mesh
     pub given_name: String,
     /// Full hierarchical name as it appears in supervision events
     pub full_name: String,
-    /// Shape of the mesh, serialized from ndslice::Shape (labels + slice topology)
+    /// Shape of the mesh, serialized from ndslice::Extent
     pub shape_json: String,
     /// Parent mesh ID (None for root meshes)
     pub parent_mesh_id: Option<u64>,
@@ -343,13 +343,13 @@ pub struct ActorMeshEvent {
     pub parent_view_json: Option<String>,
 }
 
-/// Notify the registered dispatcher that an actor mesh was created.
-/// This is called from hyperactor_mesh when an actor mesh is spawned.
-pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
+/// Notify the registered dispatcher that a mesh was created.
+/// This is called from hyperactor_mesh when a mesh is spawned.
+pub fn notify_mesh_created(event: MeshEvent) {
     if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
         if let Some(ref d) = *dispatcher {
-            if let Err(e) = d.dispatch(&EntityEvent::ActorMesh(event)) {
-                tracing::error!("Failed to dispatch actor mesh event: {}", e);
+            if let Err(e) = d.dispatch(&EntityEvent::Mesh(event)) {
+                tracing::error!("Failed to dispatch mesh event: {}", e);
             }
         }
     }
@@ -370,8 +370,8 @@ pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
 pub enum EntityEvent {
     /// An actor was created.
     Actor(ActorEvent),
-    /// An actor mesh was created.
-    ActorMesh(ActorMeshEvent),
+    /// A mesh was created.
+    Mesh(MeshEvent),
 }
 
 /// Trait for dispatchers that receive unified entity events.
@@ -393,7 +393,7 @@ pub enum EntityEvent {
 ///     fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error> {
 ///         match event {
 ///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
-///             EntityEvent::ActorMesh(mesh) => println!("Mesh: {}", mesh.full_name),
+///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
 ///         }
 ///         Ok(())
 ///     }
