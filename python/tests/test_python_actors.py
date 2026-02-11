@@ -103,7 +103,10 @@ class Indirect(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_choose():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     v = proc.spawn("counter", Counter, 3)
@@ -124,7 +127,10 @@ async def test_choose():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_stream():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     v = proc.spawn("counter2", Counter, 3)
@@ -146,7 +152,10 @@ class From(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_mesh_passed_to_mesh():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     f = proc.spawn("from", From)
@@ -160,7 +169,10 @@ async def test_mesh_passed_to_mesh():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_mesh_passed_to_mesh_on_different_proc_mesh():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     proc2 = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
@@ -175,7 +187,10 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_actor_slicing():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     proc2 = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
@@ -192,7 +207,10 @@ def test_actor_slicing():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_aggregate():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     counter = proc.spawn("counter", Counter, 1)
@@ -213,7 +231,10 @@ class RunIt(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_rank_size():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     r = proc.spawn("runit", RunIt)
@@ -225,7 +246,10 @@ async def test_rank_size():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_rank_string():
     per_host = {"hosts": 1, "gpus": 2}
     proc = fake_in_process_host().spawn_procs(per_host=per_host)
@@ -244,7 +268,10 @@ class SyncActor(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_sync_actor():
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     a = proc.spawn("actor", SyncActor)
@@ -254,7 +281,10 @@ async def test_sync_actor():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_sync_actor_sync_client() -> None:
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     a = proc.spawn("actor", SyncActor)
@@ -264,14 +294,20 @@ def test_sync_actor_sync_client() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_proc_mesh_size() -> None:
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     assert 2 == proc.size("gpus")
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_rank_size_sync() -> None:
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     r = proc.spawn("runit", RunIt)
@@ -282,7 +318,10 @@ def test_rank_size_sync() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_accumulate_sync() -> None:
     proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
     counter = proc.spawn("counter", Counter, 1)
@@ -299,7 +338,10 @@ class CastToCounter(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_value_mesh() -> None:
     per_host = {"hosts": 1, "gpus": 2}
     proc = fake_in_process_host().spawn_procs(per_host=per_host)
@@ -342,7 +384,10 @@ def test_rust_binding_modules_correct() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_proc_mesh_liveness() -> None:
     mesh = this_host().spawn_procs(per_host={"gpus": 2})
     counter = mesh.spawn("counter", Counter, 1)
@@ -378,7 +423,10 @@ class TLSActor(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_actor_tls() -> None:
     """Test that thread-local state is respected."""
     pm = this_host().spawn_procs(per_host={"gpus": 1})
@@ -409,7 +457,10 @@ class TLSActorFullSync(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_actor_tls_full_sync() -> None:
     """Test that thread-local state is respected."""
     pm = this_host().spawn_procs(per_host={"gpus": 1})
@@ -1045,7 +1096,10 @@ async def test_flush_on_disable_aggregation() -> None:
 
 
 @pytest.mark.timeout(120)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_multiple_ongoing_flushes_no_deadlock() -> None:
     """
     The goal is to make sure when a user sends multiple sync flushes, we are not deadlocked.
@@ -1140,7 +1194,10 @@ class SendAlot(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_port_as_argument() -> None:
     proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
     s = proc_mesh.spawn("send_alot", SendAlot)
@@ -1202,7 +1259,10 @@ async def test_sync_workspace() -> None:
 
 
 @pytest.mark.timeout(120)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am = pm.spawn("printer", Printer)
@@ -1221,7 +1281,10 @@ class PortedActor(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_ported_actor():
     proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
     a = proc_mesh.spawn("port_actor", PortedActor)
@@ -1238,12 +1301,18 @@ async def consume():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_python_task_tuple() -> None:
     PythonTask.from_coroutine(consume()).block_on()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_select_result() -> None:
     def s(t):
         time.sleep(t)
@@ -1264,7 +1333,10 @@ class SleepActor(Actor):
         await asyncio.sleep(t)
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_mesh_len():
     proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 12})
     s = proc_mesh.spawn("sleep_actor", SleepActor)
@@ -1343,7 +1415,10 @@ async def test_undeliverable_message_with_override() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_undeliverable_message_without_override() -> None:
     # This test generates a fault that reaches the client. We don't want it to
     # crash.
@@ -1357,7 +1432,10 @@ async def test_undeliverable_message_without_override() -> None:
     pm.stop().get()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_this_and_that():
     proc = this_proc()
     counter = proc.spawn("counter", Counter, 7)
@@ -1370,7 +1448,10 @@ class ReceptorActor(Actor):
         return 1
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 async def test_things_survive_losing_python_reference() -> None:
     """Test the slice_receptor_mesh function in LOCAL mode, verifying that setup methods are called."""
 
@@ -1422,7 +1503,10 @@ class SpawningActorFromEndpointActor(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_get_or_spawn_controller_inside_actor_endpoint():
     actor_1 = get_or_spawn_controller("actor_1", SpawningActorFromEndpointActor).get()
     actor_1.spawning_from_endpoint.call_one(
@@ -1439,7 +1523,10 @@ class Hello(Actor):
         return "hello!"
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_simple_bootstrap():
     with TemporaryDirectory() as d:
         procs = []
@@ -1480,7 +1567,10 @@ class HostMeshActor(Actor):
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_this_host() -> None:
     host = create_local_host_mesh(Extent(["hosts"], [6]))
     hosts_by_rank = [host.slice(hosts=i) for i in range(6)]
@@ -1548,7 +1638,10 @@ class FakeLocalLoginJob(LoginJob):
         return ProcessState(proc.pid, addr)
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_login_job():
     with TemporaryDirectory() as temp_dir:
         j = FakeLocalLoginJob(temp_dir)
@@ -1636,7 +1729,10 @@ class Named(Actor):
         return context().actor_instance.creator, str(context().actor_instance)
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_instance_name():
     cr, result = (
         this_host()
@@ -1682,14 +1778,20 @@ class TestPytokioActor(Actor):
         PythonTask.spawn_blocking(task).block_on()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_context_propagated_through_python_task_spawn():
     p = this_host().spawn_procs()
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
     a.context_propagated_through_spawn.call().get()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_context_propagated_through_python_task_spawn_blocking():
     p = this_host().spawn_procs()
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
@@ -1723,7 +1825,10 @@ class ActorWithAsyncCleanup(Actor):
         await self.counter.incr.call_one()
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_cleanup():
     procs = this_host().spawn_procs(per_host={"gpus": 1})
     counter = procs.spawn("counter", Counter, 0)
@@ -1734,7 +1839,10 @@ def test_cleanup():
     assert counter.value.call_one().get() == 1
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_cleanup_async():
     procs = this_host().spawn_procs(per_host={"gpus": 1})
     counter = procs.spawn("counter", Counter, 0)
@@ -1770,7 +1878,10 @@ class WrapperActor(Actor):
     # automatically stopped without needing to define one.
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_recursive_stop():
     """Tests that if A owns B, and A is stopped, B is also stopped. Cleanup
     actors are used because we can observe a side effect of them stopping"""
@@ -1790,7 +1901,10 @@ def test_recursive_stop():
     assert counter.value.call_one().get() == 2
 
 
-@parametrize_config(actor_queue_dispatch={True, False})
+@parametrize_config(
+    actor_queue_dispatch={True, False},
+    enable_native_v1_casting={True, False},
+)
 def test_get_or_spawn_controller_on_unpickled_proc_mesh():
     class StoreActor(Actor):
         def __init__(self):
