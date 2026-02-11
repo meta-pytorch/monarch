@@ -82,6 +82,7 @@ use crate::proc_launcher::format_process_name;
 use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::v1;
+use crate::v1::host_mesh::mesh_agent::HOST_AGENT;
 use crate::v1::host_mesh::mesh_agent::HostAgentMode;
 use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 
@@ -315,7 +316,7 @@ pub async fn host(
     let addr = host.addr().clone();
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc.spawn::<HostMeshAgent>(
-        "agent",
+        HOST_AGENT,
         HostMeshAgent::new(HostAgentMode::Process {
             host,
             exit_on_shutdown,

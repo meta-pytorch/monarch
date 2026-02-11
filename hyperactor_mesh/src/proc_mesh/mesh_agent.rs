@@ -58,6 +58,9 @@ use crate::reference::ActorMeshId;
 use crate::resource;
 use crate::v1::Name;
 
+/// The well-known name of the proc mesh agent actor.
+pub static PROC_AGENT: &str = "proc_agent";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
     Success { rank: usize, actor_id: ActorId },
@@ -313,7 +316,7 @@ impl ProcMeshAgent {
             record_supervision_events: true,
             supervision_events: HashMap::new(),
         };
-        proc.spawn::<Self>("agent", agent)
+        proc.spawn::<Self>(PROC_AGENT, agent)
     }
 
     async fn destroy_and_wait_except_current<'a>(

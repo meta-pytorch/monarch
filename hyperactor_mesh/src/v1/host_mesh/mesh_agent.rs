@@ -60,6 +60,9 @@ pub(crate) type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcMeshAgent>>> + Send>>;
 pub(crate) type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture + Send + Sync>;
 
+/// The well-known name of the host mesh agent actor.
+pub static HOST_AGENT: &str = "host_agent";
+
 /// Represents the different ways a [`Host`] can be managed by an agent.
 ///
 /// A host can either:
@@ -789,7 +792,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         };
 
         let system_proc = host.system_proc().clone();
-        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host))?;
+        let host_mesh_agent = system_proc.spawn(HOST_AGENT, HostMeshAgent::new(host))?;
 
         Ok(Self {
             host_mesh_agent,
@@ -979,6 +982,7 @@ mod tests {
     use crate::proc_launcher::ProcLauncher;
     use crate::proc_launcher::ProcLauncherError;
     use crate::proc_launcher::StdioHandling;
+    use crate::proc_mesh::mesh_agent::PROC_AGENT;
     use crate::resource::CreateOrUpdateClient;
     use crate::resource::GetStateClient;
 
@@ -1042,7 +1046,7 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
             .spawn(
-                "agent",
+                HOST_AGENT,
                 HostMeshAgent::new(HostAgentMode::Process {
                     host,
                     exit_on_shutdown: false,
@@ -1075,7 +1079,7 @@ mod tests {
                     // The proc itself should be direct addressed, with its name directly.
                     proc_id,
                     // The mesh agent should run in the same proc, under the name
-                    // "agent".
+                    // "proc_agent".
                     mesh_agent,
                     bootstrap_command,
                     proc_status: Some(ProcStatus::Ready { started_at: _, addr: _, agent: proc_status_mesh_agent}),
@@ -1083,7 +1087,7 @@ mod tests {
                 }),
             } if name == resource_name
               && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id("agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id(PROC_AGENT, 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
