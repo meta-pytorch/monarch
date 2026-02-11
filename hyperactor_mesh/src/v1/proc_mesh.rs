@@ -1142,7 +1142,7 @@ impl ProcMeshRef {
 
             let full_name = format!("{}/{}", self.name, mesh.name());
             let shape_json =
-                serde_json::to_string(&self.region().extent()).unwrap_or_else(|_| "{}".to_string());
+                serde_json::to_string(&mesh.region().extent()).unwrap_or_else(|_| "{}".to_string());
 
             notify_actor_mesh_created(ActorMeshEvent {
                 id: mesh_id,
@@ -1152,7 +1152,9 @@ impl ProcMeshRef {
                 full_name,
                 shape_json,
                 parent_mesh_id: Some(parent_mesh_id),
-                parent_view_json: None,
+                parent_view_json: Some(
+                    serde_json::to_string(self.region()).unwrap_or_else(|_| "{}".to_string()),
+                ),
             });
         }
 
