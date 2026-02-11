@@ -285,6 +285,44 @@ impl ProcMesh {
             proc_mesh.current_ref.root_comm_actor = root_comm_actor;
         }
 
+        // Notify telemetry sink about proc mesh creation
+        {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::Hash;
+            use std::hash::Hasher;
+
+            let mut hasher = DefaultHasher::new();
+            proc_mesh.name.to_string().hash(&mut hasher);
+            let mesh_id = hasher.finish();
+
+            let parent_mesh_id = proc_mesh.hosts().map(|h| {
+                let mut h_hasher = DefaultHasher::new();
+                h.name().to_string().hash(&mut h_hasher);
+                h_hasher.finish()
+            });
+
+            let full_name = match proc_mesh.host_mesh_name() {
+                Some(host_name) => format!("{}/{}", host_name, proc_mesh.name),
+                None => proc_mesh.name.to_string(),
+            };
+
+            let parent_view_json = proc_mesh.hosts().map(|h| {
+                serde_json::to_string(view::Ranked::region(h)).unwrap_or_else(|_| "{}".to_string())
+            });
+
+            notify_mesh_created(MeshEvent {
+                id: mesh_id,
+                timestamp: RealClock.system_time_now(),
+                class: short_type_name::<Self>().to_string(),
+                given_name: proc_mesh.name.to_string(),
+                full_name,
+                shape_json: serde_json::to_string(&proc_mesh.region().extent())
+                    .unwrap_or_else(|_| "{}".to_string()),
+                parent_mesh_id,
+                parent_view_json,
+            });
+        }
+
         Ok(proc_mesh)
     }
 

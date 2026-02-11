@@ -308,3 +308,99 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     assert joined_count == 2, (
         f"Expected 2 joined rows for 2 workers, got: {joined_count}"
     )
+
+
+@pytest.mark.timeout(120)
+def test_meshes_table_proc_mesh(cleanup_callbacks) -> None:
+    """Test that the meshes table contains ProcMesh entries when procs are spawned."""
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn procs and actors to trigger both ProcMesh and actor mesh emissions
+    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    workers = worker_procs.spawn("proc_mesh_test_worker", WorkerActor)
+
+    # Force spawn to complete
+    # pyre-ignore[29]: workers is an ActorMesh
+    workers.spawn_child.call("dummy").get()
+
+    # Query for ProcMesh entries specifically
+    result = engine.query("SELECT * FROM meshes WHERE class = 'ProcMesh'")
+    result_dict = result.to_pydict()
+
+    # We should have at least one ProcMesh entry
+    mesh_count = len(result_dict.get("id", []))
+    assert mesh_count > 0, f"Expected at least one ProcMesh entry, got {mesh_count}"
+
+    # Verify the schema has the expected columns
+    expected_columns = {
+        "id",
+        "timestamp_us",
+        "class",
+        "given_name",
+        "full_name",
+        "shape_json",
+        "parent_mesh_id",
+        "parent_view_json",
+    }
+    actual_columns = set(result_dict.keys())
+    assert expected_columns == actual_columns, (
+        f"Expected columns {expected_columns}, got {actual_columns}"
+    )
+
+    # Verify class is "ProcMesh" for all rows
+    classes = result_dict.get("class", [])
+    assert all(c == "ProcMesh" for c in classes), (
+        f"Expected all classes to be 'ProcMesh', got: {classes}"
+    )
+
+    # Verify shape_json is valid Extent JSON
+    shape_jsons = result_dict.get("shape_json", [])
+    for shape in shape_jsons:
+        assert shape is not None and shape != "", (
+            f"Expected shape_json to be populated, got '{shape}'"
+        )
+        parsed_shape = json.loads(shape)
+        assert "inner" in parsed_shape, (
+            f"Expected shape_json to contain 'inner' key (ndslice Extent), got: {parsed_shape}"
+        )
+
+
+@pytest.mark.timeout(120)
+def test_actor_mesh_joins_proc_mesh(cleanup_callbacks) -> None:
+    """Test that actor mesh parent_mesh_id links to proc mesh id in the meshes table."""
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn procs and actors
+    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    workers = worker_procs.spawn("join_pm_test_worker", WorkerActor)
+
+    # Force spawn to complete
+    # pyre-ignore[29]: workers is an ActorMesh
+    workers.spawn_child.call("dummy").get()
+
+    # Self-join: actor mesh entries joined to ProcMesh entries via parent_mesh_id
+    result = engine.query(
+        """SELECT am.given_name AS actor_mesh_name,
+                  am.class AS actor_class,
+                  pm.given_name AS proc_mesh_name,
+                  pm.class AS proc_class
+           FROM meshes am
+           INNER JOIN meshes pm ON am.parent_mesh_id = pm.id
+           WHERE pm.class = 'ProcMesh'
+             AND am.given_name LIKE '%join_pm_test_worker%'"""
+    )
+    result_dict = result.to_pydict()
+
+    # The join should produce results
+    joined_count = len(result_dict.get("actor_mesh_name", []))
+    assert joined_count > 0, (
+        "Expected actor meshes to join with ProcMesh entries via parent_mesh_id, "
+        "but got 0 rows. This means actor mesh parent_mesh_id does not match any "
+        "ProcMesh id in the meshes table."
+    )
+
+    # All joined proc_class values should be "ProcMesh"
+    proc_classes = result_dict.get("proc_class", [])
+    assert all(c == "ProcMesh" for c in proc_classes), (
+        f"Expected all proc_class values to be 'ProcMesh', got: {proc_classes}"
+    )
