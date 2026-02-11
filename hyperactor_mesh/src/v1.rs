@@ -10,6 +10,12 @@
 //! This will be moved down to the base module when we graduate
 //! the APIs and fully deprecate the "v0" APIs.
 
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
+
 pub mod actor_mesh;
 pub mod host_mesh;
 pub mod mesh_controller;

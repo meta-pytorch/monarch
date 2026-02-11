@@ -64,7 +64,6 @@ use crate::view::Region;
 /// use proptest::prelude::*;
 ///
 /// proptest! {
-///     #[test]
 ///     fn test_slice_generation(slice in gen_slice(4, 8)) {
 ///         assert!(!slice.sizes().is_empty());
 ///     }

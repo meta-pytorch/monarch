@@ -141,9 +141,10 @@ async fn main() -> Result<ExitCode> {
     );
     println!();
 
-    println!("Computation starts in 5 seconds.");
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("Starting computation...");
+    // TODO: put an indicatif spinner here
+    println!("Starts in 5 seconds.");
+    RealClock.sleep(Duration::from_secs(5)).await;
+    println!("Starting...");
 
     let proc_mesh = host_mesh
         .spawn(instance, "sieve", extent!(replica = 1))

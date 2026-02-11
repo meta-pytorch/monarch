@@ -100,7 +100,6 @@ pub mod test_utils {
 
     use crate::IbverbsConfig;
     use crate::RdmaBuffer;
-    use crate::cu_check;
     use crate::rdma_components::PollTarget;
     use crate::rdma_components::RdmaQueuePair;
     use crate::rdma_manager_actor::RdmaManagerActor;
@@ -112,8 +111,8 @@ pub mod test_utils {
     unsafe impl Send for SendSyncCudaContext {}
     unsafe impl Sync for SendSyncCudaContext {}
 
-    /// Actor responsible for CUDA initialization and buffer management within its own process context.  
-    /// This is important because you preform CUDA operations within the same process as the RDMA operations.  
+    /// Actor responsible for CUDA initialization and buffer management within its own process context.
+    /// This is important because you preform CUDA operations within the same process as the RDMA operations.
     #[hyperactor::export(
         spawn = true,
         handlers = [
