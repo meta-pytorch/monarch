@@ -18,7 +18,8 @@ use std::process::Command;
 
 use which::which;
 
-use crate::{get_env_var_with_rerun, BuildError};
+use crate::BuildError;
+use crate::get_env_var_with_rerun;
 
 /// Validate ROCm installation exists and return ROCm home path
 ///
@@ -113,12 +114,15 @@ pub fn run_hipify_torch(
 
     // Copy source files to output directory (hipify runs in-place)
     for source_file in source_files {
-        let filename = source_file
-            .file_name()
-            .ok_or_else(|| BuildError::PathNotFound(format!("Invalid source file: {:?}", source_file)))?;
+        let filename = source_file.file_name().ok_or_else(|| {
+            BuildError::PathNotFound(format!("Invalid source file: {:?}", source_file))
+        })?;
         let dest = output_dir.join(filename);
         fs::copy(source_file, &dest).map_err(|e| {
-            BuildError::CommandFailed(format!("Failed to copy {:?} to {:?}: {}", source_file, dest, e))
+            BuildError::CommandFailed(format!(
+                "Failed to copy {:?} to {:?}: {}",
+                source_file, dest, e
+            ))
         })?;
     }
 
