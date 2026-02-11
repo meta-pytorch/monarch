@@ -155,10 +155,10 @@ def main() -> None:
                ORDER BY ordinal_position""",
         ),
         (
-            "Schema of 'actor_meshes' table",
+            "Schema of 'meshes' table",
             """SELECT column_name, data_type, is_nullable
                FROM information_schema.columns
-               WHERE table_name = 'actor_meshes'
+               WHERE table_name = 'meshes'
                ORDER BY ordinal_position""",
         ),
         # Show available spans
@@ -171,7 +171,8 @@ def main() -> None:
         ("Count of actors", "SELECT COUNT(*) as total_actors FROM actors"),
         (
             "Count of actor meshes",
-            "SELECT COUNT(*) as total_actor_meshes FROM actor_meshes",
+            """SELECT COUNT(*) as total_actor_meshes FROM meshes
+               WHERE class LIKE 'ActorMesh%'""",
         ),
         # Show span details
         (
@@ -241,16 +242,18 @@ def main() -> None:
         # Sample of actor meshes
         (
             "Sample actor meshes",
-            """SELECT id, class, given_name, full_name, timestamp_us
-               FROM actor_meshes
+            """SELECT id, class, given_name, full_name, shape_json, parent_view_json, timestamp_us
+               FROM meshes
+               WHERE class LIKE 'ActorMesh%'
                ORDER BY timestamp_us DESC
                LIMIT 10""",
         ),
-        # Actor meshes by name pattern
+        # Actor meshes by name
         (
             "Actor meshes by name",
-            """SELECT given_name, class, shape_json
-               FROM actor_meshes
+            """SELECT given_name, class, shape_json, parent_view_json
+               FROM meshes
+               WHERE class LIKE 'ActorMesh%'
                ORDER BY given_name""",
         ),
     ]

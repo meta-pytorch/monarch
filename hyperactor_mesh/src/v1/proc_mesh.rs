@@ -43,8 +43,8 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
-use hyperactor_telemetry::ActorMeshEvent;
-use hyperactor_telemetry::notify_actor_mesh_created;
+use hyperactor_telemetry::MeshEvent;
+use hyperactor_telemetry::notify_mesh_created;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -83,6 +83,13 @@ use crate::v1::ValueMesh;
 use crate::v1::host_mesh::mesh_agent::ProcState;
 use crate::v1::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::v1::mesh_controller::ActorMeshController;
+
+/// Extract the short type name from a fully qualified Rust type path.
+/// e.g., "monarch_hyperactor::actor::PythonActor" -> "PythonActor"
+fn short_type_name<T: ?Sized>() -> &'static str {
+    let full = type_name::<T>();
+    full.rsplit("::").next().unwrap_or(full)
+}
 
 declare_attrs! {
     /// The maximum idle time between updates while spawning actor
@@ -1142,17 +1149,19 @@ impl ProcMeshRef {
 
             let full_name = format!("{}/{}", self.name, mesh.name());
             let shape_json =
-                serde_json::to_string(&self.region().extent()).unwrap_or_else(|_| "{}".to_string());
+                serde_json::to_string(&mesh.region().extent()).unwrap_or_else(|_| "{}".to_string());
 
-            notify_actor_mesh_created(ActorMeshEvent {
+            notify_mesh_created(MeshEvent {
                 id: mesh_id,
                 timestamp: RealClock.system_time_now(),
-                class: type_name::<A>().to_string(),
+                class: format!("ActorMesh<{}>", short_type_name::<A>()),
                 given_name: mesh.name().to_string(),
                 full_name,
                 shape_json,
                 parent_mesh_id: Some(parent_mesh_id),
-                parent_view_json: None,
+                parent_view_json: Some(
+                    serde_json::to_string(self.region()).unwrap_or_else(|_| "{}".to_string()),
+                ),
             });
         }
 
