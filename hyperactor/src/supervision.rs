@@ -94,7 +94,10 @@ fn fmt_status<'a>(
     let mut f = indented(f).with_str(" ");
 
     match status {
-        ActorStatus::Stopped(_) if actor_id.name() == "agent" => {
+        // Hack: this is an abstraction leak. The hyperactor crate should not
+        // have the knowledge of the host agent, which belongs to the
+        // hyperactor_mesh crate.
+        ActorStatus::Stopped(_) if actor_id.name() == "host_agent" => {
             // Host agent stopped - use simplified message from D86984496
             let name = match actor_id.proc_id() {
                 crate::reference::ProcId::Direct(addr, _) => addr.to_string(),
