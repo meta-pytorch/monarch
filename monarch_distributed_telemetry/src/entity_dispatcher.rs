@@ -17,7 +17,6 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::SystemTime;
 
 use hyperactor_telemetry::EntityEvent;
 use hyperactor_telemetry::EntityEventDispatcher;

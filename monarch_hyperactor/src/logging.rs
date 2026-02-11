@@ -32,7 +32,6 @@ use hyperactor_mesh::logging::LogForwardMessage;
 use hyperactor_mesh::v1::ActorMesh;
 use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::SerializablePyErr;
-use ndslice::Point;
 use ndslice::View;
 use pyo3::Bound;
 use pyo3::prelude::*;
