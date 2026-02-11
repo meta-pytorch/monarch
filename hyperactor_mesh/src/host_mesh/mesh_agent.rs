@@ -700,8 +700,8 @@ mod tests {
                     ..
                 }),
             } if name == resource_name
-              && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id("agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && proc_id == ProcId(host_addr.clone(), name.to_string())
+              && mesh_agent == ActorRef::attest(ProcId(host_addr.clone(), name.to_string()).actor_id("agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }

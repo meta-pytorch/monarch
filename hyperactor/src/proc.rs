@@ -69,6 +69,7 @@ use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::ChannelTransport;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
 use crate::clock::RealClock;
@@ -104,7 +105,6 @@ use crate::reference::ActorId;
 use crate::reference::Index;
 use crate::reference::PortId;
 use crate::reference::ProcId;
-use crate::reference::id;
 use crate::supervision::ActorSupervisionEvent;
 
 /// This is used to mint new local ranks for [`Proc::local`].
@@ -181,7 +181,7 @@ impl Proc {
     /// Create a new direct-addressed proc.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcId::Direct(addr, name);
+        let proc_id = ProcId(addr, name);
         let proc = Self::new(proc_id, DialMailboxRouter::new().into_boxed());
         proc.clone().serve(rx);
         Ok(proc)
@@ -194,7 +194,7 @@ impl Proc {
         default: BoxedMailboxSender,
     ) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcId::Direct(addr, name);
+        let proc_id = ProcId(addr, name);
         let proc = Self::new(
             proc_id,
             DialMailboxRouter::new_with_default(default).into_boxed(),
@@ -273,10 +273,9 @@ impl Proc {
     /// Create a new local-only proc. This proc is not allowed to forward messages
     /// outside of the proc itself.
     pub fn local() -> Self {
-        // TODO: name these something that is ~ globally unique, e.g., incorporate
-        // the hostname, some GUID, etc.
-        let proc_id = ProcId::Ranked(id!(local), NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed));
-        // TODO: make it so that local procs can talk to each other.
+        let rank = NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed);
+        let addr = ChannelAddr::any(ChannelTransport::Local);
+        let proc_id = ProcId(addr, format!("local_{}", rank));
         Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     }
 
@@ -305,7 +304,8 @@ impl Proc {
     pub(crate) fn runtime() -> &'static Proc {
         static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
         RUNTIME_PROC.get_or_init(|| {
-            let proc_id = ProcId::Ranked(id!(hyperactor_runtime), 0);
+            let addr = ChannelAddr::any(ChannelTransport::Local);
+            let proc_id = ProcId(addr, "hyperactor_runtime".to_string());
             Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
         })
     }

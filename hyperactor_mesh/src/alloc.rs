@@ -699,9 +699,18 @@ pub(crate) mod testing {
             assert!(points.contains(&extent.point(vec![x]).unwrap()));
         }
 
-        // Every proc should belong to the same "world" (alloc).
-        let worlds: HashSet<_> = procs.keys().map(|proc_id| proc_id.world_id()).collect();
-        assert_eq!(worlds.len(), 1);
+        // Every proc should belong to the same "alloc" (have the same prefix).
+        // Proc names are formatted as "{alloc_name}_{rank}"
+        let alloc_names: HashSet<_> = procs
+            .keys()
+            .filter_map(|proc_id| {
+                proc_id
+                    .name()
+                    .rsplit_once('_')
+                    .map(|(prefix, _)| prefix.to_string())
+            })
+            .collect();
+        assert_eq!(alloc_names.len(), 1);
 
         // Now, stop the alloc and make sure it shuts down cleanly.
 
@@ -727,7 +736,10 @@ pub(crate) mod testing {
             DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
         router.clone().serve(router_rx);
 
-        let client_proc_id = ProcId::Ranked(WorldId("test_stuck".to_string()), 0);
+        let client_proc_id = ProcId(
+            ChannelAddr::any(ChannelTransport::Local),
+            "test_stuck_0".to_string(),
+        );
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
         let client_proc = Proc::new(
             client_proc_id.clone(),

@@ -1360,7 +1360,6 @@ mod test {
     use hyperactor::ActorRef;
     use hyperactor::channel::ChannelRx;
     use hyperactor::clock::ClockKind;
-    use hyperactor::id;
     use ndslice::extent;
     use tokio::sync::oneshot;
 
@@ -1467,7 +1466,7 @@ mod test {
         let extent = extent!(host = 1, gpu = 2);
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
-        let world_id: WorldId = id!(test_world_id);
+        let world_id: WorldId = WorldId("test_world_id".to_string());
         let mut alloc = MockAlloc::new();
         alloc.expect_world_id().return_const(world_id.clone());
         alloc.expect_extent().return_const(extent.clone());
@@ -1623,7 +1622,7 @@ mod test {
         let extent = extent!(host = 1, gpu = 2);
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
-        let world_id: WorldId = id!(test_world_id);
+        let world_id: WorldId = WorldId("test_world_id".to_string());
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
@@ -1705,7 +1704,7 @@ mod test {
 
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
-        let world_id: WorldId = id!(test_world_id);
+        let world_id: WorldId = WorldId("test_world_id".to_string());
         let mut alloc1 = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
@@ -1844,7 +1843,7 @@ mod test {
 
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
-        let world_id: WorldId = id!(test_world_id);
+        let world_id: WorldId = WorldId("test_world_id".to_string());
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after all created, all running
@@ -1934,7 +1933,7 @@ mod test {
 
         let tx = channel::dial(serve_addr.clone()).unwrap();
 
-        let test_world_id: WorldId = id!(test_world_id);
+        let test_world_id: WorldId = WorldId("test_world_id".to_string());
         let mut alloc = MockAllocWrapper::new_block_next(
             MockAlloc::new(),
             // block after the failure update
@@ -2034,7 +2033,7 @@ mod test {
 
         let extent = extent!(host = 1, gpu = 1);
         let tx = channel::dial(serve_addr.clone()).unwrap();
-        let test_world_id: WorldId = id!(test_world_id);
+        let test_world_id: WorldId = WorldId("test_world_id".to_string());
         let test_trace_id = "test_trace_id_12345";
 
         // Create a mock alloc that we can verify receives the correct trace id
@@ -2115,7 +2114,7 @@ mod test {
 
         let extent = extent!(host = 1, gpu = 1);
         let tx = channel::dial(serve_addr.clone()).unwrap();
-        let test_world_id: WorldId = id!(test_world_id);
+        let test_world_id: WorldId = WorldId("test_world_id".to_string());
 
         // Create a mock alloc
         let mut alloc = MockAlloc::new();

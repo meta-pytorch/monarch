@@ -92,13 +92,24 @@ enum MyGenericEnum<'a, A: Bind + Unbind, B> {
 mod tests {
     use std::fmt::Debug;
 
-    use hyperactor::id;
+    use hyperactor::PortId;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelTransport;
     use hyperactor::message::Bind;
     use hyperactor::message::Bindings;
     use hyperactor::message::Unbind;
     use hyperactor::message::Unbound;
+    use hyperactor::reference::ProcId;
 
     use super::*;
+
+    fn test_port_id(proc_name: &str, actor_name: &str, port_idx: u64) -> PortId {
+        let proc_id = ProcId(
+            ChannelAddr::any(ChannelTransport::Local),
+            proc_name.to_string(),
+        );
+        PortId(proc_id.actor_id(actor_name, 0), port_idx)
+    }
 
     fn verify<T: Bind + Unbind + Clone + PartialEq + Debug>(my_type: T, bindings: Bindings) {
         let unbound = Unbound::try_from_message(my_type.clone()).unwrap();
@@ -111,8 +122,8 @@ mod tests {
 
     #[test]
     fn test_named_struct() {
-        let port_id2 = id!(world[0].comm[0][2]);
-        let port_id4 = id!(world[1].worker[0][4]);
+        let port_id2 = test_port_id("world_0", "comm", 2);
+        let port_id4 = test_port_id("world_1", "worker", 4);
         let port2 = PortRef::attest(port_id2.clone());
         let port4 = PortRef::attest(port_id4.clone());
         let my_struct = MyNamedStruct {
@@ -130,8 +141,8 @@ mod tests {
 
     #[test]
     fn test_unnamed_struct() {
-        let port_id2 = id!(world[0].comm[0][2]);
-        let port_id4 = id!(world[1].worker[0][4]);
+        let port_id2 = test_port_id("world_0", "comm", 2);
+        let port_id4 = test_port_id("world_1", "worker", 4);
         let port2 = PortRef::attest(port_id2.clone());
         let port4 = PortRef::attest(port_id4.clone());
         let my_struct = MyUnamedStruct(
@@ -149,8 +160,8 @@ mod tests {
 
     #[test]
     fn test_named_enum() {
-        let port_id2 = id!(world[0].comm[0][2]);
-        let port_id4 = id!(world[1].worker[0][4]);
+        let port_id2 = test_port_id("world_0", "comm", 2);
+        let port_id4 = test_port_id("world_1", "worker", 4);
         let port2 = PortRef::attest(port_id2.clone());
         let port4 = PortRef::attest(port_id4.clone());
         let my_enum = MyEnum::Struct {
@@ -168,8 +179,8 @@ mod tests {
 
     #[test]
     fn test_unnamed_enum() {
-        let port_id2 = id!(world[0].comm[0][2]);
-        let port_id4 = id!(world[1].worker[0][4]);
+        let port_id2 = test_port_id("world_0", "comm", 2);
+        let port_id4 = test_port_id("world_1", "worker", 4);
         let port2 = PortRef::attest(port_id2.clone());
         let port4 = PortRef::attest(port_id4.clone());
         let my_enum = MyEnum::Tuple(
@@ -194,8 +205,8 @@ mod tests {
 
     #[test]
     fn test_my_generic_struct() {
-        let port_id2 = id!(world[0].comm[0][2]);
-        let port_id4 = id!(world[1].worker[0][4]);
+        let port_id2 = test_port_id("world_0", "comm", 2);
+        let port_id4 = test_port_id("world_1", "worker", 4);
         let port2: PortRef<()> = PortRef::attest(port_id2.clone());
         let port4: PortRef<()> = PortRef::attest(port_id4.clone());
         let my_struct = MyGenericStruct(port2.clone(), &11, port4.clone());
@@ -206,8 +217,8 @@ mod tests {
 
     #[test]
     fn test_my_generic_enum() {
-        let port_id2 = id!(world[0].comm[0][2]);
-        let port_id4 = id!(world[1].worker[0][4]);
+        let port_id2 = test_port_id("world_0", "comm", 2);
+        let port_id4 = test_port_id("world_1", "worker", 4);
         let port2: PortRef<()> = PortRef::attest(port_id2.clone());
         let port4: PortRef<()> = PortRef::attest(port_id4.clone());
         let my_enum = MyGenericEnum::Tuple(port2.clone(), &11, port4.clone());

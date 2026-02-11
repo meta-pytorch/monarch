@@ -431,19 +431,19 @@ impl ProcessAlloc {
     }
 
     fn index(&self, proc_id: &ProcId) -> Result<usize, anyhow::Error> {
+        // ProcId names have format "{alloc_name}_{index}" (e.g., "abc123_0")
+        let name = proc_id.name();
+        let expected_prefix = format!("{}_", self.name);
         anyhow::ensure!(
-            proc_id
-                .world_name()
-                .expect("proc must be ranked for allocation index")
-                .parse::<ShortUuid>()?
-                == self.name,
+            name.starts_with(&expected_prefix),
             "proc {} does not belong to alloc {}",
             proc_id,
             self.name
         );
-        Ok(proc_id
-            .rank()
-            .expect("proc must be ranked for allocation index"))
+        let index_str = &name[expected_prefix.len()..];
+        index_str
+            .parse::<usize>()
+            .map_err(|e| anyhow::anyhow!("failed to parse index from proc name '{}': {}", name, e))
     }
 
     #[hyperactor::instrument_infallible]
@@ -535,7 +535,11 @@ impl ProcessAlloc {
                         None
                     }
                     Ok(rank) => {
-                        let proc_id = ProcId::Ranked(self.world_id.clone(), rank);
+                        // For spawned processes, we use a temporary placeholder ProcId.
+                        // The actual ProcId will be set when the process calls Hello with its address.
+                        let temp_addr = ChannelAddr::any(ChannelTransport::Local);
+                        let proc_id =
+                            ProcId(temp_addr, format!("{}_{}", self.world_id.name(), rank));
                         let (handle, monitor) =
                             Child::monitored(rank, process, log_channel, tail_size, proc_id);
 
@@ -601,10 +605,12 @@ impl Alloc for ProcessAlloc {
                                 continue;
                             }
 
+                            let proc_name = match &self.spec.proc_name {
+                                Some(name) => name.clone(),
+                                None => format!("{}_{}", self.name, index),
+                            };
                             child.post(Allocator2Process::StartProc(
-                                self.spec.proc_name.clone().map_or(
-                                    ProcId::Ranked(WorldId(self.name.to_string()), index),
-                                    |name| ProcId::Direct(addr.clone(), name)),
+                                ProcId(addr.clone(), proc_name),
                                 transport,
                             ));
                         }
@@ -761,9 +767,9 @@ mod tests {
         };
 
         if let Some(child) = alloc.active.get(
-            &proc_id
-                .rank()
-                .expect("proc must be ranked for allocation lookup"),
+            &alloc
+                .index(&proc_id)
+                .expect("proc must be in allocation for lookup"),
         ) {
             child.fail_group();
         }

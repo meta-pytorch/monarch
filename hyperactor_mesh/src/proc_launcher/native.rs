@@ -661,7 +661,10 @@ mod tests {
 
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Ranked(hyperactor::WorldId("test".into()), 7);
+        let proc_id = ProcId(
+            ChannelAddr::any(ChannelTransport::Local),
+            "test_7".to_string(),
+        );
         let opts = LaunchOptions {
             command: with_sh(script),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -695,14 +698,14 @@ mod tests {
         );
 
         // Process name: don't overfit; assert it includes the "proc "
-        // prefix and rank identity.
+        // prefix and proc name.
         assert!(
             proc_name_env.starts_with("proc "),
             "PROCESS_NAME_ENV looks wrong: {proc_name_env:?}"
         );
         assert!(
-            proc_name_env.contains("[7]"),
-            "expected rank marker in process name: {proc_name_env:?}"
+            proc_name_env.contains("test_7"),
+            "expected proc name in process name: {proc_name_env:?}"
         );
 
         // Log channel propagated
@@ -748,7 +751,7 @@ mod tests {
             let launcher = NativeProcLauncher::new();
             // v0 bootstrap by default but it doesn't matter here.
             let bootstrap = Bootstrap::default();
-            let proc_id = ProcId::Direct(any_unix_addr(), "stdio-captured".into());
+            let proc_id = ProcId(any_unix_addr(), "stdio-captured".into());
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -782,7 +785,7 @@ mod tests {
             let launcher = NativeProcLauncher::new();
             // v0 bootstrap by default but it doesn't matter here.
             let bootstrap = Bootstrap::default();
-            let proc_id = ProcId::Direct(any_unix_addr(), "stdio-inherited".into());
+            let proc_id = ProcId(any_unix_addr(), "stdio-inherited".into());
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -820,7 +823,7 @@ mod tests {
         let launcher = NativeProcLauncher::new();
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "exit-7".into());
+        let proc_id = ProcId(any_unix_addr(), "exit-7".into());
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -859,7 +862,7 @@ mod tests {
         let launcher = NativeProcLauncher::new();
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "killed".into());
+        let proc_id = ProcId(any_unix_addr(), "killed".into());
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -931,7 +934,7 @@ mod tests {
 
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "term-escalate".into());
+        let proc_id = ProcId(any_unix_addr(), "term-escalate".into());
         let opts = LaunchOptions {
             command: with_sh(script),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1019,7 +1022,7 @@ while True:
         };
 
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "drop-cleanup-test".into());
+        let proc_id = ProcId(any_unix_addr(), "drop-cleanup-test".into());
         let opts = LaunchOptions {
             command,
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),

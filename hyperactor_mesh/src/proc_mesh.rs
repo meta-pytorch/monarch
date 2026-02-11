@@ -372,14 +372,9 @@ impl ProcMesh {
             addr
         };
 
-        let bind_allocated_procs = |router: &DialMailboxRouter| {
-            // Route all of the allocated procs:
-            for AllocatedProc { proc_id, addr, .. } in running.iter() {
-                if proc_id.is_direct() {
-                    continue;
-                }
-                router.bind(proc_id.clone().into(), addr.clone());
-            }
+        let bind_allocated_procs = |_router: &DialMailboxRouter| {
+            // All procs are now direct (self-routing), so no binding needed.
+            // This closure is kept for backward compatibility but does nothing.
         };
 
         // Temporary for backward compatibility with ranked procs and v0 API.

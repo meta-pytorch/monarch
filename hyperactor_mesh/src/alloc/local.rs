@@ -168,10 +168,11 @@ impl Alloc for LocalAlloc {
                         }
                     };
 
-                    let proc_id = match &self.spec.proc_name {
-                        Some(name) => ProcId::Direct(addr.clone(), name.clone()),
-                        None => ProcId::Ranked(self.world_id.clone(), rank),
+                    let proc_name = match &self.spec.proc_name {
+                        Some(name) => name.clone(),
+                        None => format!("{}_{}", self.world_id.name(), rank),
                     };
+                    let proc_id = ProcId(addr.clone(), proc_name);
 
                     let bspan = tracing::info_span!("mesh_agent_bootstrap");
                     let (proc, mesh_agent) = match ProcMeshAgent::bootstrap(proc_id.clone()).await {

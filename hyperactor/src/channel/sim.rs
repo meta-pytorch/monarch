@@ -416,16 +416,26 @@ mod tests {
 
     use super::*;
     use crate::PortId;
+    use crate::channel::ChannelTransport;
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::clock::SimClock;
-    use crate::id;
+    use crate::reference::ActorId;
+    use crate::reference::ProcId;
     use crate::simnet;
     use crate::simnet::BetaDistribution;
     use crate::simnet::LatencyConfig;
     use crate::simnet::LatencyDistribution;
     use crate::simnet::start;
     use crate::simnet::start_with_config;
+
+    fn test_proc_id(name: &str) -> ProcId {
+        ProcId(ChannelAddr::any(ChannelTransport::Local), name.to_string())
+    }
+
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorId {
+        test_proc_id(proc_name).actor_id(actor_name, 0)
+    }
 
     #[tokio::test]
     async fn test_sim_basic() {
@@ -453,8 +463,8 @@ mod tests {
             let (_, mut rx) = sim::serve::<MessageEnvelope>(dst_addr.clone()).unwrap();
             let tx = sim::dial::<MessageEnvelope>(dst_addr).unwrap();
             let data = wirevalue::Any::serialize(&456).unwrap();
-            let sender = id!(world[0].hello);
-            let dest = id!(world[1].hello);
+            let sender = test_actor_id("world_0", "hello");
+            let dest = test_actor_id("world_1", "hello");
             let ext = extent!(region = 1, dc = 1, rack = 4, host = 4, gpu = 8);
             handle.register_proc(
                 sender.proc_id().clone(),
@@ -530,8 +540,8 @@ mod tests {
         let (_, mut rx) = sim::serve::<MessageEnvelope>(sim_addr.clone()).unwrap();
         let tx = sim::dial::<MessageEnvelope>(sim_addr_with_src).unwrap();
 
-        let controller = id!(world[0].controller);
-        let dest = id!(world[1].dest);
+        let controller = test_actor_id("world_0", "controller");
+        let dest = test_actor_id("world_1", "dest");
         let handle = simnet::simnet_handle().unwrap();
 
         let ext = extent!(region = 1, dc = 1, zone = 2, rack = 4, host = 4, gpu = 8);
@@ -599,9 +609,9 @@ mod tests {
         .unwrap();
         let client_tx = sim::dial::<MessageEnvelope>(client_to_dst).unwrap();
 
-        let controller = id!(world[0].controller);
-        let dest = id!(world[1].dest);
-        let client = id!(world[2].client);
+        let controller = test_actor_id("world_0", "controller");
+        let dest = test_actor_id("world_1", "dest");
+        let client = test_actor_id("world_2", "client");
 
         let handle = simnet::simnet_handle().unwrap();
         let ext = extent!(region = 1, dc = 1, zone = 2, rack = 4, host = 4, gpu = 8);
