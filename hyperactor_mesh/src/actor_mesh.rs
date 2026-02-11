@@ -1604,10 +1604,15 @@ mod tests {
                 dst: &PortId,
                 pay: &Payload,
             ) -> (MessageEnvelope, serde_multipart::Message) {
+                use hyperactor::ordering::SEQ_INFO;
+                use hyperactor::ordering::SeqInfo;
+
                 let serialized = wirevalue::Any::serialize(pay).unwrap();
                 let mut headers = Attrs::new();
                 hyperactor::mailbox::headers::set_send_timestamp(&mut headers);
                 hyperactor::mailbox::headers::set_rust_message_type::<Payload>(&mut headers);
+                // Set SEQ_INFO header for reordering buffer compatibility.
+                headers.set(SEQ_INFO, SeqInfo::Direct);
                 let envelope = MessageEnvelope::new(src.clone(), dst.clone(), serialized, headers);
                 let frame = Frame::Message(0u64, envelope.clone());
                 let message = serde_multipart::serialize_bincode(&frame).unwrap();
@@ -1647,7 +1652,7 @@ mod tests {
 
             // Message sized to exactly max frame length.
             let payload = Payload {
-                part: Part::from(Bytes::from(vec![0u8; 585])),
+                part: Part::from(Bytes::from(vec![0u8; 543])),
                 reply_port: reply_handle.bind(),
             };
             let (envelope, message) = build_message(
@@ -1671,7 +1676,7 @@ mod tests {
 
             // Message sized to max frame length + 1.
             let payload = Payload {
-                part: Part::from(Bytes::from(vec![0u8; 586])),
+                part: Part::from(Bytes::from(vec![0u8; 544])),
                 reply_port: reply_handle.bind(),
             };
             let (_envelope, message) = build_message(

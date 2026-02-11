@@ -1708,8 +1708,9 @@ mod tests {
             Ok(())
         });
         port_handle.send(&client, ()).unwrap();
-        // No seq will be assigned for unbound port handle.
-        assert!(rx.try_recv().unwrap().is_none());
+        // Unordered is set for unbound port handle since handler's ordered
+        // channel is expecting the SEQ_INFO header to be set.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), SeqInfo::Direct);
 
         port_handle.bind_actor_port();
         let port_id = match port_handle.location() {
@@ -1720,10 +1721,13 @@ mod tests {
         let port_ref = PortRef::attest(port_id.clone());
 
         port_handle.send(&client, ()).unwrap();
-        let SeqInfo {
+        let SeqInfo::Session {
             session_id,
             mut seq,
-        } = rx.try_recv().unwrap().unwrap();
+        } = rx.try_recv().unwrap().unwrap()
+        else {
+            panic!("expected session info");
+        };
         assert_eq!(session_id, client.sequencer().session_id());
         assert_eq!(seq, 1);
 
@@ -1733,10 +1737,13 @@ mod tests {
             seq: &mut u64,
         ) {
             *seq += 1;
-            let SeqInfo {
+            let SeqInfo::Session {
                 session_id: rcved_session_id,
                 seq: rcved_seq,
-            } = rx.try_recv().unwrap().unwrap();
+            } = rx.try_recv().unwrap().unwrap()
+            else {
+                panic!("expected session info");
+            };
             assert_eq!(rcved_session_id, session_id);
             assert_eq!(rcved_seq, *seq);
         }
@@ -1774,8 +1781,9 @@ mod tests {
             Ok(())
         });
         port_handle.send(&client, ()).unwrap();
-        // No seq will be assigned for unbound port handle.
-        assert!(rx.try_recv().unwrap().is_none());
+        // Unordered be set for unbound port handle since handler's ordered
+        // channel is expecting the SEQ_INFO header to be set.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), SeqInfo::Direct);
 
         // Bind to the allocated port.
         port_handle.bind();
@@ -1788,29 +1796,38 @@ mod tests {
 
         // After binding, non-actor ports get their own sequence.
         port_handle.send(&client, ()).unwrap();
-        let SeqInfo {
+        let SeqInfo::Session {
             session_id,
             seq: seq1,
         } = rx
             .try_recv()
             .unwrap()
-            .expect("non-actor port should have seq info");
+            .expect("non-actor port should have seq info")
+        else {
+            panic!("expected Session variant");
+        };
         assert_eq!(seq1, 1);
         assert_eq!(session_id, client.sequencer().session_id());
 
         let port_ref = PortRef::attest(port_id.clone());
         port_ref.send(&client, ()).unwrap();
-        let SeqInfo { seq: seq2, .. } = rx
+        let SeqInfo::Session { seq: seq2, .. } = rx
             .try_recv()
             .unwrap()
-            .expect("non-actor port should have seq info");
+            .expect("non-actor port should have seq info")
+        else {
+            panic!("expected Session variant");
+        };
         assert_eq!(seq2, 2);
 
         port_id.send(&client, wirevalue::Any::serialize(&()).unwrap());
-        let SeqInfo { seq: seq3, .. } = rx
+        let SeqInfo::Session { seq: seq3, .. } = rx
             .try_recv()
             .unwrap()
-            .expect("non-actor port should have seq info");
+            .expect("non-actor port should have seq info")
+        else {
+            panic!("expected Session variant");
+        };
         assert_eq!(seq3, 3);
     }
 }

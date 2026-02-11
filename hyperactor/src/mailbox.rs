@@ -69,8 +69,6 @@
 //! implementation to avoid a serialization roundtrip when passing
 //! messages locally.
 
-#![allow(dead_code)] // Allow until this is used outside of tests.
-
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -128,6 +126,7 @@ use crate::context;
 use crate::id;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
+use crate::ordering::SeqInfo;
 use crate::reference::ActorId;
 use crate::reference::PortId;
 use crate::reference::Reference;
@@ -599,6 +598,7 @@ impl PortLocation {
         PortLocation::Unbound(actor_id, std::any::type_name::<M>())
     }
 
+    #[allow(dead_code)]
     fn new_unbound_type(actor_id: ActorId, ty: &'static str) -> Self {
         PortLocation::Unbound(actor_id, ty)
     }
@@ -843,6 +843,7 @@ impl MailboxSender for UndeliverableMailboxSender {
 
 struct Buffer<T: Message> {
     queue: mpsc::UnboundedSender<(T, PortHandle<Undeliverable<T>>)>,
+    #[allow(dead_code)]
     processed: watch::Receiver<usize>,
     seq: AtomicUsize,
 }
@@ -881,6 +882,7 @@ impl<T: Message> Buffer<T> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn flush(&mut self) -> Result<(), watch::error::RecvError> {
         let seq = self.seq.load(Ordering::SeqCst);
         while *self.processed.borrow_and_update() < seq {
@@ -1434,6 +1436,7 @@ impl Mailbox {
         )
     }
 
+    #[allow(dead_code)]
     fn error(&self, err: MailboxErrorKind) -> MailboxError {
         MailboxError::new(self.inner.actor_id.clone(), err)
     }
@@ -1756,6 +1759,12 @@ impl<M: Message> PortHandle<M> {
             let sequencer = cx.instance().sequencer();
             let seq_info = sequencer.assign_seq(bound_port);
             headers.set(SEQ_INFO, seq_info);
+        } else {
+            // Because the port is not bound, messages can only be sent through
+            // this port handle's underlying tokio channel directly. As a result,
+            // we do not need to assign seq to the message. We do not need to
+            // worry about race condition due to bound_guard.
+            headers.set(SEQ_INFO, SeqInfo::Direct);
         }
         // Encountering error means the port is closed. So we do not need to
         // rollback the seq, because no message can be delivered to it, and
@@ -2150,6 +2159,7 @@ impl<M: Message> UnboundedSender<M> {
         Self { sender, port_id }
     }
 
+    #[allow(dead_code)]
     fn send(&self, headers: Attrs, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
@@ -2419,6 +2429,7 @@ impl MailboxMuxer {
     /// Unbind the sender associated with the provided actor ID. After
     /// unbinding, the muxer will no longer be able to send messages to
     /// that actor.
+    #[allow(dead_code)]
     pub(crate) fn unbind(&self, actor_id: &ActorId) {
         self.mailboxes.remove(actor_id);
     }
