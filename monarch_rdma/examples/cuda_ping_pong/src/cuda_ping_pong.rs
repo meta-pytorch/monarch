@@ -68,23 +68,15 @@ use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::context::Mailbox;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Attrs;
-use hyperactor_mesh::Bootstrap;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::Name;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
-use hyperactor_mesh::v1::host_mesh::HostMeshRef;
 use hyperactor_mesh::ActorMesh;
-use hyperactor_mesh::Mesh;
+use hyperactor_mesh::Bootstrap;
+use hyperactor_mesh::HostMeshRef;
+use hyperactor_mesh::Name;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::alloc::AllocSpec;
-use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::global_root_client;
-use ndslice::extent;
+use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbverbsConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
@@ -92,7 +84,6 @@ use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::cu_check;
 use ndslice::Extent;
 use ndslice::ViewExt;
-use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
@@ -745,10 +736,10 @@ pub async fn run() -> Result<(), anyhow::Error> {
     );
 
     // Create proc meshes (one proc per host mesh)
-    let device_1_proc_mesh = host_mesh_1
+    let device_1_proc_mesh: ProcMesh = host_mesh_1
         .spawn(&instance, "procs", Extent::unity())
         .await?;
-    let device_2_proc_mesh = host_mesh_2
+    let device_2_proc_mesh: ProcMesh = host_mesh_2
         .spawn(&instance, "procs", Extent::unity())
         .await?;
 
@@ -821,6 +812,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let buffer_2 = receiver_remote.recv().await?;
     let (handle_1, receiver_1) = instance.open_once_port::<bool>();
 
+    let (handle_2, receiver_2) = instance.open_once_port::<bool>();
     device_2_actor.send(
         &instance,
         PerformPingPong(
@@ -834,11 +826,14 @@ pub async fn run() -> Result<(), anyhow::Error> {
     receiver_2.recv().await?;
     device_1_actor.send(
         &instance,
-        instance,
         PerformPingPong(
             device_2_actor.clone(),
             buffer_2,
+            config.iterations,
             config.initial_length,
+            handle_1.bind(),
+        ),
+    )?;
     receiver_1.recv().await?;
 
     let (handle, receiver) = instance.open_once_port::<bool>();
