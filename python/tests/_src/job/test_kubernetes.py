@@ -19,7 +19,15 @@ from kubernetes.client import (
     V1PodSpec,
     V1PodStatus,
 )
-from monarch._src.job.kubernetes import _DEFAULT_MONARCH_PORT, KubernetesJob
+from kubernetes.client.rest import ApiException
+from monarch._src.job.kubernetes import (
+    _DEFAULT_MONARCH_PORT,
+    _MONARCHMESH_GROUP,
+    _MONARCHMESH_PLURAL,
+    _MONARCHMESH_VERSION,
+    _WORKER_BOOTSTRAP_SCRIPT,
+    KubernetesJob,
+)
 
 
 def _make_pod(
@@ -138,6 +146,77 @@ class TestAddMesh(unittest.TestCase):
             "apps.kubernetes.io/pod-index",
         )
 
+    # -- provisioning parameters -----------------------------------------------
+
+    def test_image_marks_provisioned(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=2, image="myimage:latest")
+        self.assertTrue(job._meshes["workers"]["provisioned"])
+        self.assertIn("pod_spec", job._meshes["workers"])
+
+    def test_pod_spec_marks_provisioned(self) -> None:
+        job = self._make_job()
+        spec = {"containers": [{"name": "w", "image": "img"}]}
+        job.add_mesh("workers", num_replicas=1, pod_spec=spec)
+        self.assertTrue(job._meshes["workers"]["provisioned"])
+        self.assertEqual(job._meshes["workers"]["pod_spec"], spec)
+
+    def test_attach_only_not_provisioned(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1)
+        self.assertFalse(job._meshes["workers"]["provisioned"])
+        self.assertNotIn("pod_spec", job._meshes["workers"])
+
+    def test_image_and_pod_spec_mutually_exclusive(self) -> None:
+        job = self._make_job()
+        with self.assertRaises(
+            ValueError, msg="image and pod_sepc are mutually exclusive"
+        ):
+            job.add_mesh(
+                "workers",
+                num_replicas=1,
+                image="img",
+                pod_spec={"containers": []},
+            )
+
+    def test_resources_requires_image(self) -> None:
+        job = self._make_job()
+        with self.assertRaises(ValueError, msg="requires 'image' in add_mesh"):
+            job.add_mesh(
+                "workers",
+                num_replicas=1,
+                resources={"cpu": "2"},
+            )
+
+    def test_label_selector_forbidden_with_provisioning(self) -> None:
+        job = self._make_job()
+        with self.assertRaises(
+            ValueError, msg="label_selector cannot be specified when image is specified"
+        ):
+            job.add_mesh(
+                "workers",
+                num_replicas=1,
+                image="img",
+                label_selector="app=custom",
+            )
+
+    def test_pod_rank_label_forbidden_with_provisioning(self) -> None:
+        job = self._make_job()
+        with self.assertRaises(
+            ValueError, msg="pod_rank_label cannot be specified when image is specified"
+        ):
+            job.add_mesh(
+                "workers",
+                num_replicas=1,
+                image="img",
+                pod_rank_label="custom-rank",
+            )
+
+    def test_custom_port_stored(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image="img", port=9999)
+        self.assertEqual(job._meshes["workers"]["port"], 9999)
+
 
 class TestCreate(unittest.TestCase):
     """Tests for KubernetesJob._create guards."""
@@ -162,6 +241,131 @@ class TestCreate(unittest.TestCase):
         job.add_mesh("workers", num_replicas=1)
         # Should not raise.
         job._create(None)
+
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_creates_crd_for_provisioned_mesh(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=3, image="myimage:latest", port=9999)
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._create(None)
+
+        mock_api.create_namespaced_custom_object.assert_called_once()
+        call_kwargs = mock_api.create_namespaced_custom_object.call_args
+        self.assertEqual(call_kwargs.kwargs["group"], _MONARCHMESH_GROUP)
+        self.assertEqual(call_kwargs.kwargs["version"], _MONARCHMESH_VERSION)
+        self.assertEqual(call_kwargs.kwargs["namespace"], "default")
+        self.assertEqual(call_kwargs.kwargs["plural"], _MONARCHMESH_PLURAL)
+        body = call_kwargs.kwargs["body"]
+        self.assertEqual(body["metadata"]["name"], "workers")
+        self.assertEqual(body["spec"]["replicas"], 3)
+        self.assertEqual(
+            body["spec"]["podTemplate"]["containers"][0]["image"], "myimage:latest"
+        )
+        self.assertEqual(body["spec"]["port"], 9999)
+
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_patches_on_conflict(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image="img")
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+        mock_api.create_namespaced_custom_object.side_effect = ApiException(
+            status=409, reason="Conflict"
+        )
+
+        job._create(None)
+
+        mock_api.patch_namespaced_custom_object.assert_called_once()
+
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_skips_attach_only_meshes(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("attach", num_replicas=1)
+        job.add_mesh("provisioned", num_replicas=1, image="img")
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._create(None)
+
+        # Only the provisioned mesh should generate a CRD call.
+        mock_api.create_namespaced_custom_object.assert_called_once()
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        self.assertEqual(body["metadata"]["name"], "provisioned")
+
+    def test_create_noop_when_all_attach_only(self) -> None:
+        """No K8s API calls when no meshes are provisioned."""
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1)
+        # Should not raise or call any K8s API.
+        job._create(None)
+
+    @patch(
+        "monarch._src.job.kubernetes.config.load_incluster_config",
+        side_effect=k8s_config.ConfigException("not in cluster"),
+    )
+    def test_create_provisioned_not_in_cluster_raises(
+        self,
+        mock_load_config: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image="img")
+        with self.assertRaises(RuntimeError, msg="in-cluster"):
+            job._create(None)
+
+
+class TestBuildWorkerPodSpec(unittest.TestCase):
+    """Tests for KubernetesJob._build_worker_pod_spec."""
+
+    def test_basic_pod_spec(self) -> None:
+        spec = KubernetesJob._build_worker_pod_spec("myimage:latest", port=26600)
+        self.assertEqual(len(spec["containers"]), 1)
+        container = spec["containers"][0]
+        self.assertEqual(container["name"], "worker")
+        self.assertEqual(container["image"], "myimage:latest")
+        self.assertEqual(
+            container["command"], ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT]
+        )
+        self.assertEqual(
+            container["env"],
+            [{"name": "MONARCH_PORT", "value": "26600"}],
+        )
+        self.assertNotIn("resources", container)
+
+    def test_custom_port_in_env(self) -> None:
+        spec = KubernetesJob._build_worker_pod_spec("img", port=9999)
+        env = spec["containers"][0]["env"]
+        self.assertEqual(env[0]["value"], "9999")
+
+    def test_resources_set(self) -> None:
+        spec = KubernetesJob._build_worker_pod_spec(
+            "img",
+            port=26600,
+            resources={"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": 2},
+        )
+        container = spec["containers"][0]
+        expected = {"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": "2"}
+        self.assertEqual(container["resources"]["requests"], expected)
+        self.assertEqual(container["resources"]["limits"], expected)
 
 
 class TestIsPodWorkerReady(unittest.TestCase):
@@ -489,9 +693,71 @@ class TestKill(unittest.TestCase):
     def _make_job(self, mock_configure: MagicMock) -> KubernetesJob:
         return KubernetesJob(namespace="default")
 
-    def test_kill_raises_not_implemented(self) -> None:
+    def test_kill_attach_only_raises_not_implemented(self) -> None:
         job = self._make_job()
+        job.add_mesh("workers", num_replicas=1)
         with self.assertRaises(NotImplementedError):
+            job._kill()
+
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_kill_deletes_provisioned_crds(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=2, image="img")
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._kill()
+
+        mock_api.delete_namespaced_custom_object.assert_called_once_with(
+            group=_MONARCHMESH_GROUP,
+            version=_MONARCHMESH_VERSION,
+            namespace="default",
+            plural=_MONARCHMESH_PLURAL,
+            name="workers",
+        )
+
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_kill_ignores_404(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image="img")
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+        mock_api.delete_namespaced_custom_object.side_effect = ApiException(
+            status=404, reason="Not Found"
+        )
+
+        # Should not raise.
+        job._kill()
+
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_kill_reraises_non_404(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image="img")
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+        mock_api.delete_namespaced_custom_object.side_effect = ApiException(
+            status=500, reason="Internal Server Error"
+        )
+
+        with self.assertRaises(ApiException):
             job._kill()
 
 
