@@ -274,7 +274,6 @@ def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
     workers = worker_procs.spawn("join_test_worker", WorkerActor)
 
     # Force spawn to complete
-    # pyre-ignore[29]: workers is an ActorMesh
     workers.spawn_child.call("dummy").get()
 
     # Join actors with actor_meshes on mesh_id = id
