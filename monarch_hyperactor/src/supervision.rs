@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use hyperactor::Instance;
 use hyperactor_mesh::supervision::MeshFailure;
@@ -31,58 +29,6 @@ pub trait Supervisable: Send + Sync {
     /// Returns `Some(PyErr)` if a supervision failure is detected,
     /// or `None` if supervision is not available or the mesh is healthy.
     async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr>;
-}
-
-/// Python-exposed wrapper for supervision functionality.
-///
-/// This provides a concrete pyclass that can be passed to endpoint collectors
-/// while abstracting over different supervision implementations.
-#[pyclass(
-    name = "SupervisionMonitor",
-    module = "monarch._rust_bindings.monarch_hyperactor.supervision"
-)]
-#[derive(Clone)]
-pub struct PySupervisionMonitor {
-    inner: Arc<dyn Supervisable>,
-}
-
-impl PySupervisionMonitor {
-    pub fn new<S: Supervisable + 'static>(supervisable: S) -> Self {
-        Self {
-            inner: Arc::new(supervisable),
-        }
-    }
-
-    pub fn from_arc(inner: Arc<dyn Supervisable>) -> Self {
-        Self { inner }
-    }
-
-    pub async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
-        self.inner.supervision_event(instance).await
-    }
-}
-
-#[pymethods]
-impl PySupervisionMonitor {
-    fn __repr__(&self) -> String {
-        "PySupervisionMonitor(...)".to_string()
-    }
-
-    /// Returns a PythonTask that resolves when a supervision event occurs.
-    ///
-    /// This is used by Python code that needs to store and await the supervision
-    /// event later, rather than directly awaiting it in Rust.
-    fn supervision_event_task(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        let inner = self.inner.clone();
-        let instance = instance.clone().into_instance();
-        PyPythonTask::new(async move {
-            match inner.supervision_event(&instance).await {
-                Some(err) => Err(err),
-                None => Ok(()),
-            }
-        })
-        .map(|mut x| x.spawn_abortable().map(Some))?
-    }
 }
 
 #[pyclass(
@@ -213,6 +159,5 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add the exception to the module using its type object
     module.add("SupervisionError", py.get_type::<SupervisionError>())?;
     module.add("MeshFailure", py.get_type::<PyMeshFailure>())?;
-    module.add_class::<PySupervisionMonitor>()?;
     Ok(())
 }
