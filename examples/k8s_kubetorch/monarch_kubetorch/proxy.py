@@ -2,16 +2,16 @@
 Monarch Proxy Classes - Client-side proxies for remote Monarch objects.
 
 These classes provide a Monarch-compatible API but route operations through
-the MonarchGateway over WebSocket. They allow users to write code as if they
-were using Monarch directly, but from outside the Kubernetes cluster.
+the MonarchGateway via kubetorch's native RPC (kt.cls method calls). They
+allow users to write code as if they were using Monarch directly, but from
+outside the Kubernetes cluster.
 """
 
-import pickle
+import base64
 from math import prod
-from typing import Dict, Generic, Optional, TYPE_CHECKING, TypeVar
+from typing import Any, Dict, Generic, Optional, TypeVar
 
-if TYPE_CHECKING:
-    from monarch_kubetorch.kubetorch_job import GatewayConnection
+import cloudpickle
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -25,7 +25,7 @@ class FutureProxy(Generic[R]):
     through the gateway.
     """
 
-    def __init__(self, future_id: str, gateway: "GatewayConnection"):
+    def __init__(self, future_id: str, gateway: Any):
         self._future_id = future_id
         self._gateway = gateway
         self._result = None
@@ -44,12 +44,11 @@ class FutureProxy(Generic[R]):
         if self._resolved:
             return self._result
 
-        result_bytes = self._gateway.call(
-            "get_future_result",
+        encoded_result = self._gateway.get_future_result(
             future_id=self._future_id,
             timeout=timeout,
         )
-        raw_result = pickle.loads(result_bytes)
+        raw_result = cloudpickle.loads(base64.b64decode(encoded_result))
 
         # Convert gateway's serialized ValueMesh back to ValueMeshProxy
         if isinstance(raw_result, dict) and raw_result.get("_type") == "ValueMesh":
@@ -105,11 +104,15 @@ class EndpointProxy:
         self,
         actor_mesh_id: str,
         endpoint_name: str,
-        gateway: "GatewayConnection",
+        gateway: Any,
     ):
         self._actor_mesh_id = actor_mesh_id
         self._endpoint_name = endpoint_name
         self._gateway = gateway
+
+    def _encode(self, obj: Any) -> str:
+        """Encode an object to a base64 cloudpickle string."""
+        return base64.b64encode(cloudpickle.dumps(obj)).decode()
 
     def call(self, *args, **kwargs) -> FutureProxy:
         """
@@ -118,12 +121,11 @@ class EndpointProxy:
         Returns:
             FutureProxy that resolves to ValueMesh of results
         """
-        result = self._gateway.call(
-            "call_endpoint",
+        result = self._gateway.call_endpoint(
             actor_mesh_id=self._actor_mesh_id,
             endpoint_name=self._endpoint_name,
-            args_bytes=pickle.dumps(args),
-            kwargs_bytes=pickle.dumps(kwargs),
+            encoded_args=self._encode(list(args)),
+            encoded_kwargs=self._encode(dict(kwargs)),
             selection="all",
         )
         return FutureProxy(result["future_id"], self._gateway)
@@ -135,12 +137,11 @@ class EndpointProxy:
         Returns:
             FutureProxy that resolves to the single result
         """
-        result = self._gateway.call(
-            "call_endpoint",
+        result = self._gateway.call_endpoint(
             actor_mesh_id=self._actor_mesh_id,
             endpoint_name=self._endpoint_name,
-            args_bytes=pickle.dumps(args),
-            kwargs_bytes=pickle.dumps(kwargs),
+            encoded_args=self._encode(list(args)),
+            encoded_kwargs=self._encode(dict(kwargs)),
             selection="one",
         )
         return FutureProxy(result["future_id"], self._gateway)
@@ -149,12 +150,11 @@ class EndpointProxy:
         """
         Broadcast to all actors (fire-and-forget, no return value).
         """
-        self._gateway.call(
-            "broadcast_endpoint",
+        self._gateway.broadcast_endpoint(
             actor_mesh_id=self._actor_mesh_id,
             endpoint_name=self._endpoint_name,
-            args_bytes=pickle.dumps(args),
-            kwargs_bytes=pickle.dumps(kwargs),
+            encoded_args=self._encode(list(args)),
+            encoded_kwargs=self._encode(dict(kwargs)),
         )
 
 
@@ -170,7 +170,7 @@ class ActorMeshProxy(Generic[T]):
         self,
         actor_mesh_id: str,
         shape: Dict[str, int],
-        gateway: "GatewayConnection",
+        gateway: Any,
     ):
         self._actor_mesh_id = actor_mesh_id
         self._shape = shape
@@ -218,7 +218,7 @@ class ActorMeshProxy(Generic[T]):
 
     def stop(self) -> FutureProxy[None]:
         """Stop all actors in this mesh."""
-        self._gateway.call("stop_actor_mesh", actor_mesh_id=self._actor_mesh_id)
+        self._gateway.stop_actor_mesh(actor_mesh_id=self._actor_mesh_id)
         # Return a completed future for API compatibility
         future = FutureProxy("", self._gateway)
         future._resolved = True
@@ -237,7 +237,7 @@ class ProcMeshProxy:
         self,
         proc_mesh_id: str,
         shape: Dict[str, int],
-        gateway: "GatewayConnection",
+        gateway: Any,
         host_mesh: "HostMeshProxy",
     ):
         self._proc_mesh_id = proc_mesh_id
@@ -264,7 +264,6 @@ class ProcMeshProxy:
         Returns:
             ActorMeshProxy for the spawned actors
         """
-        # Extract import pointers for the actor class so the gateway can import it
         import os
 
         from kubetorch.resources.callables.utils import extract_pointers, locate_working_dir
@@ -272,21 +271,19 @@ class ProcMeshProxy:
         root_path, module_name, class_name = extract_pointers(actor_class)
 
         # Compute the relative path from git root to the actor's directory
-        # This is needed so the gateway knows what to add to sys.path
         git_root, _, _ = locate_working_dir(root_path)
         module_path = os.path.relpath(root_path, git_root)
         if module_path == ".":
-            module_path = ""  # Actor is at git root, no extra path needed
+            module_path = ""
 
-        result = self._gateway.call(
-            "spawn_actors",
+        result = self._gateway.spawn_actors(
             proc_mesh_id=self._proc_mesh_id,
             name=name,
             module_name=module_name,
             class_name=class_name,
-            module_path=module_path,  # Relative path to add to sys.path
-            args=list(args),
-            kwargs=kwargs,
+            module_path=module_path,
+            encoded_args=base64.b64encode(cloudpickle.dumps(list(args))).decode(),
+            encoded_kwargs=base64.b64encode(cloudpickle.dumps(kwargs)).decode(),
         )
         return ActorMeshProxy(
             result["actor_mesh_id"],
@@ -329,7 +326,7 @@ class ProcMeshProxy:
 
     def stop(self) -> FutureProxy[None]:
         """Stop all processes in this mesh."""
-        self._gateway.call("stop_proc_mesh", proc_mesh_id=self._proc_mesh_id)
+        self._gateway.stop_proc_mesh(proc_mesh_id=self._proc_mesh_id)
         future = FutureProxy("", self._gateway)
         future._resolved = True
         future._result = None
@@ -347,7 +344,7 @@ class HostMeshProxy:
         self,
         host_mesh_id: str,
         shape: Dict[str, int],
-        gateway: "GatewayConnection",
+        gateway: Any,
     ):
         self._host_mesh_id = host_mesh_id
         self._shape = shape
@@ -368,8 +365,7 @@ class HostMeshProxy:
         Returns:
             ProcMeshProxy for the spawned processes
         """
-        result = self._gateway.call(
-            "spawn_procs",
+        result = self._gateway.spawn_procs(
             per_host=per_host,
             name=name,
         )
@@ -410,7 +406,7 @@ class HostMeshProxy:
 
     def shutdown(self) -> FutureProxy[None]:
         """Shutdown all hosts in this mesh."""
-        self._gateway.call("shutdown")
+        self._gateway.shutdown()
         future = FutureProxy("", self._gateway)
         future._resolved = True
         future._result = None

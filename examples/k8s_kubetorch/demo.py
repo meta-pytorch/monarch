@@ -6,7 +6,9 @@ the Kubernetes cluster.
 """
 
 # Monarch imports are wrapped in try-except because torchmonarch
-# may not be installed locally (it runs on the cluster)
+# may not be installed locally - it may not install on the local
+# OS and only needs to actually run on the cluster. We don't need
+# this block if Monarch is installed locally.
 try:
     from monarch.actor import Actor, endpoint
 except ImportError:
@@ -58,7 +60,6 @@ def run_demo():
     print("=" * 60)
     print("Kubetorch Monarch Integration Demo")
     print("=" * 60)
-    print()
 
     print("[1] Creating KubernetesJob with 2 replicas...")
     job = KubernetesJob(
@@ -103,13 +104,11 @@ def run_demo():
         final = counters.get_value.call().get()
         print(f"    Final values: {list(final.values())}")
 
-        print()
         print("=" * 60)
         print("Success! Monarch actors ran via Kubetorch.")
         print("=" * 60)
 
     finally:
-        print()
         print("[9] Cleaning up...")
         job.kill()
         print("    Job terminated.")

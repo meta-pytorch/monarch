@@ -2,19 +2,21 @@
 Monarch Gateway - Server-side component for external Monarch access.
 
 This class is deployed to K8s pods via kt.cls and handles Monarch operations
-proxied from external clients over WebSocket. It maintains references to
+proxied from the client via kubetorch's native RPC. It maintains references to
 HostMesh, ProcMesh, ActorMesh objects and executes operations on behalf of
 the client.
 """
 
+import base64
 import os
-import pickle
 import socket
 import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+import cloudpickle
 
 # Set Monarch/Hyperactor timeouts BEFORE importing monarch
 # These must be set before any monarch imports to take effect
@@ -49,12 +51,12 @@ class MonarchGateway:
     Deployed as a kt.cls to K8s pods, this class:
     1. Starts the Monarch worker process if not already running
     2. Bootstraps a Monarch root client
-    3. Attaches to worker pods discovered via headless service DNS
+    3. Attaches to worker pods discovered via kt.distributed.pod_ips()
     4. Creates and manages HostMesh, ProcMesh, ActorMesh objects
     5. Executes actor method calls on behalf of external clients
 
-    The external client (KubernetesJob) communicates with this gateway over
-    WebSocket, sending operation requests and receiving results.
+    The external client (KubernetesJob) communicates with this gateway via
+    kubetorch's native RPC (kt.cls method calls).
     """
 
     def __init__(self, monarch_port: int = DEFAULT_MONARCH_PORT):
@@ -65,20 +67,13 @@ class MonarchGateway:
         self._futures: Dict[str, Any] = {}
         self._worker_process: Optional[subprocess.Popen] = None
         self._monarch_port = monarch_port
-        self._worker_pythonpath: set = set()
 
         # Start the Monarch worker if not already running
         self._ensure_worker_running()
 
-    def _ensure_worker_running(self, extra_paths: Optional[List[str]] = None):
+    def _ensure_worker_running(self):
         """Start the Monarch worker process if not already running."""
         pod_ip = _get_pod_ip()
-        extra_paths = extra_paths or []
-
-        # Check if we need to restart the worker for new paths
-        new_paths = set(extra_paths) - self._worker_pythonpath
-        if new_paths and self._worker_process is not None:
-            self._stop_worker()
 
         if _is_port_in_use(self._monarch_port, pod_ip):
             if self._worker_process is not None:
@@ -90,23 +85,8 @@ class MonarchGateway:
 
         print(f"Starting Monarch worker on {pod_ip}:{self._monarch_port}")
 
-        # Build PYTHONPATH including cwd and all subdirectories
-        cwd = os.getcwd()
-        paths_to_add = {cwd}
-        try:
-            for entry in os.listdir(cwd):
-                entry_path = os.path.join(cwd, entry)
-                if os.path.isdir(entry_path) and not entry.startswith("."):
-                    paths_to_add.add(entry_path)
-        except Exception:
-            pass
-
-        paths_to_add.update(extra_paths)
-        self._worker_pythonpath.update(paths_to_add)
-
         worker_script = f"""
 import os
-import sys
 
 os.environ.setdefault("HYPERACTOR_HOST_SPAWN_READY_TIMEOUT", "300s")
 os.environ.setdefault("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT", "300s")
@@ -119,22 +99,13 @@ print(f"Monarch worker starting at {{address}}")
 run_worker_loop_forever(address=address, ca="trust_all_connections")
 """
 
-        # Build environment with PYTHONPATH
-        worker_env = os.environ.copy()
-        current_pythonpath = worker_env.get("PYTHONPATH", "")
-        pythonpath_parts = [p for p in current_pythonpath.split(":") if p]
-        for path in self._worker_pythonpath:
-            if path not in pythonpath_parts:
-                pythonpath_parts.insert(0, path)
-        worker_env["PYTHONPATH"] = ":".join(pythonpath_parts)
-
         try:
+            # Inherit environment from gateway process (kubetorch sets PYTHONPATH)
             self._worker_process = subprocess.Popen(
                 [sys.executable, "-c", worker_script],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
-                env=worker_env,
             )
             time.sleep(2)
 
@@ -157,19 +128,12 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
             self._worker_process = None
             time.sleep(1)
 
-    def _discover_worker_ips(self, headless_service_dns: str) -> List[str]:
-        """Discover all worker pod IPs via headless service DNS."""
-        addr_info = socket.getaddrinfo(headless_service_dns, None, socket.AF_INET)
-        pod_ips = sorted(list(set([addr[4][0] for addr in addr_info])))
-        return pod_ips
-
     def initialize(
         self,
-        headless_service_dns: Optional[str] = None,
-        worker_ips: Optional[List[str]] = None,
+        num_workers: Optional[int] = None,
         monarch_port: int = 26600,
     ) -> Dict[str, Any]:
-        """Initialize the gateway by attaching to worker pods."""
+        """Initialize the gateway by discovering and attaching to worker pods."""
         if self._initialized:
             return {
                 "status": "already_initialized",
@@ -177,22 +141,16 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
                 "num_workers": len(self._host_mesh) if self._host_mesh else 0,
             }
 
-        # Discover workers
-        if worker_ips:
-            pod_ips = worker_ips
-        else:
-            if not headless_service_dns:
-                service_name = os.environ.get("KT_SERVICE_NAME", "")
-                namespace = os.environ.get("POD_NAMESPACE", "default")
-                headless_service_dns = f"{service_name}-headless.{namespace}.svc.cluster.local"
+        # Discover workers via kubetorch's headless service DNS
+        from kubetorch.distributed import pod_ips
 
-            pod_ips = self._discover_worker_ips(headless_service_dns)
+        discovered_ips = pod_ips(quorum_workers=num_workers, quorum_timeout=120)
 
-        if not pod_ips:
+        if not discovered_ips:
             raise RuntimeError("No worker IPs discovered")
 
-        worker_addresses = [f"tcp://{ip}:{monarch_port}" for ip in pod_ips]
-        print(f"Attaching to {len(worker_addresses)} Monarch workers: {pod_ips}")
+        worker_addresses = [f"tcp://{ip}:{monarch_port}" for ip in discovered_ips]
+        print(f"Attaching to {len(worker_addresses)} Monarch workers: {discovered_ips}")
 
         # Import Monarch and attach to workers
         from monarch.actor import attach_to_workers, enable_transport
@@ -213,7 +171,7 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
             "status": "initialized",
             "host_mesh_id": "hm_default",
             "num_workers": len(worker_addresses),
-            "worker_ips": pod_ips,
+            "worker_ips": discovered_ips,
         }
 
     def spawn_procs(
@@ -239,8 +197,8 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
         module_name: str,
         class_name: str,
         module_path: str = "",
-        args: Optional[List] = None,
-        kwargs: Optional[Dict] = None,
+        encoded_args: str = "",
+        encoded_kwargs: str = "",
     ) -> Dict[str, Any]:
         """Spawn an ActorMesh on a ProcMesh."""
         if proc_mesh_id not in self._proc_meshes:
@@ -260,8 +218,8 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
         module = importlib.import_module(module_name)
         actor_class = getattr(module, class_name)
 
-        args = args or []
-        kwargs = kwargs or {}
+        args = cloudpickle.loads(base64.b64decode(encoded_args)) if encoded_args else []
+        kwargs = cloudpickle.loads(base64.b64decode(encoded_kwargs)) if encoded_kwargs else {}
 
         actor_mesh = proc_mesh.spawn(name, actor_class, *args, **kwargs)
         actor_mesh_id = f"am_{uuid4().hex[:8]}"
@@ -274,8 +232,8 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
         self,
         actor_mesh_id: str,
         endpoint_name: str,
-        args_bytes: bytes,
-        kwargs_bytes: bytes,
+        encoded_args: str = "",
+        encoded_kwargs: str = "",
         selection: str = "all",
     ) -> Dict[str, Any]:
         """Call an endpoint on an ActorMesh."""
@@ -283,8 +241,8 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
             raise ValueError(f"Unknown actor_mesh_id: {actor_mesh_id}")
 
         actor_mesh = self._actor_meshes[actor_mesh_id]
-        args = pickle.loads(args_bytes) if args_bytes else []
-        kwargs = pickle.loads(kwargs_bytes) if kwargs_bytes else {}
+        args = cloudpickle.loads(base64.b64decode(encoded_args)) if encoded_args else []
+        kwargs = cloudpickle.loads(base64.b64decode(encoded_kwargs)) if encoded_kwargs else {}
 
         endpoint = getattr(actor_mesh, endpoint_name)
 
@@ -301,42 +259,44 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
         self,
         actor_mesh_id: str,
         endpoint_name: str,
-        args_bytes: bytes,
-        kwargs_bytes: bytes,
+        encoded_args: str = "",
+        encoded_kwargs: str = "",
     ) -> Dict[str, Any]:
         """Broadcast to an endpoint (fire-and-forget)."""
         if actor_mesh_id not in self._actor_meshes:
             raise ValueError(f"Unknown actor_mesh_id: {actor_mesh_id}")
 
         actor_mesh = self._actor_meshes[actor_mesh_id]
-        args = pickle.loads(args_bytes) if args_bytes else []
-        kwargs = pickle.loads(kwargs_bytes) if kwargs_bytes else {}
+        args = cloudpickle.loads(base64.b64decode(encoded_args)) if encoded_args else []
+        kwargs = cloudpickle.loads(base64.b64decode(encoded_kwargs)) if encoded_kwargs else {}
 
         endpoint = getattr(actor_mesh, endpoint_name)
         endpoint.broadcast(*args, **kwargs)
         return {"status": "ok"}
 
     def _convert_monarch_result(self, result: Any) -> Any:
-        """Convert Monarch objects to plain Python objects for client unpickling."""
+        """Convert Monarch objects to plain Python objects for serialization."""
+        import collections.abc
+
         result_module = getattr(type(result), "__module__", "")
 
-        # Check if it's a ValueMesh
-        if hasattr(result, "items") and hasattr(result, "_labels"):
+        # Check if it's a ValueMesh (has items() and sizes property from MeshTrait)
+        if hasattr(result, "items") and hasattr(result, "sizes"):
             try:
                 data = {}
                 for point, value in result.items():
-                    if hasattr(point, "_asdict"):
+                    # Point is a Mapping: keys are dim names, values are coordinates.
+                    # Use values() to get coordinate ints, not keys() which gives names.
+                    if isinstance(point, collections.abc.Mapping):
+                        key = tuple(point.values())
+                    elif hasattr(point, "_asdict"):
                         key = tuple(point._asdict().values())
-                    elif hasattr(point, "__iter__"):
-                        key = tuple(point)
                     else:
                         key = (point,)
                     data[key] = value
 
-                shape = {}
-                if hasattr(result, "_labels") and hasattr(result, "_shape"):
-                    for label, size in zip(result._labels, result._shape):
-                        shape[label] = size
+                # MeshTrait.sizes returns {label: size} dict
+                shape = dict(result.sizes)
 
                 return {"_type": "ValueMesh", "data": data, "shape": shape}
             except Exception:
@@ -359,8 +319,8 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
         self,
         future_id: str,
         timeout: Optional[float] = None,
-    ) -> bytes:
-        """Get the result of a future."""
+    ) -> str:
+        """Get the result of a future, returned as a base64-encoded cloudpickle string."""
         if future_id not in self._futures:
             raise ValueError(f"Unknown future_id: {future_id}")
 
@@ -369,7 +329,7 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
         converted_result = self._convert_monarch_result(result)
         del self._futures[future_id]
 
-        return pickle.dumps(converted_result)
+        return base64.b64encode(cloudpickle.dumps(converted_result)).decode()
 
     def check_future_ready(self, future_id: str) -> Dict[str, Any]:
         """Check if a future is ready without blocking."""
@@ -379,7 +339,9 @@ run_worker_loop_forever(address=address, ca="trust_all_connections")
         future = self._futures[future_id]
         try:
             result = future.get(timeout=0)
-            return {"ready": True, "result": pickle.dumps(result)}
+            converted = self._convert_monarch_result(result)
+            encoded = base64.b64encode(cloudpickle.dumps(converted)).decode()
+            return {"ready": True, "encoded_result": encoded}
         except TimeoutError:
             return {"ready": False}
         except Exception as e:

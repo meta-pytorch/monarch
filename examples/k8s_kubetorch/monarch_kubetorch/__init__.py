@@ -24,7 +24,7 @@ For pre-allocated compute:
 """
 
 from monarch_kubetorch.gateway import MonarchGateway
-from monarch_kubetorch.kubetorch_job import GatewayConnection, KubernetesJob
+from monarch_kubetorch.kubetorch_job import KubernetesJob
 from monarch_kubetorch.proxy import (
     ActorMeshProxy,
     EndpointProxy,
@@ -40,7 +40,6 @@ __all__ = [
     "KubernetesJob",
     # Gateway (server-side)
     "MonarchGateway",
-    "GatewayConnection",
     # Proxy classes (client-side)
     "ActorMeshProxy",
     "EndpointProxy",

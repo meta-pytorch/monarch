@@ -181,7 +181,6 @@ KubernetesJob(
     name: str = None,                # Job name (auto-generated if not provided)
     namespace: str = "default",      # Kubernetes namespace
     monarch_port: int = 26600,       # Port for Monarch worker communication
-    use_websocket: bool = True,      # Use WebSocket for gateway communication
     sync_dirs: list[str] = None,     # Directories to sync (defaults to git root)
 )
 ```
