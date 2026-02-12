@@ -22,9 +22,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::ValueMesh;
 use crate::resource::Resource;
 use crate::resource::Status;
-use crate::v1::ValueMesh;
 
 /// Mesh specs
 #[derive(Debug, Named, Serialize, Deserialize)]
