@@ -3,7 +3,55 @@
 This directory contains examples for running Monarch on Kubernetes. Monarch provides native Kubernetes integration via MonarchMesh CRD and Operator.
 It is also vendor-independent and lets users decide how they want to schedule and orchestrate Monarch hosts.
 
-## Provision Monarch Hosts with MonarchMesh CRD and Operator
+## Provision Monarch Hosts from Python (Recommended)
+
+The simplest way to run Monarch on Kubernetes: create MonarchMesh CRDs
+directly from Python. No YAML manifests for worker pods are needed.
+
+### Prerequisites
+
+- A Kubernetes cluster with [Monarch CRD and operator](https://github.com/meta-pytorch/monarch-kubernetes/) installed
+- `kubectl` configured to access the cluster
+- The `monarch-tests` namespace created:
+  ```bash
+  kubectl create namespace monarch-tests
+  ```
+
+### Deploy the Controller
+
+```bash
+kubectl apply -f manifests/hello_provision.yaml
+```
+
+This creates a controller pod with RBAC permissions to create MonarchMesh CRDs and watch pods.
+
+### Running the Example
+
+```bash
+# Copy the script to the controller
+kubectl cp hello_kubernetes_job.py monarch-tests/hello-controller:/tmp/hello_kubernetes_job.py
+
+# Run with --provision to create MonarchMesh CRDs from Python
+kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision
+```
+
+The `--provision` flag tells `KubernetesJob` to create the MonarchMesh CRDs via the K8s API.
+When the script finishes, it cleans up by deleting the CRDs.
+
+### Expected Output
+
+```
+From MonarchMesh mesh1: hello from mesh1-0
+From MonarchMesh mesh2: hello from mesh2-0
+```
+
+### Cleanup
+
+```bash
+kubectl delete -f manifests/hello_provision.yaml
+```
+
+## Provision Monarch Hosts with MonarchMesh YAML Manifests
 
 ### Prerequisites
 

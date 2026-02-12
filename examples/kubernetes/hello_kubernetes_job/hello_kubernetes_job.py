@@ -8,7 +8,7 @@ import argparse
 import socket
 
 from monarch.actor import Actor, endpoint
-from monarch.job.kubernetes import KubernetesJob
+from monarch.job.kubernetes import ImageSpec, KubernetesJob
 
 
 class SimpleActor(Actor):
@@ -28,10 +28,16 @@ def greet_from_mesh(mesh_name: str, mesh_procs):
 
 def main():
     parser = argparse.ArgumentParser(description="Monarch Kubernetes example")
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "--volcano",
         action="store_true",
         help="Use Volcano scheduler with manifests/volcano_workers.yaml",
+    )
+    group.add_argument(
+        "--provision",
+        action="store_true",
+        help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
     args = parser.parse_args()
 
@@ -50,6 +56,16 @@ def main():
             label_selector="volcano.sh/job-name=mesh2",
             pod_rank_label="volcano.sh/task-index",
         )
+    elif args.provision:
+        # Provision MonarchMesh CRDs directly from Python.
+        # The Monarch operator (must be pre-installed) creates the
+        # StatefulSets and headless Services automatically.
+        job.add_mesh(
+            "mesh1", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+        )
+        job.add_mesh(
+            "mesh2", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+        )
     else:
         job.add_mesh("mesh1", 2)
         job.add_mesh("mesh2", 2)
@@ -64,6 +80,9 @@ def main():
 
     procs1.stop().get()
     procs2.stop().get()
+
+    if args.provision:
+        job.kill()
 
 
 if __name__ == "__main__":
