@@ -16,7 +16,7 @@
 #[cfg(test)]
 mod tests {
     use crate::PollTarget;
-    use crate::ibverbs_primitives::get_all_devices;
+    use crate::backend::ibverbs::primitives::get_all_devices;
     use crate::rdma_components::validate_execution_context;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
     use crate::test_utils::test_utils::RdmaManagerTestEnv;
@@ -678,7 +678,7 @@ mod tests {
             BSIZE,
             "cpu:0",
             "cpu:0",
-            crate::ibverbs_primitives::RdmaQpType::Standard,
+            crate::backend::ibverbs::primitives::IbvQpType::Standard,
         )
         .await?;
 
@@ -706,7 +706,7 @@ mod tests {
             BSIZE,
             "cpu:0",
             "cpu:0",
-            crate::ibverbs_primitives::RdmaQpType::Standard,
+            crate::backend::ibverbs::primitives::IbvQpType::Standard,
         )
         .await?;
 
@@ -738,7 +738,7 @@ mod tests {
             BSIZE,
             "cuda:0",
             "cuda:1",
-            crate::ibverbs_primitives::RdmaQpType::Standard,
+            crate::backend::ibverbs::primitives::IbvQpType::Standard,
         )
         .await?;
 
@@ -770,7 +770,7 @@ mod tests {
             BSIZE,
             "cuda:0",
             "cuda:1",
-            crate::ibverbs_primitives::RdmaQpType::Standard,
+            crate::backend::ibverbs::primitives::IbvQpType::Standard,
         )
         .await?;
 

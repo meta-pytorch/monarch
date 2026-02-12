@@ -97,7 +97,7 @@ pub mod test_utils {
     use ndslice::View;
     use ndslice::extent;
 
-    use crate::IbverbsConfig;
+    use crate::IbvConfig;
     use crate::RdmaBuffer;
     use crate::rdma_components::PollTarget;
     use crate::rdma_components::RdmaQueuePair;
@@ -536,7 +536,7 @@ pub mod test_utils {
         cpu_ref: Option<Box<[u8]>>,
     }
     /// Helper function to parse accelerator strings
-    async fn parse_accel(accel: &str, config: &mut IbverbsConfig) -> (String, usize) {
+    async fn parse_accel(accel: &str, config: &mut IbvConfig) -> (String, usize) {
         let (backend, idx) = accel.split_once(':').unwrap();
         let parsed_idx = idx.parse::<usize>().unwrap();
 
@@ -565,11 +565,11 @@ pub mod test_utils {
             buffer_size: usize,
             accel1: &str,
             accel2: &str,
-            qp_type: crate::ibverbs_primitives::RdmaQpType,
+            qp_type: crate::backend::ibverbs::primitives::IbvQpType,
         ) -> Result<Self, anyhow::Error> {
             // Use device selection logic to find optimal RDMA devices
-            let mut config1 = IbverbsConfig::targeting(accel1);
-            let mut config2 = IbverbsConfig::targeting(accel2);
+            let mut config1 = IbvConfig::targeting(accel1);
+            let mut config2 = IbvConfig::targeting(accel2);
 
             // Set the QP type
             config1.qp_type = qp_type;
@@ -748,7 +748,7 @@ pub mod test_utils {
         /// Sets up the RDMA test environment with auto-detected QP type.
         ///
         /// This is a convenience wrapper around `setup_with_qp_type` that uses
-        /// `RdmaQpType::Auto` to automatically select the appropriate QP type.
+        /// `IbvQpType::Auto` to automatically select the appropriate QP type.
         ///
         /// # Arguments
         ///
@@ -764,7 +764,7 @@ pub mod test_utils {
                 buffer_size,
                 accel1,
                 accel2,
-                crate::ibverbs_primitives::RdmaQpType::Auto,
+                crate::backend::ibverbs::primitives::IbvQpType::Auto,
             )
             .await
         }
