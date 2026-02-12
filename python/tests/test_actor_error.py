@@ -138,10 +138,7 @@ def spawn_procs_on_this_host(per_host: dict[str, int]) -> ProcMesh:
     return this_host().spawn_procs(per_host)
 
 
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -166,10 +163,7 @@ async def test_actor_exception(mesh, actor_class, num_procs) -> None:
             await exception_actor.raise_exception.call()
 
 
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -351,10 +345,7 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
         assert "This is an exception from __init__" in fault_str
 
 
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -464,10 +455,7 @@ def test_proc_mesh_bootstrap_error():
 
 
 @pytest.mark.oss_skip
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize("raise_on_getstate", [True, False])
 @pytest.mark.parametrize("raise_on_setstate", [True, False])
 @pytest.mark.parametrize("num_procs", [1, 2])
@@ -702,10 +690,7 @@ class Manager(Actor):
         return await self.workers.work.call_one()
 
 
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_errors_propagated() -> None:
     p_mesh = spawn_procs_on_this_host({"gpus": 1})
     mesh = p_mesh.spawn("manager", Manager)
@@ -719,10 +704,7 @@ async def test_errors_propagated() -> None:
 
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_supervision_handling() -> None:
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
@@ -806,10 +788,7 @@ class Intermediate(Actor):
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
     proc = spawn_procs_on_this_host({"gpus": 1})
 
@@ -840,10 +819,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     await intermediate_actor.forward_healthy_check.call()
 
 
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -889,10 +865,7 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
         await asyncio.sleep(5)
 
 
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "error_actor_cls",
     [ErrorActor, SyncErrorActor],
@@ -947,10 +920,7 @@ class FaultActor(Actor):
 
 
 @pytest.mark.timeout(180)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_sigsegv_handling():
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
@@ -987,10 +957,7 @@ async def test_sigsegv_handling():
         await actor.check.call()
 
 
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -1024,10 +991,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
 
 
 @pytest.mark.timeout(120)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_stop() -> None:
     class Printer(Actor):
         @endpoint
@@ -1130,10 +1094,7 @@ async def test_supervision_with_sending_error() -> None:
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_slice_supervision() -> None:
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
@@ -1183,10 +1144,7 @@ async def test_slice_supervision() -> None:
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_mesh_slices_inherit_parent_errors() -> None:
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
@@ -1304,10 +1262,7 @@ class ErrorActorWithSupervise(ErrorActor):
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
     # TODO: When using the same proc mesh for both, it occasionally fails with:
@@ -1337,10 +1292,7 @@ async def test_supervise_callback_handled():
 
 
 @pytest.mark.timeout(120)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_without_await_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
     # TODO: When using the same proc mesh for both, it occasionally fails with:
@@ -1370,10 +1322,7 @@ async def test_supervise_callback_without_await_handled():
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_with_mesh_ref():
     # Ensure that supervision events go to the
     pm = spawn_procs_on_this_host({"gpus": 1})
@@ -1416,10 +1365,7 @@ async def test_supervise_callback_with_mesh_ref():
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_when_procs_killed():
     pm = spawn_procs_on_this_host({"gpus": 1})
     second_mesh = spawn_procs_on_this_host({"gpus": 4})
@@ -1446,10 +1392,7 @@ async def test_supervise_callback_when_procs_killed():
 
 
 @pytest.mark.timeout(30)
-@parametrize_config(
-    actor_queue_dispatch={True, False},
-    enable_native_v1_casting={True, False},
-)
+@parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_unhandled():
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
