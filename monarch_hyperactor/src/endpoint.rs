@@ -20,14 +20,18 @@ use monarch_types::py_global;
 use monarch_types::py_module_add_function;
 use ndslice::Extent;
 use ndslice::Selection;
+use ndslice::Shape;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
 use serde_multipart::Part;
 
+use crate::actor::MethodSpecifier;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
+use crate::actor_mesh::PythonActorMesh;
+use crate::actor_mesh::to_hy_sel;
 use crate::buffers::FrozenBuffer;
 use crate::context::PyInstance;
 use crate::mailbox::PyMailbox;
@@ -43,18 +47,30 @@ use crate::metrics::ENDPOINT_CALL_THROUGHPUT;
 use crate::metrics::ENDPOINT_CHOOSE_ERROR;
 use crate::metrics::ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CHOOSE_THROUGHPUT;
+use crate::metrics::ENDPOINT_MESSAGE_SIZE_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_ERROR;
 use crate::metrics::ENDPOINT_STREAM_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_THROUGHPUT;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::shape::PyExtent;
+use crate::shape::PyShape;
 use crate::supervision::PySupervisionMonitor;
 use crate::supervision::SupervisionError;
 use crate::value_mesh::PyValueMesh;
 
 py_global!(pickle_unflatten, "monarch._src.actor.pickle", "unflatten");
 py_global!(get_context, "monarch._src.actor.actor_mesh", "context");
+py_global!(
+    create_endpoint_message,
+    "monarch._src.actor.actor_mesh",
+    "_create_endpoint_message"
+);
+py_global!(
+    dispatch_actor_rref,
+    "monarch._src.actor.actor_mesh",
+    "_dispatch_actor_rref"
+);
 py_global!(make_future, "monarch._src.actor.future", "Future");
 
 /// An infinite iterator that yields the same mailbox value forever.
@@ -780,6 +796,287 @@ pub(crate) trait Endpoint {
     }
 }
 
+#[pyclass(
+    name = "ActorEndpoint",
+    module = "monarch._rust_bindings.monarch_hyperactor.endpoint"
+)]
+pub struct ActorEndpoint {
+    inner: PythonActorMesh,
+    shape: Shape,
+    method: MethodSpecifier,
+    mesh_name: String,
+    signature: Option<Py<PyAny>>,
+    proc_mesh: Option<Py<PyAny>>,
+    propagator: Option<Py<PyAny>>,
+}
+
+impl ActorEndpoint {
+    fn create_message<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<&PythonPortRef>,
+    ) -> PyResult<PythonMessage> {
+        let port_ref_py: Py<PyAny> = match port_ref {
+            Some(pr) => pr.clone().into_pyobject(py)?.unbind().into(),
+            None => py.None(),
+        };
+
+        create_endpoint_message(py)
+            .call1((
+                self.method.clone(),
+                self.signature
+                    .as_ref()
+                    .map_or_else(|| py.None(), |s| s.clone_ref(py)),
+                args,
+                kwargs
+                    .map_or_else(|| PyDict::new(py), |d| d.clone())
+                    .into_any(),
+                port_ref_py,
+                self.proc_mesh
+                    .as_ref()
+                    .map_or_else(|| py.None(), |p| p.clone_ref(py)),
+            ))?
+            .extract()
+    }
+}
+
+impl Endpoint for ActorEndpoint {
+    fn get_extent(&self, _py: Python<'_>) -> PyResult<Extent> {
+        Ok(self.shape.extent())
+    }
+
+    fn get_method_name(&self) -> &str {
+        self.method.name()
+    }
+
+    fn send_message<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<&PythonPortRef>,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+    ) -> PyResult<()> {
+        let message = self.create_message(py, args, kwargs, port_ref)?;
+        let attributes = hyperactor_telemetry::kv_pairs!(
+            "method" => self.method.name().to_string()
+        );
+        ENDPOINT_MESSAGE_SIZE_HISTOGRAM.record(message.message.len() as f64, attributes);
+        self.inner.cast(message, selection, instance)
+    }
+
+    fn get_supervision_monitor(&self) -> Option<PySupervisionMonitor> {
+        Some(self.inner.get_supervision_monitor())
+    }
+
+    fn get_qualified_name(&self) -> Option<String> {
+        Some(format!("{}.{}()", self.mesh_name, self.method.name()))
+    }
+}
+
+#[pymethods]
+impl ActorEndpoint {
+    /// Create a new ActorEndpoint.
+    #[new]
+    #[pyo3(signature = (actor_mesh, method, shape, mesh_name, signature=None, proc_mesh=None, propagator=None))]
+    fn new(
+        actor_mesh: PythonActorMesh,
+        method: MethodSpecifier,
+        shape: PyShape,
+        mesh_name: String,
+        signature: Option<Py<PyAny>>,
+        proc_mesh: Option<Py<PyAny>>,
+        propagator: Option<Py<PyAny>>,
+    ) -> Self {
+        Self {
+            inner: actor_mesh,
+            shape: shape.get_inner().clone(),
+            method,
+            mesh_name,
+            signature,
+            proc_mesh,
+            propagator,
+        }
+    }
+
+    /// Get the method specifier (used by actor_rref for tensor dispatch).
+    #[getter]
+    fn _name(&self) -> MethodSpecifier {
+        self.method.clone()
+    }
+
+    /// Get the call name for this endpoint (returns the method specifier for compatibility with Endpoint protocol).
+    fn _call_name(&self) -> MethodSpecifier {
+        self.method.clone()
+    }
+
+    /// Get the signature (used for argument checking in _dispatch_actor_rref).
+    #[getter]
+    fn _signature(&self, py: Python<'_>) -> Py<PyAny> {
+        self.signature
+            .clone()
+            .unwrap_or_else(|| py.None().into_any())
+    }
+
+    /// Get the actor mesh (used by actor_rref for sending messages).
+    #[getter]
+    fn _actor_mesh(&self) -> PythonActorMesh {
+        self.inner.clone()
+    }
+
+    /// Propagation method for tensor shape inference.
+    /// Delegates to Python _do_propagate helper.
+    fn _propagate<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyAny>,
+        kwargs: &Bound<'py, PyAny>,
+        fake_args: &Bound<'py, PyAny>,
+        fake_kwargs: &Bound<'py, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let do_propagate = py
+            .import("monarch._src.actor.endpoint")?
+            .getattr("_do_propagate")?;
+        let propagator = self
+            .propagator
+            .as_ref()
+            .map(|p| p.clone_ref(py).into_bound(py))
+            .unwrap_or_else(|| py.None().into_bound(py));
+        let cache = PyDict::new(py);
+        do_propagate
+            .call1((&propagator, args, kwargs, fake_args, fake_kwargs, cache))?
+            .extract()
+    }
+
+    /// Propagation for fetch operations.
+    /// Returns None if no propagator is provided, otherwise calls _propagate.
+    fn _fetch_propagate<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyAny>,
+        kwargs: &Bound<'py, PyAny>,
+        fake_args: &Bound<'py, PyAny>,
+        fake_kwargs: &Bound<'py, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        if self.propagator.is_none() {
+            return Ok(py.None());
+        }
+        self._propagate(py, args, kwargs, fake_args, fake_kwargs)
+    }
+
+    /// Propagation for pipe operations.
+    /// Requires an explicit callable propagator.
+    fn _pipe_propagate<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyAny>,
+        kwargs: &Bound<'py, PyAny>,
+        fake_args: &Bound<'py, PyAny>,
+        fake_kwargs: &Bound<'py, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        // Check if propagator is callable
+        let is_callable = self
+            .propagator
+            .as_ref()
+            .map(|p| p.bind(py).is_callable())
+            .unwrap_or(false);
+        if !is_callable {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Must specify explicit callable for pipe",
+            ));
+        }
+        self._propagate(py, args, kwargs, fake_args, fake_kwargs)
+    }
+
+    /// Get the rref result by calling the Python dispatch helper.
+    #[pyo3(signature = (*args, **kwargs))]
+    fn rref<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let kwargs_dict = kwargs.map_or_else(|| PyDict::new(py), |d| d.clone());
+
+        // Call _dispatch_actor_rref(endpoint, args, kwargs)
+        let result = dispatch_actor_rref(py).call1((slf.into_pyobject(py)?, args, kwargs_dict))?;
+
+        Ok(result.unbind())
+    }
+
+    /// Call the endpoint on all actors and collect all responses into a ValueMesh.
+    #[pyo3(signature = (*args, **kwargs), name = "call")]
+    fn py_call<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.call(py, args, kwargs)
+    }
+
+    /// Load balanced sends a message to one chosen actor and awaits a result.
+    #[pyo3(signature = (*args, **kwargs), name = "choose")]
+    fn py_choose<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.choose(py, args, kwargs)
+    }
+
+    /// Call the endpoint on exactly one actor (the mesh must have exactly one actor).
+    #[pyo3(signature = (*args, **kwargs), name = "call_one")]
+    fn py_call_one<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.call_one(py, args, kwargs)
+    }
+
+    /// Call the endpoint on all actors and return an iterator of Futures.
+    #[pyo3(signature = (*args, **kwargs), name = "stream")]
+    fn py_stream<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.stream(py, args, kwargs)
+    }
+
+    /// Send a message to all actors without waiting for responses (fire-and-forget).
+    #[pyo3(signature = (*args, **kwargs), name = "broadcast")]
+    fn py_broadcast<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<()> {
+        self.broadcast(py, args, kwargs)
+    }
+
+    /// Send a message with optional port for response (used by actor_mesh.send).
+    fn _send<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: &Bound<'py, PyDict>,
+        port: Option<&PythonPortRef>,
+        selection: &str,
+    ) -> PyResult<()> {
+        let instance = self.get_current_instance(py)?;
+        let sel = to_hy_sel(selection)?;
+        self.send_message(py, args, Some(kwargs), port, sel, &instance)
+    }
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     py_module_add_function!(
         module,
@@ -801,6 +1098,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
     module.add_class::<PyValueStream>()?;
     module.add_class::<RepeatMailbox>()?;
+    module.add_class::<ActorEndpoint>()?;
 
     Ok(())
 }
