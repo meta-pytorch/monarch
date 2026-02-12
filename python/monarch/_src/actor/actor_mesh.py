@@ -76,6 +76,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
+    SupervisionMonitor,
 )
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
     ValueMesh,  # noqa (re-export)
@@ -592,11 +593,6 @@ class _SingletonActorAdapator:
     def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
         return None
 
-    def start_supervision(
-        self, instance: HyInstance, supervision_display_name: str
-    ) -> None:
-        return None
-
     def stop(self, instance: HyInstance, reason: str) -> "PythonTask[None]":
         raise NotImplementedError("stop()")
 
@@ -743,12 +739,22 @@ class ActorEndpoint(Endpoint[P, R]):
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
         instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
+        monitor = self._get_supervision_monitor()
+        monitor_task: Optional[Shared[Exception]] = (
+            None if monitor is None else monitor.supervision_event_task(instance)
         )
 
-        r._attach_supervision(monitor, self._full_name())
+        r._attach_supervision(monitor_task, self._full_name())
         return (p, r)
+
+    def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
+        # Only return a supervision monitor if the mesh is a PythonActorMesh (Rust class).
+        # For pure Python implementations like _SingletonActorAdapator,
+        # return None to skip supervision (which is correct since those
+        # implementations don't support supervision anyway).
+        if isinstance(self._actor_mesh, PythonActorMesh):
+            return self._actor_mesh.get_supervision_monitor()
+        return None
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
@@ -1632,8 +1638,6 @@ class ActorMesh(MeshTrait, Generic[T]):
         # supervision_event, which needs an Instance. Initialize here so events
         # can be collected even without any endpoints being awaited.
         instance = context().actor_instance
-        # Supervision display name is unused here now, it is set in ProcMesh::spawn.
-        mesh._inner.start_supervision(instance._as_rust(), "")
 
         async def null_func(*_args: Iterable[Any], **_kwargs: Dict[str, Any]) -> None:
             return None
