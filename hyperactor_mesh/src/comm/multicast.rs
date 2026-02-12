@@ -31,9 +31,10 @@ use serde::Serialize;
 use typeuri::Named;
 use uuid::Uuid;
 
+use crate::Name;
+use crate::ValueMesh;
 use crate::comm::CommMeshConfig;
 use crate::reference::ActorMeshId;
-use crate::v1;
 
 // A temporary trait used to share code in v0/v1 migration. Can be deleted after
 // v0 casting is deleted.
@@ -124,10 +125,7 @@ impl CastMessageEnvelope {
         M: Castable + RemoteMessage,
     {
         let data = ErasedUnbound::try_from_message(message)?;
-        let actor_name = match &actor_mesh_id {
-            ActorMeshId::V0(_, actor_name) => actor_name.clone(),
-            ActorMeshId::V1(name) => name.to_string(),
-        };
+        let actor_name = actor_mesh_id.0.to_string();
         Ok(Self {
             actor_mesh_id,
             headers,
@@ -281,7 +279,7 @@ pub(crate) struct CastMessageV1 {
     /// The client-assigned session id of this message.
     pub(super) session_id: Uuid,
     /// The client-assigned sequence numbers of this message.
-    pub(super) seqs: v1::ValueMesh<u64>,
+    pub(super) seqs: ValueMesh<u64>,
     /// The destination mesh's region.
     pub(super) dest_region: Region,
     /// The destination port of the message. It could match multiple actors with
@@ -323,12 +321,12 @@ impl CastMessageV1 {
     /// Create a new CastMessageEnvelope.
     pub(crate) fn new<A, M>(
         sender: ActorId,
-        dest_mesh: &v1::Name,
+        dest_mesh: &Name,
         dest_region: Region,
         headers: Attrs,
         message: M,
         session_id: Uuid,
-        seqs: v1::ValueMesh<u64>,
+        seqs: ValueMesh<u64>,
     ) -> Result<Self, anyhow::Error>
     where
         A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
