@@ -14,16 +14,15 @@ use criterion::Throughput;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::context::Mailbox;
+use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::actor_mesh::ActorMesh;
-use hyperactor_mesh::actor_mesh::RootActorMesh;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::LocalAllocator;
-use hyperactor_mesh::extent;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::selection::dsl::all;
-use hyperactor_mesh::selection::dsl::true_;
+use hyperactor_mesh::global_root_client;
+use ndslice::extent;
+use ndslice::view::Ranked as _;
 use tokio::time::Duration;
 
 mod bench_actor;
@@ -53,23 +52,24 @@ fn bench_actor_scaling(c: &mut Criterion) {
                     .await
                     .unwrap();
 
-                let bootstrap_instance = global_root_client();
-                let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
-                let actor_mesh: RootActorMesh<BenchActor> = proc_mesh
-                    .spawn(&bootstrap_instance, "bench", &(Duration::from_millis(0)))
+                let instance = global_root_client();
+                let mut proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "bench")
                     .await
                     .unwrap();
-                let client = proc_mesh.client();
+                let actor_mesh: ActorMesh<BenchActor> = proc_mesh
+                    .spawn(instance, "bench", &(Duration::from_millis(0)))
+                    .await
+                    .unwrap();
+                let num_actors = actor_mesh.region().num_ranks();
 
                 let start = Instant::now();
                 for i in 0..iters {
-                    let (tx, mut rx) = client.open_port();
+                    let (tx, mut rx) = instance.mailbox().open_port();
                     let payload = vec![0u8; message_size];
 
                     actor_mesh
                         .cast(
-                            client,
-                            all(true_()),
+                            instance,
                             BenchMessage {
                                 step: i as usize,
                                 reply: tx.bind(),
@@ -79,7 +79,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                         .unwrap();
 
                     let mut msg_rcv = 0;
-                    while msg_rcv < host_count * gpus {
+                    while msg_rcv < num_actors {
                         #[allow(clippy::disallowed_methods)]
                         let _ = tokio::time::timeout(Duration::from_secs(10), rx.recv())
                             .await
@@ -92,12 +92,9 @@ fn bench_actor_scaling(c: &mut Criterion) {
                 let elapsed = start.elapsed();
                 println!("Elapsed: {:?} on iters {}", elapsed, iters);
                 proc_mesh
-                    .events()
-                    .unwrap()
-                    .into_alloc()
-                    .stop_and_wait()
+                    .stop(instance, "benchmark complete".to_string())
                     .await
-                    .expect("Failed to stop allocator");
+                    .expect("Failed to stop mesh");
                 elapsed
             })
         });
@@ -153,24 +150,25 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                             .await
                             .unwrap();
 
-                        let bootstrap_instance = global_root_client();
-                        let mut proc_mesh = ProcMesh::allocate(alloc).await.unwrap();
-                        let actor_mesh: RootActorMesh<BenchActor> = proc_mesh
-                            .spawn(&bootstrap_instance, "bench", &(Duration::from_millis(0)))
+                        let instance = global_root_client();
+                        let mut proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "bench")
+                            .await
+                            .unwrap();
+                        let actor_mesh: ActorMesh<BenchActor> = proc_mesh
+                            .spawn(instance, "bench", &(Duration::from_millis(0)))
                             .await
                             .unwrap();
 
-                        let client = proc_mesh.client();
+                        let num_actors = actor_mesh.region().num_ranks();
 
                         let start = Instant::now();
                         for i in 0..iters {
-                            let (tx, mut rx) = client.open_port();
+                            let (tx, mut rx) = instance.mailbox().open_port();
                             let payload = vec![0u8; message_size];
 
                             actor_mesh
                                 .cast(
-                                    client,
-                                    all(true_()),
+                                    instance,
                                     BenchMessage {
                                         step: i as usize,
                                         reply: tx.bind(),
@@ -180,7 +178,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                                 .unwrap();
 
                             let mut msg_rcv = 0;
-                            while msg_rcv < actor_count {
+                            while msg_rcv < num_actors {
                                 #[allow(clippy::disallowed_methods)]
                                 let _ = tokio::time::timeout(Duration::from_secs(10), rx.recv())
                                     .await
@@ -190,12 +188,9 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                         }
                         let elapsed = start.elapsed();
                         proc_mesh
-                            .events()
-                            .unwrap()
-                            .into_alloc()
-                            .stop_and_wait()
+                            .stop(instance, "benchmark complete".to_string())
                             .await
-                            .expect("Failed to stop allocator");
+                            .expect("Failed to stop mesh");
                         elapsed
                     });
                 },
