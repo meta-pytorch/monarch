@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from __future__ import annotations
+
 # pyre-strict
 
 import functools
@@ -100,8 +102,11 @@ def _observe_latency_and_error(
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.mailbox import (
         OncePortReceiver as HyOncePortReceiver,
+        OncePortRef,
         PortReceiver as HyPortReceiver,
+        PortRef,
     )
+    from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionMonitor
     from monarch._src.actor.actor_mesh import ActorMesh, Port, PortReceiver, ValueMesh
 
 P = ParamSpec("P")
@@ -174,7 +179,7 @@ class Endpoint(ABC, Generic[P, R]):
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
     ) -> Extent:
         """
@@ -205,6 +210,13 @@ class Endpoint(ABC, Generic[P, R]):
     ) -> "HyPortReceiver | HyOncePortReceiver":
         return r
 
+    def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
+        """
+        Returns a Supervisor for monitoring actor health during endpoint calls.
+        Override in subclasses to provide supervision for actor meshes.
+        """
+        return None
+
     # the following are all 'adverbs' or different ways to handle the
     # return values of this endpoint. Adverbs should only ever take *args, **kwargs
     # of the original call. If we want to add syntax sugar for something that needs additional
@@ -224,7 +236,7 @@ class Endpoint(ABC, Generic[P, R]):
         r: "PortReceiver[R]" = r_port
         start_time: int = time.monotonic_ns()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=p, selection="choose")
+        self._send(args, kwargs, port=p._port_ref, selection="choose")
 
         @self._with_telemetry(
             start_time,
@@ -247,7 +259,7 @@ class Endpoint(ABC, Generic[P, R]):
         r: PortReceiver[R] = r_port
         start_time: int = time.monotonic_ns()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent = self._send(args, kwargs, port=p, selection="choose")
+        extent = self._send(args, kwargs, port=p._port_ref, selection="choose")
         if extent.nelements != 1:
             raise ValueError(
                 f"Can only use 'call_one' on a single Actor but this actor has shape {extent}"
@@ -276,7 +288,7 @@ class Endpoint(ABC, Generic[P, R]):
         p, unranked = self._port()
         r: RankedPortReceiver[R] = unranked.ranked()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p)
+        extent: Extent = self._send(args, kwargs, port=p._port_ref)
 
         @self._with_telemetry(
             start_time,
@@ -318,7 +330,7 @@ class Endpoint(ABC, Generic[P, R]):
         p, r_port = self._port()
         start_time: int = time.monotonic_ns()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p)
+        extent: Extent = self._send(args, kwargs, port=p._port_ref)
         r: "PortReceiver[R]" = r_port
 
         # Note: stream doesn't track errors per-yield since errors propagate to caller
