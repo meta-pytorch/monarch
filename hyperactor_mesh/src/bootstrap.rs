@@ -68,8 +68,11 @@ use tracing::Level;
 use typeuri::Named;
 
 use crate::config::MESH_PROC_LAUNCHER_KIND;
+use crate::host_mesh::mesh_agent::HostAgentMode;
+use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
+use crate::mesh_agent::ProcMeshAgent;
 use crate::proc_launcher::LaunchOptions;
 use crate::proc_launcher::NativeProcLauncher;
 use crate::proc_launcher::ProcExitKind;
@@ -79,11 +82,7 @@ use crate::proc_launcher::ProcLauncherError;
 use crate::proc_launcher::StdioHandling;
 use crate::proc_launcher::SystemdProcLauncher;
 use crate::proc_launcher::format_process_name;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
-use crate::v1;
-use crate::v1::host_mesh::mesh_agent::HostAgentMode;
-use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 
 mod mailbox;
 
@@ -362,7 +361,7 @@ pub enum Bootstrap {
     },
 
     /// Bootstrap as a "v1" host bootstrap. This sets up a new `Host`,
-    /// managed by a [`crate::v1::host_mesh::mesh_agent::HostMeshAgent`].
+    /// managed by a [`crate::host_mesh::mesh_agent::HostMeshAgent`].
     Host {
         /// The address on which to serve the host.
         addr: ChannelAddr,
@@ -398,13 +397,13 @@ impl Bootstrap {
     /// Serialize the mode into a environment-variable-safe string by
     /// base64-encoding its JSON representation.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn to_env_safe_string(&self) -> v1::Result<String> {
+    pub(crate) fn to_env_safe_string(&self) -> crate::Result<String> {
         Ok(BASE64_STANDARD.encode(serde_json::to_string(&self)?))
     }
 
     /// Deserialize the mode from the representation returned by [`to_env_safe_string`].
     #[allow(clippy::result_large_err)]
-    pub(crate) fn from_env_safe_string(str: &str) -> v1::Result<Self> {
+    pub(crate) fn from_env_safe_string(str: &str) -> crate::Result<Self> {
         let data = BASE64_STANDARD.decode(str)?;
         let data = std::str::from_utf8(&data)?;
         Ok(serde_json::from_str(data)?)
@@ -2367,13 +2366,13 @@ mod tests {
     use tokio::process::Command;
 
     use super::*;
+    use crate::ActorMesh;
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::ProcessAllocator;
-    use crate::v1::ActorMesh;
-    use crate::v1::host_mesh::HostMesh;
-    use crate::v1::testactor;
-    use crate::v1::testing;
+    use crate::host_mesh::HostMesh;
+    use crate::testactor;
+    use crate::testing;
 
     // Helper: Avoid repeating
     // `ChannelAddr::any(ChannelTransport::Unix)`.
@@ -3425,8 +3424,8 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_host_bootstrap() {
-        use crate::proc_mesh::mesh_agent::NewClientInstanceClient;
-        use crate::v1::host_mesh::mesh_agent::GetLocalProcClient;
+        use crate::host_mesh::mesh_agent::GetLocalProcClient;
+        use crate::mesh_agent::NewClientInstanceClient;
 
         // Create a local instance just to call the local bootstrap actor.
         // We should find a way to avoid this for local handles.
