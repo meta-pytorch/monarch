@@ -9,15 +9,12 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use futures::TryFutureExt;
 use hyperactor::context;
-use hyperactor_mesh::Mesh;
-use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::v1;
 use monarch_hyperactor;
 use monarch_hyperactor::code_sync::WorkspaceLocation;
 use monarch_hyperactor::code_sync::manager::CodeSyncManager;
@@ -30,6 +27,8 @@ use monarch_hyperactor::code_sync::manager::code_sync_mesh;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
+use ndslice::Shape;
+use ndslice::view::Ranked;
 use pyo3::Bound;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
@@ -236,21 +235,20 @@ impl PyWorkspaceConfig {
     module = "monarch._rust_bindings.monarch_extension.code_sync"
 )]
 pub struct CodeSyncMeshClient {
-    actor_mesh: SharedCell<RootActorMesh<'static, CodeSyncManager>>,
+    actor_mesh: v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
 }
 
 impl CodeSyncMeshClient {
     async fn sync_workspace_(
         instance: &impl context::Actor,
-        actor_mesh: SharedCell<RootActorMesh<'static, CodeSyncManager>>,
+        actor_mesh: &v1::actor_mesh::ActorMeshRef<CodeSyncManager>,
         local: PathBuf,
         remote: RemoteWorkspace,
         method: CodeSyncMethod,
         auto_reload: bool,
     ) -> Result<()> {
-        let actor_mesh = actor_mesh.borrow()?;
         let shape = WorkspaceShape {
-            shape: actor_mesh.shape().clone(),
+            shape: Shape::from(actor_mesh.region()),
             dimension: remote.shape.dimension.clone(),
         };
         eprintln!("Syncing workspace: {:?}", shape.owners()?);
@@ -258,7 +256,7 @@ impl CodeSyncMeshClient {
             location: remote.location.into(),
             shape,
         };
-        code_sync_mesh(instance, &actor_mesh, local, remote, method, auto_reload)
+        code_sync_mesh(instance, actor_mesh, local, remote, method, auto_reload)
             .await
             .map_err(|err| PyRuntimeError::new_err(format!("{:#?}", err)))?;
         Ok(())
@@ -269,31 +267,23 @@ impl CodeSyncMeshClient {
 impl CodeSyncMeshClient {
     #[staticmethod]
     #[pyo3(signature = (*, client, proc_mesh))]
-    fn spawn_blocking(
-        py: Python,
-        client: PyInstance,
-        proc_mesh: &Bound<'_, PyAny>,
-    ) -> PyResult<Self> {
-        let proc_mesh = proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
+    fn spawn_blocking(py: Python, client: PyInstance, proc_mesh: &PyProcMesh) -> PyResult<Self> {
+        let proc_mesh = proc_mesh.mesh_ref()?;
         signal_safe_block_on(py, async move {
             let actor_mesh = proc_mesh
-                .spawn_service(
-                    client.deref(),
-                    "code_sync_manager",
-                    &CodeSyncManagerParams {},
-                )
+                .spawn_service(&*client, "code_sync_manager", &CodeSyncManagerParams {})
                 .await
                 .map_err(|err| PyException::new_err(err.to_string()))?;
             actor_mesh
                 .cast(
-                    client.deref(),
+                    &*client,
                     SetActorMeshMessage {
-                        actor_mesh: actor_mesh.deref().clone(),
+                        actor_mesh: (*actor_mesh).clone(),
                     },
                 )
                 .map_err(|err| PyException::new_err(err.to_string()))?;
             Ok(Self {
-                actor_mesh: SharedCell::from(RootActorMesh::from(actor_mesh)),
+                actor_mesh: (*actor_mesh).clone(),
             })
         })?
     }
@@ -312,8 +302,8 @@ impl CodeSyncMeshClient {
         let actor_mesh = self.actor_mesh.clone();
         monarch_hyperactor::runtime::future_into_py(py, async move {
             CodeSyncMeshClient::sync_workspace_(
-                instance.deref(),
-                actor_mesh,
+                &*instance,
+                &actor_mesh,
                 local,
                 remote,
                 method.into(),
@@ -339,8 +329,8 @@ impl CodeSyncMeshClient {
             async move {
                 for workspace in workspaces.into_iter() {
                     CodeSyncMeshClient::sync_workspace_(
-                        instance.deref(),
-                        actor_mesh.clone(),
+                        &*instance,
+                        &actor_mesh,
                         workspace.local,
                         workspace.remote,
                         workspace.method.into(),
