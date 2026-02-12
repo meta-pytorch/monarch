@@ -331,7 +331,7 @@ def test_integer_params(param_name, test_value, default_value):
     "param_name,default_value",
     [
         # Hyperactor message handling
-        ("enable_dest_actor_reordering_buffer", True),
+        ("enable_dest_actor_reordering_buffer", False),
         # Mesh bootstrap config
         ("mesh_bootstrap_enable_pdeathsig", True),
         # Runtime and buffering
@@ -427,7 +427,7 @@ def test_all_params_together():
         default_encoding=Encoding.Json,
         channel_net_rx_buffer_full_check_interval="200ms",
         message_latency_sampling_rate=0.5,
-        enable_dest_actor_reordering_buffer=False,
+        enable_dest_actor_reordering_buffer=True,
         # Mesh bootstrap config
         mesh_bootstrap_enable_pdeathsig=False,
         mesh_terminate_concurrency=16,
@@ -464,7 +464,7 @@ def test_all_params_together():
         assert config["default_encoding"] == Encoding.Json
         assert config["channel_net_rx_buffer_full_check_interval"] == "200ms"
         assert config["message_latency_sampling_rate"] == pytest.approx(0.5, rel=1e-5)
-        assert config["enable_dest_actor_reordering_buffer"] is False
+        assert config["enable_dest_actor_reordering_buffer"] is True
         assert config["mesh_bootstrap_enable_pdeathsig"] is False
         assert config["mesh_terminate_concurrency"] == 16
         assert config["mesh_terminate_timeout"] == "20s"
@@ -495,7 +495,7 @@ def test_all_params_together():
     assert config["default_encoding"] == Encoding.Multipart
     assert config["channel_net_rx_buffer_full_check_interval"] == "5s"
     assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)
-    assert config["enable_dest_actor_reordering_buffer"] is True
+    assert config["enable_dest_actor_reordering_buffer"] is False
     assert config["mesh_bootstrap_enable_pdeathsig"] is True
     assert config["mesh_terminate_concurrency"] == 16
     assert config["mesh_terminate_timeout"] == "10s"
