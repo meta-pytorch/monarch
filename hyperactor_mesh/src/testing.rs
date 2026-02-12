@@ -37,15 +37,15 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::Bootstrap;
+use crate::HostMeshRef;
+use crate::ProcMesh;
 use crate::alloc::Alloc;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
 use crate::alloc::ProcessAllocator;
-use crate::proc_mesh::default_transport;
 use crate::supervision::MeshFailure;
-use crate::v1::HostMeshRef;
-use crate::v1::ProcMesh;
+use crate::transport::default_transport;
 
 #[derive(Debug)]
 pub struct TestRootClient {
@@ -290,7 +290,7 @@ pub async fn local_proc_mesh(
 /// ```
 #[cfg(fbcode_build)]
 pub async fn host_mesh(n: usize) -> HostMeshRef {
-    use crate::v1::Name;
+    use crate::Name;
 
     let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 

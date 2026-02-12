@@ -7,7 +7,7 @@
  */
 
 //! This module defines a test actor. It is defined in a separate module
-//! (outside of [`crate::v1::testing`]) to ensure that it is compiled into
+//! (outside of [`crate::testing`]) to ensure that it is compiled into
 //! the bootstrap binary, which is not built in test mode (and anyway, test mode
 //! does not work across crate boundaries)
 
@@ -47,15 +47,15 @@ use typeuri::Named;
 #[cfg(test)]
 use uuid::Uuid;
 
+use crate::ActorMesh;
+#[cfg(test)]
+use crate::ActorMeshRef;
+use crate::Name;
+use crate::ProcMeshRef;
 use crate::comm::multicast::CastInfo;
 use crate::supervision::MeshFailure;
-use crate::v1::ActorMesh;
 #[cfg(test)]
-use crate::v1::ActorMeshRef;
-use crate::v1::Name;
-use crate::v1::ProcMeshRef;
-#[cfg(test)]
-use crate::v1::testing;
+use crate::testing;
 
 /// A simple test actor used by various unit tests.
 #[derive(Default, Debug)]
