@@ -197,27 +197,6 @@ Provides attribute access to named HostMeshes:
 
 ## Key Concepts
 
-### HostMesh
-Represents the collection of hosts (pods) in your deployment. Each host runs a Monarch worker process.
-
-### ProcMesh
-Created by `host_mesh.spawn_procs(per_host={"procs": 1})` for CPU-only or `per_host={"gpus": 8}` for GPU workloads. Represents processes spawned on hosts.
-
-### ActorMesh
-Created by `proc_mesh.spawn("name", ActorClass)`. Represents actor instances running in each process.
-
-### Actors
-Actors inherit from `monarch.actor.Actor` and use the `@endpoint` decorator on methods that should be callable remotely:
-
-```python
-from monarch.actor import Actor, endpoint
-
-class MyActor(Actor):
-    @endpoint
-    def my_method(self, arg: int) -> int:
-        return arg * 2
-```
-
 ### Proxy Classes
 Client-side proxies (`HostMeshProxy`, `ProcMeshProxy`, `ActorMeshProxy`) that mirror Monarch's API:
 - Local operations like `slice()`, `size()` work without network calls
@@ -236,15 +215,14 @@ single_result = actors.get_value.call_one().get()
 actors.reset.broadcast()
 ```
 
-## Comparison with SkyPilotJob
+## Limitations
 
-| Feature | KubernetesJob (Kubetorch) | SkyPilotJob |
-|---------|---------------------------|-------------|
-| Works from outside cluster | Yes | No (requires driver pod) |
-| Code sync | Differential P2P | SkyPilot rsync |
-| Compute provisioning | kt.Compute (arbitrary K8s) | SkyPilot Resources |
-| Requires SkyPilot | No | Yes |
-| Network requirement | Any ingress | Direct pod connectivity |
+Because code serialization is problematic when working across diverse environments, such as between a laptop
+and a cluster, we avoid it entirely. Rather than serializing the user's Actor class to send to the cluster, we
+update the image on the Monarch hosts to have the user's Actor code, and import it from from within the cluster.
+This means we only support Actors that are importable, i.e. in global scope, and not ones defined inside
+methods that the Python importer can't see. There are ways around this that we will explore in the future if 
+there is sufficient demand.
 
 ## Troubleshooting
 
