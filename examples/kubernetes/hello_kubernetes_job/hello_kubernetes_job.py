@@ -8,7 +8,7 @@ import argparse
 import socket
 
 from monarch.actor import Actor, endpoint
-from monarch.job.kubernetes import KubernetesJob
+from monarch.job.kubernetes import ImageSpec, KubernetesJob
 
 
 class SimpleActor(Actor):
@@ -60,8 +60,12 @@ def main():
         # Provision MonarchMesh CRDs directly from Python.
         # The Monarch operator (must be pre-installed) creates the
         # StatefulSets and headless Services automatically.
-        job.add_mesh("mesh1", 2, image="ghcr.io/meta-pytorch/monarch:latest")
-        job.add_mesh("mesh2", 2, image="ghcr.io/meta-pytorch/monarch:latest")
+        job.add_mesh(
+            "mesh1", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+        )
+        job.add_mesh(
+            "mesh2", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+        )
     else:
         job.add_mesh("mesh1", 2)
         job.add_mesh("mesh2", 2)

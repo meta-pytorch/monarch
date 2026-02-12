@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import dataclasses
 import logging
 import sys
 import textwrap
@@ -52,6 +53,30 @@ _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
 """)
 
 
+@dataclasses.dataclass(frozen=True)
+class ImageSpec:
+    """Container image specification for provisioning worker pods.
+
+    Use this to provision MonarchMesh workers with a specific container
+    image and optional K8s resource requests/limits::
+
+        # Simple — image only
+        ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+
+        # With GPU resources
+        ImageSpec("ghcr.io/meta-pytorch/monarch:latest",
+                  resources={"nvidia.com/gpu": 4})
+
+    Pass the resulting object to ``KubernetesJob.add_mesh(image_spec=...)``.
+    """
+
+    image: str
+    """Required container image to use for worker pods."""
+
+    resources: dict[str, str | int] | None = None
+    """Optional K8s resource requests/limits (e.g. ``{"nvidia.com/gpu": 4}``)."""
+
+
 class KubernetesJob(JobTrait):
     """
     Job implementation for Kubernetes that discovers and connects to pods.
@@ -60,13 +85,13 @@ class KubernetesJob(JobTrait):
 
     *Pre-provisioned* -- connect to pre-provisioned pods discovered via label
     selectors. Compatible with the MonarchMesh operator, third-party
-    schedulers, or manually created pods. Used when ``image`` or ``pod_spec``
+    schedulers, or manually created pods. Used when ``image_spec`` or ``pod_spec``
     is not specified in ``add_mesh``.
 
     *Provisioning* -- create MonarchMesh CRDs via the K8s API so the
     pre-installed operator provisions StatefulSets and Services
-    automatically. Pass ``image`` (simple) or ``pod_spec`` (advanced)
-    to ``add_mesh`` to enable provisioning for that mesh. If the MonarchMesh CRD
+    automatically. Pass ``image_spec`` or ``pod_spec`` (advanced) to
+    ``add_mesh`` to enable provisioning for that mesh. If the MonarchMesh CRD
     already exists, it is patched instead of created.
     """
 
@@ -95,8 +120,7 @@ class KubernetesJob(JobTrait):
         num_replicas: int,
         label_selector: str | None = None,
         pod_rank_label: str = "apps.kubernetes.io/pod-index",
-        image: str | None = None,
-        resources: dict[str, str | int] | None = None,
+        image_spec: ImageSpec | None = None,
         port: int = _DEFAULT_MONARCH_PORT,
         pod_spec: dict[str, Any] | None = None,
     ) -> None:
@@ -104,7 +128,7 @@ class KubernetesJob(JobTrait):
         Add a mesh specification.
 
         In *attach-only* mode (default), meshes are discovered by label
-        selector. In *provisioning* mode (``image`` or ``pod_spec``
+        selector. In *provisioning* mode (``image_spec`` or ``pod_spec``
         supplied), a MonarchMesh CRD is created so the operator can
         provision the pods.
 
@@ -117,10 +141,10 @@ class KubernetesJob(JobTrait):
             num_replicas: Number of pod replicas (expects all ranks 0 to num_replicas-1)
             label_selector: Custom label selector for pod discovery. Cannot be set when provisioning.
             pod_rank_label: Label key containing the pod rank. Cannot be customized when provisioning.
-            image: Container image for simple provisioning. Mutually exclusive with `pod_spec`.
-            resources: K8s resource requests/limits (e.g. `{"cpu": "2", "nvidia.com/gpu": 1}`). Only valid with `image`.
+            image_spec: ``ImageSpec`` with container image and optional resources for simple provisioning.
+                   Mutually exclusive with ``pod_spec``.
             port: Monarch worker port (default: 26600).
-            pod_spec: Full PodSpec dict for advanced provisioning. Mutually exclusive with `image`.
+            pod_spec: Full PodSpec dict for advanced provisioning. Mutually exclusive with ``image_spec``.
 
         Raises:
             ValueError: On invalid name or conflicting parameters.
@@ -144,12 +168,10 @@ class KubernetesJob(JobTrait):
                 f"Mesh name '{name}' is invalid. Name must end with an alphanumeric character."
             )
 
-        provisioned = image is not None or pod_spec is not None
+        provisioned = image_spec is not None or pod_spec is not None
 
-        if image is not None and pod_spec is not None:
-            raise ValueError("'image' and 'pod_spec' are mutually exclusive.")
-        if resources is not None and image is None:
-            raise ValueError("'resources' requires 'image'.")
+        if image_spec is not None and pod_spec is not None:
+            raise ValueError("'image_spec' and 'pod_spec' are mutually exclusive.")
         if provisioned and label_selector is not None:
             raise ValueError("'label_selector' cannot be customized when provisioning.")
         if provisioned and pod_rank_label != "apps.kubernetes.io/pod-index":
@@ -164,8 +186,8 @@ class KubernetesJob(JobTrait):
             "port": port,
         }
 
-        if image is not None:
-            mesh_entry["pod_spec"] = self._build_worker_pod_spec(image, port, resources)
+        if image_spec is not None:
+            mesh_entry["pod_spec"] = self._build_worker_pod_spec(image_spec, port)
         elif pod_spec is not None:
             mesh_entry["pod_spec"] = pod_spec
 
@@ -244,9 +266,8 @@ class KubernetesJob(JobTrait):
 
     @staticmethod
     def _build_worker_pod_spec(
-        image: str,
+        image_spec: ImageSpec,
         port: int,
-        resources: dict[str, str | int] | None = None,
     ) -> Dict[str, Any]:
         """
         Build a PodSpec dict for the MonarchMesh CRD.
@@ -255,21 +276,20 @@ class KubernetesJob(JobTrait):
         script that starts ``run_worker_loop_forever``.
 
         Args:
-            image: Container image.
+            image_spec: ImageSpec with container image and optional resources.
             port: Monarch worker port.
-            resources: Optional K8s resource requests/limits.
 
         Returns:
             PodSpec dict suitable for the ``podTemplate`` CRD field.
         """
         container: Dict[str, Any] = {
             "name": "worker",
-            "image": image,
+            "image": image_spec.image,
             "command": ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
             "env": [{"name": "MONARCH_PORT", "value": str(port)}],
         }
-        if resources is not None:
-            k8s_resources = {str(k): str(v) for k, v in resources.items()}
+        if image_spec.resources is not None:
+            k8s_resources = {str(k): str(v) for k, v in image_spec.resources.items()}
             container["resources"] = {
                 "requests": k8s_resources,
                 "limits": k8s_resources,
