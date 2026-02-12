@@ -78,14 +78,22 @@ class GPUCollectiveActor(Actor):
             dist.destroy_process_group()
 
 
-async def main(num_hosts: int, num_gpus_per_host: int) -> None:
+async def main(num_hosts: int, num_gpus_per_host: int, provision: bool) -> None:
     logger.info("=" * 60)
     logger.info("GPU Collective Demo - Monarch on Kubernetes")
     logger.info("=" * 60)
 
     # Connect to Kubernetes job and create proc mesh
     job = KubernetesJob(namespace="monarch-tests")
-    job.add_mesh("gpumesh1", num_replicas=num_hosts)
+    if provision:
+        job.add_mesh(
+            "gpumesh1",
+            num_replicas=num_hosts,
+            image="ghcr.io/meta-pytorch/monarch:latest",
+            resources={"nvidia.com/gpu": num_gpus_per_host},
+        )
+    else:
+        job.add_mesh("gpumesh1", num_replicas=num_hosts)
     host_mesh = job.state().gpumesh1
     proc_mesh = host_mesh.spawn_procs({"gpus": num_gpus_per_host})
 
@@ -128,6 +136,9 @@ async def main(num_hosts: int, num_gpus_per_host: int) -> None:
 
     proc_mesh.stop().get()
 
+    if provision:
+        job.kill()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GPU Collective Demo with Monarch")
@@ -140,5 +151,10 @@ if __name__ == "__main__":
         default=4,
         help="Number of GPUs per host (default: 4)",
     )
+    parser.add_argument(
+        "--provision",
+        action="store_true",
+        help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.num_hosts, args.num_gpus_per_host))
+    asyncio.run(main(args.num_hosts, args.num_gpus_per_host, args.provision))
