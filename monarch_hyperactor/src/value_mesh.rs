@@ -6,18 +6,33 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
+
 use hyperactor_mesh::v1::ValueMesh;
 use ndslice::Region;
 use ndslice::view::BuildFromRegion;
 use ndslice::view::Ranked;
 use ndslice::view::ViewExt;
+use pyo3::exceptions::PyIndexError;
+use pyo3::exceptions::PyKeyError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
+use pyo3::types::PyDict;
 use pyo3::types::PyList;
+use pyo3::types::PyTuple;
 
+use crate::mesh_trait::PyMeshTrait;
+use crate::ndslice::PySlice;
+use crate::shape::PyExtent;
+use crate::shape::PyPoint;
 use crate::shape::PyShape;
 
+/// A mesh of values returned from endpoint invocations.
+///
+/// ValueMesh holds the return values from all actors in a mesh, organized by
+/// their coordinates. It supports iteration, coordinate-based access, and
+/// mesh operations like slicing and flattening.
 #[pyclass(
     name = "ValueMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.value_mesh"
@@ -31,27 +46,9 @@ impl PyValueMesh {
     /// __init__(self, shape: Shape, values: list)
     #[new]
     fn new(_py: Python<'_>, shape: &PyShape, values: Bound<'_, PyList>) -> PyResult<Self> {
-        // Convert shape to region, preserving the original Slice
-        // (offset/strides) so linear rank order matches the Python
-        // Shape.
         let s = shape.get_inner();
         let region = Region::new(s.labels().to_vec(), s.slice().clone());
-        let vals: Vec<Py<PyAny>> = values.extract()?;
-
-        // Build & validate cardinality against region.
-        let mut inner =
-            <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(region, vals)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-        // Coalesce adjacent identical Python objects (same pointer
-        // identity). For Py<PyAny>, we treat equality as object
-        // identity: consecutive references to the *same* object
-        // pointer are merged into RLE runs. This tends to compress
-        // sentinel/categorical/boolean data, but not freshly
-        // allocated numerics/strings.
-        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
-
-        Ok(Self { inner })
+        Self::build(region, values.extract()?)
     }
 
     /// Return number of ranks (Python: len(vm))
@@ -67,49 +64,191 @@ impl PyValueMesh {
         Ok(PyList::new(py, vec)?.into())
     }
 
-    /// Get value by linear rank (0..num_ranks-1).
-    fn get(&self, py: Python<'_>, rank: usize) -> PyResult<Py<PyAny>> {
-        let n = self.inner.region().num_ranks();
-        if rank >= n {
-            return Err(PyValueError::new_err(format!(
-                "index {} out of range (len={})",
-                rank, n
-            )));
-        }
-
-        // ValueMesh::get() returns &Py<PyAny>; we clone the smart
-        // pointer (incrementing the Python refcount) to return an
-        // owned Py<PyAny>. `unwrap` is safe because the bounds have
-        // been checked.
-        let v: Py<PyAny> = self.inner.get(rank).unwrap().clone_ref(py);
-
-        Ok(v)
+    #[getter]
+    fn shape(&self) -> PyShape {
+        PyShape::from(ndslice::Shape::from(self.inner.region().clone()))
     }
 
-    /// Build from (rank, value) pairs with last-write-wins semantics.
-    #[staticmethod]
-    fn from_indexed(
-        _py: Python<'_>,
-        shape: &PyShape,
-        pairs: Vec<(usize, Py<PyAny>)>,
-    ) -> PyResult<Self> {
-        // Preserve the shape's original Slice (offset/strides).
-        let s = shape.get_inner();
-        let region = Region::new(s.labels().to_vec(), s.slice().clone());
-        let mut inner = <ValueMesh<Py<PyAny>> as ndslice::view::BuildFromRegionIndexed<
-            Py<PyAny>,
-        >>::build_indexed(region, pairs)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    #[getter]
+    fn _ndslice(&self) -> PySlice {
+        self.mesh_ndslice()
+    }
 
-        // Coalesce adjacent identical Python objects (same pointer
-        // identity). For Py<PyAny>, we treat equality as object
-        // identity: consecutive references to the *same* object
-        // pointer are merged into RLE runs. This tends to compress
-        // sentinel/categorical/boolean data, but not freshly
-        // allocated numerics/strings.
+    #[getter]
+    fn _labels(&self) -> Vec<String> {
+        self.mesh_labels()
+    }
+
+    #[getter]
+    fn extent(&self) -> PyExtent {
+        self.inner.region().extent().into()
+    }
+
+    #[pyo3(signature = (**kwargs))]
+    fn item(&self, py: Python<'_>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
+        let labels = self.inner.region().labels();
+        let num_elements = self.inner.region().num_ranks();
+
+        // If no kwargs provided, the mesh must have exactly one element
+        let kwargs = match kwargs {
+            Some(k) if !k.is_empty() => k,
+            _ => {
+                // No coordinates provided - mesh must be singleton
+                if num_elements != 1 {
+                    return Err(PyValueError::new_err(format!(
+                        "item() with no arguments requires a mesh with exactly 1 element, got {}",
+                        num_elements
+                    )));
+                }
+                return Ok(Ranked::get(&self.inner, 0).unwrap().clone_ref(py));
+            }
+        };
+
+        if kwargs.len() != labels.len() {
+            return Err(PyKeyError::new_err(
+                "item() requires exactly one coordinate per dimension",
+            ));
+        }
+
+        let coordinates = labels
+            .iter()
+            .map(|label| {
+                kwargs
+                    .get_item(label)?
+                    .ok_or_else(|| PyKeyError::new_err(format!("Missing dimension '{}'", label)))?
+                    .extract()
+            })
+            .collect::<PyResult<Vec<usize>>>()?;
+
+        let slice = self.inner.region().slice();
+        let global_rank = slice
+            .location(&coordinates)
+            .map_err(|e| PyIndexError::new_err(e.to_string()))?;
+        let local_idx = slice
+            .index(global_rank)
+            .map_err(|e| PyIndexError::new_err(e.to_string()))?;
+
+        Ok(Ranked::get(&self.inner, local_idx).unwrap().clone_ref(py))
+    }
+
+    fn items(&self, py: Python<'_>) -> PyResult<PyObject> {
+        Ok(PyList::new(py, self.collect_items())?.into())
+    }
+
+    fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        self.items(py)?.call_method0(py, "__iter__")
+    }
+
+    #[pyo3(signature = (**kwargs))]
+    fn slice(&self, py: Python<'_>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        self.mesh_slice(py, kwargs)
+    }
+
+    fn flatten(&self, py: Python<'_>, name: String) -> PyResult<Self> {
+        self.mesh_flatten(py, name)
+    }
+
+    #[pyo3(signature = (**kwargs))]
+    fn split(&self, py: Python<'_>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        self.mesh_split(py, kwargs)
+    }
+
+    #[pyo3(signature = (**kwargs))]
+    fn rename(&self, py: Python<'_>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        self.mesh_rename(py, kwargs)
+    }
+
+    #[pyo3(signature = (dim=None))]
+    fn size(&self, dim: Option<&Bound<'_, PyAny>>) -> PyResult<usize> {
+        self.mesh_size(dim)
+    }
+
+    #[getter]
+    fn sizes(&self) -> HashMap<String, usize> {
+        self.mesh_sizes()
+    }
+
+    fn _new_with_shape(&self, py: Python<'_>, shape: &PyShape) -> PyResult<Self> {
+        self.new_with_shape(py, shape.get_inner().clone())
+    }
+
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyAny>, (PyShape, Py<PyList>))> {
+        let this = slf.borrow();
+        let shape = PyShape::from(ndslice::Shape::from(this.inner.region().clone()));
+        let values: Vec<Py<PyAny>> = this.inner.values().collect();
+        let values_list = PyList::new(py, values)?;
+        Ok((slf.get_type().into_any(), (shape, values_list.unbind())))
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let extent = self.inner.region().extent();
+        let items = self
+            .items(py)?
+            .bind(py)
+            .downcast::<PyList>()?
+            .iter()
+            .map(|item| -> PyResult<String> {
+                let tuple = item.downcast::<PyTuple>()?;
+                Ok(format!(
+                    "  ({}, {}),",
+                    tuple.get_item(0)?.repr()?,
+                    tuple.get_item(1)?.repr()?
+                ))
+            })
+            .collect::<PyResult<Vec<_>>>()?
+            .join("\n");
+
+        Ok(format!("ValueMesh({}):\n(\n{}\n)", extent, items))
+    }
+}
+
+impl PyValueMesh {
+    fn build(region: Region, values: Vec<Py<PyAny>>) -> PyResult<Self> {
+        let mut inner =
+            <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(region, values)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
         inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
-
         Ok(Self { inner })
+    }
+
+    fn collect_items(&self) -> Vec<(PyPoint, Py<PyAny>)> {
+        let extent = PyExtent::from(self.inner.region().extent());
+        let len = self.inner.region().slice().len();
+        (0..len)
+            .map(|i| {
+                (
+                    PyPoint::new(i, extent.clone()),
+                    Ranked::get(&self.inner, i).unwrap().clone(),
+                )
+            })
+            .collect()
+    }
+}
+
+impl PyMeshTrait for PyValueMesh {
+    fn mesh_shape(&self) -> ndslice::Shape {
+        ndslice::Shape::from(self.inner.region().clone())
+    }
+
+    fn new_with_shape(&self, py: Python<'_>, shape: ndslice::Shape) -> PyResult<Self> {
+        let cur_ranks: Vec<usize> = self.inner.region().slice().iter().collect();
+        let pos: HashMap<usize, usize> =
+            cur_ranks.iter().enumerate().map(|(i, &g)| (g, i)).collect();
+        let region = ndslice::Region::from(shape);
+        let remapped = region
+            .slice()
+            .iter()
+            .map(|g| {
+                let idx = *pos.get(&g).ok_or_else(|| {
+                    PyValueError::new_err(format!("rank {} not in current region", g))
+                })?;
+                Ok(Ranked::get(&self.inner, idx).unwrap().clone_ref(py))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Self::build(region, remapped)
     }
 }
 

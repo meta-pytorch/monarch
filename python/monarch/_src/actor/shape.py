@@ -9,7 +9,7 @@
 import itertools
 import operator
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generator, Sequence, Tuple, Union
+from typing import Any, Dict, Generator, Sequence, Tuple, TYPE_CHECKING, Union
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
 from typing_extensions import Self
@@ -233,3 +233,12 @@ class MeshTrait(ABC):
 
 
 __all__ = ["NDSlice", "Shape", "MeshTrait"]
+
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.mesh_trait import MeshTraitProtocol
+
+    def _assert_implements_protocol(x: MeshTraitProtocol) -> None: ...
+
+    def _check_meshtrait_satisfies_protocol(m: MeshTrait) -> None:
+        _assert_implements_protocol(m)
