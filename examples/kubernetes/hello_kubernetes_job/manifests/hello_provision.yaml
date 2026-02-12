@@ -1,0 +1,64 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Controller manifest for Python-native MonarchMesh provisioning.
+#
+# Unlike hello_mesh.yaml, no MonarchMesh CRDs are defined here.
+# The Python script creates them via the K8s API using --provision.
+#
+# Prerequisites:
+# - Kubernetes cluster with Monarch operator installed
+# - monarch-tests namespace created
+---
+# ServiceAccount for the controller pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hello-controller
+  namespace: monarch-tests
+---
+# Role granting permission to list/watch pods and manage MonarchMesh CRDs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hello-controller
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monarch.pytorch.org"]
+    resources: ["monarchmeshes"]
+    verbs: ["create", "get", "patch", "delete"]
+---
+# Bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hello-controller
+  namespace: monarch-tests
+subjects:
+  - kind: ServiceAccount
+    name: hello-controller
+    namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: hello-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Controller pod for running the hello_kubernetes_job script
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-controller
+  namespace: monarch-tests
+spec:
+  containers:
+    - name: controller
+      image: ghcr.io/meta-pytorch/monarch:latest
+      command: ["sleep"]
+      args: ["infinity"]
+  serviceAccountName: hello-controller
