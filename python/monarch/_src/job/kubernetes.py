@@ -8,6 +8,7 @@
 
 import logging
 import sys
+import textwrap
 from typing import Any, Dict, List
 
 try:
@@ -33,15 +34,40 @@ logger.propagate = False
 _DEFAULT_MONARCH_PORT: int = 26600
 _RFC_1123_MAX_LEN = 63
 
+# MonarchMesh CRD coordinates
+_MONARCHMESH_GROUP = "monarch.pytorch.org"
+_MONARCHMESH_VERSION = "v1alpha1"
+_MONARCHMESH_PLURAL = "monarchmeshes"
+
+# Bootstrap script for provisioned worker pods.
+# Each worker discovers its own FQDN and starts listening for connections.
+_WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
+    import os
+    import socket
+    from monarch.actor import run_worker_loop_forever
+    port = os.environ.get("MONARCH_PORT", "26600")
+    hostname = socket.getfqdn()
+    address = f"tcp://{hostname}:{port}"
+    run_worker_loop_forever(address=address, ca="trust_all_connections")
+""")
+
 
 class KubernetesJob(JobTrait):
     """
-    Job implementation for Kubernetes that connects to pre-provisioned pods.
+    Job implementation for Kubernetes that discovers and connects to pods.
 
-    It primarily uses Kubernetes label selectors to discover pods, making it compatible
-    with pods from the MonarchMesh CRD and operator, third-party schedulers, or manually
-    provisioned pods. Once discovered, it waits for pods to be ready and connects workers
-    in rank order (0 to N-1) for deterministic communication.
+    Supports two modes:
+
+    *Pre-provisioned* -- connect to pre-provisioned pods discovered via label
+    selectors. Compatible with the MonarchMesh operator, third-party
+    schedulers, or manually created pods. Used when ``image`` or ``pod_spec``
+    is not specified in ``add_mesh``.
+
+    *Provisioning* -- create MonarchMesh CRDs via the K8s API so the
+    pre-installed operator provisions StatefulSets and Services
+    automatically. Pass ``image`` (simple) or ``pod_spec`` (advanced)
+    to ``add_mesh`` to enable provisioning for that mesh. If the MonarchMesh CRD
+    already exists, it is patched instead of created.
     """
 
     def __init__(
@@ -50,10 +76,10 @@ class KubernetesJob(JobTrait):
         timeout: int | None = None,
     ) -> None:
         """
-        Initialize a KubernetesJob that connects to pre-provisioned pods using MonarchMesh CRD and operator.
+        Initialize a KubernetesJob.
 
         Args:
-            namespace: Kubernetes namespace to search for pods for all meshes
+            namespace: Kubernetes namespace for all meshes
             timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely)
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
@@ -69,12 +95,18 @@ class KubernetesJob(JobTrait):
         num_replicas: int,
         label_selector: str | None = None,
         pod_rank_label: str = "apps.kubernetes.io/pod-index",
+        image: str | None = None,
+        resources: dict[str, str | int] | None = None,
+        port: int = _DEFAULT_MONARCH_PORT,
+        pod_spec: dict[str, Any] | None = None,
     ) -> None:
         """
-        Add a mesh specification. Meshes are discovered by label selector which expects to contain
-        "app.kubernetes.io/name=monarch-worker" and "monarch.pytorch.org/mesh-name=<name>" by default if using MonarchMesh CRD and operator.
+        Add a mesh specification.
 
-        Requires all pod ranks from 0 to num_replicas-1 specified by pod rank label to be ready before the mesh becomes available.
+        In *attach-only* mode (default), meshes are discovered by label
+        selector. In *provisioning* mode (``image`` or ``pod_spec``
+        supplied), a MonarchMesh CRD is created so the operator can
+        provision the pods.
 
         Args:
             name: Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction:
@@ -83,11 +115,15 @@ class KubernetesJob(JobTrait):
                   * must start with an alphabetic character,
                   * and end with an alphanumeric character.
             num_replicas: Number of pod replicas (expects all ranks 0 to num_replicas-1)
-            label_selector: Custom Kubernetes label selector for pod discovery (default: "app.kubernetes.io/name=monarch-worker,monarch.pytorch.org/mesh-name=<name>")
-            pod_rank_label: Label key containing the pod rank for ordering workers (default: "apps.kubernetes.io/pod-index")
+            label_selector: Custom label selector for pod discovery. Cannot be set when provisioning.
+            pod_rank_label: Label key containing the pod rank. Cannot be customized when provisioning.
+            image: Container image for simple provisioning. Mutually exclusive with `pod_spec`.
+            resources: K8s resource requests/limits (e.g. `{"cpu": "2", "nvidia.com/gpu": 1}`). Only valid with `image`.
+            port: Monarch worker port (default: 26600).
+            pod_spec: Full PodSpec dict for advanced provisioning. Mutually exclusive with `image`.
 
         Raises:
-            ValueError: If name does not follow RFC 1123 DNS label standard with Monarch restriction.
+            ValueError: On invalid name or conflicting parameters.
         """
         if len(name) == 0:
             raise ValueError("Empty mesh name is invalid.")
@@ -108,22 +144,137 @@ class KubernetesJob(JobTrait):
                 f"Mesh name '{name}' is invalid. Name must end with an alphanumeric character."
             )
 
-        self._meshes[name] = {
+        provisioned = image is not None or pod_spec is not None
+
+        if image is not None and pod_spec is not None:
+            raise ValueError("'image' and 'pod_spec' are mutually exclusive.")
+        if resources is not None and image is None:
+            raise ValueError("'resources' requires 'image'.")
+        if provisioned and label_selector is not None:
+            raise ValueError("'label_selector' cannot be customized when provisioning.")
+        if provisioned and pod_rank_label != "apps.kubernetes.io/pod-index":
+            raise ValueError("'pod_rank_label' cannot be customized when provisioning.")
+
+        mesh_entry: Dict[str, Any] = {
             "label_selector": label_selector
             or f"app.kubernetes.io/name=monarch-worker,monarch.pytorch.org/mesh-name={name}",
             "num_replicas": num_replicas,
             "pod_rank_label": pod_rank_label,
+            "provisioned": provisioned,
+            "port": port,
         }
+
+        if image is not None:
+            mesh_entry["pod_spec"] = self._build_worker_pod_spec(image, port, resources)
+        elif pod_spec is not None:
+            mesh_entry["pod_spec"] = pod_spec
+
+        self._meshes[name] = mesh_entry
 
     def _create(self, client_script: str | None) -> None:
         """
-        Create operation is a no-op for KubernetesJob since we attach to existing pods.
+        Create MonarchMesh CRDs for provisioned meshes.
+
+        Attach-only meshes are a no-op. For provisioned meshes, the
+        MonarchMesh custom resource is created (or patched if it already
+        exists) so the operator can provision the StatefulSet and
+        headless Service.
         """
         if client_script is not None:
             raise RuntimeError("KubernetesJob cannot run batch-mode scripts")
 
         if not self._meshes:
             raise ValueError("At least one mesh must be added using add_mesh()")
+
+        provisioned = {
+            name: cfg for name, cfg in self._meshes.items() if cfg.get("provisioned")
+        }
+        if not provisioned:
+            return
+
+        # TODO: Add support for out-of-cluster config
+        try:
+            config.load_incluster_config()
+        except config.ConfigException as e:
+            raise RuntimeError(
+                "Failed to load in-cluster Kubernetes config. "
+                "KubernetesJob must run inside a Kubernetes cluster."
+            ) from e
+
+        api = client.CustomObjectsApi()
+
+        for mesh_name, mesh_config in provisioned.items():
+            body: Dict[str, Any] = {
+                "apiVersion": f"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}",
+                "kind": "MonarchMesh",
+                "metadata": {
+                    "name": mesh_name,
+                    "namespace": self._namespace,
+                },
+                "spec": {
+                    "replicas": mesh_config["num_replicas"],
+                    "port": mesh_config["port"],
+                    "podTemplate": mesh_config["pod_spec"],
+                },
+            }
+
+            try:
+                api.create_namespaced_custom_object(
+                    group=_MONARCHMESH_GROUP,
+                    version=_MONARCHMESH_VERSION,
+                    namespace=self._namespace,
+                    plural=_MONARCHMESH_PLURAL,
+                    body=body,
+                )
+                logger.info("Created MonarchMesh '%s'", mesh_name)
+            except ApiException as e:
+                if e.status == 409:
+                    # TODO: Consider throwing an error instead of patching if the CRD already exists.
+                    api.patch_namespaced_custom_object(
+                        group=_MONARCHMESH_GROUP,
+                        version=_MONARCHMESH_VERSION,
+                        namespace=self._namespace,
+                        plural=_MONARCHMESH_PLURAL,
+                        name=mesh_name,
+                        body=body,
+                    )
+                    logger.info("MonarchMesh '%s' already exists, patched", mesh_name)
+                else:
+                    raise
+
+    @staticmethod
+    def _build_worker_pod_spec(
+        image: str,
+        port: int,
+        resources: dict[str, str | int] | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Build a PodSpec dict for the MonarchMesh CRD.
+
+        Generates a single-container pod spec with a worker bootstrap
+        script that starts ``run_worker_loop_forever``.
+
+        Args:
+            image: Container image.
+            port: Monarch worker port.
+            resources: Optional K8s resource requests/limits.
+
+        Returns:
+            PodSpec dict suitable for the ``podTemplate`` CRD field.
+        """
+        container: Dict[str, Any] = {
+            "name": "worker",
+            "image": image,
+            "command": ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+            "env": [{"name": "MONARCH_PORT", "value": str(port)}],
+        }
+        if resources is not None:
+            k8s_resources = {str(k): str(v) for k, v in resources.items()}
+            container["resources"] = {
+                "requests": k8s_resources,
+                "limits": k8s_resources,
+            }
+        return {"containers": [container]}
 
     def _is_pod_worker_ready(self, pod: client.V1Pod) -> bool:
         """
@@ -376,11 +527,42 @@ class KubernetesJob(JobTrait):
 
     def _kill(self) -> None:
         """
-        Kill operation - not implemented for KubernetesJob.
+        Delete MonarchMesh CRDs for provisioned meshes.
 
         Raises:
-            NotImplementedError: KubernetesJob does not support killing pods
+            NotImplementedError: If no provisioned meshes exist (all
+                meshes are attach-only).
         """
-        raise NotImplementedError(
-            "KubernetesJob currently does not support killing pods."
-        )
+        provisioned = [
+            name for name, cfg in self._meshes.items() if cfg.get("provisioned")
+        ]
+        if not provisioned:
+            raise NotImplementedError(
+                "KubernetesJob currently does not support killing pods."
+            )
+
+        try:
+            config.load_incluster_config()
+        except config.ConfigException as e:
+            raise RuntimeError(
+                "Failed to load in-cluster Kubernetes config. "
+                "KubernetesJob must run inside a Kubernetes cluster."
+            ) from e
+
+        api = client.CustomObjectsApi()
+
+        for mesh_name in provisioned:
+            try:
+                api.delete_namespaced_custom_object(
+                    group=_MONARCHMESH_GROUP,
+                    version=_MONARCHMESH_VERSION,
+                    namespace=self._namespace,
+                    plural=_MONARCHMESH_PLURAL,
+                    name=mesh_name,
+                )
+                logger.info("Deleted MonarchMesh '%s'", mesh_name)
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info("MonarchMesh '%s' already deleted", mesh_name)
+                else:
+                    raise
