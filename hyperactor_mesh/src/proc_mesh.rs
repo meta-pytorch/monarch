@@ -1141,19 +1141,16 @@ impl ProcMeshRef {
             self.name().to_string().hash(&mut parent_hasher);
             let parent_mesh_id_hash = parent_hasher.finish();
 
-            hyperactor_telemetry::notify_actor_mesh_created(
-                hyperactor_telemetry::ActorMeshEvent {
-                    id: mesh_id_hash,
-                    timestamp: std::time::SystemTime::now(),
-                    class: actor_type,
-                    given_name: name_str.clone(),
-                    full_name: name_str,
-                    shape_json: serde_json::to_string(&self.region().extent())
-                        .unwrap_or_default(),
-                    parent_mesh_id: Some(parent_mesh_id_hash),
-                    parent_view_json: serde_json::to_string(self.region()).ok(),
-                },
-            );
+            hyperactor_telemetry::notify_actor_mesh_created(hyperactor_telemetry::ActorMeshEvent {
+                id: mesh_id_hash,
+                timestamp: std::time::SystemTime::now(),
+                class: actor_type,
+                given_name: name_str.clone(),
+                full_name: name_str,
+                shape_json: serde_json::to_string(&self.region().extent()).unwrap_or_default(),
+                parent_mesh_id: Some(parent_mesh_id_hash),
+                parent_view_json: serde_json::to_string(self.region()).ok(),
+            });
         }
 
         Ok(mesh)
