@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from __future__ import annotations
+
 # pyre-strict
 
 import functools
@@ -31,6 +33,7 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
+from monarch._rust_bindings.monarch_hyperactor.endpoint import value_collector
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 from monarch._src.actor.future import Future
@@ -39,9 +42,6 @@ from monarch._src.actor.metrics import (
     endpoint_broadcast_throughput_counter,
     endpoint_call_error_counter,
     endpoint_call_latency_histogram,
-    endpoint_call_one_error_counter,
-    endpoint_call_one_latency_histogram,
-    endpoint_call_one_throughput_counter,
     endpoint_call_throughput_counter,
     endpoint_choose_error_counter,
     endpoint_choose_latency_histogram,
@@ -100,8 +100,11 @@ def _observe_latency_and_error(
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.mailbox import (
         OncePortReceiver as HyOncePortReceiver,
+        OncePortRef,
         PortReceiver as HyPortReceiver,
+        PortRef,
     )
+    from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionMonitor
     from monarch._src.actor.actor_mesh import ActorMesh, Port, PortReceiver, ValueMesh
 
 P = ParamSpec("P")
@@ -131,6 +134,10 @@ class Endpoint(ABC, Generic[P, R]):
         else:
             # could happen for class Remote https://fburl.com/code/4ny98bul
             return "unknown"
+
+    @abstractmethod
+    def _get_extent(self) -> Extent:
+        pass
 
     def _with_telemetry(
         self,
@@ -174,9 +181,9 @@ class Endpoint(ABC, Generic[P, R]):
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Implements sending a message to the endpoint. The return value of the endpoint will
         be sent to port if provided. If port is not provided, the return will be dropped,
@@ -205,6 +212,20 @@ class Endpoint(ABC, Generic[P, R]):
     ) -> "HyPortReceiver | HyOncePortReceiver":
         return r
 
+    def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
+        """
+        Returns a Supervisor for monitoring actor health during endpoint calls.
+        Override in subclasses to provide supervision for actor meshes.
+        """
+        return None
+
+    def _full_name(self) -> str | None:
+        """
+        Returns the full name of the endpoint for error messages.
+        Override in subclasses to provide a meaningful name.
+        """
+        return None
+
     # the following are all 'adverbs' or different ways to handle the
     # return values of this endpoint. Adverbs should only ever take *args, **kwargs
     # of the original call. If we want to add syntax sugar for something that needs additional
@@ -224,7 +245,7 @@ class Endpoint(ABC, Generic[P, R]):
         r: "PortReceiver[R]" = r_port
         start_time: int = time.monotonic_ns()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=p, selection="choose")
+        self._send(args, kwargs, port=p._port_ref, selection="choose")
 
         @self._with_telemetry(
             start_time,
@@ -239,31 +260,30 @@ class Endpoint(ABC, Generic[P, R]):
         return Future(coro=process())
 
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
-        # Track throughput at method entry
-        method_name: str = self._get_method_name()
-        endpoint_call_one_throughput_counter.add(1, attributes={"method": method_name})
+        from monarch._src.actor.actor_mesh import context
 
-        p, r_port = self._port(once=True)
-        r: PortReceiver[R] = r_port
-        start_time: int = time.monotonic_ns()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent = self._send(args, kwargs, port=p, selection="choose")
+        method_name: str = self._get_method_name()
+
+        extent = self._get_extent()
         if extent.nelements != 1:
             raise ValueError(
                 f"Can only use 'call_one' on a single Actor but this actor has shape {extent}"
             )
 
-        @self._with_telemetry(
-            start_time,
-            endpoint_call_one_latency_histogram,
-            endpoint_call_one_error_counter,
-            1,
-        )
-        async def process() -> R:
-            result = await r.recv()
-            return result
+        actor_instance = context().actor_instance
 
-        return Future(coro=process())
+        port_ref, task = value_collector(
+            method_name,
+            self._get_supervision_monitor(),
+            actor_instance._as_rust(),
+            self._full_name(),
+            "call_one",
+        )
+
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref, selection="choose")
+
+        return Future(coro=task)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
         from monarch._src.actor.actor_mesh import RankedPortReceiver, ValueMesh
@@ -276,7 +296,8 @@ class Endpoint(ABC, Generic[P, R]):
         p, unranked = self._port()
         r: RankedPortReceiver[R] = unranked.ranked()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p)
+        self._send(args, kwargs, port=p._port_ref)
+        extent: Extent = self._get_extent()
 
         @self._with_telemetry(
             start_time,
@@ -318,8 +339,10 @@ class Endpoint(ABC, Generic[P, R]):
         p, r_port = self._port()
         start_time: int = time.monotonic_ns()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p)
+        self._send(args, kwargs, port=p._port_ref)
         r: "PortReceiver[R]" = r_port
+
+        extent: Extent = self._get_extent()
 
         # Note: stream doesn't track errors per-yield since errors propagate to caller
         latency_decorator: Any = self._with_telemetry(
