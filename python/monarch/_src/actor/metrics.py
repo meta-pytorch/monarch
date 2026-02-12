@@ -9,8 +9,8 @@
 """
 Telemetry metrics for endpoint operations.
 
-This module defines all histograms and counters used to track endpoint
-performance metrics including latency, errors, and throughput.
+This module defines histograms and counters used to track endpoint
+performance metrics. Metrics (call_one, choose) are now implemented in Rust
 """
 
 from monarch._src.actor.telemetry import METER
@@ -29,11 +29,6 @@ endpoint_stream_latency_histogram: Histogram = METER.create_histogram(
     description="Latency of endpoint stream operations per yield in microseconds",
 )
 
-# Histogram for measuring endpoint choose latency
-endpoint_choose_latency_histogram: Histogram = METER.create_histogram(
-    name="endpoint_choose_latency.us",
-    description="Latency of endpoint choose operations in microseconds",
-)
 
 # Histogram for measuring endpoint message size
 endpoint_message_size_histogram: Histogram = METER.create_histogram(
@@ -47,11 +42,6 @@ endpoint_call_error_counter: Counter = METER.create_counter(
     description="Count of errors in endpoint call operations",
 )
 
-endpoint_choose_error_counter: Counter = METER.create_counter(
-    name="endpoint_choose_error.count",
-    description="Count of errors in endpoint choose operations",
-)
-
 endpoint_broadcast_error_counter: Counter = METER.create_counter(
     name="endpoint_broadcast_error.count",
     description="Count of errors in endpoint broadcast operations",
@@ -61,11 +51,6 @@ endpoint_broadcast_error_counter: Counter = METER.create_counter(
 endpoint_call_throughput_counter: Counter = METER.create_counter(
     name="endpoint_call_throughput.count",
     description="Count of endpoint call invocations for throughput measurement",
-)
-
-endpoint_choose_throughput_counter: Counter = METER.create_counter(
-    name="endpoint_choose_throughput.count",
-    description="Count of endpoint choose invocations for throughput measurement",
 )
 
 endpoint_stream_throughput_counter: Counter = METER.create_counter(
