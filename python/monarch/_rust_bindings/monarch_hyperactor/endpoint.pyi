@@ -24,7 +24,6 @@ from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape
-from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionMonitor
 from monarch._rust_bindings.monarch_hyperactor.value_mesh import ValueMesh
 from typing_extensions import ParamSpec
 
