@@ -988,6 +988,8 @@ mod tests {
     use crate::v1::Name;
     use crate::v1::ProcMesh;
     use crate::v1::host_mesh::HostMesh;
+    use crate::v1::mesh_controller::GetSubscriberCount;
+    use crate::v1::mesh_controller::SubscriberCount;
     use crate::v1::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
     use crate::v1::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
     use crate::v1::testactor;
@@ -1651,5 +1653,88 @@ mod tests {
             Some(mesh_ref.name().to_string())
         );
         assert_matches!(next_event.event.actor_status, ActorStatus::Stopped(_));
+    }
+
+    /// Verify that calling `next_supervision_event` repeatedly on the same
+    /// `ActorMeshRef` does not increase the subscriber count on the controller.
+    /// This guards against a regression where each endpoint call would create
+    /// a new supervision subscriber.
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_subscriber_count_stable_across_supervision_calls() {
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let instance = testing::instance();
+        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
+        let proc_mesh = &meshes[1];
+
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            proc_mesh.spawn(instance, "test_actors", &()).await.unwrap();
+
+        let controller = actor_mesh.controller().as_ref().unwrap().clone();
+
+        // Query the subscriber count from the controller.
+        let (port, mut rx) = mailbox::open_port::<SubscriberCount>(instance);
+        controller
+            .send(instance, GetSubscriberCount(port.bind()))
+            .unwrap();
+        let initial_count = RealClock
+            .timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for subscriber count")
+            .expect("channel closed");
+        assert_eq!(initial_count.0, 0, "should have 0 subscribers initially");
+
+        // Call next_supervision_event multiple times, racing against a short
+        // timeout each time. The mesh is healthy so no event fires; we just
+        // want to trigger the lazy subscriber initialization repeatedly.
+        for _ in 0..5 {
+            tokio::select! {
+                _ = actor_mesh.next_supervision_event(instance) => {
+                    panic!("unexpected supervision event on healthy mesh");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+        }
+
+        // After 5 calls from the same context, there should be exactly 1
+        // subscriber (created lazily on the first call, reused thereafter).
+        let (port, mut rx) = mailbox::open_port::<SubscriberCount>(instance);
+        controller
+            .send(instance, GetSubscriberCount(port.bind()))
+            .unwrap();
+        let after_count = RealClock
+            .timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for subscriber count")
+            .expect("channel closed");
+        assert_eq!(
+            after_count.0, 1,
+            "subscriber count should be exactly 1, not growing with each call"
+        );
+
+        // Do 5 more calls to confirm it stays stable.
+        for _ in 0..5 {
+            tokio::select! {
+                _ = actor_mesh.next_supervision_event(instance) => {
+                    panic!("unexpected supervision event on healthy mesh");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+        }
+
+        let (port, mut rx) = mailbox::open_port::<SubscriberCount>(instance);
+        controller
+            .send(instance, GetSubscriberCount(port.bind()))
+            .unwrap();
+        let final_count = RealClock
+            .timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for subscriber count")
+            .expect("channel closed");
+        assert_eq!(
+            final_count.0, 1,
+            "subscriber count should still be 1 after repeated calls"
+        );
     }
 }
