@@ -15,7 +15,7 @@ use std::path::Path;
 
 use regex::Regex;
 
-use crate::ibverbs_primitives::RdmaDevice;
+use crate::backend::ibverbs::primitives::IbvDevice;
 
 // ==== PCI TOPOLOGY DISTANCE CONSTANTS ====
 //
@@ -383,14 +383,14 @@ pub fn get_nic_pci_address(nic_name: &str) -> Option<String> {
 /// Step 2: Get PCI address from compute device
 /// Step 3: Get PCI address for all RDMA NIC devices
 /// Step 4: Calculate PCI distances and return closest RDMA NIC device
-pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevice> {
+pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<IbvDevice> {
     let device_hint = device_hint?;
 
     let (prefix, postfix) = parse_device_string(device_hint)?;
 
     match prefix.as_str() {
         "nic" => {
-            let all_rdma_devices = crate::ibverbs_primitives::get_all_devices();
+            let all_rdma_devices = crate::backend::ibverbs::primitives::get_all_devices();
             all_rdma_devices
                 .into_iter()
                 .find(|dev| dev.name() == &postfix)
@@ -403,7 +403,7 @@ pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevic
             };
             let rdma_devices = get_all_rdma_devices();
             if rdma_devices.is_empty() {
-                return RdmaDevice::first_available();
+                return IbvDevice::first_available();
             }
             let pci_devices = parse_pci_topology().ok()?;
             let source_device = pci_devices.get(&source_pci_addr)?;
@@ -417,7 +417,7 @@ pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevic
 
             if let Some(closest_idx) = source_device.find_closest(&rdma_pci_devices) {
                 if let Some(optimal_name) = rdma_names.get(closest_idx) {
-                    let all_rdma_devices = crate::ibverbs_primitives::get_all_devices();
+                    let all_rdma_devices = crate::backend::ibverbs::primitives::get_all_devices();
                     for device in all_rdma_devices {
                         if *device.name() == *optimal_name {
                             return Some(device);
@@ -427,11 +427,11 @@ pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevic
             }
 
             // Fallback
-            RdmaDevice::first_available()
+            IbvDevice::first_available()
         }
         _ => {
             // Direct device name lookup for backward compatibility
-            let rdma_devices = crate::ibverbs_primitives::get_all_devices();
+            let rdma_devices = crate::backend::ibverbs::primitives::get_all_devices();
             rdma_devices
                 .into_iter()
                 .find(|dev| dev.name() == device_hint)
@@ -446,8 +446,8 @@ pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevic
 ///
 /// # Returns
 ///
-/// * `HashMap<String, RdmaDevice>` - Map from CUDA PCI address to optimal RDMA device
-pub fn create_cuda_to_rdma_mapping() -> HashMap<String, RdmaDevice> {
+/// * `HashMap<String, IbvDevice>` - Map from CUDA PCI address to optimal RDMA device
+pub fn create_cuda_to_rdma_mapping() -> HashMap<String, IbvDevice> {
     let mut mapping = HashMap::new();
 
     // Try to discover CUDA devices (GPU 0-8 should be sufficient for most systems)
@@ -468,23 +468,23 @@ pub fn create_cuda_to_rdma_mapping() -> HashMap<String, RdmaDevice> {
 ///
 /// This function applies auto-detection for default devices, but otherwise  
 /// returns the device as-is. The main device selection logic happens in
-/// `select_optimal_rdma_device` and `IbverbsConfig::with_device_hint`.
+/// `select_optimal_rdma_device` and `IbvConfig::with_device_hint`.
 ///
 /// # Arguments
 ///
-/// * `device` - The RdmaDevice to potentially resolve
+/// * `device` - The IbvDevice to potentially resolve
 ///
 /// # Returns
 ///
-/// * `Option<RdmaDevice>` - The resolved device, or None if resolution fails
-pub fn resolve_rdma_device(device: &RdmaDevice) -> Option<RdmaDevice> {
+/// * `Option<IbvDevice>` - The resolved device, or None if resolution fails
+pub fn resolve_rdma_device(device: &IbvDevice) -> Option<IbvDevice> {
     let device_name = device.name();
 
     if device_name.starts_with("mlx") {
         return Some(device.clone());
     }
 
-    let all_devices = crate::ibverbs_primitives::get_all_devices();
+    let all_devices = crate::backend::ibverbs::primitives::get_all_devices();
     let is_likely_default = if let Some(first_device) = all_devices.first() {
         device_name == first_device.name()
     } else {
