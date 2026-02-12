@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::ActorRef;
+use hyperactor::Instance;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::selection::Selection;
@@ -43,16 +45,15 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::mailbox::EitherPortRef;
 use crate::proc::PyActorId;
 use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
-use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::runtime::signal_safe_block_on;
 use crate::shape::PyRegion;
+use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 
 py_global!(
@@ -60,6 +61,7 @@ py_global!(
     "monarch._src.actor.pickle",
     "is_pending_pickle_allowed"
 );
+py_global!(_pickle, "monarch._src.actor.actor_mesh", "_pickle");
 
 /// Trait defining the common interface for actor mesh, mesh ref and actor mesh implementations.
 /// This corresponds to the Python ActorMeshProtocol ABC.
@@ -69,29 +71,10 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)>;
-
-    /// Get supervision events for this actor mesh.
-    /// Returns None by default for implementations that don't support supervision events.
-    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        Ok(None)
-    }
-
-    /// Start supervision monitoring on this mesh.
-    /// This function is idempotent, and is used to start the channel that
-    /// will provide "supervision_event" with events.
-    /// The default implementation does nothing, and it is not required that
-    /// it has to be called before supervision_event.
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        Ok(())
-    }
 
     /// Stop the actor mesh asynchronously.
     /// Default implementation raises NotImplementedError for types that don't support stopping.
@@ -107,8 +90,10 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn initialized(&self) -> PyResult<PyPythonTask> {
         PyPythonTask::new(async { Ok(None::<()>) })
     }
+}
 
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>>;
+pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>>;
 }
 
 /// This just forwards to the rust trait that can implement these bindings
@@ -116,14 +101,15 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     name = "PythonActorMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
+#[derive(Clone)]
 pub(crate) struct PythonActorMesh {
-    inner: Arc<dyn ActorMeshProtocol>,
+    inner: Arc<dyn SupervisableActorMesh>,
 }
 
 impl PythonActorMesh {
     pub(crate) fn new<F>(f: F, supervised: bool) -> Self
     where
-        F: Future<Output = PyResult<Box<dyn ActorMeshProtocol>>> + Send + 'static,
+        F: Future<Output = PyResult<Box<dyn SupervisableActorMesh>>> + Send + 'static,
     {
         let f = async move { Ok(Arc::from(f.await?)) }.boxed().shared();
         PythonActorMesh {
@@ -131,7 +117,7 @@ impl PythonActorMesh {
         }
     }
 
-    pub(crate) fn from_impl(inner: Arc<dyn ActorMeshProtocol>) -> Self {
+    pub(crate) fn from_impl(inner: Arc<dyn SupervisableActorMesh>) -> Self {
         PythonActorMesh { inner }
     }
 }
@@ -150,14 +136,15 @@ pub(crate) fn to_hy_sel(selection: &str) -> PyResult<Selection> {
 #[pymethods]
 impl PythonActorMesh {
     #[tracing::instrument(level = "debug", skip_all)]
-    pub(crate) fn cast(
+    #[pyo3(name = "cast")]
+    fn py_cast(
         &self,
         message: &PythonMessage,
         selection: &str,
         instance: &PyInstance,
     ) -> PyResult<()> {
         let sel = to_hy_sel(selection)?;
-        self.inner.cast(message.clone(), sel, instance)
+        self.cast(message.clone(), sel, &instance.clone().into_instance())
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
@@ -165,19 +152,6 @@ impl PythonActorMesh {
         Ok(PythonActorMesh {
             inner: Arc::from(inner),
         })
-    }
-
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        self.inner.supervision_event(instance)
-    }
-
-    fn start_supervision(
-        &self,
-        instance: &PyInstance,
-        supervision_display_name: String,
-    ) -> PyResult<()> {
-        self.inner
-            .start_supervision(instance, supervision_display_name)
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
@@ -190,6 +164,25 @@ impl PythonActorMesh {
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.inner.__reduce__(py)
+    }
+}
+
+impl PythonActorMesh {
+    #[hyperactor::instrument]
+    pub(crate) fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+    ) -> PyResult<()> {
+        self.inner.cast(message, selection, instance)
+    }
+    /// Returns a Supervisor that can be used to monitor actor health.
+    ///
+    /// This is used by endpoint operations to race supervision events
+    /// against message receipt.
+    pub(crate) fn get_supervision_monitor(&self) -> Arc<dyn Supervisable> {
+        self.inner.clone()
     }
 }
 
@@ -215,7 +208,7 @@ impl Clone for ClonePyErr {
     }
 }
 
-type ActorMeshResult = Result<Arc<dyn ActorMeshProtocol>, ClonePyErr>;
+type ActorMeshResult = Result<Arc<dyn SupervisableActorMesh>, ClonePyErr>;
 type ActorMeshFut = Shared<Pin<Box<dyn Future<Output = ActorMeshResult> + Send + 'static>>>;
 
 pub(crate) struct AsyncActorMesh {
@@ -261,8 +254,8 @@ impl AsyncActorMesh {
         self.queue.send(f.boxed()).unwrap();
     }
 
-    pub(crate) fn from_impl(mesh: Arc<dyn ActorMeshProtocol>) -> Self {
-        let fut = future::ready(Ok::<Arc<dyn ActorMeshProtocol>, ClonePyErr>(mesh))
+    pub(crate) fn from_impl(mesh: Arc<dyn SupervisableActorMesh>) -> Self {
+        let fut = future::ready(Ok::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(mesh))
             .boxed()
             .shared();
         // Poll the future so that its result can be observed without blocking the tokio runtime.
@@ -276,10 +269,10 @@ impl ActorMeshProtocol for AsyncActorMesh {
         &self,
         mut message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         let mesh = self.mesh.clone();
-        let instance = instance.clone();
+        let instance = instance.clone_for_py();
         self.push(async move {
             let port = match &message.kind {
                 PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
@@ -292,37 +285,25 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 mesh.await?.cast(message, selection, &instance)
             }
             .await;
-            if let (Some(p), Err(pyerr)) = (port, result) {
+            if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
                 let _ = monarch_with_gil(|py: Python<'_>| {
-                    let port_ref = match p {
-                        EitherPortRef::Once(p) => p.into_bound_py_any(py),
-                        EitherPortRef::Unbounded(p) => p.into_bound_py_any(py),
-                    }
-                    .unwrap();
-                    let port = py
-                        .import("monarch._src.actor.actor_mesh")
-                        .unwrap()
-                        .call_method1("Port", (port_ref, instance, 0))
+                    port_ref
+                        .send(
+                            &instance,
+                            PythonMessage::new(
+                                PythonMessageKind::Exception { rank: Some(0) },
+                                _pickle(py).call1((pyerr,))?,
+                                None,
+                            )?,
+                        )
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
                         .unwrap();
-                    port.call_method1("exception", (pyerr.value(py),)).unwrap();
                     Ok::<_, PyErr>(())
                 })
                 .await;
             }
         });
         Ok(())
-    }
-
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        let mesh = self.mesh.clone();
-        let region = region.clone();
-        Ok(Box::new(AsyncActorMesh::new(
-            self.queue.clone(),
-            self.supervised,
-            async move { Ok(Arc::from(mesh.await?.new_with_region(&region)?)) }
-                .boxed()
-                .shared(),
-        )))
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -353,51 +334,6 @@ impl ActorMeshProtocol for AsyncActorMesh {
         }
     }
 
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        if !self.supervised {
-            return Ok(None);
-        }
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let mesh = self.mesh.clone();
-        self.push(async move {
-            if tx.send(mesh.await).is_err() {
-                panic!("oneshot failed");
-            }
-        });
-        PyPythonTask::new(async move {
-            let event = rx
-                .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))??
-                .supervision_event(&instance)?
-                .unwrap();
-            event.task()?.take_task()?.await
-        })
-        // This task must be aborted to run the Drop for the inner PyShared, in
-        // case that one is also abortable.
-        .map(|mut x| x.spawn_abortable().map(Some))?
-    }
-
-    fn start_supervision(
-        &self,
-        instance: &PyInstance,
-        supervision_display_name: String,
-    ) -> PyResult<()> {
-        if !self.supervised {
-            return Ok(());
-        }
-        let mesh = self.mesh.clone();
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
-        self.push(async move {
-            let mesh = mesh.await;
-            if let Ok(mesh) = mesh {
-                mesh.start_supervision(&instance, supervision_display_name)
-                    .unwrap();
-            }
-        });
-        Ok(())
-    }
-
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         let mesh = self.mesh.clone();
         let instance = monarch_with_gil_blocking(|_py| instance.clone());
@@ -418,6 +354,34 @@ impl ActorMeshProtocol for AsyncActorMesh {
             mesh.await?;
             Ok(None::<()>)
         })
+    }
+}
+
+#[async_trait]
+impl Supervisable for AsyncActorMesh {
+    async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
+        if !self.supervised {
+            return None;
+        }
+        let mesh = self.mesh.clone();
+        match mesh.await {
+            Ok(mesh) => mesh.supervision_event(instance).await,
+            Err(e) => Some(e.into()),
+        }
+    }
+}
+
+impl SupervisableActorMesh for AsyncActorMesh {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>> {
+        let mesh = self.mesh.clone();
+        let region = region.clone();
+        Ok(Box::new(AsyncActorMesh::new(
+            self.queue.clone(),
+            self.supervised,
+            async move { Ok(Arc::from(mesh.await?.new_with_region(&region)?)) }
+                .boxed()
+                .shared(),
+        )))
     }
 }
 
@@ -468,12 +432,23 @@ impl PythonActorMeshImpl {
     }
 }
 
+#[async_trait]
+impl Supervisable for PythonActorMeshImpl {
+    async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
+        let mesh = self.mesh_ref();
+        match mesh.next_supervision_event(instance).await {
+            Ok(supervision_failure) => Some(SupervisionError::new_err_from(supervision_failure)),
+            Err(e) => Some(PyValueError::new_err(e.to_string())),
+        }
+    }
+}
+
 impl ActorMeshProtocol for PythonActorMeshImpl {
     fn cast(
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         <ActorMeshRef<PythonActor> as ActorMeshProtocol>::cast(
             self.mesh_ref(),
@@ -481,42 +456,6 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             selection,
             instance,
         )
-    }
-
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        // We clone here so the future can outlive the self reference, but we want
-        // to share the supervision receiver with the original mesh. This way
-        // if a second endpoint is started, it can reuse the same subscriber.
-        let mesh = self.mesh_ref().clone_with_supervision_receiver();
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
-        let shared = PyPythonTask::new::<_, ()>(async move {
-            let supervision_failure = mesh
-                .next_supervision_event(instance.deref())
-                .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            // Don't Unsubscribe here, as the receiver may have other copies being
-            // used.
-            Err(SupervisionError::new_err_from(supervision_failure))
-        })?
-        .spawn_abortable()?;
-        Ok(Some(shared))
-    }
-
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        // This function is a no-op since moving the monitor loop to ActorMeshController.
-        // Initializing the receiver changes no received events.
-        Ok(())
-    }
-
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
-        Ok(Box::new(PythonActorMeshImpl::new_ref(
-            self.mesh_ref().sliced(region.as_inner().clone()),
-        )))
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
@@ -539,6 +478,15 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 }
 
+impl SupervisableActorMesh for PythonActorMeshImpl {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>> {
+        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
+        Ok(Box::new(PythonActorMeshImpl::new_ref(
+            self.mesh_ref().sliced(region.as_inner().clone()),
+        )))
+    }
+}
+
 // Convert a v1::Error to a Python exception. v1::Error::Supervision becomes a SupervisionError,
 // all others become a RuntimeError.
 fn cast_error_to_py_error(err: v1::Error) -> PyErr {
@@ -554,10 +502,10 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         &self,
         message: PythonMessage,
         selection: Selection,
-        instance: &PyInstance,
+        instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
-            self.cast(instance.deref(), message.clone())
+            self.cast(instance, message.clone())
                 .map_err(cast_error_to_py_error)?;
         } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
             let region = Ranked::region(self);
@@ -571,7 +519,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                 Slice::new(offset, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
             );
             self.sliced(singleton_region)
-                .cast(instance.deref(), message.clone())
+                .cast(instance, message.clone())
                 .map_err(cast_error_to_py_error)?;
         } else {
             return Err(PyRuntimeError::new_err(format!(
@@ -583,32 +531,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         Ok(())
     }
 
-    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        Err(PyNotImplementedError::new_err(
-            "This should never be called on ActorMeshRef directly",
-        ))
-    }
-
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        Err(PyNotImplementedError::new_err(
-            "This should never be called on ActorMeshRef directly",
-        ))
-    }
-
     /// Stop the actor mesh asynchronously.
     fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(
             "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))
-    }
-
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        let sliced = self.sliced(region.as_inner().clone());
-        Ok(Box::new(sliced))
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
