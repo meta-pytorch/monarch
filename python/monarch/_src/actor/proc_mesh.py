@@ -493,7 +493,6 @@ class ProcMesh(MeshTrait):
         supervision_display_name = (
             f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
         )
-        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
 
         # send __init__ message to the mesh to initialize the user defined
         # python actor object.
