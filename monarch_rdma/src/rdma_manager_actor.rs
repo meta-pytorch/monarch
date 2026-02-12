@@ -47,8 +47,8 @@ use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::ibverbs::primitives::IbvQpInfo;
+use crate::backend::ibverbs::queue_pair::IbvQueuePair;
 use crate::rdma_components::RdmaBuffer;
-use crate::rdma_components::RdmaQueuePair;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
 pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
@@ -81,7 +81,7 @@ pub enum RdmaManagerMessage {
         other_device: String,
         #[reply]
         /// `reply` - Reply channel to return the queue pair for communication
-        reply: OncePortRef<RdmaQueuePair>,
+        reply: OncePortRef<IbvQueuePair>,
     },
     Connect {
         /// `other` - The ActorId of the actor to connect to
@@ -114,7 +114,7 @@ pub enum RdmaManagerMessage {
         self_device: String,
         other_device: String,
         /// `qp` - The queue pair to return (ownership transferred back)
-        qp: RdmaQueuePair,
+        qp: IbvQueuePair,
     },
     GetQpState {
         other: ActorRef<RdmaManagerActor>,
@@ -229,7 +229,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
-    ) -> Result<RdmaQueuePair, anyhow::Error> {
+    ) -> Result<IbvQueuePair, anyhow::Error> {
         self.ibverbs
             .handle()
             .request_queue_pair(cx, cx.bind().clone(), other, self_device, other_device)
@@ -282,7 +282,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
-        qp: RdmaQueuePair,
+        qp: IbvQueuePair,
     ) -> Result<(), anyhow::Error> {
         self.ibverbs
             .handle()

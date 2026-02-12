@@ -11,3 +11,8 @@
 pub mod domain;
 pub mod manager_actor;
 pub mod primitives;
+pub mod queue_pair;
+
+pub use queue_pair::DoorBell;
+pub use queue_pair::IbvQueuePair;
+pub use queue_pair::PollTarget;

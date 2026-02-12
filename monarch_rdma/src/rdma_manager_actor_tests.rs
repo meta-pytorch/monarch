@@ -15,7 +15,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::PollTarget;
+    use crate::backend::ibverbs::PollTarget;
     use crate::backend::ibverbs::primitives::get_all_devices;
     use crate::rdma_components::validate_execution_context;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
@@ -338,7 +338,7 @@ mod tests {
             )
             .await?;
         qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
-        ring_db_gpu(&mut qp_1).await?;
+        ring_db_gpu(&qp_1).await?;
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
@@ -437,7 +437,7 @@ mod tests {
             rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
         )
         .await?;
-        ring_db_gpu(&mut qp_2).await?;
+        ring_db_gpu(&qp_2).await?;
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 10).await?;
         wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
         env.verify_buffers(BSIZE, 0).await?;
