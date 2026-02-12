@@ -14,6 +14,7 @@ use hyperactor::clock::RealClock;
 use hyperactor::mailbox::PortReceiver;
 use monarch_types::py_global;
 use monarch_types::py_module_add_function;
+use ndslice::Extent;
 use pyo3::prelude::*;
 use serde_multipart::Part;
 
@@ -24,16 +25,21 @@ use crate::buffers::FrozenBuffer;
 use crate::context::PyInstance;
 use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonPortRef;
+use crate::metrics::ENDPOINT_CALL_ERROR;
+use crate::metrics::ENDPOINT_CALL_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CALL_ONE_ERROR;
 use crate::metrics::ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CALL_ONE_THROUGHPUT;
+use crate::metrics::ENDPOINT_CALL_THROUGHPUT;
 use crate::metrics::ENDPOINT_CHOOSE_ERROR;
 use crate::metrics::ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CHOOSE_THROUGHPUT;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
+use crate::shape::PyExtent;
 use crate::supervision::PySupervisionMonitor;
 use crate::supervision::SupervisionError;
+use crate::value_mesh::PyValueMesh;
 
 py_global!(pickle_unflatten, "monarch._src.actor.pickle", "unflatten");
 py_global!(make_future, "monarch._src.actor.future", "Future");
@@ -84,6 +90,7 @@ fn unflatten<'py>(
 /// Used to select the appropriate telemetry metrics for each operation type.
 #[derive(Clone, Copy, Debug)]
 enum EndpointAdverb {
+    Call,
     CallOne,
     Choose,
 }
@@ -122,6 +129,9 @@ impl RecordEndpointGuard {
             "method" => method_name.clone()
         );
         match adverb {
+            EndpointAdverb::Call => {
+                ENDPOINT_CALL_THROUGHPUT.add(1, attributes);
+            }
             EndpointAdverb::CallOne => {
                 ENDPOINT_CALL_ONE_THROUGHPUT.add(1, attributes);
             }
@@ -156,6 +166,9 @@ impl Drop for RecordEndpointGuard {
         let duration_us = self.start.elapsed().as_micros();
 
         match self.adverb {
+            EndpointAdverb::Call => {
+                ENDPOINT_CALL_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
+            }
             EndpointAdverb::CallOne => {
                 ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
             }
@@ -166,6 +179,9 @@ impl Drop for RecordEndpointGuard {
 
         if self.error_occurred.get() {
             match self.adverb {
+                EndpointAdverb::Call => {
+                    ENDPOINT_CALL_ERROR.add(1, attributes);
+                }
                 EndpointAdverb::CallOne => {
                     ENDPOINT_CALL_ONE_ERROR.add(1, attributes);
                 }
@@ -258,6 +274,98 @@ async fn collect_value(
     }
 }
 
+async fn collect_valuemesh(
+    extent: Extent,
+    mut rx: PortReceiver<PythonMessage>,
+    method_name: String,
+    supervision_monitor: Option<PySupervisionMonitor>,
+    instance: &Instance<PythonActor>,
+    qualified_endpoint_name: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let start = RealClock.now();
+
+    let expected_count = extent.num_ranks();
+
+    let record_guard = RecordEndpointGuard::new(
+        start,
+        method_name.clone(),
+        expected_count,
+        EndpointAdverb::Call,
+    );
+
+    let mut results: Vec<Option<Part>> = vec![None; expected_count];
+
+    for _ in 0..expected_count {
+        match collect_value(
+            &mut rx,
+            &supervision_monitor,
+            instance,
+            &qualified_endpoint_name,
+        )
+        .await
+        {
+            Ok((message, rank)) => {
+                results[rank.expect("RankedPort receiver got a message without a rank")] =
+                    Some(message);
+            }
+            Err(e) => {
+                record_guard.mark_error();
+                return Err(e);
+            }
+        }
+    }
+
+    Python::attach(|py| {
+        Ok(PyValueMesh::build_dense_from_extent(
+            &extent,
+            results
+                .into_iter()
+                .map(|msg| {
+                    let m = msg.expect("all responses should be filled");
+                    unflatten(py, &m, instance.mailbox_for_py().clone()).map(|obj| obj.unbind())
+                })
+                .collect::<PyResult<_>>()?,
+        )?
+        .into_pyobject(py)?
+        .into_any()
+        .unbind())
+    })
+}
+
+/// Create a task that opens a port and processes multiple responses into a ValueMesh.
+///
+/// Returns a tuple of (PortRef, PythonTask) where:
+/// - PortRef: The port reference to send to actors for responses
+/// - PythonTask: A task that awaits all responses and returns a ValueMesh
+#[pyfunction]
+#[pyo3(name = "valuemesh_collector")]
+fn py_valuemesh_collector(
+    extent: PyExtent,
+    method_name: String,
+    supervision_monitor: Option<PySupervisionMonitor>,
+    instance: PyInstance,
+    qualified_endpoint_name: Option<String>,
+) -> PyResult<(PythonPortRef, PyPythonTask)> {
+    let instance = instance.into_instance();
+    let (p, r) = instance.open_port::<PythonMessage>();
+
+    Ok((
+        PythonPortRef { inner: p.bind() },
+        PythonTask::new(async move {
+            collect_valuemesh(
+                extent.into(),
+                r,
+                method_name,
+                supervision_monitor,
+                &instance,
+                qualified_endpoint_name,
+            )
+            .await
+        })?
+        .into(),
+    ))
+}
+
 fn value_collector(
     mut receiver: PortReceiver<PythonMessage>,
     method_name: String,
@@ -290,6 +398,7 @@ fn value_collector(
     })?
     .into())
 }
+
 /// Create a task that opens a port and processes a single response.
 ///
 /// Returns a tuple of (PortRef, PythonTask) where:
@@ -320,6 +429,12 @@ fn py_value_collector(
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    py_module_add_function!(
+        module,
+        "monarch._rust_bindings.monarch_hyperactor.endpoint",
+        py_valuemesh_collector
+    );
+
     py_module_add_function!(
         module,
         "monarch._rust_bindings.monarch_hyperactor.endpoint",
