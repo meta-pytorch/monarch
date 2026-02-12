@@ -29,7 +29,7 @@ use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
 use hyperactor_mesh::alloc::sim::SimAllocator;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
-use hyperactor_mesh::proc_mesh::default_transport;
+use hyperactor_mesh::transport::default_transport;
 use ndslice::Extent;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;

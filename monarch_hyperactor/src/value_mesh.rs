@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor_mesh::v1::ValueMesh;
+use hyperactor_mesh::ValueMesh;
 use ndslice::Region;
 use ndslice::view::BuildFromRegion;
 use ndslice::view::Ranked;
