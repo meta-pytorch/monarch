@@ -136,7 +136,9 @@ pub(crate) fn probe_exit_port_via_mesh(
 
     // Cast to all actors in the mesh (should be just 1 for sliced
     // mesh)
-    actor_mesh_inner.cast(message, sel!(*), &instance.clone().into_instance())?;
+    actor_mesh_inner
+        .get_inner()
+        .cast(message, sel!(*), &instance.clone().into_instance())?;
 
     // Return an awaitable task that receives the result
     PyPythonTask::new(async move {
