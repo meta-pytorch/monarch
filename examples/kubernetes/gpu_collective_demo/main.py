@@ -23,7 +23,7 @@ import socket
 import torch
 import torch.distributed as dist
 from monarch.actor import Actor, endpoint
-from monarch.job.kubernetes import KubernetesJob
+from monarch.job.kubernetes import ImageSpec, KubernetesJob
 from monarch.spmd import setup_torch_elastic_env_async
 from monarch.tools.network import AddrType
 
@@ -89,8 +89,10 @@ async def main(num_hosts: int, num_gpus_per_host: int, provision: bool) -> None:
         job.add_mesh(
             "gpumesh1",
             num_replicas=num_hosts,
-            image="ghcr.io/meta-pytorch/monarch:latest",
-            resources={"nvidia.com/gpu": num_gpus_per_host},
+            image_spec=ImageSpec(
+                "ghcr.io/meta-pytorch/monarch:latest",
+                resources={"nvidia.com/gpu": num_gpus_per_host},
+            ),
         )
     else:
         job.add_mesh("gpumesh1", num_replicas=num_hosts)

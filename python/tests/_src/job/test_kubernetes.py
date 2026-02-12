@@ -26,6 +26,7 @@ from monarch._src.job.kubernetes import (
     _MONARCHMESH_PLURAL,
     _MONARCHMESH_VERSION,
     _WORKER_BOOTSTRAP_SCRIPT,
+    ImageSpec,
     KubernetesJob,
 )
 
@@ -150,7 +151,7 @@ class TestAddMesh(unittest.TestCase):
 
     def test_image_marks_provisioned(self) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=2, image="myimage:latest")
+        job.add_mesh("workers", num_replicas=2, image_spec=ImageSpec("myimage:latest"))
         self.assertTrue(job._meshes["workers"]["provisioned"])
         self.assertIn("pod_spec", job._meshes["workers"])
 
@@ -175,17 +176,8 @@ class TestAddMesh(unittest.TestCase):
             job.add_mesh(
                 "workers",
                 num_replicas=1,
-                image="img",
+                image_spec=ImageSpec("img"),
                 pod_spec={"containers": []},
-            )
-
-    def test_resources_requires_image(self) -> None:
-        job = self._make_job()
-        with self.assertRaises(ValueError, msg="requires 'image' in add_mesh"):
-            job.add_mesh(
-                "workers",
-                num_replicas=1,
-                resources={"cpu": "2"},
             )
 
     def test_label_selector_forbidden_with_provisioning(self) -> None:
@@ -196,7 +188,7 @@ class TestAddMesh(unittest.TestCase):
             job.add_mesh(
                 "workers",
                 num_replicas=1,
-                image="img",
+                image_spec=ImageSpec("img"),
                 label_selector="app=custom",
             )
 
@@ -208,13 +200,13 @@ class TestAddMesh(unittest.TestCase):
             job.add_mesh(
                 "workers",
                 num_replicas=1,
-                image="img",
+                image_spec=ImageSpec("img"),
                 pod_rank_label="custom-rank",
             )
 
     def test_custom_port_stored(self) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=1, image="img", port=9999)
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"), port=9999)
         self.assertEqual(job._meshes["workers"]["port"], 9999)
 
 
@@ -250,7 +242,9 @@ class TestCreate(unittest.TestCase):
         mock_custom_api_cls: MagicMock,
     ) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=3, image="myimage:latest", port=9999)
+        job.add_mesh(
+            "workers", num_replicas=3, image_spec=ImageSpec("myimage:latest"), port=9999
+        )
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
@@ -279,7 +273,7 @@ class TestCreate(unittest.TestCase):
         mock_custom_api_cls: MagicMock,
     ) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=1, image="img")
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
@@ -300,7 +294,7 @@ class TestCreate(unittest.TestCase):
     ) -> None:
         job = self._make_job()
         job.add_mesh("attach", num_replicas=1)
-        job.add_mesh("provisioned", num_replicas=1, image="img")
+        job.add_mesh("provisioned", num_replicas=1, image_spec=ImageSpec("img"))
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
@@ -328,7 +322,7 @@ class TestCreate(unittest.TestCase):
         mock_load_config: MagicMock,
     ) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=1, image="img")
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
         with self.assertRaises(RuntimeError, msg="in-cluster"):
             job._create(None)
 
@@ -337,7 +331,9 @@ class TestBuildWorkerPodSpec(unittest.TestCase):
     """Tests for KubernetesJob._build_worker_pod_spec."""
 
     def test_basic_pod_spec(self) -> None:
-        spec = KubernetesJob._build_worker_pod_spec("myimage:latest", port=26600)
+        spec = KubernetesJob._build_worker_pod_spec(
+            ImageSpec("myimage:latest"), port=26600
+        )
         self.assertEqual(len(spec["containers"]), 1)
         container = spec["containers"][0]
         self.assertEqual(container["name"], "worker")
@@ -352,15 +348,17 @@ class TestBuildWorkerPodSpec(unittest.TestCase):
         self.assertNotIn("resources", container)
 
     def test_custom_port_in_env(self) -> None:
-        spec = KubernetesJob._build_worker_pod_spec("img", port=9999)
+        spec = KubernetesJob._build_worker_pod_spec(ImageSpec("img"), port=9999)
         env = spec["containers"][0]["env"]
         self.assertEqual(env[0]["value"], "9999")
 
     def test_resources_set(self) -> None:
         spec = KubernetesJob._build_worker_pod_spec(
-            "img",
+            ImageSpec(
+                "img",
+                resources={"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": 2},
+            ),
             port=26600,
-            resources={"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": 2},
         )
         container = spec["containers"][0]
         expected = {"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": "2"}
@@ -707,7 +705,7 @@ class TestKill(unittest.TestCase):
         mock_custom_api_cls: MagicMock,
     ) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=2, image="img")
+        job.add_mesh("workers", num_replicas=2, image_spec=ImageSpec("img"))
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
@@ -730,7 +728,7 @@ class TestKill(unittest.TestCase):
         mock_custom_api_cls: MagicMock,
     ) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=1, image="img")
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
@@ -749,7 +747,7 @@ class TestKill(unittest.TestCase):
         mock_custom_api_cls: MagicMock,
     ) -> None:
         job = self._make_job()
-        job.add_mesh("workers", num_replicas=1, image="img")
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api

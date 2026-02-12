@@ -4,6 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from monarch._src.job.kubernetes import KubernetesJob
+from monarch._src.job.kubernetes import ImageSpec, KubernetesJob
 
-__all__ = ["KubernetesJob"]
+__all__ = ["ImageSpec", "KubernetesJob"]
