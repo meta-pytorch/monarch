@@ -39,12 +39,16 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     UnflattenArg,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
-from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    OncePortRef,
+    PortId,
+    PortRef,
+)
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
-from monarch._src.actor.actor_mesh import Channel, Port
+from monarch._src.actor.actor_mesh import Channel
 from monarch._src.actor.shape import NDSlice
 from monarch.common import device_mesh, messages, stream
 from monarch.common.controller_api import TController
@@ -374,9 +378,8 @@ class MeshClient(Client):
         response_port = None
         if future is not None:
             # method annotation is a lie to make Client happy
-            port, slice = cast("Tuple[Port[Any], NDSlice]", future)
-            assert port._port_ref is not None
-            response_port = (port._port_ref.port_id, slice)
+            port_ref, slice = cast("Tuple[PortRef | OncePortRef, NDSlice]", future)
+            response_port = (port_ref.port_id, slice)
         self._mesh_controller.node(seq, defs, uses, response_port, tracebacks)
         return seq
 
@@ -458,7 +461,7 @@ def create_actor_message(
     proc_mesh: Optional["ProcMesh"],
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
-    port: Optional[Port[Any]],
+    port: Optional[PortRef | OncePortRef],
     pending_pickle_state: Optional[PendingPickleState],
 ) -> PythonMessage:
     tensors = [ref for ref in refs if isinstance(ref, Tensor)]
@@ -500,7 +503,7 @@ def _create_actor_message(
     method_name: MethodSpecifier,
     args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
-    port: Optional[Port[Any]],
+    port: Optional[PortRef | OncePortRef],
     client: MeshClient,
     mesh: DeviceMesh,
     tensors: List[Tensor],
