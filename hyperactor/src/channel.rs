@@ -43,6 +43,7 @@ use crate::simnet::SimNetError;
 pub(crate) mod local;
 pub(crate) mod net;
 pub mod sim;
+pub mod uring;
 
 /// The type of error that can occur on channel operations.
 #[derive(thiserror::Error, Debug)]
