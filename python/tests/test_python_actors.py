@@ -1835,6 +1835,33 @@ def test_get_or_spawn_controller_on_unpickled_proc_mesh():
     assert my_actor.spawn_and_get_from_store.call_one(ChildActor, "a").get() == 1
 
 
+class RunForeverOnInitActor(Actor):
+    """Actor whose __init__ never returns."""
+
+    def __init__(self, pm: ProcMesh, send: Port):
+        counter = pm.spawn("counter_from_init", Counter, 42)
+        send.send(counter)
+        threading.Event().wait()
+
+    @endpoint
+    async def unreachable(self) -> None:
+        pass
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+async def test_run_forever_on_init():
+    """Test that an actor whose __init__ never returns still allows
+    initialization side effects to propagate."""
+    pm = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
+    # Fake type, actually ActorMesh[Counter], but necessary for type-checking.
+    send, recv = Channel[Counter].open()
+    forever = pm.spawn("forever", RunForeverOnInitActor, pm, send)
+    counter = recv.recv().get()
+    assert counter.value.call_one().get() == 42
+    await cast(ActorMesh, forever).stop()
+
+
 @pytest.mark.timeout(60)
 def test_raw_actor_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
