@@ -208,11 +208,11 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
         panic!("Failed to configure rdma-core with cmake");
     }
 
-    // Build only the targets we need: libibverbs.a, libmlx5.a, and librdma_util.a
-    // We don't need librdmacm which has build issues with long paths
+    // Build only the targets we need
     let targets = [
         "lib/statics/libibverbs.a",
         "lib/statics/libmlx5.a",
+        "lib/statics/libefa.a",
         "util/librdma_util.a",
     ];
 
@@ -252,10 +252,12 @@ fn emit_link_directives(rdma_build_dir: &Path) {
     // or libraries built with different flags (e.g., ENABLE_RESOLVE_NEIGH=1).
     let libmlx5_path = rdma_static_dir.join("libmlx5.a");
     let libibverbs_path = rdma_static_dir.join("libibverbs.a");
+    let libefa_path = rdma_static_dir.join("libefa.a");
     let librdma_util_path = rdma_util_dir.join("librdma_util.a");
 
     println!("cargo:rustc-link-arg={}", libmlx5_path.display());
     println!("cargo:rustc-link-arg={}", libibverbs_path.display());
+    println!("cargo:rustc-link-arg={}", libefa_path.display());
     println!("cargo:rustc-link-arg={}", librdma_util_path.display());
 
     // Export metadata for dependent crates
@@ -267,9 +269,10 @@ fn emit_link_directives(rdma_build_dir: &Path) {
 
     // Export library paths as a semicolon-separated list
     let lib_paths = format!(
-        "{};{};{}",
+        "{};{};{};{}",
         libmlx5_path.display(),
         libibverbs_path.display(),
+        libefa_path.display(),
         librdma_util_path.display()
     );
     println!("cargo::metadata=RDMA_STATIC_LIBRARIES={}", lib_paths);

@@ -98,6 +98,10 @@ fn main() {
         .allowlist_function("rdmaxcel_register_segment_scanner")
         .allowlist_function("poll_cq_with_cache")
         .allowlist_function("completion_cache_.*")
+        // EFA functions (ibverbs-based)
+        .allowlist_function("rdmaxcel_efa_.*")
+        .allowlist_function("rdmaxcel_is_efa_dev")
+        .allowlist_function("efadv_.*")
         .allowlist_type("ibv_.*")
         .allowlist_type("mlx5dv_.*")
         .allowlist_type("mlx5_wqe_.*")
@@ -113,8 +117,11 @@ fn main() {
         .allowlist_type("poll_context_t")
         .allowlist_type("poll_context")
         .allowlist_type("rdmaxcel_segment_scanner_fn")
+        // EFA types
+        .allowlist_type("efadv_.*")
         .allowlist_var("MLX5_.*")
         .allowlist_var("IBV_.*")
+        .allowlist_var("EFADV_.*")
         // Block specific types that are manually defined in lib.rs
         .blocklist_type("ibv_wc")
         .blocklist_type("mlx5_wqe_ctrl_seg")
