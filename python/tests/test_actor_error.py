@@ -188,81 +188,8 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
             exception_actor.raise_exception.call().get()
 
 
-@parametrize_config(
-    # In queue dispatch mode, __init__ exceptions become supervision errors
-    actor_queue_dispatch={
-        False,
-    }
-)
-@pytest.mark.parametrize(
-    "mesh",
-    [spawn_procs_on_fake_host, spawn_procs_on_this_host],
-    ids=["local_proc_mesh", "distributed_proc_mesh"],
-)
-@pytest.mark.parametrize(
-    "actor_class",
-    [ExceptionActor, ExceptionActorSync],
-)
-@pytest.mark.parametrize("num_procs", [1, 2])
-async def test_actor_init_exception_buggered(mesh, actor_class, num_procs) -> None:
-    """
-    Test that exceptions raised in actor initializers are propagated to the client.
-    The correct behavior here should be to raise a supervision exception.
-    """
-    proc = mesh({"gpus": num_procs})
-
-    # The exception in the constructor will be an unhandled fault by default,
-    # override this to examine the normal behavior.
-    with override_fault_hook():
-        exception_actor = proc.spawn(
-            "exception_actor", actor_class, except_on_init=True
-        )
-        with pytest.raises(ActorError, match="This is an exception from __init__"):
-            if num_procs == 1:
-                await exception_actor.noop.call_one()
-            else:
-                await exception_actor.noop.call()
-        await asyncio.sleep(3)
-
-
-@parametrize_config(
-    # In queue dispatch mode, __init__ exceptions become supervision errors
-    actor_queue_dispatch={
-        False,
-    }
-)
-@pytest.mark.parametrize(
-    "mesh",
-    [spawn_procs_on_fake_host, spawn_procs_on_this_host],
-    ids=["local_proc_mesh", "distributed_proc_mesh"],
-)
-@pytest.mark.parametrize(
-    "actor_class",
-    [ExceptionActor, ExceptionActorSync],
-)
-@pytest.mark.parametrize("num_procs", [1, 2])
-def test_actor_init_exception_sync_buggered(mesh, actor_class, num_procs) -> None:
-    """
-    Test that exceptions raised in actor initializers are propagated to the client.
-    The correct behavior here should be to raise a supervision exception.
-    """
-    proc = mesh({"gpus": num_procs})
-
-    # Same reason as the async test variant.
-    with override_fault_hook():
-        exception_actor = proc.spawn(
-            "exception_actor", actor_class, except_on_init=True
-        )
-        with pytest.raises(ActorError, match="This is an exception from __init__"):
-            if num_procs == 1:
-                exception_actor.noop.call_one().get()
-            else:
-                exception_actor.noop.call().get()
-        time.sleep(3)
-
-
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True})
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -276,8 +203,7 @@ def test_actor_init_exception_sync_buggered(mesh, actor_class, num_procs) -> Non
 async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
     """
     Test that exceptions raised in actor initializers are propagated as supervision faults.
-    In queue dispatch mode, __init__ exceptions become supervision errors delivered to the
-    unhandled_fault_hook.
+    __init__ exceptions become supervision errors delivered to the unhandled_fault_hook.
     """
     faults = []
     faulted = asyncio.Event()
@@ -303,7 +229,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True})
+@parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
     [spawn_procs_on_fake_host, spawn_procs_on_this_host],
@@ -317,8 +243,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
 def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
     """
     Test that exceptions raised in actor initializers are propagated as supervision faults.
-    In queue dispatch mode, __init__ exceptions become supervision errors delivered to the
-    unhandled_fault_hook.
+    __init__ exceptions become supervision errors delivered to the unhandled_fault_hook.
     """
     import threading
 
