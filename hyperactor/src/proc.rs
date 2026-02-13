@@ -37,7 +37,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_telemetry::ActorEvent;
 use hyperactor_telemetry::notify_actor_created;
 use hyperactor_telemetry::recorder::Recording;
@@ -844,17 +844,17 @@ impl<A: Actor + Send> WorkCell<A> {
 /// Context for a message currently being handled by an Instance.
 pub struct Context<'a, A: Actor> {
     instance: &'a Instance<A>,
-    headers: Attrs,
+    headers: Flattrs,
 }
 
 impl<'a, A: Actor> Context<'a, A> {
     /// Construct a new Context.
-    pub fn new(instance: &'a Instance<A>, headers: Attrs) -> Self {
+    pub fn new(instance: &'a Instance<A>, headers: Flattrs) -> Self {
         Self { instance, headers }
     }
 
     /// Get a reference to the message headers.
-    pub fn headers(&self) -> &Attrs {
+    pub fn headers(&self) -> &Flattrs {
         &self.headers
     }
 }
@@ -1095,7 +1095,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor running on the proc.
-    pub fn post(&self, port_id: PortId, headers: Attrs, message: wirevalue::Any) {
+    pub fn post(&self, port_id: PortId, headers: Flattrs, message: wirevalue::Any) {
         <Self as context::MailboxExt>::post(
             self,
             port_id,
@@ -1115,7 +1115,7 @@ impl<A: Actor> Instance<A> {
     pub fn post_with_external_seq_info(
         &self,
         port_id: PortId,
-        headers: Attrs,
+        headers: Flattrs,
         message: wirevalue::Any,
     ) {
         <Self as context::MailboxExt>::post(
@@ -1507,7 +1507,7 @@ impl<A: Actor> Instance<A> {
         &self,
         actor: &mut A,
         type_info: Option<&'static TypeInfo>,
-        headers: Attrs,
+        headers: Flattrs,
         message: M,
     ) -> Result<(), anyhow::Error>
     where
@@ -2130,7 +2130,7 @@ impl<A: Actor> Ports<A> {
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
-                    let seq_info = headers.get(SEQ_INFO).cloned();
+                    let seq_info = headers.get(SEQ_INFO);
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
                         Box::pin(async move {

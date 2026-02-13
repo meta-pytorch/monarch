@@ -33,7 +33,7 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::router;
@@ -772,7 +772,7 @@ impl Actor for PythonActor {
         // Calls the "__cleanup__" method on the python instance to allow the actor
         // to control its own cleanup.
         // No headers because this isn't in the context of a message.
-        let cx = Context::new(this, Attrs::new());
+        let cx = Context::new(this, Flattrs::new());
         // Turn the ActorError into a representation of the error. We may not
         // have an original exception object or traceback, so we just pass in
         // the message.
@@ -905,7 +905,7 @@ impl Actor for PythonActor {
         this: &Instance<Self>,
         event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        let cx = Context::new(this, Attrs::new());
+        let cx = Context::new(this, Flattrs::new());
         self.handle(
             &cx,
             MeshFailure {
@@ -925,7 +925,7 @@ impl RemoteSpawn for PythonActor {
 
     async fn new(
         actor_type: PickledPyObject,
-        _environment: hyperactor_config::Attrs,
+        _environment: hyperactor_config::Flattrs,
     ) -> Result<Self, anyhow::Error> {
         Self::new(actor_type)
     }

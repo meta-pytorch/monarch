@@ -36,7 +36,7 @@ use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
 use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::PortSender as _;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -581,7 +581,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
 
     async fn new(
         (transport, reply_port, command, local): Self::Params,
-        _environment: Attrs,
+        _environment: Flattrs,
     ) -> anyhow::Result<Self> {
         let host = if local {
             let spawn: ProcManagerSpawnFn =

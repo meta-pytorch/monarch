@@ -27,7 +27,7 @@ use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_mesh::global_root_client;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::View;
@@ -94,7 +94,7 @@ impl Handler<NextNumber> for SieveActor {
                 msg.prime_collector.send(cx, msg.number)?;
 
                 self.next = Some(
-                    SieveActor::new(SieveParams { prime: msg.number }, Attrs::default())
+                    SieveActor::new(SieveParams { prime: msg.number }, Flattrs::default())
                         .await?
                         .spawn(cx)?,
                 );
@@ -111,7 +111,7 @@ impl RemoteSpawn for SieveActor {
     type Params = SieveParams;
 
     /// Creates a sieve actor for `prime`.
-    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
         Ok(Self {
             prime: params.prime,
             next: None,

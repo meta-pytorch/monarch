@@ -41,9 +41,9 @@ use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::reference::UnboundPort;
 use hyperactor::reference::UnboundPortKind;
-use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_mesh_macros::sel;
 use ndslice::Point;
@@ -176,9 +176,7 @@ impl Actor for CommActor {
 
             // Needed so that the receiver of the undeliverable message can easily find the
             // original sender of the cast message.
-            message_envelope
-                .headers_mut()
-                .set(CAST_ORIGINATING_SENDER, sender.clone());
+            message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
 
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
@@ -199,7 +197,7 @@ impl Actor for CommActor {
 
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
-            let return_port = PortRef::attest_message_port(sender);
+            let return_port = PortRef::attest_message_port(&sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to deliver the cast message to the dest \
                 actor; returning to origin {}",
@@ -244,8 +242,8 @@ impl CommActor {
         let child = config.peer_for_rank(rank)?;
         // TEMPORARY: until dropping v0 support
         if let Some(cast_actor_mesh_id) = cx.headers().get(CAST_ACTOR_MESH_ID) {
-            let mut headers = Attrs::new();
-            headers.set(CAST_ACTOR_MESH_ID, cast_actor_mesh_id.clone());
+            let mut headers = Flattrs::new();
+            headers.set(CAST_ACTOR_MESH_ID, cast_actor_mesh_id);
             child.send_with_headers(cx, headers, message)?;
         } else {
             child.send(cx, message)?;
@@ -301,7 +299,7 @@ impl CommActor {
 
     fn deliver_to_dest<M: CastEnvelope>(
         cx: &Context<Self>,
-        mut headers: Attrs,
+        mut headers: Flattrs,
         message: &mut M,
         config: &CommMeshConfig,
     ) -> anyhow::Result<()> {
@@ -652,7 +650,7 @@ pub mod test_utils {
     impl hyperactor::RemoteSpawn for TestActor {
         type Params = TestActorParams;
 
-        async fn new(params: Self::Params, _environment: Attrs) -> Result<Self> {
+        async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
             let Self::Params { forward_port } = params;
             Ok(Self { forward_port })
         }

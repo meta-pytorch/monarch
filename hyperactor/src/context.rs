@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use dashmap::DashSet;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 
 use crate::ActorId;
 use crate::Instance;
@@ -75,7 +75,7 @@ pub(crate) trait MailboxExt: Mailbox {
     fn post(
         &self,
         dest: PortId,
-        headers: Attrs,
+        headers: Flattrs,
         data: wirevalue::Any,
         return_undeliverable: bool,
         seq_info_policy: SeqInfoPolicy,
@@ -102,7 +102,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
     fn post(
         &self,
         dest: PortId,
-        mut headers: Attrs,
+        mut headers: Flattrs,
         data: wirevalue::Any,
         return_undeliverable: bool,
         seq_info_policy: SeqInfoPolicy,
@@ -156,7 +156,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             return_undeliverable: bool,
         ) {
             let mut envelope =
-                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Attrs::new());
+                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Flattrs::new());
             envelope.set_return_undeliverable(return_undeliverable);
             mailbox::MailboxSender::post(
                 mailbox,

@@ -114,7 +114,7 @@ mod tests {
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
     use hyperactor::id;
-    use hyperactor_config::attrs::Attrs;
+    use hyperactor_config::Flattrs;
 
     use super::*;
     use crate::Name;
@@ -170,7 +170,7 @@ mod tests {
             third_notexist_actor_id.clone(),
             PortId(first_actor_id.clone(), 0),
             wirevalue::Any::serialize(&()).unwrap(),
-            Attrs::new(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(
@@ -183,7 +183,7 @@ mod tests {
             second_actor_id.clone(),
             PortId(third_notexist_actor_id.clone(), 0),
             wirevalue::Any::serialize(&()).unwrap(),
-            Attrs::new(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_matches!(
@@ -196,7 +196,7 @@ mod tests {
             second_actor_id.clone(),
             PortId(id!(external[0].actor), 0),
             wirevalue::Any::serialize(&()).unwrap(),
-            Attrs::new(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
@@ -211,7 +211,7 @@ mod tests {
             second_actor_id.clone(),
             PortId(system_actor_id, 0),
             wirevalue::Any::serialize(&()).unwrap(),
-            Attrs::new(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);

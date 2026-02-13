@@ -14,7 +14,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 
 use crate::Actor;
 use crate::Data;
@@ -68,7 +68,7 @@ pub struct SpawnableActor {
         &Proc,
         &str,
         Data,
-        Attrs,
+        Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>>,
 
     /// A function to retrieve the type id of the actor itself. This is
@@ -125,7 +125,7 @@ impl Remote {
         actor_type: &str,
         actor_name: &str,
         params: Data,
-        environment: Attrs,
+        environment: Flattrs,
     ) -> Result<ActorId, anyhow::Error> {
         let entry = self
             .by_name
@@ -140,7 +140,7 @@ mod tests {
     use std::assert_matches::assert_matches;
 
     use async_trait::async_trait;
-    use hyperactor_config::Attrs;
+    use hyperactor_config::Flattrs;
 
     use super::*;
     use crate as hyperactor; // for macros
@@ -159,7 +159,7 @@ mod tests {
     impl RemoteSpawn for MyActor {
         type Params = bool;
 
-        async fn new(params: bool, _environment: Attrs) -> Result<Self, anyhow::Error> {
+        async fn new(params: bool, _environment: Flattrs) -> Result<Self, anyhow::Error> {
             if params {
                 Ok(MyActor)
             } else {
@@ -191,7 +191,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
                 bincode::serialize(&true).unwrap(),
-                Attrs::default(),
+                Flattrs::default(),
             )
             .await
             .unwrap();
@@ -202,7 +202,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
                 bincode::serialize(&false).unwrap(),
-                Attrs::default(),
+                Flattrs::default(),
             )
             .await
             .unwrap_err();

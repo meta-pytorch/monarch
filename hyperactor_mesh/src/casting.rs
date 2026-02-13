@@ -21,7 +21,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -59,7 +59,7 @@ pub fn update_undeliverable_envelope_for_casting(
     mut envelope: Undeliverable<MessageEnvelope>,
 ) -> Undeliverable<MessageEnvelope> {
     let old_actor = envelope.0.sender().clone();
-    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER).cloned() {
+    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER) {
         tracing::debug!(
             actor_id = %old_actor,
             "remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
@@ -92,7 +92,7 @@ where
         "message_variant" => message.arm().unwrap_or_default(),
     ));
 
-    let mut headers = Attrs::new();
+    let mut headers = Flattrs::new();
     mailbox::headers::set_send_timestamp(&mut headers);
     mailbox::headers::set_rust_message_type::<M>(&mut headers);
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
@@ -139,7 +139,7 @@ where
     };
 
     // TEMPORARY: remove with v0 support
-    let mut headers = Attrs::new();
+    let mut headers = Flattrs::new();
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
 
     comm_actor_ref

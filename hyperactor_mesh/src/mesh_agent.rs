@@ -998,7 +998,7 @@ mod tests {
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::Undeliverable;
-    use hyperactor_config::attrs::Attrs;
+    use hyperactor_config::Flattrs;
 
     use super::*;
 
@@ -1035,7 +1035,7 @@ mod tests {
             id!(world[0].sender),
             id!(world[0].receiver[0][1]),
             &data,
-            Attrs::new(),
+            Flattrs::new(),
         )
         .unwrap()
     }
