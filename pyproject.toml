@@ -77,6 +77,7 @@ examples = [
     "psutil",
 ]
 test = [
+    "kubernetes",
     "pytest",
     "pytest-timeout",
     "pytest-asyncio",
