@@ -75,6 +75,7 @@ use crate::clock::RealClock;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
+use crate::introspect::IntrospectMessage;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -505,7 +506,7 @@ impl Proc {
     ///
     /// When spawn_child returns, the child has an associated cell and is linked
     /// with its parent.
-    fn spawn_child<A: Actor>(
+    pub(crate) fn spawn_child<A: Actor>(
         &self,
         parent: InstanceCell,
         actor: A,
@@ -1051,6 +1052,14 @@ impl<A: Actor> Instance<A> {
     /// This instance's actor ID.
     pub fn self_id(&self) -> &ActorId {
         self.inner.self_id()
+    }
+
+    /// Crate-internal access to the underlying runtime cell.
+    ///
+    /// Used by default introspection and other runtime plumbing. Not
+    /// part of the public actor API.
+    pub(crate) fn cell(&self) -> &InstanceCell {
+        &self.inner.cell
     }
 
     /// Signal the actor to stop.
@@ -2009,9 +2018,11 @@ impl InstanceCell {
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // All actors handle signals and undeliverable messages.
+        // All actors handle signals, undeliverable messages, and
+        // introspection.
         ports.bind::<Signal>();
         ports.bind::<Undeliverable<MessageEnvelope>>();
+        ports.bind::<IntrospectMessage>();
         // TODO: consider sharing `ports.bound` directly.
         for entry in ports.bound.iter() {
             self.inner

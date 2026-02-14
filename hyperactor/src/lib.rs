@@ -78,6 +78,7 @@ pub mod config;
 pub mod context;
 pub mod host;
 mod init;
+pub mod introspect;
 pub mod mailbox;
 pub mod message;
 pub mod metrics;
