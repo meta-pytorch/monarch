@@ -10,8 +10,9 @@ mod commands;
 
 use clap::Parser;
 use clap::Subcommand;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 
-use crate::commands::admin::AdminCommand;
 use crate::commands::list::ListCommand;
 use crate::commands::show::ShowCommand;
 
@@ -29,9 +30,6 @@ enum Command {
 
     #[clap(about = r#"List available resources"#)]
     List(ListCommand),
-
-    #[clap(about = r#"Admin commands for the hyperactor admin HTTP API"#)]
-    Admin(AdminCommand),
 }
 
 #[cfg(fbcode_build)]
@@ -50,9 +48,17 @@ async fn run() -> Result<(), anyhow::Error> {
     let args = Cli::parse();
     hyperactor::initialize_with_current_runtime();
 
-    match args.command {
-        Command::Show(command) => Ok(command.run().await?),
-        Command::List(command) => Ok(command.run().await?),
-        Command::Admin(command) => Ok(command.run().await?),
-    }
+    let result = match args.command {
+        Command::Show(command) => command.run().await,
+        Command::List(command) => command.run().await,
+    };
+
+    // Allow the channel layer to flush pending acks before exit.
+    // Without this, the remote host's MailboxClient observes a
+    // broken link (30 s ack timeout) and the resulting undeliverable
+    // message crashes the HostMeshAgent, tearing down the entire
+    // mesh.  The ack interval is 500 ms, so 1 s is sufficient.
+    RealClock.sleep(std::time::Duration::from_secs(1)).await;
+
+    result
 }

@@ -322,6 +322,81 @@ impl Actor for ProcMeshAgent {
         self.proc.set_supervision_coordinator(this.port())?;
         Ok(())
     }
+
+    /// Proc-level introspection override.
+    ///
+    /// `ProcMeshAgent` describes the proc it manages: on `Query` it
+    /// returns `NodeProperties::Proc` and enumerates all actor ids in
+    /// the proc as `children` (excluding the `ProcMeshAgent` itself,
+    /// which is just the infrastructure wrapper).
+    ///
+    /// `QueryChild` is unsupported because proc "children" are always
+    /// independently addressable actors; callers should introspect
+    /// them by sending `IntrospectMessage::Query` directly to the
+    /// child actor id.
+    async fn handle_introspect(
+        &mut self,
+        cx: &Instance<Self>,
+        msg: hyperactor::introspect::IntrospectMessage,
+    ) -> Result<(), anyhow::Error> {
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::NodePayload;
+        use hyperactor::introspect::NodeProperties;
+
+        match msg {
+            IntrospectMessage::Query { reply } => {
+                let all_actors = self.proc.all_actor_ids();
+                // Exclude ourselves — ProcMeshAgent is an
+                // infrastructure actor spawned into the proc it
+                // manages.
+                let children: Vec<String> = all_actors
+                    .into_iter()
+                    .filter(|id| id != cx.self_id())
+                    .map(|id| id.to_string())
+                    .collect();
+
+                if let Err(e) = reply.send(
+                    cx,
+                    NodePayload {
+                        identity: cx.self_id().to_string(),
+                        properties: NodeProperties::Proc {
+                            proc_name: self.proc.proc_id().to_string(),
+                            num_actors: children.len(),
+                            is_system: false,
+                        },
+                        children,
+                        parent: None,
+                    },
+                ) {
+                    tracing::debug!("introspect Query reply failed (querier gone?): {e}");
+                }
+            }
+            IntrospectMessage::QueryChild { child_ref, reply } => {
+                // All children are independently addressable
+                // actors.
+                if let Err(e) = reply.send(
+                    cx,
+                    NodePayload {
+                        identity: String::new(),
+                        properties: NodeProperties::Error {
+                            code: "not_found".into(),
+                            message: format!(
+                                "proc {} does not handle QueryChild \
+                                 for {}; query the actor directly",
+                                self.proc.proc_id(),
+                                child_ref,
+                            ),
+                        },
+                        children: vec![],
+                        parent: None,
+                    },
+                ) {
+                    tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
